@@ -1,6 +1,7 @@
 name_model = "debugmodel"
 max_samples = 32
 batch_size = 8
+enforce_eager = true
 
 [sampling]
 max_tokens = 64
