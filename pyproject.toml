@@ -21,6 +21,7 @@ dependencies = [
     "jaxtyping",
     "beartype",
     "math-verify>=0.7.0",
+    "toploc",
     "llmcompressor"
 ] 
 

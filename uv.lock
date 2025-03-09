@@ -1,4 +1,5 @@
 version = 1
+revision = 1
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux'",
@@ -3016,6 +3017,24 @@ wheels = [
 ]
 
 [[package]]
+name = "toploc"
+version = "0.0.7"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "torch" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ea/5a/f99aa91fe4e184b80de77891998fdbb0b8c1b7b28c7240b5d4aef28cddb3/toploc-0.0.7.tar.gz", hash = "sha256:b5fb0592d97fe9d5acde18800c871a604ef20e985e219469a1ebfcd54b1abcc6", size = 13653 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/23/97/dbcdbc6cd53ae7c5c28654687dda599eaf925c18179d8e00a69b3f322b98/toploc-0.0.7-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:719f9ec1997a2d615355a6fa6fad015e217a55ed35e27ed68931b5fc26daf88e", size = 5339707 },
+    { url = "https://files.pythonhosted.org/packages/a4/d2/9034e389363620dc9c8feace157803579a9951c311a10b78d10be51d2874/toploc-0.0.7-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:a6d9e51ab4f0681e4e4271b79a2e4c64376585602c4ae31febd1c6f6c18f9811", size = 5393791 },
+    { url = "https://files.pythonhosted.org/packages/ff/76/395fb96d300a36b99c99442149cac1bc95ddce0f50f0348ffcdc23922e9d/toploc-0.0.7-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:e60f67899fd2c6a1061a71b3196f930520c08802822f20f3fa2393a1685ae68b", size = 5371493 },
+    { url = "https://files.pythonhosted.org/packages/8e/e2/d5ac3a7f157f2ada7808711df5114ea50a11f8611e585796fac209f9ac49/toploc-0.0.7-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:fbc9b9fcfa3daa5fd310e7aefa2b50b5c48184c14fe092be9bc53e83ba82c6cd", size = 5419941 },
+    { url = "https://files.pythonhosted.org/packages/30/0f/3b54cb2b0df7eefa88c5271036ba92b8d56a5a82cb0c16a71cfbaf37d318/toploc-0.0.7-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:9dac5de0caf59692fea187042187ebdc0cc62e87a67c12ff1b45c396159db04a", size = 5370261 },
+    { url = "https://files.pythonhosted.org/packages/aa/8b/77eb9c9d84708e38c956165c471859b690bdb7fb8c21dec43f24cf04c41f/toploc-0.0.7-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:4c4903d9c3b16a31a70060aabcb8650b334e6fc810a60a952b2a37e8aea65288", size = 5423333 },
+]
+
+[[package]]
 name = "torch"
 version = "2.5.1"
 source = { registry = "https://pypi.org/simple" }
@@ -3703,6 +3722,7 @@ dependencies = [
     { name = "pyarrow" },
     { name = "pydantic-config" },
     { name = "setuptools" },
+    { name = "toploc" },
     { name = "torch" },
     { name = "torchdata" },
     { name = "transformers" },
@@ -3731,6 +3751,7 @@ requires-dist = [
     { name = "pyarrow" },
     { name = "pydantic-config", git = "https://github.com/samsja/pydantic_config.git?rev=b7becc3" },
     { name = "setuptools" },
+    { name = "toploc" },
     { name = "torch" },
     { name = "torchdata", specifier = ">=0.8.0" },
     { name = "transformers", specifier = ">=4.44.2" },
