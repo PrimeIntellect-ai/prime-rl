@@ -16,6 +16,8 @@ import time
 # from vllm.model_executor.model_loader
 from vllm.model_executor.model_loader.loader import _process_weights_after_loading
 from vllm.sequence import SampleLogprobs
+from vllm.model_executor import SamplingMetadata
+from toploc import build_proofs_bytes
 
 from zeroband.logger import get_logger
 from zeroband.models import ModelName, name_to_hf_model
@@ -118,6 +120,7 @@ def get_parquet_table(
     generated_tokens: list[vllm.RequestOutput],
     grouped_advantages: dict[int, list[float]],
     grouped_rewards: dict[int, torch.FloatTensor],
+    proofs: list[bytes],
     step: int,
 ) -> pa.Table:
     input_tokens_list = []
@@ -139,7 +142,7 @@ def get_parquet_table(
             output_logprobs_list.append(get_own_logprobs(output.logprobs))
             advantages_list.append(adv)
             rewards_list.append(reward)
-            proofs_list.append("I am toploc proof, handcrafted by jack".encode())
+            proofs_list.append(proofs[i])
             steps_list.append(step)
 
     arrays = [
@@ -231,6 +234,23 @@ def inference(config: Config):
     dataset = load_dataset(config.dataset, split="train").shuffle()  # todo never set seed otherwise this will be fucked
     max_samples = config.max_samples or len(dataset)
 
+    model = llm.llm_engine.model_executor.driver_worker.model_runner.model
+    saved_activations = {}
+
+    def logits_processor_hook(module, input):
+        assert isinstance(input[1], torch.Tensor)
+        assert isinstance(input[2], SamplingMetadata)
+        # If the lengths dont match its not a decode step
+        if len(input[2].seq_groups) != input[1].shape[0]:
+            return
+        index = [i.seq_ids[0] for i in input[2].seq_groups]
+        for ti, i in enumerate(index):
+            if i not in saved_activations:
+                saved_activations[i] = []
+            saved_activations[i].append(input[1][ti])
+
+    model.logits_processor.register_forward_pre_hook(logits_processor_hook)
+
     ckpt_step = 0
     real_step = 0
 
@@ -290,12 +310,21 @@ def inference(config: Config):
             f"Batch throughput: {tokens_per_second:.2f} tok/sec ({batch_total_tokens} tokens in {elapsed_time:.2f}s, avg seq len: {avg_seq_length:.1f})"
         )
 
+        if config.step_batch_size is not None and total_problems % config.step_batch_size == 0:
+            logger.info(f"Generated {total_problems} problems for step {real_step}")
+
+        # Compute proofs
+        proofs = [
+            b"".join(build_proofs_bytes(act, decode_batching_size=32, topk=128, skip_prefill=True)) for act in saved_activations.values()
+        ]
+        saved_activations.clear()
+
         # Compute rewards asynchronously, grouped as a dictionary.
         grouped_rewards = asyncio.run(compute_rewards_async(generated_tokens, verification_infos))
         # Compute normalized advantages per prompt.
         grouped_advantages = compute_advantages_grpo(grouped_rewards)
 
-        table = get_parquet_table(generated_tokens, grouped_advantages, grouped_rewards, ckpt_step)
+        table = get_parquet_table(generated_tokens, grouped_advantages, grouped_rewards, proofs, ckpt_step)
 
         step_path = Path(config.output_path) / f"step_{real_step}"
         os.makedirs(step_path, exist_ok=True)
