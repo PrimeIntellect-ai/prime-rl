@@ -26,4 +26,23 @@ def test_inference(tmp_path, tp):
     for file in tmp_path.joinpath("step_0").iterdir():
         if file.suffix == ".parquet":
             table = pq.read_table(file)
+            assert set(table.schema.names) == {
+                "input_tokens",
+                "output_tokens",
+                "input_logprobs",
+                "output_logprobs",
+                "advantages",
+                "rewards",
+                "proofs",
+                "step",
+            }
+
+            # Check that proof lengths are correct
+            proofs: list[bytes] = table.column("proofs").to_pylist()
+            output_tokens: list[list[int]] = table.column("output_tokens").to_pylist()
+            assert len(proofs) == len(output_tokens)
+            for proof, output_token in zip(proofs, output_tokens):
+                assert len(proof) % 258 == 0
+                assert len(proof) // 258 == (len(output_token) + 31) // 32
+
             assert table.num_rows > 0
