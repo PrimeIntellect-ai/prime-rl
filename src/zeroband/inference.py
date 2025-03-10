@@ -132,6 +132,8 @@ def get_parquet_table(
     proofs_list = []
     steps_list = []
 
+    proof_iter = iter(proofs)
+
     for i, request in enumerate(generated_tokens):
         advantages = grouped_advantages[i]
         rewards = grouped_rewards[i].tolist()
@@ -142,7 +144,7 @@ def get_parquet_table(
             output_logprobs_list.append(get_own_logprobs(output.logprobs))
             advantages_list.append(adv)
             rewards_list.append(reward)
-            proofs_list.append(proofs[i])
+            proofs_list.append(next(proof_iter))
             steps_list.append(step)
 
     arrays = [
@@ -227,6 +229,7 @@ def inference(config: Config):
         max_seq_len_to_capture=int(1.5 * config.sampling.max_tokens),  # 1.5 makes sure we capture the entire output even with prefill
         quantization=config.quant,
         enforce_eager=config.enforce_eager,
+        dtype="bfloat16",
     )
     tokenizer = llm.get_tokenizer()
     logger = get_logger(f"INFERENCE {os.environ.get('RANK', '')}")
@@ -234,7 +237,6 @@ def inference(config: Config):
     dataset = load_dataset(config.dataset, split="train").shuffle()  # todo never set seed otherwise this will be fucked
     max_samples = config.max_samples or len(dataset)
 
-    model = llm.llm_engine.model_executor.driver_worker.model_runner.model
     saved_activations = {}
 
     def logits_processor_hook(module, input):
@@ -249,6 +251,7 @@ def inference(config: Config):
                 saved_activations[i] = []
             saved_activations[i].append(input[1][ti])
 
+    model = llm.llm_engine.model_executor.driver_worker.model_runner.model
     model.logits_processor.register_forward_pre_hook(logits_processor_hook)
 
     ckpt_step = 0
@@ -314,9 +317,11 @@ def inference(config: Config):
             logger.info(f"Generated {total_problems} problems for step {real_step}")
 
         # Compute proofs
-        proofs = [
-            b"".join(build_proofs_bytes(act, decode_batching_size=32, topk=128, skip_prefill=True)) for act in saved_activations.values()
-        ]
+        # Note (Jack): Currently, vllm guarantees that seq ids are in the same order as prompts passed to generate.
+        # Generate always adds requests to the engine in the order of the prompts.
+        # And returns them in the sequence they were added.
+        act_values = [i[1] for i in sorted(saved_activations.items(), key=lambda x: x[0])]
+        proofs = [b"".join(build_proofs_bytes(act, decode_batching_size=32, topk=128, skip_prefill=True)) for act in act_values]
         saved_activations.clear()
 
         # Compute rewards asynchronously, grouped as a dictionary.
@@ -331,7 +336,7 @@ def inference(config: Config):
         pq.write_table(table, f"{step_path}/{uuid.uuid4()}.parquet")
 
         total_problems += len(prompts)
-        logger.info(f"Generated {total_problems} total samples")
+        logger.info(f"Generated {total_problems} total problems with {total_problems * config.sampling.n} total samples")
 
         if total_problems % config.step_batch_size == 0:
             logger.info(f"Generated {total_problems} problems for step {real_step}")
