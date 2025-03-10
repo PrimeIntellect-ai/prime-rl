@@ -245,11 +245,18 @@ def inference(config: Config):
         # If the lengths dont match its not a decode step
         if len(input[2].seq_groups) != input[1].shape[0]:
             return
+
         index = [i.seq_ids[0] for i in input[2].seq_groups]
-        for ti, i in enumerate(index):
+
+        # We clone here in case the decode uses cuda graphs which will overwrite the logit tensor
+        # If we copy to cpu here, we will make it a lot slower
+        logits = input[1].clone()  # .to("cpu", non_blocking=True)
+        cpu_tensors = [logits[ti] for ti in range(len(index))]
+
+        for i, tensor in zip(index, cpu_tensors):
             if i not in saved_activations:
                 saved_activations[i] = []
-            saved_activations[i].append(input[1][ti])
+            saved_activations[i].append(tensor)
 
     model = llm.llm_engine.model_executor.driver_worker.model_runner.model
     model.logits_processor.register_forward_pre_hook(logits_processor_hook)
