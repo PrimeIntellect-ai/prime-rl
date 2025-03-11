@@ -1,7 +1,8 @@
-name_model = "debugmodel"
+name_model = "QwQ32B"
 max_samples = 32
 batch_size = 8
 enforce_eager = true
+tp = 2
 
 [sampling]
-max_tokens = 64
+max_tokens = 128
