@@ -25,9 +25,9 @@ from zeroband.rewards.math import compute_math_reward
 from datasets import load_dataset
 import pyarrow as pa
 import pyarrow.parquet as pq
+from zeroband.inferencing.toploc import TopLocCache
 import multiprocessing as mp
 
-from zeroband.inferencing.toploc import TopLocCache
 from zeroband.training.mp import EnvWrapper, cuda_available_devices
 
 
@@ -230,7 +230,6 @@ def inference(config: Config):
         quantization=config.quant,
         enforce_eager=config.enforce_eager,
         dtype="bfloat16",
-        max_model_len=20000,
     )
     tokenizer = llm.get_tokenizer()
     logger = get_logger(f"INFERENCE {os.environ.get('RANK', '')}")
@@ -242,7 +241,6 @@ def inference(config: Config):
     toploc_cache = TopLocCache(max_seqs=config.batch_size * config.sampling.n, max_len=32, hidden_size=model.config.hidden_size)
 
     def logits_processor_hook(module, input):
-        start_time = time.time()
         assert isinstance(input[1], torch.Tensor)
         assert isinstance(input[2], SamplingMetadata)
         # If the lengths dont match its not a decode step
@@ -251,9 +249,7 @@ def inference(config: Config):
 
         index = [i.seq_ids[0] for i in input[2].seq_groups]
         toploc_cache.add(index, input[1])
-        logits_processor_hook.time_taken += time.time() - start_time
 
-    logits_processor_hook.time_taken = 0.0
     model.logits_processor.register_forward_pre_hook(logits_processor_hook)
 
     ckpt_step = 0
@@ -323,13 +319,10 @@ def inference(config: Config):
         # Note (Jack): Currently, vllm guarantees that seq ids are in the same order as prompts passed to generate.
         # Generate always adds requests to the engine in the order of the prompts.
         # And returns them in the sequence they were added.
-        logger.info(f"Time taken by logits processor hook: {logits_processor_hook.time_taken:.2f}s")
-        logits_processor_hook.time_taken = 0.0
-        start_time = time.time()
         toploc_cache.wait_for_proofs()
         proofs = [b"".join(proofs) for _, proofs in sorted(toploc_cache.proofs.items(), key=lambda x: x[0])]
         toploc_cache.reset_cache()
-        logger.info(f"Time taken by proofs: {time.time() - start_time:.2f}s")
+
         # Compute rewards asynchronously, grouped as a dictionary.
         grouped_rewards = asyncio.run(compute_rewards_async(generated_tokens, verification_infos))
         # Compute normalized advantages per prompt.
