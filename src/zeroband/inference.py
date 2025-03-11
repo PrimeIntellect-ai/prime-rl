@@ -17,7 +17,6 @@ import time
 from vllm.model_executor.model_loader.loader import _process_weights_after_loading
 from vllm.sequence import SampleLogprobs
 from vllm.model_executor import SamplingMetadata
-from toploc import build_proofs_bytes
 
 from zeroband.logger import get_logger
 from zeroband.models import ModelName, name_to_hf_model
@@ -26,6 +25,7 @@ from zeroband.rewards.math import compute_math_reward
 from datasets import load_dataset
 import pyarrow as pa
 import pyarrow.parquet as pq
+from zeroband.inferencing.toploc import TopLocCache
 import multiprocessing as mp
 
 from zeroband.training.mp import EnvWrapper, cuda_available_devices
@@ -237,7 +237,8 @@ def inference(config: Config):
     dataset = load_dataset(config.dataset, split="train").shuffle()  # todo never set seed otherwise this will be fucked
     max_samples = config.max_samples or len(dataset)
 
-    saved_activations = {}
+    model = llm.llm_engine.model_executor.driver_worker.model_runner.model
+    toploc_cache = TopLocCache(max_seqs=config.batch_size * config.sampling.n, max_len=32, hidden_size=model.config.hidden_size)
 
     def logits_processor_hook(module, input):
         assert isinstance(input[1], torch.Tensor)
@@ -247,18 +248,8 @@ def inference(config: Config):
             return
 
         index = [i.seq_ids[0] for i in input[2].seq_groups]
+        toploc_cache.add(index, input[1])
 
-        # We clone here in case the decode uses cuda graphs which will overwrite the logit tensor
-        # If we copy to cpu here, we will make it a lot slower
-        logits = input[1].clone()  # .to("cpu", non_blocking=True)
-        cpu_tensors = [logits[ti] for ti in range(len(index))]
-
-        for i, tensor in zip(index, cpu_tensors):
-            if i not in saved_activations:
-                saved_activations[i] = []
-            saved_activations[i].append(tensor)
-
-    model = llm.llm_engine.model_executor.driver_worker.model_runner.model
     model.logits_processor.register_forward_pre_hook(logits_processor_hook)
 
     ckpt_step = 0
@@ -304,6 +295,7 @@ def inference(config: Config):
         start_time = time.time()
         generated_tokens = llm.generate(prompts, sampling_params, use_tqdm=False)
         end_time = time.time()
+        toploc_cache.maybe_generate_proofs_in_background(force_generate=True)
 
         # Calculate tokens and throughput
         batch_input_tokens = sum(len(req.prompt_token_ids) for req in generated_tokens)
@@ -327,9 +319,9 @@ def inference(config: Config):
         # Note (Jack): Currently, vllm guarantees that seq ids are in the same order as prompts passed to generate.
         # Generate always adds requests to the engine in the order of the prompts.
         # And returns them in the sequence they were added.
-        act_values = [i[1] for i in sorted(saved_activations.items(), key=lambda x: x[0])]
-        proofs = [b"".join(build_proofs_bytes(act, decode_batching_size=32, topk=128, skip_prefill=True)) for act in act_values]
-        saved_activations.clear()
+        toploc_cache.wait_for_proofs()
+        proofs = [b"".join(proofs) for _, proofs in sorted(toploc_cache.proofs.items(), key=lambda x: x[0])]
+        toploc_cache.reset_cache()
 
         # Compute rewards asynchronously, grouped as a dictionary.
         grouped_rewards = asyncio.run(compute_rewards_async(generated_tokens, verification_infos))
