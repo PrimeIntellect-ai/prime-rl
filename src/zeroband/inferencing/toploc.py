@@ -12,7 +12,7 @@ class TopLocCache:
         self.device = device
         self._cache: Optional[torch.Tensor] = None
         self.proofs: Dict[int, List[bytes]] = {}
-        self._executor = ThreadPoolExecutor(max_workers=4)
+        self._executor = ThreadPoolExecutor(max_workers=8)
 
     def _init_cache(self, device: torch.device, dtype: torch.dtype):
         self._cache = torch.empty(self.max_seqs, self.max_len, self.hidden_size, device=device, dtype=dtype)
@@ -46,14 +46,12 @@ class TopLocCache:
     def maybe_generate_proofs_in_background(self, force_generate: bool = False):
         for seq_id, cache_index in self._seq_id_2_cache_index.items():
             if force_generate or self._current_seq_len[cache_index] == self.max_len:
-                self._executor.submit(self._generate_proof, seq_id, cache_index)
+                self._executor.submit(self._generate_proof, seq_id, cache_index, self._current_seq_len[cache_index])
                 self._current_seq_len[cache_index] = 0
 
-    def _generate_proof(self, seq_id: int, cache_index: int) -> None:
+    def _generate_proof(self, seq_id: int, cache_index: int, seq_len: int) -> None:
         """Helper method for proof generation"""
-        proof = build_proofs_bytes(
-            self._cache[cache_index, : self._current_seq_len[cache_index]], decode_batching_size=self.max_len, topk=128, skip_prefill=True
-        )[0]
+        proof = build_proofs_bytes(self._cache[cache_index, :seq_len], decode_batching_size=self.max_len, topk=128, skip_prefill=True)[0]
         self.proofs[seq_id].append(proof)
 
     def wait_for_proofs(self):
