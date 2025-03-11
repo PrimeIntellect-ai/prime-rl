@@ -36,7 +36,7 @@ class TopLocCache:
             device (torch.device): Device to store the cache tensor on
             dtype (torch.dtype): Data type for the cache tensor
         """
-        self._cache: torch.Tensor = torch.empty(self.max_seqs, self.max_len, self.hidden_size, device=device, dtype=dtype)
+        self._cache = torch.empty(self.max_seqs, self.max_len, self.hidden_size, device=device, dtype=dtype)
         self._seq_id_2_cache_index: Dict[int, int] = {}
         self._current_seq_len: List[int] = [0 for k in range(self.max_seqs)]
         # Tracks which chunk to alloc next
