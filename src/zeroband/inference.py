@@ -312,9 +312,6 @@ def inference(config: Config):
             f"Batch throughput: {tokens_per_second:.2f} tok/sec ({batch_total_tokens} tokens in {elapsed_time:.2f}s, avg seq len: {avg_seq_length:.1f})"
         )
 
-        if config.step_batch_size is not None and total_problems % config.step_batch_size == 0:
-            logger.info(f"Generated {total_problems} problems for step {real_step}")
-
         # Compute proofs
         # Note (Jack): Currently, vllm guarantees that seq ids are in the same order as prompts passed to generate.
         # Generate always adds requests to the engine in the order of the prompts.
@@ -335,7 +332,6 @@ def inference(config: Config):
         pq.write_table(table, f"{step_path}/{uuid.uuid4()}.parquet")
 
         total_problems += len(prompts)
-        logger.info(f"Generated {total_problems} total problems with {total_problems * config.sampling.n} total samples")
 
         if total_problems % config.step_batch_size == 0:
             logger.info(f"Generated {total_problems} problems for step {real_step}")
