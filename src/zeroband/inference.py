@@ -25,7 +25,9 @@ from zeroband.rewards.math import compute_math_reward
 from datasets import load_dataset
 import pyarrow as pa
 import pyarrow.parquet as pq
+import multiprocessing as mp
 
+from zeroband.inferencing.toploc import TopLocCache
 from zeroband.training.mp import EnvWrapper, cuda_available_devices
 
 
@@ -235,8 +237,6 @@ def inference(config: Config):
     sampling_params = SamplingParams(**config.sampling.model_dump())
     dataset = load_dataset(config.dataset, split="train").shuffle()  # todo never set seed otherwise this will be fucked
     max_samples = config.max_samples or len(dataset)
-
-    from zeroband.inferencing.toploc import TopLocCache
 
     model = llm.llm_engine.model_executor.driver_worker.model_runner.model
     toploc_cache = TopLocCache(max_seqs=config.batch_size * config.sampling.n, max_len=32, hidden_size=model.config.hidden_size)
