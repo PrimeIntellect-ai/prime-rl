@@ -10,6 +10,8 @@ class TopLocCache:
     This class provides functionality to store sequence data in a tensor cache and
     asynchronously generate proofs using a thread pool executor when the sequence reaches max_len.
 
+    It allows us to generate the proof as the same time as we are generating tokens
+
     Args:
         max_seqs (int): Maximum number of sequences that can be stored in the cache
         max_len (int): Maximum length of each sequence
