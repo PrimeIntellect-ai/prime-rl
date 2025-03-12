@@ -295,6 +295,9 @@ def inference(config: Config):
         start_time = time.time()
         generated_tokens = llm.generate(prompts, sampling_params, use_tqdm=False)
         end_time = time.time()
+
+        # This generates proofs for the remaining sequences that haven't reached max_len.
+        # We call here to give time for the proofs to be generated non-blocking in the background.
         toploc_cache.maybe_generate_proofs_in_background(force_generate=True)
 
         # Calculate tokens and throughput
