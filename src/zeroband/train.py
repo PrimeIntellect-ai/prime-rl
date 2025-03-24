@@ -163,7 +163,7 @@ def train(config: Config):
     )
 
     if world_info.rank == 0:
-        shardcast.initialize("./origin_data", port=3936, max_distribution_folders=config.max_async_level)
+        shardcast.initialize("./origin_data", max_distribution_folders=config.max_async_level)
 
     model, tokenizer = get_model_and_tokenizer(config.name_model, config.train.attn_impl)
 
@@ -357,6 +357,22 @@ def train(config: Config):
 
             logger.info(log)
 
+            # Lets do this first so that clients can start downloading as soon as possible
+            if config.ckpt.rollout_path is not None and training_progress.step % config.optim.step_per_rollout == 0:
+                rollout_step = training_progress.step // config.optim.step_per_rollout
+                path = Path(config.ckpt.rollout_path) / f"step_{rollout_step}"
+                previous_ckpt_rollout.append(path)
+                safetensor_path = save_ckpt_for_rollout(model, path)
+                if world_info.rank == 0:
+                    logger.info(f"Broadcasting {safetensor_path}")
+                    shardcast.broadcast(safetensor_path)  # TODO: Is this blocking?
+
+                if len(previous_ckpt_rollout) > config.max_async_level:
+                    path_to_delete = previous_ckpt_rollout.pop(0)
+                    if path_to_delete.exists():
+                        logger.info(f"Removing past rollout ckpt at {path_to_delete}")
+                        shutil.rmtree(path_to_delete, ignore_errors=True)
+
             if config.train.memory_profile and (training_progress.step == 2) and world_info.rank == 0:
                 logger.info("Dumping memory snapshot.")
                 pickle_path: str = config.train.memory_profile
@@ -367,22 +383,6 @@ def train(config: Config):
 
             if config.ckpt.interval is not None and training_progress.step % config.ckpt.interval == 0:
                 save_checkpoint_fsdp_state(model, [optimizer], training_progress, train_dataloader, scheduler, config.ckpt.path)
-
-            # TODO: Can we do this before saving fsdp state? Would give broadcast more time
-            if config.ckpt.rollout_path is not None and training_progress.step % config.optim.step_per_rollout == 0:
-                rollout_step = training_progress.step // config.optim.step_per_rollout
-                path = Path(config.ckpt.rollout_path) / f"step_{rollout_step}"
-                previous_ckpt_rollout.append(path)
-                safetensor_path = save_ckpt_for_rollout(model, path)
-                if world_info.rank == 0:
-                    logger.info(f"Broadcasting {safetensor_path}")
-                    shardcast.broadcast(safetensor_path)
-
-                if len(previous_ckpt_rollout) > config.max_async_level:
-                    path_to_delete = previous_ckpt_rollout.pop(0)
-                    if path_to_delete.exists():
-                        logger.info(f"Removing past rollout ckpt at {path_to_delete}")
-                        shutil.rmtree(path_to_delete, ignore_errors=True)
 
         logger.info(f"Finished rollout {rollout_step} step {training_progress.step}")
         if world_info.rank == 0 and config.wandb:
