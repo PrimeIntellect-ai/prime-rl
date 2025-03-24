@@ -162,7 +162,7 @@ def train(config: Config):
         config.optim.batch_size, config.train.micro_bs, config.data.num_workers, world_info
     )
 
-    if world_info.rank == 0:
+    if config.ckpt.rollout_path is not None and world_info.rank == 0:
         shardcast.initialize("./origin_data", max_distribution_folders=config.max_async_level)
 
     model, tokenizer = get_model_and_tokenizer(config.name_model, config.train.attn_impl)
