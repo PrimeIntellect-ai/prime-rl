@@ -92,9 +92,12 @@ def load_checkpoint_fsdp_state(
     scheduler.load_state_dict(state["scheduler"])
 
 
-def save_ckpt_for_rollout(model: ModelType, path: Path):
+def save_ckpt_for_rollout(model: ModelType, path: Path) -> Path:
     """
-    Save the checkpoint for rollout as one unified checkpoint.
+    Save the checkpoint for rollout as one unified safetensors file.
+
+    Return:
+        Path to the saved checkpoint safetensor
     """
     logger = get_logger()
 
@@ -115,3 +118,4 @@ def save_ckpt_for_rollout(model: ModelType, path: Path):
         stable_file.touch()
 
     logger.info(f"Rollout ckpt saved at {path} in {time.time() - start_time:.2f} seconds")
+    return path_file
