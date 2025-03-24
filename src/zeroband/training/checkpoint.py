@@ -5,6 +5,7 @@ import time
 import torch
 from torchdata.stateful_dataloader import StatefulDataLoader
 from torch.distributed.checkpoint.state_dict import get_model_state_dict, StateDictOptions
+from safetensors.torch import save_file
 
 from zeroband.logger import get_logger
 from zeroband.models import ModelType
@@ -100,7 +101,7 @@ def save_ckpt_for_rollout(model: ModelType, path: Path):
     if not path.exists():
         path.mkdir(parents=True, exist_ok=True)
 
-    path_file = path / "model.pt"
+    path_file = path / "model.safetensors"
 
     start_time = time.time()
     logger.info(f"Saving rollout ckpt at {path}")
@@ -108,7 +109,7 @@ def save_ckpt_for_rollout(model: ModelType, path: Path):
 
     # Only save on rank 0
     if torch.distributed.get_rank() == 0:
-        torch.save(state, path_file)
+        save_file(state, path_file)
 
         stable_file = path / "stable"
         stable_file.touch()
