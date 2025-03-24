@@ -1,4 +1,5 @@
 version = 1
+revision = 1
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.13' and platform_machine == 'aarch64' and sys_platform == 'linux'",
@@ -3009,6 +3010,15 @@ wheels = [
 ]
 
 [[package]]
+name = "shardcast"
+version = "0.1.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a1/b8/c2d10835a5f49baf13ceb1b9a4435f92ac90c5e03ea427422cb5f8ecd814/shardcast-0.1.2.tar.gz", hash = "sha256:b49dfaf0b1f215c75b2296d7446730c91051807d69acaac99b2c2df92da36d8f", size = 18824 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e1/35/9f448194c44f5b0e1e3afea448185b16e870b61d049c2c1604a991192eae/shardcast-0.1.2-py3-none-any.whl", hash = "sha256:e77041c4dd427520d4c0dba709d781452111d0c9aaa00af9de7653d8c4b6f292", size = 23122 },
+]
+
+[[package]]
 name = "shellingham"
 version = "1.5.4"
 source = { registry = "https://pypi.org/simple" }
@@ -3876,6 +3886,7 @@ dependencies = [
     { name = "pydantic-config" },
     { name = "pylatexenc" },
     { name = "setuptools" },
+    { name = "shardcast" },
     { name = "toploc" },
     { name = "torch" },
     { name = "torchdata" },
@@ -3907,6 +3918,7 @@ requires-dist = [
     { name = "pydantic-config", git = "https://github.com/samsja/pydantic_config.git?rev=b7becc3" },
     { name = "pylatexenc", specifier = ">=2.10" },
     { name = "setuptools" },
+    { name = "shardcast", specifier = ">=0.1.2" },
     { name = "toploc" },
     { name = "torch" },
     { name = "torchdata", specifier = ">=0.8.0" },
