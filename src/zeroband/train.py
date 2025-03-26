@@ -163,7 +163,8 @@ def train(config: Config):
     )
 
     if config.ckpt.rollout_path is not None and world_info.rank == 0:
-        shardcast.initialize("./origin_data", max_distribution_folders=config.max_async_level)
+        origin_data_dir = os.environ.get("SHARDCAST_OUTPUT_DIR", "./origin_data")
+        shardcast.initialize(origin_data_dir, max_distribution_folders=config.max_async_level)
 
     model, tokenizer = get_model_and_tokenizer(config.name_model, config.train.attn_impl)
 
