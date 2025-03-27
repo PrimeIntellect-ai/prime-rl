@@ -25,7 +25,7 @@ dependencies = [
     "pylatexenc>=2.10",
     "liger_kernel",
     "google-cloud-storage",
-    "shardcast >= 0.1.2",
+    "shardcast >= 0.1.4",
 ] 
 
 [build-system]
