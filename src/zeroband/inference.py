@@ -423,4 +423,28 @@ if __name__ == "__main__":
     # Set spawn method before any other multiprocessing code
     mp.set_start_method("spawn")
     config = Config(**parse_argv())  # type: ignore
+
+    # Maybe start shardcast downloader
+    from zeroband.inferencing import envs as inference_envs
+
+    if inference_envs.SHARDCAST_SERVERS is not None:
+        from zeroband.inferencing.shardcast_downloader import run_main_bg
+
+        shardcast_process = run_main_bg(
+            inference_envs.SHARDCAST_SERVERS,
+            config.rollout_path,
+            config.async_level + 1,
+            inference_envs.SHARDCAST_BACKLOG_VERSION,
+        )
+    else:
+        shardcast_process = None
+
     main(config)
+
+    if shardcast_process is not None:
+        import os
+        import signal
+
+        # SIGTERM is not working, so we use SIGKILL
+        os.kill(shardcast_process.pid, signal.SIGKILL)
+        shardcast_process.join()
