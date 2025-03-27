@@ -173,9 +173,8 @@ class _GCPPrefetcherInternal:
 
     def _blob_to_local_path(self, blob: storage.Blob) -> Path:
         parts = Path(blob.name).parts
-        step_dir = parts[-2]
-        filename = parts[-1]
-        return self.local_dir / step_dir / filename
+        src_part_len = len(self.src_folder.parts)
+        return self.local_dir / "/".join(parts[src_part_len:])
 
     def _delete_files(self, blob: storage.Blob):
         local_path = self._blob_to_local_path(blob)
@@ -198,9 +197,12 @@ class _GCPPrefetcherInternal:
         steps = defaultdict(list)
 
         for blob in available_steps:
-            step_number = int(blob.name.split("/")[-2].split("_")[-1])
-            if blob.name.endswith(".parquet") and blob.name not in self.files_downloaded:
-                steps[int(step_number)].append(blob)
+            try:
+                step_number = int(blob.name.partition("step_")[-1].partition("/")[0])
+                if blob.name.endswith(".parquet") and blob.name not in self.files_downloaded:
+                    steps[int(step_number)].append(blob)
+            except Exception as e:
+                self.logger.warning(f"Error parsing step number for blob {blob.name}: {e}")
 
         return steps
 
