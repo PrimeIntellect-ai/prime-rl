@@ -174,7 +174,7 @@ class _GCPPrefetcherInternal:
     def _blob_to_local_path(self, blob: storage.Blob) -> Path:
         parts = Path(blob.name).parts
         src_part_len = len(self.src_folder.parts)
-        return self.local_dir / "/".join(parts[src_part_len:])
+        return self.local_dir / Path(*parts[src_part_len:])
 
     def _delete_files(self, blob: storage.Blob):
         local_path = self._blob_to_local_path(blob)
