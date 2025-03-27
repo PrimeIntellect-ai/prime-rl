@@ -70,6 +70,8 @@ def _get_dataset_from_files_step(step_count: int, path: Path, timeout: float, ba
 
     while True:
         files = list(step_path.glob("*.parquet"))
+        accepted_flags = set(i.stem for i in step_path.glob("accepted/*.parquet"))
+        files = [i for i in files if i.stem in accepted_flags]
 
         rows = 0
         if len(files) > 0:
