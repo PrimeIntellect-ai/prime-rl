@@ -3011,11 +3011,11 @@ wheels = [
 
 [[package]]
 name = "shardcast"
-version = "0.1.4"
+version = "0.1.5"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/07/ad/835ac5d7596dcaed6743b4011606ecbb2c70855063cecd1750c73a85a52c/shardcast-0.1.4.tar.gz", hash = "sha256:f0389fd61939e2bfe22fd4b0c691f1ce3f31d2ac4e1d70a3241bc8c13f92191c", size = 18822 }
+sdist = { url = "https://files.pythonhosted.org/packages/bd/8a/16e29260a6b2118ec4502046bad6ba9ea1f6f9fe7ec0b0bdb45dc3b07673/shardcast-0.1.5.tar.gz", hash = "sha256:2d049378dd2f8d0d9a38011ccf455a57f4a2bc52c52c2ec6a2b3833d6e3f6d12", size = 18837 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e3/e9/c480242cf8c7e3e3f011473f3e3a9ece0b4db52d2f4e90ca53bbe1220a26/shardcast-0.1.4-py3-none-any.whl", hash = "sha256:3bbcd1da8e74e835ee0786a30db26af6dd46cd7d82e7c179223ab7a02b1ad562", size = 23123 },
+    { url = "https://files.pythonhosted.org/packages/28/56/53c0ccca382f5b2572c8fad92550adb608bac0d56b1c6beb52a500ae4419/shardcast-0.1.5-py3-none-any.whl", hash = "sha256:0146512972923b8dc40386da7dda64df28c5d2aee0b2e0a57efe6227e31504ad", size = 23126 },
 ]
 
 [[package]]
@@ -3918,7 +3918,7 @@ requires-dist = [
     { name = "pydantic-config", git = "https://github.com/samsja/pydantic_config.git?rev=b7becc3" },
     { name = "pylatexenc", specifier = ">=2.10" },
     { name = "setuptools" },
-    { name = "shardcast", specifier = ">=0.1.4" },
+    { name = "shardcast", specifier = ">=0.1.5" },
     { name = "toploc" },
     { name = "torch" },
     { name = "torchdata", specifier = ">=0.8.0" },
