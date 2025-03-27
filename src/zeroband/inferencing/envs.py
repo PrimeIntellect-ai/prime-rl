@@ -6,7 +6,9 @@ if TYPE_CHECKING:
     SHARDCAST_BACKLOG_VERSION: int = -1
 
 _env = {
-    "SHARDCAST_SERVERS": lambda: os.getenv("SHARDCAST_SERVERS", None),
+    "SHARDCAST_SERVERS": lambda: os.getenv("SHARDCAST_SERVERS", None).split(",")
+    if os.getenv("SHARDCAST_SERVERS", None) is not None
+    else None,
     "SHARDCAST_BACKLOG_VERSION": lambda: int(os.getenv("SHARDCAST_BACKLOG_VERSION", "-1")),
 }
 

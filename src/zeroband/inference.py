@@ -439,12 +439,14 @@ if __name__ == "__main__":
     else:
         shardcast_process = None
 
-    main(config)
+    try:
+        main(config)
 
-    if shardcast_process is not None:
-        import os
-        import signal
+    finally:
+        if shardcast_process is not None:
+            import os
+            import signal
 
-        # SIGTERM is not working, so we use SIGKILL
-        os.kill(shardcast_process.pid, signal.SIGKILL)
-        shardcast_process.join()
+            # SIGTERM is not working, so we use SIGKILL
+            os.kill(shardcast_process.pid, signal.SIGKILL)
+            shardcast_process.join()
