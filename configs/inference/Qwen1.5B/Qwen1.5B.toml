@@ -1,4 +1,3 @@
 name_model = "Qwen1.5B"
 batch_size = 8
-
-
+max_model_len = 16384

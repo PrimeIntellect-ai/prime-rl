@@ -4,6 +4,7 @@ batch_size = 8
 enforce_eager = true
 step_batch_size = 24
 total_step = 5
+max_model_len = 16384
 
 [sampling]
 max_tokens = 512
