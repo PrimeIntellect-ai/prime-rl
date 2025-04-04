@@ -427,9 +427,10 @@ def train(config: Config):
                 )
                 save_checkpoint_fsdp_state(model, [optimizer], training_progress, scheduler, config.ckpt.path)
 
+        time_rollout_step = time.time() - time_start
         logger.info(f"Finished rollout {rollout_step} step {training_progress.step}")
         if world_info.rank == 0 and config.wandb:
-            wandb.log({"rollout_step": rollout_step, "step": training_progress.step, "time_rollout_step": time.time() - time_start})
+            wandb.log({"rollout_step": rollout_step, "step": training_progress.step, "time_rollout_step": time_rollout_step})
 
         if training_progress.step >= config.optim.total_steps:
             break
