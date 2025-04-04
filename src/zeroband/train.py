@@ -6,16 +6,26 @@ from typing import TYPE_CHECKING, Literal
 
 import torch
 import torch.distributed as dist
+from torch.distributed.device_mesh import DeviceMesh, init_device_mesh
 from torch.distributed._composable.fsdp import fully_shard, MixedPrecisionPolicy  # type: ignore
 import wandb
 import shardcast
+
+from torch.distributed.tensor.parallel import (
+    ColwiseParallel,
+    parallelize_module,
+    RowwiseParallel,
+    # PrepareModuleInput,
+    # SequenceParallel,
+)
+from torch.distributed.tensor.placement_types import Replicate, Shard
 
 from zeroband.models import AttnImpl, ModelName, ModelType, get_model_and_tokenizer
 from zeroband.training.checkpoint import TrainingProgress, load_checkpoint_fsdp_state, save_checkpoint_fsdp_state, save_ckpt_for_rollout
 from zeroband.training.data import DataConfig, get_dataloader
 from zeroband.training.loss import grpo_loss, selective_log_softmax, entropy_loss
 from zeroband.training.lr_scheduler import get_scheduler
-from zeroband.training.utils import PerfCounter, apply_ac_ckpt
+from zeroband.training.utils import PerfCounter, apply_ac_ckpt, clip_grad_norm_
 
 from zeroband.logger import get_logger
 
@@ -26,7 +36,6 @@ from zeroband.training.world_info import WorldInfo, get_world_info
 
 from pydantic import model_validator
 
-from liger_kernel.transformers import apply_liger_kernel_to_qwen2
 from torch._guards import log as torch_log
 import logging
 
@@ -56,9 +65,11 @@ class TrainConfig(BaseConfig):
     reshard_after_forward: bool = True  # old shard grad op True mean full shard
     memory_profile: str | None = None
     torch_compile: bool = True
-    liger_qwen: bool = False
 
     attn_impl: AttnImpl = "flex_attention"
+
+    tp: int = 1 # Tensor parallel shard the model
+    more_tp: bool = False # Also TP shard the embedding and lm_head
 
 
 class CkptConfig(BaseConfig):
@@ -99,23 +110,16 @@ class Config(BaseConfig):
     masked_mean_axis: int | None = None  # the axis to compute the mean of the masked values
 
     @model_validator(mode="after")
-    def check_liger(self):
-        if self.train.liger_qwen:
-            assert "Qwen" in self.name_model, "train.liger_qwen can only be applied to Qwen2 models."
-        return self
-
-    @model_validator(mode="after")
     def check_ckpt_interval(self):
         if self.ckpt.interval is not None:
             assert self.ckpt.interval % self.optim.step_per_rollout == 0, "ckpt.interval must be divisible by train.step_per_rollout"
         return self
 
 
-def get_gradient_accumulation_steps(batch_size: int, micro_bs: int, data_workers: int, world_info: WorldInfo) -> int:
-    assert batch_size % world_info.world_size == 0
-    batch_size = batch_size // world_info.world_size
+def get_gradient_accumulation_steps(batch_size: int, micro_bs: int, data_workers: int, dp_world_size: int) -> int:
+    assert batch_size % dp_world_size == 0
+    batch_size = batch_size // dp_world_size
 
-    print(f"batch_size: {batch_size}, micro_bs: {micro_bs}, data_workers: {data_workers}")
     assert batch_size % micro_bs == 0, str(
         f"The micro batch size ({micro_bs}) must divide the number of samples on each GPU ({batch_size})"
     )
@@ -127,16 +131,59 @@ def get_gradient_accumulation_steps(batch_size: int, micro_bs: int, data_workers
     return batch_size // micro_bs
 
 
-def apply_fsdp(model: ModelType, reshard_after_forward: bool):
-    mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=None)
+def apply_tp(model: ModelType, config: TrainConfig, device_mesh: DeviceMesh):
+    # Qwen2 only, no sequence parallel
+
+    if config.more_tp:
+        parallelize_module(
+            model.model,
+            device_mesh,
+            {
+                "embed_tokens": RowwiseParallel(
+                    input_layouts=Replicate(),
+                    use_local_output=True,
+                ),
+            }
+        )
+
+        parallelize_module(
+            model,
+            device_mesh,
+            {
+                "lm_head": ColwiseParallel(
+                    output_layouts=Replicate(),
+                    use_local_output=True,
+                ),
+            },
+        )
+
+    parallelize_module(
+        model.model,
+        device_mesh,
+        {
+            'layers.*.self_attn.q_proj':   ColwiseParallel(input_layouts=Replicate(), output_layouts=Shard(dim=-1), use_local_output=True),
+            'layers.*.self_attn.k_proj':   ColwiseParallel(input_layouts=Replicate(), output_layouts=Shard(dim=-1), use_local_output=True),
+            'layers.*.self_attn.v_proj':   ColwiseParallel(input_layouts=Replicate(), output_layouts=Shard(dim=-1), use_local_output=True),
+            'layers.*.self_attn.o_proj':   RowwiseParallel(input_layouts=Shard(dim=-1), output_layouts=Replicate(), use_local_output=True),
+            'layers.*.mlp.gate_proj':      ColwiseParallel(input_layouts=Replicate(), output_layouts=Shard(dim=-1), use_local_output=True),
+            'layers.*.mlp.up_proj':        ColwiseParallel(input_layouts=Replicate(), output_layouts=Shard(dim=-1), use_local_output=True),
+            'layers.*.mlp.down_proj':      RowwiseParallel(input_layouts=Shard(dim=-1), output_layouts=Replicate(), use_local_output=True),
+        }
+    )
+
+
+def apply_fsdp(model: ModelType, reshard_after_forward: bool, device_mesh: DeviceMesh | None):
+    mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
 
     for layer_id, transformer_block in enumerate(model.model.layers):
         if reshard_after_forward:
             layer_reshard_after_forward = layer_id < len(model.model.layers) - 1
         else:
             layer_reshard_after_forward = False
-        fully_shard(transformer_block, mp_policy=mp_policy, reshard_after_forward=layer_reshard_after_forward)
-    fully_shard(model, mp_policy=mp_policy, reshard_after_forward=reshard_after_forward)
+        fully_shard(transformer_block, mp_policy=mp_policy, reshard_after_forward=layer_reshard_after_forward, mesh=device_mesh)
+    fully_shard(model.get_input_embeddings(), mp_policy=mp_policy, reshard_after_forward=reshard_after_forward, mesh=device_mesh)
+    fully_shard(model.get_output_embeddings(), mp_policy=mp_policy, reshard_after_forward=False, mesh=device_mesh)
+    fully_shard(model, mp_policy=mp_policy, reshard_after_forward=reshard_after_forward, mesh=device_mesh)
 
 
 def get_device_placement(gpus_ids: list[int] | None, world_info: WorldInfo) -> int:
@@ -154,13 +201,12 @@ def get_device_placement(gpus_ids: list[int] | None, world_info: WorldInfo) -> i
 
 def train(config: Config):
     if "ZERO_BAND_DEV" not in os.environ:
-        torch._logging.set_logs(dynamo=logging.CRITICAL)  # silent flex attn error
+        torch._logging.set_logs(dynamo=logging.CRITICAL)  # type: ignore (silence flex attn error)
         torch_log.setLevel(logging.CRITICAL)  #
+        logging.getLogger("transformers.modeling_utils").setLevel(logging.CRITICAL) # Silence dtype and device warnings
 
     logger = get_logger()
     world_info = get_world_info()
-
-    logger.info(f"start training on {world_info.world_size}")
 
     # Allow eager fallback during production so that that the training runs dont die
     # However, in development, we want to know that we broke torch compile
@@ -170,37 +216,54 @@ def train(config: Config):
 
     torch.cuda.set_device(get_device_placement(config.gpus_ids, world_info))
 
-    # batch_size is the total batch size for all GPUs
-
-    gradient_accumulation_steps = get_gradient_accumulation_steps(
-        config.optim.batch_size, config.train.micro_bs, config.data.num_workers, world_info
-    )
-
     if config.ckpt.rollout_path is not None and world_info.rank == 0:
         origin_data_dir = os.environ.get("SHARDCAST_OUTPUT_DIR", "./origin_data")
         shardcast.initialize(origin_data_dir, max_distribution_folders=config.max_async_level)
 
     model, tokenizer = get_model_and_tokenizer(config.name_model, config.train.attn_impl)
 
-    if config.train.liger_qwen:
-        apply_liger_kernel_to_qwen2(
-            rope=True,
-            rms_norm=True,
-            swiglu=True,
-            model=model,
-        )
+    # Create device mesh and apply fsdp/tp.
+    assert world_info.world_size % config.train.tp == 0, "world size must be divisible by tp"
+    tp_world_size = config.train.tp
+    dp_world_size = world_info.world_size // config.train.tp
+
+    world_mesh: DeviceMesh = init_device_mesh("cuda", mesh_shape=(dp_world_size, tp_world_size), mesh_dim_names=("fsdp", "tp"))
+    logger.info(f"World device mesh: {world_mesh}")
+
+    tp_mesh = world_mesh["tp"]
+    tp_rank = tp_mesh.get_local_rank() if tp_world_size > 1 else 0
+    logger.info(f"tp_rank: {tp_rank}, tp_mesh: {tp_mesh}")
+    if tp_world_size > 1:
+        apply_tp(model, config.train, device_mesh=world_mesh["tp"])
 
     if config.train.ac_ckpt:
         num = 1 if isinstance(config.train.ac_ckpt, bool) else config.train.ac_ckpt
         apply_ac_ckpt(model, num)
 
-    apply_fsdp(model, config.train.reshard_after_forward)
+    dp_mesh = world_mesh["fsdp"]
+    dp_rank = dp_mesh.get_local_rank() if dp_world_size > 1 else 0
+    logger.info(f"dp_rank: {dp_rank}, dp_mesh: {dp_mesh}")
+    apply_fsdp(model, config.train.reshard_after_forward, device_mesh=dp_mesh) # Always enabled for Mixed Precision
 
-    optimizer = torch.optim.AdamW(params=model.parameters(),lr=config.optim.optim.lr,weight_decay=config.optim.optim.weight_decay,betas=(config.optim.optim.betas1, config.optim.optim.betas2))  # fmt: skip
+    optimizer = torch.optim.AdamW(params=model.parameters(),lr=config.optim.optim.lr,weight_decay=config.optim.optim.weight_decay,betas=(config.optim.optim.betas1, config.optim.optim.betas2), foreach=False)  # fmt: skip
 
     scheduler = get_scheduler(sched_type=config.optim.sched_type,optimizer=optimizer,num_warmup_steps=config.optim.warmup_steps,num_stable_steps=config.optim.stable_steps,num_training_steps=config.optim.total_steps)  # fmt: skip
 
     training_progress = TrainingProgress(total_tokens=0, step=0)
+    gradient_accumulation_steps = get_gradient_accumulation_steps(
+        config.optim.batch_size, config.train.micro_bs, config.data.num_workers, dp_world_size
+    )
+
+    train_dataloader, prefetcher = get_dataloader(
+        tokenizer=tokenizer,
+        micro_batch_size=config.train.micro_bs,
+        batch_size=config.optim.batch_size * config.optim.step_per_rollout,
+        data_config=config.data,
+        step_count_init=training_progress.step // config.optim.step_per_rollout,
+        dp_rank=dp_rank,
+        dp_world_size=dp_world_size,
+    )
+    train_dataloader_iterator = iter(train_dataloader)
 
     if world_info.rank == 0 and config.wandb:
         wandb.init(project=config.project, config=config.model_dump())
@@ -217,16 +280,7 @@ def train(config: Config):
             f"training will continue as if it was from step {training_progress.step - training_progress.step % config.optim.step_per_rollout}"
         )
 
-    train_dataloader, prefetcher = get_dataloader(
-        tokenizer=tokenizer,
-        micro_batch_size=config.train.micro_bs,
-        batch_size=config.optim.batch_size * config.optim.step_per_rollout,
-        data_config=config.data,
-        step_count_init=training_progress.step // config.optim.step_per_rollout,
-    )
-    train_dataloader_iterator = iter(train_dataloader)
-
-    perf_counter = PerfCounter(window_size=10, model=model, seq_len=config.data.seq_length)
+    perf_counter = PerfCounter(window_size=10, model=model, seq_len=config.data.seq_length, tp_world_size=tp_world_size)
 
     previous_ckpt_rollout = []
 
@@ -251,7 +305,7 @@ def train(config: Config):
                         per_token_logps = selective_log_softmax(logits, input_ids)
                         batch["logprobs"] = per_token_logps.to("cpu")
 
-                        del logits, per_token_logps
+                        del input_ids, logits, per_token_logps
                         data.append(batch)
 
                 logprobs_aware_iterator = iter(data)
@@ -264,11 +318,10 @@ def train(config: Config):
             entropy_loss_batch = 0
             clip_ratio_batch = 0
             seq_lens_batch = 0
-            clip_seq_lens = 0
             sample_reward_batch = 0
-
-            rewards_sum = torch.tensor(0.0)
-            rewards_token_count = torch.tensor(0.0)
+            clip_seq_lens = 0
+            rewards_sum = torch.tensor(0.0, device="cuda") # On GPU for allreduce sum
+            rewards_token_count = torch.tensor(0.0, device="cuda")
 
             if config.train.memory_profile and world_info.rank == 0:
                 torch.cuda.memory._record_memory_history()
@@ -280,13 +333,13 @@ def train(config: Config):
                 loss_mask = batch["loss_mask"]
 
                 rewards = batch["rewards"][loss_mask.bool()]
-                rewards_sum += rewards.sum()
-                rewards_token_count += rewards.numel()
+                rewards_sum += rewards.sum().to("cuda")
 
-                seq_lens_batch += batch["seq_lens"].float().mean() / gradient_accumulation_steps
+                rewards_token_count += rewards.numel()
+                seq_lens_batch += batch["seq_lens"].float().mean().to('cuda') / gradient_accumulation_steps
                 clip_seq_lens += (
                     (batch["seq_lens"] >= config.data.seq_length).sum() / batch["seq_lens"].shape[0] / gradient_accumulation_steps
-                )
+                ).to('cuda')
 
                 # Forward
                 logits: Float[torch.Tensor, "batch seq vocab"] = model(input_ids=input_ids).logits.contiguous()
@@ -315,9 +368,9 @@ def train(config: Config):
                 loss = loss / gradient_accumulation_steps
                 clip_ratio = clip_ratio / gradient_accumulation_steps
 
-                sample_reward_batch += batch["rewards"][:, 0].sum() / batch["rewards"].shape[0] / gradient_accumulation_steps
+                sample_reward_batch += (batch["rewards"][:, 0].sum() / batch["rewards"].shape[0] / gradient_accumulation_steps).to("cuda")
 
-                del batch, logits, input_ids, advantages, loss_mask, original_logprobs
+                del batch, input_ids, logits, advantages, loss_mask, original_logprobs
 
                 # Backward
                 loss.backward()
@@ -327,25 +380,20 @@ def train(config: Config):
                 clip_ratio_batch += clip_ratio.detach().clone()
                 del loss, clip_ratio, pg_loss, entropy
 
-            dist.all_reduce(tensor=loss_batch, op=dist.ReduceOp.AVG)
-            dist.all_reduce(tensor=pg_loss_batch, op=dist.ReduceOp.AVG)
-            dist.all_reduce(tensor=entropy_loss_batch, op=dist.ReduceOp.AVG)
-            dist.all_reduce(tensor=clip_ratio_batch, op=dist.ReduceOp.AVG)
-
-            seq_lens_batch = seq_lens_batch / world_info.world_size
-            dist.all_reduce(tensor=seq_lens_batch, op=dist.ReduceOp.SUM)
-
-            clip_seq_lens = clip_seq_lens / world_info.world_size
-            dist.all_reduce(tensor=clip_seq_lens, op=dist.ReduceOp.SUM)
-
-            sample_reward_batch = sample_reward_batch / world_info.world_size
-            dist.all_reduce(tensor=sample_reward_batch, op=dist.ReduceOp.SUM)
-
-            dist.all_reduce(rewards_sum, op=dist.ReduceOp.SUM)
-            dist.all_reduce(rewards_token_count, op=dist.ReduceOp.SUM)
+            dp_group = dp_mesh.get_group("fsdp") if dp_world_size > 1 else None
+            if dp_group is not None:
+                dist.all_reduce(tensor=loss_batch, op=dist.ReduceOp.AVG, group=dp_group)
+                dist.all_reduce(tensor=pg_loss_batch, op=dist.ReduceOp.AVG, group=dp_group)
+                dist.all_reduce(tensor=entropy_loss_batch, op=dist.ReduceOp.AVG, group=dp_group)
+                dist.all_reduce(tensor=clip_ratio_batch, op=dist.ReduceOp.AVG, group=dp_group)
+                dist.all_reduce(tensor=seq_lens_batch, op=dist.ReduceOp.AVG, group=dp_group)
+                dist.all_reduce(tensor=clip_seq_lens, op=dist.ReduceOp.AVG, group=dp_group)
+                dist.all_reduce(tensor=sample_reward_batch, op=dist.ReduceOp.AVG, group=dp_group)
+                dist.all_reduce(tensor=rewards_sum, op=dist.ReduceOp.SUM, group=dp_group)
+                dist.all_reduce(tensor=rewards_token_count, op=dist.ReduceOp.SUM, group=dp_group)
             average_rewards = rewards_sum / rewards_token_count
 
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0).full_tensor()  # type: ignore (is a dtensor)
+            grad_norm = clip_grad_norm_(model.parameters(), 1.0, dp_mesh=dp_mesh, tp_mesh=tp_mesh)
 
             optimizer.step()
             scheduler.step()

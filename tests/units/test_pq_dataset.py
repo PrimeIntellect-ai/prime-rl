@@ -35,7 +35,7 @@ def test_should_skip_index(rank, workers_id):
 
 
 def test_padding_collate():
-    dataset = FakeTokenizedDataset(seq_len=10, vocab_size=10)
+    dataset = FakeTokenizedDataset(seq_len=10, vocab_size=10, dp_rank=0, dp_world_size=1)
 
     collate_fn = PaddingColate(seq_len=10, pad_token_id=0)
     dataloader = DataLoader(dataset, batch_size=10, num_workers=2, collate_fn=collate_fn)

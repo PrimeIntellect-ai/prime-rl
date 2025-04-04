@@ -11,6 +11,55 @@ from transformers import (
 from zeroband.models import ModelType
 from zeroband.training.world_info import get_world_info
 
+from typing import Iterable
+
+import torch.nn.utils
+import torch.distributed as dist
+from torch.distributed.tensor import DTensor
+from torch.distributed.device_mesh import DeviceMesh
+
+@torch.no_grad()
+def clip_grad_norm_(parameters: Iterable[torch.Tensor], max_norm: float, dp_mesh: DeviceMesh, tp_mesh: DeviceMesh) -> torch.Tensor:
+    dp_group = dp_mesh.get_group("fsdp")
+    tp_group = tp_mesh.get_group("tp")
+
+    grads_to_clip = []
+    dp_work = []
+
+    total_squared_sums = torch.tensor(0, device="cuda", dtype=torch.float32)
+    for p in parameters:
+        if p.grad is None:
+            continue
+
+        p = p.grad
+        grads_to_clip.append(p.to_local() if isinstance(p, DTensor) else p)
+
+        if isinstance(p, DTensor):
+            tp_reduce = p.device_mesh.mesh_dim_names and "tp" in p.device_mesh.mesh_dim_names
+            dp_reduce = p.device_mesh.mesh_dim_names and "fsdp" in p.device_mesh.mesh_dim_names
+
+            local_sum_sq = torch.sum(p.to_local() ** 2)
+            if tp_reduce:
+                dist.all_reduce(local_sum_sq, group=tp_group, op=dist.ReduceOp.SUM)
+            if dp_reduce:
+                work = dist.all_reduce(local_sum_sq, group=dp_group, op=dist.ReduceOp.SUM, async_op=True)
+                dp_work.append(work)
+            else:
+                total_squared_sums += local_sum_sq
+        else:
+            local_sum_sq = torch.sum(p ** 2)
+            total_squared_sums += local_sum_sq
+
+    for w in dp_work:
+        total_squared_sums += w.get_future().wait()[0]
+
+    total_norm = torch.sqrt(total_squared_sums)
+
+    clip_coef = torch.clamp(max_norm / (total_norm + 1e-6), max=1.0)
+    for g in grads_to_clip:
+        g.mul_(clip_coef)
+    return total_norm
+
 
 def apply_ac_ckpt(model: ModelType, num: int):
     """Apply activation checkpointing to the model.
@@ -82,7 +131,7 @@ class PerfCounter:
     we use a rollowing window because time perf counter is not precise enough in some case
     """
 
-    def __init__(self, window_size: int, model: LlamaForCausalLM, seq_len: int):
+    def __init__(self, window_size: int, model: LlamaForCausalLM, seq_len: int, tp_world_size: int):
         self.window_size = window_size
         self.tokens = []
         self.times = []
@@ -91,6 +140,7 @@ class PerfCounter:
         self.gpu_peak_flops = get_peak_flops(torch.cuda.get_device_name(torch.device("cuda")))
         self.num_params = get_num_params(model, exclude_embedding=True)
         self.num_flop_per_token = get_num_flop_per_token(self.num_params, model.config, seq_len=seq_len)
+        self.tp_world_size = tp_world_size
 
         self._world_info = get_world_info()
 

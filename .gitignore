@@ -175,3 +175,4 @@ cython_debug/
 
 # Files created while testing
 debug_I2_zero_band
+origin_data/**
