@@ -48,6 +48,8 @@ def get_peak_flops(device_name: str) -> int:
             return 756e12
         else:  # for H100 SXM and other variants
             return 989e12
+    elif "H200" in device_name:
+        return 1979e12  # sxm  https://resources.nvidia.com/en-us-data-center-overview-mc/en-us-data-center-overview/hpc-datasheet-sc23-h200
     else:  # for other GPU types, assume A100
         return 312e12
 
