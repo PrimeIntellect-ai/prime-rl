@@ -3180,20 +3180,20 @@ wheels = [
 
 [[package]]
 name = "toploc"
-version = "0.0.7"
+version = "0.1.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
     { name = "torch" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ea/5a/f99aa91fe4e184b80de77891998fdbb0b8c1b7b28c7240b5d4aef28cddb3/toploc-0.0.7.tar.gz", hash = "sha256:b5fb0592d97fe9d5acde18800c871a604ef20e985e219469a1ebfcd54b1abcc6", size = 13653 }
+sdist = { url = "https://files.pythonhosted.org/packages/ba/23/4d26e226a5f8c6829bee8e640ca6bb9003e1a1eccf61bd112b9e4ad92cf1/toploc-0.1.4.tar.gz", hash = "sha256:93f2f2a2b3c9d9bc867c47b8d68c62e4f549962c9b6bc730e07e8d50a189bdaf", size = 17743 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/23/97/dbcdbc6cd53ae7c5c28654687dda599eaf925c18179d8e00a69b3f322b98/toploc-0.0.7-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:719f9ec1997a2d615355a6fa6fad015e217a55ed35e27ed68931b5fc26daf88e", size = 5339707 },
-    { url = "https://files.pythonhosted.org/packages/a4/d2/9034e389363620dc9c8feace157803579a9951c311a10b78d10be51d2874/toploc-0.0.7-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:a6d9e51ab4f0681e4e4271b79a2e4c64376585602c4ae31febd1c6f6c18f9811", size = 5393791 },
-    { url = "https://files.pythonhosted.org/packages/ff/76/395fb96d300a36b99c99442149cac1bc95ddce0f50f0348ffcdc23922e9d/toploc-0.0.7-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:e60f67899fd2c6a1061a71b3196f930520c08802822f20f3fa2393a1685ae68b", size = 5371493 },
-    { url = "https://files.pythonhosted.org/packages/8e/e2/d5ac3a7f157f2ada7808711df5114ea50a11f8611e585796fac209f9ac49/toploc-0.0.7-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:fbc9b9fcfa3daa5fd310e7aefa2b50b5c48184c14fe092be9bc53e83ba82c6cd", size = 5419941 },
-    { url = "https://files.pythonhosted.org/packages/30/0f/3b54cb2b0df7eefa88c5271036ba92b8d56a5a82cb0c16a71cfbaf37d318/toploc-0.0.7-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:9dac5de0caf59692fea187042187ebdc0cc62e87a67c12ff1b45c396159db04a", size = 5370261 },
-    { url = "https://files.pythonhosted.org/packages/aa/8b/77eb9c9d84708e38c956165c471859b690bdb7fb8c21dec43f24cf04c41f/toploc-0.0.7-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:4c4903d9c3b16a31a70060aabcb8650b334e6fc810a60a952b2a37e8aea65288", size = 5423333 },
+    { url = "https://files.pythonhosted.org/packages/18/78/c57b662f2efb5b7e09206609698019b049f854ccf60653573812585868e3/toploc-0.1.4-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:06ea0274ad83e312c3782b393b1489309dbd866da1106765de3a094f2035377a", size = 8841791 },
+    { url = "https://files.pythonhosted.org/packages/0e/28/05c9b7fb339a1042949af0b1145d7b9cd55ec95b047017400e4c990ad647/toploc-0.1.4-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:b046bd008dd8ad8199fb7a2eca18c0e8dd405cd3f453f02dac30592cd19078c6", size = 8968125 },
+    { url = "https://files.pythonhosted.org/packages/69/81/f639257ccb9d82a77078c177338a5ae3a6bcd03ecca6a524df8eaa7aecb4/toploc-0.1.4-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:887051ce5144bbb15dca8b49601f67ec32a21c9e4d43247bb7161ad25d191777", size = 8890122 },
+    { url = "https://files.pythonhosted.org/packages/01/2b/c16e45e75ad4bf95f7738225f66d7467a6213e48aef443171378140c81a3/toploc-0.1.4-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:7da86afc3584c41b3cc776e46e90b1700da6a82e9e389aa90e59560dc5b97c18", size = 9012678 },
+    { url = "https://files.pythonhosted.org/packages/ed/39/2c2a6f0e0a1692143f27b42d92fed3d7e72d2f76c24b0d8ddd0221123582/toploc-0.1.4-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:785c296ee4d83b9af4a3e473904bd46e1a7f44fc2de9f80c48838a1cee6500db", size = 8882958 },
+    { url = "https://files.pythonhosted.org/packages/9e/ee/9c4e51e057766cd2a176b0066092645243dabf0ffcaf3dd2e750d7f8c739/toploc-0.1.4-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:298aa7feab1859ba5013924f6f9ab47ec61e19a340f55f170d2ff269772fc228", size = 9022247 },
 ]
 
 [[package]]
@@ -3919,7 +3919,7 @@ requires-dist = [
     { name = "pylatexenc", specifier = ">=2.10" },
     { name = "setuptools" },
     { name = "shardcast", specifier = ">=0.1.7" },
-    { name = "toploc" },
+    { name = "toploc", specifier = ">=0.1.4" },
     { name = "torch" },
     { name = "torchdata", specifier = ">=0.8.0" },
     { name = "transformers", specifier = ">=4.44.2" },

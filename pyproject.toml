@@ -20,7 +20,7 @@ dependencies = [
     "vllm>=0.7.3",
     "jaxtyping",
     "beartype",
-    "toploc",
+    "toploc>=0.1.4",
     "llmcompressor",
     "pylatexenc>=2.10",
     "liger_kernel",

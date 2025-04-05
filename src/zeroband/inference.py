@@ -19,6 +19,7 @@ from safetensors import safe_open
 from vllm.model_executor.model_loader.loader import _process_weights_after_loading
 from vllm.sequence import SampleLogprobs
 from vllm.model_executor import SamplingMetadata
+from vllm.model_executor.layers.logits_processor import _prune_hidden_states
 
 from zeroband.logger import get_logger
 from zeroband.models import ModelName
@@ -260,14 +261,20 @@ def inference(config: Config):
     )
 
     def logits_processor_hook(module, input):
-        assert isinstance(input[1], torch.Tensor)
-        assert isinstance(input[2], SamplingMetadata)
-        # If the lengths dont match its not a decode step
-        if len(input[2].seq_groups) != input[1].shape[0]:
+        hidden_states, sampling_metadata = input[1], input[2]
+        assert isinstance(hidden_states, torch.Tensor)
+        assert isinstance(sampling_metadata, SamplingMetadata)
+        # This check is true only for prefills
+        if max(sampling_metadata.selected_token_indices) > len(sampling_metadata.seq_groups):
             return
+        # This pruning is required when cuda graph padding is enabled.
+        hidden_states = _prune_hidden_states(hidden_states, sampling_metadata)
+        if len(sampling_metadata.seq_groups) != hidden_states.shape[0]:
+            raise ValueError(f"Lengths dont match: {len(sampling_metadata.seq_groups)} {hidden_states.shape}")
 
-        index = [i.seq_ids[0] for i in input[2].seq_groups]
-        toploc_cache.add(index, input[1])
+        # TODO: Maybe just use sampling_metadata.selected_token_indices?
+        index = [i.seq_ids[0] for i in sampling_metadata.seq_groups]
+        toploc_cache.add(index, hidden_states)
 
     if not toploc_cache.disable:
         model.logits_processor.register_forward_pre_hook(logits_processor_hook)
