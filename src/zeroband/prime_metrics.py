@@ -71,9 +71,10 @@ class PrimeMetric:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
                 sock.connect(socket_path)
 
+                msg_buffer = []
                 for key, value in metric.items():
-                    message = {"label": key, "value": value, "task_id": task_id}
-                    sock.sendall(json.dumps(message).encode())
+                    msg_buffer.append(json.dumps({"label": key, "value": value, "task_id": task_id}))
+                sock.sendall(("\n".join(msg_buffer)).encode())
             return True
         except Exception as e:
             print(f"Error sending message to Prime: {e}")
