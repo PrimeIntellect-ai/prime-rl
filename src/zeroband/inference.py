@@ -47,6 +47,14 @@ class SamplingParamConfig(BaseConfig):
     top_k: int = -1
 
 
+class DynamicTargetLengthConfig(BaseConfig):
+    a100_pcie: list[float]
+    a100_sxm: list[float]
+
+    h100_pcie: list[float]
+    h100_sxm: list[float]
+
+
 class LenRewardConfig(BaseConfig):
     reward_type: Literal["exact", "max", "clip"] = "max"
     target_length_sampling: Literal["discrete", "range"] = "discrete"
@@ -57,7 +65,7 @@ class LenRewardConfig(BaseConfig):
     max_length: int = 24000
 
     # applicable if target_length_sampling == "discrete"
-    target_lengths: list[float] = [500, 1000, 2000, 3000]
+    target_lengths: list[float] | DynamicTargetLengthConfig = [500, 1000, 2000, 3000]
 
     # applicable for reward_type max and exact
     reward_coef: float = 0.0003
@@ -223,13 +231,37 @@ def reload_model_weights(llm: LLM, ckpt_path: str):
     return llm
 
 
+def _get_target_lengths(target_lengths: list[float] | DynamicTargetLengthConfig) -> list[float]:
+    if isinstance(target_lengths, DynamicTargetLengthConfig):
+        device_name = torch.cuda.get_device_name(torch.device("cuda"))
+        if torch.cuda.is_available():
+            if "A100" in device_name:
+                if "PCIe" in device_name:
+                    target = target_lengths.a100_pcie
+                else:
+                    target = target_lengths.a100_sxm
+            elif "H100" in device_name:
+                if "PCIe" in device_name:
+                    target = target_lengths.h100_pcie
+                else:
+                    target = target_lengths.h100_sxm
+        else:
+            raise ValueError(f"Device {device_name} is not supported")
+    else:
+        target = target_lengths
+
+    return target
+
+
 def generate_target_length_prompts(config: Config, batch_size: int):
     if config.len_reward is None:
         return [""] * batch_size, [-1] * batch_size
 
     if config.len_reward.target_length_sampling == "discrete":
-        indices = torch.randint(low=0, high=len(config.len_reward.target_lengths), size=(batch_size,), device="cpu")
-        target_lengths = [int(config.len_reward.target_lengths[i]) for i in indices]
+        target_lengths_list = _get_target_lengths(config.len_reward.target_lengths)
+
+        indices = torch.randint(low=0, high=len(target_lengths_list), size=(batch_size,), device="cpu")
+        target_lengths = [int(target_lengths_list[i]) for i in indices]
 
     elif config.len_reward.target_length_sampling == "range":
         target_lengths = torch.randint(

@@ -9,7 +9,12 @@ n = 16
 [len_reward]
 reward_type = "exact"
 length_prompt_location = "instruction"
-target_lengths = [4000, 8000, 14000, 20000]
+
+[len_reward.target_lengths]
+a100_pcie = [4000]
+a100_sxm = [4000, 8000]
+h100_pcie = [4000, 8000, 14000]
+h100_sxm = [8000, 14000, 20000]
 
 [difficulty_filtering]
 solve_rate_field = "solve_rate_qwen_r1_distill_7b"
