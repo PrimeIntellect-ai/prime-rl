@@ -365,10 +365,10 @@ def train(config: Config):
                     metric_averager.update("task_reward", task_rewards)
                     metric_averager.update("seq_lens", seq_lens)
 
-                    metric_averager.update(f"length_penalty_{target_len}", len_penalty)
-                    metric_averager.update(f"sample_reward_{target_len}", rewards)
-                    metric_averager.update(f"task_reward_{target_len}", task_rewards)
-                    metric_averager.update(f"seq_lens_{target_len}", seq_lens)
+                    metric_averager.update(f"length_penalty_{target_len}", len_penalty, need_sync=False)
+                    metric_averager.update(f"sample_reward_{target_len}", rewards, need_sync=False)
+                    metric_averager.update(f"task_reward_{target_len}", task_rewards, need_sync=False)
+                    metric_averager.update(f"seq_lens_{target_len}", seq_lens, need_sync=False)
 
                 # Forward
                 logits: Float[torch.Tensor, "batch seq vocab"] = model(

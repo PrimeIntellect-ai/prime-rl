@@ -158,15 +158,18 @@ class MetricsAverager:
     def __init__(self):
         self.metrics = {}
         self.count = {}
+        self.need_sync = {}
         self.world_info = get_world_info()
 
     @torch.no_grad()
-    def update(self, key, value: torch.Tensor | list[torch.Tensor]):
+    def update(self, key, value: torch.Tensor | list[torch.Tensor], need_sync: bool = True):
         if isinstance(value, torch.Tensor):
             self._update(key, value)
         else:
             for v in value:
                 self._update(key, v)
+
+        self.need_sync[key] = need_sync
 
     def _update(self, key, value: torch.Tensor):
         if key not in self.metrics:
@@ -181,11 +184,12 @@ class MetricsAverager:
         for key in self.metrics:
             value = self.metrics[key] / self.count[key]
 
-            if value.device == torch.device("cpu"):
-                dist.all_reduce(value, op=dist.ReduceOp.SUM)
-                value = value / self.world_info.world_size
-            else:
-                dist.all_reduce(value, op=dist.ReduceOp.AVG)
+            if self.need_sync[key]:
+                if value.device == torch.device("cpu"):
+                    dist.all_reduce(value, op=dist.ReduceOp.SUM)
+                    value = value / self.world_info.world_size
+                else:
+                    dist.all_reduce(value, op=dist.ReduceOp.AVG)
 
             self.metrics[key] = value
 
