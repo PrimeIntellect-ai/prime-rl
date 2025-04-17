@@ -1,7 +1,7 @@
 name_model = "Qwen/QwQ-32B"
 batch_size = 4
 tp = "auto"
-max_model_len = 24_000
+max_model_len = 16_000
 
 [sampling]
 n = 16
@@ -9,7 +9,7 @@ n = 16
 [len_reward]
 reward_type = "exact"
 length_prompt_location = "instruction"
-target_lengths = [2000, 4000, 8000, 12000]
+target_lengths = [2000, 4000, 6000, 8000, 10000]
 
 [difficulty_filtering]
 solve_rate_field = "solve_rate_qwen_r1_distill_7b"
