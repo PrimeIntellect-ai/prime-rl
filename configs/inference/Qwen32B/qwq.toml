@@ -9,9 +9,9 @@ n = 16
 [len_reward]
 reward_type = "exact"
 length_prompt_location = "instruction"
-target_lengths = [4000, 8000, 14000, 20000]
+target_lengths = [2000, 4000, 8000, 12000]
 
 [difficulty_filtering]
 solve_rate_field = "solve_rate_qwen_r1_distill_7b"
 min_solve_rate = 0.0
-max_solve_rate = 0.7
+max_solve_rate = 0.8
