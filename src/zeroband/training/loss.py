@@ -108,7 +108,10 @@ def _compile_grpo_loss(
     logits = logits / temperature
     per_token_logps = selective_log_softmax(logits, input_ids)
 
-    coef_1 = torch.clamp(torch.exp(per_token_logps - original_logprobs), 0, clamp_log_prob_coef)
+    prev_dtype = per_token_logps.dtype
+    logp_diff = (per_token_logps - original_logprobs).to(torch.float32)
+    logp_diff_exp = torch.exp(logp_diff)
+    coef_1 = torch.clamp(logp_diff_exp.to(prev_dtype), 0, clamp_log_prob_coef)
 
     coef_2 = torch.clamp(coef_1, 1 - epsilon_low, 1 + epsilon_high)
     per_token_loss1 = -coef_1 * advantages
@@ -165,7 +168,8 @@ def kl_penalty(
     loss_mask = loss_mask[:, 1:]
 
     kl = ref_logprob - logprob
-    ratio = torch.exp(kl)
+    prev_dtype = kl.dtype
+    ratio = torch.exp(kl.to(torch.float32)).to(prev_dtype)
     kld = (ratio - kl - 1).contiguous()
     kl = torch.clamp(kld, min=-10, max=10)
     return _apply_mask(kl, loss_mask, masked_mean_axis)
