@@ -3,6 +3,10 @@ project = "intellect-2"
 
 collate_mode = "packing"
 
+grpo_epsilon_low = 0.15
+grpo_epsilon_high = 0.15
+clamp_log_prob_coef = 2.0
+
 [train]
 micro_bs = 1
 reshard_after_forward = true
