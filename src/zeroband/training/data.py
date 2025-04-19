@@ -356,7 +356,7 @@ def get_dataloader(
     if "gs" in data_config.path:
         use_stable_file = True
         if get_world_info().rank == 0:
-            prefetcher = GCPPrefetcher(data_config.path, data_config.local_dir)
+            prefetcher = GCPPrefetcher(data_config.path, data_config.local_dir, start_step=step_count_init)
         path = data_config.local_dir
 
     if data_config.fake:
