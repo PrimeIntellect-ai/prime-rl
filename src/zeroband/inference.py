@@ -106,6 +106,8 @@ class Config(BaseConfig):
 
     len_reward: LenRewardConfig | None = None
     difficulty_filtering: DifficultyFilteringConfig | None = None
+    
+    max_batch_per_step: int  = 1000000
 
 
 def fake_chat_template(messages):
@@ -414,22 +416,39 @@ def inference(config: Config):
     current_step_batch_counter = 1
     total_problems = 0
     total_tokens = 0
-
+    
+    
+    count_batch_per_step = 0
+    
     for i in range(0, min(len(dataset), max_samples), config.batch_size):
         if config.step_endpoint is not None:
-            # We get the step from the endpoint at the start of each batch to know what to work on
-            try:
-                new_real_step = requests.get(config.step_endpoint).json()
-            except Exception as e:
-                logger.warning(f"Failed to get step from endpoint {config.step_endpoint}: {e}")
-                time.sleep(10)
-                continue
+                        
+            continue_loop = True
+            while continue_loop:
+                # We get the step from the endpoint at the start of each batch to know what to work on
+                try:
+                    new_real_step = requests.get(config.step_endpoint).json()
+                    # new_real_step = 4
+                except Exception as e:
+                    logger.warning(f"Failed to get step from endpoint {config.step_endpoint}: {e}")
+                    time.sleep(10)
+                    continue
+               
+                logger.info(f"new_real_step: {new_real_step}, real_step: {real_step}, count_batch_per_step: {count_batch_per_step}")
+                if new_real_step != real_step:
+                    real_step = new_real_step
+                    current_step_batch_counter = 1
+                    continue_loop = False
+                    count_batch_per_step = 0
+                else:
+                    count_batch_per_step += 1 
+                    if count_batch_per_step < config.max_batch_per_step:
+                        continue_loop = False
+                    else:
+                        logger.info(f"Reached max files per step {config.max_batch_per_step}, waiting for new step")
+                        time.sleep(5)
+                
 
-            if new_real_step != real_step:
-                real_step = new_real_step
-                current_step_batch_counter = 1
-            else:
-                current_step_batch_counter += 1
 
         logger.info(
             f"real_step: {real_step}, ckpt_step: {ckpt_step}, real_step - ckpt_step: {real_step - ckpt_step}, config.async_level: {config.async_level}"
@@ -580,6 +599,7 @@ def inference(config: Config):
 
         logger.info(f"Generated {total_problems} problems for step {real_step}")
         real_step += 1
+        count_batch_per_step += 1
 
         if config.total_step is not None and real_step > config.total_step:
             logger.info(f"Reached total step {config.total_step}, stopping inference")
