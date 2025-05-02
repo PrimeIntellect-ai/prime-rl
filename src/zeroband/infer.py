@@ -84,6 +84,7 @@ class Config(BaseConfig):
     total_step: int | None = None
     rollout_path: str | None = None
     step_endpoint: str | None = None
+    download_dir: str | None = None
 
     quant: Literal["fp8"] | None = None
 
@@ -354,6 +355,7 @@ def inference(config: Config):
         quantization=config.quant,
         enforce_eager=config.enforce_eager,
         disable_async_output_proc=True,  # We have an off by 1 error in toploc without this flag when cuda graph padding is enabled.
+        download_dir=config.download_dir,
         dtype="bfloat16" if config.dtype == "bf16" else torch.float32,
     )
     tokenizer = llm.get_tokenizer()
