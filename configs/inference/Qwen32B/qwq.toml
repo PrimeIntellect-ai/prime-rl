@@ -1,4 +1,4 @@
-name_model = "Qwen/QwQ-32B"
+model_name = "Qwen/QwQ-32B"
 batch_size = 16
 tp = "auto"
 max_model_len = 16_000

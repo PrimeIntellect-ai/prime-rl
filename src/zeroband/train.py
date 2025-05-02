@@ -88,7 +88,7 @@ class CkptConfig(BaseConfig):
 
 
 class Config(BaseConfig):
-    name_model: ModelName = "PrimeIntellect/llama-150m-fresh"
+    model_name: ModelName = "PrimeIntellect/llama-150m-fresh"
 
     ckpt: CkptConfig = CkptConfig()
 
@@ -121,7 +121,7 @@ class Config(BaseConfig):
     @model_validator(mode="after")
     def check_liger(self):
         if self.train.liger_qwen:
-            assert "Qwen" in self.name_model, "train.liger_qwen can only be applied to Qwen2 models."
+            assert "Qwen" in self.model_name, "train.liger_qwen can only be applied to Qwen2 models."
         return self
 
     @model_validator(mode="after")
@@ -199,7 +199,7 @@ def train(config: Config):
         if envs.SHARDCAST_OUTPUT_DIR is not None:
             shardcast.initialize(envs.SHARDCAST_OUTPUT_DIR, max_distribution_folders=config.max_async_level)
 
-    model, tokenizer = get_model_and_tokenizer(config.name_model, config.train.attn_impl)
+    model, tokenizer = get_model_and_tokenizer(config.model_name, config.train.attn_impl)
 
     perf_counter = PerfCounter(window_size=min(10, 2 * config.optim.step_per_rollout), model=model, seq_len=config.data.seq_length)
 
@@ -218,7 +218,7 @@ def train(config: Config):
     apply_fsdp(model, config.train.reshard_after_forward)
 
     if config.kl_coef is not None:
-        model_reference, _ = get_model_and_tokenizer(config.name_model, config.train.attn_impl)
+        model_reference, _ = get_model_and_tokenizer(config.model_name, config.train.attn_impl)
         apply_fsdp(model_reference, config.train.reshard_after_forward)
 
     optimizer = torch.optim.AdamW(

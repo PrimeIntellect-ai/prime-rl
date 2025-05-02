@@ -1,4 +1,4 @@
-name_model = "PrimeIntellect/llama-1b-fresh"
+model_name= "PrimeIntellect/llama-1b-fresh"
 project = "debug_1B_zero_band"
 
 [train]

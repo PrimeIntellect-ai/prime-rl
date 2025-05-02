@@ -1,4 +1,4 @@
-name_model = "PrimeIntellect/llama-2m-fresh"
+model_name = "PrimeIntellect/llama-2m-fresh"
 wandb = false
 
 [train]

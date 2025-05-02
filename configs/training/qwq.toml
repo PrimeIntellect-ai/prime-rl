@@ -1,4 +1,4 @@
-name_model = "Qwen/QwQ-32B"
+model_name= "Qwen/QwQ-32B"
 project = "intellect-2"
 
 collate_mode = "packing"
