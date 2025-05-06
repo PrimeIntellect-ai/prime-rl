@@ -52,14 +52,14 @@ def test_toploc_cache(batch_size: int, max_seqs: int, num_output_tokens: int):
     # Check TOPLOC cached proofs
     assert len(toploc.proofs) == max_seqs
     expected_num_proofs = (num_output_tokens + max_len - 1) // max_len  # ceil(num_output_tokens / max_len)
-    assert all(map(lambda proof: len(proof) == expected_num_proofs, toploc.proofs.values()))
+    assert all([len(proof) == expected_num_proofs for proof in toploc.proofs.values()])
 
     # Check concatenated byte string proofs
     proofs = [b"".join(proofs) for proofs in sorted(toploc.proofs.values())]
     assert len(proofs) == max_seqs
-    assert all(map(lambda proof: type(proof) is bytes, proofs))
-    assert all(map(lambda proof: len(proof) % BYTES_PER_PROOF == 0, proofs))
-    assert all(map(lambda proof: len(proof) // BYTES_PER_PROOF == expected_num_proofs, proofs))
+    assert all([type(proof) is bytes for proof in proofs])
+    assert all([len(proof) % BYTES_PER_PROOF == 0 for proof in proofs])
+    assert all([len(proof) // BYTES_PER_PROOF == expected_num_proofs for proof in proofs])
 
 
 def test_toploc_cache_exact_proof():
@@ -118,14 +118,14 @@ def test_toploc_with_hook(llm, max_seqs: int, num_output_tokens: int):
     # Check TOPLOC cached proofs
     assert len(toploc.proofs) == max_seqs
     expected_num_proofs = (num_output_tokens + max_len - 1) // max_len
-    assert all(map(lambda proof: len(proof) == expected_num_proofs, toploc.proofs.values()))
+    assert all([len(proof) == expected_num_proofs for proof in toploc.proofs.values()])
 
     # Check concatenated byte string proofs
     proofs = [b"".join(proofs) for proofs in sorted(toploc.proofs.values())]
     assert len(proofs) == max_seqs
-    assert all(map(lambda proof: type(proof) is bytes, proofs))
-    assert all(map(lambda proof: len(proof) % BYTES_PER_PROOF == 0, proofs))
-    assert all(map(lambda proof: len(proof) // BYTES_PER_PROOF == expected_num_proofs, proofs))
+    assert all([type(proof) is bytes for proof in proofs])
+    assert all([len(proof) % BYTES_PER_PROOF == 0 for proof in proofs])
+    assert all([len(proof) // BYTES_PER_PROOF == expected_num_proofs for proof in proofs])
 
     # Validate proofs using pre-fill hook
     hook_handle.remove()
@@ -146,7 +146,7 @@ def test_toploc_with_hook(llm, max_seqs: int, num_output_tokens: int):
         # Verify proofs
         chunked_proofs = [proof[i : i + BYTES_PER_PROOF] for i in range(0, len(proof), BYTES_PER_PROOF)]
         results = verify_proofs_bytes(decode_activations, chunked_proofs, decode_batching_size=max_len, topk=128, skip_prefill=True)
-        assert all(map(lambda result: result.exp_mismatches < 60, results))
+        assert all([result.exp_mismatches < 60 for result in results])
 
     # Remove hook
     hook_handle.remove()
