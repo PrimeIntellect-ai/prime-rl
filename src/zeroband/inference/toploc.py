@@ -1,4 +1,3 @@
-from typing import Dict, List
 import torch
 import torch.nn as nn
 from torch.utils.hooks import RemovableHandle
@@ -32,13 +31,14 @@ class TOPLOC:
         self.max_len = max_len
         self.hidden_size = hidden_size
         self.device = device
-        self._cache: torch.Tensor | None = None
+        self.disable = disable
 
-        self.proofs: Dict[int, List[bytes]] = {}
+        self._cache: torch.Tensor | None = None
+        self.proofs: dict[int, list[bytes]] = {}
 
         if not disable:
             self._executor = ThreadPoolExecutor(max_workers=8)
-            self._proof_futures: Dict[int, Future] = {}
+            self._proof_futures: dict[int, Future] = {}
         else:
             self._executor = None
             self._proof_futures = {}
@@ -56,8 +56,8 @@ class TOPLOC:
         if self.disable:
             return
         self._cache = torch.empty(self.max_seqs, self.max_len, self.hidden_size, device=device, dtype=dtype)
-        self._seq_id_2_cache_index: Dict[int, int] = {}
-        self._current_seq_len: List[int] = [0 for k in range(self.max_seqs)]
+        self._seq_id_2_cache_index: dict[int, int] = {}
+        self._current_seq_len: list[int] = [0 for k in range(self.max_seqs)]
         # Tracks which chunk to alloc next
         self._current_cache_index: int = 0
 
@@ -172,7 +172,7 @@ def toploc_hook(_, inputs: tuple, toploc: TOPLOC):
     toploc.add(seq_ids, hidden_states)
 
 
-def setup_toploc(llm: LLM, disable: bool = False, **toploc_kwargs) -> Tuple[TOPLOC, Optional[RemovableHandle]]:
+def setup_toploc(llm: LLM, disable: bool = False, **toploc_kwargs) -> tuple[TOPLOC, RemovableHandle | None]:
     """Initializes the TOPLOC cache and register a hook to dynamically populate the cache during inference"""
     # Initialize the cache
     toploc = TOPLOC(disable=disable, **toploc_kwargs)
