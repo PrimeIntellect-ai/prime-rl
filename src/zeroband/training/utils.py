@@ -182,8 +182,8 @@ class MetricsAverager:
             value = self.metrics[key].clone()
             count = torch.tensor(self.count[key])
 
-            dist.all_reduce(value, op=dist.ReduceOp.SUM)
-            dist.all_reduce(count, op=dist.ReduceOp.SUM)
+            dist.all_reduce(value.to("cuda"), op=dist.ReduceOp.SUM)
+            dist.all_reduce(count.to("cuda"), op=dist.ReduceOp.SUM)
 
             value = value / count
 
