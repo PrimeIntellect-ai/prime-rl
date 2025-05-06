@@ -10,7 +10,7 @@ from vllm import LLM
 from functools import partial
 
 
-class TOPLOC:
+class TopLocCache:
     """A cache implementation for managing sequence data and generating proofs.
 
     This class provides functionality to store sequence data in a tensor cache and
@@ -21,9 +21,11 @@ class TOPLOC:
     Args:
         max_seqs (int): Maximum number of sequences that can be stored in the cache
         hidden_size (int): Size of the hidden dimension for each sequence element
+        max_len (int): Maximum length of the sequences that can be stored in the cache. Defaults to 32.
         device (torch.device | None): Device to store the cache tensor on.
             If None, the device of the first sequence will be used.
             Defaults to None.
+        disable (bool): If True, disable the TOPLOC cache. Defaults to False.
     """
 
     def __init__(self, max_seqs: int, hidden_size: int, max_len: int = 32, device: torch.device | None = None, disable: bool = False):
@@ -140,7 +142,7 @@ class TOPLOC:
         wait(list(i for i in self._proof_futures.values() if i is not None))
 
 
-def toploc_hook(_, inputs: tuple, toploc: TOPLOC):
+def toploc_cache_hook(_, inputs: tuple, toploc_cache: TopLocCache):
     """
     Pre-hook to get final hidden states of a model forward pass and add it to
     the TOPLOC cache based on sampling metadata.
@@ -149,7 +151,7 @@ def toploc_hook(_, inputs: tuple, toploc: TOPLOC):
     Args:
         _ (): Unused argument, required for compatibility with hook function signature.
         input (tuple): A tuple containing the input data. The first element is expected to be the hidden states of the model, and the second element is expected to be the sampling metadata.
-        toploc (TOPLOC): The TOPLOC instance to which the processed data will be added.
+        toploc_cache (TopLocCache): The TopLocCache instance to which the processed data will be added.
     """
     # Get hidden states and sampling metadata from inputs
     hidden_states, sampling_metadata = inputs[1], inputs[2]
@@ -169,18 +171,18 @@ def toploc_hook(_, inputs: tuple, toploc: TOPLOC):
     seq_ids = [seq_group.seq_ids[0] for seq_group in sampling_metadata.seq_groups]
 
     # Add hidden states to TOPLOC cache with corresponding seq_ids
-    toploc.add(seq_ids, hidden_states)
+    toploc_cache.add(seq_ids, hidden_states)
 
 
-def setup_toploc(llm: LLM, disable: bool = False, **toploc_kwargs) -> tuple[TOPLOC, RemovableHandle | None]:
+def setup_toploc_cache(llm: LLM, disable: bool = False, **toploc_kwargs) -> tuple[TopLocCache, RemovableHandle | None]:
     """Initializes the TOPLOC cache and register a hook to dynamically populate the cache during inference"""
     # Initialize the cache
-    toploc = TOPLOC(disable=disable, **toploc_kwargs)
+    toploc_cache = TopLocCache(disable=disable, **toploc_kwargs)
 
     # Register hook to add hidden states to TOPLOC cache
     logits_processor: nn.Module = llm.llm_engine.model_executor.driver_worker.model_runner.model.logits_processor
     handle: RemovableHandle | None = None
     if not disable:
-        handle = logits_processor.register_forward_pre_hook(partial(toploc_hook, toploc=toploc))
+        handle = logits_processor.register_forward_pre_hook(partial(toploc_cache_hook, toploc_cache=toploc_cache))
 
-    return toploc, handle
+    return toploc_cache, handle

@@ -24,7 +24,7 @@ from vllm.sequence import SampleLogprobs
 from zeroband.utils.logger import get_logger
 from zeroband.utils.world_info import get_world_info
 from zeroband.utils.models import ModelName
-from zeroband.inference.toploc import setup_toploc
+from zeroband.inference.toploc import setup_toploc_cache
 from zeroband.rewards.registry import REWARD_FUNCTIONS
 
 from datasets import load_dataset
@@ -394,7 +394,7 @@ def inference(config: Config):
         )
 
     # Setup TOPLOC
-    toploc, _ = setup_toploc(
+    toploc_cache, _ = setup_toploc_cache(
         llm,
         disable=not config.toploc,
         max_seqs=config.batch_size * config.sampling.n,
@@ -516,7 +516,7 @@ def inference(config: Config):
 
         # This generates proofs for the remaining sequences that haven't reached max_len.
         # We call here to give time for the proofs to be generated non-blocking in the background.
-        toploc.maybe_generate_proofs_in_background(force_generate=True)
+        toploc_cache.maybe_generate_proofs_in_background(force_generate=True)
 
         # Calculate tokens and throughput
         batch_input_tokens = sum(len(req.prompt_token_ids) for req in generated_tokens)
@@ -537,9 +537,9 @@ def inference(config: Config):
         # Note (Jack): Currently, vllm guarantees that seq ids are in the same order as prompts passed to generate.
         # Generate always adds requests to the engine in the order of the prompts.
         # And returns them in the sequence they were added.
-        toploc.wait_for_proofs()
-        proofs = [b"".join(proofs) for _, proofs in sorted(toploc.proofs.items(), key=lambda x: x[0])]
-        toploc.reset_cache()
+        toploc_cache.wait_for_proofs()
+        proofs = [b"".join(proofs) for _, proofs in sorted(toploc_cache.proofs.items(), key=lambda x: x[0])]
+        toploc_cache.reset_cache()
 
         start_reward_advantages = time.time()
         # Compute rewards asynchronously, grouped as a dictionary.
