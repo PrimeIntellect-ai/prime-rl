@@ -2,7 +2,6 @@
 
 
 import multiprocessing
-from typing import Optional
 import traceback
 import os
 import sys
@@ -705,7 +704,7 @@ def _temp_run(sample, generation, debug, result, metadata_list, timeout):
             metadata_list.append({})
 
 
-def check_correctness(in_outs: Optional[dict], generation, timeout=10, debug=True):
+def check_correctness(in_outs: dict | None, generation, timeout=10, debug=True):
     """Check correctness of code generation with a global timeout.
     The global timeout is to catch some extreme/rare cases not handled by the timeouts
     inside `run_test`"""

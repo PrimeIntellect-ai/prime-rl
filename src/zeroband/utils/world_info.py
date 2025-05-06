@@ -1,4 +1,3 @@
-from typing import Optional
 from typing import Dict
 
 from zeroband.utils import envs
@@ -47,7 +46,7 @@ class WorldInfo:
 
 
 # Singleton instance of WorldInfo
-_WORLD_INFO: Optional[WorldInfo] = None
+_WORLD_INFO: WorldInfo | None = None
 
 
 def get_world_info() -> WorldInfo:

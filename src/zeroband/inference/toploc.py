@@ -1,4 +1,4 @@
-from typing import Optional, Dict, List
+from typing import Dict, List
 import torch
 from toploc import build_proofs_bytes
 from concurrent.futures import ThreadPoolExecutor, Future, wait
@@ -16,17 +16,17 @@ class TopLocCache:
         max_seqs (int): Maximum number of sequences that can be stored in the cache
         max_len (int): Maximum length of each sequence
         hidden_size (int): Size of the hidden dimension for each sequence element
-        device (Optional[torch.device]): Device to store the cache tensor on.
+        device (torch.device | None): Device to store the cache tensor on.
             If None, the device of the first sequence will be used.
             Defaults to None.
     """
 
-    def __init__(self, max_seqs: int, max_len: int, hidden_size: int, device: Optional[torch.device] = None, disable: bool = False):
+    def __init__(self, max_seqs: int, max_len: int, hidden_size: int, device: torch.device | None = None, disable: bool = False):
         self.max_seqs = max_seqs
         self.max_len = max_len
         self.hidden_size = hidden_size
         self.device = device
-        self._cache: Optional[torch.Tensor] = None
+        self._cache: torch.Tensor | None = None
 
         self.proofs: Dict[int, List[bytes]] = {}
 

@@ -1,5 +1,5 @@
 import os
-from typing import TYPE_CHECKING, Any, List, Optional
+from typing import TYPE_CHECKING, Any, List
 
 from zeroband.utils.envs import _BASE_ENV, get_env_value, get_dir
 
@@ -8,9 +8,9 @@ if TYPE_CHECKING:
     # ruff: noqa
     from zeroband.utils.envs import PRIME_LOG_LEVEL, RANK, WORLD_SIZE, LOCAL_RANK, LOCAL_WORLD_SIZE
 
-    SHARDCAST_SERVERS: Optional[List[str]] = None
+    SHARDCAST_SERVERS: List[str] | None = None
     SHARDCAST_BACKLOG_VERSION: int = -1
-    NODE_ADDRESS: Optional[str] = None
+    NODE_ADDRESS: str | None = None
 
 _INFERENCE_ENV = {
     "SHARDCAST_SERVERS": lambda: os.getenv("SHARDCAST_SERVERS", None).split(",")

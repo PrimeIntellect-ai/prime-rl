@@ -8,11 +8,10 @@ import re
 from pylatexenc import latex2text
 import sympy
 from sympy.parsing import sympy_parser
-from typing import Optional
 
 
 # Dan Hendrycks' code
-def mathd_normalize_answer(answer: Optional[str]) -> Optional[str]:
+def mathd_normalize_answer(answer: str | None) -> str | None:
     if answer is None:
         return None
     answer = answer.strip()
