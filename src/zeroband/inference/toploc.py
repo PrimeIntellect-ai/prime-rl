@@ -26,7 +26,7 @@ class TOPLOC:
             Defaults to None.
     """
 
-    def __init__(self, max_seqs: int, max_len: int, hidden_size: int, device: torch.device | None = None, disable: bool = False):
+    def __init__(self, max_seqs: int, hidden_size: int, max_len: int = 32, device: torch.device | None = None, disable: bool = False):
         self.max_seqs = max_seqs
         self.max_len = max_len
         self.hidden_size = hidden_size
