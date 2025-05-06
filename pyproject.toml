@@ -16,7 +16,7 @@ dependencies = [
     "zstandard",
     "pyarrow",
     "wandb",
-    "vllm>=0.7.3",
+    "vllm>=0.8.5",
     "jaxtyping",
     "beartype",
     "toploc>=0.1.6",
