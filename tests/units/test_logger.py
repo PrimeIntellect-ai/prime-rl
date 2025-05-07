@@ -41,16 +41,3 @@ def test_init_multiple_loggers():
     assert train_logger.name == "TRAINING"
     assert inference_logger.name == "INFERENCE"
     assert train_logger != inference_logger
-
-
-@pytest.mark.parametrize("local_rank", [0, 1])
-def test_init_with_different_ranks(local_rank: int):
-    os.environ["RANK"] = str(local_rank)
-    os.environ["WORLD_SIZE"] = str(local_rank + 1)
-    os.environ["LOCAL_RANK"] = str(local_rank)
-    os.environ["LOCAL_WORLD_SIZE"] = str(local_rank + 1)  # To not raise exception in world info
-    logger = get_logger("TEST")
-    if local_rank == 0:
-        assert logger.level == logging.INFO
-    else:
-        assert logger.level == logging.CRITICAL

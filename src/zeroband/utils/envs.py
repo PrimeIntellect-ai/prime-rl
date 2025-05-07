@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     WORLD_SIZE: int = 1
     LOCAL_RANK: int = 0
     LOCAL_WORLD_SIZE: int = 1
+    CUDA_VISIBLE_DEVICES: List[int] = [0]
 
 # Shared environment variables between training and inference
 _BASE_ENV: Dict[str, Any] = {
@@ -18,6 +19,7 @@ _BASE_ENV: Dict[str, Any] = {
     "WORLD_SIZE": lambda: int(os.getenv("WORLD_SIZE", "1")),
     "LOCAL_RANK": lambda: int(os.getenv("LOCAL_RANK", "0")),
     "LOCAL_WORLD_SIZE": lambda: int(os.getenv("LOCAL_WORLD_SIZE", "1")),
+    "CUDA_VISIBLE_DEVICES": lambda: list(map(int, os.getenv("CUDA_VISIBLE_DEVICES", "0").split(","))),
 }
 
 

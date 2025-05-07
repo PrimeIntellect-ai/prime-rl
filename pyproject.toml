@@ -28,6 +28,7 @@ dependencies = [
     "asyncio>=3.4.3",
     "aiohttp>=3.10.5",
     "pyext>=0.7",
+    "prime_iroh>=0.1.2",
 ] 
 
 [build-system]
@@ -39,6 +40,8 @@ allow-direct-references = true # allow direct references to git repos in depende
 
 [tool.ruff]
 line-length = 140
+
+[tool.ruff.lint]
 ignore = ["F722", "F821"]
 
 [tool.uv]

@@ -6,7 +6,7 @@ from zeroband.utils.envs import _BASE_ENV, get_env_value, get_dir
 if TYPE_CHECKING:
     # Enable type checking for shared envs
     # ruff: noqa
-    from zeroband.utils.envs import PRIME_LOG_LEVEL, RANK, WORLD_SIZE, LOCAL_RANK, LOCAL_WORLD_SIZE
+    from zeroband.utils.envs import PRIME_LOG_LEVEL, RANK, WORLD_SIZE, LOCAL_RANK, LOCAL_WORLD_SIZE, CUDA_VISIBLE_DEVICES
 
     TRAINING_ENABLE_ACCEPTED_CHECK: bool = False
     PRIME_DASHBOARD_AUTH_TOKEN: str | None = None

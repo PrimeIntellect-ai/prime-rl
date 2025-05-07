@@ -16,27 +16,33 @@ import concurrent.futures
 import time
 from toploc.utils import sha256sum
 from safetensors import safe_open
+import torch.distributed as dist
 
 # from vllm.model_executor.model_loader
 from vllm.model_executor.model_loader.loader import _process_weights_after_loading
 from vllm.sequence import SampleLogprobs
 
 from zeroband.utils.logger import get_logger
-from zeroband.utils.world_info import get_world_info
+
 from zeroband.utils.models import ModelName
 from zeroband.inference.toploc import setup_toploc_cache
+from zeroband.inference.pipeline import PipelineConfig, setup_pipeline
 from zeroband.rewards.registry import REWARD_FUNCTIONS
+
 
 from datasets import load_dataset
 import pyarrow as pa
 import pyarrow.parquet as pq
 import multiprocessing as mp
 
-from zeroband.training.mp import EnvWrapper, cuda_available_devices
+from zeroband.training.mp import EnvWrapper
 from zeroband.utils.metrics import PrimeMetric
 from zeroband.inference.schema import pa_schema
 
 from zeroband.inference import envs
+
+# Global logger
+logger = get_logger("INFER")
 
 
 class SamplingParamConfig(BaseConfig):
@@ -93,9 +99,11 @@ class Config(BaseConfig):
 
     async_level: int = 2  # the amount of step for which we can be in advance
 
-    # mutli gpu
+    # Parallelism
     tp: int | Literal["auto"] = 1
     dp: int = 1
+    pp: PipelineConfig = PipelineConfig()
+
     gpus_ids: list[int] | None = None
     prime_log_freq: int | None = None
 
@@ -114,6 +122,17 @@ class Config(BaseConfig):
     def disable_toploc_for_fp32(self):
         if self.dtype == "fp32":
             self.toploc = False
+        return self
+
+    @model_validator(mode="after")
+    def enforce_eager_for_tp(self):
+        if self.pp.world_size > 1:
+            self.enforce_eager = True
+        return self
+
+    @model_validator(mode="after")
+    def assert_valid_parallelism(self):
+        assert not (self.dp > 1 and self.pp.world_size > 1), "Cannot use PP and DP together"
         return self
 
 
@@ -341,17 +360,15 @@ def compute_advantages_grpo(grouped_rewards: dict[int, dict[str, torch.FloatTens
 
 
 def inference(config: Config):
-    # Get world information and initialize logger
-    world_info = get_world_info()
-
     # Initialize the logger
-    logger = get_logger("INFERENCE")
-    logger.info(f"Start inference on {world_info.num_nodes} node(s) and {world_info.world_size} GPU(s)")
+    logger.info("Starting inference")
+    logger.info(f"TP={config.tp}, DP={config.dp}, PP={config.pp.world_size}")
 
     # Initialize prime metrics
     prime_metric = PrimeMetric(disable=config.prime_log_freq is None, period=config.prime_log_freq)
 
     # Initialize vLLM and get tokenizer
+    logger.info("Initializing vLLM")
     llm = LLM(
         model=config.model_name,
         tensor_parallel_size=config.tp,
@@ -375,13 +392,12 @@ def inference(config: Config):
     if envs.NODE_ADDRESS is not None:
         # We dont shuffle here because we shuffle reproducibly in the sampling loop.
         assert config.seed is None, "Seed is not supported when NODE_ADDRESS is set"
-        assert world_info.rank == 0, "DP is not supported when NODE_ADDRESS is set"
+        assert envs.RANK == 0, "DP is not supported when NODE_ADDRESS is set"
         node_address_int = int(envs.NODE_ADDRESS, 16)
         logger.info(f"Seeding with {node_address_int} ({envs.NODE_ADDRESS})")
     else:
         # Seed the dataset with a random number
-        # TODO(Mika): This breaks PP because shards load different batches
-        seed = config.seed + world_info.rank if config.seed is not None else None
+        seed = config.seed + envs.RANK if config.seed is not None else None
         generator = np.random.default_rng(seed)
         dataset = load_dataset(config.dataset, split="train").shuffle(generator=generator)
         node_address_int = None
@@ -505,6 +521,16 @@ def inference(config: Config):
         else:
             prompts = fake_chat_template(messages)
 
+        # Create communication for pipeline
+        if config.pp.world_size > 1:
+            setup_pipeline(
+                llm=llm,
+                rank=config.pp.rank,
+                world_size=config.pp.world_size,
+                iroh_seed=config.pp.iroh_seed,
+                iroh_peer_id=config.pp.iroh_peer_id,
+            )
+
         start_time = time.time()
         generated_tokens = llm.generate(prompts, sampling_params, use_tqdm=False)
         end_time = time.time()
@@ -583,57 +609,36 @@ def inference(config: Config):
             logger.info(f"Reached total step {config.total_step}, stopping inference")
             break
 
+    # Manually destroy vLLM process group to avoid warnings
+    dist.destroy_process_group()
+
     get_process_executor().shutdown(wait=True)
 
 
-def inference_sub_process(config: Config, gpus_ids: list[int], rank: int) -> list[mp.Process]:
-    """
-    This function is used to run inference by creating a sub process.
-    """
-    os.environ["CUDA_VISIBLE_DEVICES"] = cuda_available_devices(gpus_ids)
-    # this is a hack that work with spawn, basically allow the env var to be overridden when spawn read the env var a second time
+def main(config: Config) -> list[mp.Process]:
+    processes = []
+    from zeroband.inference import envs as inference_envs
 
-    envs = {"CUDA_VISIBLE_DEVICES": cuda_available_devices(gpus_ids), "RANK": str(rank)}
-    print(f"start inference on {gpus_ids} with rank {rank}")
-    fn_env = EnvWrapper(inference, envs)
-    process = mp.Process(target=fn_env, args=(config,))
-    process.start()
-
-    return process
-
-
-def inference_run(config: Config) -> list[mp.Process]:
     if config.dp > 1:
-        processes = []
-
-        gpus_ids = config.gpus_ids if config.gpus_ids is not None else list(range(torch.cuda.device_count()))
-
         if config.tp == "auto":
-            assert len(gpus_ids) % config.dp == 0, "Number of GPUs must be divisible by dp when using tp=auto"
-            config.tp = len(gpus_ids) // config.dp
-            get_logger("PRE-INFERENCE").info(f"AUTO gpu config: now using {config.tp} GPUs for tp")
-
-        assert len(gpus_ids) % (config.dp * config.tp) == 0, "Number of GPUs must be divisible by dp * tp"
-
-        num_process = len(gpus_ids) // config.tp
-        sub_process_ids = [gpus_ids[i * config.tp : (i + 1) * config.tp] for i in range(num_process)]
-
-        for rank, sub_process_id in enumerate(sub_process_ids):
-            processes.append(inference_sub_process(config, sub_process_id, rank))
-
-        return processes
-
+            assert torch.cuda.device_count() % config.dp == 0, "Number of GPUs must be divisible by DP"
+            config.tp = torch.cuda.device_count() // config.dp
+        gpu_ids = inference_envs.CUDA_VISIBLE_DEVICES
+        gpu_ids_per_rank = [gpu_ids[i : i + config.tp] for i in range(0, len(gpu_ids), config.tp)]
+        for rank, gpu_ids in enumerate(gpu_ids_per_rank):
+            envs = {"CUDA_VISIBLE_DEVICES": ",".join(map(str, gpu_ids)), "RANK": str(rank), "LOCAL_RANK": str(rank)}
+            process = mp.Process(target=EnvWrapper(inference, envs), args=(config,))
+            processes.append(process)
     else:
         if config.tp == "auto":
             config.tp = torch.cuda.device_count()
-            get_logger("PRE-INFERENCE").info(f"AUTO gpu config: now using all {config.tp} GPUs for tp")
-
         inference(config)
-        return []
 
+    # Start all processes
+    for process in processes:
+        process.start()
 
-def main(config: Config) -> list[mp.Process]:
-    processes = inference_run(config)
+    # Wait for all processes to finish
     for process in processes:
         process.join()
 
@@ -645,8 +650,6 @@ if __name__ == "__main__":
 
     if config.step_endpoint is not None:
         current_step = requests.get(config.step_endpoint).json()
-        logger = get_logger("PRE-INFERENCE")
-        logger.info(f"Current step: {current_step}")
         assert isinstance(current_step, int), "Current step must be an integer"
 
     # Maybe start shardcast downloader

@@ -10,11 +10,11 @@ ModelName: TypeAlias = Literal[
     # Llama 3
     "meta-llama/Meta-Llama-3-8B-Instruct",
     "meta-llama/Meta-Llama-3-70B-Instruct",
-    "meta-llama/Meta-Llama-3.1-8B-Instruct",
-    "meta-llama/Meta-Llama-3.1-70B-Instruct",
-    "meta-llama/Meta-Llama-3.1-405B-Instruct",
-    "meta-llama/Meta-Llama-3.2-1B-Instruct",
-    "meta-llama/Meta-Llama-3.2-3B-Instruct",
+    "meta-llama/Llama-3.1-8B-Instruct",
+    "meta-llama/Llama-3.1-70B-Instruct",
+    "meta-llama/Llama-3.1-405B-Instruct",
+    "meta-llama/Llama-3.2-1B-Instruct",
+    "meta-llama/Llama-3.2-3B-Instruct",
     # Qwen2.5
     "Qwen/Qwen2.5-0.5B-Instruct",
     "Qwen/Qwen2.5-1.5B-Instruct",
@@ -38,6 +38,11 @@ ModelName: TypeAlias = Literal[
     "Qwen/Qwen3-8B",
     "Qwen/Qwen3-14B",
     "Qwen/Qwen3-32B",
+    # Shards
+    "mikasenghaas/Llama-3.2-1B-Instruct-0.2",
+    "mikasenghaas/Llama-3.2-1B-Instruct-1.2",
+    "mikasenghaas/Qwen3-14B-0.2",
+    "mikasenghaas/Qwen3-14B-1.2",
 ]
 
 ModelType: TypeAlias = LlamaForCausalLM | Qwen2ForCausalLM | Qwen3ForCausalLM

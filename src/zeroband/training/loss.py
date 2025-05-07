@@ -173,4 +173,3 @@ def kl_penalty(
 
 def _apply_mask(tensor: torch.Tensor, mask: torch.Tensor, max_tokens: int) -> torch.Tensor:
     return (tensor * mask).sum() / max_tokens
-

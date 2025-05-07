@@ -6,6 +6,8 @@ Need to be run from the root folder
 import os
 from zeroband.train import Config as TrainingConfig
 from zeroband.infer import Config as InferenceConfig
+
+from pydantic import ValidationError
 import pytest
 import tomli
 
@@ -19,21 +21,23 @@ def get_all_toml_files(directory):
     return toml_files
 
 
-config_file_paths = get_all_toml_files("configs/training")
-inference_file_paths = get_all_toml_files("configs/inference")
-
-
-@pytest.mark.parametrize("config_file_path", config_file_paths)
-def test_load_config(config_file_path):
+@pytest.mark.parametrize("config_file_path", get_all_toml_files("configs/training"))
+def test_load_train_configs(config_file_path):
     with open(f"{config_file_path}", "rb") as f:
         content = tomli.load(f)
     config = TrainingConfig(**content)
     assert config is not None
 
 
-@pytest.mark.parametrize("config_file_path", inference_file_paths)
-def test_load_inference_config(config_file_path):
+@pytest.mark.parametrize("config_file_path", get_all_toml_files("configs/inference"))
+def test_load_inference_configs(config_file_path):
     with open(f"{config_file_path}", "rb") as f:
         content = tomli.load(f)
     config = InferenceConfig(**content)
     assert config is not None
+
+
+def test_throw_error_for_dp_and_pp():
+    with pytest.raises(ValidationError):
+        config = InferenceConfig(**{"dp": 2, "pp": {"world_size": 2}})
+        print(config)
