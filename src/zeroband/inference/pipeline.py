@@ -106,31 +106,31 @@ def setup_hooks(rank: int, world_size: int, llm: LLM, node: Node) -> None:
     if rank == 0:  # First stage
         # Send intermediate states to next stage (post-hook)
         last_layer.register_forward_hook(partial(send_intermediate_states, node=node))
-        logger.info("Registered post-hook send_intermediate_states on last layer")
+        logger.debug("Registered post-hook send_intermediate_states on last layer")
 
         # Receive outputs from last stage (post-hook)
         sampler.register_forward_hook(partial(recv_output, node=node, relay=relay))
-        logger.info("Registered post-hook recv_output on sampler")
+        logger.debug("Registered post-hook recv_output on sampler")
     elif rank == world_size - 1:  # Last stage
         # Receive intermediate states from previous stage (pre-hook)
         first_layer.register_forward_pre_hook(partial(recv_intermediate_states, node=node))
-        logger.info("Registered pre-hook recv_intermediate_states on first layer")
+        logger.debug("Registered pre-hook recv_intermediate_states on first layer")
 
         # Send outputs to first  stage (post-hook)
         sampler.register_forward_hook(partial(send_output, node=node))
-        logger.info("Registered post-hook send_output on sampler")
+        logger.debug("Registered post-hook send_output on sampler")
     else:
         # Receive intermediate states from previous stage and send positions to next stage (pre-hook)
         first_layer.register_forward_pre_hook(partial(recv_intermediate_states, node=node))
-        logger.info("Registered pre-hook recv_intermediate_states on first layer")
+        logger.debug("Registered pre-hook recv_intermediate_states on first layer")
 
         # Send intermediate states to next stage (post-hook)
         last_layer.register_forward_hook(partial(send_intermediate_states, node=node))
-        logger.info("Registered post-hook send_intermediate_states on last layer")
+        logger.debug("Registered post-hook send_intermediate_states on last layer")
 
         # Receive and relay outputs from last stage (post-hook)
         sampler.register_forward_hook(partial(recv_output, relay=relay))
-        logger.info("Registered post-hook recv_output on sampler")
+        logger.debug("Registered post-hook recv_output on sampler")
 
 
 # TODO: Outputs of decoder blocks look different for vLLM implementations and HF-based implementations. The implementation currently breaks for HF-based implementations.
