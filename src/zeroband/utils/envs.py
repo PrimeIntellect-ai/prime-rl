@@ -1,6 +1,9 @@
 from typing import TYPE_CHECKING, Any, Dict, List
 import os
 
+# Force using vLLM v0
+os.environ["VLLM_USE_V1"] = "0"
+
 if TYPE_CHECKING:
     # Prime
     PRIME_LOG_LEVEL: str = "INFO"
@@ -20,6 +23,7 @@ _BASE_ENV: Dict[str, Any] = {
     "LOCAL_RANK": lambda: int(os.getenv("LOCAL_RANK", "0")),
     "LOCAL_WORLD_SIZE": lambda: int(os.getenv("LOCAL_WORLD_SIZE", "1")),
     "CUDA_VISIBLE_DEVICES": lambda: list(map(int, os.getenv("CUDA_VISIBLE_DEVICES", "0").split(","))),
+    "VLLM_USE_V1": lambda: os.getenv("VLLM_USE_V1", "0"),
 }
 
 
