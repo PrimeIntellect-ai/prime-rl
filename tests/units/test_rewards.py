@@ -51,7 +51,7 @@ def verification_infos(samples):
     for sample in samples["samples"]:
         request_id = sample["request_idx"]
         if request_id not in request_ids:
-            verification_infos.append(sample["verification_info"])
+            verification_infos.append(json.loads(sample["verification_info"]))
             request_ids.add(request_id)
     return verification_infos
 
@@ -82,14 +82,12 @@ def ground_truth_advantages(samples):
 
 
 def test_compute_rewards(request_outputs, ground_truth_rewards, verification_infos):
-    target_lengths = [-1] * len(request_outputs)
     task_types = ["verifiable_math"] * len(request_outputs)
     grouped_rewards, grouped_task_rewards, grouped_length_penalties = compute_rewards(
         request_outputs,
         verification_infos,
-        target_lengths,
         task_types,
-        len_reward_config=None,
+        config=None,
     )
 
     # Assert return type
@@ -115,9 +113,8 @@ def test_compute_advantages(request_outputs, ground_truth_advantages, verificati
     grouped_rewards, _, _ = compute_rewards(
         request_outputs,
         verification_infos,
-        target_lengths,
         task_types,
-        len_reward_config=None,
+        config=None,
     )
     advantages = compute_advantages(grouped_rewards, epsilon=1e-6)
     # Assert return type

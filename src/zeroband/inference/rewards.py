@@ -1,4 +1,3 @@
-import json
 from typing import Literal
 
 import torch
@@ -6,14 +5,14 @@ from pydantic_config import BaseConfig
 from vllm import RequestOutput, CompletionOutput
 from concurrent.futures import ThreadPoolExecutor
 
-from zeroband.inference.genesys import REWARD_FUNCTIONS
+from zeroband.inference.genesys import get_reward_function, TaskType
 from zeroband.utils.logger import get_logger
 
 # Global logger
 logger = get_logger("INFER")
 
 
-class LenRewardConfig(BaseConfig):
+class RewardsConfig(BaseConfig):
     reward_type: Literal["exact", "max", "clip"] = "max"
     target_length_sampling: Literal["discrete", "range"] = "discrete"
     length_prompt_location: Literal["system_prompt", "instruction"] = "system_prompt"
@@ -35,58 +34,53 @@ class LenRewardConfig(BaseConfig):
 def compute_reward(
     completion_output: CompletionOutput,
     verification_info: dict,
-    len_reward_config: LenRewardConfig,
-    task_type: str,
+    task_type: TaskType,
+    config: RewardsConfig | None,
 ) -> dict[str, float]:
     # Compute task reward
-    reward_fn = REWARD_FUNCTIONS[task_type]
-    task_reward = reward_fn(completion_output.text, verification_info)
+    compute_reward = get_reward_function(task_type)
+    task_reward = compute_reward(completion_output.text, verification_info)
 
     # Compute length penalty
-    total_reward = task_reward
+    reward = task_reward
+    target_length = verification_info.get("target_length", None)
     length_penalty = 0
-    if verification_info["target_length"] > 0:
+    if target_length is not None:
         output_length = len(completion_output.token_ids)
-        target_length = verification_info["target_length"]
-
-        if len_reward_config.reward_type == "exact":
-            length_penalty = abs(output_length - target_length)
-            length_penalty = length_penalty * len_reward_config.reward_coef  # Scale factor to balance with math reward
-            total_reward -= length_penalty
-
-        elif len_reward_config.reward_type == "max":
-            diff = target_length - output_length
-            length_penalty = torch.clip(
-                torch.tensor(len_reward_config.reward_coef * diff + len_reward_config.max_reward_delta), 0, 1
-            ).item()
-            total_reward *= length_penalty
-
-        elif len_reward_config.reward_type == "clip":
+        # Penalizes absolute deviation from target length
+        if config.reward_type == "exact":
+            length_penalty = abs(target_length - output_length) * config.reward_coef
+            reward -= length_penalty
+        # Rewards for being close to target length with a maximum reward
+        elif config.reward_type == "max":
+            raw_value = config.reward_coef * (target_length - output_length) + config.max_reward_delta
+            length_penalty = max(0, min(1, raw_value))
+            reward *= length_penalty
+        # Zero reward if output exceeds target length
+        elif config.reward_type == "clip":
             length_penalty = int(output_length > target_length)
 
             if length_penalty == 1:
-                total_reward = 0
+                reward = 0
+        else:
+            raise ValueError(f"Invalid reward type: {config.reward_type}")
+    logger.debug(f"Computed reward: {reward} (task_reward: {task_reward}, length_penalty: {length_penalty})")
 
-    return {"total_reward": total_reward, "task_reward": task_reward, "length_penalty": length_penalty}
+    return {"reward": reward, "task_reward": task_reward, "length_penalty": length_penalty}
 
 
 def compute_rewards(
-    generated_tokens: list[RequestOutput],
-    verification_infos: list[str],
-    target_lengths: list[int],
+    request_outputs: list[RequestOutput],
+    verification_infos: list[dict],
     task_types: list[str],
-    len_reward_config: LenRewardConfig,
+    config: RewardsConfig | None,
 ) -> tuple[dict[int, torch.FloatTensor], dict[int, torch.FloatTensor], dict[int, torch.FloatTensor]]:
-    parsed_infos = [json.loads(ver) for ver in verification_infos]
-
-    for info, target_len in zip(parsed_infos, target_lengths):
-        info["target_length"] = target_len
-
     futures, mapping = [], []
     with ThreadPoolExecutor(max_workers=32) as executor:
-        for request_id, (request, verification_info, task_type) in enumerate(zip(generated_tokens, parsed_infos, task_types)):
+        for request_id, (request, verification_info, task_type) in enumerate(zip(request_outputs, verification_infos, task_types)):
             for output in request.outputs:
-                futures.append(executor.submit(compute_reward, output, verification_info, len_reward_config, task_type))
+                args = (output, verification_info, task_type, config)
+                futures.append(executor.submit(compute_reward, *args))
                 mapping.append(request_id)
 
         results = [future.result() for future in futures]
@@ -102,7 +96,7 @@ def compute_rewards(
         grouped_length_penalties[request_id] = []
 
     for request_id, result in zip(mapping, results):
-        grouped_total_rewards[request_id].append(result["total_reward"])
+        grouped_total_rewards[request_id].append(result["reward"])
         grouped_task_rewards[request_id].append(result["task_reward"])
         grouped_length_penalties[request_id].append(result["length_penalty"])
 

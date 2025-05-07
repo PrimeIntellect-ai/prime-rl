@@ -13,6 +13,7 @@ import time
 from toploc.utils import sha256sum
 from safetensors import safe_open
 import torch.distributed as dist
+import json
 
 # from vllm.model_executor.model_loader
 from vllm.model_executor.model_loader.loader import _process_weights_after_loading
@@ -23,7 +24,7 @@ from zeroband.utils.logger import get_logger
 from zeroband.utils.models import ModelName
 from zeroband.inference.toploc import setup_toploc_cache
 from zeroband.inference.pipeline import PipelineConfig, setup_pipeline
-from zeroband.inference.rewards import LenRewardConfig, compute_rewards, compute_advantages
+from zeroband.inference.rewards import RewardsConfig, compute_rewards, compute_advantages
 
 
 from datasets import load_dataset
@@ -92,7 +93,7 @@ class Config(BaseConfig):
 
     toploc: bool = False
 
-    len_reward: LenRewardConfig | None = None
+    rewards: RewardsConfig | None = None
     difficulty_filtering: DifficultyFilteringConfig | None = None
 
     @model_validator(mode="after")
@@ -224,23 +225,23 @@ def reload_model_weights(llm: LLM, ckpt_path: str):
 
 
 def generate_target_length_prompts(config: Config, batch_size: int):
-    if config.len_reward is None:
-        return [""] * batch_size, [-1] * batch_size
+    if config.rewards is None:
+        return [""] * batch_size, [None] * batch_size
 
-    if config.len_reward.target_length_sampling == "discrete":
-        indices = torch.randint(low=0, high=len(config.len_reward.target_lengths), size=(batch_size,), device="cpu")
-        target_lengths = [int(config.len_reward.target_lengths[i]) for i in indices]
+    if config.rewards.target_length_sampling == "discrete":
+        indices = torch.randint(low=0, high=len(config.rewards.target_lengths), size=(batch_size,), device="cpu")
+        target_lengths = [int(config.rewards.target_lengths[i]) for i in indices]
 
-    elif config.len_reward.target_length_sampling == "range":
+    elif config.rewards.target_length_sampling == "range":
         target_lengths = torch.randint(
-            low=config.len_reward.min_length, high=config.len_reward.max_length + 1, size=(batch_size,), device="cpu"
+            low=config.rewards.min_length, high=config.rewards.max_length + 1, size=(batch_size,), device="cpu"
         ).tolist()
 
     else:
         raise ValueError("'length_target_sampling' has to be 'discrete' or 'range'")
 
-    prompt_prefix = " " if config.len_reward.length_prompt_location == "instruction" else " "
-    max_word = " maximally " if config.len_reward.reward_type == "clip" else ""
+    prompt_prefix = " " if config.rewards.length_prompt_location == "instruction" else " "
+    max_word = " maximally " if config.rewards.reward_type == "clip" else ""
 
     return [f"{prompt_prefix}Think for{max_word}{target} tokens before giving a response." for target in target_lengths], target_lengths
 
@@ -382,9 +383,14 @@ def inference(config: Config):
         messages = [[{"role": "user", "content": item["prompt"]}, {"role": "assistant", "content": "<think>\n"}] for item in batch]
 
         length_prompt_additions, target_lengths = generate_target_length_prompts(config, len(batch))
+        # Assume verification_info is stored as a JSON string in the dataset.
+        verification_infos = [json.loads(item["verification_info"]) for item in batch]
+        for target_length, verification_info in zip(target_lengths, verification_infos):
+            verification_info["target_length"] = target_length
+        task_types = [item["task_type"] for item in batch]
 
-        if config.len_reward:
-            if config.len_reward.length_prompt_location == "system_prompt":
+        if config.rewards:
+            if config.rewards.length_prompt_location == "system_prompt":
                 messages = [
                     [
                         {"role": "system", "content": length_prompt},
@@ -404,10 +410,6 @@ def inference(config: Config):
                 for item, length_prompt in zip(batch, length_prompt_additions)
             ]
 
-        # Assume verification_info is stored as a JSON string in the dataset.
-        verification_infos = [item["verification_info"] for item in batch]
-        task_types = [item["task_type"] for item in batch]
-
         if tokenizer.chat_template:
             prompts = tokenizer.apply_chat_template(messages, tokenize=False, continue_final_message=True)
             if config.model_name != "Qwen/QwQ-32B":
@@ -415,7 +417,6 @@ def inference(config: Config):
                     prompts[i] = p.replace("<｜begin▁of▁sentence｜>", "")
         else:
             prompts = fake_chat_template(messages)
-
 
         start_time = time.time()
         request_outputs = llm.generate(prompts, sampling_params, use_tqdm=False)
@@ -456,7 +457,7 @@ def inference(config: Config):
         # Compute rewards and advantages
         start = time.time()
         grouped_rewards, grouped_task_rewards, grouped_length_penalties = compute_rewards(
-            request_outputs, verification_infos, target_lengths, task_types, config.len_reward
+            request_outputs, verification_infos, task_types, config.rewards
         )
         grouped_advantages = compute_advantages(grouped_rewards)
         logger.info(f"Computed rewards and advantages in in {time.time() - start:.2f}s")
@@ -493,6 +494,7 @@ def inference(config: Config):
 
     # Manually destroy vLLM process group to avoid warnings
     dist.destroy_process_group()
+
 
 def main(config: Config) -> list[mp.Process]:
     processes = []
