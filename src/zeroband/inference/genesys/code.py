@@ -3,7 +3,7 @@ import re
 from typing import Dict
 import traceback
 
-from .code_utils import check_correctness
+from zeroband.inference.genesys.code_utils import check_correctness
 
 
 def evaluate_code(completion: str, verification_info: Dict):
