@@ -23,7 +23,7 @@ from zeroband.utils.logger import get_logger
 from zeroband.utils.models import ModelName
 from zeroband.inference.toploc import setup_toploc_cache
 from zeroband.inference.pipeline import PipelineConfig, setup_pipeline
-from zeroband.inference.rewards.computation import LenRewardConfig, compute_rewards, compute_advantages
+from zeroband.inference.rewards import LenRewardConfig, compute_rewards, compute_advantages
 
 
 from datasets import load_dataset

@@ -6,7 +6,7 @@ from pydantic_config import BaseConfig
 from vllm import RequestOutput, CompletionOutput
 from concurrent.futures import ThreadPoolExecutor
 
-from zeroband.inference.rewards.registry import REWARD_FUNCTIONS
+from zeroband.inference.genesys import REWARD_FUNCTIONS
 from zeroband.utils.logger import get_logger
 
 # Global logger
