@@ -57,8 +57,7 @@ def test_setup_comm(world_size: int):
 
     # Terminate processes (raise exception with timeout)
     for p in processes:
-        try:
-            p.join(timeout=TIMEOUT)
-        except TimeoutError:
+        p.join(timeout=TIMEOUT)
+        if p.is_alive():
             p.terminate()
             raise TimeoutError(f"Process took longer than {TIMEOUT} seconds to complete")
