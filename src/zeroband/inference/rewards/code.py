@@ -1,8 +1,9 @@
-from zeroband.rewards.code_utils import check_correctness
 import json
 import re
 from typing import Dict
 import traceback
+
+from .code_utils import check_correctness
 
 
 def evaluate_code(completion: str, verification_info: Dict):

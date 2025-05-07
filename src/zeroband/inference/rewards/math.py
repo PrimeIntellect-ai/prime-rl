@@ -1,5 +1,5 @@
 from typing import Dict
-from zeroband.rewards.math_utils import extract_answer, grade_answer_mathd, grade_answer_sympy
+from .math_utils import extract_answer, grade_answer_mathd, grade_answer_sympy
 
 
 def compute_math_reward(completion: str, verification_info: Dict):
