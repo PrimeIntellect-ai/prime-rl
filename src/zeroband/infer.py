@@ -381,8 +381,17 @@ def inference(config: Config):
         dtype="bfloat16" if config.dtype == "bf16" else torch.float32,
     )
     tokenizer = llm.get_tokenizer()
-
     sampling_params = SamplingParams(**config.sampling.model_dump())
+
+    # Create communication for pipeline
+    if config.pp.world_size > 1:
+        setup_pipeline(
+            llm=llm,
+            rank=config.pp.rank,
+            world_size=config.pp.world_size,
+            iroh_seed=config.pp.iroh_seed,
+            iroh_peer_id=config.pp.iroh_peer_id,
+        )
 
     # Load  dataset
     logger.info(f"Loading dataset {config.dataset}")
@@ -521,15 +530,6 @@ def inference(config: Config):
         else:
             prompts = fake_chat_template(messages)
 
-        # Create communication for pipeline
-        if config.pp.world_size > 1:
-            setup_pipeline(
-                llm=llm,
-                rank=config.pp.rank,
-                world_size=config.pp.world_size,
-                iroh_seed=config.pp.iroh_seed,
-                iroh_peer_id=config.pp.iroh_peer_id,
-            )
 
         start_time = time.time()
         generated_tokens = llm.generate(prompts, sampling_params, use_tqdm=False)
