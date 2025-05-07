@@ -1,6 +1,5 @@
 import requests
 import os
-import asyncio
 from pathlib import Path
 from typing import Literal
 import uuid
@@ -24,7 +23,7 @@ from zeroband.utils.logger import get_logger
 from zeroband.utils.models import ModelName
 from zeroband.inference.toploc import setup_toploc_cache
 from zeroband.inference.pipeline import PipelineConfig, setup_pipeline
-from zeroband.inference.rewards.computation import LenRewardConfig, compute_rewards_async, compute_advantages_grpo
+from zeroband.inference.rewards.computation import LenRewardConfig, compute_rewards, compute_advantages
 
 
 from datasets import load_dataset
@@ -419,25 +418,25 @@ def inference(config: Config):
 
 
         start_time = time.time()
-        generated_tokens = llm.generate(prompts, sampling_params, use_tqdm=False)
+        request_outputs = llm.generate(prompts, sampling_params, use_tqdm=False)
         end_time = time.time()
 
         # Dropping like this isnt ideal. But in practice, we shouldnt have any prompts that are too long.
-        generated_tokens = [req for req in generated_tokens if len(req.outputs[0].token_ids) > 0]
-        if len(generated_tokens) != len(prompts):
-            logger.warning(f"{len(prompts) - len(generated_tokens)} prompts were filtered out because they were too long")
+        request_outputs = [req for req in request_outputs if len(req.outputs[0].token_ids) > 0]
+        if len(request_outputs) != len(prompts):
+            logger.warning(f"{len(prompts) - len(request_outputs)} prompts were filtered out because they were too long")
 
         # This generates proofs for the remaining sequences that haven't reached max_len.
         # We call here to give time for the proofs to be generated non-blocking in the background.
         toploc_cache.maybe_generate_proofs_in_background(force_generate=True)
 
         # Calculate tokens and throughput
-        batch_input_tokens = sum(len(req.prompt_token_ids) for req in generated_tokens)
-        batch_output_tokens = sum(sum(len(output.token_ids) for output in req.outputs) for req in generated_tokens)
+        batch_input_tokens = sum(len(req.prompt_token_ids) for req in request_outputs)
+        batch_output_tokens = sum(sum(len(output.token_ids) for output in req.outputs) for req in request_outputs)
         batch_total_tokens = batch_input_tokens + batch_output_tokens
         total_tokens += batch_total_tokens
 
-        avg_seq_length = batch_total_tokens / (len(generated_tokens) * config.sampling.n) if generated_tokens else 0
+        avg_seq_length = batch_total_tokens / (len(request_outputs) * config.sampling.n) if request_outputs else 0
 
         elapsed_time = end_time - start_time
         tokens_per_second = batch_total_tokens / elapsed_time if elapsed_time > 0 else 0
@@ -454,20 +453,16 @@ def inference(config: Config):
         proofs = [b"".join(proofs) for _, proofs in sorted(toploc_cache.proofs.items(), key=lambda x: x[0])]
         toploc_cache.reset_cache()
 
-        start_reward_advantages = time.time()
-        # Compute rewards asynchronously, grouped as a dictionary.
-        grouped_rewards, grouped_task_rewards, grouped_length_penalties = asyncio.run(
-            compute_rewards_async(generated_tokens, verification_infos, target_lengths, task_types, config)
+        # Compute rewards and advantages
+        start = time.time()
+        grouped_rewards, grouped_task_rewards, grouped_length_penalties = compute_rewards(
+            request_outputs, verification_infos, target_lengths, task_types, config.len_reward
         )
-        # Compute normalized advantages per prompt.
-        grouped_advantages = compute_advantages_grpo(grouped_rewards)
-        end_reward_advantages = time.time()
-
-        elapsed_time = end_reward_advantages - start_reward_advantages
-        logger.info(f"Computed rewards and advantages in in {elapsed_time:.2f}s")
+        grouped_advantages = compute_advantages(grouped_rewards)
+        logger.info(f"Computed rewards and advantages in in {time.time() - start:.2f}s")
 
         table = get_parquet_table(
-            generated_tokens,
+            request_outputs,
             grouped_advantages,
             grouped_rewards,
             grouped_task_rewards,
