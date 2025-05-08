@@ -1,10 +1,10 @@
-from vllm import RequestOutput, CompletionOutput
 import json
-import torch
-from zeroband.inference.rewards import compute_rewards, compute_advantages
+import pytest
 from collections import defaultdict
 
-import pytest
+from vllm import RequestOutput, CompletionOutput
+
+from zeroband.inference.rewards import compute_rewards
 
 
 @pytest.fixture
@@ -58,16 +58,31 @@ def verification_infos(samples):
 
 @pytest.fixture
 def ground_truth_rewards(samples):
-    rewards = defaultdict(dict)
+    rewards = defaultdict(list)
     for sample in samples["samples"]:
         request_id = sample["request_idx"]
-        completion_id = sample["output_idx"]
-        rewards[request_id][completion_id] = {
-            "reward": sample["reward"],
-            "task_reward": sample["task_reward"],
-            "length_penalty": sample["length_penalty"],
-        }
+        rewards[request_id].append(sample["reward"])
+
     yield rewards
+
+
+@pytest.fixture
+def ground_truth_task_rewards(samples):
+    task_rewards = defaultdict(list)
+    for sample in samples["samples"]:
+        request_id = sample["request_idx"]
+        task_rewards[request_id].append(sample["task_reward"])
+
+    yield task_rewards
+
+
+@pytest.fixture
+def ground_truth_length_penalties(samples):
+    penalties = defaultdict(list)
+    for sample in samples["samples"]:
+        request_id = sample["request_idx"]
+        penalties[request_id].append(sample["length_penalty"])
+    yield penalties
 
 
 @pytest.fixture
@@ -81,44 +96,31 @@ def ground_truth_advantages(samples):
     yield advantages
 
 
-def test_compute_rewards(request_outputs, ground_truth_rewards, verification_infos):
+def test_compute_rewards(
+    request_outputs,
+    ground_truth_rewards,
+    ground_truth_task_rewards,
+    ground_truth_length_penalties,
+    ground_truth_advantages,
+    verification_infos,
+):
+    # Re-compute rewards
     task_types = ["verifiable_math"] * len(request_outputs)
-    grouped_rewards, grouped_task_rewards, grouped_length_penalties = compute_rewards(
+    rewards, task_rewards, length_penalties, advantages = compute_rewards(
         request_outputs,
         verification_infos,
         task_types,
         config=None,
     )
 
-    # Assert return type
-    assert all(isinstance(rewards, torch.FloatTensor) for rewards in grouped_rewards.values())
-    assert all(isinstance(task_rewards, torch.FloatTensor) for task_rewards in grouped_task_rewards.values())
-    assert all(isinstance(length_penalties, torch.FloatTensor) for length_penalties in grouped_length_penalties.values())
+    # Assert type
+    for reward_or_advantage in [rewards, task_rewards, length_penalties, advantages]:
+        assert isinstance(reward_or_advantage, dict)
+        assert all(isinstance(key, int) for key in reward_or_advantage.keys())
+        assert all(isinstance(value, list) for value in reward_or_advantage.values())
 
-    # Assert reward computation
-    for request_id, rewards in grouped_rewards.items():
-        for completion_id, reward in enumerate(rewards.tolist()):
-            assert reward == ground_truth_rewards[request_id][completion_id]["reward"]
-    for request_id, task_rewards in grouped_task_rewards.items():
-        for completion_id, reward in enumerate(task_rewards.tolist()):
-            assert reward == ground_truth_rewards[request_id][completion_id]["task_reward"]
-    for request_id, length_penalties in grouped_length_penalties.items():
-        for completion_id, penalty in enumerate(length_penalties.tolist()):
-            assert penalty == ground_truth_rewards[request_id][completion_id]["length_penalty"]
-
-
-def test_compute_advantages(request_outputs, ground_truth_advantages, verification_infos):
-    target_lengths = [-1] * len(request_outputs)
-    task_types = ["verifiable_math"] * len(request_outputs)
-    grouped_rewards, _, _ = compute_rewards(
-        request_outputs,
-        verification_infos,
-        task_types,
-        config=None,
-    )
-    advantages = compute_advantages(grouped_rewards, epsilon=1e-6)
-    # Assert return type
-    assert all(isinstance(advantage, list) for advantage in advantages.values())
-    # Assert advantage computation
-    for request_id, advantage in advantages.items():
-        assert advantage == ground_truth_advantages[request_id]
+    # Assert computation
+    assert rewards == ground_truth_rewards
+    assert task_rewards == ground_truth_task_rewards
+    assert length_penalties == ground_truth_length_penalties
+    assert advantages == ground_truth_advantages

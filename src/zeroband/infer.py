@@ -24,7 +24,7 @@ from zeroband.utils.logger import get_logger
 from zeroband.utils.models import ModelName
 from zeroband.inference.toploc import setup_toploc_cache
 from zeroband.inference.pipeline import PipelineConfig, setup_pipeline
-from zeroband.inference.rewards import RewardsConfig, compute_rewards, compute_advantages
+from zeroband.inference.rewards import RewardsConfig, compute_rewards
 
 
 from datasets import load_dataset
@@ -166,11 +166,12 @@ def get_parquet_table(
 
     proof_iter = iter(proofs)
 
-    for i, (request, target_len) in enumerate(zip(generated_tokens, target_lengths)):
-        advantages = grouped_advantages[i]
-        rewards = grouped_rewards[i].tolist()
-        task_rewards = grouped_task_rewards[i].tolist()
-        length_penalties = grouped_length_penalties[i].tolist()
+    for request, target_len in zip(generated_tokens, target_lengths):
+        request_id = request.request_id
+        advantages = grouped_advantages[request_id]
+        rewards = grouped_rewards[request_id]
+        task_rewards = grouped_task_rewards[request_id]
+        length_penalties = grouped_length_penalties[request_id]
         for adv, reward, task_reward, length_penalty, output in zip(advantages, rewards, task_rewards, length_penalties, request.outputs):
             input_tokens_list.append(request.prompt_token_ids)
             output_tokens_list.append(output.token_ids)
@@ -456,18 +457,17 @@ def inference(config: Config):
 
         # Compute rewards and advantages
         start = time.time()
-        grouped_rewards, grouped_task_rewards, grouped_length_penalties = compute_rewards(
+        rewards, task_rewards, length_penalties, advantages = compute_rewards(
             request_outputs, verification_infos, task_types, config.rewards
         )
-        grouped_advantages = compute_advantages(grouped_rewards)
         logger.info(f"Computed rewards and advantages in in {time.time() - start:.2f}s")
 
         table = get_parquet_table(
             request_outputs,
-            grouped_advantages,
-            grouped_rewards,
-            grouped_task_rewards,
-            grouped_length_penalties,
+            advantages,
+            rewards,
+            task_rewards,
+            length_penalties,
             proofs,
             ckpt_step,
             target_lengths,
