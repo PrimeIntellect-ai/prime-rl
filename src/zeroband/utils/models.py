@@ -3,10 +3,6 @@ from transformers import AutoTokenizer, LlamaForCausalLM, Qwen2ForCausalLM, Qwen
 
 
 ModelName: TypeAlias = Literal[
-    # Dummy models
-    "PrimeIntellect/llama-2m-fresh",
-    "PrimeIntellect/llama-150m-fresh",
-    "PrimeIntellect/llama-1b-fresh",
     # Llama 3
     "meta-llama/Meta-Llama-3-8B-Instruct",
     "meta-llama/Meta-Llama-3-70B-Instruct",

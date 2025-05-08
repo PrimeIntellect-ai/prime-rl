@@ -59,8 +59,8 @@ class DifficultyFilteringConfig(BaseConfig):
 
 
 class Config(BaseConfig):
-    model_name: ModelName = "150M"
-    dataset: str = "justus27/rl-code-and-math"
+    model_name: ModelName
+    dataset: str
     batch_size: int = 32
     max_samples: int | None = None
     output_path: str = "outputs"

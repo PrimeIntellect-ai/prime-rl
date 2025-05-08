@@ -69,7 +69,7 @@ on two different terminal do:
 ```bash
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
-uv run python src/zeroband/infer.py @ configs/inference/Qwen1.5B/debug_math.toml
+uv run python src/zeroband/infer.py @ configs/inference/simple_math.toml
 ```
 
 then start the trainer
@@ -77,7 +77,7 @@ then start the trainer
 ```bash
 ulimit -n 4096
 export CUDA_VISIBLE_DEVICES=6,7
-uv  run torchrun --nproc_per_node=2 src/zeroband/train.py @ configs/training/Qwen1.5B/debug_math.toml
+uv  run torchrun --nproc_per_node=2 src/zeroband/train.py @ configs/training/simple_math.toml
 ```
 
 
@@ -88,7 +88,7 @@ on two different terminal do:
 ```bash
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
-uv run python src/zeroband/infer.py @ configs/inference/Qwen1.5B/Qwen1.5B.toml
+uv run python src/zeroband/infer.py @ configs/inference/simple_math.toml
 ```
 
 then start the trainer
@@ -96,7 +96,7 @@ then start the trainer
 ```bash
 ulimit -n 4096
 export CUDA_VISIBLE_DEVICES=6,7
-uv  run torchrun --nproc_per_node=2 src/zeroband/train.py @ configs/training/Qwen1.5B/Qwen1.5b.toml
+uv  run torchrun --nproc_per_node=2 src/zeroband/train.py @ configs/training/simple_math.toml
 ```
 
 if running on h100 node instead of H200 you should add ` --train.micro_bs 4`

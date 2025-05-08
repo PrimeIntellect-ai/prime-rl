@@ -1,4 +1,5 @@
-model_name = "PrimeIntellect/llama-2m-fresh"
+model_name = "Qwen/Qwen3-0.6B"
+dataset = "justus27/rl-code-and-math"
 max_samples = 32
 batch_size = 8
 enforce_eager = true

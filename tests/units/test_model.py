@@ -15,7 +15,7 @@ def attention_impl(request):
 
 
 def test_model(attention_impl):
-    model, tokenizer = get_model_and_tokenizer("PrimeIntellect/llama-2m-fresh", attention_impl)
+    model, tokenizer = get_model_and_tokenizer("Qwen/Qwen3-0.6B", attention_impl)
     assert model is not None
 
     BS = 2
@@ -32,7 +32,7 @@ def test_model(attention_impl):
 
 
 def test_model_with_position_ids(attention_impl):
-    model, tokenizer = get_model_and_tokenizer("PrimeIntellect/llama-2m-fresh", attention_impl)
+    model, tokenizer = get_model_and_tokenizer("Qwen/Qwen3-0.6B", attention_impl)
     assert model is not None
 
     BS = 2
@@ -62,7 +62,7 @@ def test_model_with_sequence_packing(attention_impl, correct_position_ids):
     if attention_impl != "flash_attention_2":
         pytest.skip("Test only works with flash attention")
 
-    model, tokenizer = get_model_and_tokenizer("PrimeIntellect/llama-2m-fresh", attention_impl)
+    model, tokenizer = get_model_and_tokenizer("Qwen/Qwen3-0.6B", attention_impl)
     assert model is not None
 
     model = model.to("cuda")

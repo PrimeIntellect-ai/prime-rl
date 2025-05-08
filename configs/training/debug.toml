@@ -1,4 +1,4 @@
-model_name = "PrimeIntellect/llama-2m-fresh"
+model_name = "Qwen/Qwen3-0.6B"
 wandb = false
 
 [train]
