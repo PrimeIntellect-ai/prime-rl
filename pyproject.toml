@@ -3,7 +3,7 @@ name = "zeroband"
 version = "0.1.0"
 description = "ZeroBand is a production ready codebase for decentralized training of LLM"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10, <3.11"
 dependencies = [
     "torch",
     "numpy",
@@ -29,6 +29,7 @@ dependencies = [
     "aiohttp>=3.10.5",
     "pyext>=0.7",
     "prime_iroh>=0.1.2",
+    "flash-attn>=2.7.4",
 ] 
 
 [build-system]
@@ -46,3 +47,4 @@ ignore = ["F722", "F821"]
 
 [tool.uv]
 dev-dependencies = ["ruff>=0.5.0", "pre-commit>=3.0.0","pytest>=7.0.0", "faker"]
+no-build-isolation-package = ["flash-attn"]
