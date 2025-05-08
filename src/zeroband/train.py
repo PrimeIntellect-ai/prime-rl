@@ -178,7 +178,6 @@ def get_logprobs(model: ModelType, input_ids: torch.Tensor, position_ids: torch.
 
 def train(config: Config):
     if "ZERO_BAND_DEV" not in os.environ:
-        torch._logging.set_logs(dynamo=logging.CRITICAL)  # silent flex attn error
         torch_log.setLevel(logging.CRITICAL)
 
     logger = get_logger("TRAIN")

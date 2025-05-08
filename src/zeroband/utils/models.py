@@ -48,7 +48,7 @@ ModelName: TypeAlias = Literal[
 ]
 
 ModelType: TypeAlias = LlamaForCausalLM | Qwen2ForCausalLM | Qwen3ForCausalLM
-AttnImpl: TypeAlias = Literal["flex_attention", "sdpa", "flash_attention_2"]
+AttnImpl: TypeAlias = Literal["sdpa", "flash_attention_2"]
 
 
 def get_model_and_tokenizer(model_name: ModelName, attn_impl: AttnImpl) -> tuple[ModelType, AutoTokenizer]:
