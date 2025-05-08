@@ -29,8 +29,11 @@ dependencies = [
     "aiohttp>=3.10.5",
     "pyext>=0.7",
     "prime_iroh>=0.1.2",
-    "flash-attn>=2.7.4",
+    "setuptools"
 ] 
+
+[project.optional-dependencies]
+fa = ["flash-attn>=2.7.4"]
 
 [build-system]
 requires = ["hatchling"]
