@@ -4,7 +4,6 @@ project = "rl-Qwen1.5B"
 [train]
 micro_bs = 8
 reshard_after_forward = true
-attn_impl = "flash_attention_2"
 
 [optim]
 batch_size = 512

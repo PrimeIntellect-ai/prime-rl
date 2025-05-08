@@ -70,7 +70,7 @@ class TrainConfig(BaseConfig):
     torch_compile: bool = False  #  disabling torch compile because its too unstable for RL
     liger_qwen: bool = False
 
-    attn_impl: AttnImpl = "flex_attention"
+    attn_impl: AttnImpl = "flash_attention_2"
 
 
 class CkptConfig(BaseConfig):

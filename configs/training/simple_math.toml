@@ -4,7 +4,6 @@ project = "math-debug"
 [train]
 micro_bs = 4 # change to 8 for H200
 reshard_after_forward = true
-attn_impl = "flash_attention_2"
 
 [optim]
 batch_size = 128
