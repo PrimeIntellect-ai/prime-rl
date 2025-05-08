@@ -227,7 +227,7 @@ def reload_model_weights(llm: LLM, ckpt_path: str):
 
 def generate_target_length_prompts(config: Config, batch_size: int):
     if config.rewards is None:
-        return [""] * batch_size, [None] * batch_size
+        return [""] * batch_size, [-1] * batch_size
 
     if config.rewards.target_length_sampling == "discrete":
         indices = torch.randint(low=0, high=len(config.rewards.target_lengths), size=(batch_size,), device="cpu")
