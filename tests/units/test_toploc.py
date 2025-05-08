@@ -13,7 +13,7 @@ BYTES_PER_PROOF = 258
 def llm():
     from vllm import LLM
 
-    yield LLM(model="PrimeIntellect/llama-150m-fresh", enforce_eager=True, disable_async_output_proc=True, dtype="bfloat16")
+    yield LLM(model="Qwen/Qwen3-0.6B", enforce_eager=True, disable_async_output_proc=True, dtype="bfloat16")
 
     if dist.is_initialized():
         dist.destroy_process_group()
@@ -107,7 +107,7 @@ def test_toploc_with_hook(llm, max_seqs: int, num_output_tokens: int):
     assert toploc_cache.proofs == {}
 
     # Generate sequences
-    prompts = [""] * max_seqs
+    prompts = ["My name is"] * max_seqs
     sampling_params = SamplingParams(min_tokens=num_output_tokens, max_tokens=num_output_tokens, seed=69, temperature=0.0)
     generations = llm.generate(prompts, sampling_params=sampling_params)
 
