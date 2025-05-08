@@ -93,7 +93,7 @@ class Config(BaseConfig):
 
     toploc: bool = False
 
-    len_rewards: LenRewardsConfig | None = None
+    len_reward: LenRewardsConfig | None = None
     difficulty_filtering: DifficultyFilteringConfig | None = None
 
     @model_validator(mode="after")
@@ -226,23 +226,23 @@ def reload_model_weights(llm: LLM, ckpt_path: str):
 
 
 def generate_target_length_prompts(config: Config, batch_size: int):
-    if config.len_rewards is None:
+    if config.len_reward is None:
         return [""] * batch_size, [-1] * batch_size
 
-    if config.len_rewards.target_length_sampling == "discrete":
-        indices = torch.randint(low=0, high=len(config.len_rewards.target_lengths), size=(batch_size,), device="cpu")
-        target_lengths = [int(config.len_rewards.target_lengths[i]) for i in indices]
+    if config.len_reward.target_length_sampling == "discrete":
+        indices = torch.randint(low=0, high=len(config.len_reward.target_lengths), size=(batch_size,), device="cpu")
+        target_lengths = [int(config.len_reward.target_lengths[i]) for i in indices]
 
-    elif config.len_rewards.target_length_sampling == "range":
+    elif config.len_reward.target_length_sampling == "range":
         target_lengths = torch.randint(
-            low=config.len_rewards.min_length, high=config.len_rewards.max_length + 1, size=(batch_size,), device="cpu"
+            low=config.len_reward.min_length, high=config.len_reward.max_length + 1, size=(batch_size,), device="cpu"
         ).tolist()
 
     else:
         raise ValueError("'length_target_sampling' has to be 'discrete' or 'range'")
 
-    prompt_prefix = " " if config.len_rewards.length_prompt_location == "instruction" else " "
-    max_word = " maximally " if config.len_rewards.reward_type == "clip" else ""
+    prompt_prefix = " " if config.len_reward.length_prompt_location == "instruction" else " "
+    max_word = " maximally " if config.len_reward.reward_type == "clip" else ""
 
     return [f"{prompt_prefix}Think for{max_word}{target} tokens before giving a response." for target in target_lengths], target_lengths
 
@@ -390,8 +390,8 @@ def inference(config: Config):
             verification_info["target_length"] = target_length
         task_types = [item["task_type"] for item in batch]
 
-        if config.len_rewards:
-            if config.len_rewards.length_prompt_location == "system_prompt":
+        if config.len_reward:
+            if config.len_reward.length_prompt_location == "system_prompt":
                 messages = [
                     [
                         {"role": "system", "content": length_prompt},
@@ -458,7 +458,7 @@ def inference(config: Config):
         # Compute rewards and advantages
         start = time.time()
         rewards, task_rewards, length_penalties, advantages = compute_rewards(
-            request_outputs, verification_infos, task_types, config.len_rewards
+            request_outputs, verification_infos, task_types, config.len_reward
         )
         logger.info(f"Computed rewards and advantages in in {time.time() - start:.2f}s")
 
