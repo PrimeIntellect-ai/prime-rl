@@ -24,7 +24,7 @@ from zeroband.utils.logger import get_logger
 from zeroband.utils.models import ModelName
 from zeroband.inference.toploc import setup_toploc_cache
 from zeroband.inference.pipeline import PipelineConfig, setup_pipeline
-from zeroband.inference.rewards import RewardsConfig, compute_rewards
+from zeroband.inference.rewards import LenRewardsConfig, compute_rewards
 
 
 from datasets import load_dataset
@@ -93,7 +93,7 @@ class Config(BaseConfig):
 
     toploc: bool = False
 
-    rewards: RewardsConfig | None = None
+    len_rewards: LenRewardsConfig | None = None
     difficulty_filtering: DifficultyFilteringConfig | None = None
 
     @model_validator(mode="after")
@@ -226,23 +226,23 @@ def reload_model_weights(llm: LLM, ckpt_path: str):
 
 
 def generate_target_length_prompts(config: Config, batch_size: int):
-    if config.rewards is None:
+    if config.len_rewards is None:
         return [""] * batch_size, [-1] * batch_size
 
-    if config.rewards.target_length_sampling == "discrete":
-        indices = torch.randint(low=0, high=len(config.rewards.target_lengths), size=(batch_size,), device="cpu")
-        target_lengths = [int(config.rewards.target_lengths[i]) for i in indices]
+    if config.len_rewards.target_length_sampling == "discrete":
+        indices = torch.randint(low=0, high=len(config.len_rewards.target_lengths), size=(batch_size,), device="cpu")
+        target_lengths = [int(config.len_rewards.target_lengths[i]) for i in indices]
 
-    elif config.rewards.target_length_sampling == "range":
+    elif config.len_rewards.target_length_sampling == "range":
         target_lengths = torch.randint(
-            low=config.rewards.min_length, high=config.rewards.max_length + 1, size=(batch_size,), device="cpu"
+            low=config.len_rewards.min_length, high=config.len_rewards.max_length + 1, size=(batch_size,), device="cpu"
         ).tolist()
 
     else:
         raise ValueError("'length_target_sampling' has to be 'discrete' or 'range'")
 
-    prompt_prefix = " " if config.rewards.length_prompt_location == "instruction" else " "
-    max_word = " maximally " if config.rewards.reward_type == "clip" else ""
+    prompt_prefix = " " if config.len_rewards.length_prompt_location == "instruction" else " "
+    max_word = " maximally " if config.len_rewards.reward_type == "clip" else ""
 
     return [f"{prompt_prefix}Think for{max_word}{target} tokens before giving a response." for target in target_lengths], target_lengths
 
@@ -390,8 +390,8 @@ def inference(config: Config):
             verification_info["target_length"] = target_length
         task_types = [item["task_type"] for item in batch]
 
-        if config.rewards:
-            if config.rewards.length_prompt_location == "system_prompt":
+        if config.len_rewards:
+            if config.len_rewards.length_prompt_location == "system_prompt":
                 messages = [
                     [
                         {"role": "system", "content": length_prompt},
@@ -458,7 +458,7 @@ def inference(config: Config):
         # Compute rewards and advantages
         start = time.time()
         rewards, task_rewards, length_penalties, advantages = compute_rewards(
-            request_outputs, verification_infos, task_types, config.rewards
+            request_outputs, verification_infos, task_types, config.len_rewards
         )
         logger.info(f"Computed rewards and advantages in in {time.time() - start:.2f}s")
 

@@ -12,7 +12,7 @@ from zeroband.utils.logger import get_logger
 logger = get_logger("INFER")
 
 
-class RewardsConfig(BaseConfig):
+class LenRewardsConfig(BaseConfig):
     reward_type: Literal["exact", "max", "clip"] = "max"
     target_length_sampling: Literal["discrete", "range"] = "discrete"
     length_prompt_location: Literal["system_prompt", "instruction"] = "system_prompt"
@@ -35,7 +35,7 @@ def _compute_completion_reward(
     completion_output: CompletionOutput,
     verification_info: dict,
     task_type: TaskType,
-    config: RewardsConfig | None,
+    config: LenRewardsConfig | None,
 ) -> dict[str, float]:
     """
     Computes the reward from a single vLLM completion output given the
@@ -86,7 +86,7 @@ def _compute_request_rewards(
     request_output: RequestOutput,
     verification_info: dict,
     task_type: TaskType,
-    config: RewardsConfig | None,
+    config: LenRewardsConfig | None,
 ) -> dict[str, list[float]]:
     """
     Computes the rewards and advantages from a single vLLM request output given
@@ -125,7 +125,7 @@ def compute_rewards(
     request_outputs: list[RequestOutput],
     verification_infos: list[dict],
     task_types: list[str],
-    config: RewardsConfig | None,
+    config: LenRewardsConfig | None,
 ) -> tuple[dict[int, list], dict[int, list], dict[int, list], dict[int, list]]:
     """
     Computes the rewards and advantages for a list of vLLM request outputs
