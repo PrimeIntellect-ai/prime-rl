@@ -28,13 +28,13 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 source $HOME/.local/bin/env
 ```
 
-3. Set up the environment:
+3. Set up the environment (will default to Python 3.10)
+
 ```bash
-uv venv --python 3.10
-source .venv/bin/activate
 uv sync
-uv pip install flash-attn --no-build-isolation
 ```
+
+You can check that `flash_attn` is installed correctly by running `uv run python -c "import flash_attn"` and ensure no error is thrown.
 
 4. Precommit install
 
