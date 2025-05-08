@@ -57,6 +57,8 @@ def setup_comm(world_size: int, iroh_seed: int | None, iroh_peer_id: str | None)
     else:
         # If no seed, create a new node
         node = Node(num_streams=1)
+    # TODO(Mika): It seems like this sleep is mandatory for the node to be discoverable by other peers. If we don't sleep here, any peer running node.connect() to us will fail with exception `No addressing information for NodeId(...), unable to connect`. We should probably fix this in `prime-iroh`
+    time.sleep(1)
     logger.info(f"Created node (ID={node.node_id()})")
 
     # Connect to peer

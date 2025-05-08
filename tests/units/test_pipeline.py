@@ -4,37 +4,33 @@ from multiprocessing import Process
 
 from zeroband.inference.pipeline import setup_comm
 
-# Pre-computed node IDs for different seeds (useful for debugging)
+# Pre-computed node IDs for different seeds (our team's favorite numbers)
 IROH_NODE_ID_MAP = {
-    0: "ee1aa49a4459dfe813a3cf6eb882041230c7b2558469de81f87c9bf23bf10a03",
-    1: "ff87a0b0a3c7c0ce827e9cada5ff79e75a44a0633bfcb5b50f99307ddb26b337",
-    2: "191fc38f134aaf1b7fdb1f86330b9d03e94bd4ba884f490389de964448e89b3f",
-    3: "c5bbbb60e412879bbec7bb769804fa8e36e68af10d5477280b63deeaca931bed",
-    4: "4f44e6c7bdfed3d9f48d86149ee3d29382cae8c83ca253e06a70be54a301828b",
-    5: "e2e8aa145e1ec5cb01ebfaa40e10e12f0230c832fd8135470c001cb86d77de00",
-    6: "17888c2ca502371245e5e35d5bcf35246c3bc36878e859938c9ead3c54db174f",
-    7: "478243aed376da313d7cf3a60637c264cb36acc936efb341ff8d3d712092d244",
+    9: "00d21610e478bc59b0c1e70505874e191bf94ab73cb1f9246f963f9bc0a1b253",  # Jack
+    10: "ff572e291402ae6a3952e54459c349acd635908e2dd34a7c02f04c88d8a616a6",  # Mika
+    11: "f69f4d12b2283bc43a6dd8f0e83df69ffa91cc9e76cca77c0f85b3fa9854f55a",  # Jimmy
+    13: "c15efa1d4b0a2f4473c694703df14a70c1da9bca8772db974fd4631c87b90463",  # Manveer
+    19: "c45523145ee88ad9322cd0668f64d85a153f42ffb4157584c748bed65ffff85f",  # Sami
+    42: "9bdb607f02802cdd126290cfa1e025e4c13bbdbb347a70edeace584159303454",  # Vincent
+    99: "affeb073bfca840baab714d67813b21e4671444685217d02b48c10eaa8dcbbb6",  # Johannes
+    101: "57bb53127d7ad7c2ea91e87fa57ef18ac6ad6f2ea84c10092ad7693ff2f88a7e",  # Madison
 }
 
+SEEDS = list(IROH_NODE_ID_MAP.keys())
 TIMEOUT = 10
-SEEDS = list(range(8))
 
 
 @pytest.mark.parametrize("seed", SEEDS)
-def test_has_precomputed_node_ids(seed):
-    assert len(SEEDS) == len(IROH_NODE_ID_MAP)
-    assert IROH_NODE_ID_MAP.get(seed) is not None
-
-
-@pytest.mark.parametrize("seed", range(8))
 def test_node_seeding(seed):
     node = Node.with_seed(num_streams=1, seed=seed)
     assert node.node_id() == IROH_NODE_ID_MAP[seed]
 
 
 def _setup_comm(rank: int, world_size: int):
-    peer_id = IROH_NODE_ID_MAP[(rank + 1) % world_size]
-    node = setup_comm(world_size, rank, peer_id)
+    seed = SEEDS[rank]
+    peer_seed = SEEDS[(rank + 1) % world_size]
+    peer_id = IROH_NODE_ID_MAP[peer_seed]
+    node = setup_comm(world_size, seed, peer_id)
     assert isinstance(node, Node)
 
 
