@@ -2,13 +2,14 @@ model_name = "Qwen/Qwen3-0.6B"
 wandb = false
 
 [train]
-micro_bs = 8
+micro_bs = 1
 
 [optim]
-batch_size = 16
+batch_size = 2
 warmup_steps = 10
 total_steps = 4
 
 [data]
 fake = true
+seq_length = 128
 timeout = 1
