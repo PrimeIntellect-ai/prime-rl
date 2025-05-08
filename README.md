@@ -32,6 +32,7 @@ source $HOME/.local/bin/env
 
 ```bash
 uv sync
+uv sync --fa
 ```
 
 You can check that `flash_attn` is installed correctly by running `uv run python -c "import flash_attn"` and ensure no error is thrown.
