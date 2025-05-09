@@ -18,7 +18,7 @@ from zeroband.utils.logger import get_logger
 from zeroband.training.data_prefetch import GCPPrefetcher, STABLE_FILE
 from zeroband.utils.world_info import get_world_info
 from zeroband.training import envs
-from zeroband.inference.schema import pa_schema
+from zeroband.utils.parquet import pa_schema
 
 
 class DataConfig(BaseConfig):
