@@ -381,17 +381,12 @@ def inference(config: Config):
 
         # Compute rewards and advantages
         start = time.time()
-        rewards, task_rewards, length_penalties, advantages = compute_rewards(
-            request_outputs, verification_infos, task_types, config.len_reward
-        )
+        request_rewards = compute_rewards(request_outputs, verification_infos, task_types, config.len_reward)
         logger.info(f"Computed rewards and advantages in in {time.time() - start:.2f}s")
 
         table = get_parquet_table(
             request_outputs,
-            advantages,
-            rewards,
-            task_rewards,
-            length_penalties,
+            request_rewards,
             proofs,
             ckpt_step,
             target_lengths,

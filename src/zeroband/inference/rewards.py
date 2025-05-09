@@ -1,4 +1,5 @@
 from typing import Literal
+from dataclasses import dataclass
 
 import numpy as np
 from pydantic_config import BaseConfig
@@ -29,6 +30,21 @@ class LenRewardsConfig(BaseConfig):
 
     # only applicable for reward_type == "max"
     max_reward_delta: float = 0.5
+
+
+@dataclass
+class CompletionReward:
+    completion_id: int  # type(CompletionOutput.index)
+    reward: float
+    task_reward: float
+    length_penalty: float
+    advantage: float | None = None
+
+
+@dataclass
+class RequestRewards:
+    request_id: str  # type(RequestOutput.request_id)
+    rewards: list[CompletionReward]
 
 
 def _compute_completion_reward(
@@ -79,7 +95,7 @@ def _compute_completion_reward(
         else:
             raise ValueError(f"Invalid reward type: {config.reward_type}")
 
-    return {"reward": reward, "task_reward": task_reward, "length_penalty": length_penalty}
+    return CompletionReward(completion_id=completion_output.index, reward=reward, task_reward=task_reward, length_penalty=length_penalty)
 
 
 def _compute_request_rewards(
@@ -87,7 +103,7 @@ def _compute_request_rewards(
     verification_info: dict,
     task_type: TaskType,
     config: LenRewardsConfig | None,
-) -> dict[str, list[float]]:
+) -> RequestRewards:
     """
     Computes the rewards and advantages from a single vLLM request output given
     the task type (e.g. math, code, etc.) and information on how to verify all
@@ -103,30 +119,26 @@ def _compute_request_rewards(
         A dictionary containing the rewards, task rewards, and length penalties
         for each completion in the request output.
     """
-    results = []
+    completion_rewards = []
     for output in request_output.outputs:
         args = (output, verification_info, task_type, config)
-        results.append(_compute_completion_reward(*args))
-
-    # Turn list of dicts into dict of lists
-    # [{"reward": 1, "task_reward": 1, "length_penalty": 0}, ...]
-    # -> {"reward": [1, ...], "task_reward": [1, ...], "length_penalty": [0, ...]}
-    rewards = {key: [d[key] for d in results] for key in results[0].keys()}
+        completion_rewards.append(_compute_completion_reward(*args))
 
     # Compute advantage (normalized rewards)
-    reward = np.array(rewards["reward"], dtype=np.float32)
-    advantage = (reward - reward.mean()) / (reward.std(ddof=1) + 1e-6)
-    rewards["advantage"] = advantage.tolist()
+    reward_array = np.array([reward.reward for reward in completion_rewards], dtype=np.float32)
+    advantage_array = (reward_array - reward_array.mean()) / (reward_array.std(ddof=1) + 1e-6)
+    for completion_reward, advantage in zip(completion_rewards, advantage_array):
+        completion_reward.advantage = float(advantage)
 
-    return request_output.request_id, rewards
+    return RequestRewards(request_id=request_output.request_id, rewards=completion_rewards)
 
 
 def compute_rewards(
     request_outputs: list[RequestOutput],
     verification_infos: list[dict],
-    task_types: list[str],
+    task_types: list[TaskType],
     config: LenRewardsConfig | None,
-) -> tuple[dict[int, list], dict[int, list], dict[int, list], dict[int, list]]:
+) -> list[RequestRewards]:
     """
     Computes the rewards and advantages for a list of vLLM request outputs
     given their task types and verification infos.
@@ -145,23 +157,8 @@ def compute_rewards(
     max_workers = min(32, len(request_outputs))
     futures = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for request, verification_info, task_type in zip(request_outputs, verification_infos, task_types):
-            args = (request, verification_info, task_type, config)
+        for request, info, task_type in zip(request_outputs, verification_infos, task_types):
+            args = (request, info, task_type, config)
             futures.append(executor.submit(_compute_request_rewards, *args))
 
-        results = dict(future.result() for future in futures)
-
-    # Switch the order of the keys
-    # {0: {"reward": [1, 0], "task_reward": [1, 1], "length_penalty": [0, 1]}, ...}
-    # -> {"reward": {0: {"reward": [1, 0], ...}, ...}
-    grouped_results = {}
-    for metric in ["reward", "task_reward", "length_penalty", "advantage"]:
-        grouped_results[metric] = {request_id: request_data[metric] for request_id, request_data in results.items()}
-
-    # Explicitly return the grouped results
-    rewards = grouped_results["reward"]
-    task_rewards = grouped_results["task_reward"]
-    length_penalties = grouped_results["length_penalty"]
-    advantages = grouped_results["advantage"]
-
-    return rewards, task_rewards, length_penalties, advantages
+    return list(future.result() for future in futures)
