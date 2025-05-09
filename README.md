@@ -62,22 +62,57 @@ uv run python src/zeroband/infer.py @ configs/inference/debug.toml
 ```
 
 
-## Debug math run
+## Simple Math Run
 
-on two different terminal do:
+This debug run trains `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` on the `justus27/math-hendrycks-genesys-format` dataset using separate inference and training processes.
+Depending on the number of available GPUs, we have to adjust the number of generated samples on the inference workers to match the batch size of the training process.
+
+If you have 2 GPUs, run the following commands:
 
 ```bash
+# Start inference worker
+export CUDA_VISIBLE_DEVICES=0
+export VLLM_WORKER_MULTIPROC_METHOD=spawn
+uv run python src/zeroband/infer.py @ configs/inference/simple_math.toml --dp 1 --batch-size 64
+```
+
+```bash
+# Start trainer
+ulimit -n 4096
+export CUDA_VISIBLE_DEVICES=1
+uv  run torchrun src/zeroband/train.py @ configs/training/simple_math.toml
+```
+
+If you have 4 GPUs, run the following commands:
+
+```bash
+# Start inference workers
+export CUDA_VISIBLE_DEVICES=0,1
+export VLLM_WORKER_MULTIPROC_METHOD=spawn
+uv run python src/zeroband/infer.py @ configs/inference/simple_math.toml --dp 2 --batch-size 32
+```
+
+```bash
+# Start trainer
+ulimit -n 4096
+export CUDA_VISIBLE_DEVICES=2
+uv  run torchrun src/zeroband/train.py @ configs/training/simple_math.toml
+```
+
+If you have 8 GPUs, run the following commands:
+
+```bash
+# Start inference workers
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 uv run python src/zeroband/infer.py @ configs/inference/simple_math.toml
 ```
 
-then start the trainer
-
 ```bash
+# Start trainer
 ulimit -n 4096
 export CUDA_VISIBLE_DEVICES=6,7
-uv  run torchrun --nproc_per_node=2 src/zeroband/train.py @ configs/training/simple_math.toml
+uv  run torchrun --nproc_per_node=2 src/zeroband/train.py @ configs/training/simple_math.toml --data.num_workers 2
 ```
 
 
