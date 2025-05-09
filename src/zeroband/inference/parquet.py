@@ -1,20 +1,6 @@
 import pyarrow as pa
 from vllm import RequestOutput
-from vllm.sequence import SampleLogprobs
 from zeroband.utils.parquet import pa_schema
-
-
-def get_own_logprobs(sample_logprobs: SampleLogprobs) -> float:
-    logprobs = []
-
-    for logprob in sample_logprobs:
-        assert isinstance(logprob, dict), "Logprobs should be a dict"
-        assert len(logprob) == 1, "Logprobs should be a dict with 1 key"
-
-        _token_id, logprob_p = list(logprob.items())[0]
-        logprobs.append(logprob_p.logprob)
-
-    return logprobs
 
 
 def get_parquet_table(
@@ -29,8 +15,6 @@ def get_parquet_table(
 ) -> pa.Table:
     input_tokens_list = []
     output_tokens_list = []
-    input_logprobs_list = []
-    output_logprobs_list = []
     advantages_list = []
     rewards_list = []
     task_rewards_list = []
@@ -50,8 +34,6 @@ def get_parquet_table(
         for adv, reward, task_reward, length_penalty, output in zip(advantages, rewards, task_rewards, length_penalties, request.outputs):
             input_tokens_list.append(request.prompt_token_ids)
             output_tokens_list.append(output.token_ids)
-            input_logprobs_list.append([0] * len(request.prompt_token_ids))  # putting 0 for now as not needed in the grpo loss
-            output_logprobs_list.append(get_own_logprobs(output.logprobs))
             advantages_list.append(adv)
             rewards_list.append(reward)
             task_rewards_list.append(task_reward)
@@ -63,8 +45,6 @@ def get_parquet_table(
     arrays = [
         pa.array(input_tokens_list, type=pa.list_(pa.int32())),
         pa.array(output_tokens_list, type=pa.list_(pa.int32())),
-        pa.array(input_logprobs_list, type=pa.list_(pa.float32())),
-        pa.array(output_logprobs_list, type=pa.list_(pa.float32())),
         pa.array(advantages_list, type=pa.float32()),
         pa.array(rewards_list, type=pa.float32()),
         pa.array(task_rewards_list, type=pa.float32()),
