@@ -1,6 +1,6 @@
 import pyarrow as pa
 import pyarrow.parquet as pq
-from zeroband.inference.schema import pa_schema
+from zeroband.utils.parquet import pa_schema
 from pathlib import Path
 import os
 import pytest
@@ -14,8 +14,6 @@ def _create_one_pa_table(batch_size: int, seq_len: int):
     # Initialize lists for each column
     input_tokens_list = [[1] * seq_len for _ in range(batch_size)]  # Wrap in list
     output_tokens_list = [[1] * seq_len for _ in range(batch_size)]  # Wrap in list
-    input_logprobs_list = [[0] * seq_len for _ in range(batch_size)]  # Wrap in list
-    output_logprobs_list = [[0] * seq_len for _ in range(batch_size)]  # Wrap in list
     task_rewards_list = [0] * batch_size
     length_penalty_list = [0] * batch_size
     target_lengths_list = [seq_len] * batch_size
@@ -28,8 +26,6 @@ def _create_one_pa_table(batch_size: int, seq_len: int):
     arrays = [
         pa.array(input_tokens_list, type=pa.list_(pa.int32())),
         pa.array(output_tokens_list, type=pa.list_(pa.int32())),
-        pa.array(input_logprobs_list, type=pa.list_(pa.float32())),
-        pa.array(output_logprobs_list, type=pa.list_(pa.float32())),
         pa.array(advantages_list, type=pa.float32()),
         pa.array(rewards_list, type=pa.float32()),
         pa.array(task_rewards_list, type=pa.float32()),

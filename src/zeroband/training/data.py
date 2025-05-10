@@ -18,7 +18,7 @@ from zeroband.utils.logger import get_logger
 from zeroband.training.data_prefetch import GCPPrefetcher, STABLE_FILE
 from zeroband.utils.world_info import get_world_info
 from zeroband.training import envs
-from zeroband.inference.schema import pa_schema
+from zeroband.utils.parquet import pa_schema
 
 
 class DataConfig(BaseConfig):
@@ -38,7 +38,6 @@ class DatasetOutput(TypedDict):
     input_ids: Int[torch.Tensor, "seq"]
     advantages: Float[torch.Tensor, "seq"]
     loss_mask: Int[torch.Tensor, "seq"]
-    logprobs: Float[torch.Tensor, "seq"]
 
     # sample level
     seq_lens: Int[torch.Tensor, "1"]
@@ -74,7 +73,6 @@ class FakeTokenizedDataset(IterableDataset):
                 "advantages": advantages,
                 "rewards": 0.5,
                 "loss_mask": torch.ones(len_).int(),
-                "logprobs": torch.randn(len_),
                 "task_rewards": 0.5,
                 "length_penalties": 0.5,
                 "target_lengths": seq_len,
@@ -248,8 +246,6 @@ class ParquetDataset(IterableDataset):
                 "output_tokens",
                 "advantages",
                 "rewards",
-                "input_logprobs",
-                "output_logprobs",
                 "task_rewards",
                 "length_penalties",
                 "target_lengths",
@@ -263,8 +259,6 @@ class ParquetDataset(IterableDataset):
                     for (
                         in_token,
                         out_token,
-                        in_logprob,
-                        out_logprob,
                         advantage,
                         reward,
                         task_reward,
@@ -273,8 +267,6 @@ class ParquetDataset(IterableDataset):
                     ) in zip(
                         batch["input_tokens"],
                         batch["output_tokens"],
-                        batch["input_logprobs"],
-                        batch["output_logprobs"],
                         batch["advantages"],
                         batch["rewards"],
                         batch["task_rewards"],
@@ -294,11 +286,8 @@ class ParquetDataset(IterableDataset):
                         try:
                             input_ids = torch.tensor(in_token.as_py())
                             output_ids = torch.tensor(out_token.as_py())
-                            in_logprobs = torch.tensor(in_logprob.as_py())
-                            out_logprobs = torch.tensor(out_logprob.as_py())
 
                             ids = torch.cat([input_ids, output_ids], dim=0)
-                            logprobs = torch.cat([in_logprobs, out_logprobs], dim=0)
                             loss_mask = torch.cat([torch.zeros(len(input_ids)), torch.ones(len(output_ids))], dim=0).int()
 
                             adv_value = advantage.as_py()
@@ -311,7 +300,6 @@ class ParquetDataset(IterableDataset):
                                 "advantages": adv,
                                 "rewards": reward_value,
                                 "loss_mask": loss_mask,
-                                "logprobs": logprobs,
                                 "task_rewards": task_reward.as_py(),
                                 "length_penalties": length_penalty.as_py(),
                                 "target_lengths": target_length.as_py(),
@@ -385,7 +373,6 @@ class BatchOutput(TypedDict):
     input_ids: Int[torch.Tensor, "batch seq"]
     advantages: Float[torch.Tensor, "batch seq"]
     loss_mask: Int[torch.Tensor, "batch seq"]
-    logprobs: Float[torch.Tensor, "batch seq"]
     position_ids: Int[torch.Tensor, "batch seq"]
 
     # sample level
@@ -411,7 +398,6 @@ def collate_fn(samples: list[DatasetOutput], max_seq_len: int, pad_token_id: int
     advantages = [sample["advantages"] for sample in samples]
     rewards = [sample["rewards"] for sample in samples]
     loss_masks = [sample["loss_mask"] for sample in samples]
-    logprobs = [sample["logprobs"] for sample in samples]
     task_rewards = [sample["task_rewards"] for sample in samples]
     length_penalties = [sample["length_penalties"] for sample in samples]
     target_lengths = [sample["target_lengths"] for sample in samples]
@@ -425,7 +411,6 @@ def collate_fn(samples: list[DatasetOutput], max_seq_len: int, pad_token_id: int
         inputs_ids.append(torch.full((padding_len,), fill_value=pad_token_id, dtype=inputs_ids[0].dtype))
         advantages.append(torch.zeros(padding_len, dtype=advantages[0].dtype))
         loss_masks.append(torch.zeros(padding_len, dtype=loss_masks[0].dtype).int())
-        logprobs.append(torch.zeros(padding_len, dtype=logprobs[0].dtype))
         position_ids.append(torch.arange(0, padding_len, dtype=torch.int32))
 
     return {
@@ -433,7 +418,6 @@ def collate_fn(samples: list[DatasetOutput], max_seq_len: int, pad_token_id: int
         "input_ids": torch.cat(inputs_ids, dim=0)[:max_seq_len].unsqueeze(0),
         "advantages": torch.cat(advantages, dim=0)[:max_seq_len].unsqueeze(0),
         "loss_mask": torch.cat(loss_masks, dim=0)[:max_seq_len].unsqueeze(0),
-        "logprobs": torch.cat(logprobs, dim=0)[:max_seq_len].unsqueeze(0),
         "position_ids": torch.cat(position_ids, dim=0)[:max_seq_len].unsqueeze(0),
         # sample level
         "rewards": torch.tensor(rewards),
@@ -530,7 +514,6 @@ def merge_batches_padding(batches: list[BatchOutput]) -> list[BatchOutput]:
         "advantages": torch.cat([b["advantages"] for b in batches], dim=0),
         "rewards": torch.cat([b["rewards"] for b in batches], dim=0),
         "loss_mask": torch.cat([b["loss_mask"] for b in batches], dim=0),
-        "logprobs": torch.cat([b["logprobs"] for b in batches], dim=0),
         "position_ids": torch.cat([b["position_ids"] for b in batches], dim=0),
         # sample level
         "seq_lens": torch.cat([b["seq_lens"] for b in batches]),

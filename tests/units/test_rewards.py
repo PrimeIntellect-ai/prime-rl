@@ -1,7 +1,7 @@
 import pickle
 import pytest
 
-from zeroband.inference.rewards import compute_rewards
+from zeroband.inference.rewards import RequestRewards, CompletionReward, compute_rewards
 
 
 @pytest.fixture
@@ -47,19 +47,32 @@ def test_compute_rewards(precomputed_rewards):
 
     # Re-compute rewards
     task_types = ["verifiable_math"] * len(request_outputs)
-    rewards, task_rewards, length_penalties, advantages = compute_rewards(request_outputs, verification_infos, task_types, config)
+    request_rewards = compute_rewards(request_outputs, verification_infos, task_types, config)
+
+    assert all(isinstance(request_reward, RequestRewards) for request_reward in request_rewards)
 
     # Assert type
-    for reward_or_advantage in [rewards, task_rewards, length_penalties, advantages]:
-        assert isinstance(reward_or_advantage, dict)
-        assert all(isinstance(key, str) for key in reward_or_advantage.keys())
-        assert all(isinstance(value, list) for value in reward_or_advantage.values())
+    for request_reward in request_rewards:
+        for completion_reward in request_reward.rewards:
+            assert isinstance(completion_reward, CompletionReward)
+            print(type(completion_reward.advantage))
+            assert isinstance(completion_reward.advantage, float)
 
-    # Assert that there is some non-zero reward
-    assert any(any(reward > 0 for reward in rewards) for rewards in reward_or_advantage.values())
+    grouped_rewards = {
+        request_reward.request_id: [reward.reward for reward in request_reward.rewards] for request_reward in request_rewards
+    }
+    grouped_task_rewards = {
+        request_reward.request_id: [reward.task_reward for reward in request_reward.rewards] for request_reward in request_rewards
+    }
+    grouped_length_penalties = {
+        request_reward.request_id: [reward.length_penalty for reward in request_reward.rewards] for request_reward in request_rewards
+    }
+    grouped_advantages = {
+        request_reward.request_id: [reward.advantage for reward in request_reward.rewards] for request_reward in request_rewards
+    }
 
     # Assert computation
-    assert rewards == ground_truth_rewards
-    assert task_rewards == ground_truth_task_rewards
-    assert length_penalties == ground_truth_length_penalties
-    assert advantages == ground_truth_advantages
+    assert grouped_rewards == ground_truth_rewards
+    assert grouped_task_rewards == ground_truth_task_rewards
+    assert grouped_length_penalties == ground_truth_length_penalties
+    assert grouped_advantages == ground_truth_advantages

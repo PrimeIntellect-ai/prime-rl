@@ -8,7 +8,6 @@ import torch
 from vllm import LLM, SamplingParams
 from pydantic import model_validator
 from pydantic_config import BaseConfig, parse_argv
-import vllm
 import time
 from toploc.utils import sha256sum
 from safetensors import safe_open
@@ -17,7 +16,6 @@ import json
 
 # from vllm.model_executor.model_loader
 from vllm.model_executor.model_loader.loader import _process_weights_after_loading
-from vllm.sequence import SampleLogprobs
 
 from zeroband.utils.logger import get_logger
 
@@ -25,16 +23,15 @@ from zeroband.utils.models import ModelName
 from zeroband.inference.toploc import setup_toploc_cache
 from zeroband.inference.pipeline import PipelineConfig, setup_pipeline
 from zeroband.inference.rewards import LenRewardsConfig, compute_rewards
+from zeroband.inference.parquet import get_parquet_table
 
 
 from datasets import load_dataset
-import pyarrow as pa
 import pyarrow.parquet as pq
 import multiprocessing as mp
 
 from zeroband.training.mp import EnvWrapper
 from zeroband.utils.metrics import PrimeMetric
-from zeroband.inference.schema import pa_schema
 
 from zeroband.inference import envs
 
@@ -48,7 +45,6 @@ class SamplingParamConfig(BaseConfig):
     ignore_eos: bool = False
     top_p: float = 1
     n: int = 8
-    logprobs: int = 0  # 0 mean 1 logprob here
     top_k: int = -1
 
 
@@ -127,78 +123,6 @@ def fake_chat_template(messages):
         formatted_prompts.append(prompt.strip())
 
     return formatted_prompts
-
-
-def get_own_logprobs(sample_logprobs: SampleLogprobs) -> float:
-    logprobs = []
-
-    for logprob in sample_logprobs:
-        assert isinstance(logprob, dict), "Logprobs should be a dict"
-        assert len(logprob) == 1, "Logprobs should be a dict with 1 key"
-
-        _token_id, logprob_p = list(logprob.items())[0]
-        logprobs.append(logprob_p.logprob)
-
-    return logprobs
-
-
-def get_parquet_table(
-    generated_tokens: list[vllm.RequestOutput],
-    grouped_advantages: dict[int, list[float]],
-    grouped_rewards: dict[int, torch.FloatTensor],
-    grouped_task_rewards: dict[int, torch.FloatTensor],
-    grouped_length_penalties: dict[int, torch.FloatTensor],
-    proofs: list[bytes],
-    step: int,
-    target_lengths: list[int],
-) -> pa.Table:
-    input_tokens_list = []
-    output_tokens_list = []
-    input_logprobs_list = []
-    output_logprobs_list = []
-    advantages_list = []
-    rewards_list = []
-    task_rewards_list = []
-    length_penalty_list = []
-    proofs_list = []
-    steps_list = []
-    target_lengths_list = []
-
-    proof_iter = iter(proofs)
-
-    for request, target_len in zip(generated_tokens, target_lengths):
-        request_id = request.request_id
-        advantages = grouped_advantages[request_id]
-        rewards = grouped_rewards[request_id]
-        task_rewards = grouped_task_rewards[request_id]
-        length_penalties = grouped_length_penalties[request_id]
-        for adv, reward, task_reward, length_penalty, output in zip(advantages, rewards, task_rewards, length_penalties, request.outputs):
-            input_tokens_list.append(request.prompt_token_ids)
-            output_tokens_list.append(output.token_ids)
-            input_logprobs_list.append([0] * len(request.prompt_token_ids))  # putting 0 for now as not needed in the grpo loss
-            output_logprobs_list.append(get_own_logprobs(output.logprobs))
-            advantages_list.append(adv)
-            rewards_list.append(reward)
-            task_rewards_list.append(task_reward)
-            length_penalty_list.append(length_penalty)
-            proofs_list.append(next(proof_iter) if len(output.token_ids) > 1 else b"")
-            steps_list.append(step)
-            target_lengths_list.append(target_len)
-
-    arrays = [
-        pa.array(input_tokens_list, type=pa.list_(pa.int32())),
-        pa.array(output_tokens_list, type=pa.list_(pa.int32())),
-        pa.array(input_logprobs_list, type=pa.list_(pa.float32())),
-        pa.array(output_logprobs_list, type=pa.list_(pa.float32())),
-        pa.array(advantages_list, type=pa.float32()),
-        pa.array(rewards_list, type=pa.float32()),
-        pa.array(task_rewards_list, type=pa.float32()),
-        pa.array(length_penalty_list, type=pa.float32()),
-        pa.array(proofs_list, type=pa.binary()),
-        pa.array(steps_list, type=pa.int32()),
-        pa.array(target_lengths_list, type=pa.int32()),
-    ]
-    return pa.Table.from_arrays(arrays, schema=pa_schema)
 
 
 def reload_model_weights(llm: LLM, ckpt_path: str):
@@ -457,17 +381,12 @@ def inference(config: Config):
 
         # Compute rewards and advantages
         start = time.time()
-        rewards, task_rewards, length_penalties, advantages = compute_rewards(
-            request_outputs, verification_infos, task_types, config.len_reward
-        )
+        request_rewards = compute_rewards(request_outputs, verification_infos, task_types, config.len_reward)
         logger.info(f"Computed rewards and advantages in in {time.time() - start:.2f}s")
 
         table = get_parquet_table(
             request_outputs,
-            advantages,
-            rewards,
-            task_rewards,
-            length_penalties,
+            request_rewards,
             proofs,
             ckpt_step,
             target_lengths,
