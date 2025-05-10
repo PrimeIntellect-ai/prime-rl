@@ -46,9 +46,8 @@ main() {
     fi
     
     log_info "Installing dependencies in virtual environment..."
-    uv sync
-    uv sync --fa
-    log_info "Installation completed! You can double check that everything is install correctly by running"
+    uv sync && uv sync --extra fa
+    log_info "Installation completed!"
 }
 
 main

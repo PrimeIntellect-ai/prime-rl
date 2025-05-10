@@ -31,8 +31,7 @@ source $HOME/.local/bin/env
 3. Set up the environment (will default to Python 3.10)
 
 ```bash
-uv sync
-uv sync --fa
+uv sync && uv sync --extra fa
 ```
 
 You can check that `flash_attn` is installed correctly by running `uv run python -c "import flash_attn"` and ensure no error is thrown.
