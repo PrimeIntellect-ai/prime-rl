@@ -4,7 +4,7 @@ import os
 # Force using vLLM v0
 os.environ["VLLM_USE_V1"] = "0"
 
-# Disable rust logs it not manually set
+# Disable rust logs if not manually set
 if os.getenv("RUST_LOG") is None:
     os.environ["RUST_LOG"] = "off"
 
