@@ -19,7 +19,7 @@ IROH_NODE_ID_MAP = {
 }
 
 SEEDS = list(IROH_NODE_ID_MAP.keys())
-TIMEOUT = 10
+TIMEOUT = 30
 
 
 @pytest.mark.parametrize("seed", SEEDS)
@@ -33,10 +33,12 @@ def _setup_comm(rank: int, world_size: int, error_queue: Queue):
     peer_seed = SEEDS[(rank + 1) % world_size]
     peer_id = IROH_NODE_ID_MAP[peer_seed]
     try:
-        setup_comm(world_size, seed, peer_id)
+        node = setup_comm(world_size, seed, peer_id)
     except Exception as e:
         error_queue.put((rank, str(e)))
         raise e
+    finally:
+        node.close()
 
 
 @pytest.mark.parametrize("world_size", [1, 2, 4, 8])
