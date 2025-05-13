@@ -1,8 +1,10 @@
 import pytest
-from prime_iroh import Node
-from multiprocessing import Process
+from multiprocessing import Process, Queue
 
+import zeroband.utils.envs as envs
 from zeroband.inference.pipeline import setup_comm
+
+from prime_iroh import Node
 
 # Pre-computed node IDs for different seeds (our team's favorite numbers)
 IROH_NODE_ID_MAP = {
@@ -26,12 +28,15 @@ def test_node_seeding(seed):
     assert node.node_id() == IROH_NODE_ID_MAP[seed]
 
 
-def _setup_comm(rank: int, world_size: int):
+def _setup_comm(rank: int, world_size: int, error_queue: Queue):
     seed = SEEDS[rank]
     peer_seed = SEEDS[(rank + 1) % world_size]
     peer_id = IROH_NODE_ID_MAP[peer_seed]
-    node = setup_comm(world_size, seed, peer_id)
-    assert isinstance(node, Node)
+    try:
+        setup_comm(world_size, seed, peer_id)
+    except Exception as e:
+        error_queue.put((rank, str(e)))
+        raise e
 
 
 @pytest.mark.parametrize("world_size", [1, 2, 4, 8])
@@ -40,20 +45,30 @@ def test_setup_comm(world_size: int):
     if world_size == 1:
         with pytest.raises(AssertionError):
             setup_comm(world_size, None, None)
+        return
 
-    # Setup processes
+    # Setup error queue and processes
+    error_queue = Queue()
     processes = []
     for rank in range(world_size):
-        process = Process(target=_setup_comm, args=(rank, world_size))
+        process = Process(target=_setup_comm, args=(rank, world_size, error_queue))
         processes.append(process)
 
     # Start processes
     for p in processes:
         p.start()
 
-    # Terminate processes (raise exception with timeout)
+    # Wait for processes
     for p in processes:
         p.join(timeout=TIMEOUT)
         if p.is_alive():
             p.terminate()
             raise TimeoutError(f"Process took longer than {TIMEOUT} seconds to complete")
+    
+    # Check for errors
+    if not error_queue.empty():
+        errors = []
+        while not error_queue.empty():
+            rank, error = error_queue.get()
+            errors.append(f"Rank {rank}: {error}")
+        raise RuntimeError("Subprocess errors:\n" + "\n".join(errors))
