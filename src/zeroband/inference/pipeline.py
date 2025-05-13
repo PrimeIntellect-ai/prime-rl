@@ -32,7 +32,7 @@ def setup_pipeline(llm: LLM, rank: int, world_size: int, iroh_seed: int | None =
         rank: The rank of the current process (this is equivalent to the model shard index)
         world_size: The total number of stages
         iroh_seed: The seed for the PRIME-IROH node (optional, will lead to deterministic connection strings)
-        iroh_peer_id: The peer ID for the PRIME-IROH node (optional, will connect to a random peer if not provided)
+        iroh_peer_id: The peer ID for the PRIME-IROH node (optional)
     """
     node = setup_comm(world_size=world_size, iroh_seed=iroh_seed, iroh_peer_id=iroh_peer_id)
     setup_hooks(rank=rank, world_size=world_size, llm=llm, node=node)
@@ -46,7 +46,7 @@ def setup_comm(world_size: int, iroh_seed: int | None, iroh_peer_id: str | None)
     Args:
         world_size: The total number of model shards
         iroh_seed: The seed for the PRIME-IROH node (optional, will lead to deterministic connection strings)
-        iroh_peer_id: The peer ID for the PRIME-IROH node (optional, will connect to a random peer if not provided)
+        iroh_peer_id: The peer ID for the PRIME-IROH node (optional)
     """
     assert world_size > 1, "Pipeline parallel inference requires at least 2 stages"
 
@@ -57,15 +57,13 @@ def setup_comm(world_size: int, iroh_seed: int | None, iroh_peer_id: str | None)
     else:
         # If no seed, create a new node
         node = Node(num_streams=1)
-    # TODO(Mika): It seems like this sleep is mandatory for the node to be discoverable by other peers. If we don't sleep here, any peer running node.connect() to us will fail with exception `No addressing information for NodeId(...), unable to connect`. We should probably fix this in `prime-iroh`
-    time.sleep(1)
     logger.info(f"Created node (ID={node.node_id()})")
 
     # Connect to peer
     if iroh_peer_id is None:
         iroh_peer_id = input("Enter Peer ID: ").strip()
     logger.info(f"Setting up outgoing connection to {iroh_peer_id}")
-    node.connect(iroh_peer_id)
+    node.connect(iroh_peer_id, num_retries=10, backoff_ms=100) # Roughly 100s wait
     logger.info(f"Outgoing connection to {iroh_peer_id} successful!")
 
     # Wait for connection to sender and receiver to be established
