@@ -26,7 +26,7 @@ class PipelineConfig(BaseConfig):
     iroh_peer_id: str | None = None
 
 
-def setup_pipeline(llm: LLM, rank: int, world_size: int, iroh_seed: int | None = None, iroh_peer_id: str | None = None) -> Node:
+def setup_pipeline(llm: LLM, rank: int, world_size: int, iroh_seed: int | None = None, iroh_peer_id: str | None = None) -> "Node":
     """
     Setup PRIME-IROH communication and hooks for pipeline parallel inference.
 
@@ -41,7 +41,7 @@ def setup_pipeline(llm: LLM, rank: int, world_size: int, iroh_seed: int | None =
     setup_hooks(rank=rank, world_size=world_size, llm=llm, node=node)
 
 
-def setup_comm(world_size: int, iroh_seed: int | None, iroh_peer_id: str | None) -> Node:
+def setup_comm(world_size: int, iroh_seed: int | None, iroh_peer_id: str | None) -> "Node":
     """
     Setup communication via PRIME-IROH. Forms a ring topology between the model shards
     with unidirectional communication flow.
@@ -51,6 +51,8 @@ def setup_comm(world_size: int, iroh_seed: int | None, iroh_peer_id: str | None)
         iroh_seed: The seed for the PRIME-IROH node (optional, will lead to deterministic connection strings)
         iroh_peer_id: The peer ID for the PRIME-IROH node (optional)
     """
+    from prime_iroh import Node
+
     assert world_size > 1, "Pipeline parallel inference requires at least 2 stages"
 
     # Setup node (with or without seed)
@@ -80,7 +82,7 @@ def setup_comm(world_size: int, iroh_seed: int | None, iroh_peer_id: str | None)
     return node
 
 
-def setup_hooks(rank: int, world_size: int, llm: LLM, node: Node) -> None:
+def setup_hooks(rank: int, world_size: int, llm: LLM, node: "Node") -> None:
     """
     Setup hooks to enable pipeline parallel inference based on pipeline topology.
 
@@ -137,7 +139,7 @@ def setup_hooks(rank: int, world_size: int, llm: LLM, node: Node) -> None:
 
 
 # TODO: Outputs of decoder blocks look different for vLLM implementations and HF-based implementations. The implementation currently breaks for HF-based implementations.
-def send_intermediate_states(_, __, output: Tuple, node: Node) -> None:
+def send_intermediate_states(_, __, output: Tuple, node: "Node") -> None:
     """
     A post-hook that sends the hidden states and residual of the last decoder layer to the next stage node's first layer.
 
@@ -157,7 +159,7 @@ def send_intermediate_states(_, __, output: Tuple, node: Node) -> None:
     )
 
 
-def recv_intermediate_states(_, input: Tuple, node: Node) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def recv_intermediate_states(_, input: Tuple, node: "Node") -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     A pre-hook that receives the hidden states and residual from the previous stage node's last layer at the first layer of the current node.
 
@@ -181,7 +183,7 @@ def recv_intermediate_states(_, input: Tuple, node: Node) -> Tuple[torch.Tensor,
     return positions, hidden_states, residuals
 
 
-def recv_output(_, __, output, node: Node, relay=False) -> SamplerOutput:
+def recv_output(_, __, output, node: "Node", relay=False) -> SamplerOutput:
     """
     A post-hook that receives sampling outputs from the last stage node and optionally relays them to the next stage node.
     For a pipeline with 4 stages, this hook should be registered as follows:
@@ -209,7 +211,7 @@ def recv_output(_, __, output, node: Node, relay=False) -> SamplerOutput:
     return output
 
 
-def send_output(_, __, output: SamplerOutput, node: Node) -> None:
+def send_output(_, __, output: SamplerOutput, node: "Node") -> None:
     """
     A post-hook that sends the sampling outputs from the last stage node to the first stage node.
 
