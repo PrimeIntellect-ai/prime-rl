@@ -1,7 +1,7 @@
 import pytest
 from multiprocessing import Process, Queue
 
-import zeroband.utils.envs as envs # noqa
+import zeroband.utils.envs as envs  # noqa
 from zeroband.inference.pipeline import setup_comm
 
 from prime_iroh import Node

@@ -1,4 +1,3 @@
-
 from typing import Literal
 from pydantic_config import BaseConfig
 from pydantic import model_validator
@@ -7,6 +6,7 @@ from pydantic import model_validator
 from zeroband.inference.pipeline import PipelineConfig
 from zeroband.inference.rewards import LenRewardsConfig
 from zeroband.utils.models import ModelName
+
 
 class SamplingParamConfig(BaseConfig):
     temperature: float = 0.6

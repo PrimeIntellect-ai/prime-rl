@@ -42,7 +42,6 @@ import logging
 from zeroband.utils.http_monitor import HttpMonitor
 
 
-
 def get_local_batch_size(batch_size: int, micro_bs: int, data_workers: int, world_info: WorldInfo) -> int:
     assert batch_size % world_info.world_size == 0
     batch_size = batch_size // world_info.world_size

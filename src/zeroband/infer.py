@@ -6,7 +6,6 @@ import numpy as np
 import torch
 from vllm import LLM, SamplingParams
 from pydantic_config import parse_argv
-import vllm
 import time
 from toploc.utils import sha256sum
 from safetensors import safe_open
@@ -37,7 +36,6 @@ from zeroband.inference import envs
 
 # Global logger
 logger = get_logger("INFER")
-
 
 
 def fake_chat_template(messages):
