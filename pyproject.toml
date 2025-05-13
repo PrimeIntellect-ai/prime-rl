@@ -28,7 +28,7 @@ dependencies = [
     "asyncio>=3.4.3",
     "aiohttp>=3.10.5",
     "pyext>=0.7",
-    "prime_iroh>=0.1.2",
+    "prime-iroh>=0.2.0",
     "setuptools"
 ] 
 
