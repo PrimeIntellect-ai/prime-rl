@@ -1,7 +1,7 @@
 import pytest
 from multiprocessing import Process, Queue
 
-import zeroband.utils.envs as envs
+import zeroband.utils.envs as envs # noqa
 from zeroband.inference.pipeline import setup_comm
 
 from prime_iroh import Node
@@ -64,7 +64,7 @@ def test_setup_comm(world_size: int):
         if p.is_alive():
             p.terminate()
             raise TimeoutError(f"Process took longer than {TIMEOUT} seconds to complete")
-    
+
     # Check for errors
     if not error_queue.empty():
         errors = []

@@ -63,7 +63,7 @@ def setup_comm(world_size: int, iroh_seed: int | None, iroh_peer_id: str | None)
     if iroh_peer_id is None:
         iroh_peer_id = input("Enter Peer ID: ").strip()
     logger.info(f"Setting up outgoing connection to {iroh_peer_id}")
-    node.connect(iroh_peer_id, num_retries=10) # Roughly 10*30s=300s wait
+    node.connect(iroh_peer_id, num_retries=10)  # Roughly 10*30s=300s wait
     logger.info(f"Outgoing connection to {iroh_peer_id} successful!")
 
     # Wait for connection to sender and receiver to be established
