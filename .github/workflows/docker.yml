@@ -6,7 +6,8 @@ on:
     tags:
     - '*'
 jobs:
-  build:
+  run:
+    name: Build and push to Docker Hub
     runs-on: image-builder
     steps:
       - name: Remove unnecessary packages

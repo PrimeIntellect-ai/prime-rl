@@ -1,4 +1,4 @@
-name: Tests on GPU
+name: Run tests
 
 on:
   push:
@@ -9,8 +9,8 @@ on:
     types: [opened, synchronize, reopened]
 
 jobs:
-  gpu-tests:
-    name: python
+  run:
+    name: Run tests
     runs-on: self-hosted
 
     steps:
@@ -19,9 +19,10 @@ jobs:
           submodules: true
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+          cache-local-path: "/workspace"
           cache-dependency-glob: "uv.lock"
       
       - name: Set up Python 
