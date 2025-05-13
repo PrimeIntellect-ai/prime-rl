@@ -1700,10 +1700,10 @@ wheels = [
 
 [[package]]
 name = "prime-iroh"
-version = "0.2.0"
+version = "0.2.1"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/06/4f/ae6badea22c7905db6c1147c875c452c9e289f8f13b7163c7e4c0b1cc478/prime_iroh-0.2.0-cp310-cp310-manylinux_2_34_x86_64.whl", hash = "sha256:3e2911a30937c013007f757085248879acbd293dd8a8b96df8e57ef7e7041712", size = 8792765, upload-time = "2025-05-13T04:02:57.037Z" },
+    { url = "https://files.pythonhosted.org/packages/14/10/016b89903095480a1ea1576be71f978331cf34d66fe756077b870d758f16/prime_iroh-0.2.1-cp310-cp310-manylinux_2_34_x86_64.whl", hash = "sha256:658d7dccd81cd63e1499b38b8716f29e6d4c86ac74fca145710dce0bbab82da6", size = 8780561, upload-time = "2025-05-13T05:48:17.537Z" },
 ]
 
 [[package]]
@@ -3037,7 +3037,7 @@ requires-dist = [
     { name = "llmcompressor" },
     { name = "ninja" },
     { name = "numpy" },
-    { name = "prime-iroh", specifier = ">=0.2.0" },
+    { name = "prime-iroh", specifier = ">=0.2.1" },
     { name = "pyarrow" },
     { name = "pydantic-config", git = "https://github.com/samsja/pydantic_config.git?rev=b7becc3" },
     { name = "pyext", specifier = ">=0.7" },
