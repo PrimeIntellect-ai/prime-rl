@@ -77,5 +77,4 @@ ENV PATH="/root/prime-rl/.venv/bin:$PATH"
 COPY --from=builder /root/prime-rl/src ./src
 COPY ./configs/ ./configs/
 
-ENTRYPOINT ["python", "src/zeroband/inference.py"]
-CMD ["@", "configs/inference/Qwen1.5B/multistep.toml", "--output_path", "/share"]
+ENTRYPOINT ["python", "src/zeroband/infer.py"]
