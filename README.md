@@ -217,6 +217,8 @@ PRIME_LOG_LEVEL=DEBUG VLLM_CONFIGURE_LOGGING=0 CUDA_VISIBLE_DEVICES=2,3 uv run p
 	--seed 69
 ```
 
+*Note: To check the logs of `prime-iroh` (used for connecting PP nodes), you can add the `RUST_LOG=prime_iroh=info` environment variable.*
+
 We don't support DP+PP and so that configuration will raise an exception.
 
 
