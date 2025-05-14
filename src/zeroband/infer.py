@@ -274,6 +274,7 @@ def inference(config: Config):
         start_time = time.time()
         request_outputs = llm.generate(prompts, sampling_params, use_tqdm=False)
         end_time = time.time()
+        print(f"Example: {request_outputs[0].prompt}{request_outputs[0].outputs[0].text}")
 
         # Dropping like this isnt ideal. But in practice, we shouldnt have any prompts that are too long.
         request_outputs = [req for req in request_outputs if len(req.outputs[0].token_ids) > 0]
