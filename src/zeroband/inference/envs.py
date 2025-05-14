@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     SHARDCAST_SERVERS: List[str] | None = None
     SHARDCAST_BACKLOG_VERSION: int = -1
     NODE_ADDRESS: str | None = None
+    GROUP_ID: str | None = None
 
 _INFERENCE_ENV = {
     "SHARDCAST_SERVERS": lambda: os.getenv("SHARDCAST_SERVERS", None).split(",")
@@ -18,6 +19,7 @@ _INFERENCE_ENV = {
     else None,
     "SHARDCAST_BACKLOG_VERSION": lambda: int(os.getenv("SHARDCAST_BACKLOG_VERSION", "-1")),
     "NODE_ADDRESS": lambda: os.getenv("NODE_ADDRESS", None),
+    "GROUP_ID": lambda: os.getenv("GROUP_ID", None),
     **_BASE_ENV,
 }
 
