@@ -1,8 +1,8 @@
 import torch
-from torch import Tensor
-from jaxtyping import Float, Int, jaxtyped
-from beartype import beartype as typechecker
 import torch.nn.functional as F
+from beartype import beartype as typechecker
+from jaxtyping import Float, Int, jaxtyped
+from torch import Tensor
 
 
 # beartype here just make sure we have the correct shape

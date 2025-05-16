@@ -1,7 +1,7 @@
 from typing import Literal
-from pydantic_config import BaseConfig
-from pydantic import model_validator
 
+from pydantic import model_validator
+from pydantic_config import BaseConfig
 
 from zeroband.inference.pipeline import PipelineConfig
 from zeroband.inference.rewards import LenRewardsConfig

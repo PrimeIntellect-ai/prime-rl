@@ -1,24 +1,20 @@
-from pathlib import Path
 import time
+from pathlib import Path
 from typing import Any, Generator, Literal, TypeAlias, TypedDict
 
-from pydantic_config import BaseConfig
-
-
-import torch
-from torch.utils.data import IterableDataset, DataLoader
-import torch.distributed as dist
-
-from jaxtyping import Float, Int
-
-from pyarrow import dataset as ds
 import pyarrow.parquet as pq
+import torch
+import torch.distributed as dist
+from jaxtyping import Float, Int
+from pyarrow import dataset as ds
+from pydantic_config import BaseConfig
+from torch.utils.data import DataLoader, IterableDataset
 
-from zeroband.utils.logger import get_logger
-from zeroband.training.data_prefetch import GCPPrefetcher, STABLE_FILE
-from zeroband.utils.world_info import get_world_info
 from zeroband.training import envs
+from zeroband.training.data_prefetch import STABLE_FILE, GCPPrefetcher
+from zeroband.utils.logger import get_logger
 from zeroband.utils.parquet import pa_schema
+from zeroband.utils.world_info import get_world_info
 
 
 class DataConfig(BaseConfig):

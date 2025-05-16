@@ -1,7 +1,7 @@
 import json
 import re
-from typing import Dict
 import traceback
+from typing import Dict
 
 from zeroband.inference.genesys.code_utils import check_correctness
 

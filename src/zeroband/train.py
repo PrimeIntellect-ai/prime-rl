@@ -1,47 +1,41 @@
+import logging
 import os
-from pathlib import Path
 import shutil
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+import shardcast
 import torch
 import torch.distributed as dist
-from torch.distributed._composable.fsdp import fully_shard, MixedPrecisionPolicy  # type: ignore
 import torch.distributed.tensor
 import wandb
-import shardcast
+from jaxtyping import Float
+from liger_kernel.transformers import apply_liger_kernel_to_qwen2
+from pydantic_config import parse_argv
+from torch._guards import log as torch_log
+from torch.distributed._composable.fsdp import MixedPrecisionPolicy, fully_shard  # type: ignore
 
-from zeroband.training.config import Config
-from zeroband.utils.models import ModelType, get_model_and_tokenizer
 from zeroband.training import envs
 from zeroband.training.checkpoint import TrainingProgress, load_checkpoint_fsdp_state, save_checkpoint_fsdp_state, save_ckpt_for_rollout
+from zeroband.training.config import Config
 from zeroband.training.data import BatchOutput, DatasetOutput, get_dataloader, packed_batch
-from zeroband.training.loss import grpo_loss, kl_penalty, selective_log_softmax, entropy_loss
+from zeroband.training.loss import entropy_loss, grpo_loss, kl_penalty, selective_log_softmax
 from zeroband.training.lr_scheduler import get_scheduler
 from zeroband.training.utils import (
+    MetricsAverager,
     PerfCounter,
     apply_ac_ckpt,
-    MetricsAverager,
+    log_prompt_response_samples,
+    log_to_wandb,
     offload_model_to_cpu,
     reshard_module,
     wake_up_model_from_cpu,
-    log_prompt_response_samples,
-    log_to_wandb,
 )
-
-from zeroband.utils.logger import get_logger
-
-from pydantic_config import parse_argv
-from jaxtyping import Float
-
-from zeroband.utils.world_info import WorldInfo, get_world_info
-
-
-from liger_kernel.transformers import apply_liger_kernel_to_qwen2
-from torch._guards import log as torch_log
-import logging
-
 from zeroband.utils.http_monitor import HttpMonitor
+from zeroband.utils.logger import get_logger
+from zeroband.utils.models import ModelType, get_model_and_tokenizer
+from zeroband.utils.world_info import WorldInfo, get_world_info
 
 
 def get_local_batch_size(batch_size: int, micro_bs: int, data_workers: int, world_info: WorldInfo) -> int:

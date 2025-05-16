@@ -1,12 +1,13 @@
+import os
+from functools import lru_cache
+from pathlib import Path
+
 import pyarrow as pa
 import pyarrow.parquet as pq
-from zeroband.utils.parquet import pa_schema
-from pathlib import Path
-import os
 import pytest
-from functools import lru_cache
 
 from zeroband.training.data import STABLE_FILE
+from zeroband.utils.parquet import pa_schema
 
 
 @lru_cache(maxsize=None)

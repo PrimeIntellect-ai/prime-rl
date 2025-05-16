@@ -1,17 +1,18 @@
+import random
+
 import pytest
+import torch
+from torch.utils.data import DataLoader
+
 from zeroband.training.data import (
+    FakeTokenizedDataset,
     ParquetDataset,
     _should_skip_index,
     collate_fn,
-    FakeTokenizedDataset,
+    pack_datatset_outputs_balancing,
     pack_datatset_outputs_efficiently,
     packed_batch,
-    pack_datatset_outputs_balancing,
 )
-from torch.utils.data import DataLoader
-
-import torch
-import random
 
 
 def test_pq_dataset(fake_rollout_files_dir):

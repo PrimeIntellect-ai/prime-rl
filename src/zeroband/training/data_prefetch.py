@@ -1,12 +1,11 @@
+import multiprocessing as mp
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
+
 from google.cloud import storage
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import wait
 
 from zeroband.utils.logger import get_logger
-import multiprocessing as mp
-
 
 STABLE_FILE = "stable"
 

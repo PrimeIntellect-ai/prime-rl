@@ -1,5 +1,5 @@
-from typing import TYPE_CHECKING, Any, Dict, List
 import os
+from typing import TYPE_CHECKING, Any, Dict, List
 
 # Force using vLLM v0
 os.environ["VLLM_USE_V1"] = "0"

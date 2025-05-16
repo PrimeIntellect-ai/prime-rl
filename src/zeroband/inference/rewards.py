@@ -1,12 +1,12 @@
-from typing import Literal
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 from pydantic_config import BaseConfig
-from vllm import RequestOutput, CompletionOutput
-from concurrent.futures import ThreadPoolExecutor
+from vllm import CompletionOutput, RequestOutput
 
-from zeroband.inference.genesys import get_reward_function, TaskType
+from zeroband.inference.genesys import TaskType, get_reward_function
 from zeroband.utils.logger import get_logger
 
 # Global logger

@@ -46,6 +46,7 @@ allow-direct-references = true # allow direct references to git repos in depende
 line-length = 140
 
 [tool.ruff.lint]
+select = ["F", "I"]
 ignore = ["F722", "F821"]
 
 [tool.uv]

@@ -2,9 +2,9 @@ import pytest
 import torch
 import torch.distributed as dist
 from toploc import verify_proofs_bytes
+from vllm import SamplingParams, TokensPrompt
 
 from zeroband.inference.toploc import TopLocCache, setup_toploc_cache
-from vllm import SamplingParams, TokensPrompt
 
 BYTES_PER_PROOF = 258
 
