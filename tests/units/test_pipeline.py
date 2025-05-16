@@ -1,10 +1,10 @@
-import pytest
 from multiprocessing import Process, Queue
+
+import pytest
+from prime_iroh import Node
 
 import zeroband.utils.envs as envs  # noqa
 from zeroband.inference.pipeline import setup_comm
-
-from prime_iroh import Node
 
 # Pre-computed node IDs for different seeds (our team's favorite numbers)
 IROH_NODE_ID_MAP = {

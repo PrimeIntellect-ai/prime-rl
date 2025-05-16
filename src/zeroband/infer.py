@@ -1,30 +1,30 @@
-import requests
+import json
+import multiprocessing as mp
 import os
-from pathlib import Path
-import uuid
-import numpy as np
-import torch
-from vllm import LLM, SamplingParams
-from pydantic_config import parse_argv
 import time
-from toploc.utils import sha256sum
+import uuid
+from pathlib import Path
+
+import numpy as np
+import pyarrow.parquet as pq
+import requests
+import torch
 import torch.distributed as dist
 from datasets import load_dataset
-import pyarrow.parquet as pq
-import multiprocessing as mp
-import json
+from pydantic_config import parse_argv
+from toploc.utils import sha256sum
+from vllm import LLM, SamplingParams
 
 from zeroband.inference import envs
-from zeroband.utils.logger import get_logger
-from zeroband.utils.metrics import PrimeMetric
 from zeroband.inference.config import Config
-from zeroband.inference.utils import generate_target_length_prompts, reload_model_weights, fake_chat_template
-from zeroband.inference.toploc import setup_toploc_cache
+from zeroband.inference.parquet import get_parquet_table
 from zeroband.inference.pipeline import setup_pipeline
 from zeroband.inference.rewards import compute_rewards
-from zeroband.inference.parquet import get_parquet_table
-
+from zeroband.inference.toploc import setup_toploc_cache
+from zeroband.inference.utils import fake_chat_template, generate_target_length_prompts, reload_model_weights
 from zeroband.training.mp import EnvWrapper
+from zeroband.utils.logger import get_logger
+from zeroband.utils.metrics import PrimeMetric
 
 # Global logger
 logger = get_logger("INFER")

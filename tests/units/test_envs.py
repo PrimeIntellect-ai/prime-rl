@@ -1,4 +1,5 @@
 import os
+
 import pytest
 
 from zeroband.inference import envs as inference_env

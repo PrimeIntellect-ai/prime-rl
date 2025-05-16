@@ -5,8 +5,9 @@ Call grade_answer(given_answer: str, ground_truth: str).
 """
 
 import re
-from pylatexenc import latex2text
+
 import sympy
+from pylatexenc import latex2text
 from sympy.parsing import sympy_parser
 
 

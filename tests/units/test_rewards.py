@@ -1,7 +1,8 @@
 import pickle
+
 import pytest
 
-from zeroband.inference.rewards import RequestRewards, CompletionReward, compute_rewards
+from zeroband.inference.rewards import CompletionReward, RequestRewards, compute_rewards
 
 
 @pytest.fixture

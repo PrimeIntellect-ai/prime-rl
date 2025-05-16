@@ -1,6 +1,7 @@
 import subprocess
-import pytest
+
 import pyarrow.parquet as pq
+import pytest
 
 
 def _test_torchrun(config, extra_args=[]):

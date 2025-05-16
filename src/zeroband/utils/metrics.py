@@ -1,11 +1,12 @@
-import socket
-import platform
 import json
 import os
-from typing import Any
-import psutil
+import platform
+import socket
 import threading
 import time
+from typing import Any
+
+import psutil
 import pynvml
 
 

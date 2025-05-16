@@ -1,15 +1,15 @@
-import time
 import pickle
-from typing import Tuple
+import time
 from functools import partial
+from typing import Tuple
 
 import torch
 import torch.nn as nn
-from vllm.model_executor.layers.sampler import SamplerOutput
+from prime_iroh import Node
 from pydantic_config import BaseConfig
 from vllm import LLM
+from vllm.model_executor.layers.sampler import SamplerOutput
 
-from prime_iroh import Node
 from zeroband.utils.logger import get_logger
 
 # Global logger

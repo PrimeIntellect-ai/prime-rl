@@ -1,8 +1,10 @@
 from typing import Literal
-from pydantic_config import BaseConfig
+
 from pydantic import model_validator
-from zeroband.utils.models import ModelName, AttnImpl
+from pydantic_config import BaseConfig
+
 from zeroband.training.data import CollateMode, DataConfig
+from zeroband.utils.models import AttnImpl, ModelName
 
 
 class AdamConfig(BaseConfig):

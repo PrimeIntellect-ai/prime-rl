@@ -1,5 +1,5 @@
-import torch
 import pytest
+import torch
 
 from zeroband.utils.models import get_model_and_tokenizer
 

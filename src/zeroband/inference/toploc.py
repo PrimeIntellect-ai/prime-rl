@@ -1,13 +1,13 @@
+from concurrent.futures import Future, ThreadPoolExecutor, wait
+from functools import partial
+
 import torch
 import torch.nn as nn
-from torch.utils.hooks import RemovableHandle
 from toploc import build_proofs_bytes
-from concurrent.futures import ThreadPoolExecutor, Future, wait
+from torch.utils.hooks import RemovableHandle
+from vllm import LLM
 from vllm.model_executor import SamplingMetadata
 from vllm.model_executor.layers.logits_processor import _prune_hidden_states
-from vllm import LLM
-
-from functools import partial
 
 
 class TopLocCache:

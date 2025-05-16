@@ -1,9 +1,10 @@
 import argparse
-from shardcast import ClientNode
-import time
 import logging
-from pathlib import Path
 import multiprocessing as mp
+import time
+from pathlib import Path
+
+from shardcast import ClientNode
 
 POLL_INTERVAL = 5
 logger = logging.getLogger(__name__)

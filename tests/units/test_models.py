@@ -1,6 +1,8 @@
+from typing import get_args
+
 import pytest
 from huggingface_hub import HfApi
-from typing import get_args
+
 from zeroband.utils.models import ModelName
 
 

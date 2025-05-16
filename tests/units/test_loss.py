@@ -1,6 +1,7 @@
-from zeroband.training.loss import grpo_loss, entropy_loss, kl_penalty
-import torch
 import pytest
+import torch
+
+from zeroband.training.loss import entropy_loss, grpo_loss, kl_penalty
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])

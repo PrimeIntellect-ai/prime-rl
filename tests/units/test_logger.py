@@ -1,8 +1,10 @@
-import os
 import logging
+import os
+
 import pytest
+
+from zeroband.utils.logger import ALLOWED_LEVELS, LoggerName, PrimeFormatter, get_logger, reset_logger
 from zeroband.utils.world_info import reset_world_info
-from zeroband.utils.logger import ALLOWED_LEVELS, get_logger, reset_logger, PrimeFormatter, LoggerName
 
 
 @pytest.fixture(autouse=True)

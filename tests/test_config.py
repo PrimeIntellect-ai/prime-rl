@@ -4,12 +4,13 @@ Need to be run from the root folder
 """
 
 import os
-from zeroband.train import Config as TrainingConfig
-from zeroband.infer import Config as InferenceConfig
 
-from pydantic import ValidationError
 import pytest
 import tomli
+from pydantic import ValidationError
+
+from zeroband.infer import Config as InferenceConfig
+from zeroband.train import Config as TrainingConfig
 
 
 def get_all_toml_files(directory):

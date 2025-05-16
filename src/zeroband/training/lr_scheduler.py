@@ -1,9 +1,8 @@
-from typing import Callable
-from functools import partial
 import math
+from functools import partial
+from typing import Callable
 
-from torch.optim.lr_scheduler import LRScheduler, LambdaLR
-
+from torch.optim.lr_scheduler import LambdaLR, LRScheduler
 from transformers.optimization import get_cosine_schedule_with_warmup, get_linear_schedule_with_warmup
 
 

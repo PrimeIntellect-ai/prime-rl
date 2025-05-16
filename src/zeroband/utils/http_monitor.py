@@ -1,8 +1,10 @@
-from typing import Any
-import aiohttp
-from zeroband.utils.logger import get_logger
 import asyncio
+from typing import Any
+
+import aiohttp
+
 from zeroband.training import envs
+from zeroband.utils.logger import get_logger
 
 
 class HttpMonitor:

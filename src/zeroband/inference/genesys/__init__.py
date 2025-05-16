@@ -1,6 +1,7 @@
-from typing import Literal, Callable
-from zeroband.inference.genesys.math import compute_math_reward
+from typing import Callable, Literal
+
 from zeroband.inference.genesys.code import evaluate_code
+from zeroband.inference.genesys.math import compute_math_reward
 
 TaskType = Literal["verifiable_math", "prime_rl_code"]
 

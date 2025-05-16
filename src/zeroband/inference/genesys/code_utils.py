@@ -1,22 +1,22 @@
 # Borrowed from PRIME-RL and Codeparrot: https://github.com/PRIME-RL/PRIME/tree/main/training/verl/utils/reward_score/evaluation_utils/code_util, https://huggingface.co/spaces/codeparrot/apps_metric/blob/main/utils.py
 
 
-import multiprocessing
-import traceback
-import os
-import sys
 import ast
-import json
 import faulthandler
+import json
+import multiprocessing
+import os
 import platform
-from datetime import datetime
 import signal
-import numpy as np
-
-from io import StringIO
-from unittest.mock import patch, mock_open
-from pyext import RuntimeModule
+import sys
+import traceback
+from datetime import datetime
 from enum import Enum
+from io import StringIO
+from unittest.mock import mock_open, patch
+
+import numpy as np
+from pyext import RuntimeModule
 
 
 def truncatefn(s, length=300):
