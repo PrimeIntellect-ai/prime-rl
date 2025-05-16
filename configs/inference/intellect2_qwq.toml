@@ -7,7 +7,7 @@ max_model_len = 16_000
 [sampling]
 n = 16
 
-[len_reward]
+[rewards.len_reward]
 reward_type = "exact"
 length_prompt_location = "instruction"
 target_lengths = [2000, 4000, 6000, 8000, 10000]

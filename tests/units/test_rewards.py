@@ -1,8 +1,8 @@
 import pickle
 import pytest
 
-from zeroband.inference.rewards import RequestRewards, CompletionReward, compute_rewards
-
+from zeroband.inference.rewards import RequestRewards, CompletionReward, compute_vllm_rewards
+from zeroband.inference.genesys import TaskType
 
 @pytest.fixture
 def precomputed_rewards(path):
@@ -46,8 +46,8 @@ def test_compute_rewards(precomputed_rewards):
     ground_truth_advantages = precomputed_rewards["advantages"]
 
     # Re-compute rewards
-    task_types = ["verifiable_math"] * len(request_outputs)
-    request_rewards = compute_rewards(request_outputs, verification_infos, task_types, config)
+    task_types: list[TaskType] = ["verifiable_math"] * len(request_outputs)
+    request_rewards = compute_vllm_rewards(request_outputs, verification_infos, task_types, config)
 
     assert all(isinstance(request_reward, RequestRewards) for request_reward in request_rewards)
 

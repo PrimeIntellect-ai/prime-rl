@@ -29,7 +29,9 @@ dependencies = [
     "aiohttp>=3.10.5",
     "pyext>=0.7",
     "prime-iroh>=0.2.1",
-    "setuptools"
+    "setuptools",
+    "fastapi",
+    "requests",
 ] 
 
 [project.optional-dependencies]

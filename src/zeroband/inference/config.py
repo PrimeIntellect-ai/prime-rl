@@ -4,7 +4,7 @@ from pydantic import model_validator
 
 
 from zeroband.inference.pipeline import PipelineConfig
-from zeroband.inference.rewards import LenRewardsConfig
+from zeroband.inference.rewards import RewardsConfig
 from zeroband.utils.models import ModelName
 
 
@@ -59,7 +59,7 @@ class Config(BaseConfig):
 
     toploc: bool = False
 
-    len_reward: LenRewardsConfig | None = None
+    rewards: RewardsConfig = RewardsConfig()
     difficulty_filtering: DifficultyFilteringConfig | None = None
 
     @model_validator(mode="after")

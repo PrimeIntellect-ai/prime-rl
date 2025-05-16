@@ -21,7 +21,6 @@ _INFERENCE_ENV = {
     **_BASE_ENV,
 }
 
-
 def __getattr__(name: str) -> Any:
     return get_env_value(_INFERENCE_ENV, name)
 
