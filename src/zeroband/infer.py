@@ -8,95 +8,26 @@ from vllm import LLM, SamplingParams
 from pydantic_config import parse_argv
 import time
 from toploc.utils import sha256sum
-from safetensors import safe_open
 import torch.distributed as dist
+from datasets import load_dataset
+import pyarrow.parquet as pq
+import multiprocessing as mp
 import json
 
-# from vllm.model_executor.model_loader
-from vllm.model_executor.model_loader.loader import _process_weights_after_loading
-
-
-from zeroband.inference.config import Config
+from zeroband.inference import envs
 from zeroband.utils.logger import get_logger
-
+from zeroband.utils.metrics import PrimeMetric
+from zeroband.inference.config import Config
+from zeroband.inference.utils import generate_target_length_prompts, reload_model_weights, fake_chat_template
 from zeroband.inference.toploc import setup_toploc_cache
 from zeroband.inference.pipeline import setup_pipeline
 from zeroband.inference.rewards import compute_rewards
 from zeroband.inference.parquet import get_parquet_table
 
-
-from datasets import load_dataset
-import pyarrow.parquet as pq
-import multiprocessing as mp
-
 from zeroband.training.mp import EnvWrapper
-from zeroband.utils.metrics import PrimeMetric
-
-from zeroband.inference import envs
 
 # Global logger
 logger = get_logger("INFER")
-
-
-def fake_chat_template(messages):
-    formatted_prompts = []
-
-    for conversation in messages:
-        prompt = ""
-        for message in conversation:
-            if message["role"] == "user":
-                prompt += f"Human: {message['content']}\n\n"
-            elif message["role"] == "assistant":
-                prompt += f"Assistant: {message['content']}\n\n"
-        formatted_prompts.append(prompt.strip())
-
-    return formatted_prompts
-
-
-def reload_model_weights(llm: LLM, ckpt_path: str):
-    # Access the internal model from vLLM
-    model = llm.llm_engine.model_executor.driver_worker.model_runner.model
-    # Load state dict
-    with safe_open(ckpt_path, framework="pt", device="cpu") as f:
-        # Create a better weight iterator that filters out empty keys and handles prefixes
-        def weights_iterator():
-            for key in f.keys():
-                # Skip empty keys
-                if not key:
-                    continue
-                yield key, f.get_tensor(key)
-
-        # Load weights
-        model.load_weights(weights_iterator())
-
-    # Process weights after loading (important for some models)
-    model_config = llm.llm_engine.model_config
-    device = next(model.parameters()).device
-    _process_weights_after_loading(model, model_config, device)
-
-    return llm
-
-
-def generate_target_length_prompts(config: Config, batch_size: int):
-    if config.len_reward is None:
-        return [""] * batch_size, [-1] * batch_size
-
-    if config.len_reward.target_length_sampling == "discrete":
-        indices = torch.randint(low=0, high=len(config.len_reward.target_lengths), size=(batch_size,), device="cpu")
-        target_lengths = [int(config.len_reward.target_lengths[i]) for i in indices]
-
-    elif config.len_reward.target_length_sampling == "range":
-        target_lengths = torch.randint(
-            low=config.len_reward.min_length, high=config.len_reward.max_length + 1, size=(batch_size,), device="cpu"
-        ).tolist()
-
-    else:
-        raise ValueError("'length_target_sampling' has to be 'discrete' or 'range'")
-
-    prompt_prefix = " " if config.len_reward.length_prompt_location == "instruction" else " "
-    max_word = " maximally " if config.len_reward.reward_type == "clip" else ""
-
-    return [f"{prompt_prefix}Think for{max_word}{target} tokens before giving a response." for target in target_lengths], target_lengths
 
 
 def inference(config: Config):
@@ -235,7 +166,7 @@ def inference(config: Config):
             batch = dataset.select(range(i, min(i + config.batch_size, len(dataset))))
         messages = [[{"role": "user", "content": item["prompt"]}, {"role": "assistant", "content": "<think>\n"}] for item in batch]
 
-        length_prompt_additions, target_lengths = generate_target_length_prompts(config, len(batch))
+        length_prompt_additions, target_lengths = generate_target_length_prompts(config.len_reward, len(batch))
         # Assume verification_info is stored as a JSON string in the dataset.
         verification_infos = [json.loads(item["verification_info"]) for item in batch]
         for target_length, verification_info in zip(target_lengths, verification_infos):
