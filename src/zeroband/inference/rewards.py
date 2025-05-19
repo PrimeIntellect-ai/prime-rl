@@ -46,6 +46,21 @@ class RequestRewards:
     request_id: str  # type(RequestOutput.request_id)
     rewards: list[CompletionReward]
 
+def calculate_passrate(request: RequestRewards) -> float:
+    """
+    Calculate the pass rate for a given request.
+
+    Args:
+        request: The request to calculate the pass rate for.
+
+    Returns:
+        The pass rate for the request.
+    """
+    pass_count = sum(int(completion_reward.task_reward == 1) for completion_reward in request.rewards)
+    num_completions = len(request.rewards)
+    if num_completions == 0:
+        return 0.0
+    return pass_count / num_completions
 
 def _compute_completion_reward(
     completion_output: CompletionOutput,

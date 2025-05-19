@@ -21,7 +21,7 @@ from zeroband.inference.config import Config
 from zeroband.inference.utils import generate_target_length_prompts, reload_model_weights, fake_chat_template
 from zeroband.inference.toploc import setup_toploc_cache
 from zeroband.inference.pipeline import setup_pipeline
-from zeroband.inference.rewards import compute_rewards
+from zeroband.inference.rewards import compute_rewards, calculate_passrate
 from zeroband.inference.parquet import get_parquet_table
 
 from zeroband.training.mp import EnvWrapper
@@ -53,6 +53,7 @@ def inference(config: Config):
     )
     tokenizer = llm.get_tokenizer()
     sampling_params = SamplingParams(**config.sampling.model_dump())
+    calibration_sampling_params = SamplingParams(**{**config.sampling.model_dump(), "n": config.calibration_n})
 
     # Create communication for pipeline
     if config.pp.world_size > 1:
@@ -174,6 +175,7 @@ def inference(config: Config):
         task_types = [item["task_type"] for item in batch]
 
         if config.len_reward:
+            # TODO: implement calibration prompt for len reward?
             if config.len_reward.length_prompt_location == "system_prompt":
                 messages = [
                     [
@@ -194,20 +196,35 @@ def inference(config: Config):
                 for item, length_prompt in zip(batch, length_prompt_additions)
             ]
 
+            # TODO: use same prompt as in evals
+            calibration_prompt = lambda question: f"Here is a question: ```english\n{question}\n```\nDo not answer the above question. Instead, please estimate the percentage of the time you'd get it correct if I asked you several times. Respond with a single integer between 0 and 100."
+            calibration_messages = [
+                [{"role": "user", "content": calibration_prompt(item['prompt'])}, {"role": "assistant", "content": "<think>\n"}]
+                for item, length_prompt in zip(batch, length_prompt_additions)
+            ]
+
         if tokenizer.chat_template:
             prompts = tokenizer.apply_chat_template(messages, tokenize=False, continue_final_message=True)
+            calibration_prompts = tokenizer.apply_chat_template(calibration_messages, tokenize=False, continue_final_message=True)
             if config.model_name != "Qwen/QwQ-32B":
                 for i, p in enumerate(prompts):
                     prompts[i] = p.replace("<｜begin▁of▁sentence｜>", "")
+
+                for i, calibration_p in enumerate(calibration_prompts):
+                    calibration_prompts[i] = calibration_p.replace("<｜begin▁of▁sentence｜>", "")
         else:
             prompts = fake_chat_template(messages)
+            calibration_prompts = fake_chat_template(calibration_messages)
 
         start_time = time.time()
         request_outputs = llm.generate(prompts, sampling_params, use_tqdm=False)
         end_time = time.time()
+        
+        request_calibration_outputs = llm.generate(calibration_prompts, calibration_sampling_params, use_tqdm=False)
 
         # Dropping like this isnt ideal. But in practice, we shouldnt have any prompts that are too long.
         request_outputs = [req for req in request_outputs if len(req.outputs[0].token_ids) > 0]
+        request_calibration_outputs = [req for req in request_calibration_outputs if len(req.outputs[0].token_ids) > 0]
         if len(request_outputs) != len(prompts):
             logger.warning(f"{len(prompts) - len(request_outputs)} prompts were filtered out because they were too long")
 
@@ -243,9 +260,14 @@ def inference(config: Config):
         request_rewards = compute_rewards(request_outputs, verification_infos, task_types, config.len_reward)
         logger.info(f"Computed rewards and advantages in in {time.time() - start:.2f}s")
 
+        # Compute calibration rewards
+        calibration_verification_infos = [{**ver_info, "passrate": calculate_passrate(request)} for request, ver_info in zip(request_rewards, verification_infos)]
+        calibration_task_types = ["calibration"] * len(request_rewards)
+        request_calibration_rewards = compute_rewards(request_calibration_outputs, calibration_verification_infos, calibration_task_types, config.len_reward)
+
         table = get_parquet_table(
-            request_outputs,
-            request_rewards,
+            request_calibration_outputs,
+            request_calibration_rewards,
             proofs,
             ckpt_step,
             target_lengths,

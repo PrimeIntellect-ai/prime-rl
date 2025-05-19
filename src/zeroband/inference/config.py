@@ -13,7 +13,7 @@ class SamplingParamConfig(BaseConfig):
     max_tokens: int | None = None
     ignore_eos: bool = False
     top_p: float = 1
-    n: int = 8
+    n: int = 64
     logprobs: int = 0  # 0 mean 1 logprob here
     top_k: int = -1
 
@@ -38,6 +38,7 @@ class Config(BaseConfig):
     quant: Literal["fp8"] | None = None
 
     sampling: SamplingParamConfig = SamplingParamConfig()
+    calibration_n: int = 8
     enforce_eager: bool = False
     max_model_len: int | None = None
 
