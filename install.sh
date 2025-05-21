@@ -32,7 +32,7 @@ main() {
 
 
     log_info "Cloning repository..."
-    git clone git@github.com:PrimeIntellect-ai/prime-rl.git
+    git clone https://github.com/PrimeIntellect-ai/prime-rl.git
     
     log_info "Entering project directory..."
     cd prime-rl
