@@ -6,7 +6,14 @@ from zeroband.utils.models import get_model_and_tokenizer
 BS = 1
 SEQ_LEN = 16
 
+pytestmark = [pytest.mark.gpu]
 
+def test_model_forward_gpu():
+    model, tokenizer = get_model_and_tokenizer("Qwen/Qwen3-0.6B", "flash_attention_2")
+    assert model is not None
+    assert tokenizer is not None
+
+    model = model.to("cuda")
 def test_model_forward(model_name, attn_impl):
     model, tokenizer = get_model_and_tokenizer(model_name, attn_impl)
     assert model is not None
