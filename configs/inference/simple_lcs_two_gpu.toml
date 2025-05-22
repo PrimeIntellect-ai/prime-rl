@@ -4,4 +4,4 @@ batch_size = 128
 dp = 1
 rollout_path = "outputs"
 output_path = "data_rollout"
-max_model_len = 512
+max_model_len = 2048

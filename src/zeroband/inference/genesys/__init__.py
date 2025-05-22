@@ -17,5 +17,5 @@ def get_reward_function(task_type: TaskType) -> Callable[[str, dict], float]:
 _REWARD_FUNCTIONS: dict[TaskType, Callable] = {
     "verifiable_math": compute_math_reward,
     "prime_rl_code": evaluate_code,
-    "lcs_reward": lcs_reward_func,
+    "reverse_text": lcs_reward_func,
 }
