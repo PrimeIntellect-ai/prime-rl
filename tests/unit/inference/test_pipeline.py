@@ -42,6 +42,7 @@ def _setup_comm(rank: int, world_size: int, error_queue: Queue):
 
 
 @pytest.mark.parametrize("world_size", [1, 2, 4, 8])
+@pytest.mark.slow
 def test_setup_comm(world_size: int):
     # Test that setup_comm raises an error for 1 stage
     if world_size == 1:

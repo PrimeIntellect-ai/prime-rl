@@ -86,6 +86,8 @@ def test_toploc_cache_exact_proof():
 
 @pytest.mark.parametrize("max_seqs", [1, 8, 64])
 @pytest.mark.parametrize("num_output_tokens", [16, 32, 64])
+@pytest.mark.slow
+@pytest.mark.gpu
 def test_toploc_with_hook(llm, max_seqs: int, num_output_tokens: int):
     # Setup TOPLOC
     model = llm.llm_engine.model_executor.driver_worker.model_runner.model
