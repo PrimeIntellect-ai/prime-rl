@@ -1,9 +1,10 @@
 from typing import Callable, Literal
 
 from zeroband.inference.genesys.code import evaluate_code
+from zeroband.inference.genesys.lcs_reward import lcs_reward_func
 from zeroband.inference.genesys.math import compute_math_reward
 
-TaskType = Literal["verifiable_math", "prime_rl_code"]
+TaskType = Literal["verifiable_math", "prime_rl_code", "lcs_reward"]
 
 
 def get_reward_function(task_type: TaskType) -> Callable[[str, dict], float]:
@@ -13,4 +14,8 @@ def get_reward_function(task_type: TaskType) -> Callable[[str, dict], float]:
         raise ValueError(f"Invalid task type: {task_type}")
 
 
-_REWARD_FUNCTIONS: dict[TaskType, Callable] = {"verifiable_math": compute_math_reward, "prime_rl_code": evaluate_code}
+_REWARD_FUNCTIONS: dict[TaskType, Callable] = {
+    "verifiable_math": compute_math_reward,
+    "prime_rl_code": evaluate_code,
+    "lcs_reward": lcs_reward_func,
+}
