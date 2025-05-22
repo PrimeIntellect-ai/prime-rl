@@ -1,4 +1,5 @@
 import os
+import subprocess
 from pathlib import Path
 from typing import Callable
 
@@ -96,8 +97,8 @@ def create_dummy_parquet_table(batch_size: int, seq_len: int) -> Table:
     return Table.from_pydict(data, schema=pa_schema)
 
 
-@pytest.fixture()
-def fake_rollout_files_dir(tmp_path: Path) -> Callable[[list[int], int, int, int], Path]:
+@pytest.fixture(scope="module")
+def fake_rollout_files_dir(tmp_path_factory: pytest.TempPathFactory) -> Callable[[list[int], int, int, int], Path]:
     """
     Create a temporary directory with dummy parquet files with inference output for testing
 
@@ -107,12 +108,12 @@ def fake_rollout_files_dir(tmp_path: Path) -> Callable[[list[int], int, int, int
     Returns:
         A function that can be called to write dummy parquet files to the temporary directory
     """
+    path = tmp_path_factory.mktemp("fake_rollout_files")
 
     def write_dummy_parquet_files(steps: list[int] = [0], num_files: int = 1, batch_size: int = 1, seq_len: int = 10) -> Path:
-        os.makedirs(tmp_path, exist_ok=True)
         for step in steps:
-            step_path = tmp_path / f"step_{step}"
-            step_path.mkdir(parents=True, exist_ok=True)
+            step_path = path / f"step_{step}"
+            os.makedirs(step_path, exist_ok=True)
             for file_idx in range(num_files):
                 table = create_dummy_parquet_table(batch_size, seq_len)
                 pq.write_table(table, f"{step_path}/{file_idx}.parquet")
@@ -120,6 +121,6 @@ def fake_rollout_files_dir(tmp_path: Path) -> Callable[[list[int], int, int, int
             stable_file = step_path / STABLE_FILE
             stable_file.touch()
 
-        return tmp_path
+        return path
 
     return write_dummy_parquet_files

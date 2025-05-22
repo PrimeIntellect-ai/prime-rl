@@ -3,6 +3,7 @@ dataset = "justus27/rl-code-and-math"
 max_samples = 32
 batch_size = 8
 enforce_eager = true
+toploc = true
 
 [sampling]
-max_tokens = 64
+max_tokens = 16
