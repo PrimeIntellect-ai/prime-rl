@@ -3,16 +3,7 @@ import os
 
 import pytest
 
-from zeroband.utils.logger import ALLOWED_LEVELS, LoggerName, PrimeFormatter, get_logger, reset_logger
-from zeroband.utils.world_info import reset_world_info
-
-
-@pytest.fixture(autouse=True)
-def cleanup():
-    yield
-    reset_logger("TRAIN")
-    reset_logger("INFER")
-    reset_world_info()
+from zeroband.utils.logger import ALLOWED_LEVELS, LoggerName, PrimeFormatter, get_logger
 
 
 def test_init_with_default_args():

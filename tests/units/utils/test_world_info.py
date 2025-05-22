@@ -3,22 +3,9 @@ import subprocess
 
 import pytest
 
-from zeroband.utils.world_info import get_world_info, reset_world_info
+from zeroband.utils.world_info import get_world_info
 
 ENV_VARS = ["RANK", "WORLD_SIZE", "LOCAL_RANK", "LOCAL_WORLD_SIZE"]
-
-
-def reset_env_vars():
-    for var in ENV_VARS:
-        if var in os.environ:
-            del os.environ[var]
-
-
-@pytest.fixture(autouse=True)
-def setup():
-    reset_env_vars()
-    reset_world_info()
-    yield
 
 
 def test_init_with_default_args():

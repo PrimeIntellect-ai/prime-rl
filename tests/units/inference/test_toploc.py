@@ -1,22 +1,11 @@
 import pytest
 import torch
-import torch.distributed as dist
 from toploc import verify_proofs_bytes
 from vllm import SamplingParams, TokensPrompt
 
 from zeroband.inference.toploc import TopLocCache, setup_toploc_cache
 
 BYTES_PER_PROOF = 258
-
-
-@pytest.fixture(scope="session")
-def llm():
-    from vllm import LLM
-
-    yield LLM(model="Qwen/Qwen3-0.6B", enforce_eager=True, disable_async_output_proc=True, dtype="bfloat16")
-
-    if dist.is_initialized():
-        dist.destroy_process_group()
 
 
 def test_toploc_disable():

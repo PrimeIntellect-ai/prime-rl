@@ -5,9 +5,61 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+import torch.distributed as dist
+from huggingface_hub import HfApi
 
 from zeroband.training.data import STABLE_FILE
+from zeroband.utils.logger import reset_logger
+from zeroband.utils.models import AttnImpl, ModelName
 from zeroband.utils.parquet import pa_schema
+from zeroband.utils.world_info import reset_world_info
+
+
+@pytest.fixture(autouse=True)
+def global_setup_and_cleanup():
+    # Make sure that before each test we reset environment variables and singletons
+    original_env = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(original_env)
+    reset_world_info()
+    reset_logger("TRAIN")
+    reset_logger("INFER")
+
+
+@pytest.fixture(params=["eager", "sdpa", "flash_attention_2"])
+def attn_impl(request) -> AttnImpl:
+    try:
+        # ruff: noqa: F401
+        import flash_attn
+    except ImportError:
+        pytest.skip("Flash Attention not available")
+    return request.param
+
+
+@pytest.fixture(scope="session")
+def model_name() -> ModelName:
+    """Main model to use for tests."""
+    return "Qwen/Qwen3-0.6B"
+
+
+@pytest.fixture(scope="session")
+def hf_api() -> HfApi:
+    """Hugging Face API to use for tests."""
+    return HfApi()
+
+
+@pytest.fixture(scope="session")
+def llm(model_name):
+    """
+    vLLM LLM instance to use for tests. Incurs significant startup time, hence reused across tests.
+    """
+    from vllm import LLM
+
+    yield LLM(model=model_name, enforce_eager=True, disable_async_output_proc=True, dtype="bfloat16")
+
+    if dist.is_initialized():
+        dist.destroy_process_group()
 
 
 @lru_cache(maxsize=None)
