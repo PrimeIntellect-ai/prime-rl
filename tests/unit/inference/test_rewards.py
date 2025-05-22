@@ -28,7 +28,7 @@ from zeroband.inference.rewards import CompletionReward, RequestRewards, compute
 # ```
 def test_compute_rewards():
     # Load precomputed rewards
-    with open("tests/units/inference/rewards.pkl", "rb") as f:
+    with open("tests/unit/inference/rewards.pkl", "rb") as f:
         precomputed_rewards = pickle.load(f)
     # Get inputs and outputs
     request_outputs = precomputed_rewards["request_outputs"]
