@@ -34,7 +34,7 @@ def precomputed_rewards(path):
 #         f,
 #     )
 # ```
-@pytest.mark.parametrize("path", ["tests/units/rewards.pkl"])
+@pytest.mark.parametrize("path", ["tests/units/inference/rewards.pkl"])
 def test_compute_rewards(precomputed_rewards):
     # Get inputs and outputs
     request_outputs = precomputed_rewards["request_outputs"]
