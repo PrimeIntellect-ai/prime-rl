@@ -1,4 +1,11 @@
 # Update src/zeroband/inference/genesys/sanskrit.py
+try:
+    from chandas import identify
+    CHANDAS_AVAILABLE = True
+except ImportError:
+    CHANDAS_AVAILABLE = False
+    print("Warning: Chandas library not available. Install with: pip install chandas")
+
 def compute_sanskrit_poetry_reward(completion: str, verification_info: Dict) -> float:
     """
     Enhanced reward function with anti-gaming measures.
