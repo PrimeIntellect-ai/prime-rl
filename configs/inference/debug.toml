@@ -1,9 +1,18 @@
-model_name = "Qwen/Qwen3-0.6B"
-dataset = "justus27/rl-code-and-math"
 max_samples = 32
 batch_size = 8
+
+[model]
+name = "Qwen/Qwen3-0.6B"
 enforce_eager = true
-toploc = true
+
+[data]
+name = "justus27/rl-code-and-math"
 
 [sampling]
 max_tokens = 16
+
+[toploc]
+disable = false
+
+[io]
+cleanup = true

@@ -6,6 +6,12 @@ import time
 import uuid
 from pathlib import Path
 
+# Setup logger (and environment variables before any other imports)
+# ruff: noqa: I001
+from zeroband.inference.logger import setup_logger
+
+logger = setup_logger(tag="Inference")
+
 import numpy as np
 import pyarrow.parquet as pq
 import requests
@@ -16,62 +22,66 @@ from pydantic_config import parse_argv
 from toploc.utils import sha256sum
 from vllm import LLM, SamplingParams
 
+
 from zeroband.inference import envs
 from zeroband.inference.config import Config
+from zeroband.inference.logger import get_logger
 from zeroband.inference.parquet import get_parquet_table
 from zeroband.inference.pipeline import setup_pipeline
 from zeroband.inference.rewards import compute_rewards
 from zeroband.inference.toploc import setup_toploc_cache
 from zeroband.inference.utils import fake_chat_template, generate_target_length_prompts, reload_model_weights
 from zeroband.training.mp import EnvWrapper
-from zeroband.utils.logger import get_logger
 from zeroband.utils.metrics import PrimeMetric
-
-# Global logger
-logger = get_logger("INFER")
 
 
 def inference(config: Config):
-    # Initialize the logger
+    # Get inference logger
+    logger = get_logger()
     logger.info("Starting inference")
-    logger.info(f"TP={config.tp}, DP={config.dp}, PP={config.pp.world_size}")
 
-    if config.clean_output_path and config.output_path is not None:
-        logger.info(f"Cleaning output path {config.output_path}")
-        shutil.rmtree(config.output_path, ignore_errors=True)
+    # Log configuration
+    for field, value in config.model_dump().items():
+        logger.info(f"{field}: {value}")
+
+    if config.io.cleanup and config.io.data_dir is not None:
+        logger.info(f"Cleaning data directory {config.io.data_dir}")
+        shutil.rmtree(config.io.data_dir, ignore_errors=True)
 
     # Initialize prime metrics
     prime_metric = PrimeMetric(disable=config.prime_log_freq is None, period=config.prime_log_freq)
 
     # Initialize vLLM and get tokenizer
-    logger.info("Initializing vLLM")
+    logger.info(f"Initializing vLLM v{os.environ.get('VLLM_USE_V1')} for model {config.model.name}")
     llm = LLM(
-        model=config.model_name,
-        tensor_parallel_size=config.tp,
-        max_seq_len_to_capture=config.max_model_len,
-        max_model_len=config.max_model_len,
-        quantization=config.quant,
-        enforce_eager=config.enforce_eager,
+        model=config.model.name,
+        tensor_parallel_size=config.parallel.tp,
+        max_seq_len_to_capture=config.model.max_model_len,
+        max_model_len=config.model.max_model_len,
+        quantization=config.model.quant,
+        enforce_eager=config.model.enforce_eager,
         disable_async_output_proc=True,  # We have an off by 1 error in toploc without this flag when cuda graph padding is enabled.
-        download_dir=config.download_dir,
-        dtype="bfloat16" if config.dtype == "bf16" else torch.float32,
+        download_dir=config.io.cache_dir,
+        dtype="bfloat16" if config.model.dtype == "bf16" else torch.float32,
     )
     tokenizer = llm.get_tokenizer()
     sampling_params = SamplingParams(**config.sampling.model_dump())
 
     # Create communication for pipeline
-    if config.pp.world_size > 1:
+    if config.parallel.pp.world_size > 1:
+        logger.info(f"Setting up pipeline rank {config.parallel.pp.rank} in world size {config.parallel.pp.world_size}")
         setup_pipeline(
             llm=llm,
-            rank=config.pp.rank,
-            world_size=config.pp.world_size,
-            iroh_seed=config.pp.iroh_seed,
-            iroh_peer_id=config.pp.iroh_peer_id,
+            rank=config.parallel.pp.rank,
+            world_size=config.parallel.pp.world_size,
+            iroh_seed=config.parallel.pp.iroh_seed,
+            iroh_peer_id=config.parallel.pp.iroh_peer_id,
         )
 
     # Load  dataset
-    logger.info(f"Loading dataset {config.dataset}")
-    dataset = load_dataset(config.dataset, split="train")
+    logger.info(f"Loading dataset {config.data.name}")
+    dataset = load_dataset(config.data.name, split="train")
+    logger.info(f"Loaded dataset {config.data.name} with {len(dataset)} samples")
 
     # Optionally shuffle dataset
     if envs.NODE_ADDRESS is not None:
@@ -83,37 +93,44 @@ def inference(config: Config):
     else:
         # Seed the dataset with a random number
         seed = config.seed + envs.RANK if config.seed is not None else None
+        logger.info(f"Seeding with {seed}")
         generator = np.random.default_rng(seed)
-        dataset = load_dataset(config.dataset, split="train").shuffle(generator=generator)
         node_address_int = None
 
-    # Optionally filter dataset
-    if config.difficulty_filtering:
-        dataset = dataset.filter(
-            lambda x: x[config.difficulty_filtering.solve_rate_field] >= config.difficulty_filtering.min_solve_rate
-            and x[config.difficulty_filtering.solve_rate_field] <= config.difficulty_filtering.max_solve_rate
-        )
+    logger.info(f"Shuffling dataset {config.data.name}")
+    dataset = dataset.shuffle(generator=generator)
 
-    # Setup TOPLOC
+    # Optionally filter dataset
+    if config.data.filtering:
+        logger.info(f"Filtering dataset {config.data.name} with {config.data.filtering.solve_rate_field}")
+        dataset = dataset.filter(
+            lambda x: x[config.data.filtering.solve_rate_field] >= config.data.filtering.min_solve_rate
+            and x[config.data.filtering.solve_rate_field] <= config.data.filtering.max_solve_rate
+        )
+        logger.info(f"Filtered dataset {config.data.name}, {len(dataset)} samples remaining")
+
+    # Setup TOPLOC cache and register hook to add hidden states to it
+    num_batch_samples = config.batch_size * config.sampling.n
+    hidden_size = llm.llm_engine.model_executor.driver_worker.model_runner.model.config.hidden_size
     toploc_cache, _ = setup_toploc_cache(
         llm,
-        disable=not config.toploc,
-        max_seqs=config.batch_size * config.sampling.n,
-        hidden_size=llm.llm_engine.model_executor.driver_worker.model_runner.model.config.hidden_size,
+        config.toploc,
+        max_seqs=num_batch_samples,
+        hidden_size=hidden_size,
     )
 
-    if config.ckpt_start_path is not None:
-        path = Path(config.ckpt_start_path)
-        path_file = path / "model.safetensors"
-        if not path_file.exists():
-            raise FileNotFoundError(f"Checkpoint file {path_file} does not exist")
-        ckpt_step = int(path.name.split("_")[-1])
-        logger.info(f"Resuming from step {ckpt_step} at {path_file}")
-        llm = reload_model_weights(llm, path_file)
-        real_step = ckpt_step
-    else:
-        ckpt_step = 0
-        real_step = 0
+    step = 0
+    ckpt_step = 0
+    if config.io.checkpoint_start_dir is not None:
+        checkpoint_dir = Path(config.io.checkpoint_start_dir)
+        checkpoint_file = checkpoint_dir / "model.safetensors"
+        logger.info(f"Resuming from step {ckpt_step} at {checkpoint_file}")
+        if not checkpoint_file.exists():
+            raise FileNotFoundError(f"Checkpoint file {checkpoint_file} does not exist")
+        llm = reload_model_weights(llm, checkpoint_file)
+        logger.info(f"Reloaded model weights from {checkpoint_file}")
+        ckpt_step = int(checkpoint_file.name.split("_")[-1])
+        step = ckpt_step
 
     # This is used by the seeding logic to make sure we dont generate the same samples twice if we do multiple batches for a step
     current_step_batch_counter = 1
@@ -122,56 +139,66 @@ def inference(config: Config):
     max_samples = config.max_samples or len(dataset)
 
     for i in range(0, min(len(dataset), max_samples), config.batch_size):
+        logger.info("---")
+        logger.info(f"Step {step}")
+        logger.info(f"Generating: {config.sampling.n} samples for {config.batch_size} problems")
+
+        # Get current step from endpoint
         if config.step_endpoint is not None:
+            logger.info(f"Getting current step from endpoint {config.step_endpoint}")
             # We get the step from the endpoint at the start of each batch to know what to work on
             try:
-                new_real_step = requests.get(config.step_endpoint).json()
+                new_step = requests.get(config.step_endpoint).json()
             except Exception as e:
                 logger.warning(f"Failed to get step from endpoint {config.step_endpoint}: {e}")
                 time.sleep(10)
                 continue
 
-            if new_real_step != real_step:
-                real_step = new_real_step
+            if new_step != step:
+                step = new_step
                 current_step_batch_counter = 1
             else:
                 current_step_batch_counter += 1
 
-        logger.info(
-            f"real_step: {real_step}, ckpt_step: {ckpt_step}, real_step - ckpt_step: {real_step - ckpt_step}, config.async_level: {config.async_level}"
-        )
-        if config.rollout_path is not None and real_step - ckpt_step > config.async_level:
-            ckpt_step = real_step - config.async_level
+        # Reload model weights if we are past the async level
+        if config.io.checkpoint_dir is not None and step - ckpt_step > config.async_level:
+            ckpt_step = step - config.async_level
             attempt_count = 0
             while True:
-                stable_file = Path(config.rollout_path) / f"step_{ckpt_step}/stable"
+                stable_file = Path(config.io.checkpoint_dir) / f"step_{ckpt_step}/stable"
                 if stable_file.exists():
-                    logger.info(f"Reloading model weights from {config.rollout_path} ckpt {ckpt_step}")
-                    llm = reload_model_weights(llm, Path(config.rollout_path) / f"step_{ckpt_step}/model.safetensors")
+                    logger.info(f"Reloading model weights for step {ckpt_step} from {config.io.checkpoint_dir} ckpt {ckpt_step}")
+                    ckpt_file = Path(config.io.checkpoint_dir) / f"step_{ckpt_step}/model.safetensors"
+                    llm = reload_model_weights(llm, ckpt_file)
                     total_problems = 0
                     total_tokens = 0
-                    logger.info(f"Reloaded model weights from {config.rollout_path} ckpt {ckpt_step}")
+                    logger.info(f"Reloaded model weights for step {ckpt_step} from {ckpt_file}")
                     break
                 if attempt_count % 30 == 0:
                     logger.info(f"No stable file found at {stable_file}, waiting for new checkpoint")
                 time.sleep(1)
                 attempt_count += 1
 
-        # Get batch
+        # Randomize sampling indices in production
         if node_address_int is not None:
             # TODO: What if we have multiple sample per real step?
             # Its impossible right now but we need to fix this if accept counter is used.
 
             # We reseed the generator here to make the sampling reproducible at each step.
             # This would work even if the node restarts and resumes from the current step.
-            generator = np.random.default_rng(node_address_int * current_step_batch_counter + real_step)
-            indexes = generator.integers(0, len(dataset), config.batch_size)
-            batch = dataset.select(indexes)
+            generator = np.random.default_rng(node_address_int * current_step_batch_counter + step)
+            indices = generator.integers(0, len(dataset), config.batch_size)
         else:
-            batch = dataset.select(range(i, min(i + config.batch_size, len(dataset))))
-        messages = [[{"role": "user", "content": item["prompt"]}, {"role": "assistant", "content": "<think>\n"}] for item in batch]
+            indices = range(i, min(i + config.batch_size, len(dataset)))
 
+        # Sample batch from dataset
+        logger.debug(f"Sampling batch with indices {indices[:5]}")
+        batch = dataset.select(indices)
+
+        # Prepare prompts
+        messages = [[{"role": "user", "content": item["prompt"]}, {"role": "assistant", "content": "<think>\n"}] for item in batch]
         length_prompt_additions, target_lengths = generate_target_length_prompts(config.len_reward, len(batch))
+
         # Assume verification_info is stored as a JSON string in the dataset.
         verification_infos = [json.loads(item["verification_info"]) for item in batch]
         for target_length, verification_info in zip(target_lengths, verification_infos):
@@ -199,17 +226,21 @@ def inference(config: Config):
                 for item, length_prompt in zip(batch, length_prompt_additions)
             ]
 
+        # Apply chat template
         if tokenizer.chat_template:
             prompts = tokenizer.apply_chat_template(messages, tokenize=False, continue_final_message=True)
-            if config.model_name != "Qwen/QwQ-32B":
+
+            # Remove <think> from prompts
+            if config.model.name != "Qwen/QwQ-32B":
                 for i, p in enumerate(prompts):
                     prompts[i] = p.replace("<｜begin▁of▁sentence｜>", "")
         else:
             prompts = fake_chat_template(messages)
 
-        start_time = time.time()
+        # Generating
+        batch_start = time.time()
         request_outputs = llm.generate(prompts, sampling_params, use_tqdm=False)
-        end_time = time.time()
+        batch_end = time.time()
 
         # Dropping like this isnt ideal. But in practice, we shouldnt have any prompts that are too long.
         request_outputs = [req for req in request_outputs if len(req.outputs[0].token_ids) > 0]
@@ -220,20 +251,19 @@ def inference(config: Config):
         # We call here to give time for the proofs to be generated non-blocking in the background.
         toploc_cache.maybe_generate_proofs_in_background(force_generate=True)
 
-        # Calculate tokens and throughput
+        # Calculate batch throughput and average sequence length
         batch_input_tokens = sum(len(req.prompt_token_ids) for req in request_outputs)
         batch_output_tokens = sum(sum(len(output.token_ids) for output in req.outputs) for req in request_outputs)
-        batch_total_tokens = batch_input_tokens + batch_output_tokens
-        total_tokens += batch_total_tokens
+        batch_tokens = batch_input_tokens + batch_output_tokens
+        batch_throughput = batch_tokens / (batch_end - batch_start)
+        avg_sequence_length = batch_tokens / num_batch_samples
 
-        avg_seq_length = batch_total_tokens / (len(request_outputs) * config.sampling.n) if request_outputs else 0
+        # Calculate overall tokens
+        total_tokens += batch_tokens
 
-        elapsed_time = end_time - start_time
-        tokens_per_second = batch_total_tokens / elapsed_time if elapsed_time > 0 else 0
-
-        logger.info(
-            f"Batch throughput: {tokens_per_second:.2f} tok/sec ({batch_total_tokens} tokens in {elapsed_time:.2f}s, avg seq len: {avg_seq_length:.1f})"
-        )
+        logger.info(f"Generated {len(request_outputs)} samples ({batch_tokens} tokens) in {batch_end - batch_start:.2f}s")
+        logger.info(f"Batch throughput: {batch_throughput:.2f} tok/sec")
+        logger.info(f"Average sequence length  {avg_sequence_length:.1f}")
 
         # Compute proofs
         # Note (Jack): Currently, vllm guarantees that seq ids are in the same order as prompts passed to generate.
@@ -256,23 +286,28 @@ def inference(config: Config):
             target_lengths,
         )
 
-        step_path = Path(config.output_path) / f"step_{real_step}"
-        os.makedirs(step_path, exist_ok=True)
-        pq_save_path = f"{step_path}/{uuid.uuid4()}.parquet"
-        pq.write_table(table, pq_save_path)
-        file_sha = sha256sum(pq_save_path)
-        prime_metric.log_prime({"file_sha": file_sha, "file_name": pq_save_path})
-        logger.info(f"✨ Saved {len(proofs)} samples to {pq_save_path} with sha {file_sha or 'NA'}")
+        # Write step outputs to parquet file
+        step_dir = Path(config.io.data_dir) / f"step_{step}"
+        step_dir.mkdir(parents=True, exist_ok=True)
+        step_file = f"{step_dir}/{uuid.uuid4()}.parquet"
+        pq.write_table(table, step_file)
+        logger.info(f"Saved {num_batch_samples} output samples to {step_file}")
 
+        # Compute and log file sha
+        file_sha = sha256sum(step_file)
+        logger.info(f"Logged output file with SHA256 {file_sha or 'NA'}")
+        prime_metric.log_prime({"file_sha": file_sha, "file_name": step_file})
+
+        # Log metrics to dashboard
         total_problems += len(prompts)
-        metric = {"dashbord-progress/total": total_problems, f"dashbord-progress/{config.dataset}": total_tokens}
+        metric = {"dashbord-progress/total": total_problems, f"dashbord-progress/{config.data.name}": total_tokens}
         prime_metric.log_prime(metric)
 
-        logger.info(f"Generated {total_problems} problems for step {real_step}")
-        real_step += 1
+        # Increment step counter
+        step += 1
 
-        if config.total_step is not None and real_step > config.total_step:
-            logger.info(f"Reached total step {config.total_step}, stopping inference")
+        if config.max_steps is not None and step > config.max_steps:
+            logger.info(f"Reached max step {config.max_steps}, stopping inference")
             break
 
     # Manually destroy vLLM process group to avoid warnings
@@ -283,19 +318,19 @@ def main(config: Config) -> list[mp.Process]:
     processes = []
     from zeroband.inference import envs as inference_envs
 
-    if config.dp > 1:
-        if config.tp == "auto":
-            assert torch.cuda.device_count() % config.dp == 0, "Number of GPUs must be divisible by DP"
-            config.tp = torch.cuda.device_count() // config.dp
+    if config.parallel.dp > 1:
+        if config.parallel.tp == "auto":
+            assert torch.cuda.device_count() % config.parallel.dp == 0, "Number of GPUs must be divisible by DP"
+            config.parallel.tp = torch.cuda.device_count() // config.parallel.dp
         gpu_ids = inference_envs.CUDA_VISIBLE_DEVICES
-        gpu_ids_per_rank = [gpu_ids[i : i + config.tp] for i in range(0, len(gpu_ids), config.tp)]
+        gpu_ids_per_rank = [gpu_ids[i : i + config.parallel.tp] for i in range(0, len(gpu_ids), config.parallel.tp)]
         for rank, gpu_ids in enumerate(gpu_ids_per_rank):
             envs = {"CUDA_VISIBLE_DEVICES": ",".join(map(str, gpu_ids)), "RANK": str(rank), "LOCAL_RANK": str(rank)}
             process = mp.Process(target=EnvWrapper(inference, envs), args=(config,))
             processes.append(process)
     else:
-        if config.tp == "auto":
-            config.tp = torch.cuda.device_count()
+        if config.parallel.tp == "auto":
+            config.parallel.tp = torch.cuda.device_count()
         inference(config)
 
     # Start all processes
@@ -309,7 +344,7 @@ def main(config: Config) -> list[mp.Process]:
 
 if __name__ == "__main__":
     # Set spawn method before any other multiprocessing code
-    mp.set_start_method("spawn")
+    # mp.set_start_method("spawn")
     config = Config(**parse_argv())  # type: ignore
 
     if config.step_endpoint is not None:
@@ -324,7 +359,7 @@ if __name__ == "__main__":
 
         shardcast_process = run_main_bg(
             inference_envs.SHARDCAST_SERVERS,
-            config.rollout_path,
+            config.io.checkpoint_dir,
             config.async_level + 1,
             # TODO: maybe +1 because we most likely wont download the current step in time?
             # We could deadlock though.
