@@ -12,7 +12,7 @@ total_steps = 100000000000000
 step_per_rollout = 2
 
 [optim.optim]
-lr = 1e-6
+lr = 6e-6
 
 
 
