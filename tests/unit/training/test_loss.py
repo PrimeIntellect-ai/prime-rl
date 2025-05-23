@@ -3,6 +3,8 @@ import torch
 
 from zeroband.training.loss import entropy_loss, grpo_loss, kl_penalty
 
+pytestmark = [pytest.mark.gpu]
+
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 def test_grpo_loss(dtype):
