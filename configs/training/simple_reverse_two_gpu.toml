@@ -2,7 +2,7 @@ model_name = "willcb/Qwen2.5-0.5B-Reverse-SFT"
 project = "reverse-debug"
 
 [train]
-micro_bs = 2
+micro_bs = 32
 reshard_after_forward = true
 
 [optim]
@@ -18,7 +18,7 @@ lr = 6e-6
 
 [data]
 path = "data_rollout"
-seq_length = 2048
+seq_length = 128
 
 [ckpt]
 rollout_path = "outputs"
