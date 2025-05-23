@@ -1,6 +1,6 @@
 from typing import Literal, TypeAlias
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, LlamaForCausalLM, Qwen2ForCausalLM, Qwen3ForCausalLM
 
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, LlamaForCausalLM, Qwen2ForCausalLM, Qwen3ForCausalLM
 
 ModelName: TypeAlias = Literal[
     # Llama 3
