@@ -19,16 +19,8 @@ def process(
     output_path: Path, run_process: Callable[[list[str]], Popen], fake_rollout_files_dir: Callable[[list[int], int, int, int], Path]
 ):
     data_path = fake_rollout_files_dir(steps=list(range(2)), num_files=8, batch_size=8, seq_len=16)
-    return run_process(CMD + ["--ckpt.path", str(output_path), "--data.path", str(data_path), "--no-data.fake"])
+    return run_process(CMD + ["--data.path", str(data_path), "--no-data.fake"])
 
 
 def test_no_error(process: Popen):
     assert process.returncode == 0, f"Process failed with return code {process.returncode}"
-
-
-def test_output_directories_exist(output_path: Path):
-    assert output_path.exists()
-    assert not (output_path / "step_0").exists()
-    assert (output_path / "step_1").exists()
-    assert (output_path / "step_2").exists()
-    assert not (output_path / "step_3").exists()

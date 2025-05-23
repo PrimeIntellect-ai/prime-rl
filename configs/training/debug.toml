@@ -15,7 +15,3 @@ total_steps = 2
 fake = true
 seq_length = 128
 timeout = 1
-
-[ckpt]
-path = "checkpoints"
-interval = 1
