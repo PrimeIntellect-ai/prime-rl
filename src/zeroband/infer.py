@@ -74,12 +74,12 @@ def inference(config: Config):
     dataset = load_dataset(config.dataset, split="train")
 
     # Optionally shuffle dataset
-    if envs.NODE_ADDRESS is not None:
+    if envs.GROUP_ID is not None:
         # We dont shuffle here because we shuffle reproducibly in the sampling loop.
-        assert config.seed is None, "Seed is not supported when NODE_ADDRESS is set"
-        assert envs.RANK == 0, "DP is not supported when NODE_ADDRESS is set"
-        node_address_int = int(envs.NODE_ADDRESS, 16)
-        logger.info(f"Seeding with {node_address_int} ({envs.NODE_ADDRESS})")
+        assert config.seed is None, "Seed is not supported when GROUP_ID is set"
+        assert envs.RANK == 0, "DP is not supported when GROUP_ID is set"
+        node_address_int = int(envs.GROUP_ID, 16)
+        logger.info(f"Seeding with {node_address_int} ({envs.GROUP_ID})")
     else:
         # Seed the dataset with a random number
         seed = config.seed + envs.RANK if config.seed is not None else None
@@ -210,6 +210,7 @@ def inference(config: Config):
         start_time = time.time()
         request_outputs = llm.generate(prompts, sampling_params, use_tqdm=False)
         end_time = time.time()
+        print(f"Example: {request_outputs[0].prompt}{request_outputs[0].outputs[0].text}")
 
         # Dropping like this isnt ideal. But in practice, we shouldnt have any prompts that are too long.
         request_outputs = [req for req in request_outputs if len(req.outputs[0].token_ids) > 0]
