@@ -1,18 +1,9 @@
 # Update src/zeroband/inference/genesys/sanskrit.py
-try:
-    from chandas import identify
-    CHANDAS_AVAILABLE = True
-except ImportError:
-    CHANDAS_AVAILABLE = False
-    print("Warning: Chandas library not available. Install with: pip install chandas")
-
+from typing import Dict
 def compute_sanskrit_poetry_reward(completion: str, verification_info: Dict) -> float:
     """
     Enhanced reward function with anti-gaming measures.
     """
-    if not CHANDAS_AVAILABLE:
-        return 0.0
-    
     # Extract poem
     if "</think>" in completion:
         poem = completion.split("</think>")[1].strip()
@@ -27,8 +18,9 @@ def compute_sanskrit_poetry_reward(completion: str, verification_info: Dict) -> 
     if is_repetitive(poem):
         return 0.0
     
-    expected_meter = verification_info.get("meter_type", "Śloka")
-    topic = verification_info.get("topic", "")
+    # These should always be present - fail fast if missing
+    expected_meter = verification_info["meter_type"]
+    topic = verification_info["topic"]
     
     # Verify meter using Chandas
     meter_score = verify_meter_with_chandas(poem, expected_meter)
@@ -62,13 +54,13 @@ def verify_meter_with_chandas(poem: str, expected_meter: str) -> float:
         
         expected_norm = normalize_meter_name(expected_meter)
         
-        # Exact match
-        if id_result.get('exact'):
+        # Explicit checks instead of .get() - be clear about what we expect
+        if 'exact' in id_result and id_result['exact']:
             if normalize_meter_name(id_result['exact']) == expected_norm:
                 return 1.0
         
-        # Partial match
-        if id_result.get('partial'):
+        # Check partial matches only if exact match failed
+        if 'partial' in id_result and id_result['partial']:
             for partial in id_result['partial']:
                 if normalize_meter_name(partial) == expected_norm:
                     return 0.7
