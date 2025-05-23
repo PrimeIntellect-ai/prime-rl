@@ -1,5 +1,5 @@
 model_name = "willcb/Qwen2.5-0.5B-Reverse-SFT"
-dataset = "agentlans/wikipedia-paragraphs"
+dataset = "PrimeIntellect/reverse_text_dataset_debug"
 batch_size = 16
 dp = 1
 rollout_path = "outputs"

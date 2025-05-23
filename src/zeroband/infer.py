@@ -72,16 +72,7 @@ def inference(config: Config):
     # Load  dataset
     logger.info(f"Loading dataset {config.dataset}")
 
-    if config.dataset == "agentlans/wikipedia-paragraphs":
-        dataset = load_dataset(config.dataset, split="train").map(
-            lambda x: {
-                "prompt": f"Reverse the given text.{x['text']}",
-                "verification_info": json.dumps({"ground_truth": x["text"][::-1]}),
-                "task_type": "reverse_text",
-            }
-        )
-    else:
-        dataset = load_dataset(config.dataset, split="train")
+    dataset = load_dataset(config.dataset, split="train")
 
     # Optionally shuffle dataset
     if envs.NODE_ADDRESS is not None:
