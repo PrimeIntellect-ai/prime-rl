@@ -24,7 +24,7 @@ jobs:
       - name: Install dependencies
         run: uv sync
       - name: Run CPU tests
-        run: uv run pytest tests -m "not gpu" -v
+        run: uv run pytest tests -m "not gpu"
 
   gpu-tests:
     name: Run GPU Tests
@@ -43,4 +43,4 @@ jobs:
       - name: Install dependencies
         run: uv sync && uv sync --extra fa
       - name: Run GPU tests
-        run: uv run pytest tests -m gpu -v
+        run: uv run pytest tests -m gpu
