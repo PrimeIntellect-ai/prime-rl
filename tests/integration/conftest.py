@@ -27,5 +27,6 @@ def run_process() -> Generator[Callable[[list[str]], subprocess.Popen], None, No
 
     yield start_process
 
-    process.terminate()
-    process.wait()
+    if process is not None and process.poll() is None:
+        process.terminate()
+        process.wait()
