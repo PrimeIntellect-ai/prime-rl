@@ -241,10 +241,10 @@ To run CPU-only tests, use the inverse of the `gpu` marker:
 uv run pytest -v -m "not gpu"
 ```
 
-To run fast tests, use the `fast` marker:
+To run fast tests, use the inverse of the `slow` marker:
 
 ```bash
-uv run pytest -v -m fast
+uv run pytest -v -m "not slow"
 ```
 
 ## Citation
