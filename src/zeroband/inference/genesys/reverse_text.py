@@ -8,7 +8,7 @@ def lcs_ratio(x: str, y: str) -> float:
     return SequenceMatcher(None, x, y).ratio()
 
 
-def lcs_reward_func(completion: str, verification_info: dict) -> int:
+def reverse_text(completion: str, verification_info: dict) -> int:
     """
     LCS ratio of the reversed prompt and the parsed completion.
     """

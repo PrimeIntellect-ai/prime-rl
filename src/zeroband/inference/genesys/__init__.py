@@ -1,10 +1,10 @@
 from typing import Callable, Literal
 
 from zeroband.inference.genesys.code import evaluate_code
-from zeroband.inference.genesys.lcs_reward import lcs_reward_func
 from zeroband.inference.genesys.math import compute_math_reward
+from zeroband.inference.genesys.reverse_text import reverse_text
 
-TaskType = Literal["verifiable_math", "prime_rl_code", "lcs_reward"]
+TaskType = Literal["verifiable_math", "prime_rl_code", "reverse_text"]
 
 
 def get_reward_function(task_type: TaskType) -> Callable[[str, dict], float]:
@@ -17,5 +17,5 @@ def get_reward_function(task_type: TaskType) -> Callable[[str, dict], float]:
 _REWARD_FUNCTIONS: dict[TaskType, Callable] = {
     "verifiable_math": compute_math_reward,
     "prime_rl_code": evaluate_code,
-    "reverse_text": lcs_reward_func,
+    "reverse_text": reverse_text,
 }
