@@ -6,9 +6,6 @@ import pytest
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
 
-USERNAME = os.environ.get("USERNAME_CI", os.getlogin())
-
-
 @pytest.fixture(scope="session")
 def username():
     return os.environ.get("USERNAME_CI", os.getlogin())
