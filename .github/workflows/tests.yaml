@@ -1,0 +1,34 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  cpu-tests:
+    name: Run CPU Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Setup project
+        uses: ./.github/workflows/setup.yaml
+      - name: Run CPU tests
+        run: uv run pytest tests -m "not gpu" -v
+
+  gpu-tests:
+    name: Run GPU Tests
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Setup project
+        uses: ./.github/workflows/setup.yaml
+      - name: Run GPU tests
+        run: uv run pytest tests -m gpu -v

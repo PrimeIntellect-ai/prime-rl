@@ -1,0 +1,18 @@
+name: Setup
+
+on:
+  workflow_call
+
+jobs:
+  uv:
+    name: Setup virtual environment
+    runs-on: "composite"
+    steps:
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dependencies
+        run: uv sync && uv sync --extra fa
