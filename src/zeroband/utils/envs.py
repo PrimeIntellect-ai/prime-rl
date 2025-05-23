@@ -9,20 +9,31 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"  # to avoid HF warning
 if os.getenv("RUST_LOG") is None:
     os.environ["RUST_LOG"] = "off"
 
+if os.getenv("LOG_LEVEL") is None:
+    os.environ["LOG_LEVEL"] = "ERROR"
+
 if TYPE_CHECKING:
     # Prime
-    PRIME_LOG_LEVEL: str = "INFO"
+    PRIME_LOG_LEVEL: str
+
+    # Rust
+    RUST_LOG: str
+
+    # vLLM
+    VLLM_USE_V1: str
 
     # PyTorch
-    RANK: int = 0
-    WORLD_SIZE: int = 1
-    LOCAL_RANK: int = 0
-    LOCAL_WORLD_SIZE: int = 1
-    CUDA_VISIBLE_DEVICES: List[int] = [0]
+    RANK: int
+    WORLD_SIZE: int
+    LOCAL_RANK: int
+    LOCAL_WORLD_SIZE: int
+    CUDA_VISIBLE_DEVICES: List[int]
 
 # Shared environment variables between training and inference
 _BASE_ENV: Dict[str, Any] = {
     "PRIME_LOG_LEVEL": lambda: os.getenv("PRIME_LOG_LEVEL", "INFO"),
+    "RUST_LOG": lambda: os.getenv("RUST_LOG", "off"),
+    "VLLM_USE_V1": lambda: os.getenv("VLLM_USE_V1", "0"),
     "RANK": lambda: int(os.getenv("RANK", "0")),
     "WORLD_SIZE": lambda: int(os.getenv("WORLD_SIZE", "1")),
     "LOCAL_RANK": lambda: int(os.getenv("LOCAL_RANK", "0")),
