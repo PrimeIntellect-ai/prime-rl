@@ -43,6 +43,8 @@ ModelName: TypeAlias = Literal[
     "mikasenghaas/Qwen3-14B-1.2",
     "mikasenghaas/Qwen3-30B-A3B-0.2",
     "mikasenghaas/Qwen3-30B-A3B-1.2",
+    # Reverse SFT
+    "willcb/Qwen2.5-0.5B-Reverse-SFT",
 ]
 
 ModelType: TypeAlias = LlamaForCausalLM | Qwen2ForCausalLM | Qwen3ForCausalLM
