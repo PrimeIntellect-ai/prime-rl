@@ -1,36 +1,21 @@
 import pytest
 import torch
-from transformers import AutoTokenizer
 
-from zeroband.utils.models import ModelType, get_model_and_tokenizer
+from zeroband.utils.models import get_model_and_tokenizer
 
 BS = 1
 SEQ_LEN = 16
 
+pytestmark = [pytest.mark.gpu]
 
-@pytest.fixture(params=["eager", "sdpa", "flash_attention_2"], scope="session")
-def attn_impl(request):
-    try:
-        # ruff: noqa: F401
-        import flash_attn
-    except ImportError:
-        pytest.skip("Flash Attention not available")
-    return request.param
+def test_model_forward_gpu():
+    model, tokenizer = get_model_and_tokenizer("Qwen/Qwen3-0.6B", "flash_attention_2")
+    assert model is not None
+    assert tokenizer is not None
 
-
-@pytest.fixture(scope="session")
-def model_name():
-    return "Qwen/Qwen2.5-0.5B-Instruct"
-
-
-@pytest.fixture(scope="session")
-def model_tokenizer(model_name, attn_impl) -> tuple[ModelType, AutoTokenizer]:
+    model = model.to("cuda")
+def test_model_forward(model_name, attn_impl):
     model, tokenizer = get_model_and_tokenizer(model_name, attn_impl)
-    return model, tokenizer
-
-
-def test_model_forward(model_tokenizer: tuple[ModelType, AutoTokenizer]):
-    model, tokenizer = model_tokenizer
     assert model is not None
     assert tokenizer is not None
 
@@ -42,8 +27,8 @@ def test_model_forward(model_tokenizer: tuple[ModelType, AutoTokenizer]):
         assert outputs.shape == (BS, SEQ_LEN, model.config.vocab_size)
 
 
-def test_model_with_position_ids(model_tokenizer: tuple[ModelType, AutoTokenizer]):
-    model, tokenizer = model_tokenizer
+def test_model_with_position_ids(model_name, attn_impl):
+    model, tokenizer = get_model_and_tokenizer(model_name, attn_impl)
     assert model is not None
     assert tokenizer is not None
 
@@ -59,7 +44,7 @@ def test_model_with_position_ids(model_tokenizer: tuple[ModelType, AutoTokenizer
 
 @pytest.mark.skip(reason="Sequence packing for Qwen not working.")
 @pytest.mark.parametrize("correct_position_ids", [True, False])
-def test_model_with_sequence_packing(model_tokenizer: tuple[ModelType, AutoTokenizer], correct_position_ids):
+def test_model_with_sequence_packing(model_name, attn_impl, correct_position_ids):
     """
     The goal of this test is to check that the sequence packing works correctly.
 
@@ -68,13 +53,12 @@ def test_model_with_sequence_packing(model_tokenizer: tuple[ModelType, AutoToken
     [B, seq]  and doing [1, B*seq] with the proper masking.
 
     """
-    model, tokenizer = model_tokenizer
+    model, tokenizer = get_model_and_tokenizer(model_name, attn_impl)
+    assert model is not None
+    assert tokenizer is not None
 
     if model.config._attn_implementation != "flash_attention_2":
         pytest.skip("Test only works with flash attention")
-
-    assert model is not None
-    assert tokenizer is not None
 
     model = model.to("cuda")
     inputs = [0, 1, 2, 3]

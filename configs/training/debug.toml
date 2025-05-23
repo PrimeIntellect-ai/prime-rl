@@ -1,5 +1,7 @@
 model_name = "Qwen/Qwen3-0.6B"
 wandb = false
+kl_coef = 0.02
+collate_mode = "padding"
 
 [train]
 micro_bs = 1
@@ -7,7 +9,7 @@ micro_bs = 1
 [optim]
 batch_size = 2
 warmup_steps = 10
-total_steps = 4
+total_steps = 2
 
 [data]
 fake = true

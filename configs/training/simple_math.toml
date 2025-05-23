@@ -22,4 +22,4 @@ seq_length = 2048
 
 [ckpt]
 rollout_path = "outputs"
-clean_rollout_path_start = true
+clean_rollout_path = true

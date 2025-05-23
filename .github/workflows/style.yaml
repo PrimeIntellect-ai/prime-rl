@@ -1,4 +1,4 @@
-name: Check style
+name: Style
 
 on:
   push:
@@ -10,7 +10,12 @@ on:
 
 jobs:
   ruff:
+    name: Run ruff
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/ruff-action@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Run ruff
+        uses: astral-sh/ruff-action@v3

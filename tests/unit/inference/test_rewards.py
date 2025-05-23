@@ -1,14 +1,6 @@
 import pickle
 
-import pytest
-
 from zeroband.inference.rewards import CompletionReward, RequestRewards, compute_rewards
-
-
-@pytest.fixture
-def precomputed_rewards(path):
-    with open(path, "rb") as f:
-        return pickle.load(f)
 
 
 # Mika: This is a somewhat brittle test that simply checks whether the reward
@@ -34,8 +26,10 @@ def precomputed_rewards(path):
 #         f,
 #     )
 # ```
-@pytest.mark.parametrize("path", ["tests/units/rewards.pkl"])
-def test_compute_rewards(precomputed_rewards):
+def test_compute_rewards():
+    # Load precomputed rewards
+    with open("tests/unit/inference/rewards.pkl", "rb") as f:
+        precomputed_rewards = pickle.load(f)
     # Get inputs and outputs
     request_outputs = precomputed_rewards["request_outputs"]
     verification_infos = precomputed_rewards["verification_infos"]

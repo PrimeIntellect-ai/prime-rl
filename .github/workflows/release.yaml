@@ -1,4 +1,4 @@
-name: Push to Docker Hub
+name: Release
 
 on:
   push:
@@ -6,7 +6,8 @@ on:
     tags:
     - '*'
 jobs:
-  build:
+  docker:
+    name: Push to Docker
     runs-on: image-builder
     steps:
       - name: Remove unnecessary packages

@@ -91,7 +91,7 @@ def train(config: Config):
     world_info = get_world_info()
     wandb_sample_history = None
 
-    if config.ckpt.clean_rollout_path_start and config.ckpt.rollout_path is not None:
+    if config.ckpt.clean_rollout_path and config.ckpt.rollout_path is not None:
         logger.info(f"Cleaning rollout path {config.ckpt.rollout_path}")
         shutil.rmtree(config.ckpt.rollout_path, ignore_errors=True)
 

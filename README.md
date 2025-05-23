@@ -42,12 +42,6 @@ You can check that `flash_attn` is installed correctly by running `uv run python
 uv run pre-commit install
 ```
 
-5. Test
-
-```bash
-uv run pytest
-```
-
 6. debug run 
 
 training
@@ -221,6 +215,37 @@ PRIME_LOG_LEVEL=DEBUG VLLM_CONFIGURE_LOGGING=0 CUDA_VISIBLE_DEVICES=2,3 uv run p
 
 We don't support DP+PP and so that configuration will raise an exception.
 
+## Tests
+
+Run the full test suite 
+
+```bash
+uv run pytest -v
+```
+
+To run unit tests, run
+
+```bash
+uv run pytest tests/unit -v
+```
+
+To run integration tests, run
+
+```bash
+uv run pytest tests/integration -v
+```
+
+To run CPU-only tests, use the inverse of the `gpu` marker:
+
+```bash
+uv run pytest -v -m "not gpu"
+```
+
+To run fast tests, use the inverse of the `slow` marker:
+
+```bash
+uv run pytest -v -m "not slow"
+```
 
 ## Citation
 

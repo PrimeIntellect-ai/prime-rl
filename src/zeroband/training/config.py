@@ -44,7 +44,7 @@ class CkptConfig(BaseConfig):
     resume: str | None = None
 
     rollout_path: str | None = None  # if rollout path is set we saved at each step
-    clean_rollout_path_start: bool = False  # if true, the rollout path will be cleaned up before running the training
+    clean_rollout_path: bool = False  # if true, the rollout path will be cleaned up before running the training
 
     @model_validator(mode="after")
     def check_path_and_interval(self):

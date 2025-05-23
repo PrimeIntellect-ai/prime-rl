@@ -36,7 +36,7 @@ def inference(config: Config):
     logger.info("Starting inference")
     logger.info(f"TP={config.tp}, DP={config.dp}, PP={config.pp.world_size}")
 
-    if config.clean_output_path_start and config.output_path is not None:
+    if config.clean_output_path and config.output_path is not None:
         logger.info(f"Cleaning output path {config.output_path}")
         shutil.rmtree(config.output_path, ignore_errors=True)
 

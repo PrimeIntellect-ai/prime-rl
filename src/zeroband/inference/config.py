@@ -31,7 +31,7 @@ class Config(BaseConfig):
     max_samples: int | None = None
 
     output_path: str = "outputs"
-    clean_output_path_start: bool = False  # if true, the output path will be cleaned up before running the inference
+    clean_output_path: bool = False  # if true, the output path will be cleaned up before running the inference
 
     total_step: int | None = None
     rollout_path: str | None = None
