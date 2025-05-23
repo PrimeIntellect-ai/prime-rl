@@ -11,10 +11,6 @@ jobs:
     name: Run CPU Tests
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          submodules: true
       - name: Setup project
         uses: ./.github/workflows/setup.yaml
       - name: Run CPU tests
@@ -24,10 +20,6 @@ jobs:
     name: Run GPU Tests
     runs-on: self-hosted
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          submodules: true
       - name: Setup project
         uses: ./.github/workflows/setup.yaml
       - name: Run GPU tests

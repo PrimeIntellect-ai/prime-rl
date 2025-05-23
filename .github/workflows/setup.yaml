@@ -8,6 +8,10 @@ jobs:
     name: Setup virtual environment
     runs-on: "composite"
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
