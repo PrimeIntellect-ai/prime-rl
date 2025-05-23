@@ -6,8 +6,35 @@ import pytest
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
 
-def test_short_rl_training():
-    training_cmd = "uv run torchrun --nproc_per_node=1 src/zeroband/train.py @ configs/training/simple_reverse_two_gpu.toml --optim.total_steps 40".split()
+USERNAME = os.environ.get("USERNAME_CI", os.getlogin())
+
+
+@pytest.fixture(scope="session")
+def username():
+    return os.environ.get("USERNAME_CI", os.getlogin())
+
+
+@pytest.fixture(scope="session")
+def branch_name():
+    branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"]).decode("utf-8").strip()
+    return branch
+
+
+@pytest.fixture(scope="session")
+def commit_hash():
+    commit = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"]).decode("utf-8").strip()
+    return commit
+
+
+def test_short_rl_training(commit_hash: str, branch_name: str, username: str):
+    wandb_run_name = f"{branch_name}-{commit_hash}"
+
+    if username == "CI_RUNNER":
+        project = "ci_run_prime_rl"
+    else:
+        project = "ci_run_prime_rl_local"
+
+    training_cmd = f"uv run torchrun --nproc_per_node=1 src/zeroband/train.py @ configs/training/simple_reverse_two_gpu.toml --optim.total_steps 40 --wandb_run_name {wandb_run_name} --project {project}".split()
     inference_cmd = "uv run python src/zeroband/infer.py @ configs/inference/simple_reverse_two_gpus.toml --total_step 20".split()
 
     training_process = subprocess.Popen(training_cmd)
