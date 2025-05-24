@@ -1,4 +1,4 @@
-model_name = "mikasenghaas/Qwen3-0.6B-0.2"
+model_name = "mikasenghaas/Qwen3-8B-0.2"
 dataset = "justus27/rl-code-and-math"
 max_samples = 32
 batch_size = 8
