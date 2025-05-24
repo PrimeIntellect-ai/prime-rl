@@ -60,6 +60,7 @@ class Config(BaseConfig):
 
     project: str = "prime_simple"
     wandb: bool = True
+    wandb_run_name: str | None = None
 
     data: DataConfig = DataConfig()
     optim: OptimConfig = OptimConfig()

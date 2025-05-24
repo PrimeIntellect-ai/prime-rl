@@ -71,6 +71,7 @@ def inference(config: Config):
 
     # Load  dataset
     logger.info(f"Loading dataset {config.dataset}")
+
     dataset = load_dataset(config.dataset, split="train")
 
     # Optionally shuffle dataset
@@ -84,7 +85,7 @@ def inference(config: Config):
         # Seed the dataset with a random number
         seed = config.seed + envs.RANK if config.seed is not None else None
         generator = np.random.default_rng(seed)
-        dataset = load_dataset(config.dataset, split="train").shuffle(generator=generator)
+        dataset = dataset.shuffle(generator=generator)
         node_address_int = None
 
     if config.max_prompt_len:

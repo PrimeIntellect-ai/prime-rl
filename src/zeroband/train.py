@@ -151,7 +151,7 @@ def train(config: Config):
     training_progress = TrainingProgress(total_tokens=0, step=config.start_step, total_samples=total_samples)
 
     if world_info.rank == 0 and config.wandb:
-        wandb.init(project=config.project, config=config.model_dump(), dir="wandb_logs")
+        wandb.init(project=config.project, config=config.model_dump(), dir="wandb_logs", name=config.wandb_run_name)
 
     if envs.PRIME_API_BASE_URL is not None:
         monitor = HttpMonitor()

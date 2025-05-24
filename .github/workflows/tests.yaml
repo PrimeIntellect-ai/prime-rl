@@ -29,6 +29,7 @@ jobs:
   gpu-tests:
     name: Run GPU Tests
     runs-on: self-hosted
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -43,4 +44,6 @@ jobs:
       - name: Install dependencies
         run: uv sync && uv sync --extra fa
       - name: Run GPU tests
+        env:
+          USERNAME_CI: CI_RUNNER
         run: uv run pytest tests -m gpu
