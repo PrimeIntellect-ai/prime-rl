@@ -39,6 +39,8 @@ ModelName: TypeAlias = Literal[
     # Shards
     "mikasenghaas/Llama-3.2-1B-Instruct-0.2",
     "mikasenghaas/Llama-3.2-1B-Instruct-1.2",
+    "mikasenghaas/Qwen3-8B-0.2",
+    "mikasenghaas/Qwen3-8B-1.2",
     "mikasenghaas/Qwen3-14B-0.2",
     "mikasenghaas/Qwen3-14B-1.2",
     "mikasenghaas/Qwen3-30B-A3B-0.2",
