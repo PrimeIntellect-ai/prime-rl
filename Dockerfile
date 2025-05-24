@@ -56,10 +56,10 @@ COPY ./src/ ./src/
 RUN uv sync && uv sync --extra fa
 
 # Runtime stage
-FROM python:3.10-slim
+FROM python:3.11-slim
 WORKDIR /root/prime-rl
 
-RUN apt-get update && apt-get install -y --no-install-recommends --force-yes build-essential wget
+RUN apt-get update && apt-get install -y --no-install-recommends --force-yes build-essential wget clang
 
 # Copy virtual environment
 COPY --from=builder /root/prime-rl/.venv /root/prime-rl/.venv
