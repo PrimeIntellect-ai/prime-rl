@@ -65,6 +65,8 @@ class Config(BaseConfig):
     len_reward: LenRewardsConfig | None = None
     difficulty_filtering: DifficultyFilteringConfig | None = None
 
+    max_prompt_len: int | None = None
+
     @model_validator(mode="after")
     def disable_toploc_for_fp32(self):
         if self.dtype == "fp32":

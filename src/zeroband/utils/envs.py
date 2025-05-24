@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, Any, Dict, List
 
 # Force using vLLM v0
 os.environ["VLLM_USE_V1"] = "0"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"  # to avoid HF warning
 
 # Disable rust logs if not manually set
 if os.getenv("RUST_LOG") is None:

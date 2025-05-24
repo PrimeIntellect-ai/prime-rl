@@ -1,5 +1,7 @@
 import torch
+from datasets import Dataset
 from safetensors import safe_open
+from transformers import AutoTokenizer
 from vllm import LLM
 from vllm.model_executor.model_loader.loader import _process_weights_after_loading
 
@@ -65,3 +67,22 @@ def generate_target_length_prompts(config: LenRewardsConfig, batch_size: int):
     max_word = " maximally " if config.len_reward.reward_type == "clip" else ""
 
     return [f"{prompt_prefix}Think for{max_word}{target} tokens before giving a response." for target in target_lengths], target_lengths
+
+
+def filter_data_by_prompt_length(data: Dataset, max_length: int, tokenizer: AutoTokenizer, tokenize_batch_size: int = 10000):
+    def _add_token_lengths_batched(examples):
+        prompts = examples["prompt"]
+        tokenized = tokenizer(prompts, padding=False, truncation=False)
+        token_lengths = [len(ids) for ids in tokenized.input_ids]
+        return {"token_length": token_lengths}
+
+    data = data.map(
+        _add_token_lengths_batched,
+        batched=True,
+        batch_size=tokenize_batch_size,
+        desc=f"Calculating prompt lengths to filter out lengths > {max_length}",
+    )
+
+    data = data.filter(lambda x: x["token_length"] <= max_length)
+
+    return data

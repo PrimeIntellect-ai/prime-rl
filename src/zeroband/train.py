@@ -300,14 +300,6 @@ def train(config: Config):
                 for target_lengths in batch["target_lengths"]:
                     metric_averager.update("target_lengths", target_lengths)
 
-                ## per micro batch metrics
-
-                metric_averager.update("batch_reward", batch["rewards"].float().mean())
-                metric_averager.update("batch_task_reward", batch["task_rewards"].float().mean())
-                metric_averager.update("batch_seq_lens", batch["seq_lens"].float().mean())
-                metric_averager.update("batch_length_penalties", batch["length_penalties"].float().mean())
-                metric_averager.update("batch_target_lengths", batch["target_lengths"].float().mean())
-
                 # Forward
                 logits: Float[torch.Tensor, "batch seq vocab"] = model(
                     input_ids=input_ids, position_ids=batch["position_ids"]

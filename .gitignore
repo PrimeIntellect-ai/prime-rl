@@ -1,6 +1,7 @@
 .vscode/*
 logs/*
 wandb/*
+wandb_logs/*
 datasets/*
 output/*
 outputs/*
