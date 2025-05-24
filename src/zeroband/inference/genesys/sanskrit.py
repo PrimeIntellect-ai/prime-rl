@@ -2,6 +2,7 @@ from typing import Dict, List, Optional, Tuple
 import re
 from difflib import SequenceMatcher
 import chandas
+import unicodedata
 
 
 class SanskritMeterDatabase:
@@ -372,28 +373,59 @@ class SanskritMeterDatabase:
         """Get list of popular classical meters."""
         classical_meters = ['sloka', 'indravajra', 'upendravajra', 'vasantatilaka', 'mandakranta', 'sardullavikridita', 'sragdhara']
         return [name for name in classical_meters if name in cls.METERS]
-    
+
     @classmethod
     def _normalize_name(cls, meter_name: str) -> str:
         """Normalize meter name for consistent matching."""
         # Handle common variations and transliterations
         name = meter_name.lower().strip()
         
-        # Common transliteration variations
-        name = name.replace('ā', 'a').replace('ī', 'i').replace('ū', 'u')
-        name = name.replace('ṛ', 'r').replace('ṝ', 'r')
-        name = name.replace('ḷ', 'l').replace('ḹ', 'l')
-        name = name.replace('ṅ', 'n').replace('ñ', 'n').replace('ṇ', 'n')
-        name = name.replace('ṭ', 't').replace('ḍ', 'd')
-        name = name.replace('ś', 'sh').replace('ṣ', 's')
-        name = name.replace('ṃ', 'm').replace('ḥ', 'h')
+        # Use NFC to ensure characters are in composed form for proper replacement
+        name = unicodedata.normalize('NFC', name)
+        
+        # Handle conjunct consonants first (before individual character replacements)
+        name = name.replace('ṣṭ', 'sht')  # Common conjunct: ṣṭ → sht
+        name = name.replace('kṣ', 'ksh')  # kṣ → ksh
+        name = name.replace('jñ', 'gn')   # jñ → gn
+        
+        # Handle compound word patterns (Sanskrit-specific)
+        name = name.replace('ūla', 'ulla')  # Śārdūla → Śārdulla (tiger compounds)
+        name = name.replace('ūl', 'ull')    # General ūl → ull pattern
+        
+        # Comprehensive diacritical character mappings
+        diacritical_map = {
+            # Vowels with macrons
+            'ā': 'a', 'ī': 'i', 'ū': 'u', 'ē': 'e', 'ō': 'o',
+            'Ā': 'a', 'Ī': 'i', 'Ū': 'u', 'Ē': 'e', 'Ō': 'o',
+            
+            # Retroflex consonants  
+            'ṭ': 't', 'ḍ': 'd', 'ṇ': 'n', 'ṣ': 's', 'ḷ': 'l',
+            'Ṭ': 't', 'Ḍ': 'd', 'Ṇ': 'n', 'Ṣ': 's', 'Ḷ': 'l',
+            
+            # Sibilants
+            'ś': 's', 'Ś': 's',
+            
+            # Vowels with other marks
+            'ṛ': 'r', 'ṝ': 'r', 'ḹ': 'l',
+            'Ṛ': 'r', 'Ṝ': 'r', 'Ḹ': 'l',
+            
+            # Nasals
+            'ṅ': 'n', 'ñ': 'n', 'ṃ': 'm',
+            'Ṅ': 'n', 'Ñ': 'n', 'Ṃ': 'm',
+            
+            # Aspirate
+            'ḥ': 'h', 'Ḥ': 'h'
+        }
+        
+        # Apply all diacritical mappings
+        for diac_char, simple_char in diacritical_map.items():
+            name = name.replace(diac_char, simple_char)
         
         # Remove spaces, hyphens, and common variations
         name = name.replace(' ', '').replace('-', '').replace('_', '')
         name = name.replace('vrtta', '').replace('vṛtta', '')
         
         return name
-
 
 class SanskritProsodyAnalyzer:
     """Analyzes Sanskrit text for prosodic patterns (L/G sequences)."""
@@ -522,91 +554,3 @@ def _is_repetitive_text(text: str) -> bool:
     # If any word appears more than 50% of the time, consider repetitive
     max_frequency = max(word_counts.values()) / len(words)
     return max_frequency > 0.5
-
-
-# Testing and debugging utilities
-# def test_reward_system():
-#     """Test the reward system with known Sanskrit verses."""
-#     print("Testing Sanskrit Poetry Reward System")
-#     print("=" * 60)
-    
-#     # Classic Anushtubh verse
-#     test_verse = """यदा यदा हि धर्मस्य ग्लानिर्भवति भारत।
-# अभ्युत्थानमधर्मस्य तदात्मानं सृजाम्यहम्॥"""
-    
-#     completion = f"<think>Composing Anushtubh verse</think>\n{test_verse}"
-#     verification = {"meter_type": "Anushtubh", "topic": "dharma"}
-    
-#     reward = compute_sanskrit_poetry_reward(completion, verification)
-    
-#     print(f"Test verse:\n{test_verse}")
-#     print(f"Expected meter: {verification['meter_type']}")
-#     print(f"Final reward: {reward:.3f}")
-#     print("=" * 60)
-    
-#     # Show database statistics
-#     print_database_stats()
-    
-#     return reward
-
-
-# def print_database_stats():
-#     """Print comprehensive statistics about the meter database."""
-#     print("\nSanskrit Meter Database Statistics:")
-#     print("=" * 40)
-    
-#     total_meters = len(SanskritMeterDatabase.METERS)
-#     print(f"Total meters: {total_meters}")
-    
-#     # Group by syllable count
-#     syllable_counts = {}
-#     for name, meter in SanskritMeterDatabase.METERS.items():
-#         count = meter['syllables_per_pada']
-#         if count not in syllable_counts:
-#             syllable_counts[count] = []
-#         syllable_counts[count].append(name)
-    
-#     print(f"\nMeters by syllable count per pada:")
-#     for count in sorted(syllable_counts.keys()):
-#         meters = syllable_counts[count]
-#         print(f"  {count} syllables: {len(meters)} meter(s)")
-#         if len(meters) <= 5:
-#             print(f"    {', '.join(meters)}")
-#         else:
-#             print(f"    {', '.join(meters[:3])}, ... (+{len(meters)-3} more)")
-    
-#     # Show special categories
-#     vedic = SanskritMeterDatabase.get_vedic_meters()
-#     classical = SanskritMeterDatabase.get_classical_meters()
-    
-#     print(f"\nVedic meters ({len(vedic)}): {', '.join(vedic)}")
-#     print(f"Popular classical meters ({len(classical)}): {', '.join(classical)}")
-    
-#     print("=" * 40)
-
-
-# def test_meter_variations():
-#     """Test meter name normalization with various spellings."""
-#     test_names = [
-#         ("Anuṣṭubh", "anushtubh"),
-#         ("anushtubh", "anushtubh"), 
-#         ("Śloka", "sloka"),
-#         ("sloka", "sloka"),
-#         ("Indravajrā", "indravajra"),
-#         ("Śārdūlavikrīḍita", "sardullavikridita"),
-#         ("Vasanta-tilakā", "vasantatilaka"),
-#         ("Mandākrāntā", "mandakranta")
-#     ]
-    
-#     print("\nTesting meter name variations:")
-#     print("-" * 30)
-    
-#     for input_name, expected in test_names:
-#         meter_info = SanskritMeterDatabase.get_meter_info(input_name)
-#         status = "✓" if meter_info is not None else "✗"
-#         print(f"{status} '{input_name}' -> {meter_info['syllables_per_pada'] if meter_info else 'Not found'} syllables")
-
-
-# if __name__ == "__main__":
-#     test_reward_system()
-#     test_meter_variations()
