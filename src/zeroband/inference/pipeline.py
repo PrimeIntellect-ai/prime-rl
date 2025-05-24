@@ -132,7 +132,7 @@ def setup_hooks(rank: int, world_size: int, llm: LLM, node: Node) -> None:
         logger.debug("Registered post-hook send_intermediate_states on last layer")
 
         # Receive and relay outputs from last stage (post-hook)
-        sampler.register_forward_hook(partial(recv_output, relay=relay))
+        sampler.register_forward_hook(partial(recv_output, node=node, relay=relay))
         logger.debug("Registered post-hook recv_output on sampler")
 
 
