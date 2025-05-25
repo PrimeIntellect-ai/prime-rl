@@ -215,7 +215,7 @@ def inference(config: Config):
         request_outputs = llm.generate(prompts, sampling_params, use_tqdm=False)
         end_time = time.time()
 
-        # Dropping like this isnt ideal. But in practice, we shouldnt have any prompts that are too long.
+        # Dropping like this isn't ideal. But in practice, we shouldn't have any prompts that are too long.
         request_outputs = [req for req in request_outputs if len(req.outputs[0].token_ids) > 0]
         if len(request_outputs) != len(prompts):
             logger.warning(f"{len(prompts) - len(request_outputs)} prompts were filtered out because they were too long")
@@ -330,7 +330,7 @@ if __name__ == "__main__":
             inference_envs.SHARDCAST_SERVERS,
             config.rollout_path,
             config.async_level + 1,
-            # TODO: maybe +1 because we most likely wont download the current step in time?
+            # TODO: maybe +1 because we most likely won't download the current step in time?
             # We could deadlock though.
             max(current_step - config.async_level, 1),
         )
