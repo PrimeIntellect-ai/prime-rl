@@ -7,7 +7,7 @@ def cuda_available_devices(gpus_ids: list[int]) -> str:
 
 class EnvWrapper:
     """
-    This class wrapp a function call and overide the environment variables
+    This class wrap a function call and override the environment variables
     FYI: cannot use a simple function because of pickle issues
     """
 
