@@ -130,5 +130,5 @@ class PrimeMetric:
 
     def __del__(self):
         if hasattr(self, "_thread") and self._thread is not None:
-            # need to check hasattr because __del__ sometine delete attributes befores
+            # need to check hasattr because __del__ sometime delete attributes before
             self._stop_metrics_thread()
