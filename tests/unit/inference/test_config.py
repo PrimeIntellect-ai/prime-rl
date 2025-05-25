@@ -1,5 +1,5 @@
 """
-Tests all of the config file. usefull to catch mismatch key after a renaming of a arg name
+Tests all of the config file. useful to catch mismatch key after a renaming of a arg name
 Need to be run from the root folder
 """
 
