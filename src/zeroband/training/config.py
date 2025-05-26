@@ -85,6 +85,8 @@ class Config(BaseConfig):
     start_total_samples: int | None = None
     start_rollout_step: int | None = None
 
+    stop_after_steps: int | None = None
+
     @model_validator(mode="after")
     def check_liger(self):
         if self.train.liger_qwen:
