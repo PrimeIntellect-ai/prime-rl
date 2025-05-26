@@ -1,8 +1,10 @@
 from pathlib import Path
+from typing import Callable
 
 import pyarrow.parquet as pq
 import pytest
 
+from tests.integration import Command, Environment, ProcessResult
 from zeroband.training.data import pa_schema
 
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
@@ -16,11 +18,11 @@ def output_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 @pytest.fixture(scope="module")
-def process(output_path: Path, run_process):
+def process(output_path: Path, run_process: Callable[[Command, Environment], ProcessResult]) -> ProcessResult:
     return run_process(CMD + ["--output-path", str(output_path)], {})
 
 
-def test_no_error(process):
+def test_no_error(process: ProcessResult):
     assert process.returncode == 0, f"Process failed with return code {process.returncode}"
 
 
