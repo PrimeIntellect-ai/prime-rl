@@ -118,7 +118,7 @@ def save_ckpt_for_rollout(model: ModelType, path: Path, dtype: torch.dtype = tor
         if isinstance(value, DTensor):
             value: DTensor = value.to(dtype)
             # only gather after the downcast to dtype as it will be faster
-            value = value.full_tensor()  # idealy would only be gathered on rank 0
+            value = value.full_tensor()  # ideally would only be gathered on rank 0
 
         if world_info.rank == 0:
             key: set[str] = get_fqns(model, key)

@@ -17,7 +17,7 @@ class WorldInfo:
         self, rank: int | None = None, world_size: int | None = None, local_rank: int | None = None, local_world_size: int | None = None
     ):
         """
-        Initialize the WorldInfo object either manually or by parsing enviornment variables.
+        Initialize the WorldInfo object either manually or by parsing environment variables.
         """
         self.rank = rank or envs.RANK
         self.world_size = world_size or envs.WORLD_SIZE

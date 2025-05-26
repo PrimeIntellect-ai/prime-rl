@@ -5,7 +5,6 @@ from pydantic_config import BaseConfig
 
 from zeroband.inference.pipeline import PipelineConfig
 from zeroband.inference.rewards import LenRewardsConfig
-from zeroband.utils.models import ModelName
 
 
 class SamplingParamConfig(BaseConfig):
@@ -25,7 +24,7 @@ class DifficultyFilteringConfig(BaseConfig):
 
 
 class Config(BaseConfig):
-    model_name: ModelName
+    model_name: str
     dataset: str
     batch_size: int = 32
     max_samples: int | None = None

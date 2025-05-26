@@ -4,7 +4,7 @@ from pydantic import model_validator
 from pydantic_config import BaseConfig
 
 from zeroband.training.data import CollateMode, DataConfig
-from zeroband.utils.models import AttnImpl, ModelName
+from zeroband.utils.models import AttnImpl
 
 
 class AdamConfig(BaseConfig):
@@ -54,7 +54,7 @@ class CkptConfig(BaseConfig):
 
 
 class Config(BaseConfig):
-    model_name: ModelName
+    model_name: str
 
     ckpt: CkptConfig = CkptConfig()
 
