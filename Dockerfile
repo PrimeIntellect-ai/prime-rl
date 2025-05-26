@@ -78,3 +78,4 @@ COPY --from=builder /root/prime-rl/src ./src
 COPY ./configs/ ./configs/
 
 ENTRYPOINT ["python", "src/zeroband/infer.py"]
+CMD ["--help"]
