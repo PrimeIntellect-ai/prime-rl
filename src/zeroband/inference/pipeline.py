@@ -37,6 +37,7 @@ def setup_pipeline(llm: LLM, rank: int, world_size: int, iroh_seed: int | None =
         iroh_seed: The seed for the PRIME-IROH node (optional, will lead to deterministic connection strings)
         iroh_peer_id: The peer ID for the PRIME-IROH node (optional)
     """
+    logger.info(f"Setting up pipeline parallelism (pp.rank={rank}, pp.world_size={world_size})")
     node = setup_comm(world_size=world_size, iroh_seed=iroh_seed, iroh_peer_id=iroh_peer_id)
     setup_hooks(rank=rank, world_size=world_size, llm=llm, node=node)
 

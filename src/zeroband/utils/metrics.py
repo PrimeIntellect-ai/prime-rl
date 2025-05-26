@@ -12,7 +12,7 @@ import pynvml
 from zeroband.utils.logger import get_logger
 
 # Module logger
-logger = get_logger("PRIME_METRICS")
+logger = get_logger("INFER")
 
 
 class PrimeMetric:
