@@ -12,6 +12,9 @@ if TYPE_CHECKING:
     VLLM_USE_V1: str
     VLLM_CONFIGURE_LOGGING: str
 
+    # Rust
+    RUST_LOG: str
+
     # Shardcast
     SHARDCAST_SERVERS: List[str] | None = None
     SHARDCAST_BACKLOG_VERSION: int = -1
@@ -25,6 +28,7 @@ _INFERENCE_ENV_PARSERS = {
     "SHARDCAST_SERVERS": lambda x: x.split(","),
     "SHARDCAST_BACKLOG_VERSION": int,
     "GROUP_ID": str,
+    "RUST_LOG": str,
     **_BASE_ENV_PARSERS,
 }
 
@@ -32,6 +36,7 @@ _INFERENCE_ENV_DEFAULTS = {
     "SHARDCAST_BACKLOG_VERSION": "-1",
     "VLLM_CONFIGURE_LOGGING": "0",  # Disable vLLM logging unless explicitly enabled
     "VLLM_USE_V1": "0",  # Use v0 engine (TOPLOC and PP do not support v1 yet)
+    "RUST_LOG": "off",  # Disable Rust logs (from prime-iroh)
 }
 
 set_defaults(_INFERENCE_ENV_DEFAULTS)
