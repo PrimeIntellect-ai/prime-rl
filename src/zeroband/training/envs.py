@@ -1,13 +1,14 @@
-from typing import TYPE_CHECKING, Any, List
+from typing import TYPE_CHECKING, Any
 import os
 
-from zeroband.utils.envs import _BASE_ENV, get_env_value, get_dir
+from zeroband.utils.envs import _ENV_PARSERS as _BASE_ENV_PARSERS, get_env_value, get_dir, set_defaults
 
 if TYPE_CHECKING:
     # Enable type checking for shared envs
     # ruff: noqa
-    from zeroband.utils.envs import PRIME_LOG_LEVEL, RANK, WORLD_SIZE, LOCAL_RANK, LOCAL_WORLD_SIZE, CUDA_VISIBLE_DEVICES
+    from zeroband.utils.envs import PRIME_LOG_LEVEL, CUDA_VISIBLE_DEVICES
 
+    # Prime
     TRAINING_ENABLE_ACCEPTED_CHECK: bool = False
     PRIME_DASHBOARD_AUTH_TOKEN: str | None = None
     PRIME_API_BASE_URL: str | None = None
@@ -15,20 +16,41 @@ if TYPE_CHECKING:
     PRIME_DASHBOARD_METRIC_INTERVAL: int = 1
     SHARDCAST_OUTPUT_DIR: str | None = None
 
-_TRAINING_ENV = {
-    "TRAINING_ENABLE_ACCEPTED_CHECK": lambda: os.getenv("TRAINING_ENABLE_ACCEPTED_CHECK", "false").lower() in ["true", "1", "yes", "y"],
-    "PRIME_API_BASE_URL": lambda: os.getenv("PRIME_API_BASE_URL"),
-    "PRIME_DASHBOARD_AUTH_TOKEN": lambda: os.getenv("PRIME_DASHBOARD_AUTH_TOKEN"),
-    "PRIME_RUN_ID": lambda: os.getenv("PRIME_RUN_ID"),
-    "PRIME_DASHBOARD_METRIC_INTERVAL": lambda: int(os.getenv("PRIME_DASHBOARD_METRIC_INTERVAL", "1")),
-    "SHARDCAST_OUTPUT_DIR": lambda: os.getenv("SHARDCAST_OUTPUT_DIR", None),
-    **_BASE_ENV,
+    # PyTorch
+    RANK: int
+    WORLD_SIZE: int
+    LOCAL_RANK: int
+    LOCAL_WORLD_SIZE: int
+
+
+_TRAINING_ENV_PARSERS = {
+    "RANK": int,
+    "WORLD_SIZE": int,
+    "LOCAL_RANK": int,
+    "LOCAL_WORLD_SIZE": int,
+    "TRAINING_ENABLE_ACCEPTED_CHECK": lambda x: x.lower() in ["true", "1", "yes", "y"],
+    "PRIME_API_BASE_URL": str,
+    "PRIME_DASHBOARD_AUTH_TOKEN": str,
+    "PRIME_RUN_ID": lambda: str,
+    "PRIME_DASHBOARD_METRIC_INTERVAL": int,
+    "SHARDCAST_OUTPUT_DIR": str,
+    **_BASE_ENV_PARSERS,
 }
+
+_TRAINING_ENV_DEFAULTS = {
+    "PRIME_DASHBOARD_METRIC_INTERVAL": "1",
+    "RANK": "0",
+    "WORLD_SIZE": "1",
+    "LOCAL_RANK": "0",
+    "LOCAL_WORLD_SIZE": "1",
+}
+
+set_defaults(_TRAINING_ENV_DEFAULTS)
 
 
 def __getattr__(name: str) -> Any:
-    return get_env_value(_TRAINING_ENV, name)
+    return get_env_value(_TRAINING_ENV_PARSERS, name)
 
 
-def __dir__() -> List[str]:
-    return get_dir(_TRAINING_ENV)
+def __dir__() -> list[str]:
+    return get_dir(_TRAINING_ENV_PARSERS)
