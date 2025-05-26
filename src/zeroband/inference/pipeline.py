@@ -1,4 +1,3 @@
-import os
 import pickle
 import time
 from functools import partial
@@ -55,11 +54,10 @@ def setup_comm(world_size: int, iroh_seed: int | None, iroh_peer_id: str | None)
     assert world_size > 1, "Pipeline parallel inference requires at least 2 stages"
 
     # Setup node (with or without seed)
-    iroh_seed = os.environ.get("IROH_SEED", iroh_seed)
     if iroh_seed is not None:
         logger.debug(f"Using IROH seed: {iroh_seed}")
         # If seed is provided, create a new node with the seed
-        node = Node.with_seed(num_streams=1, seed=int(iroh_seed))
+        node = Node.with_seed(num_streams=1, seed=iroh_seed)
     else:
         # If no seed, create a new node
         node = Node(num_streams=1)
