@@ -60,4 +60,5 @@ addopts = "--strict-markers"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "gpu: marks tests as gpu (deselect with '-m \"not gpu\"')",
+    "e2e: marks tests as end to end (deselect with '-m \"not e2e\"')",
 ]

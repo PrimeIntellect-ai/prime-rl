@@ -44,6 +44,8 @@ jobs:
       - name: Install dependencies
         run: uv sync && uv sync --extra fa
       - name: Run GPU tests
+        run: uv run pytest tests -m "gpu and not e2e"
+      - name: Run E2E tests
         env:
           USERNAME_CI: CI_RUNNER
-        run: uv run pytest tests -m gpu
+        run: uv run pytest tests -m "e2e"
