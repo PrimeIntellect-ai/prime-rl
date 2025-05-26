@@ -11,10 +11,10 @@ from huggingface_hub import HfApi
 from pyarrow import Table
 
 from zeroband.training.data import STABLE_FILE
+from zeroband.training.world_info import reset_world_info
 from zeroband.utils.logger import reset_logger
 from zeroband.utils.models import AttnImpl
 from zeroband.utils.parquet import pa_schema
-from zeroband.utils.world_info import reset_world_info
 
 
 @pytest.fixture(autouse=True)
