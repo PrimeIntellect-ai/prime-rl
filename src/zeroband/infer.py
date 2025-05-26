@@ -6,6 +6,10 @@ import time
 import uuid
 from pathlib import Path
 
+# Import environment before any other imports
+# ruff: noqa: I001
+from zeroband.inference import envs
+
 import numpy as np
 import pyarrow.parquet as pq
 import requests
@@ -16,7 +20,6 @@ from pydantic_config import parse_argv
 from toploc.utils import sha256sum
 from vllm import LLM, SamplingParams
 
-from zeroband.inference import envs
 from zeroband.inference.config import Config
 from zeroband.inference.parquet import get_parquet_table
 from zeroband.inference.pipeline import setup_pipeline
@@ -34,6 +37,10 @@ logger = get_logger("INFER")
 def inference(config: Config):
     # Initialize the logger
     logger.info("Starting inference")
+
+    # Log relevant configuration
+    logger.info(f"Model: {config.model_name}")
+    logger.info(f"Dataset: {config.dataset}")
     logger.info(f"TP={config.tp}, DP={config.dp}, PP={config.pp.world_size}")
 
     if config.clean_output_path and config.output_path is not None:
@@ -285,13 +292,13 @@ def inference(config: Config):
 
 def main(config: Config) -> list[mp.Process]:
     processes = []
-    from zeroband.inference import envs as inference_envs
+    import zeroband.inference.envs as envs
 
     if config.dp > 1:
         if config.tp == "auto":
             assert torch.cuda.device_count() % config.dp == 0, "Number of GPUs must be divisible by DP"
             config.tp = torch.cuda.device_count() // config.dp
-        gpu_ids = inference_envs.CUDA_VISIBLE_DEVICES
+        gpu_ids = envs.CUDA_VISIBLE_DEVICES
         gpu_ids_per_rank = [gpu_ids[i : i + config.tp] for i in range(0, len(gpu_ids), config.tp)]
         for rank, gpu_ids in enumerate(gpu_ids_per_rank):
             envs = {"CUDA_VISIBLE_DEVICES": ",".join(map(str, gpu_ids)), "RANK": str(rank), "LOCAL_RANK": str(rank)}
