@@ -29,7 +29,7 @@ jobs:
   gpu-tests:
     name: Run GPU Tests
     runs-on: self-hosted
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -48,4 +48,4 @@ jobs:
       - name: Run E2E tests
         env:
           USERNAME_CI: CI_RUNNER
-        run: uv run pytest tests -m "e2e"
+        run: uv run pytest -s tests -m "e2e"
