@@ -10,9 +10,43 @@ from zeroband.training.data import pa_schema
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
 
 ENV0 = {"CUDA_VISIBLE_DEVICES": "0"}
-CMD0 = ["uv", "run", "src/zeroband/infer.py", "@configs/inference/pipeline/debug0.toml"]
+CMD0 = [
+    "uv",
+    "run",
+    "src/zeroband/infer.py",
+    "@configs/inference/debug.toml",
+    "--model-name",
+    "mikasenghaas/Qwen3-0.6B-0.2",
+    "--pp.rank",
+    "0",
+    "--pp.world_size",
+    "2",
+    "--pp.iroh_seed",
+    "0",
+    "--pp.iroh_peer_id",
+    "ff87a0b0a3c7c0ce827e9cada5ff79e75a44a0633bfcb5b50f99307ddb26b337",
+    "--seed",
+    "69",
+]
 ENV1 = {"CUDA_VISIBLE_DEVICES": "1"}
-CMD1 = ["uv", "run", "src/zeroband/infer.py", "@configs/inference/pipeline/debug1.toml"]
+CMD1 = [
+    "uv",
+    "run",
+    "src/zeroband/infer.py",
+    "@configs/inference/debug.toml",
+    "--model-name",
+    "mikasenghaas/Qwen3-0.6B-1.2",
+    "--pp.rank",
+    "1",
+    "--pp.world_size",
+    "2",
+    "--pp.iroh_seed",
+    "1",
+    "--pp.iroh_peer_id",
+    "ee1aa49a4459dfe813a3cf6eb882041230c7b2558469de81f87c9bf23bf10a03",
+    "--seed",
+    "69",
+]
 
 
 @pytest.fixture(scope="module")
