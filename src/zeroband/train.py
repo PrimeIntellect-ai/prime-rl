@@ -465,7 +465,9 @@ def train(config: Config):
             }
             log_to_wandb(new_metrics)
 
-        if training_progress.step >= config.optim.total_steps or training_progress.step >= config.stop_after_steps:
+        if training_progress.step >= config.optim.total_steps or (
+            config.stop_after_steps is not None and training_progress.step >= config.stop_after_steps
+        ):
             break
 
     if prefetcher is not None:

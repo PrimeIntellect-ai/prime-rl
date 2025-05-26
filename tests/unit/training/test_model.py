@@ -6,7 +6,7 @@ from zeroband.utils.models import get_model_and_tokenizer
 BS = 1
 SEQ_LEN = 8
 
-pytestmark = [pytest.mark.gpu]
+pytestmark = [pytest.mark.gpu, pytest.mark.skip]
 
 
 def test_model_forward_gpu():

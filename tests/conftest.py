@@ -6,6 +6,7 @@ from typing import Callable
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+import torch
 import torch.distributed as dist
 from huggingface_hub import HfApi
 from pyarrow import Table
@@ -29,6 +30,7 @@ def global_setup_and_cleanup():
     reset_world_info()
     reset_logger("TRAIN")
     reset_logger("INFER")
+    torch.cuda.empty_cache()
 
 
 @pytest.fixture(params=["eager", "sdpa", "flash_attention_2"])
