@@ -12,7 +12,7 @@ from pyarrow import Table
 
 from zeroband.training.data import STABLE_FILE
 from zeroband.utils.logger import reset_logger
-from zeroband.utils.models import AttnImpl, ModelName
+from zeroband.utils.models import AttnImpl
 from zeroband.utils.parquet import pa_schema
 from zeroband.utils.world_info import reset_world_info
 
@@ -45,7 +45,7 @@ def attn_impl(request) -> AttnImpl:
 
 
 @pytest.fixture(scope="session")
-def model_name() -> ModelName:
+def model_name() -> str:
     """Main model to use for tests."""
     return "Qwen/Qwen3-0.6B"
 
@@ -57,7 +57,7 @@ def hf_api() -> HfApi:
 
 
 @pytest.fixture(scope="session")
-def llm(model_name: ModelName) -> "LLM":
+def llm(model_name: str) -> "LLM":
     """
     vLLM LLM instance to use for tests. Incurs significant startup time, hence reused across tests.
     """
