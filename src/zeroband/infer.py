@@ -260,15 +260,17 @@ def inference(config: Config):
         monitor.log(progress_metrics)
 
         # Compute performance metrics
-        batch_throughput = batch_tokens / (end_time - start_time)
+        batch_tokens_per_second = batch_tokens / (end_time - start_time)
+        batch_samples_per_minute = batch_samples / (end_time - start_time) * 60
         batch_avg_seq_length = batch_tokens / num_batch_samples
         logger.info(
-            f"Batch throughput: {batch_throughput:.2f} tok/sec ({batch_tokens} tokens in {end_time - start_time:.2f}s, avg seq len: {batch_avg_seq_length:.1f})"
+            f"Batch throughput: {batch_tokens_per_second:.2f} tokens/sec, {batch_samples_per_minute:.2f} samples/min ({batch_tokens} tokens in {end_time - start_time:.2f}s, avg seq len: {batch_avg_seq_length:.1f})"
         )
 
         # Log performance metrics
         perf_metrics = {
-            "performance/batch_throughput": batch_throughput,
+            "performance/batch_tokens_per_second": batch_tokens_per_second,
+            "performance/batch_samples_per_minute": batch_samples_per_minute,
             "performance/batch_avg_seq_length": batch_avg_seq_length,
         }
         monitor.log(perf_metrics)
