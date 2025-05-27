@@ -6,7 +6,8 @@ prime-rl is a codebase for decentralized RL training at scale.
 
 ## install
 quick install
-```
+
+```bash
 curl -sSL https://raw.githubusercontent.com/PrimeIntellect-ai/prime-rl/main/install.sh | bash
 ```
 
@@ -251,7 +252,7 @@ uv run pytest -v -m "not slow"
 
 If you find `prime-rl` useful, feel free to cite our work:
 
-```
+```bash
 @misc{primeintellectteam2025intellect2reasoningmodeltrained,
       title={INTELLECT-2: A Reasoning Model Trained Through Globally Decentralized Reinforcement Learning}, 
       author={Prime Intellect Team and Sami Jaghouar and Justus Mattern and Jack Min Ong and Jannik Straube and Manveer Basra and Aaron Pazdera and Kushal Thaman and Matthew Di Ferrante and Felix Gabriel and Fares Obeid and Kemal Erdem and Michael Keiblinger and Johannes Hagemann},
