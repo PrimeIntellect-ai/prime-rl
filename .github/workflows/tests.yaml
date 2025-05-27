@@ -29,7 +29,7 @@ jobs:
   gpu-tests:
     name: Run GPU Tests
     runs-on: self-hosted
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -43,8 +43,26 @@ jobs:
 
       - name: Install dependencies
         run: uv sync && uv sync --extra fa
-      # - name: Run GPU tests
-      #   run: uv run pytest tests -m "gpu and not e2e"
+      - name: Run GPU tests
+        run: uv run pytest tests -m "gpu and not e2e"
+
+  e2e-tests:
+    name: Run E2E Tests
+    runs-on: self-hosted
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dependencies
+        run: uv sync && uv sync --extra fa
       - name: Run E2E tests
         env:
           USERNAME_CI: CI_RUNNER
