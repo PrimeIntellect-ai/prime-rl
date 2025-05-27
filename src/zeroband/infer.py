@@ -25,8 +25,8 @@ from zeroband.inference.parquet import get_parquet_table
 from zeroband.inference.pipeline import setup_pipeline
 from zeroband.inference.rewards import compute_vllm_rewards
 from zeroband.inference.toploc import setup_toploc_cache
+from zeroband.inference.metrics import setup_metrics
 from zeroband.inference.utils import fake_chat_template, filter_data_by_prompt_length, generate_target_length_prompts, reload_model_weights
-from zeroband.inference.metrics import PrimeMetric
 from zeroband.training.mp import EnvWrapper
 from zeroband.utils.logger import get_logger
 
@@ -44,11 +44,11 @@ def inference(config: Config):
     logger.info(f"Parallelism: TP={config.tp}, DP={config.dp}, PP={config.pp.world_size}")
 
     if config.clean_output_path and config.output_path is not None:
-        logger.debug(f"Cleaning output path {config.output_path}")
+        logger.info(f"Cleaning output path {config.output_path}")
         shutil.rmtree(config.output_path, ignore_errors=True)
 
     # Initialize metrics
-    prime_metric = PrimeMetric(disable=config.prime_log_freq is None, period=config.prime_log_freq)
+    metrics = setup_metrics(config.metrics)
 
     # Initialize vLLM and get tokenizer
     logger.info(
@@ -240,24 +240,38 @@ def inference(config: Config):
         # We call here to give time for the proofs to be generated non-blocking in the background.
         toploc_cache.maybe_generate_proofs_in_background(force_generate=True)
 
-        # Calculate batch problems, samples and tokens
+        # Compute progress metrics
         batch_problems = len(batch)
         batch_samples = sum(len(req.outputs) for req in request_outputs)
         batch_input_tokens = sum(len(req.prompt_token_ids) for req in request_outputs)
         batch_output_tokens = sum(sum(len(output.token_ids) for output in req.outputs) for req in request_outputs)
         batch_tokens = batch_input_tokens + batch_output_tokens
-        # Calculate overall problems, samples and tokens
         total_tokens += batch_tokens
         total_problems += batch_problems
         total_samples += batch_samples
         logger.info(f"Generated {batch_samples} samples for {batch_problems} problems for step {real_step} in {end_time - start_time:.2f}s")
 
-        # Compute batch throughput and average sequence length
+        # Log progress metrics
+        progress_metrics = {
+            "progress/batch_problems": batch_problems,
+            "progress/batch_samples": batch_samples,
+            "progress/batch_tokens": batch_tokens,
+        }
+        metrics.log(progress_metrics)
+
+        # Compute performance metrics
         batch_throughput = batch_tokens / (end_time - start_time)
-        avg_sequence_length = batch_tokens / num_batch_samples
+        batch_avg_seq_length = batch_tokens / num_batch_samples
         logger.info(
-            f"Batch throughput: {batch_throughput:.2f} tok/sec ({batch_tokens} tokens in {end_time - start_time:.2f}s, avg seq len: {avg_sequence_length:.1f})"
+            f"Batch throughput: {batch_throughput:.2f} tok/sec ({batch_tokens} tokens in {end_time - start_time:.2f}s, avg seq len: {batch_avg_seq_length:.1f})"
         )
+
+        # Log performance metrics
+        perf_metrics = {
+            "performance/batch_throughput": batch_throughput,
+            "performance/batch_avg_seq_length": batch_avg_seq_length,
+        }
+        metrics.log(perf_metrics)
 
         # Compute proofs
         # Note (Jack): Currently, vllm guarantees that seq ids are in the same order as prompts passed to generate.
@@ -272,6 +286,7 @@ def inference(config: Config):
         request_rewards = compute_vllm_rewards(request_outputs, verification_infos, task_types, config.rewards)
         logger.info(f"Computed rewards and advantages in {time.time() - start:.2f}s")
 
+        # Get parquet table
         table = get_parquet_table(
             request_outputs,
             request_rewards,
@@ -280,17 +295,16 @@ def inference(config: Config):
             target_lengths,
         )
 
+        # Save outputs to parquet file
         step_path = Path(config.output_path) / f"step_{real_step}"
-        os.makedirs(step_path, exist_ok=True)
-        pq_save_path = f"{step_path}/{uuid.uuid4()}.parquet"
-        pq.write_table(table, pq_save_path)
-        logger.info(f"Saved batch outputs to {pq_save_path}")
+        step_path.mkdir(parents=True, exist_ok=True)
+        save_path = step_path / f"{uuid.uuid4()}.parquet"
+        pq.write_table(table, save_path)
+        logger.info(f"Saved batch outputs to {save_path}")
 
-        file_sha = sha256sum(pq_save_path)
-        prime_metric.log_prime({"file_sha": file_sha, "file_name": pq_save_path})
-
-        metric = {"dashbord-progress/total": total_problems, f"dashbord-progress/{config.dataset}": total_tokens}
-        prime_metric.log_prime(metric)
+        # Log file metadata
+        sha256 = sha256sum(save_path)
+        metrics.log({"output/step": real_step, "output/save_path": save_path.as_posix(), "output/sha256": sha256})
 
         real_step += 1
 
