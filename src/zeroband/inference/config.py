@@ -3,6 +3,7 @@ from typing import Literal
 from pydantic import model_validator
 from pydantic_config import BaseConfig
 
+from zeroband.inference.metrics import MetricsConfig
 from zeroband.inference.pipeline import PipelineConfig
 from zeroband.inference.rewards import RewardsConfig
 
@@ -49,6 +50,9 @@ class Config(BaseConfig):
     tp: int | Literal["auto"] = 1
     dp: int = 1
     pp: PipelineConfig = PipelineConfig()
+
+    # Metrics
+    metrics: MetricsConfig = MetricsConfig()
 
     gpus_ids: list[int] | None = None
     prime_log_freq: int | None = None
