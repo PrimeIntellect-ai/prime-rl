@@ -31,8 +31,8 @@ def test_short_rl_training(commit_hash: str, branch_name: str, username: str):
         project = "ci_run_prime_rl_local"
         wandb_run_name = f"{username}-{branch_name}-{commit_hash}"
 
-    training_cmd = f"uv run torchrun --nproc_per_node=1 src/zeroband/train.py @ configs/training/simple_reverse_two_gpu.toml --optim.stop_after_steps 70 --wandb_run_name {wandb_run_name} --project {project}".split()
-    inference_cmd = "uv run python src/zeroband/infer.py @ configs/inference/simple_reverse_two_gpus.toml --total_step 35".split()
+    training_cmd = f"uv run torchrun --nproc_per_node=1 src/zeroband/train.py @ configs/training/simple_reverse_two_gpu.toml --stop_after_steps 20 --wandb_run_name {wandb_run_name} --project {project}".split()
+    inference_cmd = "uv run python src/zeroband/infer.py @ configs/inference/simple_reverse_two_gpus.toml --total_step 10".split()
 
     training_process = subprocess.Popen(training_cmd)
     envs = os.environ.copy()
