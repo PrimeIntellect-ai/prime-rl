@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 jobs:
   cpu-tests:
@@ -29,7 +29,8 @@ jobs:
   gpu-tests:
     name: Run GPU Tests
     runs-on: self-hosted
-    timeout-minutes: 10
+    timeout-minutes: 20
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -49,7 +50,8 @@ jobs:
   e2e-tests:
     name: Run E2E Tests
     runs-on: self-hosted
-    timeout-minutes: 10
+    timeout-minutes: 20
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -67,3 +69,4 @@ jobs:
         env:
           USERNAME_CI: CI_RUNNER
         run: uv run pytest -s tests -m "e2e"
+
