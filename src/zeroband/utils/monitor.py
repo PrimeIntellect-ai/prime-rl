@@ -1,3 +1,4 @@
+import asyncio
 import json
 import socket
 import threading
@@ -6,6 +7,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
+import aiohttp
 import psutil
 import pynvml
 from pydantic import field_validator, model_validator
@@ -18,35 +20,56 @@ from zeroband.utils.logger import get_logger
 logger = get_logger("INFER")
 
 
+def overwrite_if_none(value: str | None, env_var: str) -> str | None:
+    if value is None:
+        return getattr(envs, env_var)
+
+    return value
+
+
 class OutputConfig(BaseConfig):
     # Whether to log to this output
     enable: bool = False
 
-    # The task ID the metrics belong to
-    task_id: str | None = None
-
-    @field_validator("task_id", mode="before")
-    @classmethod
-    def get_task_id_from_env(cls, v):
-        if v is None:
-            return envs.PRIME_TASK_ID
-        return v
-
 
 class FileOutputConfig(OutputConfig):
     # The file path to log to
-    path: str = "outputs/metrics.txt"
+    path: str | None = None
 
 
 class SocketOutputConfig(OutputConfig):
     # The socket path to log to
-    path: str = "/var/run/com.prime.miner/metrics.sock"
+    path: str | None = None
+
+    @field_validator("path", mode="before")
+    def overwrite_path_with_env(cls, v):
+        return overwrite_if_none(v, "PRIME_SOCKET_PATH")
+
+
+class APIOutputConfig(OutputConfig):
+    # The API URL to log to
+    url: str | None = None
+
+    # The API auth token to use
+    auth_token: str | None = None
+
+    # The number of times .log() is called before sending the buffer
+    flush_frequency: int = 1
+
+    @field_validator("url", mode="before")
+    def overwrite_url_with_env(cls, v):
+        return overwrite_if_none(v, "PRIME_API_URL")
+
+    @field_validator("auth_token", mode="before")
+    def overwrite_auth_token_with_env(cls, v):
+        return overwrite_if_none(v, "PRIME_API_AUTH_TOKEN")
 
 
 class MonitorConfig(BaseConfig):
     # List of possible outputs to log to
     file: FileOutputConfig = FileOutputConfig()
     socket: SocketOutputConfig = SocketOutputConfig()
+    api: APIOutputConfig = APIOutputConfig()
 
     # Interval in seconds to log system metrics (if 0, no system metrics are logged)
     system_log_frequency: int = 0
@@ -63,14 +86,10 @@ class Output(ABC):
     def __init__(self, config: OutputConfig):
         self.config = config
         self.lock = threading.Lock()
-        if not self.config.task_id:
-            logger.warning("Task ID it not set. Set it in the config or as PRIME_TASK_ID.")
-        logger.info(f"Initialized {self.__class__.__name__} ({str(self.config).replace(' ', ', ')})")
+        logger.debug(f"Initializing {self.__class__.__name__} ({str(self.config).replace(' ', ', ')})")
 
-    def _add_task_id(self, metrics: dict[str, Any]) -> dict[str, Any]:
-        if self.config.task_id:
-            metrics["task_id"] = self.config.task_id
-        return metrics
+    def _serialize_metrics(self, metrics: dict[str, Any]) -> str:
+        return json.dumps(metrics)
 
     @abstractmethod
     def log(self, metrics: dict[str, Any]) -> None:
@@ -82,17 +101,17 @@ class FileOutput(Output):
 
     def __init__(self, config: FileOutputConfig):
         super().__init__(config)
-        self.file_path = Path(config.path)
-        self.file_path.parent.mkdir(parents=True, exist_ok=True)
+        assert self.config.path is not None, "File path must be set for FileOutput. Set it as --monitor.file.path."
+        Path(self.config.path).parent.mkdir(parents=True, exist_ok=True)
 
     def log(self, metrics: dict[str, Any]) -> None:
         with self.lock:
             try:
-                with open(self.file_path, "a") as f:
-                    f.write(json.dumps(self._add_task_id(metrics)) + "\n")
-                logger.debug(f"Logged successfully to {self.file_path}")
+                with open(self.config.path, "a") as f:
+                    f.write(self._serialize_metrics(metrics) + "\n")
+                logger.debug(f"Logged successfully to {self.config.path}")
             except Exception as e:
-                logger.error(f"Failed to log metrics to {self.file_path}: {e}")
+                logger.error(f"Failed to log metrics to {self.config.path}: {e}")
 
 
 class SocketOutput(Output):
@@ -100,20 +119,84 @@ class SocketOutput(Output):
 
     def __init__(self, config: SocketOutputConfig):
         super().__init__(config)
-        self.socket_path = config.path
+        # Assert that the socket path is set
+        assert self.config.path is not None, (
+            "Socket path must be set for SocketOutput. Set it as --monitor.socket.path or PRIME_SOCKET_PATH."
+        )
 
     def log(self, metrics: dict[str, Any]) -> None:
         with self.lock:
             try:
                 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-                    sock.connect(self.socket_path)
-                    msg_buffer = []
-                    for key, value in metrics.items():
-                        msg_buffer.append(json.dumps(self._add_task_id({"label": key, "value": value})))
-                    sock.sendall(("\n".join(msg_buffer)).encode())
-                logger.debug(f"Logged successfully to {self.socket_path}")
+                    sock.connect(self.config.path)
+                    sock.sendall(self._serialize_metrics(metrics).encode())
+                logger.debug(f"Logged successfully to {self.config.path}")
             except Exception as e:
-                logger.error(f"Failed to log metrics to {self.socket_path}: {e}")
+                logger.error(f"Failed to log metrics to {self.config.path}: {e}")
+
+
+class APIOutput(Output):
+    """Logs to an API via HTTP. Previously called `HttpMonitor`."""
+
+    def __init__(self, config: APIOutputConfig):
+        super().__init__(config)
+        # Assert that the URL and auth token are set
+        assert self.config.url is not None, "URL must be set for APIOutput. Set it as --monitor.api.url or PRIME_API_URL."
+        assert self.config.auth_token is not None, (
+            "Auth token must be set for APIOutput. Set it as --monitor.api.auth_token or PRIME_API_AUTH_TOKEN."
+        )
+
+        # Setup buffer and async loop for flushing metrics
+        self.buffer: list[dict[str, Any]] = []
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+
+    # TODO(Mika): I don't think we need this anymore
+    # def _remove_duplicates(self):
+    #     seen = set()
+    #     unique_logs = []
+    #     for log in self.data:
+    #         log_tuple = tuple(sorted(log.items()))
+    #         if log_tuple not in seen:
+    #             unique_logs.append(log)
+    #             seen.add(log_tuple)
+    #     self.data = unique_logs
+
+    def log(self, metrics: dict[str, Any]) -> None:
+        """Logs metrics to the server"""
+        self.buffer.append(metrics)
+
+        # Send the batch if the buffer is full
+        if len(self.buffer) >= self.config.flush_frequency:
+            self.loop.run_until_complete(self._send_batch())
+
+    async def _send_batch(self):
+        """Send a batch of metrics to the server"""
+        batch_metrics = self.buffer[: self.config.flush_frequency]
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self.config.auth_token}"}
+        payload = {"metrics": batch_metrics, "operation_type": "append"}
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(self.config.url, json=payload, headers=headers) as response:
+                    if response is not None:
+                        response.raise_for_status()
+                logger.debug(f"Logged successfully to server {self.config.url}")
+        except Exception as e:
+            logger.error(f"Error sending batch to server: {str(e)}")
+
+        # Clear the buffer
+        self.buffer = self.buffer[self.config.flush_frequency :]
+
+    async def _flush(self):
+        """Send any remaining metrics"""
+        while self.buffer:
+            await self._send_batch()
+
+    def __del__(self):
+        if hasattr(self, "loop") and self.loop is not None:
+            self.loop.run_until_complete(self._flush())
+            self.loop.close()
 
 
 class Monitor:
@@ -122,14 +205,21 @@ class Monitor:
     """
 
     def __init__(self, config: MonitorConfig):
-        logger.info(f"Initialized monitor ({str(config).replace(' ', ',')})")
-
         # Initialize outputs
         self.outputs = []
         if config.file.enable:
             self.outputs.append(FileOutput(config.file))
         if config.socket.enable:
             self.outputs.append(SocketOutput(config.socket))
+        if config.api.enable:
+            self.outputs.append(APIOutput(config.api))
+
+        output_msg = (
+            "No outputs configured, no metrics will be logged."
+            if len(self.outputs) == 0
+            else "Outputs: " + ", ".join([output.__class__.__name__ for output in self.outputs])
+        )
+        logger.info(f"Initialized Monitor ({output_msg})")
 
         # Start metrics collection thread, if system_log_frequency is greater than 0
         if config.system_log_frequency > 0:
