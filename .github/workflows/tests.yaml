@@ -70,8 +70,21 @@ jobs:
           USERNAME_CI: CI_RUNNER
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-
+        
         run: uv run python -c "import wandb; wandb.init(project='test')"
 
-        # run: uv run pytest -s tests -m "e2e"
 
+      - name: Debug WANDB env
+        env:
+          USERNAME_CI: CI_RUNNER
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        
+        run: |
+          if [ -z "$WANDB_API_KEY" ]; then
+            echo "WANDB_API_KEY is NOT set"
+            exit 1
+          else
+            echo "WANDB_API_KEY is set"
+          fi
+        
