@@ -29,7 +29,7 @@ jobs:
 
       - name: Install dependencies
         run: uv sync && uv sync --extra fa
-      - name: Run GPU unit tests
+      - name: Run unit tests
         run: uv run pytest tests/unit -m gpu
 
   gpu-tests-integration:
@@ -50,7 +50,7 @@ jobs:
 
       - name: Install dependencies
         run: uv sync && uv sync --extra fa
-      - name: Run GPU integration tests
+      - name: Run integration tests
         run: uv run pytest tests/integration -m gpu
 
   e2e-tests:
@@ -71,7 +71,7 @@ jobs:
 
       - name: Install dependencies
         run: uv sync && uv sync --extra fa
-      - name: Run GPU E2E tests
+      - name: Run E2E tests
         env:
           USERNAME_CI: CI_RUNNER
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}

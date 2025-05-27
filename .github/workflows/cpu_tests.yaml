@@ -23,7 +23,7 @@ jobs:
 
       - name: Install dependencies
         run: uv sync
-      - name: Run CPU tests
+      - name: Run tests
         run: uv run pytest tests -m "not gpu"
 
 
