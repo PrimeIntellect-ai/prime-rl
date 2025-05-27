@@ -10,7 +10,7 @@ on:
 
 jobs:
   ruff:
-    name: Run ruff
+    name: Ruff
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository

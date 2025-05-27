@@ -1,4 +1,4 @@
-name: Tests
+name: CPU Tests
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
 
 jobs:
   cpu-tests-units:
-    name: Run CPU tests
+    name: All tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository

@@ -1,4 +1,4 @@
-name: Tests
+name: GPU Tests
 
 on:
   push:
@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   gpu-tests-units:
-    name: Run GPU unit tests
+    name: Unit tests
     runs-on: self-hosted
     timeout-minutes: 20
     if: github.event_name == 'push' || github.event.pull_request.draft == false
@@ -33,7 +33,7 @@ jobs:
         run: uv run pytest tests/unit -m gpu
 
   gpu-tests-integration:
-    name: Run GPU integration tests
+    name: Integration tests
     runs-on: self-hosted
     timeout-minutes: 20
     if: github.event_name == 'push' || github.event.pull_request.draft == false
@@ -54,7 +54,7 @@ jobs:
         run: uv run pytest tests/integration -m gpu
 
   e2e-tests:
-    name: Run GPU e2e tests
+    name: E2E tests
     runs-on: self-hosted
     timeout-minutes: 20
     if: github.event_name == 'push' || github.event.pull_request.draft == false
