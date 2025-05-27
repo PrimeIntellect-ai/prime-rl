@@ -33,9 +33,9 @@ from zeroband.training.utils import (
     wake_up_model_from_cpu,
 )
 from zeroband.training.world_info import WorldInfo, get_world_info
-from zeroband.utils.http_monitor import HttpMonitor
 from zeroband.utils.logger import get_logger
 from zeroband.utils.models import ModelType, get_model_and_tokenizer
+from zeroband.utils.monitor import setup_monitor
 
 
 def get_local_batch_size(batch_size: int, micro_bs: int, data_workers: int, world_info: WorldInfo) -> int:
@@ -153,8 +153,8 @@ def train(config: Config):
     if world_info.rank == 0 and config.wandb:
         wandb.init(project=config.project, config=config.model_dump(), dir="wandb_logs", name=config.wandb_run_name)
 
-    if envs.PRIME_API_BASE_URL is not None:
-        monitor = HttpMonitor()
+    # Setup the monitor
+    monitor = setup_monitor(config.monitor)
 
     if config.train.torch_compile:
         model = torch.compile(model) if not TYPE_CHECKING else model
@@ -415,8 +415,15 @@ def train(config: Config):
             if world_info.rank == 0:
                 if config.wandb:
                     log_to_wandb(metrics)
-                if envs.PRIME_API_BASE_URL is not None:
-                    monitor.log(metrics)
+
+                # Lowercase metrics before logging
+                metrics = {k.lower(): v for k, v in metrics.items()}
+
+                # Filter metrics to only include the ones we want to send to the API
+                metrics = {k: metrics[k] for k in ("step", "seq_lens", "sample_reward", "total_samples")}
+
+                # TODO(Mika): Maybe need to ensure not logging duplicates?
+                monitor.log(metrics)
 
             logger.info(log)
 
@@ -472,9 +479,6 @@ def train(config: Config):
 
     if prefetcher is not None:
         prefetcher.shutdown()
-
-    if world_info.rank == 0 and envs.PRIME_API_BASE_URL is not None:
-        monitor.finish()
 
     logger.info("Training finished, exiting ...")
     logger.info(f"Max memory: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB")
