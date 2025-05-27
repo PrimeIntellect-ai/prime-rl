@@ -304,7 +304,7 @@ def inference(config: Config):
 
         # Log file metadata
         sha256 = sha256sum(save_path)
-        metrics.log({"output/step": real_step, "output/save_path": save_path.as_posix(), "output/sha256": sha256})
+        metrics.log({"output/save_path": save_path.as_posix(), "output/sha256": sha256})
 
         real_step += 1
 
