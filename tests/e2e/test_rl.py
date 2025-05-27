@@ -35,7 +35,7 @@ def processes(run_processes: Callable[[list[Command], list[Environment]], list[P
     if branch_name_ is None:
         branch_name = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"]).decode("utf-8").strip()
     else:
-        branch_name = branch_name_.remove("/merge")
+        branch_name = branch_name_.replace("/merge", "")
         branch_name = f"pr-{branch_name}"
 
     commit_hash = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"]).decode("utf-8").strip()
