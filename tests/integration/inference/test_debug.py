@@ -1,10 +1,10 @@
 from pathlib import Path
-from subprocess import Popen
 from typing import Callable
 
 import pyarrow.parquet as pq
 import pytest
 
+from tests.integration import Command, Environment, ProcessResult
 from zeroband.training.data import pa_schema
 
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
@@ -18,11 +18,11 @@ def output_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 @pytest.fixture(scope="module")
-def process(output_path: Path, run_process: Callable[[list[str]], Popen]):
-    return run_process(CMD + ["--output-path", str(output_path)])
+def process(output_path: Path, run_process: Callable[[Command, Environment], ProcessResult]) -> ProcessResult:
+    return run_process(CMD + ["--output-path", str(output_path)], {})
 
 
-def test_no_error(process: Popen):
+def test_no_error(process: ProcessResult):
     assert process.returncode == 0, f"Process failed with return code {process.returncode}"
 
 
@@ -35,7 +35,9 @@ def test_output_directories_exist(output_path: Path):
 
 
 def test_output_files_have_correct_schemas(output_path: Path):
-    for file in output_path.rglob("*.parquet"):
+    files = list(output_path.rglob("*.parquet"))
+    assert len(files) == 4, f"Expected 4 files, got {len(files)}"
+    for file in files:
         assert pq.read_schema(file).equals(pa_schema)
 
 

@@ -1,5 +1,5 @@
 model_name = "Qwen/Qwen3-0.6B"
-dataset = "justus27/rl-code-and-math"
+dataset = "PrimeIntellect/INTELLECT-2-RL-Dataset"
 max_samples = 32
 batch_size = 8
 enforce_eager = true

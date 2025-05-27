@@ -1,5 +1,5 @@
 model_name = "Qwen/QwQ-32B"
-dataset = "justus27/rl-code-and-math"
+dataset = "PrimeIntellect/INTELLECT-2-RL-Dataset"
 batch_size = 16
 tp = "auto"
 max_model_len = 16_000

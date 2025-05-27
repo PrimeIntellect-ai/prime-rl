@@ -9,6 +9,11 @@ from typing import Any
 import psutil
 import pynvml
 
+from zeroband.utils.logger import get_logger
+
+# Module logger
+logger = get_logger("INFER")
+
 
 class PrimeMetric:
     """
@@ -28,8 +33,8 @@ class PrimeMetric:
     def __init__(self, disable: bool = False, period: int = 5):
         self.disable = disable
         self.period = period
-        self._thread = None
         self.has_gpu = False
+        self._thread = None
 
         if self.disable:
             return
@@ -43,44 +48,33 @@ class PrimeMetric:
         except pynvml.NVMLError:
             pass
 
+        default = "/tmp/com.prime.miner/metrics.sock" if platform.system() == "Darwin" else "/var/run/com.prime.miner/metrics.sock"
+        self.socket_path = os.getenv("PRIME_TASK_BRIDGE_SOCKET", default=default)
+
+        logger.info(f"Initialized PrimeMetrics (period={self.period}, has_gpu={self.has_gpu})")
+
     ## public
 
-    def log_prime(self, metric: dict[str, Any]):
+    def log_prime(self, metric: dict[str, Any]) -> None:
         if self.disable:
             return
-        if not (self._send_message_prime(metric)):
-            print(f"Prime logging failed: {metric}")
-
-    ## private
-
-    @classmethod
-    def _get_default_socket_path(cls) -> str:
-        """Returns the default socket path based on the operating system."""
-        default = "/tmp/com.prime.miner/metrics.sock" if platform.system() == "Darwin" else "/var/run/com.prime.miner/metrics.sock"
-        return os.getenv("PRIME_TASK_BRIDGE_SOCKET", default=default)
-
-    def _send_message_prime(self, metric: dict, socket_path: str = None) -> bool:
-        """Sends a message to the specified socket path or uses the default if none is provided."""
-        socket_path = socket_path or os.getenv("PRIME_TASK_BRIDGE_SOCKET", self._get_default_socket_path())
-        # print("Sending message to socket: ", socket_path)
+        logger.debug(f"Trying to log {metric}")
 
         task_id = os.getenv("PRIME_TASK_ID", None)
         if task_id is None:
-            print("No task ID found, skipping logging to Prime")
+            logger.warning("No task ID found, skipping logging")
             return False
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-                sock.connect(socket_path)
+                sock.connect(self.socket_path)
 
                 msg_buffer = []
                 for key, value in metric.items():
                     msg_buffer.append(json.dumps({"label": key, "value": value, "task_id": task_id}))
                 sock.sendall(("\n".join(msg_buffer)).encode())
-            return True
+            logger.debug("Logged successfully")
         except Exception as e:
-            print(f"Error sending message to Prime: {e}")
-            print(f"Socket path: {socket_path}")
-            return False
+            logger.error(f"Logging failed with error: {e}")
 
     ### background system metrics
 
@@ -89,7 +83,7 @@ class PrimeMetric:
         if self._thread is not None:
             return
         self._stop_event.clear()
-        self._thread = threading.Thread(target=self._collect_metrics)
+        self._thread = threading.Thread(target=self._collect_metrics, daemon=True)
         self._thread.daemon = True
         self._thread.start()
 
@@ -125,6 +119,7 @@ class PrimeMetric:
                         }
                     )
 
+            logger.debug(f"Collected metrics: {metrics}")
             self.log_prime(metrics)
             time.sleep(self.period)
 

@@ -1,8 +1,9 @@
 from pathlib import Path
-from subprocess import Popen
 from typing import Callable
 
 import pytest
+
+from tests.integration import Command, Environment, ProcessResult
 
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
 
@@ -16,11 +17,11 @@ def output_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 @pytest.fixture(scope="module")
 def process(
-    output_path: Path, run_process: Callable[[list[str]], Popen], fake_rollout_files_dir: Callable[[list[int], int, int, int], Path]
+    run_process: Callable[[Command, Environment], ProcessResult], fake_rollout_files_dir: Callable[[list[int], int, int, int], Path]
 ):
     data_path = fake_rollout_files_dir(steps=list(range(2)), num_files=8, batch_size=8, seq_len=16)
-    return run_process(CMD + ["--data.path", str(data_path), "--no-data.fake"])
+    return run_process(CMD + ["--data.path", str(data_path), "--no-data.fake"], {})
 
 
-def test_no_error(process: Popen):
+def test_no_error(process: ProcessResult):
     assert process.returncode == 0, f"Process failed with return code {process.returncode}"

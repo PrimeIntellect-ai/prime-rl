@@ -16,9 +16,9 @@ from transformers import (
     PreTrainedTokenizer,
 )
 
+from zeroband.training.world_info import get_world_info
 from zeroband.utils.logger import get_logger
 from zeroband.utils.models import ModelType
-from zeroband.utils.world_info import get_world_info
 
 
 def apply_ac_ckpt(model: ModelType, num: int):

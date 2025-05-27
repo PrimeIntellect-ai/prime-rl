@@ -32,10 +32,10 @@ from zeroband.training.utils import (
     reshard_module,
     wake_up_model_from_cpu,
 )
+from zeroband.training.world_info import WorldInfo, get_world_info
 from zeroband.utils.http_monitor import HttpMonitor
 from zeroband.utils.logger import get_logger
 from zeroband.utils.models import ModelType, get_model_and_tokenizer
-from zeroband.utils.world_info import WorldInfo, get_world_info
 
 
 def get_local_batch_size(batch_size: int, micro_bs: int, data_workers: int, world_info: WorldInfo) -> int:

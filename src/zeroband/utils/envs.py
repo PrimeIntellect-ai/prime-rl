@@ -1,50 +1,57 @@
 import os
-from typing import TYPE_CHECKING, Any, Dict, List
-
-# Force using vLLM v0
-os.environ["VLLM_USE_V1"] = "0"
-os.environ["TOKENIZERS_PARALLELISM"] = "false"  # to avoid HF warning
-
-# Disable rust logs if not manually set
-if os.getenv("RUST_LOG") is None:
-    os.environ["RUST_LOG"] = "off"
+from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     # Prime
-    PRIME_LOG_LEVEL: str = "INFO"
+    PRIME_LOG_LEVEL: str
 
     # PyTorch
-    RANK: int = 0
-    WORLD_SIZE: int = 1
-    LOCAL_RANK: int = 0
-    LOCAL_WORLD_SIZE: int = 1
-    CUDA_VISIBLE_DEVICES: List[int] = [0]
+    CUDA_VISIBLE_DEVICES: list[int]
 
-# Shared environment variables between training and inference
-_BASE_ENV: Dict[str, Any] = {
-    "PRIME_LOG_LEVEL": lambda: os.getenv("PRIME_LOG_LEVEL", "INFO"),
-    "RANK": lambda: int(os.getenv("RANK", "0")),
-    "WORLD_SIZE": lambda: int(os.getenv("WORLD_SIZE", "1")),
-    "LOCAL_RANK": lambda: int(os.getenv("LOCAL_RANK", "0")),
-    "LOCAL_WORLD_SIZE": lambda: int(os.getenv("LOCAL_WORLD_SIZE", "1")),
-    "CUDA_VISIBLE_DEVICES": lambda: list(map(int, os.getenv("CUDA_VISIBLE_DEVICES", "0").split(","))),
-    "VLLM_USE_V1": lambda: os.getenv("VLLM_USE_V1", "0"),
+
+# All environment variables with their type parsers
+_ENV_PARSERS: dict[str, Callable[[str], Any]] = {
+    "PRIME_LOG_LEVEL": str,
+    "CUDA_VISIBLE_DEVICES": lambda x: list(map(int, x.split(","))),
+}
+
+# Subset of environment variables with default values
+_ENV_DEFAULTS: dict[str, str] = {
+    "PRIME_LOG_LEVEL": "INFO",
 }
 
 
-def get_env_value(envs: Dict[str, Any], key: str) -> Any:
-    if key not in envs:
+# Initialize environment variables that have defaults
+def set_defaults(env_defaults: dict[str, str]):
+    for key, default_value in env_defaults.items():
+        if os.getenv(key) is None:
+            os.environ[key] = default_value
+
+
+set_defaults(_ENV_DEFAULTS)
+
+
+def get_env_value(env_parser: dict[str, Callable[[str], Any]], key: str) -> Any:
+    """Get an environment variable value with type safety and parsing."""
+    if key not in env_parser:
         raise AttributeError(f"Invalid environment variable: {key}")
-    return envs[key]()
+
+    raw_value = os.getenv(key)
+    if raw_value is None:
+        return None
+    parser = env_parser[key]
+
+    return parser(raw_value)
 
 
-def get_dir(envs: Dict[str, Any]) -> List[str]:
-    return list(envs.keys())
+def get_dir(env_parser: dict[str, Callable[[str], Any]]) -> list[str]:
+    """Get list of available environment variable names."""
+    return list(env_parser.keys())
 
 
 def __getattr__(name: str) -> Any:
-    return get_env_value(_BASE_ENV, name)
+    return get_env_value(_ENV_PARSERS, name)
 
 
-def __dir__() -> List[str]:
-    return get_dir(_BASE_ENV)
+def __dir__() -> list[str]:
+    return get_dir(_ENV_PARSERS)
