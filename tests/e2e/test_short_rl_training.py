@@ -3,7 +3,7 @@ import subprocess
 
 import pytest
 
-pytestmark = [pytest.mark.gpu, pytest.mark.slow, pytest.mark.e2e]
+pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
 
 @pytest.fixture(scope="session")
