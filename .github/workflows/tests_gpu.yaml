@@ -73,6 +73,8 @@ jobs:
           USERNAME_CI: CI_RUNNER
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_HEAD_REF: ${{ github.head_ref }}
+
         run: uv run pytest -s tests -m "e2e"
 

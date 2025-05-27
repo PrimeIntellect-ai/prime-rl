@@ -13,7 +13,12 @@ def username():
 
 @pytest.fixture(scope="session")
 def branch_name():
-    branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"]).decode("utf-8").strip()
+    branch_name_ = os.environ.get("GITHUB_REF_NAME", None)
+    if branch_name_ is None:
+        branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"]).decode("utf-8").strip()
+    else:
+        branch = branch_name_.remove("/merge")
+        branch = f"pr-{branch}"
     return branch
 
 
