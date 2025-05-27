@@ -4,7 +4,7 @@ import torch
 from zeroband.utils.models import get_model_and_tokenizer
 
 BS = 1
-SEQ_LEN = 8
+SEQ_LEN = 16
 
 pytestmark = [pytest.mark.gpu, pytest.mark.skip]
 
