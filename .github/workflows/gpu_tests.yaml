@@ -14,7 +14,6 @@ jobs:
   setup:
     name: Setup environment
     runs-on: self-hosted
-    timeout-minutes: 10
     if: github.event_name == 'push' || github.event.pull_request.draft == false
     steps:
       - name: Checkout repository
@@ -32,7 +31,7 @@ jobs:
   unit-tests:
     name: Unit tests
     runs-on: self-hosted
-    timeout-minutes: 15
+    timeout-minutes: 10
     needs: setup
     if: github.event_name == 'push' || github.event.pull_request.draft == false
     steps:
@@ -44,7 +43,7 @@ jobs:
   integration-tests:
     name: Integration tests
     runs-on: self-hosted
-    timeout-minutes: 15
+    timeout-minutes: 10
     needs: setup
     if: github.event_name == 'push' || github.event.pull_request.draft == false
     steps:
@@ -56,7 +55,7 @@ jobs:
   e2e-tests:
     name: E2E tests
     runs-on: self-hosted
-    timeout-minutes: 15
+    timeout-minutes: 10
     needs: setup
     if: github.event_name == 'push' || github.event.pull_request.draft == false
     steps:

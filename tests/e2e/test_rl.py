@@ -26,6 +26,8 @@ INFERENCE_CMD = [
     "@configs/inference/simple_reverse_two_gpus.toml",
 ]
 
+TIMEOUT = 600
+
 
 @pytest.fixture(scope="module")
 def processes(run_processes: Callable[[list[Command], list[Environment]], list[ProcessResult]]) -> list[ProcessResult]:
@@ -50,7 +52,7 @@ def processes(run_processes: Callable[[list[Command], list[Environment]], list[P
     training_cmd = TRAINING_CMD + ["--wandb_run_name", wandb_run_name, "--project", project]
     inference_cmd = INFERENCE_CMD
 
-    return run_processes([training_cmd, inference_cmd], [TRAINING_ENV, INFERENCE_ENV], timeout=600)
+    return run_processes([training_cmd, inference_cmd], [TRAINING_ENV, INFERENCE_ENV], timeout=TIMEOUT)
 
 
 def test_no_error(processes: list[ProcessResult]):
