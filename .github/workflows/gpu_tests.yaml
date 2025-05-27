@@ -11,10 +11,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  gpu-tests-units:
-    name: Unit tests
+  setup:
+    name: Setup environment
     runs-on: self-hosted
-    timeout-minutes: 20
+    timeout-minutes: 10
     if: github.event_name == 'push' || github.event.pull_request.draft == false
     steps:
       - name: Checkout repository
@@ -26,51 +26,36 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-
       - name: Install dependencies
         run: uv sync && uv sync --extra fa
+
+  unit-tests:
+    name: Unit tests
+    runs-on: self-hosted
+    timeout-minutes: 15
+    needs: setup
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    steps:
       - name: Run unit tests
         run: uv run pytest tests/unit -m gpu
 
-  gpu-tests-integration:
+  integration-tests:
     name: Integration tests
     runs-on: self-hosted
-    timeout-minutes: 20
+    timeout-minutes: 15
+    needs: setup
     if: github.event_name == 'push' || github.event.pull_request.draft == false
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          submodules: true
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-
-      - name: Install dependencies
-        run: uv sync && uv sync --extra fa
       - name: Run integration tests
         run: uv run pytest tests/integration -m gpu
 
   e2e-tests:
     name: E2E tests
     runs-on: self-hosted
-    timeout-minutes: 20
+    timeout-minutes: 15
+    needs: setup
     if: github.event_name == 'push' || github.event.pull_request.draft == false
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          submodules: true
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-
-      - name: Install dependencies
-        run: uv sync && uv sync --extra fa
       - name: Run E2E tests
         env:
           USERNAME_CI: CI_RUNNER
