@@ -26,11 +26,9 @@ from zeroband.inference.pipeline import setup_pipeline
 from zeroband.inference.rewards import compute_vllm_rewards
 from zeroband.inference.toploc import setup_toploc_cache
 from zeroband.inference.utils import fake_chat_template, filter_data_by_prompt_length, generate_target_length_prompts, reload_model_weights
-
-
+from zeroband.inference.metrics import PrimeMetric
 from zeroband.training.mp import EnvWrapper
 from zeroband.utils.logger import get_logger
-from zeroband.utils.metrics import PrimeMetric
 
 # Global logger
 logger = get_logger("INFER")
@@ -219,10 +217,7 @@ def inference(config: Config):
                     for item, length_prompt in zip(batch, length_prompt_additions)
                 ]
         else:
-            messages = [
-                [{"role": "user", "content": item["prompt"]}, {"role": "assistant", "content": "<think>\n"}]
-                for item in batch
-            ]
+            messages = [[{"role": "user", "content": item["prompt"]}, {"role": "assistant", "content": "<think>\n"}] for item in batch]
 
         if tokenizer.chat_template:
             prompts = tokenizer.apply_chat_template(messages, tokenize=False, continue_final_message=True)
