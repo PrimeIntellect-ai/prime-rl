@@ -6,7 +6,7 @@ from zeroband.utils.envs import _ENV_PARSERS as _BASE_ENV_PARSERS, get_env_value
 if TYPE_CHECKING:
     # Enable type checking for shared envs
     # ruff: noqa
-    from zeroband.utils.envs import PRIME_LOG_LEVEL, CUDA_VISIBLE_DEVICES
+    from zeroband.utils.envs import *
 
     # vLLM
     VLLM_USE_V1: str
