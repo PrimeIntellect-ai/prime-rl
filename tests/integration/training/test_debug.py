@@ -2,7 +2,7 @@ from typing import Callable
 
 import pytest
 
-from tests.integration import Command, Environment, ProcessResult
+from tests import Command, Environment, ProcessResult
 
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
 

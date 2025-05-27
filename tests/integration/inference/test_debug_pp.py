@@ -4,7 +4,7 @@ from typing import Callable
 import pyarrow.parquet as pq
 import pytest
 
-from tests.integration import Command, Environment, ProcessResult
+from tests import Command, Environment, ProcessResult
 from zeroband.training.data import pa_schema
 
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
