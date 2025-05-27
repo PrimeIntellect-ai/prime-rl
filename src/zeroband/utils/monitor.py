@@ -53,9 +53,6 @@ class APIOutputConfig(OutputConfig):
     # The API auth token to use
     auth_token: str | None = None
 
-    # The number of times .log() is called before sending the buffer
-    flush_frequency: int = 1
-
     @field_validator("url", mode="before")
     def overwrite_url_with_env(cls, v):
         return overwrite_if_none(v, "PRIME_API_URL")
@@ -146,57 +143,22 @@ class APIOutput(Output):
             "Auth token must be set for APIOutput. Set it as --monitor.api.auth_token or PRIME_API_AUTH_TOKEN."
         )
 
-        # Setup buffer and async loop for flushing metrics
-        self.buffer: list[dict[str, Any]] = []
-        self.loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.loop)
-
-    # TODO(Mika): I don't think we need this anymore
-    # def _remove_duplicates(self):
-    #     seen = set()
-    #     unique_logs = []
-    #     for log in self.data:
-    #         log_tuple = tuple(sorted(log.items()))
-    #         if log_tuple not in seen:
-    #             unique_logs.append(log)
-    #             seen.add(log_tuple)
-    #     self.data = unique_logs
-
     def log(self, metrics: dict[str, Any]) -> None:
         """Logs metrics to the server"""
-        self.buffer.append(metrics)
-
-        # Send the batch if the buffer is full
-        if len(self.buffer) >= self.config.flush_frequency:
-            self.loop.run_until_complete(self._send_batch())
-
-    async def _send_batch(self):
-        """Send a batch of metrics to the server"""
-        batch_metrics = self.buffer[: self.config.flush_frequency]
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self.config.auth_token}"}
-        payload = {"metrics": batch_metrics, "operation_type": "append"}
+        payload = {"metrics": self._serialize_metrics(metrics), "operation_type": "append"}
 
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(self.config.url, json=payload, headers=headers) as response:
-                    if response is not None:
-                        response.raise_for_status()
-                logger.debug(f"Logged successfully to server {self.config.url}")
-        except Exception as e:
-            logger.error(f"Error sending batch to server: {str(e)}")
+        async def _send_batch():
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(self.config.url, json=payload, headers=headers) as response:
+                        if response is not None:
+                            response.raise_for_status()
+                    logger.debug(f"Logged successfully to server {self.config.url}")
+            except Exception as e:
+                logger.error(f"Error sending batch to server: {str(e)}")
 
-        # Clear the buffer
-        self.buffer = self.buffer[self.config.flush_frequency :]
-
-    async def _flush(self):
-        """Send any remaining metrics"""
-        while self.buffer:
-            await self._send_batch()
-
-    def __del__(self):
-        if hasattr(self, "loop") and self.loop is not None:
-            self.loop.run_until_complete(self._flush())
-            self.loop.close()
+        asyncio.run(_send_batch())
 
 
 class Monitor:
@@ -214,16 +176,12 @@ class Monitor:
         if config.api.enable:
             self.outputs.append(APIOutput(config.api))
 
-        output_msg = (
-            "No outputs configured, no metrics will be logged."
-            if len(self.outputs) == 0
-            else "Outputs: " + ", ".join([output.__class__.__name__ for output in self.outputs])
-        )
-        logger.info(f"Initialized Monitor ({output_msg})")
+        self.disabled = len(self.outputs) == 0
+        logger.info(f"Initialized Monitor ({'disabled' if self.disabled else ''})")
 
         # Start metrics collection thread, if system_log_frequency is greater than 0
         if config.system_log_frequency > 0:
-            logger.debug(f"Starting system metrics logging thread with frequency {config.system_log_frequency}s")
+            logger.info(f"Starting thread to log system metrics every {config.system_log_frequency}s")
             self._system_log_frequency = config.system_log_frequency
             self._has_gpu = self._set_has_gpu()
             self._thread = None
@@ -232,7 +190,9 @@ class Monitor:
 
     def log(self, metrics: dict[str, Any]) -> None:
         """Logs metrics to all outputs."""
-        logger.debug(f"Logging metrics: {metrics}")
+        if self.disabled:
+            return
+        logger.info(f"Logging metrics: {metrics}")
         for output in self.outputs:
             output.log(metrics)
 
