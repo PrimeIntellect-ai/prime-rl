@@ -177,7 +177,7 @@ class Monitor:
             self.outputs.append(APIOutput(config.api))
 
         self.disabled = len(self.outputs) == 0
-        logger.info(f"Initialized Monitor ({'disabled' if self.disabled else ''})")
+        logger.info(f"Initialized Monitor{' (disabled)' if self.disabled else ''}")
 
         # Start metrics collection thread, if system_log_frequency is greater than 0
         if config.system_log_frequency > 0:
