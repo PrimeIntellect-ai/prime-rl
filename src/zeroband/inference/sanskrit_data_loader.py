@@ -15,7 +15,7 @@ class SanskritQuoteDataset:
     
     def __init__(
         self,
-        dataset_name: str = "pawsdev/sanskrit-verses-gretil",
+        dataset_name: str = "paws/sanskrit-verses-gretil",
         split: str = "train",
         cache_dir: Optional[str] = None,
         local_path: Optional[str] = None,
@@ -219,7 +219,7 @@ Genre: [genre], Author: [author], Text: [text], Chapter: [chapter], Verse: [vers
 
 # Convenience function for creating dataset
 def create_sanskrit_dataset(
-    dataset_name: str = "pawsdev/sanskrit-gretil-quotes",
+    dataset_name: str = "paws/sanskrit-gretil-quotes",
     split: str = "train",
     cache_dir: Optional[str] = None,
     local_path: Optional[str] = None,

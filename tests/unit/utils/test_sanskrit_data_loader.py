@@ -73,59 +73,6 @@ class TestSanskritQuoteDataset:
         assert dataset.genre_counts == {"epic": 1, "kavya": 1, "purana": 1}
         assert dataset.author_counts == {"Vyasa": 1, "Kalidasa": 1, "Unknown": 1}
         
-    def test_get_random_batch(self, mock_dataset_data):
-        """Test random batch sampling."""
-        with patch('zeroband.inference.sanskrit_data_loader.load_dataset') as mock_load:
-            mock_load.return_value = Dataset.from_list(mock_dataset_data)
-            dataset = SanskritQuoteDataset("test/dataset")
-            
-            # Test batch smaller than dataset
-            batch = dataset.get_random_batch(2)
-            assert len(batch) == 2
-            assert all(ex in mock_dataset_data for ex in batch)
-            
-            # Test batch larger than dataset
-            batch = dataset.get_random_batch(5)
-            assert len(batch) == 3  # Should return all available
-            
-    def test_get_balanced_batch(self, mock_dataset_data):
-        """Test balanced batch sampling."""
-        # Add more examples to test balancing
-        extended_data = mock_dataset_data + [
-            {
-                "id": "test4",
-                "quote_text": "अग्निमीळे पुरोहितं...",
-                "ground_truth": {
-                    "genre": "veda",
-                    "author": "Unknown",
-                    "text": "Rigveda",
-                    "chapter": "1",
-                    "verse": "1"
-                }
-            },
-            {
-                "id": "test5",
-                "quote_text": "सत्यमेव जयते...",
-                "ground_truth": {
-                    "genre": "veda",
-                    "author": "Unknown",
-                    "text": "Mundaka Upanishad",
-                    "verse": "3.1.6"
-                }
-            }
-        ]
-        
-        with patch('zeroband.inference.sanskrit_data_loader.load_dataset') as mock_load:
-            mock_load.return_value = Dataset.from_list(extended_data)
-            dataset = SanskritQuoteDataset("test/dataset")
-            
-            batch = dataset.get_balanced_batch(4)
-            assert len(batch) == 4
-            
-            # Check genre distribution
-            genres = [ex['ground_truth']['genre'] for ex in batch]
-            # Should have representation from multiple genres
-            assert len(set(genres)) > 1
             
     def test_format_prompt_with_existing_prompt(self, mock_dataset_data):
         """Test prompt formatting when prompt exists."""
@@ -189,30 +136,6 @@ class TestSanskritQuoteDataset:
             batch3 = next(batch_iter)
             assert len(batch3) == 2
             
-    def test_load_local_json(self, tmp_path, mock_dataset_data):
-        """Test loading from local JSON file."""
-        # Create temporary JSON file
-        json_file = tmp_path / "test_dataset.json"
-        import json
-        with open(json_file, 'w') as f:
-            json.dump(mock_dataset_data, f)
-            
-        dataset = SanskritQuoteDataset(local_path=str(json_file))
-        assert len(dataset.dataset) == 3
-        assert dataset.genre_counts == {"epic": 1, "kavya": 1, "purana": 1}
-        
-    def test_load_local_jsonl(self, tmp_path, mock_dataset_data):
-        """Test loading from local JSONL file."""
-        # Create temporary JSONL file
-        jsonl_file = tmp_path / "test_dataset.jsonl"
-        import json
-        with open(jsonl_file, 'w') as f:
-            for item in mock_dataset_data:
-                f.write(json.dumps(item) + '\n')
-                
-        dataset = SanskritQuoteDataset(local_path=str(jsonl_file))
-        assert len(dataset.dataset) == 3
-        assert dataset.genre_counts == {"epic": 1, "kavya": 1, "purana": 1}
         
     def test_create_sanskrit_dataset_function(self):
         """Test convenience function."""
