@@ -25,7 +25,7 @@ from zeroband.inference.parquet import get_parquet_table
 from zeroband.inference.pipeline import setup_pipeline
 from zeroband.inference.rewards import compute_vllm_rewards
 from zeroband.inference.toploc import setup_toploc_cache
-from zeroband.inference.metrics import setup_metrics
+from zeroband.utils.monitor import setup_monitor
 from zeroband.inference.utils import fake_chat_template, filter_data_by_prompt_length, generate_target_length_prompts, reload_model_weights
 from zeroband.training.mp import EnvWrapper
 from zeroband.utils.logger import get_logger
@@ -48,7 +48,7 @@ def inference(config: Config):
         shutil.rmtree(config.output_path, ignore_errors=True)
 
     # Initialize metrics
-    metrics = setup_metrics(config.metrics)
+    monitor = setup_monitor(config.monitor)
 
     # Initialize vLLM and get tokenizer
     logger.info(
@@ -257,7 +257,7 @@ def inference(config: Config):
             "progress/batch_samples": batch_samples,
             "progress/batch_tokens": batch_tokens,
         }
-        metrics.log(progress_metrics)
+        monitor.log(progress_metrics)
 
         # Compute performance metrics
         batch_throughput = batch_tokens / (end_time - start_time)
@@ -271,7 +271,7 @@ def inference(config: Config):
             "performance/batch_throughput": batch_throughput,
             "performance/batch_avg_seq_length": batch_avg_seq_length,
         }
-        metrics.log(perf_metrics)
+        monitor.log(perf_metrics)
 
         # Compute proofs
         # Note (Jack): Currently, vllm guarantees that seq ids are in the same order as prompts passed to generate.
@@ -304,7 +304,7 @@ def inference(config: Config):
 
         # Log file metadata
         sha256 = sha256sum(save_path)
-        metrics.log({"output/save_path": save_path.as_posix(), "output/sha256": sha256})
+        monitor.log({"output/save_path": save_path.as_posix(), "output/sha256": sha256})
 
         real_step += 1
 

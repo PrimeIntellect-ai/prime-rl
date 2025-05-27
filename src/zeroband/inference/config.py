@@ -3,9 +3,9 @@ from typing import Literal
 from pydantic import model_validator
 from pydantic_config import BaseConfig
 
-from zeroband.inference.metrics import MetricsConfig
 from zeroband.inference.pipeline import PipelineConfig
 from zeroband.inference.rewards import RewardsConfig
+from zeroband.utils.monitor import MonitorConfig
 
 
 class SamplingParamConfig(BaseConfig):
@@ -51,8 +51,8 @@ class Config(BaseConfig):
     dp: int = 1
     pp: PipelineConfig = PipelineConfig()
 
-    # Metrics
-    metrics: MetricsConfig = MetricsConfig()
+    # Monitoring (performance, progress, system metrics, etc.)
+    monitor: MonitorConfig = MonitorConfig()
 
     gpus_ids: list[int] | None = None
     prime_log_freq: int | None = None
