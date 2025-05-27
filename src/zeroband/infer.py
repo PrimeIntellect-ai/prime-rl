@@ -83,12 +83,12 @@ def inference(config: Config):
     logger.info(f"Loaded dataset {config.dataset} with {len(dataset):,} problems")
 
     # Optionally shuffle dataset
-    if envs.GROUP_ID is not None:
+    if envs.PRIME_GROUP_ID is not None:
         # We dont shuffle here because we shuffle reproducibly in the sampling loop.
-        assert config.seed is None, "Seed is not supported when GROUP_ID is set"
-        assert os.environ.get("DP_RANK") is None, "DP is not supported when GROUP_ID is set"
-        node_address_int = int(envs.GROUP_ID, 16)
-        logger.info(f"Seeding with {node_address_int} ({envs.GROUP_ID})")
+        assert config.seed is None, "Seed is not supported when PRIME_GROUP_ID is set"
+        assert os.environ.get("DP_RANK") is None, "DP is not supported when PRIME_GROUP_ID is set"
+        node_address_int = int(envs.PRIME_GROUP_ID, 16)
+        logger.info(f"Seeding with {node_address_int} ({envs.PRIME_GROUP_ID})")
     else:
         # Seed the dataset with a random number
         seed = config.seed + int(os.environ.get("DP_RANK", 0)) if config.seed is not None else None

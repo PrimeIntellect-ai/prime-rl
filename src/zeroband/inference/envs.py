@@ -19,19 +19,11 @@ if TYPE_CHECKING:
     SHARDCAST_SERVERS: List[str] | None = None
     SHARDCAST_BACKLOG_VERSION: int = -1
 
-    # Protocol
-    GROUP_ID: str | None = None
-    PRIME_TASK_ID: str | None = None
-    PRIME_TASK_BRIDGE_SOCKET: str | None = None
-
 _INFERENCE_ENV_PARSERS = {
     "VLLM_USE_V1": str,
     "VLLM_CONFIGURE_LOGGING": str,
     "SHARDCAST_SERVERS": lambda x: x.split(","),
     "SHARDCAST_BACKLOG_VERSION": int,
-    "GROUP_ID": str,
-    "PRIME_TASK_ID": str,
-    "PRIME_TASK_BRIDGE_SOCKET": str,
     "RUST_LOG": str,
     **_BASE_ENV_PARSERS,
 }
