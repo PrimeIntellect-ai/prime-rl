@@ -68,5 +68,8 @@ jobs:
       - name: Run E2E tests
         env:
           USERNAME_CI: CI_RUNNER
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          
         run: uv run pytest -s tests -m "e2e"
 
