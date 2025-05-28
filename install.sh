@@ -21,7 +21,7 @@ main() {
     sudo apt update
 
     log_info "Installing cmake python3-dev..."
-    sudo apt install nvtop htop tmux gem cmake python3-dev -y
+    sudo apt install nvtop htop tmux ruby cmake python3-dev -y
     sudo gem install tmuxinator
 
     log_info "Installing gsutil..."
