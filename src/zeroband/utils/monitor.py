@@ -10,21 +10,14 @@ from typing import Any
 import aiohttp
 import psutil
 import pynvml
-from pydantic import field_validator, model_validator
+from pydantic import model_validator
 from pydantic_config import BaseConfig
 
-import zeroband.inference.envs as envs
+import zeroband.utils.envs as envs
 from zeroband.utils.logger import get_logger
 
 # Module logger
 logger = get_logger("INFER")
-
-
-def overwrite_if_none(value: str | None, env_var: str) -> str | None:
-    if value is None:
-        return getattr(envs, env_var)
-
-    return value
 
 
 class MonitorConfig(BaseConfig):
@@ -41,10 +34,6 @@ class SocketMonitorConfig(MonitorConfig):
     # The socket path to log to
     path: str | None = None
 
-    @field_validator("path", mode="before")
-    def overwrite_path_with_env(cls, v):
-        return overwrite_if_none(v, "PRIME_SOCKET_PATH")
-
 
 class APIMonitorConfig(MonitorConfig):
     # The API URL to log to
@@ -52,14 +41,6 @@ class APIMonitorConfig(MonitorConfig):
 
     # The API auth token to use
     auth_token: str | None = None
-
-    @field_validator("url", mode="before")
-    def overwrite_url_with_env(cls, v):
-        return overwrite_if_none(v, "PRIME_API_URL")
-
-    @field_validator("auth_token", mode="before")
-    def overwrite_auth_token_with_env(cls, v):
-        return overwrite_if_none(v, "PRIME_API_AUTH_TOKEN")
 
 
 class MultiMonitorConfig(BaseConfig):
@@ -97,17 +78,18 @@ class FileMonitor(Monitor):
 
     def __init__(self, config: FileMonitorConfig):
         super().__init__(config)
-        assert self.config.path is not None, "File path must be set for FileOutput. Set it as --monitor.file.path."
-        Path(self.config.path).parent.mkdir(parents=True, exist_ok=True)
+        self.file_path = self.config.path
+        assert self.file_path is not None, "File path must be set for FileOutput. Set it as --monitor.file.path."
+        Path(self.file_path).parent.mkdir(parents=True, exist_ok=True)
 
     def log(self, metrics: dict[str, Any]) -> None:
         with self.lock:
             try:
-                with open(self.config.path, "a") as f:
+                with open(self.file_path, "a") as f:
                     f.write(self._serialize_metrics(metrics) + "\n")
-                logger.debug(f"Logged successfully to {self.config.path}")
+                logger.debug(f"Logged successfully to {self.file_path}")
             except Exception as e:
-                logger.error(f"Failed to log metrics to {self.config.path}: {e}")
+                logger.error(f"Failed to log metrics to {self.file_path}: {e}")
 
 
 class SocketMonitor(Monitor):
@@ -115,8 +97,10 @@ class SocketMonitor(Monitor):
 
     def __init__(self, config: SocketMonitorConfig):
         super().__init__(config)
+        self.socket_path = self.config.path or envs.PRIME_SOCKET_PATH
+
         # Assert that the socket path is set
-        assert self.config.path is not None, (
+        assert self.socket_path is not None, (
             "Socket path must be set for SocketOutput. Set it as --monitor.socket.path or PRIME_SOCKET_PATH."
         )
 
@@ -124,11 +108,11 @@ class SocketMonitor(Monitor):
         with self.lock:
             try:
                 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-                    sock.connect(self.config.path)
+                    sock.connect(self.socket_path)
                     sock.sendall(self._serialize_metrics(metrics).encode())
-                logger.debug(f"Logged successfully to {self.config.path}")
+                logger.debug(f"Logged successfully to {self.socket_path}")
             except Exception as e:
-                logger.error(f"Failed to log metrics to {self.config.path}: {e}")
+                logger.error(f"Failed to log metrics to {self.socket_path}: {e}")
 
 
 class APIMonitor(Monitor):
@@ -136,24 +120,27 @@ class APIMonitor(Monitor):
 
     def __init__(self, config: APIMonitorConfig):
         super().__init__(config)
+        self.url = self.config.url or envs.PRIME_API_URL
+        self.auth_token = self.config.auth_token or envs.PRIME_API_AUTH_TOKEN
+
         # Assert that the URL and auth token are set
-        assert self.config.url is not None, "URL must be set for APIOutput. Set it as --monitor.api.url or PRIME_API_URL."
-        assert self.config.auth_token is not None, (
+        assert self.url is not None, "URL must be set for APIOutput. Set it as --monitor.api.url or PRIME_API_URL."
+        assert self.auth_token is not None, (
             "Auth token must be set for APIOutput. Set it as --monitor.api.auth_token or PRIME_API_AUTH_TOKEN."
         )
 
     def log(self, metrics: dict[str, Any]) -> None:
         """Logs metrics to the server"""
-        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self.config.auth_token}"}
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self.auth_token}"}
         payload = {"metrics": self._serialize_metrics(metrics), "operation_type": "append"}
 
         async def _send_batch():
             try:
                 async with aiohttp.ClientSession() as session:
-                    async with session.post(self.config.url, json=payload, headers=headers) as response:
+                    async with session.post(self.url, json=payload, headers=headers) as response:
                         if response is not None:
                             response.raise_for_status()
-                    logger.debug(f"Logged successfully to server {self.config.url}")
+                    logger.debug(f"Logged successfully to server {self.url}")
             except Exception as e:
                 logger.error(f"Error sending batch to server: {str(e)}")
 
