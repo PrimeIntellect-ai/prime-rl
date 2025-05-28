@@ -26,6 +26,23 @@ class PipelineConfig(BaseConfig):
     iroh_peer_id: str | None = None
 
 
+def serialize(obj) -> bytes:
+    """Serialize an object to bytes. If it's a tensor, move to CPU first."""
+    if isinstance(obj, torch.Tensor):
+        return pickle.dumps(obj.to("cpu"))
+    return pickle.dumps(obj)
+
+
+def deserialize(data: bytes, device: torch.device | None = None):
+    """Deserialize bytes to object. If it's a tensor and device is specified, move to device."""
+    obj = pickle.loads(data)
+    if isinstance(obj, torch.Tensor) and device is not None:
+        return obj.to(device)
+    elif isinstance(obj, torch.Tensor):
+        return obj.to("cuda")
+    return obj
+
+
 def setup_pipeline(llm: LLM, rank: int, world_size: int, iroh_seed: int | None = None, iroh_peer_id: str | None = None) -> Node:
     """
     Setup PRIME-IROH communication and hooks for pipeline parallel inference.
@@ -150,8 +167,8 @@ def send_intermediate_states(_, __, output: Tuple, node: Node) -> None:
         node: The node that is being hooked
     """
     hidden_states, residual = output
-    serialized_hidden_states = pickle.dumps(hidden_states.to("cpu"))
-    serialized_residual = pickle.dumps(residual.to("cpu"))
+    serialized_hidden_states = serialize(hidden_states)
+    serialized_residual = serialize(residual)
     node.isend(serialized_hidden_states, tag=0, latency=None).wait()
     node.isend(serialized_residual, tag=0, latency=None).wait()
     logger.debug(
@@ -174,8 +191,8 @@ def recv_intermediate_states(_, input: Tuple, node: Node) -> Tuple[torch.Tensor,
     device = positions.device
     serialized_hidden_states = node.irecv(tag=0).wait()
     serialized_residual = node.irecv(tag=0).wait()
-    hidden_states = pickle.loads(serialized_hidden_states).to(device)
-    residuals = pickle.loads(serialized_residual).to(device)
+    hidden_states = deserialize(serialized_hidden_states, device)
+    residuals = deserialize(serialized_residual, device)
     logger.debug(
         f"Got hidden_states and residuals ({hidden_states.shape}, {residuals.shape}) ({len(serialized_hidden_states) + len(serialized_residual)} bytes)"
     )
@@ -207,7 +224,7 @@ def recv_output(_, __, output, node: Node, relay=False) -> SamplerOutput:
     if relay:
         node.isend(serialized_output, tag=0, latency=None).wait()
         logger.debug(f"Sent outputs ({len(serialized_output)} bytes)")
-    output = pickle.loads(serialized_output)
+    output = deserialize(serialized_output)
     return output
 
 
@@ -221,6 +238,6 @@ def send_output(_, __, output: SamplerOutput, node: Node) -> None:
         output: The outputs of the module
         node: The node class instances for communication
     """
-    serialized_output = pickle.dumps(output)
+    serialized_output = serialize(output)
     node.isend(serialized_output, tag=0, latency=None).wait()
     logger.debug(f"Sent outputs ({len(serialized_output)} bytes)")
