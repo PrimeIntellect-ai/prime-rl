@@ -89,8 +89,7 @@ class Output(ABC):
         return json.dumps(metrics)
 
     @abstractmethod
-    def log(self, metrics: dict[str, Any]) -> None:
-        pass
+    def log(self, metrics: dict[str, Any]) -> None: ...
 
 
 class FileOutput(Output):
