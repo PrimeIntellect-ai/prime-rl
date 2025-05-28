@@ -1,7 +1,7 @@
 model_name = "Qwen/Qwen3-0.6B"
 dataset = "PrimeIntellect/INTELLECT-2-RL-Dataset"
-max_samples = 32
 batch_size = 8
+total_step = 4
 enforce_eager = true
 toploc = true
 

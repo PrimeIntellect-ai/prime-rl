@@ -28,7 +28,6 @@ class Config(BaseConfig):
     model_name: str
     dataset: str
     batch_size: int = 32
-    max_samples: int | None = None
 
     output_path: str = "outputs"
     clean_output_path: bool = False  # if true, the output path will be cleaned up before running the inference
