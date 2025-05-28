@@ -21,8 +21,8 @@ main() {
     sudo apt update
 
     log_info "Installing cmake python3-dev..."
-    sudo apt install nvtop tmux cmake python3-dev htop  -y
-
+    sudo apt install nvtop htop tmux gem cmake python3-dev -y
+    sudo gem install tmuxinator
 
     log_info "Installing gsutil..."
     curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
