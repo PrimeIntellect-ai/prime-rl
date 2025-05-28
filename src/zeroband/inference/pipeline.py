@@ -28,12 +28,12 @@ class PipelineConfig(BaseConfig):
 
 
 def serialize_tensors(tensor_dict: dict[str, torch.Tensor]) -> bytes:
-    """Safely serializes a tensor to bytes."""
+    """Safely serializes a dictionary of tensors to bytes."""
     return save(tensor_dict)
 
 
 def deserialize_tensors(data: bytes, device: torch.device | None = None) -> dict[str, torch.Tensor]:
-    """Safely deserializes a tensor from bytes."""
+    """Safely deserializes a dictionary of tensors from bytes."""
     tensor_dict = load(data)
     if device is not None:
         return {key: tensor.to(device) for key, tensor in tensor_dict.items()}
@@ -41,12 +41,12 @@ def deserialize_tensors(data: bytes, device: torch.device | None = None) -> dict
 
 
 def serialize_sampler_output(output: SamplerOutput) -> bytes:
-    """Safely serializes a vllm SamplerOutput"""
+    """Safely serializes a vLLM SamplerOutput object"""
     return msgspec.json.encode(output)
 
 
 def deserialize_sampler_output(data: bytes) -> SamplerOutput:
-    """Safely deserializes a vllm SamplerOutput"""
+    """Safely deserializes a vLLM SamplerOutput object"""
     return msgspec.json.decode(data, type=SamplerOutput)
 
 
