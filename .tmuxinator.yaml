@@ -1,0 +1,22 @@
+name: RL
+enable_pane_titles: true
+windows:
+  - RL:
+      layout: even-horizontal
+      panes:
+        - Training:
+            - export CUDA_VISIBLE_DEVICES=0
+            - uv run torchrun src/zeroband/train.py @ configs/training/simple_reverse_two_gpu.toml --monitor.file.enable --monitor.file.path outputs/training_monitor.jsonl
+        - Inference:
+            - export CUDA_VISIBLE_DEVICES=1
+            - uv run src/zeroband/infer.py @ configs/inference/simple_reverse_two_gpus.toml --monitor.file.enable --monitor.file.path outputs/inference_monitor.jsonl
+  - Monitor:
+      layout: even-horizontal
+      panes:
+        - Training Logs: watch -n 1 "cat outputs/training_monitor.jsonl | tail -n 10"
+        - Inference Logs: watch -n 1 "cat outputs/inference_monitor.jsonl | tail -n 10"
+  - System:
+      layout: even-horizontal
+      panes:
+        - CPU Monitor: htop
+        - GPU Monitor: nvtop
