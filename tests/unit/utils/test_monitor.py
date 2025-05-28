@@ -4,70 +4,70 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from zeroband.utils.monitor import (
-    APIOutput,
-    APIOutputConfig,
-    FileOutput,
-    FileOutputConfig,
-    SocketOutput,
-    SocketOutputConfig,
+    APIMonitor,
+    APIMonitorConfig,
+    FileMonitor,
+    FileMonitorConfig,
+    SocketMonitor,
+    SocketMonitorConfig,
 )
 
 
-def test_invalid_file_output_config():
+def test_invalid_file_monitor_config():
     with pytest.raises(AssertionError):
-        FileOutput(FileOutputConfig(enable=True))
-
-    with pytest.raises(AssertionError):
-        FileOutput(FileOutputConfig(enable=True, path=None))
-
-
-def test_invalid_socket_output_config():
-    with pytest.raises(AssertionError):
-        SocketOutput(SocketOutputConfig(enable=True))
+        FileMonitor(FileMonitorConfig(enable=True))
 
     with pytest.raises(AssertionError):
-        SocketOutput(SocketOutputConfig(enable=True, path=None))
+        FileMonitor(FileMonitorConfig(enable=True, path=None))
 
 
-def test_invalid_api_output_config():
+def test_invalid_socket_monitor_config():
     with pytest.raises(AssertionError):
-        APIOutput(APIOutputConfig(enable=True))
-
-    with pytest.raises(AssertionError):
-        APIOutput(APIOutputConfig(enable=True, url=None))
+        SocketMonitor(SocketMonitorConfig(enable=True))
 
     with pytest.raises(AssertionError):
-        APIOutput(APIOutputConfig(enable=True, url="http://localhost:8000/api/v1/metrics", auth_token=None))
+        SocketMonitor(SocketMonitorConfig(enable=True, path=None))
 
 
-def test_valid_file_output_config(tmp_path):
+def test_invalid_api_monitor_config():
+    with pytest.raises(AssertionError):
+        APIMonitor(APIMonitorConfig(enable=True))
+
+    with pytest.raises(AssertionError):
+        APIMonitor(APIMonitorConfig(enable=True, url=None))
+
+    with pytest.raises(AssertionError):
+        APIMonitor(APIMonitorConfig(enable=True, url="http://localhost:8000/api/v1/metrics", auth_token=None))
+
+
+def test_valid_file_monitor_config(tmp_path):
     file_path = (tmp_path / "file_monitor.jsonl").as_posix()
-    output = FileOutput(FileOutputConfig(enable=True, path=file_path))
+    output = FileMonitor(FileMonitorConfig(enable=True, path=file_path))
     assert output is not None
     assert output.config.path == file_path
     assert output.config.enable
 
 
-def test_valid_socket_output_config(tmp_path):
+def test_valid_socket_monitor_config(tmp_path):
     socket_path = (tmp_path / "socket_monitor.sock").as_posix()
-    output = SocketOutput(SocketOutputConfig(enable=True, path=socket_path))
+    output = SocketMonitor(SocketMonitorConfig(enable=True, path=socket_path))
     assert output is not None
     assert output.config.path == socket_path
     assert output.config.enable
 
 
-def test_valid_http_output_config():
-    output = APIOutput(APIOutputConfig(enable=True, url="http://localhost:8000/api/v1/metrics", auth_token="test_token"))
+def test_valid_http_monitor_config():
+    output = APIMonitor(APIMonitorConfig(enable=True, url="http://localhost:8000/api/v1/metrics", auth_token="test_token"))
     assert output is not None
     assert output.config.url == "http://localhost:8000/api/v1/metrics"
     assert output.config.auth_token == "test_token"
     assert output.config.enable
 
 
-def test_file_output(tmp_path):
+def test_file_monitor(tmp_path):
     # Create file output
     file_path = (tmp_path / "file_monitor.jsonl").as_posix()
-    output = FileOutput(FileOutputConfig(enable=True, path=file_path))
+    output = FileMonitor(FileMonitorConfig(enable=True, path=file_path))
     assert output is not None
     assert output.config.path == file_path
     assert output.config.enable
@@ -90,9 +90,9 @@ def mock_socket():
         yield mock_socket_instance
 
 
-def test_socket_output(mock_socket):
+def test_socket_monitor(mock_socket):
     # Create socket output
-    output = SocketOutput(SocketOutputConfig(enable=True, path="/test/socket.sock"))
+    output = SocketMonitor(SocketMonitorConfig(enable=True, path="/test/socket.sock"))
 
     # Test logging metrics
     test_metrics = {"step": 1, "loss": 3.14}
@@ -116,9 +116,9 @@ def mock_api():
 
 
 @pytest.mark.skip(reason="Does not work yet with async context")
-def test_api_output(mock_api):
+def test_api_monitor(mock_api):
     # Create API output
-    output = APIOutput(APIOutputConfig(enable=True, url="http://localhost:8000/api/v1/metrics", auth_token="test_token"))
+    output = APIMonitor(APIMonitorConfig(enable=True, url="http://localhost:8000/api/v1/metrics", auth_token="test_token"))
 
     # Test logging metrics
     test_metrics = {"step": 1, "loss": 3.14}

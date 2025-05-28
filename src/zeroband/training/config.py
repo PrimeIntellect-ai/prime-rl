@@ -5,7 +5,7 @@ from pydantic_config import BaseConfig
 
 from zeroband.training.data import CollateMode, DataConfig
 from zeroband.utils.models import AttnImpl
-from zeroband.utils.monitor import MonitorConfig
+from zeroband.utils.monitor import MultiMonitorConfig
 
 
 class AdamConfig(BaseConfig):
@@ -67,7 +67,7 @@ class Config(BaseConfig):
     optim: OptimConfig = OptimConfig()
     train: TrainConfig
 
-    monitor: MonitorConfig = MonitorConfig()
+    monitor: MultiMonitorConfig = MultiMonitorConfig()
 
     gpus_ids: list[int] | None = None
 

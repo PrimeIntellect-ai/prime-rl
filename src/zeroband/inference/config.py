@@ -5,7 +5,7 @@ from pydantic_config import BaseConfig
 
 from zeroband.inference.pipeline import PipelineConfig
 from zeroband.inference.rewards import RewardsConfig
-from zeroband.utils.monitor import MonitorConfig
+from zeroband.utils.monitor import MultiMonitorConfig
 
 
 class SamplingParamConfig(BaseConfig):
@@ -52,7 +52,7 @@ class Config(BaseConfig):
     pp: PipelineConfig = PipelineConfig()
 
     # Monitoring (performance, progress, system metrics, etc.)
-    monitor: MonitorConfig = MonitorConfig()
+    monitor: MultiMonitorConfig = MultiMonitorConfig()
 
     gpus_ids: list[int] | None = None
     prime_log_freq: int | None = None

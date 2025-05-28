@@ -27,17 +27,17 @@ def overwrite_if_none(value: str | None, env_var: str) -> str | None:
     return value
 
 
-class OutputConfig(BaseConfig):
-    # Whether to log to this output
+class MonitorConfig(BaseConfig):
+    # Whether to log to this monitor
     enable: bool = False
 
 
-class FileOutputConfig(OutputConfig):
+class FileMonitorConfig(MonitorConfig):
     # The file path to log to
     path: str | None = None
 
 
-class SocketOutputConfig(OutputConfig):
+class SocketMonitorConfig(MonitorConfig):
     # The socket path to log to
     path: str | None = None
 
@@ -46,7 +46,7 @@ class SocketOutputConfig(OutputConfig):
         return overwrite_if_none(v, "PRIME_SOCKET_PATH")
 
 
-class APIOutputConfig(OutputConfig):
+class APIMonitorConfig(MonitorConfig):
     # The API URL to log to
     url: str | None = None
 
@@ -62,11 +62,11 @@ class APIOutputConfig(OutputConfig):
         return overwrite_if_none(v, "PRIME_API_AUTH_TOKEN")
 
 
-class MonitorConfig(BaseConfig):
-    # List of possible outputs to log to
-    file: FileOutputConfig = FileOutputConfig()
-    socket: SocketOutputConfig = SocketOutputConfig()
-    api: APIOutputConfig = APIOutputConfig()
+class MultiMonitorConfig(BaseConfig):
+    # All possible monitors (currently only supports one instance per type)
+    file: FileMonitorConfig = FileMonitorConfig()
+    socket: SocketMonitorConfig = SocketMonitorConfig()
+    api: APIMonitorConfig = APIMonitorConfig()
 
     # Interval in seconds to log system metrics (if 0, no system metrics are logged)
     system_log_frequency: int = 0
@@ -77,10 +77,10 @@ class MonitorConfig(BaseConfig):
         return self
 
 
-class Output(ABC):
-    """Base class for logging metrics to a single output."""
+class Monitor(ABC):
+    """Base class for logging metrics to a single monitoring type (e.g. file, socket, API)."""
 
-    def __init__(self, config: OutputConfig):
+    def __init__(self, config: MonitorConfig):
         self.config = config
         self.lock = threading.Lock()
         logger.debug(f"Initializing {self.__class__.__name__} ({str(self.config).replace(' ', ', ')})")
@@ -92,10 +92,10 @@ class Output(ABC):
     def log(self, metrics: dict[str, Any]) -> None: ...
 
 
-class FileOutput(Output):
+class FileMonitor(Monitor):
     """Logs to a file. Used for debugging."""
 
-    def __init__(self, config: FileOutputConfig):
+    def __init__(self, config: FileMonitorConfig):
         super().__init__(config)
         assert self.config.path is not None, "File path must be set for FileOutput. Set it as --monitor.file.path."
         Path(self.config.path).parent.mkdir(parents=True, exist_ok=True)
@@ -110,10 +110,10 @@ class FileOutput(Output):
                 logger.error(f"Failed to log metrics to {self.config.path}: {e}")
 
 
-class SocketOutput(Output):
+class SocketMonitor(Monitor):
     """Logs to a Unix socket. Previously called `PrimeMetrics`."""
 
-    def __init__(self, config: SocketOutputConfig):
+    def __init__(self, config: SocketMonitorConfig):
         super().__init__(config)
         # Assert that the socket path is set
         assert self.config.path is not None, (
@@ -131,10 +131,10 @@ class SocketOutput(Output):
                 logger.error(f"Failed to log metrics to {self.config.path}: {e}")
 
 
-class APIOutput(Output):
+class APIMonitor(Monitor):
     """Logs to an API via HTTP. Previously called `HttpMonitor`."""
 
-    def __init__(self, config: APIOutputConfig):
+    def __init__(self, config: APIMonitorConfig):
         super().__init__(config)
         # Assert that the URL and auth token are set
         assert self.config.url is not None, "URL must be set for APIOutput. Set it as --monitor.api.url or PRIME_API_URL."
@@ -160,20 +160,20 @@ class APIOutput(Output):
         asyncio.run(_send_batch())
 
 
-class Monitor:
+class MultiMonitor:
     """
     Log progress, performance, and system metrics to multiple (configurable) outputs.
     """
 
-    def __init__(self, config: MonitorConfig):
+    def __init__(self, config: MultiMonitorConfig):
         # Initialize outputs
         self.outputs = []
         if config.file.enable:
-            self.outputs.append(FileOutput(config.file))
+            self.outputs.append(FileMonitor(config.file))
         if config.socket.enable:
-            self.outputs.append(SocketOutput(config.socket))
+            self.outputs.append(SocketMonitor(config.socket))
         if config.api.enable:
-            self.outputs.append(APIOutput(config.api))
+            self.outputs.append(APIMonitor(config.api))
 
         self.disabled = len(self.outputs) == 0
         logger.info(f"Initialized Monitor{' (disabled)' if self.disabled else ''}")
@@ -253,6 +253,6 @@ class Monitor:
             self._stop_metrics_thread()
 
 
-def setup_monitor(config: MonitorConfig) -> Monitor:
-    """Sets up a monitor to log metrics to the specified outputs."""
-    return Monitor(config)
+def setup_monitor(config: MultiMonitorConfig) -> MultiMonitor:
+    """Sets up a monitor to log metrics to multiple specified outputs."""
+    return MultiMonitor(config)
