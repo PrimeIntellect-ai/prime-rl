@@ -306,7 +306,7 @@ def inference(config: Config):
 
         # Log file metadata
         sha256 = sha256sum(save_path)
-        monitor.log({"output/save_path": save_path.as_posix(), "output/sha256": sha256})
+        monitor.log({"output/save_path": save_path.as_posix(), "output/sha256": sha256, "output/output_flops": 0})
 
         real_step += 1
 
