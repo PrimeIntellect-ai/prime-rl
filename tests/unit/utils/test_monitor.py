@@ -1,4 +1,5 @@
 import json
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -44,7 +45,7 @@ def test_valid_file_monitor_config(tmp_path):
     file_path = (tmp_path / "file_monitor.jsonl").as_posix()
     output = FileMonitor(FileMonitorConfig(enable=True, path=file_path))
     assert output is not None
-    assert output.config.path == file_path
+    assert output.file_path == file_path
     assert output.config.enable
 
 
@@ -52,15 +53,28 @@ def test_valid_socket_monitor_config(tmp_path):
     socket_path = (tmp_path / "socket_monitor.sock").as_posix()
     output = SocketMonitor(SocketMonitorConfig(enable=True, path=socket_path))
     assert output is not None
-    assert output.config.path == socket_path
+    assert output.socket_path == socket_path
+    assert output.config.enable
+
+
+def test_valid_socket_monitor_config_with_env(tmp_path):
+    socket_path = (tmp_path / "socket_monitor.sock").as_posix()
+    os.environ["PRIME_SOCKET_PATH"] = (tmp_path / "socket_monitor.sock").as_posix()
+    output = SocketMonitor(SocketMonitorConfig(enable=True))
+    assert output is not None
+    assert output.socket_path == socket_path
     assert output.config.enable
 
 
 def test_valid_http_monitor_config():
-    output = APIMonitor(APIMonitorConfig(enable=True, url="http://localhost:8000/api/v1/metrics", auth_token="test_token"))
+    url = "http://localhost:8000/api/v1/metrics"
+    auth_token = "test_token"
+    os.environ["PRIME_API_URL"] = url
+    os.environ["PRIME_API_AUTH_TOKEN"] = auth_token
+    output = APIMonitor(APIMonitorConfig(enable=True))
     assert output is not None
-    assert output.config.url == "http://localhost:8000/api/v1/metrics"
-    assert output.config.auth_token == "test_token"
+    assert output.url == url
+    assert output.auth_token == auth_token
     assert output.config.enable
 
 
