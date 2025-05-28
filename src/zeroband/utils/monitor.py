@@ -65,9 +65,18 @@ class Monitor(ABC):
     def __init__(self, config: MonitorConfig):
         self.config = config
         self.lock = threading.Lock()
+        self.metadata = {
+            "run_id": envs.PRIME_RUN_ID,
+            "task_id": envs.PRIME_TASK_ID,
+        }
+        self.has_metadata = any(self.metadata.values())
+        if not self.has_metadata:
+            logger.warning("No run metadata found. This is fine for local runs, but unexpected when contributing to a public run.")
         logger.debug(f"Initializing {self.__class__.__name__} ({str(self.config).replace(' ', ', ')})")
 
     def _serialize_metrics(self, metrics: dict[str, Any]) -> str:
+        if self.has_metadata:
+            metrics.update(self.metadata)
         return json.dumps(metrics)
 
     @abstractmethod
@@ -107,20 +116,10 @@ class SocketMonitor(Monitor):
 
     def log(self, metrics: dict[str, Any]) -> None:
         with self.lock:
-            task_id = os.getenv("PRIME_TASK_ID", None)
-            if task_id is None:
-                logger.warning("No task ID found, skipping logging")
-                return
-
             try:
                 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
                     sock.connect(self.socket_path)
-                    
-                    msg_buffer = []
-                    for key, value in metrics.items():
-                        msg_buffer.append(json.dumps({"label": key, "value": value, "task_id": task_id}))
-                    sock.sendall("\n".join(msg_buffer).encode())
-                    
+                    sock.sendall(self._serialize_metrics(metrics).encode())
                 logger.debug(f"Logged successfully to {self.socket_path}")
             except Exception as e:
                 logger.error(f"Failed to log metrics to {self.socket_path}: {e}")
@@ -143,9 +142,9 @@ class APIMonitor(Monitor):
     def log(self, metrics: dict[str, Any]) -> None:
         """Logs metrics to the server"""
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self.auth_token}"}
-        payload = {"metrics": self._serialize_metrics(metrics), "operation_type": "append"}
+        payload = {"metrics": self._serialize_metrics(metrics)}
 
-        async def _send_batch():
+        async def _post_metrics():
             try:
                 async with aiohttp.ClientSession() as session:
                     async with session.post(self.url, json=payload, headers=headers) as response:
@@ -153,9 +152,9 @@ class APIMonitor(Monitor):
                             response.raise_for_status()
                     logger.debug(f"Logged successfully to server {self.url}")
             except Exception as e:
-                logger.error(f"Error sending batch to server: {str(e)}")
+                logger.error(f"Failed to log metrics to {self.url}: {e}")
 
-        asyncio.run(_send_batch())
+        asyncio.run(_post_metrics())
 
 
 class MultiMonitor:
