@@ -7,6 +7,3 @@ output_path = "data_rollout"
 max_model_len = 128
 clean_output_path = true
 total_step = 50
-
-[sampling]
-n = 8
