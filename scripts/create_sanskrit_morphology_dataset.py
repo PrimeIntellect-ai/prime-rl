@@ -65,7 +65,7 @@ def create_morphology_prompt(spec: VerbMorphologySpecification) -> str:
     )
 
 # --- Dataset Builder ---
-def create_datasets(size: int = 75000, test_size: float = 0.1) -> DatasetDict:
+def create_datasets(size: int = 200000, test_size: float = 0.1) -> DatasetDict:
     print(f"\n🔄 Generating {size} Sanskrit morphology examples...")
     examples = generate_examples(size)
 

@@ -32,6 +32,7 @@ dependencies = [
     "setuptools",
     "reasoning-gym @ git+https://github.com/open-thought/reasoning-gym.git",
     "tomli>=2.2.1",
+    "vidyut",
 ] 
 
 [project.optional-dependencies]

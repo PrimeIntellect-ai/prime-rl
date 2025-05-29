@@ -1,6 +1,6 @@
 import pytest
 
-from src.zeroband.inference.genesys.sanskrit_morphology import compute_sanskrit_morphology_reward
+from zeroband.inference.genesys.sanskrit_morphology import compute_sanskrit_morphology_reward
 
 # --- Test Data ---
 @pytest.fixture
