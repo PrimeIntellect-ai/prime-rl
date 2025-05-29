@@ -29,7 +29,7 @@ class Config(BaseConfig):
     dataset: str
 
     # The maximum number of of sequences to decode in parallel (if None, will be computed automatically)
-    batch_size: int | None = None
+    batch_size: int | Literal["auto"] = "auto"
 
     max_samples: int | None = None
 
