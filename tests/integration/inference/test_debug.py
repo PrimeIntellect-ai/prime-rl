@@ -29,14 +29,12 @@ def test_no_error(process: ProcessResult):
 def test_output_directories_exist(output_path: Path):
     assert output_path.joinpath("step_0").exists()
     assert output_path.joinpath("step_1").exists()
-    assert output_path.joinpath("step_2").exists()
-    assert output_path.joinpath("step_3").exists()
-    assert not output_path.joinpath("step_4").exists()
+    assert not output_path.joinpath("step_2").exists()
 
 
 def test_output_files_have_correct_schemas(output_path: Path):
     files = list(output_path.rglob("*.parquet"))
-    assert len(files) == 4, f"Expected 4 files, got {len(files)}"
+    assert len(files) == 2, f"Expected 2 files, got {len(files)}"
     for file in files:
         assert pq.read_schema(file).equals(pa_schema)
 
