@@ -1,6 +1,6 @@
 model_name = "Qwen/QwQ-32B"
 dataset = "PrimeIntellect/INTELLECT-2-RL-Dataset"
-batch_size = 16
+batch_size = 96
 tp = "auto"
 max_model_len = 16_000
 

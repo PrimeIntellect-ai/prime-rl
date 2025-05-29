@@ -62,13 +62,16 @@ uv run python src/zeroband/infer.py @ configs/inference/debug.toml
 This debug run trains `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` on the `justus27/math-hendrycks-genesys-format` dataset using separate inference and training processes.
 Depending on the number of available GPUs, we have to adjust the number of generated samples on the inference workers to match the batch size of the training process.
 
+Training samples per step: `batch_size * step_per_rollout`
+Inference samples per step: `batch_size * dp`
+
 If you have 2 GPUs, run the following commands:
 
 ```bash
 # Start inference worker
 export CUDA_VISIBLE_DEVICES=0
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
-uv run python src/zeroband/infer.py @ configs/inference/simple_math.toml --dp 1 --batch-size 64
+uv run python src/zeroband/infer.py @ configs/inference/simple_math.toml --dp 1 --batch-size 512
 ```
 
 ```bash
@@ -84,7 +87,7 @@ If you have 4 GPUs, run the following commands:
 # Start inference workers
 export CUDA_VISIBLE_DEVICES=0,1
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
-uv run python src/zeroband/infer.py @ configs/inference/simple_math.toml --dp 2 --batch-size 32
+uv run python src/zeroband/infer.py @ configs/inference/simple_math.toml --dp 2 --batch-size 256
 ```
 
 ```bash
