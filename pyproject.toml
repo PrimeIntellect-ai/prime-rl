@@ -27,7 +27,7 @@ dependencies = [
     "shardcast >= 0.3.1",
     "asyncio>=3.4.3",
     "aiohttp>=3.10.5",
-    "pyext @ git+https://github.com/justusmattern27/PyExt.git",
+    "pyext @ git+https://github.com/justusmattern27/PyExt.git@2a77e41",
     "prime-iroh>=0.3.0",
     "setuptools",
     "fastapi",
