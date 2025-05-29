@@ -70,13 +70,7 @@ def inference(config: Config):
 
     # Create communication for pipeline
     if config.pp.world_size > 1:
-        setup_pipeline(
-            llm=llm,
-            rank=config.pp.rank,
-            world_size=config.pp.world_size,
-            iroh_seed=config.pp.iroh_seed,
-            iroh_peer_id=config.pp.iroh_peer_id,
-        )
+        setup_pipeline(config=config.pp, llm=llm)
 
     # Load  dataset
     dataset = load_dataset(config.dataset, split="train")

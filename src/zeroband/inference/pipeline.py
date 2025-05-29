@@ -16,15 +16,22 @@ from zeroband.utils.logger import get_logger
 # Global logger
 logger = get_logger("INFER")
 
-# How many times to retry connection (each retry takes ~30s)
-NUM_RETRIES = 10
-
 
 class PipelineConfig(BaseConfig):
+    # The rank of the current node in the pipeline
     rank: int = 0
+
+    # The total number of nodes in the pipeline (e.g. the number of PP model shards)
     world_size: int = 1
+
+    # The seed used to create the public node address (optional, will lead to deterministic connection strings)
     iroh_seed: int | None = None
+
+    # The peer ID to connect to (optional, if not provided, the user will be prompted to enter it)
     iroh_peer_id: str | None = None
+
+    # How many times to retry connection to peer (each retry takes ~30s)
+    connection_num_retries: int = 10  # Each retry takes ~30s, so 10 retries is ~300s (5min)
 
 
 def serialize_tensors(tensor_dict: dict[str, torch.Tensor]) -> bytes:
@@ -50,7 +57,7 @@ def deserialize_sampler_output(data: bytes) -> SamplerOutput:
     return msgspec.json.decode(data, type=SamplerOutput)
 
 
-def setup_pipeline(llm: LLM, rank: int, world_size: int, iroh_seed: int | None = None, iroh_peer_id: str | None = None) -> Node:
+def setup_pipeline(config: PipelineConfig, llm: LLM) -> Node:
     """
     Setup PRIME-IROH communication and hooks for pipeline parallel inference.
 
@@ -61,12 +68,12 @@ def setup_pipeline(llm: LLM, rank: int, world_size: int, iroh_seed: int | None =
         iroh_seed: The seed for the PRIME-IROH node (optional, will lead to deterministic connection strings)
         iroh_peer_id: The peer ID for the PRIME-IROH node (optional)
     """
-    logger.info(f"Setting up pipeline parallelism (pp.rank={rank}, pp.world_size={world_size})")
-    node = setup_comm(world_size=world_size, iroh_seed=iroh_seed, iroh_peer_id=iroh_peer_id)
-    setup_hooks(rank=rank, world_size=world_size, llm=llm, node=node)
+    logger.info(f"Setting up pipeline parallelism (pp.rank={config.rank}, pp.world_size={config.world_size})")
+    node = setup_comm(config=config)
+    setup_hooks(config=config, llm=llm, node=node)
 
 
-def setup_comm(world_size: int, iroh_seed: int | None, iroh_peer_id: str | None) -> Node:
+def setup_comm(config: PipelineConfig) -> Node:
     """
     Setup communication via PRIME-IROH. Forms a ring topology between the model shards
     with unidirectional communication flow.
@@ -76,24 +83,24 @@ def setup_comm(world_size: int, iroh_seed: int | None, iroh_peer_id: str | None)
         iroh_seed: The seed for the PRIME-IROH node (optional, will lead to deterministic connection strings)
         iroh_peer_id: The peer ID for the PRIME-IROH node (optional)
     """
-    assert world_size > 1, "Pipeline parallel inference requires at least 2 stages"
+    assert config.world_size > 1, "Pipeline parallel inference requires at least 2 stages"
 
     # Setup node (with or without seed)
-    if iroh_seed is not None:
-        logger.debug(f"Using IROH seed: {iroh_seed}")
+    if config.iroh_seed is not None:
+        logger.debug(f"Using IROH seed: {config.iroh_seed}")
         # If seed is provided, create a new node with the seed
-        node = Node.with_seed(num_streams=1, seed=iroh_seed)
+        node = Node.with_seed(num_streams=1, seed=config.iroh_seed)
     else:
         # If no seed, create a new node
         node = Node(num_streams=1)
     logger.info(f"Created node (ID={node.node_id()})")
 
     # Connect to peer
-    if iroh_peer_id is None:
-        iroh_peer_id = input("Enter Peer ID: ").strip()
-    logger.info(f"Setting up outgoing connection to {iroh_peer_id}")
-    node.connect(iroh_peer_id, num_retries=NUM_RETRIES)  # Roughly 10*30s=300s wait
-    logger.info(f"Outgoing connection to {iroh_peer_id} successful!")
+    if config.iroh_peer_id is None:
+        config.iroh_peer_id = input("Enter Peer ID: ").strip()
+    logger.info(f"Setting up outgoing connection to {config.iroh_peer_id}")
+    node.connect(config.iroh_peer_id, num_retries=config.connection_num_retries)
+    logger.info(f"Outgoing connection to {config.iroh_peer_id} successful!")
 
     # Wait for connection to sender and receiver to be established
     # Note: This requires the PP communication loop to be closed, e.g. for 4 stages:
@@ -106,7 +113,7 @@ def setup_comm(world_size: int, iroh_seed: int | None, iroh_peer_id: str | None)
     return node
 
 
-def setup_hooks(rank: int, world_size: int, llm: LLM, node: Node) -> None:
+def setup_hooks(config: PipelineConfig, llm: LLM, node: Node) -> None:
     """
     Setup hooks to enable pipeline parallel inference based on pipeline topology.
 
@@ -116,7 +123,7 @@ def setup_hooks(rank: int, world_size: int, llm: LLM, node: Node) -> None:
         llm: The LLM model shard instance
         node: The node class instances for communication
     """
-    assert world_size > 1, "Pipeline parallel inference requires at least 2 stages"
+    assert config.world_size > 1, "Pipeline parallel inference requires at least 2 stages"
 
     # Model runner owns sampler, model owns layers
     model_runner: nn.Module = llm.llm_engine.model_executor.driver_worker.model_runner
@@ -130,9 +137,9 @@ def setup_hooks(rank: int, world_size: int, llm: LLM, node: Node) -> None:
     sampler: nn.Module = model_runner.sampler
 
     # Don't relay outputs from stage with index -2->-1
-    relay = rank != world_size - 2
+    relay = config.rank != config.world_size - 2
 
-    if rank == 0:  # First stage
+    if config.rank == 0:  # First stage
         # Send intermediate states to next stage (post-hook)
         last_layer.register_forward_hook(partial(send_intermediate_states, node=node))
         logger.debug("Registered post-hook send_intermediate_states on last layer")
@@ -140,7 +147,7 @@ def setup_hooks(rank: int, world_size: int, llm: LLM, node: Node) -> None:
         # Receive outputs from last stage (post-hook)
         sampler.register_forward_hook(partial(recv_output, node=node, relay=relay))
         logger.debug("Registered post-hook recv_output on sampler")
-    elif rank == world_size - 1:  # Last stage
+    elif config.rank == config.world_size - 1:  # Last stage
         # Receive intermediate states from previous stage (pre-hook)
         first_layer.register_forward_pre_hook(partial(recv_intermediate_states, node=node))
         logger.debug("Registered pre-hook recv_intermediate_states on first layer")

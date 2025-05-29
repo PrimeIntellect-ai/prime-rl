@@ -4,7 +4,7 @@ import pytest
 from prime_iroh import Node
 
 import zeroband.utils.envs as envs  # noqa
-from zeroband.inference.pipeline import setup_comm
+from zeroband.inference.pipeline import PipelineConfig, setup_comm
 
 # Pre-computed node IDs for different seeds (our team's favorite numbers)
 IROH_NODE_ID_MAP = {
@@ -32,8 +32,9 @@ def _setup_comm(rank: int, world_size: int, error_queue: Queue):
     seed = SEEDS[rank]
     peer_seed = SEEDS[(rank + 1) % world_size]
     peer_id = IROH_NODE_ID_MAP[peer_seed]
+    config = PipelineConfig(rank=rank, world_size=world_size, iroh_seed=seed, iroh_peer_id=peer_id)
     try:
-        node = setup_comm(world_size, seed, peer_id)
+        node = setup_comm(config)
     except Exception as e:
         error_queue.put((rank, str(e)))
         raise e
@@ -47,7 +48,7 @@ def test_setup_comm(world_size: int):
     # Test that setup_comm raises an error for 1 stage
     if world_size == 1:
         with pytest.raises(AssertionError):
-            setup_comm(world_size, None, None)
+            setup_comm(PipelineConfig(world_size=world_size))
         return
 
     # Setup error queue and processes
