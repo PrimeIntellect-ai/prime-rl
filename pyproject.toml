@@ -27,7 +27,7 @@ dependencies = [
     "shardcast >= 0.3.1",
     "asyncio>=3.4.3",
     "aiohttp>=3.10.5",
-    "pyext @ git+https://github.com/justusmattern27/PyExt.git@2a77e41a97628ca0e4abd288b1b653b12a442ad7",
+    "pyext @ git+https://github.com/justusmattern27/PyExt.git",
     "prime-iroh>=0.3.0",
     "setuptools",
     "fastapi",
@@ -55,14 +55,7 @@ select = ["F", "I"]
 ignore = ["F722", "F821"]
 
 [tool.uv]
-dev-dependencies = [
-    "ruff>=0.5.0",
-    "pre-commit>=3.0.0",
-    "pytest>=7.0.0",
-    "faker",
-    "jupyter>=1.1.1",
-    "ipykernel>=6.29.5",
-]
+dev-dependencies = ["ruff>=0.5.0", "pre-commit>=3.0.0", "pytest>=7.0.0", "faker"]
 no-build-isolation-package = ["flash-attn"]
 
 [tool.pytest.ini_options]
