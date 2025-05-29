@@ -100,11 +100,11 @@ def _test_all_reduce(rank: int, world_size: int, operation: str, error_queue: Qu
     peer_id = IROH_NODE_ID_MAP[peer_seed]
 
     try:
-        # Setup communication
-        node = setup_comm(world_size, seed, peer_id)
-
         # Create config
-        config = PipelineConfig(rank=rank, world_size=world_size)
+        config = PipelineConfig(rank=rank, world_size=world_size, iroh_seed=seed, iroh_peer_id=peer_id)
+
+        # Setup communication
+        node = setup_comm(config)
 
         # Create test tensor - each rank contributes rank + 1
         test_tensor = torch.tensor(float(rank + 1))
