@@ -93,8 +93,16 @@ def filter_data_by_prompt_length(data: Dataset, max_length: int, tokenizer: Auto
 
 def compute_max_batch_size(config: InferenceConfig, node: Node | None, llm: LLM) -> int:
     """
-    Automatically computes the maximum batch size (number of samples decoded in parallel) without exceeding the GPU memory,
-    applying a safety margin to prevent cache eviction.
+    Automatically computes the maximum batch size (number of sequences decoded in
+    parallel) without exceeding the GPU memory to prevent cache eviction.
+
+    Args:
+        config (InferenceConfig): The inference configuration.
+        node (Node | None): The `prime-iroh` node to use for all-reduce.
+        llm (LLM): The vLLM LLM instance.
+
+    Returns:
+        int: The maximum batch size.
     """
     # Computes the maximum batch size with a safety margin to prevent cache eviction
     num_gpu_blocks = llm.llm_engine.model_executor.cache_config.num_gpu_blocks
