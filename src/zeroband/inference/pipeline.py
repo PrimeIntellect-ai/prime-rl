@@ -71,6 +71,7 @@ def setup_pipeline(config: PipelineConfig, llm: LLM) -> Node:
     logger.info(f"Setting up pipeline parallelism (pp.rank={config.rank}, pp.world_size={config.world_size})")
     node = setup_comm(config=config)
     setup_hooks(config=config, llm=llm, node=node)
+    return node
 
 
 def setup_comm(config: PipelineConfig) -> Node:
@@ -249,3 +250,53 @@ def send_output(_, __, output: SamplerOutput, node: Node) -> None:
     serialized_output = serialize_sampler_output(output)
     node.isend(serialized_output, tag=0, latency=None).wait()
     logger.debug(f"Sent outputs ({len(serialized_output)} bytes)")
+
+
+def all_reduce(node: Node, tensor: torch.Tensor, config: PipelineConfig, op: callable = torch.add) -> torch.Tensor:
+    """
+    Performs a ring all-reduce operation on tensors with a custom reduction operation.
+
+    Args:
+        node: The communication node (already organized in a ring topology)
+        tensor: The tensor value to reduce
+        config: Inference config containing world_size
+        op: Custom reduction operation (e.g., torch.add, torch.max, torch.min)
+
+    Returns:
+        The reduced tensor after applying the operation across all nodes in the ring
+    """
+    # No communication needed for single node
+    if config.world_size == 1:
+        logger.debug("No communication needed to all-reduce tensor with world_size=1")
+        return tensor
+
+    result_tensor = tensor.clone()
+    current_tensor = tensor.clone()
+    logger.debug(f"Initial tensor: {current_tensor}")
+
+    # Ring all-reduce: each node sends/receives for (world_size - 1) iterations
+    for _ in range(config.world_size - 1):
+        # Serialize current tensor for transmission
+        tensor_dict = {"data": current_tensor}
+        send_data = serialize_tensors(tensor_dict)
+        logger.debug(f"Sending {current_tensor} ({len(send_data)} bytes) to next node")
+        send_future = node.isend(send_data, tag=0, latency=None)
+
+        # Receive tensor from previous node
+        recv_future = node.irecv(tag=0)
+
+        # Wait for both operations to complete
+        send_future.wait()
+        recv_data = recv_future.wait()
+
+        # Deserialize received tensor and apply reduction operation
+        received_tensors = deserialize_tensors(recv_data)
+        logger.debug(f"Received {received_tensors['data']} ({len(recv_data)} bytes) from previous node")
+        current_tensor = received_tensors["data"]
+
+        # Apply the custom reduction operation
+        result_tensor = op(result_tensor, current_tensor)
+
+    logger.debug(f"All-reduced tensor: {result_tensor}")
+
+    return result_tensor
