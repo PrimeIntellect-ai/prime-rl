@@ -16,6 +16,7 @@ import requests
 import torch
 import torch.distributed as dist
 from datasets import load_dataset
+from prime_iroh import Node
 from pydantic_config import parse_argv
 from toploc.utils import sha256sum
 from vllm import LLM, SamplingParams
@@ -26,7 +27,13 @@ from zeroband.inference.pipeline import setup_pipeline
 from zeroband.inference.rewards import compute_vllm_rewards
 from zeroband.inference.toploc import setup_toploc_cache
 from zeroband.utils.monitor import setup_monitor
-from zeroband.inference.utils import fake_chat_template, filter_data_by_prompt_length, generate_target_length_prompts, reload_model_weights
+from zeroband.inference.utils import (
+    fake_chat_template,
+    filter_data_by_prompt_length,
+    generate_target_length_prompts,
+    reload_model_weights,
+    compute_max_batch_size,
+)
 from zeroband.training.mp import EnvWrapper
 from zeroband.utils.logger import get_logger
 
@@ -69,8 +76,20 @@ def inference(config: Config):
     sampling_params = SamplingParams(**config.sampling.model_dump())
 
     # Create communication for pipeline
+    node: Node | None = None
     if config.pp.world_size > 1:
-        setup_pipeline(config=config.pp, llm=llm)
+        node = setup_pipeline(config=config.pp, llm=llm)
+
+    # Compute the maximum batch size
+    max_batch_size = config.batch_size or compute_max_batch_size(config, node, llm)
+
+    print(f"Max batch size: {max_batch_size}")
+
+    dist.destroy_process_group()
+
+    import sys
+
+    sys.exit()
 
     # Load  dataset
     dataset = load_dataset(config.dataset, split="train")

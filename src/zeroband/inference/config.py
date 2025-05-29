@@ -27,7 +27,10 @@ class DifficultyFilteringConfig(BaseConfig):
 class Config(BaseConfig):
     model_name: str
     dataset: str
-    batch_size: int = 32
+
+    # The maximum number of of sequences to decode in parallel (if None, will be computed automatically)
+    batch_size: int | None = None
+
     max_samples: int | None = None
 
     output_path: str = "outputs"
