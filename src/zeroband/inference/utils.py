@@ -27,37 +27,23 @@ def fake_chat_template(messages):
     return formatted_prompts
 
 
-def prepare_prompts(prompts: list[str], length_prompt_additions: list[str], config: InferenceConfig, tokenizer) -> list[str]:
-    messages = [[{"role": "user", "content": prompt}, {"role": "assistant", "content": "<think>\n"}] for prompt in prompts]
+def filter_data_by_prompt_length(data: Dataset, max_length: int, tokenizer: AutoTokenizer, tokenize_batch_size: int = 10000):
+    def _add_token_lengths_batched(examples):
+        prompts = examples["prompt"]
+        tokenized = tokenizer(prompts, padding=False, truncation=False)
+        token_lengths = [len(ids) for ids in tokenized.input_ids]
+        return {"token_length": token_lengths}
 
-    len_reward = config.rewards.len_reward
-    if len_reward:
-        if len_reward.length_prompt_location == "system_prompt":
-            messages = [
-                [
-                    {"role": "system", "content": length_prompt},
-                    {"role": "user", "content": prompt},
-                    {"role": "assistant", "content": "<think>\n"},
-                ]
-                for prompt, length_prompt in zip(prompts, length_prompt_additions)
-            ]
-        else:
-            messages = [
-                [{"role": "user", "content": prompt + length_prompt}, {"role": "assistant", "content": "<think>\n"}]
-                for prompt, length_prompt in zip(prompts, length_prompt_additions)
-            ]
-    else:
-        messages = [[{"role": "user", "content": prompt}, {"role": "assistant", "content": "<think>\n"}] for prompt in prompts]
+    data = data.map(
+        _add_token_lengths_batched,
+        batched=True,
+        batch_size=tokenize_batch_size,
+        desc=f"Calculating prompt lengths to filter out lengths > {max_length}",
+    )
 
-    if tokenizer.chat_template:
-        prompts = tokenizer.apply_chat_template(messages, tokenize=False, continue_final_message=True)
-        if config.model_name != "Qwen/QwQ-32B":
-            for i, p in enumerate(prompts):
-                prompts[i] = p.replace("<｜begin▁of▁sentence｜>", "")
-    else:
-        prompts = fake_chat_template(messages)
+    data = data.filter(lambda x: x["token_length"] <= max_length)
 
-    return prompts
+    return data
 
 
 def reload_model_weights(llm: LLM, ckpt_path: str):
@@ -106,23 +92,37 @@ def generate_target_length_prompts(config: LenRewardsConfig | None, batch_size: 
     return [f"{prompt_prefix}Think for{max_word}{target} tokens before giving a response." for target in target_lengths], target_lengths
 
 
-def filter_data_by_prompt_length(data: Dataset, max_length: int, tokenizer: AutoTokenizer, tokenize_batch_size: int = 10000):
-    def _add_token_lengths_batched(examples):
-        prompts = examples["prompt"]
-        tokenized = tokenizer(prompts, padding=False, truncation=False)
-        token_lengths = [len(ids) for ids in tokenized.input_ids]
-        return {"token_length": token_lengths}
+def prepare_prompts(prompts: list[str], length_prompt_additions: list[str], config: InferenceConfig, tokenizer) -> list[str]:
+    messages = [[{"role": "user", "content": prompt}, {"role": "assistant", "content": "<think>\n"}] for prompt in prompts]
 
-    data = data.map(
-        _add_token_lengths_batched,
-        batched=True,
-        batch_size=tokenize_batch_size,
-        desc=f"Calculating prompt lengths to filter out lengths > {max_length}",
-    )
+    len_reward = config.rewards.len_reward
+    if len_reward:
+        if len_reward.length_prompt_location == "system_prompt":
+            messages = [
+                [
+                    {"role": "system", "content": length_prompt},
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "<think>\n"},
+                ]
+                for prompt, length_prompt in zip(prompts, length_prompt_additions)
+            ]
+        else:
+            messages = [
+                [{"role": "user", "content": prompt + length_prompt}, {"role": "assistant", "content": "<think>\n"}]
+                for prompt, length_prompt in zip(prompts, length_prompt_additions)
+            ]
+    else:
+        messages = [[{"role": "user", "content": prompt}, {"role": "assistant", "content": "<think>\n"}] for prompt in prompts]
 
-    data = data.filter(lambda x: x["token_length"] <= max_length)
+    if tokenizer.chat_template:
+        prompts = tokenizer.apply_chat_template(messages, tokenize=False, continue_final_message=True)
+        if config.model_name != "Qwen/QwQ-32B":
+            for i, p in enumerate(prompts):
+                prompts[i] = p.replace("<｜begin▁of▁sentence｜>", "")
+    else:
+        prompts = fake_chat_template(messages)
 
-    return data
+    return prompts
 
 
 def compute_max_batch_size(llm: LLM) -> int:
