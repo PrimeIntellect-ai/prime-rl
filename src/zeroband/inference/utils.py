@@ -1,3 +1,5 @@
+from typing import Any
+
 import torch
 from datasets import Dataset
 from safetensors import safe_open
@@ -115,3 +117,30 @@ def compute_max_batch_size(llm: LLM) -> int:
     max_batch_size = max_cache_tokens // max_model_len
 
     return max_batch_size
+
+
+def rgetattr(obj: Any, attr_path: str) -> Any:
+    """
+    Tries to get a (nested) attribute from an object. For example, if
+    `model.layers` is an attribute of `model`, then `rgetattr(model,
+    "model.layers")` will return the attribute `layers`. If `layers` is not an
+    attribute of `model`, then `rgetattr(model, "layers")` will raise an
+    `AttributeError`.
+
+    Args:
+        obj: The object to get the attribute from.
+        attr_path: The path to the attribute. For example, "model.layers" will
+            get the attribute `layers` from the attribute `model` of `obj`.
+
+    Returns:
+        The attribute.
+    """
+    attrs = attr_path.split(".")
+    current = obj
+
+    for attr in attrs:
+        if not hasattr(current, attr):
+            raise AttributeError(f"'{type(current).__name__}' object has no attribute '{attr}'")
+        current = getattr(current, attr)
+
+    return current

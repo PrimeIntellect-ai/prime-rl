@@ -11,6 +11,7 @@ from safetensors.torch import load, save
 from vllm import LLM
 from vllm.model_executor.layers.sampler import SamplerOutput
 
+from zeroband.inference.utils import rgetattr
 from zeroband.utils.logger import get_logger
 
 # Global logger
@@ -99,7 +100,41 @@ def setup_comm(config: PipelineConfig) -> Node | None:
     return node
 
 
-def setup_hooks(config: PipelineConfig, llm: LLM, node: Node | None) -> None:
+def patch_model_load(config: PipelineConfig) -> None:
+    """
+    Patch the vLLM model load to only load the correct model shard.
+    """
+    import vllm.model_executor.models.utils as model_utils
+    from vllm.model_executor.models.utils import LayerFn, PPMissingLayer, maybe_offload_to_cpu
+
+    # Skip patching if world_size == 1
+    if config.world_size == 1:
+        return
+
+    def _patched_make_layers(num_hidden_layers: int, layer_fn: LayerFn, prefix: str) -> Tuple[int, int, torch.nn.ModuleList]:
+        from vllm.distributed.utils import get_pp_indices
+
+        start_layer, end_layer = get_pp_indices(num_hidden_layers, config.rank, config.world_size)
+        modules = torch.nn.ModuleList(
+            [PPMissingLayer() for _ in range(start_layer)]
+            + [maybe_offload_to_cpu(layer_fn(prefix=f"{prefix}.{idx}")) for idx in range(start_layer, end_layer)]
+            + [PPMissingLayer() for _ in range(end_layer, num_hidden_layers)]
+        )
+        return start_layer, end_layer, modules
+
+    # Monkey patch the function
+    logger.info(f"Patching model init for pp.rank={config.rank} in pp.world_size={config.world_size}")
+    model_utils.make_layers = _patched_make_layers
+
+
+def setup_hooks(
+    config: PipelineConfig,
+    llm: LLM,
+    node: Node | None,
+    start_layer_key: str = "model.start_layer",
+    end_layer_key: str = "model.end_layer",
+    model_layers_key: str = "model.layers",
+) -> None:
     """
     Setup hooks to enable pipeline parallel inference.
 
@@ -117,8 +152,10 @@ def setup_hooks(config: PipelineConfig, llm: LLM, node: Node | None) -> None:
     model: nn.Module = model_runner.model
 
     # Extract first and last layers (pre/post-hook to recv/send intermediate states)
-    first_layer: nn.Module = model.model.layers[0]
-    last_layer: nn.Module = model.model.layers[-1]
+    first_layer_idx = rgetattr(model, start_layer_key)
+    last_layer_idx = rgetattr(model, end_layer_key) - 1
+    first_layer: nn.Module = rgetattr(model, model_layers_key)[first_layer_idx]
+    last_layer: nn.Module = rgetattr(model, model_layers_key)[last_layer_idx]
 
     # Extract sampler (post-hook to recv/send outputs)
     sampler: nn.Module = model_runner.sampler

@@ -22,7 +22,7 @@ from vllm import LLM, SamplingParams
 
 from zeroband.inference.config import Config
 from zeroband.inference.parquet import get_parquet_table
-from zeroband.inference.pipeline import all_reduce, setup_comm, setup_hooks
+from zeroband.inference.pipeline import all_reduce, patch_model_load, setup_comm, setup_hooks
 from zeroband.inference.rewards import compute_vllm_rewards
 from zeroband.inference.toploc import setup_toploc_cache
 from zeroband.utils.monitor import setup_monitor
@@ -58,6 +58,9 @@ def inference(config: Config):
 
     # Setup communication
     node = setup_comm(config=config.pp)
+
+    # Patch vLLM's model loading to load model shard
+    patch_model_load(config=config.pp)
 
     # Initialize vLLM and get tokenizer
     logger.info(
