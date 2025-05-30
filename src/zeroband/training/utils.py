@@ -277,8 +277,8 @@ def log_to_wandb(
 
     # Handle task-specific metrics based on the prefix
     for key, value in metrics_dict.items():
-        if key.startswith("task_") and key != "task_reward":  # Exclude task_reward
-            wandb_metrics[f"task_rewards/{key}"] = value
+        if key.startswith("individual_task_"):
+            wandb_metrics[f"task_rewards/{key.replace('individual_task_', '')}"] = value
 
     # Log everything
     wandb.log(wandb_metrics, step=metrics_dict.get("step", step))

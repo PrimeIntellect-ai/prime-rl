@@ -288,10 +288,9 @@ def train(config: Config):
 
                 loss_mask = batch["loss_mask"]
 
-                # Update all metrics consistently - one call per individual value
+                # Update general metrics
                 for rewards in batch["rewards"]:
                     metric_averager.update("sample_reward", rewards)
-
                 for seq_lens in batch["seq_lens"]:
                     metric_averager.update("seq_lens", seq_lens)
                 for length_penalties in batch["length_penalties"]:
@@ -304,7 +303,7 @@ def train(config: Config):
                     # Group rewards by task type
                     task_type_rewards = {}
                     for i, task_type in enumerate(batch["task_types"]):
-                        task_key = f"task_{task_type}"
+                        task_key = f"individual_task_{task_type}"
                         if task_key not in task_type_rewards:
                             task_type_rewards[task_key] = []
                         task_type_rewards[task_key].append(batch["task_rewards"][i].item())
