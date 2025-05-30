@@ -78,7 +78,7 @@ class Config(BaseConfig):
     entropy_loss_coeff: float = 0.001
     clamp_log_prob_coef: float = 4.0
 
-    max_async_level: int = 2  # the amount of rollout checkpoints to keep
+    async_level: int = 2  # the amount of rollout checkpoints to keep
 
     collate_mode: CollateMode = "padding"
 
@@ -89,6 +89,8 @@ class Config(BaseConfig):
     start_rollout_step: int | None = None
 
     stop_after_steps: int | None = None
+
+    use_infer_model_logprobs: bool = False  # if true, the logprobs will be computed using the same model that was used for inference
 
     @model_validator(mode="after")
     def check_liger(self):

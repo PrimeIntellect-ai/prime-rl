@@ -211,6 +211,10 @@ OffloadedTensor: TypeAlias = list[tuple[torch.Tensor, int]]
 
 
 def offload_model_to_cpu(model: ModelType) -> OffloadedTensor:
+    """
+    Retun a list of cpu tensor representing the model weight.
+    Also reduce to 0 the gpu memory usage.
+    """
     tensors_offloaded = []
     for param in chain(model.parameters(), model.buffers()):
         data = get_real_tensor(param.data)
@@ -220,6 +224,21 @@ def offload_model_to_cpu(model: ModelType) -> OffloadedTensor:
         tensors_offloaded.append((cpu_data, storage_size))
     torch.cuda.synchronize()
     torch.cuda.empty_cache()
+    return tensors_offloaded
+
+
+def copy_model_to_cpu(model: ModelType) -> OffloadedTensor:
+    """
+    Retun a list of cpu tensor representing the model weight.
+    Keep gpu memory intact.
+    """
+
+    tensors_offloaded = []
+    for param in chain(model.parameters(), model.buffers()):
+        data = get_real_tensor(param.data)
+        cpu_data = data.to("cpu")
+        tensors_offloaded.append(cpu_data)
+
     return tensors_offloaded
 
 
