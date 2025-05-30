@@ -288,19 +288,38 @@ def train(config: Config):
 
                 loss_mask = batch["loss_mask"]
 
-                ## correct aggregated metrics
+                # Update all metrics consistently - one call per individual value
                 for rewards in batch["rewards"]:
                     metric_averager.update("sample_reward", rewards)
-                for task_rewards in batch["task_rewards"]:
-                    metric_averager.update("task_reward", task_rewards)
+
                 for seq_lens in batch["seq_lens"]:
                     metric_averager.update("seq_lens", seq_lens)
                 for length_penalties in batch["length_penalties"]:
                     metric_averager.update("length_penalties", length_penalties)
                 for target_lengths in batch["target_lengths"]:
                     metric_averager.update("target_lengths", target_lengths)
-                for reward, task_type in zip(batch["task_rewards"], batch["task_types"]):
-                    metric_averager.update(f"task_{task_type}", torch.tensor(reward))
+
+                # Task-specific metrics with proper grouping
+                if "task_types" in batch:
+                    # Group rewards by task type
+                    task_type_rewards = {}
+                    for i, task_type in enumerate(batch["task_types"]):
+                        task_key = f"task_{task_type}"
+                        if task_key not in task_type_rewards:
+                            task_type_rewards[task_key] = []
+                        task_type_rewards[task_key].append(batch["task_rewards"][i].item())
+
+                    # Update metrics with task-specific averages
+                    for task_key, rewards in task_type_rewards.items():
+                        if rewards:
+                            avg_reward = sum(rewards) / len(rewards)
+                            metric_averager.update(task_key, torch.tensor(avg_reward))
+
+                    # Add aggregate task_reward metric
+                    all_task_rewards = [reward.item() for reward in batch["task_rewards"]]
+                    if all_task_rewards:
+                        avg_task_reward = sum(all_task_rewards) / len(all_task_rewards)
+                        metric_averager.update("task_reward", torch.tensor(avg_task_reward))
 
                 # Forward
                 logits: Float[torch.Tensor, "batch seq vocab"] = model(
