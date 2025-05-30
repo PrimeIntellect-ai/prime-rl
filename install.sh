@@ -20,9 +20,14 @@ main() {
     log_info "Updating apt..."
     sudo apt update
 
-    log_info "Installing cmake python3-dev..."
-    sudo apt install nvtop tmux cmake python3-dev htop  -y
+    log_info "Installing git cmake python3-dev..."
+    sudo apt install nvtop tmux cmake python3-dev htop git -y
 
+    log_info "Cloning repository..."
+    git clone https://github.com/PrimeIntellect-ai/prime-rl
+
+    log_info "Entering project directory..."
+    cd prime-rl
 
     log_info "Installing gsutil..."
     curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
@@ -30,21 +35,14 @@ main() {
     sudo apt-get update -y
     sudo apt-get install -y google-cloud-cli
 
-
-    log_info "Cloning repository..."
-    git clone git@github.com:PrimeIntellect-ai/prime-rl.git
-    
-    log_info "Entering project directory..."
-    cd prime-rl
-    
     log_info "Installing uv..."
     curl -LsSf https://astral.sh/uv/install.sh | sh
-    
+
     log_info "Sourcing uv environment..."
     if ! command -v uv &> /dev/null; then
         source $HOME/.local/bin/env
     fi
-    
+
     log_info "Installing dependencies in virtual environment..."
     uv sync && uv sync --extra fa
     log_info "Installation completed!"
