@@ -229,12 +229,7 @@ def train(config: Config):
                 for grad_acc_step in range(num_grad_acc_steps):
                     batch = batch_packed[grad_acc_step]
                     logger.debug(f"log prob grad_acc_step {grad_acc_step} / {num_grad_acc_steps}, batch: {batch['input_ids'].shape}")
-
                     input_ids = batch["input_ids"].to("cuda")
-
-                    per_token_logps = get_logprobs(model, input_ids, batch["position_ids"], config.temperature)
-
-                    batch["logprobs"] = per_token_logps.to("cpu")
 
                     if config.kl_coef is not None:
                         logger.debug(f"kl grad_acc_step {grad_acc_step} / {num_grad_acc_steps}, batch: {batch['input_ids'].shape}")
@@ -327,38 +322,28 @@ def train(config: Config):
                 # Gather args for grpo loss
                 advantages = batch["advantages"].to("cuda")
                 loss_mask = loss_mask.to("cuda")
-                original_logprobs = batch["logprobs"].to("cuda")
 
                 # Loss
-                pg_loss, clip_ratio = grpo_loss(
-                    logits,
-                    input_ids,
-                    advantages,
-                    original_logprobs,
-                    loss_mask,
-                    config.temperature,
-                    config.grpo_epsilon_low,
-                    config.grpo_epsilon_high,
-                    config.clamp_log_prob_coef,
-                    max_tokens,
-                )
+                pg_loss = grpo_loss(advantages=advantages, loss_mask=loss_mask, max_tokens=max_tokens)
 
-                entropy = entropy_loss(logits, loss_mask, config.temperature, max_tokens)
+                entropy = entropy_loss(logits=logits, loss_mask=loss_mask, temperature=config.temperature, max_tokens=max_tokens)
 
                 loss = pg_loss - config.entropy_loss_coeff * entropy
 
                 if config.kl_coef is not None:
+                    original_logprobs = batch["logprobs"].to("cuda")  # TODO: sami probably will break rn
                     kl = kl_penalty(original_logprobs, batch["ref_logprobs"].to("cuda"), loss_mask, max_tokens)
                     kl_scaled = kl * config.kl_coef
                     metric_averager.update("kl", kl_scaled)
                     loss = loss + kl_scaled
+                    del original_logprobs
 
                 loss = loss / num_grad_acc_steps
 
                 inputs_ids_shape = input_ids.shape
 
                 # Now we can delete the batch data
-                del batch, logits, input_ids, advantages, loss_mask, original_logprobs
+                del batch, logits, input_ids, advantages, loss_mask
 
                 # Backward
                 loss.backward()
@@ -366,9 +351,8 @@ def train(config: Config):
 
                 metric_averager.update("pg_loss", pg_loss.detach().clone())
                 metric_averager.update("entropy_loss", entropy.detach().clone())
-                metric_averager.update("clip_ratio", clip_ratio.detach().clone())
 
-                del loss, pg_loss, entropy, clip_ratio
+                del loss, pg_loss, entropy
 
             metric_averager.sync()
 
@@ -415,7 +399,6 @@ def train(config: Config):
                 f"step: {training_progress.step}, "
                 f"rollout_step: {training_progress.step // config.optim.step_per_rollout}, "
                 f"loss: {loss_batch.item():.4f}, "
-                f"clip_ratio: {metric_averager['clip_ratio'].item():.4f}, "
                 f"sample_reward: {metric_averager['sample_reward'].item():.4f}, "
             )
 

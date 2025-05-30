@@ -95,9 +95,3 @@ class Config(BaseConfig):
         if self.train.liger_qwen:
             assert "Qwen" in self.model_name, "train.liger_qwen can only be applied to Qwen2 models."
         return self
-
-    @model_validator(mode="after")
-    def check_ckpt_interval(self):
-        if self.ckpt.interval is not None:
-            assert self.ckpt.interval % self.optim.step_per_rollout == 0, "ckpt.interval must be divisible by train.step_per_rollout"
-        return self
