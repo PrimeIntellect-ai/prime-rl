@@ -31,8 +31,8 @@ from zeroband.inference.utils import (
     reload_model_weights,
     compute_max_batch_size,
     get_inference_input_output_flops,
-    prepare_prompts,
-    generate_target_length_prompts,
+    generate_target_lengths,
+    format_prompts,
 )
 from zeroband.training.mp import EnvWrapper
 from zeroband.utils.logger import get_logger
@@ -215,11 +215,11 @@ def inference(config: Config):
         task_types = [item["task_type"] for item in problems]
         prompts = [item["prompt"] for item in problems]
 
-        length_prompt_additions, target_lengths = generate_target_length_prompts(config.rewards.len_reward, len(prompts))
+        target_lengths = generate_target_lengths(config.rewards.len_reward, len(prompts))
         for target_length, verification_info in zip(target_lengths, verification_infos):
             verification_info["target_length"] = target_length
 
-        prompts = prepare_prompts(prompts, length_prompt_additions, config=config, tokenizer=tokenizer)
+        prompts = format_prompts(prompts, target_lengths, config.rewards.len_reward, llm)
 
         start_time = time.time()
         request_outputs = llm.generate(prompts, sampling_params, use_tqdm=False)

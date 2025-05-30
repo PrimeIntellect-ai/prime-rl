@@ -7,24 +7,8 @@ from transformers import AutoTokenizer
 from vllm import LLM
 from vllm.model_executor.model_loader.loader import _process_weights_after_loading
 
-from zeroband.inference.config import Config as InferenceConfig
 from zeroband.inference.rewards import LenRewardsConfig
 from zeroband.inference.work_counting import get_inference_input_output_flops  # noqa: F401
-
-
-def fake_chat_template(messages):
-    formatted_prompts = []
-
-    for conversation in messages:
-        prompt = ""
-        for message in conversation:
-            if message["role"] == "user":
-                prompt += f"Human: {message['content']}\n\n"
-            elif message["role"] == "assistant":
-                prompt += f"Assistant: {message['content']}\n\n"
-        formatted_prompts.append(prompt.strip())
-
-    return formatted_prompts
 
 
 def filter_data_by_prompt_length(data: Dataset, max_length: int, tokenizer: AutoTokenizer, tokenize_batch_size: int = 10000):
@@ -70,59 +54,58 @@ def reload_model_weights(llm: LLM, ckpt_path: str):
     return llm
 
 
-def generate_target_length_prompts(config: LenRewardsConfig | None, batch_size: int):
-    if config is None:
-        return [""] * batch_size, [-1] * batch_size
+def generate_target_lengths(len_reward_config: LenRewardsConfig | None, batch_size: int) -> list[int]:
+    """
+    Generate target lengths for all prompts in the batch.
 
-    if config.target_length_sampling == "discrete":
-        indices = torch.randint(low=0, high=len(config.len_reward.target_lengths), size=(batch_size,), device="cpu")
-        target_lengths = [int(config.len_reward.target_lengths[i]) for i in indices]
+    Args:
+        len_reward_config: The length reward configuration.
+        batch_size: The number of prompts to generate target lengths for.
 
-    elif config.target_length_sampling == "range":
+    Returns:
+        A list of target lengths.
+    """
+    if len_reward_config is None:
+        target_lengths = [-1] * batch_size
+    elif len_reward_config.target_length_sampling == "discrete":
+        indices = torch.randint(low=0, high=len(len_reward_config.target_lengths), size=(batch_size,), device="cpu")
+        target_lengths = [int(len_reward_config.target_lengths[i]) for i in indices]
+    elif len_reward_config.target_length_sampling == "range":
         target_lengths = torch.randint(
-            low=config.len_reward.min_length, high=config.len_reward.max_length + 1, size=(batch_size,), device="cpu"
+            low=len_reward_config.min_length, high=len_reward_config.max_length + 1, size=(batch_size,), device="cpu"
         ).tolist()
-
     else:
         raise ValueError("'length_target_sampling' has to be 'discrete' or 'range'")
 
-    prompt_prefix = " " if config.len_reward.length_prompt_location == "instruction" else " "
-    max_word = " maximally " if config.len_reward.reward_type == "clip" else ""
-
-    return [f"{prompt_prefix}Think for{max_word}{target} tokens before giving a response." for target in target_lengths], target_lengths
+    return target_lengths
 
 
-def prepare_prompts(prompts: list[str], length_prompt_additions: list[str], config: InferenceConfig, tokenizer) -> list[str]:
-    messages = [[{"role": "user", "content": prompt}, {"role": "assistant", "content": "<think>\n"}] for prompt in prompts]
-
-    len_reward = config.rewards.len_reward
-    if len_reward:
-        if len_reward.length_prompt_location == "system_prompt":
+def format_prompts(prompts: list[str], target_lengths: list[int], len_rewards_config: LenRewardsConfig | None, llm: LLM) -> list[str]:
+    # Apply length prompt additions
+    if len_rewards_config:
+        max_word = "maximally" if len_rewards_config.reward_type == "clip" else ""
+        if len_rewards_config.length_prompt_location == "system_prompt":  # Add length prompt to system prompt
             messages = [
                 [
-                    {"role": "system", "content": length_prompt},
+                    {"role": "system", "content": f"Think for {max_word} {target_length} tokens before giving a response."},
                     {"role": "user", "content": prompt},
-                    {"role": "assistant", "content": "<think>\n"},
                 ]
-                for prompt, length_prompt in zip(prompts, length_prompt_additions)
+                for prompt, target_length in zip(prompts, target_lengths)
             ]
-        else:
+        else:  # Add length prompt to user prompt
             messages = [
-                [{"role": "user", "content": prompt + length_prompt}, {"role": "assistant", "content": "<think>\n"}]
-                for prompt, length_prompt in zip(prompts, length_prompt_additions)
+                [{"role": "user", "content": prompt + f" Think for {max_word} {target_length} tokens before giving a response."}]
+                for prompt, target_length in zip(prompts, target_lengths)
             ]
     else:
-        messages = [[{"role": "user", "content": prompt}, {"role": "assistant", "content": "<think>\n"}] for prompt in prompts]
+        # No length prompt additions, just use the prompts as is
+        messages = [[{"role": "user", "content": prompt}] for prompt in prompts]
 
-    if tokenizer.chat_template:
-        prompts = tokenizer.apply_chat_template(messages, tokenize=False, continue_final_message=True)
-        if config.model_name != "Qwen/QwQ-32B":
-            for i, p in enumerate(prompts):
-                prompts[i] = p.replace("<｜begin▁of▁sentence｜>", "")
-    else:
-        prompts = fake_chat_template(messages)
+    # Apply chat template
+    tokenizer = llm.get_tokenizer()
+    formatted_prompts = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, enable_thinking=True)
 
-    return prompts
+    return formatted_prompts
 
 
 def compute_max_batch_size(llm: LLM) -> int:
