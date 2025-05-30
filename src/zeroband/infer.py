@@ -269,6 +269,11 @@ def inference(config: Config):
         total_samples += batch_samples
         logger.info(f"Generated {batch_samples} samples for {batch_problems} problems for step {real_step} in {end_time - start_time:.2f}s")
 
+        # Print example
+        first_prompt = tokenizer.decode(request_outputs[0].prompt_token_ids)
+        first_completion = tokenizer.decode(request_outputs[0].outputs[0].token_ids)
+        logger.info(f"Example: {first_prompt}{first_completion}")
+
         # Log progress metrics
         progress_metrics = {
             "progress/batch_problems": batch_problems,
