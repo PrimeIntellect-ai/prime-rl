@@ -101,6 +101,7 @@ def create_dummy_parquet_table(batch_size: int, seq_len: int) -> Table:
         "proofs": pa.array([b"I am toploc proof, handcrafted by jack"] * batch_size, type=pa.binary()),
         "step": pa.array([0] * batch_size, type=pa.int32()),
         "target_lengths": pa.array([seq_len] * batch_size, type=pa.int32()),
+        "task_type": pa.array(["test_task"] * batch_size, type=pa.string()),  # ADD THIS LINE
     }
 
     # Create table directly from dictionary
