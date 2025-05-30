@@ -1,4 +1,3 @@
-
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -65,7 +64,6 @@ class RewardRequest(BaseModel):
             yield request_output, verification_info, task_type
 
 
-
 def unwrap_request_output(request_output: RequestOutput) -> ModelOutput:
     outputs = [ModelCompletion(index=o.index, text=o.text, token_ids=o.token_ids) for o in request_output.outputs]
     return ModelOutput(request_id=request_output.request_id, outputs=outputs)
@@ -97,6 +95,8 @@ class CompletionReward(BaseModel):
 class RequestRewards(BaseModel):
     request_id: str  # type(RequestOutput.request_id)
     rewards: list[CompletionReward]
+    task_type: str
+
 
 class RewardsResponse(BaseModel):
     rewards: list[RequestRewards]
@@ -136,11 +136,11 @@ def _compute_completion_reward(
             output_length = len(completion_output.token_ids)
             # Penalizes absolute deviation from target length
             if length_config.reward_type == "exact":
-                length_penalty = (abs(target_length - output_length) * length_config.reward_coef)
+                length_penalty = abs(target_length - output_length) * length_config.reward_coef
                 reward -= length_penalty
             # Rewards for being close to target length with a maximum reward
             elif length_config.reward_type == "max":
-                raw_value = (length_config.reward_coef * (target_length - output_length) + length_config.max_reward_delta)
+                raw_value = length_config.reward_coef * (target_length - output_length) + length_config.max_reward_delta
                 length_penalty = max(0, min(1, raw_value))
                 reward *= length_penalty
             # Zero reward if output exceeds target length
@@ -192,9 +192,7 @@ def _compute_request_rewards(
     for completion_reward, advantage in zip(completion_rewards, advantage_array):
         completion_reward.advantage = float(advantage)
 
-    return RequestRewards(
-        request_id=request_output.request_id, rewards=completion_rewards
-    )
+    return RequestRewards(request_id=request_output.request_id, rewards=completion_rewards, task_type=str(task_type))
 
 
 def compute_rewards(

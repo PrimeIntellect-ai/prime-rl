@@ -41,6 +41,7 @@ class DatasetOutput(TypedDict):
     task_rewards: Float[torch.Tensor, "1"]
     length_penalties: Float[torch.Tensor, "1"]
     target_lengths: Int[torch.Tensor, "1"]
+    task_type: str
 
 
 class FakeTokenizedDataset(IterableDataset):
@@ -72,6 +73,7 @@ class FakeTokenizedDataset(IterableDataset):
                 "task_rewards": 0.5,
                 "length_penalties": 0.5,
                 "target_lengths": seq_len,
+                "task_type": "fake_task",
             }
 
 
@@ -245,6 +247,7 @@ class ParquetDataset(IterableDataset):
                 "task_rewards",
                 "length_penalties",
                 "target_lengths",
+                "task_type",
             ]
 
             scanner = dataset.scanner(columns=required_columns, batch_size=self._pq_read_bs)
@@ -260,6 +263,7 @@ class ParquetDataset(IterableDataset):
                         task_reward,
                         length_penalty,
                         target_length,
+                        task_type,
                     ) in zip(
                         batch["input_tokens"],
                         batch["output_tokens"],
@@ -268,6 +272,7 @@ class ParquetDataset(IterableDataset):
                         batch["task_rewards"],
                         batch["length_penalties"],
                         batch["target_lengths"],
+                        batch["task_type"],
                     ):
                         counter += 1
                         if _should_skip_index(
@@ -299,6 +304,7 @@ class ParquetDataset(IterableDataset):
                                 "task_rewards": task_reward.as_py(),
                                 "length_penalties": length_penalty.as_py(),
                                 "target_lengths": target_length.as_py(),
+                                "task_type": task_type.as_py(),
                             }
 
                         except Exception as e:
@@ -377,6 +383,7 @@ class BatchOutput(TypedDict):
     task_rewards: Float[torch.Tensor, "sample"]
     length_penalties: Float[torch.Tensor, "sample"]
     target_lengths: Int[torch.Tensor, "sample"]
+    task_types: list[str]
 
 
 ### colate
@@ -384,7 +391,7 @@ class BatchOutput(TypedDict):
 
 def collate_fn(samples: list[DatasetOutput], max_seq_len: int, pad_token_id: int) -> BatchOutput:
     """
-    This take a list of samples that should be packed together along the sequence dimension. Will add padding at the end of needed and
+    This take a list of samples that should be packed together along the sequence dimension. Will add padding at the end if needed and
     clipped to max_seq_len
     """
 
@@ -397,6 +404,7 @@ def collate_fn(samples: list[DatasetOutput], max_seq_len: int, pad_token_id: int
     task_rewards = [sample["task_rewards"] for sample in samples]
     length_penalties = [sample["length_penalties"] for sample in samples]
     target_lengths = [sample["target_lengths"] for sample in samples]
+    task_types = [sample["task_type"] for sample in samples]
 
     seq_lens = [len(sample["input_ids"]) for sample in samples]
     position_ids = [torch.arange(0, len(sample["input_ids"]), dtype=torch.int32) for sample in samples]
@@ -421,6 +429,7 @@ def collate_fn(samples: list[DatasetOutput], max_seq_len: int, pad_token_id: int
         "task_rewards": torch.tensor(task_rewards),
         "length_penalties": torch.tensor(length_penalties),
         "target_lengths": torch.tensor(target_lengths),
+        "task_types": task_types,
     }
 
 
@@ -503,7 +512,7 @@ def packed_batch_packing(batch_optim: list[DatasetOutput], max_seq_len: int, pad
     return data_parallel_rebalancing(micro_batches)
 
 
-def merge_batches_padding(batches: list[BatchOutput]) -> list[BatchOutput]:
+def merge_batches_padding(batches: list[BatchOutput]) -> BatchOutput:
     return {
         # token level
         "input_ids": torch.cat([b["input_ids"] for b in batches], dim=0),
@@ -516,6 +525,7 @@ def merge_batches_padding(batches: list[BatchOutput]) -> list[BatchOutput]:
         "task_rewards": torch.cat([b["task_rewards"] for b in batches]),
         "length_penalties": torch.cat([b["length_penalties"] for b in batches]),
         "target_lengths": torch.cat([b["target_lengths"] for b in batches]),
+        "task_types": [task_type for b in batches for task_type in b["task_types"]],
     }
 
 

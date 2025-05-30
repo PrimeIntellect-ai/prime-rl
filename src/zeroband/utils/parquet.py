@@ -11,5 +11,6 @@ pa_schema = pa.schema(
         ("proofs", pa.binary()),
         ("step", pa.int32()),
         ("target_lengths", pa.int32()),
+        ("task_type", pa.string()),
     ]
 )

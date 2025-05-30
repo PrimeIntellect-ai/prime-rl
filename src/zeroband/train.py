@@ -2,6 +2,7 @@ import logging
 import os
 import shutil
 import time
+from collections import defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -299,6 +300,14 @@ def train(config: Config):
                     metric_averager.update("length_penalties", length_penalties)
                 for target_lengths in batch["target_lengths"]:
                     metric_averager.update("target_lengths", target_lengths)
+
+                task_rewards_by_type = defaultdict(list)
+                for reward, task_type in zip(batch["task_rewards"], batch["task_types"]):
+                    task_rewards_by_type[task_type].append(reward.item())
+
+                for task_type, rewards in task_rewards_by_type.items():
+                    avg_reward = sum(rewards) / len(rewards)
+                    metric_averager.update(f"{task_type}", torch.tensor(avg_reward))
 
                 # Forward
                 logits: Float[torch.Tensor, "batch seq vocab"] = model(

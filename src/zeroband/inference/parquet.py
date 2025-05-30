@@ -32,6 +32,7 @@ def get_parquet_table(
                     "proofs": next(proof_iter) if len(output.token_ids) > 1 else b"",
                     "step": step,
                     "target_lengths": target_length,
+                    "task_type": request_rewards.task_type,
                 }
             )
 

@@ -266,6 +266,7 @@ def log_to_wandb(
             "time_data_loading",
             "time_packing",
         ],
+        "task_rewards/": [],
     }
 
     # Add metrics to respective groups
@@ -273,6 +274,11 @@ def log_to_wandb(
         for k in keys:
             if k in metrics_dict and metrics_dict[k] is not None:
                 wandb_metrics[f"{prefix}{k}"] = metrics_dict[k]
+
+    # Handle task-specific metrics dynamically
+    for key, value in metrics_dict.items():
+        if key.startswith("task_") and "_reward" in key:
+            wandb_metrics[f"task_rewards/{key}"] = value
 
     # Log everything
     wandb.log(wandb_metrics, step=metrics_dict.get("step", step))
