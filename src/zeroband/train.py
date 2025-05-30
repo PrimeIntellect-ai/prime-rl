@@ -28,6 +28,7 @@ from zeroband.training.utils import (
     OffloadedTensor,
     PerfCounter,
     apply_ac_ckpt,
+    copy_model_to_cpu,
     log_prompt_response_samples,
     log_to_wandb,
     offload_model_to_cpu,
@@ -110,7 +111,7 @@ def train(config: Config):
 
     if config.ckpt.rollout_path is not None and world_info.rank == 0:
         if envs.SHARDCAST_OUTPUT_DIR is not None:
-            shardcast.initialize(envs.SHARDCAST_OUTPUT_DIR, max_distribution_folders=config.max_async_level)
+            shardcast.initialize(envs.SHARDCAST_OUTPUT_DIR, max_distribution_folders=config.async_level)
 
     model, tokenizer = get_model_and_tokenizer(config.model_name, config.train.attn_impl)
 
@@ -133,6 +134,10 @@ def train(config: Config):
     if config.kl_coef is not None:
         model_reference, _ = get_model_and_tokenizer(config.model_name, config.train.attn_impl)
         apply_fsdp(model_reference, config.train.reshard_after_forward)
+
+    if config.use_infer_model_logprobs:
+        model_for_logprob_only, _ = get_model_and_tokenizer(config.model_name, config.train.attn_impl)
+        apply_fsdp(model_for_logprob_only, config.train.reshard_after_forward)
 
     optimizer = torch.optim.AdamW(
         params=model.parameters(),
@@ -164,12 +169,21 @@ def train(config: Config):
         if config.kl_coef is not None:
             model_reference = torch.compile(model_reference) if not TYPE_CHECKING else model_reference
 
+        if config.use_infer_model_logprobs:
+            model_for_logprob_only = torch.compile(model_for_logprob_only) if not TYPE_CHECKING else model_for_logprob_only
+
     tensor_offloaded_repository: dict[int, OffloadedTensor] = {}
 
     if config.kl_coef is not None:
         logger.info(f"memory before model reference offload: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
         tensor_offloaded_repository[0] = offload_model_to_cpu(model_reference)
         logger.info(f"memory after model reference offload: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+
+    if config.use_infer_model_logprobs:
+        logger.info(f"memory before model for logprob offload: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+        tensor_offloaded_repository[0] = offload_model_to_cpu(model_for_logprob_only)
+        # will be redundant if kl loss is use but probably fine with it
+        logger.info(f"memory after model for logprob offload: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
 
     if config.ckpt.resume:
         logger.info(f"loading checkpoint from {config.ckpt.resume}")
@@ -207,7 +221,15 @@ def train(config: Config):
         with torch.no_grad():
             if config.kl_coef is not None:
                 wake_up_model_from_cpu(model_reference, tensor_offloaded_repository[0])
-                del tensor_offloaded_repository[0]
+                # del tensor_offloaded_repository[0]
+
+            if config.use_infer_model_logprobs:
+                og_infer_step = training_progress.step // config.optim.step_per_rollout - config.async_level
+                infer_step = max(og_infer_step, 0)
+                wake_up_model_from_cpu(model_for_logprob_only, tensor_offloaded_repository[infer_step])
+
+                if og_infer_step == infer_step:
+                    del tensor_offloaded_repository[infer_step]
 
             data: list[list[BatchOutput]] = []
 
@@ -235,7 +257,8 @@ def train(config: Config):
 
                     input_ids = batch["input_ids"].to("cuda")
 
-                    per_token_logps = get_logprobs(model, input_ids, batch["position_ids"], config.temperature)
+                    model_for_logprob = model_for_logprob_only if config.use_infer_model_logprobs else model
+                    per_token_logps = get_logprobs(model_for_logprob, input_ids, batch["position_ids"], config.temperature)
 
                     batch["logprobs"] = per_token_logps.to("cpu")
 
@@ -250,6 +273,12 @@ def train(config: Config):
                 # if we don't manually reshard the the embed and lm head will conflict with the offloading because they will stay unshard until backward which we never call
                 reshard_module(model_reference)
                 tensor_offloaded_repository[0] = offload_model_to_cpu(model_reference)
+
+            if config.use_infer_model_logprobs:
+                # here we sepcifically don't save the tensor offloaded, they are alreay consumed and we will never use it again.
+                # this avoid having to make sure we don't keep too much tensor offloaded in cpu memory
+                reshard_module(model_for_logprob_only)
+                offload_model_to_cpu(model_for_logprob_only)
 
             logprobs_aware_iterator = iter(data)
 
@@ -461,7 +490,7 @@ def train(config: Config):
                         logger.info(f"Broadcasting {safetensor_path}")
                         shardcast.broadcast(safetensor_path)  # TODO: Is this blocking?
 
-                if len(previous_ckpt_rollout) > config.max_async_level:
+                if len(previous_ckpt_rollout) > config.async_level:
                     path_to_delete = previous_ckpt_rollout.pop(0)
                     if path_to_delete.exists():
                         logger.info(f"Removing past rollout ckpt at {path_to_delete}")
@@ -480,6 +509,10 @@ def train(config: Config):
                     f"Saving checkpoint at step {training_progress.step}, rollout_step {training_progress.step // config.optim.step_per_rollout}"
                 )
                 save_checkpoint_fsdp_state(model, [optimizer], training_progress, scheduler, config.ckpt.path)
+
+        if config.use_infer_model_logprobs:
+            reshard_module(model_for_logprob_only)
+            tensor_offloaded_repository[training_progress.step // config.optim.step_per_rollout] = copy_model_to_cpu(model)
 
         time_rollout_step = time.time() - time_start
         logger.info(f"Finished rollout {rollout_step} step {training_progress.step}")
