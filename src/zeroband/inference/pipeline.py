@@ -57,34 +57,19 @@ def deserialize_sampler_output(data: bytes) -> SamplerOutput:
     return msgspec.json.decode(data, type=SamplerOutput)
 
 
-def setup_pipeline(config: PipelineConfig, llm: LLM) -> Node:
-    """
-    Setup PRIME-IROH communication and hooks for pipeline parallel inference.
-
-    Args:
-        llm: The LLM model shard instance
-        rank: The rank of the current process (this is equivalent to the model shard index)
-        world_size: The total number of stages
-        iroh_seed: The seed for the PRIME-IROH node (optional, will lead to deterministic connection strings)
-        iroh_peer_id: The peer ID for the PRIME-IROH node (optional)
-    """
-    logger.info(f"Setting up pipeline parallelism (pp.rank={config.rank}, pp.world_size={config.world_size})")
-    node = setup_comm(config=config)
-    setup_hooks(config=config, llm=llm, node=node)
-    return node
-
-
-def setup_comm(config: PipelineConfig) -> Node:
+def setup_comm(config: PipelineConfig) -> Node | None:
     """
     Setup communication via PRIME-IROH. Forms a ring topology between the model shards
     with unidirectional communication flow.
 
     Args:
-        world_size: The total number of model shards
-        iroh_seed: The seed for the PRIME-IROH node (optional, will lead to deterministic connection strings)
-        iroh_peer_id: The peer ID for the PRIME-IROH node (optional)
+        config: The pipeline configuration
+
+    Returns:
+        The node if world_size > 1, otherwise None
     """
-    assert config.world_size > 1, "Pipeline parallel inference requires at least 2 stages"
+    if config.world_size == 1:
+        return None
 
     # Setup node (with or without seed)
     if config.iroh_seed is not None:
@@ -114,17 +99,18 @@ def setup_comm(config: PipelineConfig) -> Node:
     return node
 
 
-def setup_hooks(config: PipelineConfig, llm: LLM, node: Node) -> None:
+def setup_hooks(config: PipelineConfig, llm: LLM, node: Node | None) -> None:
     """
-    Setup hooks to enable pipeline parallel inference based on pipeline topology.
+    Setup hooks to enable pipeline parallel inference.
 
     Args:
-        rank: The stage index of the current process
-        world_size: The total number of stages
+        config: The pipeline configuration
         llm: The LLM model shard instance
-        node: The node class instances for communication
+        node: The node class instances for communication (None if world_size == 1)
     """
-    assert config.world_size > 1, "Pipeline parallel inference requires at least 2 stages"
+    if config.world_size == 1:
+        assert node is None, "Node should be None if world_size == 1"
+        return
 
     # Model runner owns sampler, model owns layers
     model_runner: nn.Module = llm.llm_engine.model_executor.driver_worker.model_runner
@@ -170,7 +156,6 @@ def setup_hooks(config: PipelineConfig, llm: LLM, node: Node) -> None:
         logger.debug("Registered post-hook recv_output on sampler")
 
 
-# TODO: Outputs of decoder blocks look different for vLLM implementations and HF-based implementations. The implementation currently breaks for HF-based implementations.
 def send_intermediate_states(_, __, output: Tuple, node: Node) -> None:
     """
     A post-hook that sends the hidden states and residual of the last decoder layer to the next stage node's first layer.
