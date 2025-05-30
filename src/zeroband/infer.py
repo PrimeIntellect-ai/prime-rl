@@ -135,7 +135,7 @@ def inference(config: Config):
     )
 
     ckpt_step = 0
-    real_step = 0
+    real_step = config.start_step or 0
     if config.ckpt_start_path is not None:
         logger.info(f"Resuming from checkpoint {config.ckpt_start_path}")
         path = Path(config.ckpt_start_path)

@@ -33,6 +33,9 @@ class Config(BaseConfig):
 
     max_samples: int | None = None
 
+    # The step to start from (if None, will start from 0)
+    start_step: int | None = None
+
     output_path: str = "outputs"
     clean_output_path: bool = False  # if true, the output path will be cleaned up before running the inference
 
