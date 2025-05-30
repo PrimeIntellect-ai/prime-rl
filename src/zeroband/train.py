@@ -25,6 +25,7 @@ from zeroband.training.loss import entropy_loss, grpo_loss, kl_penalty, selectiv
 from zeroband.training.lr_scheduler import get_scheduler
 from zeroband.training.utils import (
     MetricsAverager,
+    OffloadedTensor,
     PerfCounter,
     apply_ac_ckpt,
     log_prompt_response_samples,
@@ -163,9 +164,11 @@ def train(config: Config):
         if config.kl_coef is not None:
             model_reference = torch.compile(model_reference) if not TYPE_CHECKING else model_reference
 
+    tensor_offloaded_repository: dict[int, OffloadedTensor] = {}
+
     if config.kl_coef is not None:
         logger.info(f"memory before model reference offload: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-        tensors_offloaded_reference = offload_model_to_cpu(model_reference)
+        tensor_offloaded_repository[0] = offload_model_to_cpu(model_reference)
         logger.info(f"memory after model reference offload: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
 
     if config.ckpt.resume:
@@ -203,8 +206,8 @@ def train(config: Config):
         # here we want to pre-compute the logprobs with the model before update
         with torch.no_grad():
             if config.kl_coef is not None:
-                wake_up_model_from_cpu(model_reference, tensors_offloaded_reference)
-                del tensors_offloaded_reference
+                wake_up_model_from_cpu(model_reference, tensor_offloaded_repository[0])
+                del tensor_offloaded_repository[0]
 
             data: list[list[BatchOutput]] = []
 
@@ -246,7 +249,7 @@ def train(config: Config):
             if config.kl_coef is not None:
                 # if we don't manually reshard the the embed and lm head will conflict with the offloading because they will stay unshard until backward which we never call
                 reshard_module(model_reference)
-                tensors_offloaded_reference = offload_model_to_cpu(model_reference)
+                tensor_offloaded_repository[0] = offload_model_to_cpu(model_reference)
 
             logprobs_aware_iterator = iter(data)
 
