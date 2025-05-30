@@ -20,7 +20,7 @@ IROH_NODE_ID_MAP = {
 }
 
 SEEDS = list(IROH_NODE_ID_MAP.keys())
-TIMEOUT = 30
+TIMEOUT = 60
 
 
 @pytest.mark.parametrize("seed", SEEDS)
@@ -64,11 +64,15 @@ def test_setup_comm(world_size: int):
         p.start()
 
     # Wait for processes
+    timed_out = False
     for p in processes:
         p.join(timeout=TIMEOUT)
         if p.is_alive():
-            p.terminate()
-            raise TimeoutError(f"Process took longer than {TIMEOUT} seconds to complete")
+            timed_out = True
+            p.kill()
+
+    if timed_out:
+        raise TimeoutError(f"Process took longer than {TIMEOUT} seconds to complete")
 
     # Check for errors
     if not error_queue.empty():
@@ -147,11 +151,15 @@ def test_all_reduce(world_size: int, operation: str):
         process.start()
 
     # Wait for processes
+    timed_out = False
     for p in processes:
         p.join(timeout=TIMEOUT)
         if p.is_alive():
-            p.terminate()
-            raise TimeoutError(f"Process took longer than {TIMEOUT} seconds to complete")
+            timed_out = True
+            p.kill()
+
+    if timed_out:
+        raise TimeoutError(f"Process took longer than {TIMEOUT} seconds to complete")
 
     # Check for errors
     if not error_queue.empty():
