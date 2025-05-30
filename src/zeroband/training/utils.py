@@ -237,7 +237,8 @@ def copy_model_to_cpu(model: ModelType) -> OffloadedTensor:
     for param in chain(model.parameters(), model.buffers()):
         data = get_real_tensor(param.data)
         cpu_data = data.to("cpu")
-        tensors_offloaded.append(cpu_data)
+        storage_size = data.untyped_storage().size()
+        tensors_offloaded.append((cpu_data, storage_size))
 
     return tensors_offloaded
 
