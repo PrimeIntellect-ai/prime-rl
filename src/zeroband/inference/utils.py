@@ -121,19 +121,32 @@ def compute_max_batch_size(llm: LLM) -> int:
 
 def rgetattr(obj: Any, attr_path: str) -> Any:
     """
-    Tries to get a (nested) attribute from an object. For example, if
-    `model.layers` is an attribute of `model`, then `rgetattr(model,
-    "model.layers")` will return the attribute `layers`. If `layers` is not an
-    attribute of `model`, then `rgetattr(model, "layers")` will raise an
-    `AttributeError`.
+    Tries to get a (nested) attribute from an object. For example:
+
+    ```python
+    class Foo:
+        bar = "baz"
+
+    class Bar:
+        foo = Foo()
+
+    foo = Foo()
+    bar = Bar()
+    ```
+
+    Here, the following holds:
+    - `getattr(foo, "bar")` will return `"baz"`.
+    - `getattr(bar, "foo)` will return an object of type `Foo`.
+    - `getattr(bar, "foo.bar")` will error
+
+    This function solves this. `rgetattr(bar, "foo.bar")` will return `"baz"`.
 
     Args:
         obj: The object to get the attribute from.
-        attr_path: The path to the attribute. For example, "model.layers" will
-            get the attribute `layers` from the attribute `model` of `obj`.
+        attr_path: The path to the attribute, nested using `.` as separator.
 
     Returns:
-        The attribute.
+        The attribute
     """
     attrs = attr_path.split(".")
     current = obj

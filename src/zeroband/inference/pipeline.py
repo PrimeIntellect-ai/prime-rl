@@ -112,6 +112,22 @@ def patch_model_load(config: PipelineConfig) -> None:
         return
 
     def _patched_make_layers(num_hidden_layers: int, layer_fn: LayerFn, prefix: str) -> Tuple[int, int, torch.nn.ModuleList]:
+        """
+        This is a patched version of the `make_layers` function in vLLM which is
+        called when PP is used internally. It returns the index of the first and
+        last layer for the current shard. The only difference to the original
+        function is that we pass the PP rank and world size directly to the
+        `get_pp_indices` function, instead of getting them from the PP
+        torch.distributed group (vLLM default).
+
+        Args:
+            num_hidden_layers: The total number of hidden layers in the model
+            layer_fn: The function to create a layer
+            prefix: The prefix to use for the layer
+
+        Returns:
+            The index of the first and last layer for the current shard, and the nn.ModuleList of the layers
+        """
         from vllm.distributed.utils import get_pp_indices
 
         start_layer, end_layer = get_pp_indices(num_hidden_layers, config.rank, config.world_size)
