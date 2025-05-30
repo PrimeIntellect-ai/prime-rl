@@ -23,7 +23,7 @@ from vllm import LLM, SamplingParams
 
 from zeroband.inference.config import Config
 from zeroband.inference.parquet import get_parquet_table
-from zeroband.inference.pipeline import setup_pipeline
+from zeroband.inference.pipeline import all_reduce, setup_pipeline
 from zeroband.inference.rewards import compute_vllm_rewards
 from zeroband.inference.toploc import setup_toploc_cache
 from zeroband.utils.monitor import setup_monitor
@@ -84,7 +84,8 @@ def inference(config: Config):
     batch_size = config.batch_size
     if batch_size == "auto":
         # Automatically compute the maximum batch size
-        batch_size = compute_max_batch_size(config, node, llm)
+        local_batch_size = compute_max_batch_size(llm)
+        batch_size = all_reduce(node, torch.tensor(local_batch_size), config=config.pp, op=torch.min).item()
         logger.info(f"Auto-computed batch size: {batch_size}")
 
     # Throw an error if the batch size is too small for the number of samples to generate per problem

@@ -1,13 +1,10 @@
 import torch
 from datasets import Dataset
-from prime_iroh import Node
 from safetensors import safe_open
 from transformers import AutoTokenizer
 from vllm import LLM
 from vllm.model_executor.model_loader.loader import _process_weights_after_loading
 
-from zeroband.inference.config import Config as InferenceConfig
-from zeroband.inference.pipeline import all_reduce
 from zeroband.inference.rewards import LenRewardsConfig
 
 
@@ -91,7 +88,7 @@ def filter_data_by_prompt_length(data: Dataset, max_length: int, tokenizer: Auto
     return data
 
 
-def compute_max_batch_size(config: InferenceConfig, node: Node | None, llm: LLM) -> int:
+def compute_max_batch_size(llm: LLM) -> int:
     """
     Automatically computes the maximum batch size (number of sequences decoded in
     parallel) without exceeding the GPU memory to prevent cache eviction. We use vLLM's
@@ -106,20 +103,15 @@ def compute_max_batch_size(config: InferenceConfig, node: Node | None, llm: LLM)
     maximum sequence length possible, here `max_model_len`.
 
     Args:
-        config (InferenceConfig): The inference configuration.
-        node (Node | None): The `prime-iroh` node to use for all-reduce.
         llm (LLM): The vLLM LLM instance.
 
     Returns:
         int: The maximum batch size.
     """
-    # Computes the maximum batch size with a safety margin to prevent cache eviction
     num_gpu_blocks = llm.llm_engine.model_executor.cache_config.num_gpu_blocks
     block_size = llm.llm_engine.model_executor.cache_config.block_size
     max_model_len = llm.llm_engine.model_config.max_model_len
     max_cache_tokens = num_gpu_blocks * block_size
     max_batch_size = max_cache_tokens // max_model_len
-
-    max_batch_size = all_reduce(node, torch.tensor(max_batch_size), config=config.pp, op=torch.min).item()
 
     return max_batch_size
