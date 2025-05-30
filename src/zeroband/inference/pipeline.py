@@ -59,8 +59,8 @@ def deserialize_sampler_output(data: bytes) -> SamplerOutput:
 
 def setup_comm(config: PipelineConfig) -> Node | None:
     """
-    Setup communication via PRIME-IROH. Forms a ring topology between the model shards
-    with unidirectional communication flow.
+    Setup P2P communication via using `prime-iroh` nodes. Forms a ring topology
+    between the model shards with unidirectional communication flow.
 
     Args:
         config: The pipeline configuration
@@ -73,7 +73,7 @@ def setup_comm(config: PipelineConfig) -> Node | None:
 
     # Setup node (with or without seed)
     if config.iroh_seed is not None:
-        logger.debug(f"Using IROH seed: {config.iroh_seed}")
+        logger.debug(f"Using seed: {config.iroh_seed}")
         # If seed is provided, create a new node with the seed
         node = Node.with_seed(num_streams=1, seed=config.iroh_seed)
     else:
