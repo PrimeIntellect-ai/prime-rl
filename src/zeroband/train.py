@@ -2,6 +2,7 @@ import logging
 import os
 import shutil
 import time
+from collections import defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -301,11 +302,9 @@ def train(config: Config):
                 # Task-specific metrics with proper grouping
                 if "task_types" in batch:
                     # Group rewards by task type
-                    task_type_rewards = {}
+                    task_type_rewards = defaultdict(list)
                     for i, task_type in enumerate(batch["task_types"]):
                         task_key = f"individual_task_{task_type}"
-                        if task_key not in task_type_rewards:
-                            task_type_rewards[task_key] = []
                         task_type_rewards[task_key].append(batch["task_rewards"][i].item())
 
                     # Update metrics with task-specific averages
