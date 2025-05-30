@@ -142,28 +142,26 @@ Below are examples of how to run inference for different parallelization strateg
 Single Node (DP=1, TP=1, PP=1, *requires 1 GPU*)
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 uv run python src/zeroband/infer.py @ configs/inference/debug.toml --model-name Qwen/Qwen3-0.6B
+CUDA_VISIBLE_DEVICES=0 uv run python src/zeroband/infer.py @ configs/inference/debug.toml
 ```
 
 Only TP (TP=2, PP=1, DP=1, *requires 2 GPUs*)
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/infer.py @ configs/inference/debug.toml --model-name Qwen/Qwen3-0.6B \
-	--tp 2
+CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/infer.py @ configs/inference/debug.toml --tp 2
 ```
 
 Only DP (DP=2, TP=1, PP=1, *requires 2 GPUs*)
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/infer.py @ configs/inference/debug.toml --model-name Qwen/Qwen3-0.6B \
-	--dp 2
+CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/infer.py @ configs/inference/debug.toml --dp 2
 ```
 
 Only PP (DP=1, TP=1, PP=2, *requires 2 GPUs*)
 
 ```bash
 # Node 1
-CUDA_VISIBLE_DEVICES=0 uv run python src/zeroband/infer.py @ configs/inference/debug.toml --model-name mikasenghaas/Qwen3-0.6B-0.2 \
+CUDA_VISIBLE_DEVICES=0 uv run python src/zeroband/infer.py @ configs/inference/debug.toml \
 	--pp.rank 0 \
 	--pp.world-size 2 \
 	--pp.iroh-seed 0 \
@@ -173,7 +171,7 @@ CUDA_VISIBLE_DEVICES=0 uv run python src/zeroband/infer.py @ configs/inference/d
 
 ```bash
 # Node 2
-CUDA_VISIBLE_DEVICES=1 uv run python src/zeroband/infer.py @ configs/inference/debug.toml --model-name mikasenghaas/Qwen3-0.6B-1.2 \
+CUDA_VISIBLE_DEVICES=1 uv run python src/zeroband/infer.py @ configs/inference/debug.toml \
 	--pp.rank 1 \
 	--pp.world-size 2 \
 	--pp.iroh-seed 1 \
@@ -186,16 +184,14 @@ CUDA_VISIBLE_DEVICES=1 uv run python src/zeroband/infer.py @ configs/inference/d
 DP+TP (DP=2, TP=2, PP=1, *requires 4 GPUs*)
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 uv run python src/zeroband/infer.py @ configs/inference/debug.toml --model-name Qwen/Qwen3-0.6B \
-	--dp 2 \
-	--tp auto
+CUDA_VISIBLE_DEVICES=0,1,2,3 uv run python src/zeroband/infer.py @ configs/inference/debug.toml --dp 2 --tp auto
 ```
 
 PP+TP (DP=1, TP=2, PP=2, *requires 4 GPUs*)
 
 ```bash
 # Node 1
-CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/infer.py @ configs/inference/debug.toml --model-name mikasenghaas/Qwen3-0.6B-0.2 \
+CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/infer.py @ configs/inference/debug.toml \
 	--tp auto \
 	--pp.rank 0 \
 	--pp.world-size 2 \
@@ -206,7 +202,7 @@ CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/infer.py @ configs/inference
 
 ```bash
 # Node 2
-CUDA_VISIBLE_DEVICES=2,3 uv run python src/zeroband/infer.py @ configs/inference/debug.toml --model-name mikasenghaas/Qwen3-0.6B-1.2 \
+CUDA_VISIBLE_DEVICES=2,3 uv run python src/zeroband/infer.py @ configs/inference/debug.toml \
 	--tp auto \
 	--pp.rank 1 \
 	--pp.world-size 2 \

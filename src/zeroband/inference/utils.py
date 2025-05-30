@@ -1,3 +1,5 @@
+from typing import Any
+
 import torch
 from datasets import Dataset
 from safetensors import safe_open
@@ -115,3 +117,43 @@ def compute_max_batch_size(llm: LLM) -> int:
     max_batch_size = max_cache_tokens // max_model_len
 
     return max_batch_size
+
+
+def rgetattr(obj: Any, attr_path: str) -> Any:
+    """
+    Tries to get a (nested) attribute from an object. For example:
+
+    ```python
+    class Foo:
+        bar = "baz"
+
+    class Bar:
+        foo = Foo()
+
+    foo = Foo()
+    bar = Bar()
+    ```
+
+    Here, the following holds:
+    - `getattr(foo, "bar")` will return `"baz"`.
+    - `getattr(bar, "foo)` will return an object of type `Foo`.
+    - `getattr(bar, "foo.bar")` will error
+
+    This function solves this. `rgetattr(bar, "foo.bar")` will return `"baz"`.
+
+    Args:
+        obj: The object to get the attribute from.
+        attr_path: The path to the attribute, nested using `.` as separator.
+
+    Returns:
+        The attribute
+    """
+    attrs = attr_path.split(".")
+    current = obj
+
+    for attr in attrs:
+        if not hasattr(current, attr):
+            raise AttributeError(f"'{type(current).__name__}' object has no attribute '{attr}'")
+        current = getattr(current, attr)
+
+    return current

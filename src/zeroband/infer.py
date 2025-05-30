@@ -16,14 +16,13 @@ import requests
 import torch
 import torch.distributed as dist
 from datasets import load_dataset
-from prime_iroh import Node
 from pydantic_config import parse_argv
 from toploc.utils import sha256sum
 from vllm import LLM, SamplingParams
 
 from zeroband.inference.config import Config
 from zeroband.inference.parquet import get_parquet_table
-from zeroband.inference.pipeline import all_reduce, setup_pipeline
+from zeroband.inference.pipeline import all_reduce, patch_model_load, setup_comm, setup_hooks
 from zeroband.inference.rewards import compute_vllm_rewards
 from zeroband.inference.toploc import setup_toploc_cache
 from zeroband.utils.monitor import setup_monitor
@@ -57,6 +56,12 @@ def inference(config: Config):
     # Initialize metrics
     monitor = setup_monitor(config.monitor)
 
+    # Setup communication
+    node = setup_comm(config=config.pp)
+
+    # Patch vLLM's model loading to load model shard
+    patch_model_load(config=config.pp)
+
     # Initialize vLLM and get tokenizer
     logger.info(
         f"Initializing vLLM for {config.model_name} (max_model_len={config.max_model_len}, enforce_eager={config.enforce_eager}, dtype={config.dtype}, quant={config.quant})"
@@ -75,10 +80,8 @@ def inference(config: Config):
     tokenizer = llm.get_tokenizer()
     sampling_params = SamplingParams(**config.sampling.model_dump())
 
-    # Create communication for pipeline
-    node: Node | None = None
-    if config.pp.world_size > 1:
-        node = setup_pipeline(config=config.pp, llm=llm)
+    # Setup pipeline parallel hooks
+    setup_hooks(config=config.pp, llm=llm, node=node)
 
     # Compute the maximum batch size
     batch_size = config.batch_size
@@ -268,6 +271,11 @@ def inference(config: Config):
         total_problems += batch_problems
         total_samples += batch_samples
         logger.info(f"Generated {batch_samples} samples for {batch_problems} problems for step {real_step} in {end_time - start_time:.2f}s")
+
+        # Print example
+        first_prompt = tokenizer.decode(request_outputs[0].prompt_token_ids)
+        first_completion = tokenizer.decode(request_outputs[0].outputs[0].token_ids)
+        logger.debug(f"Example: {first_prompt}{first_completion}")
 
         # Log progress metrics
         progress_metrics = {

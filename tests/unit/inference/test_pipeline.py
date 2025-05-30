@@ -48,8 +48,7 @@ def _test_setup_comm(rank: int, world_size: int, error_queue: Queue):
 def test_setup_comm(world_size: int):
     # Test that setup_comm raises an error for 1 stage
     if world_size == 1:
-        with pytest.raises(AssertionError):
-            setup_comm(PipelineConfig(world_size=world_size))
+        assert setup_comm(PipelineConfig(world_size=world_size)) is None
         return
 
     # Setup error queue and processes

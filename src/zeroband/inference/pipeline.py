@@ -11,6 +11,7 @@ from safetensors.torch import load, save
 from vllm import LLM
 from vllm.model_executor.layers.sampler import SamplerOutput
 
+from zeroband.inference.utils import rgetattr
 from zeroband.utils.logger import get_logger
 
 # Global logger
@@ -57,38 +58,23 @@ def deserialize_sampler_output(data: bytes) -> SamplerOutput:
     return msgspec.json.decode(data, type=SamplerOutput)
 
 
-def setup_pipeline(config: PipelineConfig, llm: LLM) -> Node:
+def setup_comm(config: PipelineConfig) -> Node | None:
     """
-    Setup PRIME-IROH communication and hooks for pipeline parallel inference.
+    Setup P2P communication via using `prime-iroh` nodes. Forms a ring topology
+    between the model shards with unidirectional communication flow.
 
     Args:
-        llm: The LLM model shard instance
-        rank: The rank of the current process (this is equivalent to the model shard index)
-        world_size: The total number of stages
-        iroh_seed: The seed for the PRIME-IROH node (optional, will lead to deterministic connection strings)
-        iroh_peer_id: The peer ID for the PRIME-IROH node (optional)
-    """
-    logger.info(f"Setting up pipeline parallelism (pp.rank={config.rank}, pp.world_size={config.world_size})")
-    node = setup_comm(config=config)
-    setup_hooks(config=config, llm=llm, node=node)
-    return node
+        config: The pipeline configuration
 
-
-def setup_comm(config: PipelineConfig) -> Node:
+    Returns:
+        The node if world_size > 1, otherwise None
     """
-    Setup communication via PRIME-IROH. Forms a ring topology between the model shards
-    with unidirectional communication flow.
-
-    Args:
-        world_size: The total number of model shards
-        iroh_seed: The seed for the PRIME-IROH node (optional, will lead to deterministic connection strings)
-        iroh_peer_id: The peer ID for the PRIME-IROH node (optional)
-    """
-    assert config.world_size > 1, "Pipeline parallel inference requires at least 2 stages"
+    if config.world_size == 1:
+        return None
 
     # Setup node (with or without seed)
     if config.iroh_seed is not None:
-        logger.debug(f"Using IROH seed: {config.iroh_seed}")
+        logger.debug(f"Using seed: {config.iroh_seed}")
         # If seed is provided, create a new node with the seed
         node = Node.with_seed(num_streams=1, seed=config.iroh_seed)
     else:
@@ -114,25 +100,78 @@ def setup_comm(config: PipelineConfig) -> Node:
     return node
 
 
-def setup_hooks(config: PipelineConfig, llm: LLM, node: Node) -> None:
+def patch_model_load(config: PipelineConfig) -> None:
     """
-    Setup hooks to enable pipeline parallel inference based on pipeline topology.
+    Patch the vLLM model load to only load the correct model shard.
+    """
+    import vllm.model_executor.models.utils as model_utils
+    from vllm.model_executor.models.utils import LayerFn, PPMissingLayer, maybe_offload_to_cpu
+
+    # Skip patching if world_size == 1
+    if config.world_size == 1:
+        return
+
+    def _patched_make_layers(num_hidden_layers: int, layer_fn: LayerFn, prefix: str) -> Tuple[int, int, torch.nn.ModuleList]:
+        """
+        This is a patched version of the `make_layers` function in vLLM which is
+        called when PP is used internally. It returns the index of the first and
+        last layer for the current shard. The only difference to the original
+        function is that we pass the PP rank and world size directly to the
+        `get_pp_indices` function, instead of getting them from the PP
+        torch.distributed group (vLLM default).
+
+        Args:
+            num_hidden_layers: The total number of hidden layers in the model
+            layer_fn: The function to create a layer
+            prefix: The prefix to use for the layer
+
+        Returns:
+            The index of the first and last layer for the current shard, and the nn.ModuleList of the layers
+        """
+        from vllm.distributed.utils import get_pp_indices
+
+        start_layer, end_layer = get_pp_indices(num_hidden_layers, config.rank, config.world_size)
+        modules = torch.nn.ModuleList(
+            [PPMissingLayer() for _ in range(start_layer)]
+            + [maybe_offload_to_cpu(layer_fn(prefix=f"{prefix}.{idx}")) for idx in range(start_layer, end_layer)]
+            + [PPMissingLayer() for _ in range(end_layer, num_hidden_layers)]
+        )
+        return start_layer, end_layer, modules
+
+    # Monkey patch the function
+    logger.info(f"Patching model init for pp.rank={config.rank} in pp.world_size={config.world_size}")
+    model_utils.make_layers = _patched_make_layers
+
+
+def setup_hooks(
+    config: PipelineConfig,
+    llm: LLM,
+    node: Node | None,
+    start_layer_key: str = "model.start_layer",
+    end_layer_key: str = "model.end_layer",
+    model_layers_key: str = "model.layers",
+) -> None:
+    """
+    Setup hooks to enable pipeline parallel inference.
 
     Args:
-        rank: The stage index of the current process
-        world_size: The total number of stages
+        config: The pipeline configuration
         llm: The LLM model shard instance
-        node: The node class instances for communication
+        node: The node class instances for communication (None if world_size == 1)
     """
-    assert config.world_size > 1, "Pipeline parallel inference requires at least 2 stages"
+    if config.world_size == 1:
+        assert node is None, "Node should be None if world_size == 1"
+        return
 
     # Model runner owns sampler, model owns layers
     model_runner: nn.Module = llm.llm_engine.model_executor.driver_worker.model_runner
     model: nn.Module = model_runner.model
 
     # Extract first and last layers (pre/post-hook to recv/send intermediate states)
-    first_layer: nn.Module = model.model.layers[0]
-    last_layer: nn.Module = model.model.layers[-1]
+    first_layer_idx = rgetattr(model, start_layer_key)
+    last_layer_idx = rgetattr(model, end_layer_key) - 1
+    first_layer: nn.Module = rgetattr(model, model_layers_key)[first_layer_idx]
+    last_layer: nn.Module = rgetattr(model, model_layers_key)[last_layer_idx]
 
     # Extract sampler (post-hook to recv/send outputs)
     sampler: nn.Module = model_runner.sampler
@@ -170,7 +209,6 @@ def setup_hooks(config: PipelineConfig, llm: LLM, node: Node) -> None:
         logger.debug("Registered post-hook recv_output on sampler")
 
 
-# TODO: Outputs of decoder blocks look different for vLLM implementations and HF-based implementations. The implementation currently breaks for HF-based implementations.
 def send_intermediate_states(_, __, output: Tuple, node: Node) -> None:
     """
     A post-hook that sends the hidden states and residual of the last decoder layer to the next stage node's first layer.
