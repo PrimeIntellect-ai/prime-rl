@@ -27,12 +27,12 @@ from zeroband.inference.rewards import compute_vllm_rewards
 from zeroband.inference.toploc import setup_toploc_cache
 from zeroband.utils.monitor import setup_monitor
 from zeroband.inference.utils import (
-    fake_chat_template,
     filter_data_by_prompt_length,
-    generate_target_length_prompts,
     reload_model_weights,
     compute_max_batch_size,
     get_inference_input_output_flops,
+    prepare_prompts,
+    generate_target_length_prompts,
 )
 from zeroband.training.mp import EnvWrapper
 from zeroband.utils.logger import get_logger
@@ -211,41 +211,15 @@ def inference(config: Config):
         logger.debug(f"Sampling batch with indices [{' '.join(map(str, indices[:3]))}...{' '.join(map(str, indices[-3:]))}]")
         problems = dataset.select(indices)
 
-        messages = [[{"role": "user", "content": item["prompt"]}, {"role": "assistant", "content": "<think>\n"}] for item in problems]
-
-        # Assume verification_info is stored as a JSON string in the dataset.
         verification_infos = [json.loads(item["verification_info"]) for item in problems]
         task_types = [item["task_type"] for item in problems]
+        prompts = [item["prompt"] for item in problems]
 
-        len_reward = config.rewards.len_reward
-        length_prompt_additions, target_lengths = generate_target_length_prompts(len_reward, len(problems))
+        length_prompt_additions, target_lengths = generate_target_length_prompts(config.rewards.len_reward, len(prompts))
         for target_length, verification_info in zip(target_lengths, verification_infos):
             verification_info["target_length"] = target_length
-        if len_reward:
-            if len_reward.length_prompt_location == "system_prompt":
-                messages = [
-                    [
-                        {"role": "system", "content": length_prompt},
-                        {"role": "user", "content": item["prompt"]},
-                        {"role": "assistant", "content": "<think>\n"},
-                    ]
-                    for item, length_prompt in zip(problems, length_prompt_additions)
-                ]
-            else:
-                messages = [
-                    [{"role": "user", "content": item["prompt"] + length_prompt}, {"role": "assistant", "content": "<think>\n"}]
-                    for item, length_prompt in zip(problems, length_prompt_additions)
-                ]
-        else:
-            messages = [[{"role": "user", "content": item["prompt"]}, {"role": "assistant", "content": "<think>\n"}] for item in problems]
 
-        if tokenizer.chat_template:
-            prompts = tokenizer.apply_chat_template(messages, tokenize=False, continue_final_message=True)
-            if config.model_name != "Qwen/QwQ-32B":
-                for i, p in enumerate(prompts):
-                    prompts[i] = p.replace("<｜begin▁of▁sentence｜>", "")
-        else:
-            prompts = fake_chat_template(messages)
+        prompts = prepare_prompts(prompts, length_prompt_additions, config=config, tokenizer=tokenizer)
 
         start_time = time.time()
         request_outputs = llm.generate(prompts, sampling_params, use_tqdm=False)

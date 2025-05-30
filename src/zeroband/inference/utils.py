@@ -7,6 +7,7 @@ from transformers import AutoTokenizer
 from vllm import LLM
 from vllm.model_executor.model_loader.loader import _process_weights_after_loading
 
+from zeroband.inference.config import Config as InferenceConfig
 from zeroband.inference.rewards import LenRewardsConfig
 from zeroband.inference.work_counting import get_inference_input_output_flops  # noqa: F401
 
@@ -24,6 +25,39 @@ def fake_chat_template(messages):
         formatted_prompts.append(prompt.strip())
 
     return formatted_prompts
+
+
+def prepare_prompts(prompts: list[str], length_prompt_additions: list[str], config: InferenceConfig, tokenizer) -> list[str]:
+    messages = [[{"role": "user", "content": prompt}, {"role": "assistant", "content": "<think>\n"}] for prompt in prompts]
+
+    len_reward = config.rewards.len_reward
+    if len_reward:
+        if len_reward.length_prompt_location == "system_prompt":
+            messages = [
+                [
+                    {"role": "system", "content": length_prompt},
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "<think>\n"},
+                ]
+                for prompt, length_prompt in zip(prompts, length_prompt_additions)
+            ]
+        else:
+            messages = [
+                [{"role": "user", "content": prompt + length_prompt}, {"role": "assistant", "content": "<think>\n"}]
+                for prompt, length_prompt in zip(prompts, length_prompt_additions)
+            ]
+    else:
+        messages = [[{"role": "user", "content": prompt}, {"role": "assistant", "content": "<think>\n"}] for prompt in prompts]
+
+    if tokenizer.chat_template:
+        prompts = tokenizer.apply_chat_template(messages, tokenize=False, continue_final_message=True)
+        if config.model_name != "Qwen/QwQ-32B":
+            for i, p in enumerate(prompts):
+                prompts[i] = p.replace("<｜begin▁of▁sentence｜>", "")
+    else:
+        prompts = fake_chat_template(messages)
+
+    return prompts
 
 
 def reload_model_weights(llm: LLM, ckpt_path: str):
