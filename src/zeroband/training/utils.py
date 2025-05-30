@@ -275,7 +275,7 @@ def log_to_wandb(
             if k in metrics_dict and metrics_dict[k] is not None:
                 wandb_metrics[f"{prefix}{k}"] = metrics_dict[k]
 
-    # Handle task-specific metrics based on the prefiz
+    # Handle task-specific metrics based on the prefix
     for key, value in metrics_dict.items():
         if key.startswith("task_"):
             wandb_metrics[f"task_rewards/{key}"] = value
