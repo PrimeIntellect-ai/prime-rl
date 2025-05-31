@@ -126,6 +126,8 @@ def save_ckpt_for_rollout(model: ModelType, path: Path, dtype: torch.dtype = tor
             key = next(iter(key))
             cpu_state[key] = value.to("cpu", non_blocking=True)
 
+    torch.distributed.barrier()
+
     logger.info(f"gathering full tensor checkpointing in {time.time() - start_time:.2f} seconds")
 
     def _save():
