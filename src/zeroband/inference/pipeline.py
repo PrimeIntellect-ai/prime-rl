@@ -222,7 +222,7 @@ def send_intermediate_states(_, __, output: Tuple, node: Node) -> None:
     hidden_states, residual = output
     serialized_tensors = serialize_tensors({"hidden_states": hidden_states, "residual": residual})
     node.isend(serialized_tensors, tag=0, latency=None).wait()
-    logger.trace(f"Sent hidden_states and residual ({hidden_states.shape}, {residual.shape}) ({len(serialized_tensors)} bytes)")
+    # logger.debug(f"Sent hidden_states and residual ({hidden_states.shape}, {residual.shape}) ({len(serialized_tensors)} bytes)")
 
 
 def recv_intermediate_states(_, input: Tuple, node: Node) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -242,7 +242,7 @@ def recv_intermediate_states(_, input: Tuple, node: Node) -> Tuple[torch.Tensor,
     deserialized_tensors = deserialize_tensors(serialized_tensors, device)
     hidden_states = deserialized_tensors["hidden_states"]
     residuals = deserialized_tensors["residual"]
-    logger.trace(f"Got hidden_states and residuals ({hidden_states.shape}, {residuals.shape}) ({len(serialized_tensors)} bytes)")
+    # logger.debug(f"Got hidden_states and residuals ({hidden_states.shape}, {residuals.shape}) ({len(serialized_tensors)} bytes)")
 
     return positions, hidden_states, residuals
 
@@ -267,10 +267,10 @@ def recv_output(_, __, output, node: Node, relay=False) -> SamplerOutput:
         relay: Whether to relay the outputs to the next stage node
     """
     serialized_output = node.irecv(tag=0).wait()
-    logger.trace(f"Received outputs ({len(serialized_output)} bytes)")
+    # logger.debug(f"Received outputs ({len(serialized_output)} bytes)")
     if relay:
         node.isend(serialized_output, tag=0, latency=None).wait()
-        logger.trace(f"Sent outputs ({len(serialized_output)} bytes)")
+        # logger.debug(f"Sent outputs ({len(serialized_output)} bytes)")
     output = deserialize_sampler_output(serialized_output)
     return output
 
@@ -287,7 +287,7 @@ def send_output(_, __, output: SamplerOutput, node: Node) -> None:
     """
     serialized_output = serialize_sampler_output(output)
     node.isend(serialized_output, tag=0, latency=None).wait()
-    logger.trace(f"Sent outputs ({len(serialized_output)} bytes)")
+    # logger.debug(f"Sent outputs ({len(serialized_output)} bytes)")
 
 
 def all_reduce(node: Node, tensor: torch.Tensor, config: PipelineConfig, op: callable = torch.add) -> torch.Tensor:
@@ -317,7 +317,7 @@ def all_reduce(node: Node, tensor: torch.Tensor, config: PipelineConfig, op: cal
         # Serialize current tensor for transmission
         tensor_dict = {"data": current_tensor}
         send_data = serialize_tensors(tensor_dict)
-        logger.trace(f"Sending {current_tensor} ({len(send_data)} bytes) to next node")
+        # logger.debug(f"Sending {current_tensor} ({len(send_data)} bytes) to next node")
         send_future = node.isend(send_data, tag=0, latency=None)
 
         # Receive tensor from previous node
@@ -329,7 +329,7 @@ def all_reduce(node: Node, tensor: torch.Tensor, config: PipelineConfig, op: cal
 
         # Deserialize received tensor and apply reduction operation
         received_tensors = deserialize_tensors(recv_data)
-        logger.trace(f"Received {received_tensors['data']} ({len(recv_data)} bytes) from previous node")
+        # logger.debug(f"Received {received_tensors['data']} ({len(recv_data)} bytes) from previous node")
         current_tensor = received_tensors["data"]
 
         # Apply the custom reduction operation
