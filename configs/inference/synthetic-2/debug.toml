@@ -1,0 +1,10 @@
+model_name = "Qwen/Qwen3-0.6B"
+dataset = "PrimeIntellect/INTELLECT-2-RL-Dataset"
+
+max_model_len = 16384
+max_samples = 100
+toploc = true
+
+[sampling]
+max_tokens = 100
+n = 1
