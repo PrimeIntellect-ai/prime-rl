@@ -56,9 +56,6 @@ def inference(config: Config):
     # Initialize metrics
     monitor = setup_monitor(config.monitor)
 
-    # Setup communication
-    node = setup_comm(config=config.pp)
-
     # Patch vLLM's model loading to load model shard
     patch_model_load(config=config.pp)
 
@@ -80,7 +77,8 @@ def inference(config: Config):
     tokenizer = llm.get_tokenizer()
     sampling_params = SamplingParams(**config.sampling.model_dump())
 
-    # Setup pipeline parallel hooks
+    # Setup and pipeline parallel hooks
+    node = setup_comm(config=config.pp)
     setup_hooks(config=config.pp, llm=llm, node=node)
 
     # Compute the maximum batch size
