@@ -1,0 +1,2 @@
+model_name = "Qwen/Qwen3-32B"
+max_model_len = 16384
