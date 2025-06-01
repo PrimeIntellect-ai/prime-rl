@@ -80,11 +80,11 @@ def setup_comm(config: PipelineConfig) -> Node | None:
     else:
         # If no seed, create a new node
         node = Node(num_streams=1)
-    logger.info(f"Created node (ID={node.node_id()})")
+    logger.info(f"Created node ({node.node_id()})")
 
     # Connect to peer
     if config.iroh_peer_id is None:
-        config.iroh_peer_id = input("Enter Peer ID: ").strip()
+        config.iroh_peer_id = input("Enter peer address: ").strip()
     logger.info(f"Setting up outgoing connection to {config.iroh_peer_id}")
     node.connect(config.iroh_peer_id, num_retries=config.connection_num_retries)
     logger.info(f"Outgoing connection to {config.iroh_peer_id} successful!")
