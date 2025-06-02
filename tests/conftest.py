@@ -94,6 +94,8 @@ def create_dummy_parquet_table(batch_size: int, seq_len: int) -> Table:
     data = {
         "input_tokens": pa.array([[1] * seq_len for _ in range(batch_size)], type=pa.list_(pa.int32())),
         "output_tokens": pa.array([[1] * seq_len for _ in range(batch_size)], type=pa.list_(pa.int32())),
+        "prompt": pa.array(["prompt" for _ in range(batch_size)], type=pa.string()),
+        "completion": pa.array(["completion" for _ in range(batch_size)], type=pa.string()),
         "advantages": pa.array([1] * batch_size, type=pa.float32()),
         "rewards": pa.array([1] * batch_size, type=pa.float32()),
         "task_rewards": pa.array([0] * batch_size, type=pa.float32()),

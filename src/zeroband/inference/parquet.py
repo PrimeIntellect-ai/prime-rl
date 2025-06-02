@@ -25,6 +25,8 @@ def get_parquet_table(
                 {
                     "input_tokens": request_output.prompt_token_ids,
                     "output_tokens": output.token_ids,
+                    "prompt": request_output.prompt,
+                    "completion": output.text,
                     "advantages": reward.advantage,
                     "rewards": reward.reward,
                     "task_rewards": reward.task_reward,
