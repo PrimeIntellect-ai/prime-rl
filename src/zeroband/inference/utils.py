@@ -87,14 +87,14 @@ def format_prompts(prompts: list[str], target_lengths: list[int], len_rewards_co
         if len_rewards_config.length_prompt_location == "system_prompt":  # Add length prompt to system prompt
             messages = [
                 [
-                    {"role": "system", "content": f"Think for {max_word} {target_length} tokens before giving a response."},
+                    {"role": "system", "content": f"Think for {max_word}{target_length} tokens before giving a response."},
                     {"role": "user", "content": prompt},
                 ]
                 for prompt, target_length in zip(prompts, target_lengths)
             ]
         else:  # Add length prompt to user prompt
             messages = [
-                [{"role": "user", "content": prompt + f" Think for {max_word} {target_length} tokens before giving a response."}]
+                [{"role": "user", "content": prompt + f" Think for {max_word}{target_length} tokens before giving a response."}]
                 for prompt, target_length in zip(prompts, target_lengths)
             ]
     else:
