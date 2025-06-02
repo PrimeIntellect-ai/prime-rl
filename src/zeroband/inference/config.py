@@ -47,6 +47,10 @@ class Config(BaseConfig):
     quant: Literal["fp8"] | None = None
 
     sampling: SamplingParamConfig = SamplingParamConfig()
+
+    # Whether to enable thinking for the model. Used by the `format_prompts` function to prepend a thinking prompt
+    enable_thinking: bool = True
+
     enforce_eager: bool = False
     max_model_len: int | None = None
 

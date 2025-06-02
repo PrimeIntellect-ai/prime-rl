@@ -82,7 +82,11 @@ def generate_target_lengths(len_reward_config: LenRewardsConfig | None, batch_si
 
 
 def format_prompts(
-    prompts: list[str], target_lengths: list[int], len_rewards_config: LenRewardsConfig | None, tokenizer: AnyTokenizer
+    prompts: list[str],
+    target_lengths: list[int],
+    len_rewards_config: LenRewardsConfig | None,
+    tokenizer: AnyTokenizer,
+    enable_thinking: bool = True,
 ) -> list[str]:
     """
     Formats a batch of raw prompts. Relies on the default chat template of the
@@ -97,6 +101,7 @@ def format_prompts(
         target_lengths: A list of target lengths (will be [-1, -1, ...] if no length rewards are configured).
         len_rewards_config: A configuration for length rewards. If `None`, no length rewards are configured.
         tokenizer: Any HF tokenizer instance
+        enable_thinking: Whether to enable thinking for the model. Used by the `apply_chat_template` to prepend a thinking prompt (for some models)
 
     Returns:
         A list of formatted prompts.
@@ -122,7 +127,7 @@ def format_prompts(
         messages = [[{"role": "user", "content": prompt}] for prompt in prompts]
 
     # Apply chat template
-    formatted_prompts = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, enable_thinking=True)
+    formatted_prompts = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, enable_thinking=enable_thinking)
 
     return formatted_prompts
 

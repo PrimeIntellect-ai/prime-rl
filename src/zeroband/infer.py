@@ -219,7 +219,9 @@ def inference(config: Config):
         for target_length, verification_info in zip(target_lengths, verification_infos):
             verification_info["target_length"] = target_length
 
-        prompts = format_prompts(prompts, target_lengths, config.rewards.len_reward, tokenizer)
+        prompts = format_prompts(
+            prompts, target_lengths, config.rewards.len_reward, tokenizer=tokenizer, enable_thinking=config.enable_thinking
+        )
 
         start_time = time.time()
         request_outputs = llm.generate(prompts, sampling_params, use_tqdm=False)
