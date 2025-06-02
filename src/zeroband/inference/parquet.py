@@ -8,6 +8,7 @@ from zeroband.utils.parquet import pa_schema
 def get_parquet_table(
     request_outputs: list[RequestOutput],
     request_rewards: list[RequestRewards],
+    prompts: list[str],
     proofs: list[bytes],
     step: int,
     target_lengths: list[int],
@@ -17,7 +18,7 @@ def get_parquet_table(
 
     # Create flattened list of records for PyArrow table
     records = []
-    for request_output, request_rewards, target_length in zip(request_outputs, request_rewards, target_lengths):
+    for request_output, request_rewards, prompt, target_length in zip(request_outputs, request_rewards, prompts, target_lengths):
         assert request_output.request_id == request_rewards.request_id
         for output, reward in zip(request_output.outputs, request_rewards.rewards):
             assert output.index == reward.completion_id
@@ -25,7 +26,7 @@ def get_parquet_table(
                 {
                     "input_tokens": request_output.prompt_token_ids,
                     "output_tokens": output.token_ids,
-                    "prompt": request_output.prompt,
+                    "prompt": prompt,
                     "completion": output.text,
                     "advantages": reward.advantage,
                     "rewards": reward.reward,

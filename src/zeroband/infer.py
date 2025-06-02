@@ -220,12 +220,12 @@ def inference(config: Config):
         for target_length, verification_info in zip(target_lengths, verification_infos):
             verification_info["target_length"] = target_length
 
-        prompts = format_prompts(
+        formatted_prompts = format_prompts(
             prompts, target_lengths, config.rewards.len_reward, tokenizer=tokenizer, enable_thinking=config.enable_thinking
         )
 
         start_time = time.time()
-        request_outputs = llm.generate(prompts, sampling_params, use_tqdm=False)
+        request_outputs = llm.generate(formatted_prompts, sampling_params, use_tqdm=False)
         end_time = time.time()
 
         # Dropping like this isn't ideal. But in practice, we shouldn't have any prompts that are too long.
@@ -299,6 +299,7 @@ def inference(config: Config):
         table = get_parquet_table(
             request_outputs,
             request_rewards,
+            prompts,
             proofs,
             ckpt_step,
             target_lengths,
