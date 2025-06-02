@@ -64,7 +64,7 @@ def inference(config: Config):
     logger.info(
         f"Initializing vLLM for {config.model_name} (max_model_len={config.max_model_len}, enforce_eager={config.enforce_eager}, dtype={config.dtype}, quant={config.quant})"
     )
-    llm: LLM = LLM(
+    llm = LLM(
         model=config.model_name,
         tensor_parallel_size=config.tp,
         max_seq_len_to_capture=config.max_model_len,
