@@ -27,7 +27,7 @@ class DifficultyFilteringConfig(BaseConfig):
 
 class Config(BaseConfig):
     model_name: str
-    dataset: str
+    dataset: str = "PrimeIntellect/INTELLECT-2-RL-Dataset"
 
     # The maximum number of of sequences to decode in parallel (if None, will be computed automatically)
     batch_size: int | Literal["auto"] = "auto"
