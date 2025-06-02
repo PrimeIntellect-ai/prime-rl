@@ -175,20 +175,6 @@ def is_repetitive(poem: str, word_uniqueness_threshold=0.3, short_pattern_max_de
 
     for pattern_len in range(2, min(6, poem_len // 2)): # Check patterns of length 2 to 5
         short_pattern = poem_no_space[:pattern_len]
-        # Count occurrences of this specific pattern starting poem
-        # More robustly, one could check for any dominant short pattern, not just the initial one.
-        # For simplicity, sticking to initial pattern for now.
-        # A simple `poem_no_space.count(short_pattern)` could be misleading if patterns overlap heavily.
-        # Instead, let's check if the poem seems to be constructed largely of one or two very short patterns.
-        
-        # This is a more advanced check: if the poem, when compressed (like run-length encoding of sorts),
-        # is very small, it might be repetitive.
-        # For simplicity, the original `poem.count(pattern) > len(poem) // (i * 2)`
-        # was trying to say: if a pattern of length `i` occurs more times than
-        # would fill half the poem if patterns were distinct.
-        
-        # Let's use a slightly modified version of your original logic:
-        # Check if the *initial* short pattern repeats excessively
         if poem_no_space.count(short_pattern) * pattern_len > poem_len * short_pattern_max_density:
             # print(f"Debug (is_repetitive): High short pattern density for '{short_pattern}'")
             return True
@@ -210,11 +196,6 @@ def compute_sanskrit_poetry_reward(completion: str, verification_info: Dict) -> 
             # print("Debug (reward): Malformed <think> tag or no content after.")
             return 0.0
     else:
-        # If no <think> tag, assume the whole completion is the poem,
-        # but this might be too lenient depending on expected input format.
-        # For now, let's be strict: if <think> is expected, it should be there.
-        # Or, if the problem implies no <think> tag, then poem_text_devanagari = completion.strip()
-        # Assuming for now, if no <think>, it's an invalid format for this specific reward function design.
         # print("Debug (reward): No <think> tag found in completion.")
         return 0.0 # Or handle as per specific requirements for completions without <think>
     
