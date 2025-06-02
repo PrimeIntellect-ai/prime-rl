@@ -1,5 +1,5 @@
 model_name = "willcb/Qwen2.5-0.5B-Reverse-SFT"
-dataset = "PrimeIntellect/reverse_text_dataset_debug_50_seq_len"
+dataset = "mikasenghaas/reverse_text_dataset_debug_50_seq_len"
 batch_size = 128
 dp = 1
 rollout_path = "outputs"

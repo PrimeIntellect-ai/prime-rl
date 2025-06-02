@@ -1,3 +1,4 @@
+import re
 from difflib import SequenceMatcher
 
 
@@ -13,10 +14,13 @@ def reverse_text(completion: str, verification_info: dict) -> int:
     LCS ratio of the reversed prompt and the parsed completion.
     """
 
-    # Extract solution.
-    if "</think>" in completion:
-        model_solution = completion.split("</think>")[1]
-    else:
+    # Extract solution between <answer> and </answer> tags
+    answer_text = re.search(r"<answer>(.*?)</answer>", completion, re.DOTALL)
+    if not answer_text:
         return 0
 
-    return lcs_ratio(model_solution, verification_info["ground_truth"])
+    ground_truth = verification_info.get("ground_truth")
+    if not ground_truth:
+        return 0
+
+    return lcs_ratio(answer_text.group(1).strip(), ground_truth)
