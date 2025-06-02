@@ -1,0 +1,2 @@
+model_name = "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B"
+max_model_len = 16384
