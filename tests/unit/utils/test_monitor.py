@@ -107,9 +107,7 @@ def mock_socket():
 def test_socket_monitor(mock_socket):
     # Set task ID in environment
     test_task_id = "test-task-123"
-    test_run_id = "test-run-123"
     os.environ["PRIME_TASK_ID"] = test_task_id
-    os.environ["PRIME_RUN_ID"] = test_run_id
 
     # Create socket output
     output = SocketMonitor(SocketMonitorConfig(enable=True, path="/test/socket.sock"))
@@ -123,7 +121,7 @@ def test_socket_monitor(mock_socket):
 
     # Get the data that was sent
     sent_data = mock_socket.sendall.call_args[0][0].decode("utf-8")
-    expected_data = json.dumps({**test_metrics, "task_id": test_task_id, "run_id": test_run_id})
+    expected_data = json.dumps({**test_metrics, "task_id": test_task_id})
     assert sent_data.strip() == expected_data
 
 

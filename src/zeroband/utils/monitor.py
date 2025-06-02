@@ -65,7 +65,6 @@ class Monitor(ABC):
         self.config = config
         self.lock = threading.Lock()
         self.metadata = {
-            "run_id": envs.PRIME_RUN_ID,
             "task_id": envs.PRIME_TASK_ID,
         }
         self.has_metadata = any(self.metadata.values())

@@ -8,7 +8,6 @@ if TYPE_CHECKING:
     PRIME_API_AUTH_TOKEN: str
     PRIME_SOCKET_PATH: str
     PRIME_TASK_ID: str
-    PRIME_RUN_ID: str
     PRIME_GROUP_ID: str
 
     # PyTorch
@@ -22,7 +21,6 @@ _ENV_PARSERS: dict[str, Callable[[str], Any]] = {
     "PRIME_API_AUTH_TOKEN": str,
     "PRIME_SOCKET_PATH": str,
     "PRIME_TASK_ID": str,
-    "PRIME_RUN_ID": str,
     "PRIME_GROUP_ID": str,
     "CUDA_VISIBLE_DEVICES": lambda x: list(map(int, x.split(","))),
 }
