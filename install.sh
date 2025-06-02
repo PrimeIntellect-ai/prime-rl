@@ -20,11 +20,11 @@ main() {
     log_info "Updating apt..."
     sudo apt update
 
-    log_info "Installing git cmake python3-dev..."
-    sudo apt install nvtop tmux cmake python3-dev htop git -y
+    log_info "Installing git, tmux, htop, nvtop, cmake, python3-dev..."
+    sudo apt install git tmux htop nvtop cmake python3-dev -y
 
     log_info "Cloning repository..."
-    git clone https://github.com/PrimeIntellect-ai/prime-rl
+    git clone git@github.com:PrimeIntellect-ai/prime-rl.git
 
     log_info "Entering project directory..."
     cd prime-rl
