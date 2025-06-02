@@ -81,6 +81,23 @@ def generate_target_lengths(len_reward_config: LenRewardsConfig | None, batch_si
 
 
 def format_prompts(prompts: list[str], target_lengths: list[int], len_rewards_config: LenRewardsConfig | None, llm: LLM) -> list[str]:
+    """
+    Formats a batch of raw prompts. Relies on the default chat template of the
+    LLM's tokenizer to call `apply_chat_template`. We call with
+    `add_generation_prompt=True` to add the generation prompt to the beginning
+    of the prompt. We also call with `enable_thinking=True` to enable thinking
+    for models that support it. For example, for `Qwen/QwQ-32B` this will add an
+    unclosed `</think>` tag to the beginning of the system response.
+
+    Args:
+        prompts: A list of raw prompts.
+        target_lengths: A list of target lengths (will be [-1, -1, ...] if no length rewards are configured).
+        len_rewards_config: A configuration for length rewards. If `None`, no length rewards are configured.
+        llm: A vLLM LLM instance (used to get the tokenizer)
+
+    Returns:
+        A list of formatted prompts.
+    """
     # Apply length prompt additions
     if len_rewards_config:
         max_word = "maximally" if len_rewards_config.reward_type == "clip" else ""
