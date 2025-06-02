@@ -64,7 +64,7 @@ def inference(config: Config):
     logger.info(
         f"Initializing vLLM for {config.model_name} (max_model_len={config.max_model_len}, enforce_eager={config.enforce_eager}, dtype={config.dtype}, quant={config.quant})"
     )
-    llm = LLM(
+    llm: LLM = LLM(
         model=config.model_name,
         tensor_parallel_size=config.tp,
         max_seq_len_to_capture=config.max_model_len,
@@ -219,7 +219,7 @@ def inference(config: Config):
         for target_length, verification_info in zip(target_lengths, verification_infos):
             verification_info["target_length"] = target_length
 
-        prompts = format_prompts(prompts, target_lengths, config.rewards.len_reward, llm)
+        prompts = format_prompts(prompts, target_lengths, config.rewards.len_reward, tokenizer)
 
         start_time = time.time()
         request_outputs = llm.generate(prompts, sampling_params, use_tqdm=False)

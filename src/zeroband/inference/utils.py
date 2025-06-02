@@ -6,6 +6,7 @@ from safetensors import safe_open
 from transformers import AutoTokenizer
 from vllm import LLM
 from vllm.model_executor.model_loader.loader import _process_weights_after_loading
+from vllm.transformers_utils.tokenizer import AnyTokenizer
 
 from zeroband.inference.rewards import LenRewardsConfig
 from zeroband.inference.work_counting import get_inference_input_output_flops  # noqa: F401
@@ -80,7 +81,9 @@ def generate_target_lengths(len_reward_config: LenRewardsConfig | None, batch_si
     return target_lengths
 
 
-def format_prompts(prompts: list[str], target_lengths: list[int], len_rewards_config: LenRewardsConfig | None, llm: LLM) -> list[str]:
+def format_prompts(
+    prompts: list[str], target_lengths: list[int], len_rewards_config: LenRewardsConfig | None, tokenizer: AnyTokenizer
+) -> list[str]:
     """
     Formats a batch of raw prompts. Relies on the default chat template of the
     LLM's tokenizer to call `apply_chat_template`. We call with
@@ -93,7 +96,7 @@ def format_prompts(prompts: list[str], target_lengths: list[int], len_rewards_co
         prompts: A list of raw prompts.
         target_lengths: A list of target lengths (will be [-1, -1, ...] if no length rewards are configured).
         len_rewards_config: A configuration for length rewards. If `None`, no length rewards are configured.
-        llm: A vLLM LLM instance (used to get the tokenizer)
+        tokenizer: Any HF tokenizer instance
 
     Returns:
         A list of formatted prompts.
@@ -119,7 +122,6 @@ def format_prompts(prompts: list[str], target_lengths: list[int], len_rewards_co
         messages = [[{"role": "user", "content": prompt}] for prompt in prompts]
 
     # Apply chat template
-    tokenizer = llm.get_tokenizer()
     formatted_prompts = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, enable_thinking=True)
 
     return formatted_prompts
