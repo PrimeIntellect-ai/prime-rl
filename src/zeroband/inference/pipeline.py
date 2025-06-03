@@ -227,7 +227,9 @@ def send_intermediate_states(_, __, output: Tuple, node: Node) -> None:
     hidden_states, residual = output
     serialized_tensors = serialize_tensors({"hidden_states": hidden_states, "residual": residual})
     node.isend(serialized_tensors, tag=0, latency=None).wait()
-    # logger.debug(f"Sent hidden_states and residual ({hidden_states.shape}, {residual.shape}) ({len(serialized_tensors)} bytes)")
+    print(f"Sent hidden_states and residual ({hidden_states.shape}, {residual.shape}) ({len(serialized_tensors)} bytes)")
+    print(f"hidden_states[-1][-5:]: {hidden_states[-1][-5:].tolist()}")
+    print(f"residual[-1][-5:]: {residual[-1][-5:].tolist()}")
 
 
 def recv_intermediate_states(_, input: Tuple, node: Node) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -247,7 +249,9 @@ def recv_intermediate_states(_, input: Tuple, node: Node) -> Tuple[torch.Tensor,
     deserialized_tensors = deserialize_tensors(serialized_tensors, device)
     hidden_states = deserialized_tensors["hidden_states"]
     residuals = deserialized_tensors["residual"]
-    # logger.debug(f"Got hidden_states and residuals ({hidden_states.shape}, {residuals.shape}) ({len(serialized_tensors)} bytes)")
+    print(f"Got hidden_states and residuals ({hidden_states.shape}, {residuals.shape}) ({len(serialized_tensors)} bytes)")
+    print(f"hidden_states[-1][-5:]: {hidden_states[-1][-5:].tolist()}")
+    print(f"residuals[-1][-5:]: {residuals[-1][-5:].tolist()}")
 
     return positions, hidden_states, residuals
 
