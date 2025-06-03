@@ -8,7 +8,7 @@ import torch.nn as nn
 from prime_iroh import Node
 from pydantic_config import BaseConfig
 from safetensors.torch import load, save
-from vllm import LLM
+from vllm.distributed.parallel_state import get_tp_group
 from vllm.model_executor.layers.sampler import SamplerOutput
 
 from zeroband.inference.utils import rgetattr
@@ -148,20 +148,20 @@ def patch_model_load(config: PipelineConfig) -> None:
     model_utils.make_layers = _patched_make_layers
 
 
-def setup_hooks(
+def setup_hooks_driver(
+    worker,
     config: PipelineConfig,
-    llm: LLM,
     node: Node | None,
     start_layer_key: str = "model.start_layer",
     end_layer_key: str = "model.end_layer",
     model_layers_key: str = "model.layers",
 ) -> None:
     """
-    Setup hooks to enable pipeline parallel inference.
+    Setup hooks to enable pipeline parallel inference - worker version.
 
     Args:
+        worker: The worker object (passed by collective_rpc)
         config: The pipeline configuration
-        llm: The LLM model shard instance
         node: The node class instances for communication (None if world_size == 1)
     """
     if not config.pipeline_enabled:
@@ -169,8 +169,8 @@ def setup_hooks(
         return
 
     # Model runner owns sampler, model owns layers
-    model_runner: nn.Module = llm.llm_engine.model_executor.driver_worker.model_runner
-    model: nn.Module = model_runner.model
+    model_runner = worker.model_runner
+    model = worker.get_model()
 
     # Extract first and last layers (pre/post-hook to recv/send intermediate states)
     first_layer_idx = rgetattr(model, start_layer_key)
@@ -186,7 +186,7 @@ def setup_hooks(
 
     if config.rank == 0:  # First stage
         # Send intermediate states to next stage (post-hook)
-        last_layer.register_forward_hook(partial(send_intermediate_states, node=node))
+        last_layer.register_forward_hook(partial(all_gather_and_send_intermediate_states, node=node))
         logger.debug("Registered post-hook send_intermediate_states on last layer")
 
         # Receive outputs from last stage (post-hook)
@@ -206,7 +206,7 @@ def setup_hooks(
         logger.debug("Registered pre-hook recv_intermediate_states on first layer")
 
         # Send intermediate states to next stage (post-hook)
-        last_layer.register_forward_hook(partial(send_intermediate_states, node=node))
+        last_layer.register_forward_hook(partial(all_gather_and_send_intermediate_states, node=node))
         logger.debug("Registered post-hook send_intermediate_states on last layer")
 
         # Receive and relay outputs from last stage (post-hook)
@@ -214,7 +214,86 @@ def setup_hooks(
         logger.debug("Registered post-hook recv_output on sampler")
 
 
-def send_intermediate_states(_, __, output: Tuple, node: Node) -> None:
+def setup_hooks_non_driver(
+    worker,
+    config: PipelineConfig,
+    start_layer_key: str = "model.start_layer",
+    end_layer_key: str = "model.end_layer",
+    model_layers_key: str = "model.layers",
+) -> None:
+    """
+    Setup hooks to enable pipeline parallel inference - worker version.
+
+    Args:
+        worker: The worker object (passed by collective_rpc)
+        config: The pipeline configuration
+        node: The node class instances for communication (None if world_size == 1)
+    """
+    if config.world_size == 1:
+        return
+
+    # Model runner owns sampler, model owns layers
+    model_runner = worker.model_runner
+    model = worker.get_model()
+
+    # Extract first and last layers (pre/post-hook to recv/send intermediate states)
+    first_layer_idx = rgetattr(model, start_layer_key)
+    last_layer_idx = rgetattr(model, end_layer_key) - 1
+    first_layer: nn.Module = rgetattr(model, model_layers_key)[first_layer_idx]
+    last_layer: nn.Module = rgetattr(model, model_layers_key)[last_layer_idx]
+
+    # Extract sampler (post-hook to recv/send outputs)
+    sampler: nn.Module = model_runner.sampler
+
+    # Don't relay outputs from stage with index -2->-1
+    relay = config.rank != config.world_size - 2
+
+    if config.rank == 0:  # First stage
+        # Send intermediate states to next stage (post-hook)
+        last_layer.register_forward_hook(all_gather_intermediate_states)
+        logger.debug("Registered post-hook send_intermediate_states on last layer")
+
+        # Receive outputs from last stage (post-hook)
+        # sampler.register_forward_hook(partial(recv_output, node=node, relay=relay))
+        # logger.debug("Registered post-hook recv_output on sampler")
+    elif config.rank == config.world_size - 1:  # Last stage
+        pass
+    else:
+        # Receive intermediate states from previous stage and send positions to next stage (pre-hook)
+        # first_layer.register_forward_pre_hook(partial(recv_intermediate_states, node=node))
+        # logger.debug("Registered pre-hook recv_intermediate_states on first layer")
+
+        # Send intermediate states to next stage (post-hook)
+        last_layer.register_forward_hook(all_gather_intermediate_states)
+        logger.debug("Registered post-hook send_intermediate_states on last layer")
+
+        # Receive and relay outputs from last stage (post-hook)
+        # sampler.register_forward_hook(partial(recv_output, node=node, relay=relay))
+        # logger.debug("Registered post-hook recv_output on sampler")
+
+
+def _all_gather_intermediate_states(hidden_states, residual) -> None:
+    """
+    A post-hook that all-gathers the hidden states and residual of the last decoder layer to the next stage node's first layer.
+    """
+    if get_tp_group().world_size > 1:
+        logger.debug(f"All-gathering hidden_states and residual ({hidden_states.shape}, {residual.shape})")
+        logger.debug(f"hidden_states[-1][-5:]={hidden_states[-1][-5:]}")
+        logger.debug(f"residual[-1][-5:]={residual[-1][-5:]}")
+        hidden_states = get_tp_group().all_gather(hidden_states, dim=-1)
+        residual = get_tp_group().all_gather(residual, dim=-1)
+        logger.debug("All-gathered hidden_states and residual")
+        logger.debug(f"hidden_states[-1][-5:]={hidden_states[-1][-5:]}")
+        logger.debug(f"residual[-1][-5:]={residual[-1][-5:]}")
+
+
+def all_gather_intermediate_states(_, __, output: Tuple) -> None:
+    hidden_states, residual = output
+    # All-gather within current PP stage's TP group
+    _all_gather_intermediate_states(hidden_states, residual)
+
+
+def all_gather_and_send_intermediate_states(_, __, output: Tuple, node: Node) -> None:
     """
     A post-hook that sends the hidden states and residual of the last decoder layer to the next stage node's first layer.
 
@@ -225,9 +304,16 @@ def send_intermediate_states(_, __, output: Tuple, node: Node) -> None:
         node: The node that is being hooked
     """
     hidden_states, residual = output
-    serialized_tensors = serialize_tensors({"hidden_states": hidden_states, "residual": residual})
-    node.isend(serialized_tensors, tag=0, latency=None).wait()
-    # logger.debug(f"Sent hidden_states and residual ({hidden_states.shape}, {residual.shape}) ({len(serialized_tensors)} bytes)")
+
+    # All-gather within current PP stage's TP group
+    _all_gather_intermediate_states(hidden_states, residual)
+
+    # Send complete tensors
+    if get_tp_group().rank == 0:  # Only one TP rank sends
+        logger.debug("Sending hidden_states and residual")
+        serialized_tensors = serialize_tensors({"hidden_states": hidden_states, "residual": residual})
+        node.isend(serialized_tensors, tag=0, latency=None).wait()
+        logger.debug(f"Sent hidden_states and residual ({hidden_states.shape}, {residual.shape}) ({len(serialized_tensors)} bytes)")
 
 
 def recv_intermediate_states(_, input: Tuple, node: Node) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -243,11 +329,12 @@ def recv_intermediate_states(_, input: Tuple, node: Node) -> Tuple[torch.Tensor,
     """
     positions, _, _ = input
     device = positions.device
+    logger.debug("Receiving hidden_states and residuals")
     serialized_tensors = node.irecv(tag=0).wait()
     deserialized_tensors = deserialize_tensors(serialized_tensors, device)
     hidden_states = deserialized_tensors["hidden_states"]
     residuals = deserialized_tensors["residual"]
-    # logger.debug(f"Got hidden_states and residuals ({hidden_states.shape}, {residuals.shape}) ({len(serialized_tensors)} bytes)")
+    logger.debug(f"Received hidden_states and residuals ({hidden_states.shape}, {residuals.shape}) ({len(serialized_tensors)} bytes)")
 
     return positions, hidden_states, residuals
 
