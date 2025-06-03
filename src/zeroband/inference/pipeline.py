@@ -8,7 +8,7 @@ import torch.nn as nn
 from prime_iroh import Node
 from pydantic_config import BaseConfig
 from safetensors.torch import load, save
-from vllm import LLM
+from vllm.distributed.parallel_state import get_tp_group
 from vllm.model_executor.layers.sampler import SamplerOutput
 
 from zeroband.inference.utils import rgetattr
@@ -148,20 +148,20 @@ def patch_model_load(config: PipelineConfig) -> None:
     model_utils.make_layers = _patched_make_layers
 
 
-def setup_hooks(
+def setup_hooks_driver(
+    worker,
     config: PipelineConfig,
-    llm: LLM,
     node: Node | None,
     start_layer_key: str = "model.start_layer",
     end_layer_key: str = "model.end_layer",
     model_layers_key: str = "model.layers",
 ) -> None:
     """
-    Setup hooks to enable pipeline parallel inference.
+    Setup hooks to enable pipeline parallel inference - worker version.
 
     Args:
+        worker: The worker object (passed by collective_rpc)
         config: The pipeline configuration
-        llm: The LLM model shard instance
         node: The node class instances for communication (None if world_size == 1)
     """
     if not config.pipeline_enabled:
@@ -169,8 +169,8 @@ def setup_hooks(
         return
 
     # Model runner owns sampler, model owns layers
-    model_runner: nn.Module = llm.llm_engine.model_executor.driver_worker.model_runner
-    model: nn.Module = model_runner.model
+    model_runner = worker.model_runner
+    model = worker.get_model()
 
     # Extract first and last layers (pre/post-hook to recv/send intermediate states)
     first_layer_idx = rgetattr(model, start_layer_key)
@@ -197,6 +197,10 @@ def setup_hooks(
         first_layer.register_forward_pre_hook(partial(recv_intermediate_states, node=node))
         logger.debug("Registered pre-hook recv_intermediate_states on first layer")
 
+        # Broadcast intermediate states within TP group (pre-hook)
+        first_layer.register_forward_pre_hook(broadcast_intermediate_states)
+        logger.debug("Registered pre-hook broadcast_intermediate_states on first layer")
+
         # Send outputs to first  stage (post-hook)
         sampler.register_forward_hook(partial(send_output, node=node))
         logger.debug("Registered post-hook send_output on sampler")
@@ -205,6 +209,10 @@ def setup_hooks(
         first_layer.register_forward_pre_hook(partial(recv_intermediate_states, node=node))
         logger.debug("Registered pre-hook recv_intermediate_states on first layer")
 
+        # Broadcast intermediate states within TP group (pre-hook)
+        first_layer.register_forward_pre_hook(broadcast_intermediate_states)
+        logger.debug("Registered pre-hook broadcast_intermediate_states on first layer")
+
         # Send intermediate states to next stage (post-hook)
         last_layer.register_forward_hook(partial(send_intermediate_states, node=node))
         logger.debug("Registered post-hook send_intermediate_states on last layer")
@@ -212,6 +220,58 @@ def setup_hooks(
         # Receive and relay outputs from last stage (post-hook)
         sampler.register_forward_hook(partial(recv_output, node=node, relay=relay))
         logger.debug("Registered post-hook recv_output on sampler")
+
+
+def setup_hooks_non_driver(
+    worker,
+    config: PipelineConfig,
+    start_layer_key: str = "model.start_layer",
+    model_layers_key: str = "model.layers",
+) -> None:
+    """
+    Setup hooks to enable pipeline parallel inference - worker version.
+
+    Args:
+        worker: The worker object (passed by collective_rpc)
+        config: The pipeline configuration
+        node: The node class instances for communication (None if world_size == 1)
+    """
+    if config.world_size == 1:
+        return
+
+    # Model owns layers
+    model = worker.get_model()
+
+    # Extract first and last layers (pre/post-hook to recv/send intermediate states)
+    first_layer_idx = rgetattr(model, start_layer_key)
+    first_layer: nn.Module = rgetattr(model, model_layers_key)[first_layer_idx]
+
+    if config.rank != 0:  # Not first stage
+        # Receive intermediate states from TP driver worker (pre-hook)
+        first_layer.register_forward_pre_hook(broadcast_intermediate_states)
+        logger.debug("Registered pre-hook broadcast_intermediate_states on first layer")
+
+
+def broadcast_intermediate_states(_, input: Tuple) -> None:
+    """
+    A pre-hook that broadcasts the hidden states and residual of the last
+    decoder layer to the next stage node's first layer.
+
+    Args:
+        _: The module that is being hooked
+        input: The input to the module (here the positions, hidden states and residual of a decoder layer)
+
+    Returns:
+        None
+    """
+    positions, hidden_states, residual = input
+    if residual is None:
+        residual = torch.zeros_like(hidden_states, device=hidden_states.device, dtype=hidden_states.dtype)
+    get_tp_group().broadcast(hidden_states)
+    get_tp_group().broadcast(residual)
+    # logger.debug("Broadcasted hidden_states and residual")
+
+    return positions, hidden_states, residual
 
 
 def send_intermediate_states(_, __, output: Tuple, node: Node) -> None:
@@ -227,9 +287,7 @@ def send_intermediate_states(_, __, output: Tuple, node: Node) -> None:
     hidden_states, residual = output
     serialized_tensors = serialize_tensors({"hidden_states": hidden_states, "residual": residual})
     node.isend(serialized_tensors, tag=0, latency=None).wait()
-    print(f"Sent hidden_states and residual ({hidden_states.shape}, {residual.shape}) ({len(serialized_tensors)} bytes)")
-    print(f"hidden_states[-1][-5:]: {hidden_states[-1][-5:].tolist()}")
-    print(f"residual[-1][-5:]: {residual[-1][-5:].tolist()}")
+    # logger.debug(f"Sent hidden_states and residual ({hidden_states.shape}, {residual.shape}) ({len(serialized_tensors)} bytes)")
 
 
 def recv_intermediate_states(_, input: Tuple, node: Node) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -249,9 +307,7 @@ def recv_intermediate_states(_, input: Tuple, node: Node) -> Tuple[torch.Tensor,
     deserialized_tensors = deserialize_tensors(serialized_tensors, device)
     hidden_states = deserialized_tensors["hidden_states"]
     residuals = deserialized_tensors["residual"]
-    print(f"Got hidden_states and residuals ({hidden_states.shape}, {residuals.shape}) ({len(serialized_tensors)} bytes)")
-    print(f"hidden_states[-1][-5:]: {hidden_states[-1][-5:].tolist()}")
-    print(f"residuals[-1][-5:]: {residuals[-1][-5:].tolist()}")
+    # logger.debug(f"Received hidden_states and residuals ({hidden_states.shape}, {residuals.shape}) ({len(serialized_tensors)} bytes)")
 
     return positions, hidden_states, residuals
 

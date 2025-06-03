@@ -22,7 +22,7 @@ from vllm import LLM, SamplingParams
 
 from zeroband.inference.config import Config
 from zeroband.inference.parquet import get_parquet_table
-from zeroband.inference.pipeline import all_reduce, patch_model_load, setup_comm, setup_hooks
+from zeroband.inference.pipeline import all_reduce, patch_model_load, setup_comm, setup_hooks_driver, setup_hooks_non_driver
 from zeroband.inference.rewards import compute_vllm_rewards
 from zeroband.inference.toploc import setup_toploc_cache
 from zeroband.utils.monitor import setup_monitor
@@ -80,7 +80,19 @@ def inference(config: Config):
 
     # Setup and pipeline parallel hooks
     node = setup_comm(config=config.pp)
-    setup_hooks(config=config.pp, llm=llm, node=node)
+
+    # Setup hook on driver worker
+    worker = llm.llm_engine.model_executor.driver_worker
+    setup_hooks_driver(worker, config.pp, node)
+
+    # Setup all gather hook on non-driver workers
+    model_executor = llm.llm_engine.model_executor
+    from vllm.executor.mp_distributed_executor import MultiprocessingDistributedExecutor
+
+    if isinstance(model_executor, MultiprocessingDistributedExecutor):
+        model_executor.collective_rpc(
+            lambda worker: setup_hooks_non_driver(worker, config.pp), kwargs=dict(async_run_tensor_parallel_workers_only=True)
+        )
 
     # Compute the maximum batch size
     batch_size = config.batch_size
