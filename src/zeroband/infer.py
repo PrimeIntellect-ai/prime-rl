@@ -3,6 +3,7 @@ import multiprocessing as mp
 import os
 import shutil
 import time
+import uuid
 from pathlib import Path
 
 # Import environment before any other imports
@@ -331,14 +332,9 @@ def inference(config: Config):
         )
 
         # Save outputs to parquet file
-        # step_path = Path(config.output_path) / f"step_{real_step}"
-        # step_path.mkdir(parents=True, exist_ok=True)
-        # save_path = step_path / f"{uuid.uuid4()}.parquet"
-        Path(config.output_path).mkdir(parents=True, exist_ok=True)
-        save_path = (
-            Path(config.output_path)
-            / f"{config.sampling.n}-{envs.PRIME_GROUP_ID}-{config.pp.world_size}-{real_step}-{config.pp.rank}.parquet"
-        )
+        step_path = Path(config.output_path) / f"step_{real_step}"
+        step_path.mkdir(parents=True, exist_ok=True)
+        save_path = step_path / f"{uuid.uuid4()}.parquet"
         pq.write_table(table, save_path)
         logger.info(f"Saved batch outputs to {save_path}")
 
