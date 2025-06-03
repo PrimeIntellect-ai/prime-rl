@@ -16,6 +16,7 @@ class SamplingParamConfig(BaseConfig):
     n: int = 8
     logprobs: int = 0  # 0 mean 1 logprob here
     top_k: int = -1
+    seed: int | None = None
 
 
 class DifficultyFilteringConfig(BaseConfig):
