@@ -102,7 +102,7 @@ def grpo_loss_kl_cov(
     loss_mask: Int[Tensor, "batch seq"],
     temperature: float,
     max_tokens: int,
-    kl_coef: float,
+    kl_coef_cov: float,
     k_percent: float,
 ) -> tuple[Tensor, Tensor | None]:
     # we start by dropping the bos token because it does not have a corresponding logit
@@ -129,7 +129,7 @@ def grpo_loss_kl_cov(
 
     pg_losses1 = -advantages * ratio
 
-    pg_losses_kl = -advantages * ratio + kl_coef * abs_kl
+    pg_losses_kl = -advantages * ratio + kl_coef_cov * abs_kl
 
     pg_losses = pg_losses1
 

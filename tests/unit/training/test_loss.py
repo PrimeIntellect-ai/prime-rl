@@ -65,7 +65,7 @@ def test_grpo_loss_kl_cov_loss():
         original_logprobs,
         loss_mask,
         temperature=0.6,
-        kl_coef=1.0,
+        kl_coef_cov=1.0,
         k_percent=0.2,
         max_tokens=100,
     )

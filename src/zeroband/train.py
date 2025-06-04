@@ -394,7 +394,7 @@ def train(config: Config):
                         loss_mask,
                         config.temperature,
                         max_tokens,
-                        config.kl_coef,
+                        config.kl_coef_cov,
                         config.k_percent,
                     )
                 else:

@@ -95,7 +95,7 @@ class Config(BaseConfig):
     grpo_loss_type: Literal["default", "ratio", "kl_cov"] = "default"
 
     k_percent: float = 0.2
-    kl_coef: float = 1.0
+    kl_coef_cov: float = 1.0
 
     @model_validator(mode="after")
     def check_liger(self):
