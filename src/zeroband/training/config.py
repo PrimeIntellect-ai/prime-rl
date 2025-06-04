@@ -92,7 +92,10 @@ class Config(BaseConfig):
 
     use_infer_model_logprobs: bool = False  # if true, the logprobs will be computed using the same model that was used for inference
 
-    grpo_loss_type: Literal["default", "ratio"] = "default"
+    grpo_loss_type: Literal["default", "ratio", "kl_cov"] = "default"
+
+    k_percent: float = 0.2
+    kl_coef: float = 1.0
 
     @model_validator(mode="after")
     def check_liger(self):

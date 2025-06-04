@@ -21,7 +21,7 @@ from zeroband.training import envs
 from zeroband.training.checkpoint import TrainingProgress, load_checkpoint_fsdp_state, save_checkpoint_fsdp_state, save_ckpt_for_rollout
 from zeroband.training.config import Config
 from zeroband.training.data import BatchOutput, DatasetOutput, get_dataloader, packed_batch
-from zeroband.training.loss import entropy_loss, grpo_loss, grpo_loss_ratio, kl_penalty, selective_log_softmax
+from zeroband.training.loss import entropy_loss, grpo_loss, grpo_loss_kl_cov, grpo_loss_ratio, kl_penalty, selective_log_softmax
 from zeroband.training.lr_scheduler import get_scheduler
 from zeroband.training.utils import (
     MetricsAverager,
@@ -384,6 +384,18 @@ def train(config: Config):
                         loss_mask,
                         config.temperature,
                         max_tokens,
+                    )
+                elif config.grpo_loss_type == "kl_cov":
+                    pg_loss, clip_ratio = grpo_loss_kl_cov(
+                        logits,
+                        input_ids,
+                        advantages,
+                        original_logprobs,
+                        loss_mask,
+                        config.temperature,
+                        max_tokens,
+                        config.kl_coef,
+                        config.k_percent,
                     )
                 else:
                     raise ValueError(f"Invalid grpo_loss_type: {config.grpo_loss_type}")

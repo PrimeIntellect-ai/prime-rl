@@ -92,6 +92,70 @@ def grpo_loss_ratio(
     return loss, None
 
 
+# beartype here just make sure we have the correct shape
+@jaxtyped(typechecker=typechecker)
+def grpo_loss_kl_cov(
+    logits: Float[Tensor, "batch seq vocab"],
+    input_ids: Int[Tensor, "batch seq"],
+    advantages: Float[Tensor, "batch seq"],
+    original_logprobs: Float[Tensor, "batch seq_minus_1"],
+    loss_mask: Int[Tensor, "batch seq"],
+    temperature: float,
+    max_tokens: int,
+    kl_coef: float,
+    k_percent: float,
+) -> tuple[Tensor, Tensor | None]:
+    # we start by dropping the bos token because it does not have a corresponding logit
+    input_ids = input_ids[:, 1:]
+    advantages = advantages[:, 1:]
+    # original_logprobs = original_logprobs[:, 1:] # no need to do it now
+    loss_mask = loss_mask[:, 1:]
+
+    # from the logits we drop the last logits because it corresponds to the next token that will be sample but is not here yet
+    logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token prediction
+
+    # Divide logits by sampling temperature.
+    # See https://huggingface.co/blog/the_n_implementation_details_of_rlhf_with_ppo#policy-training-implementation-details
+    logits = logits / temperature
+    per_token_logps = selective_log_softmax(logits, input_ids)
+
+    negative_approx_kl = per_token_logps - original_logprobs
+
+    abs_kl = negative_approx_kl.abs()
+
+    ratio = torch.exp(negative_approx_kl)
+
+    ppo_kl_abs = (abs_kl * loss_mask).sum() / (loss_mask.sum() + 1e-8)
+
+    pg_losses1 = -advantages * ratio
+
+    pg_losses_kl = -advantages * ratio + kl_coef * abs_kl
+
+    pg_losses = pg_losses1
+
+    all_valid = loss_mask > 0
+    all_valid_idx = torch.nonzero(all_valid.reshape(-1), as_tuple=True)[0]
+    all_valid_adv = advantages[all_valid].detach().reshape(-1).cpu()
+    all_valid_logp = per_token_logps[all_valid].detach().reshape(-1).cpu()
+
+    k = min(k_percent, len(all_valid_adv))
+
+    if k != 0:
+        cov_lst_all = (all_valid_adv - all_valid_adv.mean()) * (all_valid_logp - all_valid_logp.mean())
+        k_percent_nums = max(1, int(len(cov_lst_all) * k / 100))
+        large_cov_idxs = torch.topk(cov_lst_all, k_percent_nums, largest=True).indices
+
+        if len(large_cov_idxs) != 0:
+            large_cov_idxs = all_valid_idx[large_cov_idxs]
+            pg_losses[large_cov_idxs // advantages.shape[1], large_cov_idxs % advantages.shape[1]] = pg_losses_kl[
+                large_cov_idxs // advantages.shape[1], large_cov_idxs % advantages.shape[1]
+            ]
+
+    pg_loss = _apply_mask(pg_losses, loss_mask, max_tokens)
+
+    return pg_loss, ppo_kl_abs
+
+
 def selective_log_softmax(logits, index):
     """
     credits to https://github.com/huggingface/trl/blob/07cfe1677e552b7d5c92b7740e5b2f0b057661d8/trl/trainer/utils.py#L1659

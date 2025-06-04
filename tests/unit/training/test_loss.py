@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from zeroband.training.loss import entropy_loss, grpo_loss, grpo_loss_ratio, kl_penalty
+from zeroband.training.loss import entropy_loss, grpo_loss, grpo_loss_kl_cov, grpo_loss_ratio, kl_penalty
 
 pytestmark = [pytest.mark.gpu]
 
@@ -47,6 +47,26 @@ def test_grpo_loss_ratio(dtype):
         original_logprobs,
         loss_mask,
         temperature=0.6,
+        max_tokens=100,
+    )
+
+
+def test_grpo_loss_kl_cov_loss():
+    logits = torch.randn(10, 10, 10, dtype=torch.float32).cuda()
+    input_ids = torch.randint(0, 10, (10, 10)).cuda()
+    advantages = torch.randn(10, 10).cuda()
+    original_logprobs = torch.randn(10, 9, dtype=torch.float32).cuda()
+    loss_mask = torch.ones(10, 10).int().cuda()
+
+    loss, _ = grpo_loss_kl_cov(
+        logits,
+        input_ids,
+        advantages,
+        original_logprobs,
+        loss_mask,
+        temperature=0.6,
+        kl_coef=1.0,
+        k_percent=0.2,
         max_tokens=100,
     )
 
