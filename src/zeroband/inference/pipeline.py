@@ -8,7 +8,9 @@ import torch.nn as nn
 from prime_iroh import Node
 from pydantic_config import BaseConfig
 from safetensors.torch import load, save
+from vllm import LLM
 from vllm.distributed.parallel_state import get_tp_group
+from vllm.executor.mp_distributed_executor import MultiprocessingDistributedExecutor
 from vllm.model_executor.layers.sampler import SamplerOutput
 
 from zeroband.inference.utils import rgetattr
@@ -158,13 +160,35 @@ def patch_model_load(config: PipelineConfig) -> None:
     model_utils.make_layers = _patched_make_layers
 
 
-def setup_hooks_driver(
-    worker,
+def setup_hooks(
+    llm: LLM,
     config: PipelineConfig,
     node: Node | None,
     start_layer_key: str = "model.start_layer",
     end_layer_key: str = "model.end_layer",
     model_layers_key: str = "model.layers",
+) -> None:
+    # Setup driver hooks
+    driver_worker = llm.llm_engine.model_executor.driver_worker
+    setup_hooks_driver(driver_worker, config, node, start_layer_key, end_layer_key, model_layers_key)
+
+    # Setup non-driver hooks
+    model_executor = llm.llm_engine.model_executor
+
+    if isinstance(model_executor, MultiprocessingDistributedExecutor):
+        model_executor.collective_rpc(
+            lambda worker: setup_hooks_non_driver(worker, config, start_layer_key, model_layers_key),
+            kwargs=dict(async_run_tensor_parallel_workers_only=True),
+        )
+
+
+def setup_hooks_driver(
+    worker,
+    config: PipelineConfig,
+    node: Node | None,
+    start_layer_key: str,
+    end_layer_key: str,
+    model_layers_key: str,
 ) -> None:
     """
     Setup hooks to enable pipeline parallel inference - worker version.
@@ -235,8 +259,8 @@ def setup_hooks_driver(
 def setup_hooks_non_driver(
     worker,
     config: PipelineConfig,
-    start_layer_key: str = "model.start_layer",
-    model_layers_key: str = "model.layers",
+    start_layer_key: str,
+    model_layers_key: str,
 ) -> None:
     """
     Setup hooks to enable pipeline parallel inference - worker version.
