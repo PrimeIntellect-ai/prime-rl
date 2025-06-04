@@ -35,9 +35,19 @@ class PipelineConfig(BaseConfig):
     connection_num_retries: int = 10  # Each retry takes ~30s, so 10 retries is ~300s (5min)
 
     @property
-    def pipeline_enabled(self) -> bool:
+    def is_enabled(self) -> bool:
         """Returns True if pipeline parallelism is enabled (world_size > 1)."""
         return self.world_size > 1
+
+    @property
+    def is_first_stage(self) -> bool:
+        """Returns True if the current rank is the first rank."""
+        return self.rank == 0
+
+    @property
+    def is_last_stage(self) -> bool:
+        """Returns True if the current rank is the last rank."""
+        return self.rank == self.world_size - 1
 
 
 def serialize_tensors(tensor_dict: dict[str, torch.Tensor]) -> bytes:
@@ -74,7 +84,7 @@ def setup_comm(config: PipelineConfig) -> Node | None:
     Returns:
         The node if world_size > 1, otherwise None
     """
-    if not config.pipeline_enabled:
+    if not config.is_enabled:
         return None
 
     # Setup node (with or without seed)
@@ -113,7 +123,7 @@ def patch_model_load(config: PipelineConfig) -> None:
     from vllm.model_executor.models.utils import LayerFn, PPMissingLayer, maybe_offload_to_cpu
 
     # Skip patching if world_size == 1
-    if not config.pipeline_enabled:
+    if not config.is_enabled:
         return
 
     def _patched_make_layers(num_hidden_layers: int, layer_fn: LayerFn, prefix: str) -> Tuple[int, int, torch.nn.ModuleList]:
@@ -164,7 +174,7 @@ def setup_hooks_driver(
         config: The pipeline configuration
         node: The node class instances for communication (None if world_size == 1)
     """
-    if not config.pipeline_enabled:
+    if not config.is_enabled:
         assert node is None, "Node should be None if pipeline is disabled"
         return
 
@@ -184,7 +194,7 @@ def setup_hooks_driver(
     # Don't relay outputs from stage with index -2->-1
     relay = config.rank != config.world_size - 2
 
-    if config.rank == 0:  # First stage
+    if config.is_first_stage:  # First stage
         # Send intermediate states to next stage (post-hook)
         last_layer.register_forward_hook(partial(send_intermediate_states, node=node))
         logger.debug("Registered post-hook send_intermediate_states on last layer")
@@ -192,7 +202,7 @@ def setup_hooks_driver(
         # Receive outputs from last stage (post-hook)
         sampler.register_forward_hook(partial(recv_output, node=node, relay=relay))
         logger.debug("Registered post-hook recv_output on sampler")
-    elif config.rank == config.world_size - 1:  # Last stage
+    elif config.is_last_stage:  # Last stage
         # Receive intermediate states from previous stage (pre-hook)
         first_layer.register_forward_pre_hook(partial(recv_intermediate_states, node=node))
         logger.debug("Registered pre-hook recv_intermediate_states on first layer")
@@ -234,9 +244,8 @@ def setup_hooks_non_driver(
     Args:
         worker: The worker object (passed by collective_rpc)
         config: The pipeline configuration
-        node: The node class instances for communication (None if world_size == 1)
     """
-    if not config.pipeline_enabled:
+    if not config.is_enabled:
         return
 
     # Model owns layers
@@ -246,7 +255,7 @@ def setup_hooks_non_driver(
     first_layer_idx = rgetattr(model, start_layer_key)
     first_layer: nn.Module = rgetattr(model, model_layers_key)[first_layer_idx]
 
-    if config.rank != 0:  # Not first stage
+    if not config.is_first_stage:  # Not first stage
         # Receive intermediate states from TP driver worker (pre-hook)
         first_layer.register_forward_pre_hook(broadcast_intermediate_states)
         logger.debug("Registered pre-hook broadcast_intermediate_states on first layer")
@@ -369,8 +378,7 @@ def all_reduce(node: Node, tensor: torch.Tensor, config: PipelineConfig, op: cal
         The reduced tensor after applying the operation across all nodes in the ring
     """
     # No communication needed for single node
-    if not config.pipeline_enabled:
-        logger.debug("No communication needed to all-reduce tensor with pipeline disabled")
+    if not config.is_enabled:
         return tensor
 
     result_tensor = tensor.clone()
