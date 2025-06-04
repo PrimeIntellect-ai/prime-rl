@@ -236,7 +236,7 @@ def setup_hooks_non_driver(
         config: The pipeline configuration
         node: The node class instances for communication (None if world_size == 1)
     """
-    if config.world_size == 1:
+    if not config.pipeline_enabled:
         return
 
     # Model owns layers
