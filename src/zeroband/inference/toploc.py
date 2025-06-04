@@ -197,7 +197,7 @@ def setup_toploc_cache(
     if not disable:
         handle = logits_processor.register_forward_pre_hook(partial(toploc_cache_hook, toploc_cache=toploc_cache))
 
-    if pipeline_config.pipeline_enabled and pipeline_config.rank < pipeline_config.world_size - 1:
+    if pipeline_config.is_enabled and pipeline_config.rank < pipeline_config.world_size - 1:
         llm.llm_engine.model_executor.driver_worker.model_runner.model.model.norm = ArgsIdentity()
 
     return toploc_cache, handle
