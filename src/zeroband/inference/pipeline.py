@@ -12,7 +12,6 @@ from vllm import LLM
 from vllm.distributed.parallel_state import get_tp_group
 from vllm.executor.mp_distributed_executor import MultiprocessingDistributedExecutor
 from vllm.model_executor.layers.sampler import SamplerOutput
-from vllm.worker.worker import Worker
 
 from zeroband.inference.utils import rgetattr
 from zeroband.utils.logger import get_logger
@@ -193,7 +192,7 @@ def setup_hooks(
         model_layers_key: The key to the layers in the model (e.g. "model.layers")
     """
     # Setup driver hooks
-    driver_worker: Worker = llm.llm_engine.model_executor.driver_worker
+    driver_worker = llm.llm_engine.model_executor.driver_worker
     setup_hooks_driver(driver_worker, config, node, start_layer_key, end_layer_key, model_layers_key)
 
     # Setup non-driver hooks
@@ -207,7 +206,7 @@ def setup_hooks(
 
 
 def setup_hooks_driver(
-    worker: Worker,
+    worker,
     config: PipelineConfig,
     node: Node | None,
     start_layer_key: str,
@@ -304,7 +303,7 @@ def setup_hooks_driver(
 
 
 def setup_hooks_non_driver(
-    worker: Worker,
+    worker,
     config: PipelineConfig,
     start_layer_key: str,
     model_layers_key: str,
