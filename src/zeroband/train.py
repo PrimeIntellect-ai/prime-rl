@@ -135,7 +135,7 @@ def train(config: Config):
         model_reference, _ = get_model_and_tokenizer(config.model_name, config.train.attn_impl)
         apply_fsdp(model_reference, config.train.reshard_after_forward)
 
-    if config.use_infer_model_logprobs:
+    if config.use_infer_model_logprobs and not config.use_vllm_logprobs:
         model_for_logprob_only, _ = get_model_and_tokenizer(config.model_name, config.train.attn_impl)
         apply_fsdp(model_for_logprob_only, config.train.reshard_after_forward)
 
@@ -169,7 +169,7 @@ def train(config: Config):
         if config.kl_coef is not None:
             model_reference = torch.compile(model_reference) if not TYPE_CHECKING else model_reference
 
-        if config.use_infer_model_logprobs:
+        if config.use_infer_model_logprobs and not config.use_vllm_logprobs:
             model_for_logprob_only = torch.compile(model_for_logprob_only) if not TYPE_CHECKING else model_for_logprob_only
 
     tensor_offloaded_repository: dict[int, OffloadedTensor] = {}
@@ -179,7 +179,7 @@ def train(config: Config):
         tensor_offloaded_repository[0] = offload_model_to_cpu(model_reference)
         logger.info(f"memory after model reference offload: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
 
-    if config.use_infer_model_logprobs:
+    if config.use_infer_model_logprobs and not config.use_vllm_logprobs:
         logger.info(f"memory before model for logprob offload: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
         tensor_offloaded_repository[0] = offload_model_to_cpu(model_for_logprob_only)
         # will be redundant if kl loss is use but probably fine with it
@@ -204,6 +204,7 @@ def train(config: Config):
         batch_size=config.optim.batch_size * config.optim.step_per_rollout,
         data_config=config.data,
         step_count_init=step_count_init,
+        use_vllm_logprobs=config.use_vllm_logprobs,
     )
     train_dataloader_iterator = iter(train_dataloader)
 
@@ -223,7 +224,7 @@ def train(config: Config):
                 wake_up_model_from_cpu(model_reference, tensor_offloaded_repository[0])
                 # del tensor_offloaded_repository[0]
 
-            if config.use_infer_model_logprobs:
+            if config.use_infer_model_logprobs and not config.use_vllm_logprobs:
                 og_infer_step = training_progress.step // config.optim.step_per_rollout - config.async_level
                 infer_step = max(og_infer_step, 0)
                 wake_up_model_from_cpu(model_for_logprob_only, tensor_offloaded_repository[infer_step])
@@ -255,15 +256,22 @@ def train(config: Config):
                     batch = batch_packed[grad_acc_step]
                     logger.debug(f"log prob grad_acc_step {grad_acc_step} / {num_grad_acc_steps}, batch: {batch['input_ids'].shape}")
 
-                    input_ids = batch["input_ids"].to("cuda")
+                    # Only compute logprobs if not using vllm logprobs or if the batch doesn't have them
+                    if not config.use_vllm_logprobs or batch["logprobs"] is None:
+                        input_ids = batch["input_ids"].to("cuda")
 
-                    model_for_logprob = model_for_logprob_only if config.use_infer_model_logprobs else model
-                    per_token_logps = get_logprobs(model_for_logprob, input_ids, batch["position_ids"], config.temperature)
+                        model_for_logprob = (
+                            model_for_logprob_only if config.use_infer_model_logprobs and not config.use_vllm_logprobs else model
+                        )
+                        per_token_logps = get_logprobs(model_for_logprob, input_ids, batch["position_ids"], config.temperature)
 
-                    batch["logprobs"] = per_token_logps.to("cpu")
+                        batch["logprobs"] = per_token_logps.to("cpu")
+                    else:
+                        logger.debug(f"Using vllm logprobs from dataset for grad_acc_step {grad_acc_step}")
 
                     if config.kl_coef is not None:
                         logger.debug(f"kl grad_acc_step {grad_acc_step} / {num_grad_acc_steps}, batch: {batch['input_ids'].shape}")
+                        input_ids = batch["input_ids"].to("cuda")
                         per_token_logps_reference = get_logprobs(model_reference, input_ids, batch["position_ids"], config.temperature)
                         batch["ref_logprobs"] = per_token_logps_reference.to("cpu")
 
@@ -274,7 +282,7 @@ def train(config: Config):
                 reshard_module(model_reference)
                 tensor_offloaded_repository[0] = offload_model_to_cpu(model_reference)
 
-            if config.use_infer_model_logprobs:
+            if config.use_infer_model_logprobs and not config.use_vllm_logprobs:
                 # here we sepcifically don't save the tensor offloaded, they are alreay consumed and we will never use it again.
                 # this avoid having to make sure we don't keep too much tensor offloaded in cpu memory
                 reshard_module(model_for_logprob_only)
@@ -536,7 +544,7 @@ def train(config: Config):
                 )
                 save_checkpoint_fsdp_state(model, [optimizer], training_progress, scheduler, config.ckpt.path)
 
-        if config.use_infer_model_logprobs:
+        if config.use_infer_model_logprobs and not config.use_vllm_logprobs:
             reshard_module(model_for_logprob_only)
             tensor_offloaded_repository[training_progress.step // config.optim.step_per_rollout] = copy_model_to_cpu(model)
 
