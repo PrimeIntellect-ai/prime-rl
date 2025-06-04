@@ -92,6 +92,8 @@ class Config(BaseConfig):
 
     use_infer_model_logprobs: bool = False  # if true, the logprobs will be computed using the same model that was used for inference
 
+    grpo_loss_type: Literal["default", "ratio"] = "default"
+
     @model_validator(mode="after")
     def check_liger(self):
         if self.train.liger_qwen:

@@ -21,7 +21,7 @@ from zeroband.training import envs
 from zeroband.training.checkpoint import TrainingProgress, load_checkpoint_fsdp_state, save_checkpoint_fsdp_state, save_ckpt_for_rollout
 from zeroband.training.config import Config
 from zeroband.training.data import BatchOutput, DatasetOutput, get_dataloader, packed_batch
-from zeroband.training.loss import entropy_loss, grpo_loss, kl_penalty, selective_log_softmax
+from zeroband.training.loss import entropy_loss, grpo_loss, grpo_loss_ratio, kl_penalty, selective_log_softmax
 from zeroband.training.lr_scheduler import get_scheduler
 from zeroband.training.utils import (
     MetricsAverager,
@@ -362,18 +362,31 @@ def train(config: Config):
                 original_logprobs = batch["logprobs"].to("cuda")
 
                 # Loss
-                pg_loss, clip_ratio = grpo_loss(
-                    logits,
-                    input_ids,
-                    advantages,
-                    original_logprobs,
-                    loss_mask,
-                    config.temperature,
-                    config.grpo_epsilon_low,
-                    config.grpo_epsilon_high,
-                    config.clamp_log_prob_coef,
-                    max_tokens,
-                )
+                if config.grpo_loss_type == "default":
+                    pg_loss, clip_ratio = grpo_loss(
+                        logits,
+                        input_ids,
+                        advantages,
+                        original_logprobs,
+                        loss_mask,
+                        config.temperature,
+                        config.grpo_epsilon_low,
+                        config.grpo_epsilon_high,
+                        config.clamp_log_prob_coef,
+                        max_tokens,
+                    )
+                elif config.grpo_loss_type == "ratio":
+                    pg_loss, clip_ratio = grpo_loss_ratio(
+                        logits,
+                        input_ids,
+                        advantages,
+                        original_logprobs,
+                        loss_mask,
+                        config.temperature,
+                        max_tokens,
+                    )
+                else:
+                    raise ValueError(f"Invalid grpo_loss_type: {config.grpo_loss_type}")
 
                 entropy = entropy_loss(logits, loss_mask, config.temperature, max_tokens)
 
@@ -398,7 +411,9 @@ def train(config: Config):
 
                 metric_averager.update("pg_loss", pg_loss.detach().clone())
                 metric_averager.update("entropy_loss", entropy.detach().clone())
-                metric_averager.update("clip_ratio", clip_ratio.detach().clone())
+
+                if clip_ratio is not None:
+                    metric_averager.update("clip_ratio", clip_ratio.detach().clone())
 
                 del loss, pg_loss, entropy, clip_ratio
 
@@ -447,7 +462,6 @@ def train(config: Config):
                 f"step: {training_progress.step}, "
                 f"rollout_step: {training_progress.step // config.optim.step_per_rollout}, "
                 f"loss: {loss_batch.item():.4f}, "
-                f"clip_ratio: {metric_averager['clip_ratio'].item():.4f}, "
                 f"sample_reward: {metric_averager['sample_reward'].item():.4f}, "
             )
 
