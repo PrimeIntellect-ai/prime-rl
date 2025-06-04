@@ -7,7 +7,7 @@ output/*
 outputs/*
 data/*
 data_rollout/*
-test.ipynb
+*.ipynb
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
