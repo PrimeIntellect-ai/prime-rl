@@ -1,9 +1,12 @@
 model_name = "Qwen/Qwen3-0.6B"
-dataset = "PrimeIntellect/INTELLECT-2-RL-Dataset"
 
-max_model_len = 16384
-max_samples = 100
+max_model_len = 8192
+total_step = 5
 toploc = true
+
+[monitor.file]
+enable = true
+path = "file_monitor.jsonl"
 
 [sampling]
 max_tokens = 100
