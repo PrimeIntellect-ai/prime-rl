@@ -6,8 +6,8 @@ toploc = true
 
 [monitor.file]
 enable = true
-path = "file_monitor.jsonl"
+path = "outputs/file_monitor.jsonl"
 
 [sampling]
-max_tokens = 100
+max_tokens = 1000
 n = 1
