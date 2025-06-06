@@ -30,8 +30,8 @@ def test_format_prompts(prompts: list[str], tokenizer: AutoTokenizer, enable_thi
     match tokenizer.name_or_path:
         case "deepseek-ai/DeepSeek-R1-0528":
             assert formatted_prompts == [
-                "<｜begin▁of▁sentence｜><｜User｜>What is the capital of France?<｜Assistant｜>",
-                "<｜begin▁of▁sentence｜><｜User｜>Explain quantum mechanics<｜Assistant｜>",
+                "<｜User｜>What is the capital of France?<｜Assistant｜>",
+                "<｜User｜>Explain quantum mechanics<｜Assistant｜>",
             ]
         case "Qwen/QwQ-32B":
             expected_formatted_prompts = [
@@ -69,13 +69,13 @@ def test_format_prompts_with_length_rewards(
         case "deepseek-ai/DeepSeek-R1-0528":
             if length_rewards_config.length_prompt_location == "system_prompt":
                 expected_formatted_prompts = [
-                    "<｜begin▁of▁sentence｜>Think for 100 tokens before giving a response.<｜User｜>What is the capital of France?<｜Assistant｜>",
-                    "<｜begin▁of▁sentence｜>Think for 200 tokens before giving a response.<｜User｜>Explain quantum mechanics<｜Assistant｜>",
+                    "Think for 100 tokens before giving a response.<｜User｜>What is the capital of France?<｜Assistant｜>",
+                    "Think for 200 tokens before giving a response.<｜User｜>Explain quantum mechanics<｜Assistant｜>",
                 ]
             else:
                 expected_formatted_prompts = [
-                    "<｜begin▁of▁sentence｜><｜User｜>What is the capital of France? Think for 100 tokens before giving a response.<｜Assistant｜>",
-                    "<｜begin▁of▁sentence｜><｜User｜>Explain quantum mechanics Think for 200 tokens before giving a response.<｜Assistant｜>",
+                    "<｜User｜>What is the capital of France? Think for 100 tokens before giving a response.<｜Assistant｜>",
+                    "<｜User｜>Explain quantum mechanics Think for 200 tokens before giving a response.<｜Assistant｜>",
                 ]
             assert formatted_prompts == expected_formatted_prompts
         case "Qwen/QwQ-32B":
