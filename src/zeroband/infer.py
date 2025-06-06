@@ -25,6 +25,7 @@ from zeroband.inference.parquet import get_parquet_table
 from zeroband.inference.pipeline import all_reduce, patch_model_load, setup_comm, setup_hooks
 from zeroband.inference.rewards import compute_vllm_rewards
 from zeroband.inference.toploc import setup_toploc_cache
+from zeroband.inference.toploc2 import Toploc2Sampler
 from zeroband.utils.monitor import setup_monitor
 from zeroband.inference.utils import (
     filter_data_by_prompt_length,
@@ -74,7 +75,9 @@ def inference(config: Config):
         disable_async_output_proc=True,  # We have an off by 1 error in toploc without this flag when cuda graph padding is enabled.
         download_dir=config.download_dir,
         dtype="bfloat16" if config.dtype == "bf16" else torch.float32,
+        enable_chunked_prefill=False,  # This is required for toploc2 because chunked prefill seems to allow len(seq_groups) != len(selected_token_indices) which is unexpected
     )
+    llm.llm_engine.model_executor.driver_worker.model_runner.sampler = Toploc2Sampler()
     tokenizer = llm.get_tokenizer()
     sampling_params = SamplingParams(**config.sampling.model_dump())
 
@@ -209,6 +212,7 @@ def inference(config: Config):
             # This would work even if the node restarts and resumes from the current step.
             generator = np.random.default_rng(node_address_int * current_step_batch_counter + real_step)
             indices = generator.integers(0, len(dataset), problems_per_batch)
+            sampling_params.seed = int(generator.integers(2**32))
         else:
             # Use modulo to cycle through the dataset instead of terminating
             indices = [(dataset_offset + j) % len(dataset) for j in range(problems_per_batch)]
