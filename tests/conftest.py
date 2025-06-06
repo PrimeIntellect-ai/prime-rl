@@ -104,6 +104,7 @@ def create_dummy_parquet_table(batch_size: int, seq_len: int) -> Table:
         "step": pa.array([0] * batch_size, type=pa.int32()),
         "target_lengths": pa.array([seq_len] * batch_size, type=pa.int32()),
         "task_type": pa.array(["test_task"] * batch_size, type=pa.string()),
+        "problem_id": pa.array(["0"] * batch_size, type=pa.string()),
     }
 
     # Create table directly from dictionary
