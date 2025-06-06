@@ -4,6 +4,7 @@ import torch
 from datasets import Dataset
 from safetensors import safe_open
 from transformers import AutoTokenizer
+from transformers.tokenization_utils_base import BatchEncoding
 from vllm import LLM
 from vllm.model_executor.model_loader.loader import _process_weights_after_loading
 from vllm.transformers_utils.tokenizer import AnyTokenizer
@@ -87,7 +88,8 @@ def format_prompts(
     len_rewards_config: LenRewardsConfig | None,
     tokenizer: AnyTokenizer,
     enable_thinking: bool = True,
-) -> list[str]:
+    tokenize: bool = False,
+) -> list[str] | BatchEncoding:
     """
     Formats a batch of raw prompts. Relies on the default chat template of the
     LLM's tokenizer to call `apply_chat_template`. We call with
@@ -102,9 +104,10 @@ def format_prompts(
         len_rewards_config: A configuration for length rewards. If `None`, no length rewards are configured.
         tokenizer: Any HF tokenizer instance
         enable_thinking: Whether to enable thinking for the model. Used by the `apply_chat_template` to prepend a thinking prompt (for some models)
+        tokenize: Whether to tokenize the formatted prompts. If True, returns BatchEncoding; if False (default), returns list[str].
 
     Returns:
-        A list of formatted prompts.
+        A list of formatted prompts if tokenize=False, or a BatchEncoding if tokenize=True.
     """
     # Apply length prompt additions
     if len_rewards_config:
@@ -127,11 +130,14 @@ def format_prompts(
         messages = [[{"role": "user", "content": prompt}] for prompt in prompts]
 
     # Apply chat template
-    formatted_prompts = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, enable_thinking=enable_thinking)
+    formatted_prompts = tokenizer.apply_chat_template(
+        messages, tokenize=tokenize, add_generation_prompt=True, enable_thinking=enable_thinking
+    )
 
-    for i, _formatted_prompt in enumerate(formatted_prompts):
-        if tokenizer.bos_token and _formatted_prompt.startswith(tokenizer.bos_token):
-            formatted_prompts[i] = _formatted_prompt[len(tokenizer.bos_token) :]
+    if not tokenize:
+        for i, _formatted_prompt in enumerate(formatted_prompts):
+            if tokenizer.bos_token and _formatted_prompt.startswith(tokenizer.bos_token):
+                formatted_prompts[i] = _formatted_prompt[len(tokenizer.bos_token) :]
 
     return formatted_prompts
 
