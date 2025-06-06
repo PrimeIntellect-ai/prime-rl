@@ -5,6 +5,7 @@ pa_schema = pa.schema(
         ("input_tokens", pa.list_(pa.int32())),
         ("output_tokens", pa.list_(pa.int32())),
         ("prompt", pa.string()),
+        ("problem_id", pa.string()),
         ("completion", pa.string()),
         ("advantages", pa.float32()),
         ("rewards", pa.float32()),
