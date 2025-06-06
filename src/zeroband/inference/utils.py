@@ -129,6 +129,10 @@ def format_prompts(
     # Apply chat template
     formatted_prompts = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, enable_thinking=enable_thinking)
 
+    for i, _formatted_prompt in enumerate(formatted_prompts):
+        if tokenizer.bos_token and _formatted_prompt.startswith(tokenizer.bos_token):
+            formatted_prompts[i] = _formatted_prompt[len(tokenizer.bos_token) :]
+
     return formatted_prompts
 
 
