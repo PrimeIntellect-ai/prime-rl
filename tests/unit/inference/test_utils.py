@@ -8,6 +8,7 @@ from zeroband.inference.utils import format_prompts
     "tokenizer_name",
     [
         "deepseek-ai/DeepSeek-R1-0528",
+        "PrimeIntellect/INTELLECT-1-Instruct",
     ],
 )
 def test_format_prompts_single_bos_token(tokenizer_name: str) -> None:
@@ -40,6 +41,7 @@ def test_format_prompts_single_bos_token(tokenizer_name: str) -> None:
     "tokenizer_name",
     [
         "deepseek-ai/DeepSeek-R1-0528",
+        "PrimeIntellect/INTELLECT-1-Instruct",
     ],
 )
 def test_format_prompts_tokenization_consistency(tokenizer_name: str) -> None:
