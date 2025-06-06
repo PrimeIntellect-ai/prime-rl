@@ -12,13 +12,20 @@ def get_parquet_table(
     proofs: list[bytes],
     step: int,
     target_lengths: list[int],
+    problem_ids: list[str],
 ) -> pa.Table:
     # Iterator over proofs
     proof_iter = iter(proofs)
 
     # Create flattened list of records for PyArrow table
     records = []
-    for request_output, request_rewards, prompt, target_length in zip(request_outputs, request_rewards, prompts, target_lengths):
+    for request_output, request_rewards, prompt, target_length, problem_id in zip(
+        request_outputs,
+        request_rewards,
+        prompts,
+        target_lengths,
+        problem_ids,
+    ):
         assert request_output.request_id == request_rewards.request_id
         for output, reward in zip(request_output.outputs, request_rewards.rewards):
             assert output.index == reward.completion_id
@@ -28,6 +35,7 @@ def get_parquet_table(
                     "output_tokens": output.token_ids,
                     "prompt": prompt,
                     "completion": output.text,
+                    "problem_id": str(problem_id),
                     "advantages": reward.advantage,
                     "rewards": reward.reward,
                     "task_rewards": reward.task_reward,
