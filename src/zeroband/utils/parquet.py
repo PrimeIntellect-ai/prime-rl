@@ -4,6 +4,8 @@ pa_schema = pa.schema(
     [
         ("input_tokens", pa.list_(pa.int32())),
         ("output_tokens", pa.list_(pa.int32())),
+        ("input_logprobs", pa.list_(pa.float32())),  # Optional - can be null
+        ("output_logprobs", pa.list_(pa.float32())),  # Optional - can be null
         ("prompt", pa.string()),
         ("completion", pa.string()),
         ("advantages", pa.float32()),
