@@ -90,6 +90,8 @@ class Config(BaseConfig):
 
     stop_after_steps: int | None = None
 
+    normalize_batch_to_token_count: bool = False
+
     @model_validator(mode="after")
     def check_liger(self):
         if self.train.liger_qwen:

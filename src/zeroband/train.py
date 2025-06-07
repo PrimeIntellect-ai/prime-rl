@@ -285,7 +285,10 @@ def train(config: Config):
                 batch = data_per_rollout[grad_acc_step]
 
                 input_ids = batch["input_ids"].to("cuda")
-                max_tokens = input_ids.shape[0] * input_ids.shape[1]
+                if config.normalize_batch_to_token_count:
+                    max_tokens = int(sum(batch["seq_lens"]))
+                else:
+                    max_tokens = input_ids.shape[0] * input_ids.shape[1]
 
                 loss_mask = batch["loss_mask"]
 
