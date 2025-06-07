@@ -1,13 +1,14 @@
-import os
-from datasets import load_dataset, Dataset
 import json
+import os
+
+from datasets import Dataset, load_dataset
 
 # Get the directory of the current script
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
 with open(os.path.join(script_dir, "baselines/times_torch_L40S.json"), "r") as f:
     TORCH_BASELINES_L40S = json.load(f)
-    
+
 with open(os.path.join(script_dir, "baselines/times_torch_compile_L40S.json"), "r") as f:
     TORCH_COMPILE_BASELINES_L40S = json.load(f)
 
@@ -22,9 +23,8 @@ PROBLEM_INSTRUCTION = """
 Optimize the architecture named Model with custom CUDA operators! Name your optimized output architecture ModelNew. Output the new code in codeblocks. Please generate real code, NOT pseudocode, make sure the code compiles and is fully functional. Just output the new model code, no other text, and NO testing code! \n
 """
 
-def prompt_generate_custom_cuda(
-    arc_src: str, example_arch_src: str, example_new_arch_src: str
-) -> str:
+
+def prompt_generate_custom_cuda(arc_src: str, example_arch_src: str, example_new_arch_src: str) -> str:
     prompt = PROBLEM_STATEMENT
 
     if example_arch_src != "" and example_new_arch_src != "":
@@ -53,7 +53,7 @@ def read_file(file_path) -> str:
     if not os.path.exists(file_path):
         print(f"File {file_path} does not exist")
         return ""
-    
+
     try:
         with open(file_path, "r") as file:
             return file.read()
@@ -77,34 +77,31 @@ def prompt_generate_custom_cuda_from_prompt_template(ref_arch_src: str) -> str:
     return prompt_generate_custom_cuda(arch, example_arch, example_new_arch)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     all_data = []
-    
+
     for level in ["level_1", "level_2", "level_3"]:
         data = load_dataset("ScalingIntelligence/KernelBench")[level]
         data = [d for d in data]
-        
+
         for i, d in enumerate(data):
             level_id = level.replace("_", "")
-            all_data.append(dict(
-                problem_id=f"kernelbench_{level}_{d['problem_id']}",
-                task_type="kernelbench",
-                prompt=prompt_generate_custom_cuda_from_prompt_template(d["code"]),
-                verification_info=json.dumps(dict(
-                    reference_arch=d["code"], 
-                    mean_runtime_torch=TORCH_BASELINES_L40S[level_id][d["name"]+".py"]["mean"],
-                    mean_runtime_torch_compile=TORCH_COMPILE_BASELINES_L40S[level_id][d["name"]+".py"]["mean"]
-                )),
-                metadata=json.dumps(dict(level=d["level"], name=d["name"]))
-            ))
-            
-    upload = Dataset.from_list(all_data)
-    
-    upload.push_to_hub("justus27/kernelbench-genesys")
-        
-    
-        
-    
-        
+            all_data.append(
+                dict(
+                    problem_id=f"kernelbench_{level}_{d['problem_id']}",
+                    task_type="kernelbench",
+                    prompt=prompt_generate_custom_cuda_from_prompt_template(d["code"]),
+                    verification_info=json.dumps(
+                        dict(
+                            reference_arch=d["code"],
+                            mean_runtime_torch=TORCH_BASELINES_L40S[level_id][d["name"] + ".py"]["mean"],
+                            mean_runtime_torch_compile=TORCH_COMPILE_BASELINES_L40S[level_id][d["name"] + ".py"]["mean"],
+                        )
+                    ),
+                    metadata=json.dumps(dict(level=d["level"], name=d["name"])),
+                )
+            )
 
-        
+    upload = Dataset.from_list(all_data)
+
+    upload.push_to_hub("justus27/kernelbench-genesys")
