@@ -6,6 +6,7 @@ from zeroband.inference.genesys.code_output_prediction import verify_code_output
 from zeroband.inference.genesys.complex_json_output import verify_complex_json_formatting
 from zeroband.inference.genesys.formatask import compute_reward as compute_formatask_reward
 from zeroband.inference.genesys.ifeval import verify_ifeval
+from zeroband.inference.genesys.kernelbench.verify_kernel import assign_kernel_reward
 from zeroband.inference.genesys.math import compute_math_reward
 from zeroband.inference.genesys.pydantic_json_adherance import validate_pydantic_json
 from zeroband.inference.genesys.reasoning_gym import verify_reasoning_gym
@@ -24,6 +25,7 @@ TaskType = Literal[
     "ifeval",
     "complex_json_output",
     "formatask",
+    "kernelbench",
 ]
 
 
@@ -46,4 +48,5 @@ _REWARD_FUNCTIONS: dict[TaskType, Callable] = {
     "ifeval": verify_ifeval,
     "complex_json_output": verify_complex_json_formatting,
     "formatask": compute_formatask_reward,
+    "kernelbench": assign_kernel_reward,
 }
