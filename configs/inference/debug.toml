@@ -4,6 +4,7 @@ total_step = 2
 batch_size = 16
 enforce_eager = true
 toploc = true
+max_model_len = 8192
 
 [sampling]
 max_tokens = 16
