@@ -1,0 +1,2258 @@
+{
+    "level1": {
+        "1_Square_matrix_multiplication_.py": {
+            "mean": 0.457,
+            "std": 0.0122,
+            "min": 0.434,
+            "max": 0.508,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "2_Standard_matrix_multiplication_.py": {
+            "mean": 0.417,
+            "std": 0.00769,
+            "min": 0.406,
+            "max": 0.444,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "3_Batched_matrix_multiplication.py": {
+            "mean": 0.208,
+            "std": 0.0101,
+            "min": 0.195,
+            "max": 0.269,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "4_Matrix_vector_multiplication_.py": {
+            "mean": 0.244,
+            "std": 0.0325,
+            "min": 0.232,
+            "max": 0.494,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "5_Matrix_scalar_multiplication.py": {
+            "mean": 0.875,
+            "std": 0.00646,
+            "min": 0.865,
+            "max": 0.901,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "6_Matmul_with_large_K_dimension_.py": {
+            "mean": 0.672,
+            "std": 0.0117,
+            "min": 0.65,
+            "max": 0.707,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "7_Matmul_with_small_K_dimension_.py": {
+            "mean": 1.68,
+            "std": 0.00989,
+            "min": 1.66,
+            "max": 1.71,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "8_Matmul_with_irregular_shapes_.py": {
+            "mean": 6.88,
+            "std": 0.347,
+            "min": 5.86,
+            "max": 7.43,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "9_Tall_skinny_matrix_multiplication_.py": {
+            "mean": 2.02,
+            "std": 0.0286,
+            "min": 1.99,
+            "max": 2.28,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "10_3D_tensor_matrix_multiplication.py": {
+            "mean": 1.23,
+            "std": 0.0629,
+            "min": 1.14,
+            "max": 1.34,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "11_4D_tensor_matrix_multiplication.py": {
+            "mean": 28.8,
+            "std": 0.872,
+            "min": 27.6,
+            "max": 30.2,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "12_Matmul_with_diagonal_matrices_.py": {
+            "mean": 2.6,
+            "std": 0.127,
+            "min": 2.5,
+            "max": 3.16,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "13_Matmul_for_symmetric_matrices.py": {
+            "mean": 3.26,
+            "std": 0.18,
+            "min": 2.8,
+            "max": 3.43,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "14_Matmul_for_upper_triangular_matrices.py": {
+            "mean": 2.71,
+            "std": 0.158,
+            "min": 2.61,
+            "max": 3.04,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "15_Matmul_for_lower_triangular_matrices.py": {
+            "mean": 2.64,
+            "std": 0.0923,
+            "min": 2.59,
+            "max": 2.97,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "16_Matmul_with_transposed_A.py": {
+            "mean": 0.42,
+            "std": 0.00857,
+            "min": 0.396,
+            "max": 0.441,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "17_Matmul_with_transposed_B.py": {
+            "mean": 0.567,
+            "std": 0.00767,
+            "min": 0.553,
+            "max": 0.594,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "18_Matmul_with_transposed_both.py": {
+            "mean": 0.44,
+            "std": 0.00816,
+            "min": 0.417,
+            "max": 0.472,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "19_ReLU.py": {
+            "mean": 0.0875,
+            "std": 0.0148,
+            "min": 0.0778,
+            "max": 0.208,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "20_LeakyReLU.py": {
+            "mean": 0.0894,
+            "std": 0.00992,
+            "min": 0.0809,
+            "max": 0.121,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "21_Sigmoid.py": {
+            "mean": 0.161,
+            "std": 0.125,
+            "min": 0.0819,
+            "max": 0.986,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "22_Tanh.py": {
+            "mean": 0.0868,
+            "std": 0.00888,
+            "min": 0.0799,
+            "max": 0.126,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "23_Softmax.py": {
+            "mean": 0.142,
+            "std": 0.0135,
+            "min": 0.129,
+            "max": 0.223,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "24_LogSoftmax.py": {
+            "mean": 0.158,
+            "std": 0.0267,
+            "min": 0.139,
+            "max": 0.322,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "25_Swish.py": {
+            "mean": 0.101,
+            "std": 0.0544,
+            "min": 0.0819,
+            "max": 0.462,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "26_GELU_.py": {
+            "mean": 0.0876,
+            "std": 0.00845,
+            "min": 0.0809,
+            "max": 0.125,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "27_SELU_.py": {
+            "mean": 0.0901,
+            "std": 0.0282,
+            "min": 0.0809,
+            "max": 0.357,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "28_HardSigmoid.py": {
+            "mean": 0.0931,
+            "std": 0.0155,
+            "min": 0.0799,
+            "max": 0.181,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "29_Softplus.py": {
+            "mean": 0.0862,
+            "std": 0.00979,
+            "min": 0.0788,
+            "max": 0.142,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "30_Softsign.py": {
+            "mean": 0.0865,
+            "std": 0.00808,
+            "min": 0.0778,
+            "max": 0.12,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "31_ELU.py": {
+            "mean": 0.0913,
+            "std": 0.00991,
+            "min": 0.0829,
+            "max": 0.125,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "32_HardTanh.py": {
+            "mean": 0.0883,
+            "std": 0.0109,
+            "min": 0.0799,
+            "max": 0.138,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "33_BatchNorm.py": {
+            "mean": 1.33,
+            "std": 0.00728,
+            "min": 1.32,
+            "max": 1.36,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "34_InstanceNorm.py": {
+            "mean": 1.15,
+            "std": 0.0114,
+            "min": 1.13,
+            "max": 1.2,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "35_GroupNorm_.py": {
+            "mean": 1.27,
+            "std": 0.00758,
+            "min": 1.27,
+            "max": 1.32,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "36_RMSNorm_.py": {
+            "mean": 1.26,
+            "std": 0.00787,
+            "min": 1.25,
+            "max": 1.28,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "37_FrobeniusNorm_.py": {
+            "mean": 1.27,
+            "std": 0.00715,
+            "min": 1.26,
+            "max": 1.29,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "38_L1Norm_.py": {
+            "mean": 0.116,
+            "std": 0.012,
+            "min": 0.105,
+            "max": 0.16,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "39_L2Norm_.py": {
+            "mean": 0.122,
+            "std": 0.014,
+            "min": 0.112,
+            "max": 0.198,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "40_LayerNorm.py": {
+            "mean": 1.6,
+            "std": 0.0093,
+            "min": 1.58,
+            "max": 1.63,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "41_Max_Pooling_1D.py": {
+            "mean": 0.101,
+            "std": 0.0115,
+            "min": 0.0932,
+            "max": 0.174,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "42_Max_Pooling_2D.py": {
+            "mean": 0.094,
+            "std": 0.00803,
+            "min": 0.0861,
+            "max": 0.122,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "43_Max_Pooling_3D.py": {
+            "mean": 0.987,
+            "std": 0.00407,
+            "min": 0.982,
+            "max": 1.0,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "44_Average_Pooling_1D.py": {
+            "mean": 0.0986,
+            "std": 0.0285,
+            "min": 0.085,
+            "max": 0.356,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "45_Average_Pooling_2D.py": {
+            "mean": 0.478,
+            "std": 0.00603,
+            "min": 0.471,
+            "max": 0.515,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "46_Average_Pooling_3D.py": {
+            "mean": 0.901,
+            "std": 0.0225,
+            "min": 0.892,
+            "max": 1.12,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "47_Sum_reduction_over_a_dimension.py": {
+            "mean": 0.11,
+            "std": 0.0383,
+            "min": 0.0983,
+            "max": 0.477,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "48_Mean_reduction_over_a_dimension.py": {
+            "mean": 0.11,
+            "std": 0.0117,
+            "min": 0.0983,
+            "max": 0.152,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "49_Max_reduction_over_a_dimension.py": {
+            "mean": 0.106,
+            "std": 0.00894,
+            "min": 0.0962,
+            "max": 0.137,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "50_Product_reduction_over_a_dimension.py": {
+            "mean": 0.111,
+            "std": 0.0107,
+            "min": 0.0994,
+            "max": 0.144,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "51_Argmax_over_a_dimension.py": {
+            "mean": 0.0894,
+            "std": 0.00927,
+            "min": 0.0819,
+            "max": 0.122,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "52_Argmin_over_a_dimension.py": {
+            "mean": 0.0953,
+            "std": 0.011,
+            "min": 0.086,
+            "max": 0.137,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "53_Min_reduction_over_a_dimension.py": {
+            "mean": 0.106,
+            "std": 0.00897,
+            "min": 0.0952,
+            "max": 0.134,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "54_conv_standard_3D__square_input__square_kernel.py": {
+            "mean": 3.9,
+            "std": 0.197,
+            "min": 3.81,
+            "max": 4.51,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "55_conv_standard_2D__asymmetric_input__square_kernel.py": {
+            "mean": 0.731,
+            "std": 0.0432,
+            "min": 0.713,
+            "max": 1.03,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "56_conv_standard_2D__asymmetric_input__asymmetric_kernel.py": {
+            "mean": 0.732,
+            "std": 0.0119,
+            "min": 0.714,
+            "max": 0.799,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "57_conv_transposed_2D__square_input__square_kernel.py": {
+            "mean": 0.489,
+            "std": 0.00759,
+            "min": 0.481,
+            "max": 0.534,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "58_conv_transposed_3D__asymmetric_input__asymmetric_kernel.py": {
+            "mean": 1.64,
+            "std": 0.0234,
+            "min": 1.59,
+            "max": 1.68,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "59_conv_standard_3D__asymmetric_input__square_kernel.py": {
+            "mean": 13.6,
+            "std": 0.0383,
+            "min": 13.5,
+            "max": 13.7,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "60_conv_standard_3D__square_input__asymmetric_kernel.py": {
+            "mean": 11.8,
+            "std": 0.0883,
+            "min": 11.5,
+            "max": 12.0,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "61_conv_transposed_3D__square_input__square_kernel.py": {
+            "mean": 2.36,
+            "std": 0.0505,
+            "min": 2.23,
+            "max": 2.44,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "62_conv_standard_2D__square_input__asymmetric_kernel.py": {
+            "mean": 1.4,
+            "std": 0.0121,
+            "min": 1.38,
+            "max": 1.47,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "63_conv_standard_2D__square_input__square_kernel.py": {
+            "mean": 1.4,
+            "std": 0.0333,
+            "min": 1.38,
+            "max": 1.71,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "64_conv_transposed_1D.py": {
+            "mean": 0.117,
+            "std": 0.00944,
+            "min": 0.108,
+            "max": 0.156,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "65_conv_transposed_2D__square_input__asymmetric_kernel.py": {
+            "mean": 0.533,
+            "std": 0.00595,
+            "min": 0.524,
+            "max": 0.554,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "66_conv_standard_3D__asymmetric_input__asymmetric_kernel.py": {
+            "mean": 49.4,
+            "std": 0.325,
+            "min": 48.7,
+            "max": 50.6,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "67_conv_standard_1D.py": {
+            "mean": 0.121,
+            "std": 0.0113,
+            "min": 0.111,
+            "max": 0.171,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "68_conv_transposed_3D__square_input__asymmetric_kernel.py": {
+            "mean": 36.5,
+            "std": 0.934,
+            "min": 35.5,
+            "max": 40.2,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "69_conv_transposed_2D__asymmetric_input__asymmetric_kernel.py": {
+            "mean": 0.194,
+            "std": 0.0117,
+            "min": 0.181,
+            "max": 0.224,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "70_conv_transposed_3D__asymmetric_input__square_kernel.py": {
+            "mean": 1.25,
+            "std": 0.0325,
+            "min": 1.21,
+            "max": 1.5,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "71_conv_transposed_2D__asymmetric_input__square_kernel.py": {
+            "mean": 1.15,
+            "std": 0.00843,
+            "min": 1.13,
+            "max": 1.18,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "72_conv_transposed_3D_asymmetric_input_asymmetric_kernel___strided_padded_grouped_.py": {
+            "mean": 35.9,
+            "std": 0.0484,
+            "min": 35.8,
+            "max": 36.1,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "73_conv_transposed_3D_asymmetric_input_square_kernel__strided_padded__grouped.py": {
+            "mean": 2.12,
+            "std": 0.00867,
+            "min": 2.1,
+            "max": 2.14,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "74_conv_transposed_1D_dilated.py": {
+            "mean": 0.148,
+            "std": 0.00995,
+            "min": 0.137,
+            "max": 0.176,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "75_conv_transposed_2D_asymmetric_input_asymmetric_kernel_strided__grouped____padded____dilated__.py": {
+            "mean": 9.87,
+            "std": 0.0148,
+            "min": 9.83,
+            "max": 9.91,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "76_conv_standard_1D_dilated_strided__.py": {
+            "mean": 0.126,
+            "std": 0.014,
+            "min": 0.114,
+            "max": 0.176,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "77_conv_transposed_3D_square_input_square_kernel___padded____dilated____strided__.py": {
+            "mean": 3.3,
+            "std": 0.044,
+            "min": 3.27,
+            "max": 3.62,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "78_conv_transposed_2D_asymmetric_input_asymmetric_kernel___padded__.py": {
+            "mean": 1.2,
+            "std": 0.02,
+            "min": 1.18,
+            "max": 1.39,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "79_conv_transposed_1D_asymmetric_input_square_kernel___padded____strided____dilated__.py": {
+            "mean": 0.139,
+            "std": 0.00999,
+            "min": 0.129,
+            "max": 0.173,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "80_conv_standard_2D_square_input_asymmetric_kernel___dilated____padded__.py": {
+            "mean": 1.45,
+            "std": 0.0115,
+            "min": 1.43,
+            "max": 1.47,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "81_conv_transposed_2D_asymmetric_input_square_kernel___dilated____padded____strided__.py": {
+            "mean": 4.24,
+            "std": 0.035,
+            "min": 4.19,
+            "max": 4.51,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "82_conv_depthwise_2D_square_input_square_kernel.py": {
+            "mean": 0.172,
+            "std": 0.0304,
+            "min": 0.153,
+            "max": 0.358,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "83_conv_depthwise_2D_square_input_asymmetric_kernel.py": {
+            "mean": 0.867,
+            "std": 0.0121,
+            "min": 0.845,
+            "max": 0.919,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "84_conv_depthwise_2D_asymmetric_input_square_kernel.py": {
+            "mean": 0.159,
+            "std": 0.00992,
+            "min": 0.148,
+            "max": 0.183,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "85_conv_depthwise_2D_asymmetric_input_asymmetric_kernel.py": {
+            "mean": 0.159,
+            "std": 0.0116,
+            "min": 0.147,
+            "max": 0.2,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "86_conv_depthwise_separable_2D.py": {
+            "mean": 1.42,
+            "std": 0.0657,
+            "min": 1.37,
+            "max": 1.82,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "87_conv_pointwise_2D.py": {
+            "mean": 1.42,
+            "std": 0.00762,
+            "min": 1.41,
+            "max": 1.44,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "88_MinGPTNewGelu.py": {
+            "mean": 0.0911,
+            "std": 0.00954,
+            "min": 0.0809,
+            "max": 0.134,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "89_cumsum.py": {
+            "mean": 0.0971,
+            "std": 0.0111,
+            "min": 0.0852,
+            "max": 0.137,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "90_cumprod.py": {
+            "mean": 0.0875,
+            "std": 0.00898,
+            "min": 0.0799,
+            "max": 0.124,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "91_cumsum_reverse.py": {
+            "mean": 0.118,
+            "std": 0.0135,
+            "min": 0.105,
+            "max": 0.184,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "92_cumsum_exclusive.py": {
+            "mean": 0.0944,
+            "std": 0.0229,
+            "min": 0.0829,
+            "max": 0.289,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "93_masked_cumsum.py": {
+            "mean": 0.0912,
+            "std": 0.0215,
+            "min": 0.0819,
+            "max": 0.29,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "94_MSELoss.py": {
+            "mean": 0.104,
+            "std": 0.00922,
+            "min": 0.0963,
+            "max": 0.147,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "95_CrossEntropyLoss.py": {
+            "mean": 0.11,
+            "std": 0.0121,
+            "min": 0.0993,
+            "max": 0.15,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "96_HuberLoss.py": {
+            "mean": 0.115,
+            "std": 0.0392,
+            "min": 0.102,
+            "max": 0.497,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "97_CosineSimilarityLoss.py": {
+            "mean": 0.116,
+            "std": 0.013,
+            "min": 0.106,
+            "max": 0.189,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "98_KLDivLoss.py": {
+            "mean": 0.109,
+            "std": 0.0187,
+            "min": 0.0983,
+            "max": 0.268,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "99_TripletMarginLoss.py": {
+            "mean": 0.115,
+            "std": 0.0093,
+            "min": 0.105,
+            "max": 0.146,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "100_HingeLoss.py": {
+            "mean": 0.094,
+            "std": 0.029,
+            "min": 0.081,
+            "max": 0.351,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        }
+    },
+    "level2": {
+        "1_Conv2D_ReLU_BiasAdd.py": {
+            "mean": 0.212,
+            "std": 0.061,
+            "min": 0.179,
+            "max": 0.536,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "2_ConvTranspose2d_BiasAdd_Clamp_Scaling_Clamp_Divide.py": {
+            "mean": 0.37,
+            "std": 0.00606,
+            "min": 0.364,
+            "max": 0.411,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "3_ConvTranspose3d_Sum_LayerNorm_AvgPool_GELU.py": {
+            "mean": 43.8,
+            "std": 0.158,
+            "min": 43.6,
+            "max": 44.4,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "4_Conv2d_Mish_Mish.py": {
+            "mean": 0.202,
+            "std": 0.012,
+            "min": 0.189,
+            "max": 0.244,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "5_ConvTranspose2d_Subtract_Tanh.py": {
+            "mean": 0.205,
+            "std": 0.012,
+            "min": 0.194,
+            "max": 0.248,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "6_Conv3d_Softmax_MaxPool_MaxPool.py": {
+            "mean": 1.62,
+            "std": 0.0219,
+            "min": 1.6,
+            "max": 1.76,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "7_Conv3d_ReLU_LeakyReLU_GELU_Sigmoid_BiasAdd.py": {
+            "mean": 0.811,
+            "std": 0.00692,
+            "min": 0.8,
+            "max": 0.835,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "8_Conv3d_Divide_Max_GlobalAvgPool_BiasAdd_Sum.py": {
+            "mean": 1.45,
+            "std": 0.00719,
+            "min": 1.44,
+            "max": 1.47,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "9_Matmul_Subtract_Multiply_ReLU.py": {
+            "mean": 0.129,
+            "std": 0.0109,
+            "min": 0.119,
+            "max": 0.172,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "10_ConvTranspose2d_MaxPool_Hardtanh_Mean_Tanh.py": {
+            "mean": 0.228,
+            "std": 0.0546,
+            "min": 0.211,
+            "max": 0.756,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "11_ConvTranspose2d_BatchNorm_Tanh_MaxPool_GroupNorm.py": {
+            "mean": 1.09,
+            "std": 0.00656,
+            "min": 1.08,
+            "max": 1.12,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "12_Gemm_Multiply_LeakyReLU.py": {
+            "mean": 0.127,
+            "std": 0.0109,
+            "min": 0.118,
+            "max": 0.168,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "13_ConvTranspose3d_Mean_Add_Softmax_Tanh_Scaling.py": {
+            "mean": 2.15,
+            "std": 0.00506,
+            "min": 2.14,
+            "max": 2.17,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "14_Gemm_Divide_Sum_Scaling.py": {
+            "mean": 0.131,
+            "std": 0.00886,
+            "min": 0.123,
+            "max": 0.165,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "15_ConvTranspose3d_BatchNorm_Subtract.py": {
+            "mean": 3.47,
+            "std": 0.0169,
+            "min": 3.42,
+            "max": 3.54,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "16_ConvTranspose2d_Mish_Add_Hardtanh_Scaling.py": {
+            "mean": 0.313,
+            "std": 0.00768,
+            "min": 0.305,
+            "max": 0.352,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "17_Conv2d_InstanceNorm_Divide.py": {
+            "mean": 0.201,
+            "std": 0.0103,
+            "min": 0.189,
+            "max": 0.227,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "18_Matmul_Sum_Max_AvgPool_LogSumExp_LogSumExp.py": {
+            "mean": 0.137,
+            "std": 0.0291,
+            "min": 0.124,
+            "max": 0.409,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "19_ConvTranspose2d_GELU_GroupNorm.py": {
+            "mean": 0.969,
+            "std": 0.00334,
+            "min": 0.962,
+            "max": 0.981,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "20_ConvTranspose3d_Sum_ResidualAdd_Multiply_ResidualAdd.py": {
+            "mean": 4.6,
+            "std": 0.032,
+            "min": 4.54,
+            "max": 4.7,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "21_Conv2d_Add_Scale_Sigmoid_GroupNorm.py": {
+            "mean": 0.232,
+            "std": 0.0128,
+            "min": 0.218,
+            "max": 0.27,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "22_Matmul_Scale_ResidualAdd_Clamp_LogSumExp_Mish.py": {
+            "mean": 0.132,
+            "std": 0.011,
+            "min": 0.122,
+            "max": 0.171,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "23_Conv3d_GroupNorm_Mean.py": {
+            "mean": 0.686,
+            "std": 0.0122,
+            "min": 0.671,
+            "max": 0.745,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "24_Conv3d_Min_Softmax.py": {
+            "mean": 0.715,
+            "std": 0.00706,
+            "min": 0.702,
+            "max": 0.738,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "25_Conv2d_Min_Tanh_Tanh.py": {
+            "mean": 0.196,
+            "std": 0.0128,
+            "min": 0.183,
+            "max": 0.234,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "26_ConvTranspose3d_Add_HardSwish.py": {
+            "mean": 11.0,
+            "std": 0.0943,
+            "min": 10.8,
+            "max": 11.3,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "27_Conv3d_HardSwish_ReLU_Softmax_Mean.py": {
+            "mean": 0.814,
+            "std": 0.0208,
+            "min": 0.795,
+            "max": 0.996,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "28_BMM_InstanceNorm_Sum_ResidualAdd_Multiply.py": {
+            "mean": 0.248,
+            "std": 0.0113,
+            "min": 0.232,
+            "max": 0.279,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "29_Matmul_Mish_Mish.py": {
+            "mean": 0.126,
+            "std": 0.0118,
+            "min": 0.117,
+            "max": 0.167,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "30_Gemm_GroupNorm_Hardtanh.py": {
+            "mean": 0.158,
+            "std": 0.0119,
+            "min": 0.145,
+            "max": 0.204,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "31_Conv2d_Min_Add_Multiply.py": {
+            "mean": 0.2,
+            "std": 0.0119,
+            "min": 0.188,
+            "max": 0.247,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "32_Conv2d_Scaling_Min.py": {
+            "mean": 0.205,
+            "std": 0.0129,
+            "min": 0.193,
+            "max": 0.243,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "33_Gemm_Scale_BatchNorm.py": {
+            "mean": 0.164,
+            "std": 0.0118,
+            "min": 0.153,
+            "max": 0.211,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "34_ConvTranspose3d_LayerNorm_GELU_Scaling.py": {
+            "mean": 39.1,
+            "std": 0.0948,
+            "min": 39.0,
+            "max": 39.5,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "35_Conv2d_Subtract_HardSwish_MaxPool_Mish.py": {
+            "mean": 0.215,
+            "std": 0.0128,
+            "min": 0.202,
+            "max": 0.255,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "36_ConvTranspose2d_Min_Sum_GELU_Add.py": {
+            "mean": 0.359,
+            "std": 0.0105,
+            "min": 0.35,
+            "max": 0.418,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "37_Matmul_Swish_Sum_GroupNorm.py": {
+            "mean": 0.156,
+            "std": 0.0108,
+            "min": 0.144,
+            "max": 0.192,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "38_ConvTranspose3d_AvgPool_Clamp_Softmax_Multiply.py": {
+            "mean": 2.55,
+            "std": 0.00689,
+            "min": 2.54,
+            "max": 2.57,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "39_Gemm_Scale_BatchNorm.py": {
+            "mean": 0.173,
+            "std": 0.0127,
+            "min": 0.159,
+            "max": 0.223,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "40_Matmul_Scaling_ResidualAdd.py": {
+            "mean": 0.129,
+            "std": 0.0128,
+            "min": 0.119,
+            "max": 0.207,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "41_Gemm_BatchNorm_GELU_GroupNorm_Mean_ReLU.py": {
+            "mean": 0.208,
+            "std": 0.0132,
+            "min": 0.194,
+            "max": 0.248,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "42_ConvTranspose2d_GlobalAvgPool_BiasAdd_LogSumExp_Sum_Multiply.py": {
+            "mean": 0.222,
+            "std": 0.016,
+            "min": 0.208,
+            "max": 0.3,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "43_Conv3d_Max_LogSumExp_ReLU.py": {
+            "mean": 1.37,
+            "std": 0.0102,
+            "min": 1.35,
+            "max": 1.4,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "44_ConvTranspose2d_Multiply_GlobalAvgPool_GlobalAvgPool_Mean.py": {
+            "mean": 0.358,
+            "std": 0.00878,
+            "min": 0.348,
+            "max": 0.384,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "45_Gemm_Sigmoid_Sum_LogSumExp.py": {
+            "mean": 0.144,
+            "std": 0.0107,
+            "min": 0.132,
+            "max": 0.177,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "46_Conv2d_Subtract_Tanh_Subtract_AvgPool.py": {
+            "mean": 0.207,
+            "std": 0.0105,
+            "min": 0.193,
+            "max": 0.237,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "47_Conv3d_Mish_Tanh.py": {
+            "mean": 0.146,
+            "std": 0.00873,
+            "min": 0.138,
+            "max": 0.18,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "48_Conv3d_Scaling_Tanh_Multiply_Sigmoid.py": {
+            "mean": 0.834,
+            "std": 0.00794,
+            "min": 0.818,
+            "max": 0.865,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "49_ConvTranspose3d_Softmax_Sigmoid.py": {
+            "mean": 5.47,
+            "std": 0.0172,
+            "min": 5.43,
+            "max": 5.52,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "50_ConvTranspose3d_Scaling_AvgPool_BiasAdd_Scaling.py": {
+            "mean": 21.2,
+            "std": 0.047,
+            "min": 21.1,
+            "max": 21.5,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "51_Gemm_Subtract_GlobalAvgPool_LogSumExp_GELU_ResidualAdd.py": {
+            "mean": 0.15,
+            "std": 0.0107,
+            "min": 0.139,
+            "max": 0.193,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "52_Conv2d_Activation_BatchNorm.py": {
+            "mean": 0.277,
+            "std": 0.0154,
+            "min": 0.259,
+            "max": 0.329,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "53_Gemm_Scaling_Hardtanh_GELU.py": {
+            "mean": 0.13,
+            "std": 0.0105,
+            "min": 0.12,
+            "max": 0.188,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "54_Conv2d_Multiply_LeakyReLU_GELU.py": {
+            "mean": 0.197,
+            "std": 0.0137,
+            "min": 0.183,
+            "max": 0.264,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "55_Matmul_MaxPool_Sum_Scale.py": {
+            "mean": 0.144,
+            "std": 0.0263,
+            "min": 0.124,
+            "max": 0.333,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "56_Matmul_Sigmoid_Sum.py": {
+            "mean": 0.128,
+            "std": 0.00991,
+            "min": 0.12,
+            "max": 0.164,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "57_Conv2d_ReLU_HardSwish.py": {
+            "mean": 0.208,
+            "std": 0.0127,
+            "min": 0.193,
+            "max": 0.263,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "58_ConvTranspose3d_LogSumExp_HardSwish_Subtract_Clamp_Max.py": {
+            "mean": 18.3,
+            "std": 0.0216,
+            "min": 18.2,
+            "max": 18.4,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "59_Matmul_Swish_Scaling.py": {
+            "mean": 0.123,
+            "std": 0.01,
+            "min": 0.115,
+            "max": 0.155,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "60_ConvTranspose3d_Swish_GroupNorm_HardSwish.py": {
+            "mean": 21.3,
+            "std": 0.153,
+            "min": 21.1,
+            "max": 22.1,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "61_ConvTranspose3d_ReLU_GroupNorm.py": {
+            "mean": 0.319,
+            "std": 0.00623,
+            "min": 0.31,
+            "max": 0.34,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "62_Matmul_GroupNorm_LeakyReLU_Sum.py": {
+            "mean": 0.169,
+            "std": 0.0168,
+            "min": 0.151,
+            "max": 0.241,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "63_Gemm_ReLU_Divide.py": {
+            "mean": 0.132,
+            "std": 0.0266,
+            "min": 0.118,
+            "max": 0.37,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "64_Gemm_LogSumExp_LeakyReLU_LeakyReLU_GELU_GELU.py": {
+            "mean": 0.137,
+            "std": 0.0102,
+            "min": 0.126,
+            "max": 0.17,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "65_Conv2d_AvgPool_Sigmoid_Sum.py": {
+            "mean": 0.211,
+            "std": 0.0131,
+            "min": 0.198,
+            "max": 0.267,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "66_Matmul_Dropout_Mean_Softmax.py": {
+            "mean": 0.164,
+            "std": 0.0109,
+            "min": 0.155,
+            "max": 0.205,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "67_Conv2d_GELU_GlobalAvgPool.py": {
+            "mean": 0.225,
+            "std": 0.0119,
+            "min": 0.212,
+            "max": 0.266,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "68_Matmul_Min_Subtract.py": {
+            "mean": 0.127,
+            "std": 0.0167,
+            "min": 0.117,
+            "max": 0.26,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "69_Conv2d_HardSwish_ReLU.py": {
+            "mean": 0.203,
+            "std": 0.0117,
+            "min": 0.19,
+            "max": 0.241,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "70_Gemm_Sigmoid_Scaling_ResidualAdd.py": {
+            "mean": 0.124,
+            "std": 0.0131,
+            "min": 0.114,
+            "max": 0.174,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "71_Conv2d_Divide_LeakyReLU.py": {
+            "mean": 0.198,
+            "std": 0.0136,
+            "min": 0.184,
+            "max": 0.243,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "72_ConvTranspose3d_BatchNorm_AvgPool_AvgPool.py": {
+            "mean": 47.0,
+            "std": 0.0765,
+            "min": 46.9,
+            "max": 47.3,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "73_Conv2d_BatchNorm_Scaling.py": {
+            "mean": 0.277,
+            "std": 0.0146,
+            "min": 0.257,
+            "max": 0.313,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "74_ConvTranspose3d_LeakyReLU_Multiply_LeakyReLU_Max.py": {
+            "mean": 3.02,
+            "std": 0.0277,
+            "min": 2.98,
+            "max": 3.26,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "75_Gemm_GroupNorm_Min_BiasAdd.py": {
+            "mean": 0.178,
+            "std": 0.0112,
+            "min": 0.164,
+            "max": 0.218,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "76_Gemm_Add_ReLU.py": {
+            "mean": 0.132,
+            "std": 0.0279,
+            "min": 0.119,
+            "max": 0.382,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "77_ConvTranspose3d_Scale_BatchNorm_GlobalAvgPool.py": {
+            "mean": 1.41,
+            "std": 0.0123,
+            "min": 1.39,
+            "max": 1.44,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "78_ConvTranspose3d_Max_Max_Sum.py": {
+            "mean": 3.06,
+            "std": 0.00782,
+            "min": 3.04,
+            "max": 3.08,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "79_Conv3d_Multiply_InstanceNorm_Clamp_Multiply_Max.py": {
+            "mean": 0.726,
+            "std": 0.01,
+            "min": 0.716,
+            "max": 0.784,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "80_Gemm_Max_Subtract_GELU.py": {
+            "mean": 0.144,
+            "std": 0.0244,
+            "min": 0.128,
+            "max": 0.305,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "81_Gemm_Swish_Divide_Clamp_Tanh_Clamp.py": {
+            "mean": 0.125,
+            "std": 0.00979,
+            "min": 0.115,
+            "max": 0.164,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "82_Conv2d_Tanh_Scaling_BiasAdd_Max.py": {
+            "mean": 0.221,
+            "std": 0.0334,
+            "min": 0.203,
+            "max": 0.515,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "83_Conv3d_GroupNorm_Min_Clamp_Dropout.py": {
+            "mean": 0.878,
+            "std": 0.00743,
+            "min": 0.866,
+            "max": 0.901,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "84_Gemm_BatchNorm_Scaling_Softmax.py": {
+            "mean": 0.182,
+            "std": 0.012,
+            "min": 0.168,
+            "max": 0.218,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "85_Conv2d_GroupNorm_Scale_MaxPool_Clamp.py": {
+            "mean": 0.24,
+            "std": 0.0119,
+            "min": 0.224,
+            "max": 0.282,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "86_Matmul_Divide_GELU.py": {
+            "mean": 0.132,
+            "std": 0.0163,
+            "min": 0.119,
+            "max": 0.212,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "87_Conv2d_Subtract_Subtract_Mish.py": {
+            "mean": 0.203,
+            "std": 0.0119,
+            "min": 0.19,
+            "max": 0.234,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "88_Gemm_GroupNorm_Swish_Multiply_Swish.py": {
+            "mean": 0.159,
+            "std": 0.0114,
+            "min": 0.148,
+            "max": 0.201,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "89_ConvTranspose3d_MaxPool_Softmax_Subtract_Swish_Max.py": {
+            "mean": 21.2,
+            "std": 0.0339,
+            "min": 21.1,
+            "max": 21.3,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "90_Conv3d_LeakyReLU_Sum_Clamp_GELU.py": {
+            "mean": 0.809,
+            "std": 0.00728,
+            "min": 0.796,
+            "max": 0.842,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "91_ConvTranspose2d_Softmax_BiasAdd_Scaling_Sigmoid.py": {
+            "mean": 0.244,
+            "std": 0.00886,
+            "min": 0.234,
+            "max": 0.278,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "92_Conv2d_GroupNorm_Tanh_HardSwish_ResidualAdd_LogSumExp.py": {
+            "mean": 0.229,
+            "std": 0.0132,
+            "min": 0.212,
+            "max": 0.271,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "93_ConvTranspose2d_Add_Min_GELU_Multiply.py": {
+            "mean": 0.295,
+            "std": 0.0135,
+            "min": 0.284,
+            "max": 0.383,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "94_Gemm_BiasAdd_Hardtanh_Mish_GroupNorm.py": {
+            "mean": 0.153,
+            "std": 0.0103,
+            "min": 0.142,
+            "max": 0.185,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "95_Matmul_Add_Swish_Tanh_GELU_Hardtanh.py": {
+            "mean": 0.128,
+            "std": 0.0141,
+            "min": 0.115,
+            "max": 0.186,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "96_ConvTranspose3d_Multiply_Max_GlobalAvgPool_Clamp.py": {
+            "mean": 25.0,
+            "std": 0.0378,
+            "min": 24.9,
+            "max": 25.2,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "97_Matmul_BatchNorm_BiasAdd_Divide_Swish.py": {
+            "mean": 0.175,
+            "std": 0.0114,
+            "min": 0.163,
+            "max": 0.209,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "98_Matmul_AvgPool_GELU_Scale_Max.py": {
+            "mean": 0.136,
+            "std": 0.0308,
+            "min": 0.126,
+            "max": 0.434,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "99_Matmul_GELU_Softmax.py": {
+            "mean": 0.133,
+            "std": 0.0123,
+            "min": 0.122,
+            "max": 0.18,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "100_ConvTranspose3d_Clamp_Min_Divide.py": {
+            "mean": 2.37,
+            "std": 0.00584,
+            "min": 2.36,
+            "max": 2.39,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        }
+    },
+    "level3": {
+        "1_MLP.py": {
+            "mean": 0.204,
+            "std": 0.0119,
+            "min": 0.19,
+            "max": 0.245,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "2_ShallowWideMLP.py": {
+            "mean": 0.198,
+            "std": 0.011,
+            "min": 0.186,
+            "max": 0.231,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "3_DeepNarrowMLP.py": {
+            "mean": 0.343,
+            "std": 0.0169,
+            "min": 0.324,
+            "max": 0.388,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "4_LeNet5.py": {
+            "mean": 0.349,
+            "std": 0.0146,
+            "min": 0.333,
+            "max": 0.385,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "5_AlexNet.py": {
+            "mean": 1.05,
+            "std": 0.0158,
+            "min": 1.02,
+            "max": 1.09,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "6_GoogleNetInceptionModule.py": {
+            "mean": 26.0,
+            "std": 0.0385,
+            "min": 25.9,
+            "max": 26.2,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "7_GoogleNetInceptionV1.py": {
+            "mean": 3.35,
+            "std": 0.1,
+            "min": 3.2,
+            "max": 3.95,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "8_ResNetBasicBlock.py": {
+            "mean": 2.85,
+            "std": 0.00939,
+            "min": 2.83,
+            "max": 2.88,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "9_ResNet18.py": {
+            "mean": 2.68,
+            "std": 0.139,
+            "min": 2.59,
+            "max": 3.67,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "10_ResNet101.py": {
+            "mean": 11.0,
+            "std": 0.317,
+            "min": 10.7,
+            "max": 12.7,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "11_VGG16.py": {
+            "mean": 5.84,
+            "std": 0.0335,
+            "min": 5.8,
+            "max": 6.1,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "12_VGG19.py": {
+            "mean": 6.63,
+            "std": 0.0605,
+            "min": 6.57,
+            "max": 6.92,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "13_DenseNet121TransitionLayer.py": {
+            "mean": 0.775,
+            "std": 0.00621,
+            "min": 0.764,
+            "max": 0.797,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "14_DenseNet121DenseBlock.py": {
+            "mean": 19.4,
+            "std": 0.0891,
+            "min": 19.3,
+            "max": 19.8,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "15_DenseNet121.py": {
+            "mean": 11.5,
+            "std": 0.0443,
+            "min": 11.4,
+            "max": 11.6,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "16_DenseNet201.py": {
+            "mean": 27.6,
+            "std": 2.91,
+            "min": 25.5,
+            "max": 40.9,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "17_SqueezeNetFireModule.py": {
+            "mean": 1.58,
+            "std": 0.063,
+            "min": 1.55,
+            "max": 2.19,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "18_SqueezeNet.py": {
+            "mean": 1.71,
+            "std": 0.024,
+            "min": 1.65,
+            "max": 1.78,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "19_MobileNetV1.py": {
+            "mean": 3.0,
+            "std": 0.0439,
+            "min": 2.93,
+            "max": 3.22,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "20_MobileNetV2.py": {
+            "mean": 5.71,
+            "std": 0.21,
+            "min": 5.5,
+            "max": 6.75,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "21_EfficientNetMBConv.py": {
+            "mean": 15.3,
+            "std": 0.058,
+            "min": 15.2,
+            "max": 15.5,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "22_EfficientNetB0.py": {
+            "mean": 4.48,
+            "std": 0.043,
+            "min": 4.39,
+            "max": 4.64,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "23_EfficientNetB1.py": {
+            "mean": 2.74,
+            "std": 0.0625,
+            "min": 2.67,
+            "max": 3.26,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "24_EfficientNetB2.py": {
+            "mean": 2.29,
+            "std": 0.106,
+            "min": 2.13,
+            "max": 2.92,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "25_ShuffleNetUnit.py": {
+            "mean": 24.7,
+            "std": 0.0381,
+            "min": 24.6,
+            "max": 24.8,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "26_ShuffleNet.py": {
+            "mean": 15.6,
+            "std": 0.118,
+            "min": 15.5,
+            "max": 16.5,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "27_RegNet.py": {
+            "mean": 2.63,
+            "std": 0.0167,
+            "min": 2.61,
+            "max": 2.77,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "28_VisionTransformer.py": {
+            "mean": 1.64,
+            "std": 0.091,
+            "min": 1.56,
+            "max": 2.42,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "29_SwinMLP.py": {
+            "mean": 4.2,
+            "std": 0.0305,
+            "min": 4.11,
+            "max": 4.25,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "30_SwinTransformerV2.py": {
+            "mean": 6.06,
+            "std": 0.0437,
+            "min": 5.95,
+            "max": 6.17,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "31_VisionAttention.py": {
+            "mean": 18.8,
+            "std": 0.201,
+            "min": 18.2,
+            "max": 19.3,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "32_ConvolutionalVisionTransformer.py": {
+            "mean": 1.62,
+            "std": 0.0201,
+            "min": 1.58,
+            "max": 1.68,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "33_VanillaRNN.py": {
+            "mean": 0.183,
+            "std": 0.0119,
+            "min": 0.17,
+            "max": 0.214,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "34_VanillaRNNHidden.py": {
+            "mean": 0.153,
+            "std": 0.0116,
+            "min": 0.142,
+            "max": 0.19,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "35_LTSM.py": {
+            "mean": 18.6,
+            "std": 0.355,
+            "min": 18.2,
+            "max": 19.9,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "36_LTSMHn.py": {
+            "mean": 18.6,
+            "std": 0.173,
+            "min": 18.4,
+            "max": 19.4,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "37_LTSMCn.py": {
+            "mean": 18.1,
+            "std": 0.0655,
+            "min": 18.0,
+            "max": 18.6,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "38_LTSMBidirectional.py": {
+            "mean": 39.0,
+            "std": 0.213,
+            "min": 38.7,
+            "max": 40.0,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "39_GRU.py": {
+            "mean": 20.7,
+            "std": 0.219,
+            "min": 20.4,
+            "max": 21.6,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "40_GRUHidden.py": {
+            "mean": 20.1,
+            "std": 0.166,
+            "min": 19.9,
+            "max": 20.8,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "41_GRUBirectional.py": {
+            "mean": 49.9,
+            "std": 0.499,
+            "min": 49.4,
+            "max": 52.1,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "42_GRUBidirectionalHidden.py": {
+            "mean": 50.5,
+            "std": 0.49,
+            "min": 49.8,
+            "max": 52.2,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "43_MinGPTCausalAttention.py": {
+            "mean": 18.5,
+            "std": 0.0637,
+            "min": 18.3,
+            "max": 18.7,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "44_MiniGPTBlock.py": {
+            "mean": 39.8,
+            "std": 0.591,
+            "min": 38.3,
+            "max": 41.6,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "45_UNetSoftmax.py": {
+            "mean": 9.73,
+            "std": 0.0426,
+            "min": 9.6,
+            "max": 9.82,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "46_NetVladWithGhostClusters.py": {
+            "mean": 0.298,
+            "std": 0.0141,
+            "min": 0.278,
+            "max": 0.334,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "47_NetVladNoGhostClusters.py": {
+            "mean": 0.299,
+            "std": 0.0142,
+            "min": 0.281,
+            "max": 0.338,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "48_Mamba2ReturnY.py": {
+            "mean": 0.403,
+            "std": 0.0143,
+            "min": 0.385,
+            "max": 0.44,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "49_Mamba2ReturnFinalState.py": {
+            "mean": 0.242,
+            "std": 0.0138,
+            "min": 0.224,
+            "max": 0.296,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        },
+        "50_ReLUSelfAttention.py": {
+            "mean": 7.38,
+            "std": 0.0367,
+            "min": 7.34,
+            "max": 7.63,
+            "num_trials": 100,
+            "hardware": "NVIDIA L40S",
+            "device": "cuda:0"
+        }
+    }
+}
