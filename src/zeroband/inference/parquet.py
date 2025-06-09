@@ -1,4 +1,5 @@
 import pyarrow as pa
+from datasets import Dataset
 from vllm import RequestOutput
 
 from zeroband.inference.rewards import RequestRewards
@@ -12,7 +13,7 @@ def get_parquet_table(
     proofs: list[bytes],
     step: int,
     target_lengths: list[int],
-    problems: list[dict],
+    problems: Dataset,
 ) -> pa.Table:
     # Iterator over proofs
     proof_iter = iter(proofs)
@@ -31,11 +32,11 @@ def get_parquet_table(
             assert output.index == reward.completion_id
             records.append(
                 {
+                    "problem_id": str(problem.get("problem_id", request_output.request_id)),
                     "input_tokens": request_output.prompt_token_ids,
                     "output_tokens": output.token_ids,
                     "prompt": prompt,
                     "completion": output.text,
-                    "problem_id": str(problem["problem_id"]),
                     "advantages": reward.advantage,
                     "rewards": reward.reward,
                     "task_rewards": reward.task_reward,
