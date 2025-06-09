@@ -307,6 +307,7 @@ def inference(config: Config):
             proofs,
             ckpt_step,
             target_lengths,
+            problems,
         )
 
         # Save outputs to parquet file
