@@ -2019,14 +2019,12 @@ wheels = [
 
 [[package]]
 name = "prime-iroh"
-version = "0.3.0"
+version = "0.3.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/7a/8c/96fe94f5e863815db11e41854a31368459975dce783bcbc99e2e9e2ecf9d/prime_iroh-0.3.0.tar.gz", hash = "sha256:99d197edfb949063cb414bea473cedf4fe15ee7206f1214d2dde55b6269a14d8", size = 63791, upload-time = "2025-05-29T19:26:57.557Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/57/89/9f229ffd4243321ef398fc9338a059e02ec266f8bd3b0b14485a851354b1/prime_iroh-0.3.1.tar.gz", hash = "sha256:5421c9d7e6a86243067fd80e4c94d29983eac2e514c07d8578f5a9ad94f40c3f", size = 63662, upload-time = "2025-06-09T13:56:43.901Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2a/82/aed298aff61334b3c8b300a64b1839a3b6d55c3a9ce3c0090a56b33253de/prime_iroh-0.3.0-cp311-cp311-macosx_10_12_x86_64.whl", hash = "sha256:4bd095087a7d4a3b8e909cb76f321a6c5062315fe2be63a9d6ed69c78f04d8cc", size = 7517259, upload-time = "2025-05-29T19:32:27.499Z" },
-    { url = "https://files.pythonhosted.org/packages/c2/89/5d632436a0e767f86549f6ade259fcba0383f246d96ebc5acf47e4f605c9/prime_iroh-0.3.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:f298f630625c07b238c0dfaf1e9591116580fe47ee91dc73deccde54f78deeb6", size = 7254401, upload-time = "2025-05-29T19:32:12.449Z" },
-    { url = "https://files.pythonhosted.org/packages/e2/fb/fb46fbd2faafda5e0a1ec48341461360d29577d6e74bb4e6ba76644c540c/prime_iroh-0.3.0-cp311-cp311-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:3f29b3afd56d87b379626c7036c43eab574ac8aab0078711f6916157abaa374e", size = 9195755, upload-time = "2025-05-29T19:35:50.553Z" },
-    { url = "https://files.pythonhosted.org/packages/51/9d/1d045c5951bf06adedc1e20aaca53b3f162051476ce575dfc94cf7b484d6/prime_iroh-0.3.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:71ed80b8cdb040bc5e7a2548b482785591173c205846bc5a2c42afa1f4c48a39", size = 8789992, upload-time = "2025-05-29T19:32:30.236Z" },
+    { url = "https://files.pythonhosted.org/packages/fd/ea/d4bea6f58c526364b702be9d27eed0c9164448a996bfaa59f3ef76ab6217/prime_iroh-0.3.1-cp311-cp311-macosx_10_12_x86_64.whl", hash = "sha256:1a57f1dc0798123905e3cd495ab8aa0b94871b45aa6ab0e8e8d645ec69fdbc93", size = 7354220, upload-time = "2025-06-09T13:58:49.157Z" },
+    { url = "https://files.pythonhosted.org/packages/df/4a/b9b290732028289eea4009aeafd36fb78dab9b55142804388bf21449c85f/prime_iroh-0.3.1-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:57476f193f83ae5e23ffbdade626cf97ae7683e04cb9021c521e27db3abd95c2", size = 7072355, upload-time = "2025-06-09T13:59:39.451Z" },
 ]
 
 [[package]]
@@ -3502,7 +3500,7 @@ requires-dist = [
     { name = "llmcompressor" },
     { name = "ninja" },
     { name = "numpy" },
-    { name = "prime-iroh", specifier = ">=0.3.0" },
+    { name = "prime-iroh", specifier = ">=0.3.1" },
     { name = "pyarrow" },
     { name = "pydantic", extras = ["email"], specifier = ">=2.11.5" },
     { name = "pydantic-config", git = "https://github.com/samsja/pydantic_config.git?rev=b7becc3" },
