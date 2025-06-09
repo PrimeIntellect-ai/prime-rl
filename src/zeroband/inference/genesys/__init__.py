@@ -3,6 +3,7 @@ from typing import Callable, Literal
 from zeroband.inference.genesys.ascii_tree_formatting import compute_reward as compute_ascii_tree_reward
 from zeroband.inference.genesys.code import evaluate_code
 from zeroband.inference.genesys.code_output_prediction import verify_code_output_prediction
+from zeroband.inference.genesys.codeforces import codeforces_reward
 from zeroband.inference.genesys.complex_json_output import verify_complex_json_formatting
 from zeroband.inference.genesys.ifeval import verify_ifeval
 from zeroband.inference.genesys.math import compute_math_reward
@@ -37,6 +38,7 @@ _REWARD_FUNCTIONS: dict[TaskType, Callable] = {
     "prime_rl_code": evaluate_code,
     "reasoning_gym": verify_reasoning_gym,
     "code_output_prediction": verify_code_output_prediction,
+    "codeforces": codeforces_reward,
     "reverse_text": reverse_text,
     "unscramble_sentence": compute_unscramble_reward,
     "ascii_tree_formatting": compute_ascii_tree_reward,
