@@ -8,15 +8,44 @@ from zeroband.inference.rewards import RewardsConfig
 from zeroband.utils.monitor import MultiMonitorConfig
 
 
-class SamplingParamConfig(BaseConfig):
-    temperature: float = 0.6
-    max_tokens: int | None = None
-    ignore_eos: bool = False
-    top_p: float = 1
+class SamplingConfig(BaseConfig):
+    """Parameters for sampling tokens from logits. Follows the vLLM sampling parameters."""
+
+    # Number of output sequences to return for the given prompt.
     n: int = 8
+
+    # Penalizes new tokens based on whether they appear in the generated text so far (Values >0 penalize/ <0 reward repeated tokens)
+    presence_penalty: float = 0
+
+    # Penalizes new tokens based on their frequency in the generated text so far (Values >0 penalize/ <0 reward repeated tokens)
+    frequency_penalty: float = 0
+
+    # Scales the output probability distribution to control the randomness of the sampling. Lower values lead to more deterministic sampling while higher values make the model more random. If 0, sampling will be greedy.
+    temperature: float = 0.6
+
+    # The cumulative probability of the top tokens to consider. For example, if 0.9, then the minimum set of tokens whose cumulative probability is at least 0.9 is considered. If 1, all tokens are considered.
+    top_p: float = 1
+
+    # The number of tokens with highest probability to consider. If -1, all tokens are considered.
     top_k: int = -1
+
+    # The minimum probability for a token to be considered, relative to the probability of the most likely token. If 0, all tokens are considered.
+    min_p: float = 0.0
+
+    # The number of log probabilities to return per output token. When set to None, no probability is returned. If set to a non-None value, the result includes the log probabilities of the specified number of most likely tokens, as well as the chosen tokens (e.g. 0 returns only the logprob of the chosen token)
+    logprobs: int | None = 0
+
+    # Whether to ignore the EOS token. If True, the model will generate until the end of the sequence. If False, the model will generate until the EOS token is reached.
+    ignore_eos: bool = False
+
+    # Maximum number of output tokens to generate per sequence. If None, the model will generate until EOS or maximum context length is reached.
+    max_tokens: int | None = None
+
+    # Minimum number of output tokens to generate per sequence.
+    min_tokens: int | None = None
+
+    # Random seed to use for generation. If None, sampling will be random.
     seed: int | None = None
-    logprobs: int | None = 0  # put to None to disable logprobs calculation
 
     @model_validator(mode="after")
     def convert_negative_logprobs_to_none(self):
@@ -52,7 +81,7 @@ class Config(BaseConfig):
 
     quant: Literal["fp8"] | None = None
 
-    sampling: SamplingParamConfig = SamplingParamConfig()
+    sampling: SamplingConfig = SamplingConfig()
 
     # Whether to enable thinking for the model. Used by the `format_prompts` function to prepend a thinking prompt
     enable_thinking: bool = True
