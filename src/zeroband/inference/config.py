@@ -155,7 +155,7 @@ class RLConfig(BaseConfig):
     ckpt_path: str = "checkpoints"
 
     # Whether to clean the checkpoint path at the start of the inference. Useful for debugging. Defaults to False.
-    clean_checkpoint_path: bool = False
+    clean_ckpt_path: bool = False
 
     # The maximum number of steps that inference can be ahead of training. Defaults to 2, which means that inference can be 2 steps ahead of training.
     max_async: int = 2
@@ -195,11 +195,11 @@ class Config(BaseConfig):
     # The maximum number of steps to run. Defaults to None, which means the inference will run indefinitely.
     max_steps: int | None = None
 
-    # The path to write inference outputs (parquet files) to. The folder will be automatically created and populated with subdirectories for each step. Defaults to writing to "outputs" at the root of the project directory.
-    output_path: str = "outputs"
+    # The path to write inference outputs (rollouts) to. The folder will be automatically created and populated with subdirectories for each step. Defaults to writing to "rollouts" at the root of the project directory.
+    rollout_path: str = "rollouts"
 
-    # Whether to clean the output path at the start of the inference. Useful for debugging. Defaults to False.
-    clean_output_path: bool = False
+    # Whether to clean the rollout path at the start of the inference. Useful for debugging. Defaults to False.
+    clean_rollout_path: bool = False
 
     # Random seed for reproducible outputs. Is used across inference components, such as the model, sampling and batching. Should only be used for debugging. Defaults to None, which skips seeding.
     seed: int | None = None

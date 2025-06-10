@@ -52,9 +52,9 @@ def inference(config: Config):
     logger.info(f"Dataset: {config.data.name}")
     logger.info(f"Parallelism: TP={config.parallel.tp}, DP={config.parallel.dp}, PP={config.parallel.pp.world_size}")
 
-    if config.clean_output_path and config.output_path is not None:
-        logger.info(f"Cleaning output path {config.output_path}")
-        shutil.rmtree(config.output_path, ignore_errors=True)
+    if config.clean_rollout_path and config.rollout_path is not None:
+        logger.info(f"Cleaning rollout path {config.rollout_path}")
+        shutil.rmtree(config.rollout_path, ignore_errors=True)
 
     # Pre-download the model weights
     logger.info(f"Downloading model weights for {config.model_name}")
@@ -348,7 +348,7 @@ def inference(config: Config):
         )
 
         # Save outputs to parquet file
-        step_path = Path(config.output_path) / f"step_{real_step}"
+        step_path = Path(config.rollout_path) / f"step_{real_step}"
         step_path.mkdir(parents=True, exist_ok=True)
         save_path = step_path / f"{uuid.uuid4()}.parquet"
         pq.write_table(table, save_path)
