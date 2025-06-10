@@ -228,6 +228,12 @@ class Config(BaseSettings):
     toploc2: bool = True
 
     @model_validator(mode="after")
+    def enforce_eager_for_pp(self):
+        if self.parallel.pp.world_size > 1:
+            self.model.enforce_eager = True
+        return self
+
+    @model_validator(mode="after")
     def disable_toploc_for_fp32(self):
         if self.model.dtype == "float32":
             self.toploc = False
