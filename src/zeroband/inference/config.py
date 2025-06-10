@@ -51,7 +51,7 @@ class SamplingConfig(BaseConfig):
     ignore_eos: Annotated[bool, Field(default=False)]
 
     # Maximum number of output tokens to generate per sequence. If None, the model will generate until EOS or maximum context length is reached.
-    max_tokens: Annotated[int | None, Field(default=None, ge=1)]
+    max_tokens: Annotated[int | None, Field(default=None)]
 
     # Minimum number of output tokens to generate per sequence.
     min_tokens: Annotated[int, Field(default=0, ge=0)]
@@ -77,19 +77,13 @@ class ParallelConfig(BaseConfig):
     """
 
     # The TP world size, i.e. the number of local GPUs to use for tensor parallelism within vLLM. This argument is directly passed to vLLM as `tensor_parallel_size`. If "auto", will be set to the number of local GPUs available.
-    tp: Annotated[int | Literal["auto"], Field(default=1, ge=1)]
+    tp: Annotated[int | Literal["auto"], Field(default=1)]
 
     # The DP world size, i.e. the number of local GPUs use for data parallelism. This argument is used to spawn multiple processes running vLLM instance independently.
     dp: Annotated[int, Field(default=1, ge=1)]
 
     # The pipeline parallelism configuration
     pp: Annotated[PipelineConfig, Field(default=PipelineConfig())]
-
-    @model_validator(mode="after")
-    def enforce_eager_for_pp(self):
-        if self.pp.world_size > 1:
-            self.enforce_eager = True
-        return self
 
     @model_validator(mode="after")
     def assert_valid_parallelism(self):
