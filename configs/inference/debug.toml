@@ -1,5 +1,5 @@
 total_step = 2
-batch_size = 16
+max_batch_size = 16
 toploc = true
 
 [model]

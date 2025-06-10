@@ -102,16 +102,16 @@ def inference(config: Config):
     setup_hooks(llm, config.parallel.pp, node)
 
     # Compute the maximum batch size
-    batch_size = config.batch_size
-    if batch_size == "auto":
+    max_batch_size = config.max_batch_size
+    if max_batch_size == "auto":
         # Automatically compute the maximum batch size
-        local_batch_size = compute_max_batch_size(llm)
-        batch_size = all_reduce(node, torch.tensor(local_batch_size), config=config.parallel.pp, op=torch.min).item()
-        logger.info(f"Auto-computed batch size: {batch_size}")
+        local_max_batch_size = compute_max_batch_size(llm)
+        max_batch_size = all_reduce(node, torch.tensor(local_max_batch_size), config=config.parallel.pp, op=torch.min).item()
+        logger.info(f"Auto-computed max batch size: {max_batch_size}")
 
     # Throw an error if the batch size is too small for the number of samples to generate per problem
-    if config.sampling.n > batch_size:
-        raise ValueError(f"Sampling.n ({config.sampling.n}) must be less than or equal to batch_size ({batch_size})")
+    if config.sampling.n > max_batch_size:
+        raise ValueError(f"Sampling.n ({config.sampling.n}) must be less than or equal to max_batch_size ({max_batch_size})")
 
     # Load  dataset
     dataset = load_dataset(config.data.name, split=config.data.split)
@@ -147,6 +147,13 @@ def inference(config: Config):
             and x[config.data.difficulty_filtering.solve_rate_field] <= config.data.difficulty_filtering.max_solve_rate
         )
 
+    # Compute the true batch size
+    problems_per_batch = max_batch_size // config.sampling.n
+    batch_size = problems_per_batch * config.sampling.n
+    logger.info(
+        f"Problems per batch: {max_batch_size} // {config.sampling.n} = {problems_per_batch}, batch size: {problems_per_batch} * {config.sampling.n} = {batch_size} (missing: {max_batch_size % config.sampling.n})"
+    )
+
     # Setup TOPLOC
     hidden_size = llm.llm_engine.model_executor.driver_worker.model_runner.model.config.hidden_size
     toploc_cache, _ = setup_toploc_cache(
@@ -175,12 +182,6 @@ def inference(config: Config):
     total_problems = 0
     total_samples = 0
     total_tokens = 0
-
-    # Compute the maximum number of problems and problems per batch
-    problems_per_batch = batch_size // config.sampling.n
-    logger.info(
-        f"Problems per batch: {batch_size} // {config.sampling.n} = {problems_per_batch} (missing: {batch_size % config.sampling.n})"
-    )
 
     dataset_offset = 0
     while True:

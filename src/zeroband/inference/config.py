@@ -106,7 +106,7 @@ class ModelConfig(BaseConfig):
     # Whether to enforce PyTorch eager mode for the model. Defaults to False, which uses PyTorch eager and cuda graphs in hybrid for maximal performance.
     enforce_eager: bool = False
 
-    # The device to use for inference.
+    # The device to use for inference. Defaults to "auto".
     device: Literal["auto", "cuda", "cpu"] = "auto"
 
     # Whether to enable thinking for the model. Used by the `format_prompts` function to prepend a thinking prompt
@@ -114,31 +114,63 @@ class ModelConfig(BaseConfig):
 
 
 class DifficultyFilteringConfig(BaseConfig):
+    """Configuration that controls offline difficulty filtering of the dataset."""
+
+    # The field in the dataset that contains the solve rate
     solve_rate_field: str = "solve_rate_qwen_r1_distill_7b"
+
+    # The minimum solve rate to filter by
     min_solve_rate: float = 0.0
+
+    # The maximum solve rate to filter by
     max_solve_rate: float = 0.5
 
 
+class DataConfig(BaseConfig):
+    """Configurations for the dataset to be used for inference."""
+
+    # The name of the HF dataset to use
+    name: str = "PrimeIntellect/INTELLECT-2-RL-Dataset"
+
+    # The split of the dataset to use
+    split: str = "train"
+
+    # The maximum number of input tokens. If set, filters out all samples with more than this number of input tokens. Defaults to None, which means no filtering.
+    max_prompt_len: int | None = None
+
+    # Configuration that controls offline difficulty filtering of the dataset
+    difficulty_filtering: DifficultyFilteringConfig | None = None
+
+
 class Config(BaseConfig):
+    # The model configuration
     model: ModelConfig = ModelConfig()
-    dataset: str = "PrimeIntellect/INTELLECT-2-RL-Dataset"
 
-    # The maximum number of of sequences to decode in parallel (if None, will be computed automatically)
-    batch_size: int | Literal["auto"] = "auto"
+    # The data configuration
+    data: DataConfig = DataConfig()
 
-    # The step to start from (if None, will start from 0)
+    # The sampling configuration
+    sampling: SamplingConfig = SamplingConfig()
+
+    # The parallel configuration
+    parallel: ParallelConfig = ParallelConfig()
+
+    # The monitor configuration
+    monitor: MultiMonitorConfig = MultiMonitorConfig()
+
+    # The maximum number of of sequences to decode in parallel. Defaults to "auto", which automatically computes the maximum batch size based on the model's context length and available KV cache.
+    max_batch_size: int | Literal["auto"] = "auto"
+
+    # The step to start from. Defaults to None, which means the inference will start from the beginning of the dataset.
     start_step: int | None = None
 
+    # The path to the output directory. Defaults to "outputs".
     output_path: str = "outputs"
     clean_output_path: bool = False  # if true, the output path will be cleaned up before running the inference
 
     total_step: int | None = None
     rollout_path: str | None = None
     step_endpoint: str | None = None
-
-    sampling: SamplingConfig = SamplingConfig()
-    parallel: ParallelConfig = ParallelConfig()
-    monitor: MultiMonitorConfig = MultiMonitorConfig()
 
     async_level: int = 2  # the amount of step for which we can be in advance
 
@@ -154,9 +186,6 @@ class Config(BaseConfig):
     toploc2: bool = True
 
     rewards: RewardsConfig = RewardsConfig()
-    difficulty_filtering: DifficultyFilteringConfig | None = None
-
-    max_prompt_len: int | None = None
 
     @model_validator(mode="after")
     def disable_toploc_for_fp32(self):
