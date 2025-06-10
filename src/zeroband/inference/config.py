@@ -142,6 +142,25 @@ class DataConfig(BaseConfig):
     difficulty_filtering: DifficultyFilteringConfig | None = None
 
 
+class RLConfig(BaseConfig):
+    """Configuration if inference is run in an RL setting"""
+
+    # An API endpoint that returns the current step during an RL run. Defaults to None, which means that the local inference step counter is used.
+    step_endpoint: str | None = None
+
+    # The path to the checkpoint to start from. Defaults to None, which means that the base model specified in `--model.name` is used.
+    ckpt_start_path: str | None = None
+
+    # The path to read new checkpoints from. Only relevant for RL training when the inference model is updated during the run. Defaults to "checkpoints", which means that checkpoints will be read from subdirectories for each step in the "checkpoints" folder at the root of the project directory.
+    ckpt_path: str = "checkpoints"
+
+    # Whether to clean the checkpoint path at the start of the inference. Useful for debugging. Defaults to False.
+    clean_checkpoint_path: bool = False
+
+    # The maximum number of steps that inference can be ahead of training. Defaults to 2, which means that inference can be 2 steps ahead of training.
+    max_async: int = 2
+
+
 class Config(BaseConfig):
     # The model configuration
     model: ModelConfig = ModelConfig()
@@ -158,29 +177,29 @@ class Config(BaseConfig):
     # The monitor configuration
     monitor: MultiMonitorConfig = MultiMonitorConfig()
 
+    # The RL configuration. If None, inference will run in a non-RL setting.
+    rl: RLConfig | None = None
+
     # The maximum number of of sequences to decode in parallel. Defaults to "auto", which automatically computes the maximum batch size based on the model's context length and available KV cache.
     max_batch_size: int | Literal["auto"] = "auto"
 
-    # The step to start from. Defaults to None, which means the inference will start from the beginning of the dataset.
-    start_step: int | None = None
+    # The step to start from. Defaults to 0, which means that inference will start from the beginning of the dataset.
+    start_step: int = 0
 
-    # The path to the output directory. Defaults to "outputs".
+    # The maximum number of steps to run. Defaults to None, which means the inference will run indefinitely.
+    max_steps: int | None = None
+
+    # The path to write inference outputs (parquet files) to. The folder will be automatically created and populated with subdirectories for each step. Defaults to writing to "outputs" at the root of the project directory.
     output_path: str = "outputs"
-    clean_output_path: bool = False  # if true, the output path will be cleaned up before running the inference
 
-    total_step: int | None = None
-    rollout_path: str | None = None
-    step_endpoint: str | None = None
-
-    async_level: int = 2  # the amount of step for which we can be in advance
+    # Whether to clean the output path at the start of the inference. Useful for debugging. Defaults to False.
+    clean_output_path: bool = False
 
     gpus_ids: list[int] | None = None
     prime_log_freq: int | None = None
 
     # Random seed for reproducible outputs. Is used across inference components, such as the model, sampling and batching. Should only be used for debugging. Defaults to None, which skips seeding.
     seed: int | None = None
-
-    ckpt_start_path: str | None = None
 
     toploc: bool = False
     toploc2: bool = True

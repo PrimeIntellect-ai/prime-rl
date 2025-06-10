@@ -1,4 +1,4 @@
-total_step = 2
+max_steps = 2
 max_batch_size = 16
 toploc = true
 

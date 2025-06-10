@@ -165,10 +165,10 @@ def inference(config: Config):
     )
 
     ckpt_step = 0
-    real_step = config.start_step or 0
-    if config.ckpt_start_path is not None:
-        logger.info(f"Resuming from checkpoint {config.ckpt_start_path}")
-        path = Path(config.ckpt_start_path)
+    real_step = config.start_step
+    if config.rl and config.rl.ckpt_start_path is not None:
+        logger.info(f"Resuming from checkpoint {config.rl.ckpt_start_path}")
+        path = Path(config.rl.ckpt_start_path)
         path_file = path / "model.safetensors"
         if not path_file.exists():
             raise FileNotFoundError(f"Checkpoint file {path_file} does not exist")
@@ -185,12 +185,12 @@ def inference(config: Config):
 
     dataset_offset = 0
     while True:
-        if config.step_endpoint is not None:
+        if config.rl and config.rl.step_endpoint is not None:
             # We get the step from the endpoint at the start of each batch to know what to work on
             try:
-                new_real_step = requests.get(config.step_endpoint).json()
+                new_real_step = requests.get(config.rl.step_endpoint).json()
             except Exception as e:
-                logger.warning(f"Failed to get step from endpoint {config.step_endpoint}: {e}")
+                logger.warning(f"Failed to get step from endpoint {config.rl.step_endpoint}: {e}")
                 time.sleep(10)
                 continue
 
@@ -201,15 +201,15 @@ def inference(config: Config):
                 current_step_batch_counter += 1
 
         logger.info(f"Inference step {real_step} (Checkpoint step: {ckpt_step})")
-        if config.rollout_path is not None and real_step - ckpt_step > config.async_level:
-            logger.info(f"Required to reload model weights for step {ckpt_step} from {config.rollout_path}")
-            ckpt_step = real_step - config.async_level
+        if config.rl and real_step - ckpt_step > config.rl.max_async:
+            logger.info(f"Required to reload model weights for step {ckpt_step} from {config.rl.ckpt_path}")
+            ckpt_step = real_step - config.rl.max_async
             attempt_count = 0
             while True:
-                stable_file = Path(config.rollout_path) / f"step_{ckpt_step}/stable"
+                stable_file = Path(config.rl.ckpt_path) / f"step_{ckpt_step}/stable"
                 if stable_file.exists():
                     logger.info(f"Reloading model weights for step {ckpt_step} from {stable_file}")
-                    llm = reload_model_weights(llm, Path(config.rollout_path) / f"step_{ckpt_step}/model.safetensors")
+                    llm = reload_model_weights(llm, Path(config.rl.ckpt_path) / f"step_{ckpt_step}/model.safetensors")
                     total_problems = 0
                     total_tokens = 0
                     logger.info(f"Reloaded model weights for step {ckpt_step} from {stable_file}")
@@ -372,8 +372,8 @@ def inference(config: Config):
 
         real_step += 1
 
-        if config.total_step is not None and real_step > config.total_step:
-            logger.info(f"Reached total step {config.total_step}, stopping inference")
+        if config.max_steps is not None and real_step > config.max_steps:
+            logger.info(f"Reached max steps {config.max_steps}, stopping inference")
             break
 
         dataset_offset += batch_size
@@ -417,23 +417,24 @@ if __name__ == "__main__":
     mp.set_start_method("spawn")
     config = Config(**parse_argv())  # type: ignore
 
-    if config.step_endpoint is not None:
-        current_step = requests.get(config.step_endpoint).json()
+    if config.rl and config.rl.step_endpoint is not None:
+        current_step = requests.get(config.rl.step_endpoint).json()
         assert isinstance(current_step, int), "Current step must be an integer"
 
     # Maybe start shardcast downloader
     from zeroband.inference import envs as inference_envs
 
     if inference_envs.SHARDCAST_SERVERS is not None:
+        assert config.rl is not None, "RL config is required when SHARDCAST_SERVERS is set"
         from zeroband.inference.shardcast_downloader import run_main_bg
 
         shardcast_process = run_main_bg(
             inference_envs.SHARDCAST_SERVERS,
-            config.rollout_path,
-            config.async_level + 1,
+            config.rl.ckpt_path,
+            config.rl.max_async + 1,
             # TODO: maybe +1 because we most likely won't download the current step in time?
             # We could deadlock though.
-            max(current_step - config.async_level, 1),
+            max(current_step - config.rl.max_async, 1),
         )
     else:
         shardcast_process = None
