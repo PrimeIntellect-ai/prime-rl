@@ -42,7 +42,7 @@ class SamplingConfig(BaseConfig):
     max_tokens: int | None = None
 
     # Minimum number of output tokens to generate per sequence.
-    min_tokens: int | None = None
+    min_tokens: int = 0
 
     # Random seed to use for generation. If None, sampling will be random.
     seed: int | None = None
@@ -52,6 +52,36 @@ class SamplingConfig(BaseConfig):
         """Convert negative logprobs values to None to disable logprobs calculation."""
         if self.logprobs is not None and self.logprobs < 0:
             self.logprobs = None
+        return self
+
+
+class ParallelConfig(BaseConfig):
+    """
+    Configurations for multi-node and multi-GPU setups. By default, inference
+    runs on a single GPU. We support tensor parallelism via vLLM, data
+    parallelism via multi-processing and pipeline parallelism over public IP via
+    custom hooks.  All combinations of parallelism are supported except for DP
+    and PP together.
+    """
+
+    # The TP world size, i.e. the number of local GPUs to use for tensor parallelism within vLLM. This argument is directly passed to vLLM as `tensor_parallel_size`. If "auto", will be set to the number of local GPUs available.
+    tp: int | Literal["auto"] = 1
+
+    # The DP world size, i.e. the number of local GPUs use for data parallelism. This argument is used to spawn multiple processes running vLLM instance independently.
+    dp: int = 1
+
+    # The pipeline parallelism configuration
+    pp: PipelineConfig = PipelineConfig()
+
+    @model_validator(mode="after")
+    def enforce_eager_for_pp(self):
+        if self.pp.world_size > 1:
+            self.enforce_eager = True
+        return self
+
+    @model_validator(mode="after")
+    def assert_valid_parallelism(self):
+        assert not (self.dp > 1 and self.pp.world_size > 1), "Cannot use PP and DP together"
         return self
 
 
@@ -82,6 +112,8 @@ class Config(BaseConfig):
     quant: Literal["fp8"] | None = None
 
     sampling: SamplingConfig = SamplingConfig()
+    parallel: ParallelConfig = ParallelConfig()
+    monitor: MultiMonitorConfig = MultiMonitorConfig()
 
     # Whether to enable thinking for the model. Used by the `format_prompts` function to prepend a thinking prompt
     enable_thinking: bool = True
@@ -90,14 +122,6 @@ class Config(BaseConfig):
     max_model_len: int | None = None
 
     async_level: int = 2  # the amount of step for which we can be in advance
-
-    # Parallelism
-    tp: int | Literal["auto"] = 1
-    dp: int = 1
-    pp: PipelineConfig = PipelineConfig()
-
-    # Monitoring (performance, progress, system metrics, etc.)
-    monitor: MultiMonitorConfig = MultiMonitorConfig()
 
     gpus_ids: list[int] | None = None
     prime_log_freq: int | None = None
@@ -120,15 +144,4 @@ class Config(BaseConfig):
     def disable_toploc_for_fp32(self):
         if self.dtype == "fp32":
             self.toploc = False
-        return self
-
-    @model_validator(mode="after")
-    def enforce_eager_for_tp(self):
-        if self.pp.world_size > 1:
-            self.enforce_eager = True
-        return self
-
-    @model_validator(mode="after")
-    def assert_valid_parallelism(self):
-        assert not (self.dp > 1 and self.pp.world_size > 1), "Cannot use PP and DP together"
         return self

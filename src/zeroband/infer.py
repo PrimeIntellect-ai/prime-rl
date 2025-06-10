@@ -50,7 +50,7 @@ def inference(config: Config):
     # Log relevant configuration
     logger.info(f"Model: {config.model_name}")
     logger.info(f"Dataset: {config.dataset}")
-    logger.info(f"Parallelism: TP={config.tp}, DP={config.dp}, PP={config.pp.world_size}")
+    logger.info(f"Parallelism: TP={config.parallel.tp}, DP={config.parallel.dp}, PP={config.parallel.pp.world_size}")
 
     if config.clean_output_path and config.output_path is not None:
         logger.info(f"Cleaning output path {config.output_path}")
@@ -66,7 +66,7 @@ def inference(config: Config):
     monitor = setup_monitor(config.monitor)
 
     # Patch vLLM's model loading to load model shard
-    patch_model_load(config=config.pp)
+    patch_model_load(config=config.parallel.pp)
 
     # Initialize vLLM and get tokenizer
     logger.info(
@@ -74,7 +74,7 @@ def inference(config: Config):
     )
     llm = LLM(
         model=config.model_name,
-        tensor_parallel_size=config.tp,
+        tensor_parallel_size=config.parallel.tp,
         max_seq_len_to_capture=config.max_model_len,
         max_model_len=config.max_model_len,
         quantization=config.quant,
@@ -94,17 +94,17 @@ def inference(config: Config):
     sampling_params = SamplingParams(**sampling_config)
 
     # Setup pipeline parallel communication
-    node = setup_comm(config.pp)
+    node = setup_comm(config.parallel.pp)
 
     # Setup pipeline parallel hooks
-    setup_hooks(llm, config.pp, node)
+    setup_hooks(llm, config.parallel.pp, node)
 
     # Compute the maximum batch size
     batch_size = config.batch_size
     if batch_size == "auto":
         # Automatically compute the maximum batch size
         local_batch_size = compute_max_batch_size(llm)
-        batch_size = all_reduce(node, torch.tensor(local_batch_size), config=config.pp, op=torch.min).item()
+        batch_size = all_reduce(node, torch.tensor(local_batch_size), config=config.parallel.pp, op=torch.min).item()
         logger.info(f"Auto-computed batch size: {batch_size}")
 
     # Throw an error if the batch size is too small for the number of samples to generate per problem
@@ -148,7 +148,7 @@ def inference(config: Config):
     hidden_size = llm.llm_engine.model_executor.driver_worker.model_runner.model.config.hidden_size
     toploc_cache, _ = setup_toploc_cache(
         llm,
-        pipeline_config=config.pp,
+        pipeline_config=config.parallel.pp,
         disable=not config.toploc,
         max_seqs=batch_size,
         hidden_size=hidden_size,
@@ -356,8 +356,8 @@ def inference(config: Config):
             {
                 "output/save_path": save_path.as_posix(),
                 "output/sha256": sha256,
-                "output/output_flops": sum(output_flops for _, output_flops in flop_counts) // config.pp.world_size,
-                "output/input_flops": sum(input_flops for input_flops, _ in flop_counts) // config.pp.world_size,
+                "output/output_flops": sum(output_flops for _, output_flops in flop_counts) // config.parallel.pp.world_size,
+                "output/input_flops": sum(input_flops for input_flops, _ in flop_counts) // config.parallel.pp.world_size,
             }
         )
 
@@ -379,19 +379,19 @@ def main(config: Config) -> list[mp.Process]:
     processes = []
     import zeroband.inference.envs as envs
 
-    if config.dp > 1:
-        if config.tp == "auto":
-            assert torch.cuda.device_count() % config.dp == 0, "Number of GPUs must be divisible by DP"
-            config.tp = torch.cuda.device_count() // config.dp
+    if config.parallel.dp > 1:
+        if config.parallel.tp == "auto":
+            assert torch.cuda.device_count() % config.parallel.dp == 0, "Number of GPUs must be divisible by DP"
+            config.parallel.tp = torch.cuda.device_count() // config.parallel.dp
         gpu_ids = envs.CUDA_VISIBLE_DEVICES
-        gpu_ids_per_rank = [gpu_ids[i : i + config.tp] for i in range(0, len(gpu_ids), config.tp)]
+        gpu_ids_per_rank = [gpu_ids[i : i + config.parallel.tp] for i in range(0, len(gpu_ids), config.parallel.tp)]
         for rank, gpu_ids in enumerate(gpu_ids_per_rank):
             envs = {"CUDA_VISIBLE_DEVICES": ",".join(map(str, gpu_ids)), "DP_RANK": str(rank)}
             process = mp.Process(target=EnvWrapper(inference, envs), args=(config,))
             processes.append(process)
     else:
-        if config.tp == "auto":
-            config.tp = torch.cuda.device_count()
+        if config.parallel.tp == "auto":
+            config.parallel.tp = torch.cuda.device_count()
         inference(config)
 
     # Start all processes
