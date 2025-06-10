@@ -48,12 +48,12 @@ uv run pre-commit install
 training
 
 ```bash
-uv run torchrun --nproc_per_node=2 src/zeroband/train.py @ configs/training/debug.toml
+uv run torchrun --nproc_per_node=2 src/zeroband/train.py @configs/training/debug.toml
 ```
 
 inference
 ```bash
-uv run python src/zeroband/infer.py @ configs/inference/debug.toml
+uv run python src/zeroband/infer.py @configs/inference/debug.toml
 ```
 
 
@@ -71,14 +71,14 @@ If you have 2 GPUs, run the following commands:
 # Start inference worker
 export CUDA_VISIBLE_DEVICES=0
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
-uv run python src/zeroband/infer.py @ configs/inference/simple_math.toml --dp 1 --batch-size 512
+uv run python src/zeroband/infer.py @configs/inference/simple_math.toml --parallel.dp 1 --max-batch-size 512
 ```
 
 ```bash
 # Start trainer
 ulimit -n 4096
 export CUDA_VISIBLE_DEVICES=1
-uv  run torchrun src/zeroband/train.py @ configs/training/simple_math.toml
+uv  run torchrun src/zeroband/train.py @configs/training/simple_math.toml
 ```
 
 If you have 4 GPUs, run the following commands:
@@ -87,14 +87,14 @@ If you have 4 GPUs, run the following commands:
 # Start inference workers
 export CUDA_VISIBLE_DEVICES=0,1
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
-uv run python src/zeroband/infer.py @ configs/inference/simple_math.toml --dp 2 --batch-size 256
+uv run python src/zeroband/infer.py @configs/inference/simple_math.toml --parallel.dp 2 --max-batch-size 256
 ```
 
 ```bash
 # Start trainer
 ulimit -n 4096
 export CUDA_VISIBLE_DEVICES=2
-uv  run torchrun src/zeroband/train.py @ configs/training/simple_math.toml
+uv  run torchrun src/zeroband/train.py @configs/training/simple_math.toml
 ```
 
 If you have 8 GPUs, run the following commands:
@@ -103,14 +103,14 @@ If you have 8 GPUs, run the following commands:
 # Start inference workers
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
-uv run python src/zeroband/infer.py @ configs/inference/simple_math.toml
+uv run python src/zeroband/infer.py @configs/inference/simple_math.toml
 ```
 
 ```bash
 # Start trainer
 ulimit -n 4096
 export CUDA_VISIBLE_DEVICES=6,7
-uv  run torchrun --nproc_per_node=2 src/zeroband/train.py @ configs/training/simple_math.toml --data.num_workers 2
+uv  run torchrun --nproc_per_node=2 src/zeroband/train.py @configs/training/simple_math.toml --data.num_workers 2
 ```
 
 
@@ -121,7 +121,7 @@ on two different terminal do:
 ```bash
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
-uv run python src/zeroband/infer.py @ configs/inference/deepscaler.toml
+uv run python src/zeroband/infer.py @configs/inference/deepscaler.toml
 ```
 
 then start the trainer
@@ -129,7 +129,7 @@ then start the trainer
 ```bash
 ulimit -n 4096
 export CUDA_VISIBLE_DEVICES=6,7
-uv  run torchrun --nproc_per_node=2 src/zeroband/train.py @ configs/training/deepscaler.toml
+uv  run torchrun --nproc_per_node=2 src/zeroband/train.py @configs/training/deepscaler.toml
 ```
 
 if running on h100 node instead of H200 you should add ` --train.micro_bs 4`
@@ -142,40 +142,36 @@ Below are examples of how to run inference for different parallelization strateg
 Single Node (DP=1, TP=1, PP=1, *requires 1 GPU*)
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 uv run python src/zeroband/infer.py @ configs/inference/debug.toml
+CUDA_VISIBLE_DEVICES=0 uv run python src/zeroband/infer.py @configs/inference/debug.toml
 ```
 
 Only TP (TP=2, PP=1, DP=1, *requires 2 GPUs*)
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/infer.py @ configs/inference/debug.toml --tp 2
+CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/infer.py @configs/inference/debug.toml --parallel.tp 2
 ```
 
 Only DP (DP=2, TP=1, PP=1, *requires 2 GPUs*)
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/infer.py @ configs/inference/debug.toml --dp 2
+CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/infer.py @configs/inference/debug.toml --parallel.dp 2
 ```
 
 Only PP (DP=1, TP=1, PP=2, *requires 2 GPUs*)
 
 ```bash
 # Node 1
-CUDA_VISIBLE_DEVICES=0 uv run python src/zeroband/infer.py @ configs/inference/debug.toml \
-	--pp.rank 0 \
-	--pp.world-size 2 \
-	--pp.iroh-seed 0 \
-	--pp.iroh-peer-id ff87a0b0a3c7c0ce827e9cada5ff79e75a44a0633bfcb5b50f99307ddb26b337 \
+CUDA_VISIBLE_DEVICES=0 uv run python src/zeroband/infer.py @configs/inference/debug.toml \
+	--parallel.pp.rank 0 \
+	--parallel.pp.world-size 2 \
 	--seed 69
 ```
 
 ```bash
 # Node 2
-CUDA_VISIBLE_DEVICES=1 uv run python src/zeroband/infer.py @ configs/inference/debug.toml \
-	--pp.rank 1 \
-	--pp.world-size 2 \
-	--pp.iroh-seed 1 \
-	--pp.iroh-peer-id ee1aa49a4459dfe813a3cf6eb882041230c7b2558469de81f87c9bf23bf10a03 \
+CUDA_VISIBLE_DEVICES=1 uv run python src/zeroband/infer.py @configs/inference/debug.toml \
+	--parallel.pp.rank 1 \
+	--parallel.pp.world-size 2 \
 	--seed 69
 ```
 
@@ -184,30 +180,26 @@ CUDA_VISIBLE_DEVICES=1 uv run python src/zeroband/infer.py @ configs/inference/d
 DP+TP (DP=2, TP=2, PP=1, *requires 4 GPUs*)
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 uv run python src/zeroband/infer.py @ configs/inference/debug.toml --dp 2 --tp auto
+CUDA_VISIBLE_DEVICES=0,1,2,3 uv run python src/zeroband/infer.py @configs/inference/debug.toml --parallel.dp 2 --parallel.tp auto
 ```
 
 PP+TP (DP=1, TP=2, PP=2, *requires 4 GPUs*)
 
 ```bash
 # Node 1
-CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/infer.py @ configs/inference/debug.toml \
-	--tp auto \
-	--pp.rank 0 \
-	--pp.world-size 2 \
-	--pp.iroh-seed 0 \
-	--pp.iroh-peer-id ff87a0b0a3c7c0ce827e9cada5ff79e75a44a0633bfcb5b50f99307ddb26b337 \
+CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/infer.py @configs/inference/debug.toml \
+	--parallel.tp auto \
+	--parallel.pp.rank 0 \
+	--parallel.pp.world-size 2 \
 	--seed 69
 ```
 
 ```bash
 # Node 2
-CUDA_VISIBLE_DEVICES=2,3 uv run python src/zeroband/infer.py @ configs/inference/debug.toml \
-	--tp auto \
-	--pp.rank 1 \
-	--pp.world-size 2 \
-	--pp.iroh-seed 1 \
-	--pp.iroh-peer-id ee1aa49a4459dfe813a3cf6eb882041230c7b2558469de81f87c9bf23bf10a03 \
+CUDA_VISIBLE_DEVICES=2,3 uv run python src/zeroband/infer.py @configs/inference/debug.toml \
+	--parallel.tp auto \
+	--parallel.pp.rank 1 \
+	--parallel.pp.world-size 2 \
 	--seed 69
 ```
 
