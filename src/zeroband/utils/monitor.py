@@ -21,36 +21,40 @@ logger = get_logger("INFER")
 
 
 class MonitorConfig(BaseConfig):
-    # Whether to log to this monitor
-    enable: Annotated[bool, Field(default=False)]
+    enable: Annotated[bool, Field(default=False, description="Whether to log to this monitor")]
 
 
 class FileMonitorConfig(MonitorConfig):
-    # The file path to log to
-    path: Annotated[str | None, Field(default=None)]
+    """Configures logging to a file."""
+
+    path: Annotated[str | None, Field(default=None, description="The file path to log to")]
 
 
 class SocketMonitorConfig(MonitorConfig):
-    # The socket path to log to
-    path: Annotated[str | None, Field(default=None)]
+    """Configures logging to a Unix socket."""
+
+    path: Annotated[str | None, Field(default=None, description="The socket path to log to")]
 
 
 class APIMonitorConfig(MonitorConfig):
-    # The API URL to log to
-    url: Annotated[str | None, Field(default=None)]
+    """Configures logging to an API via HTTP."""
 
-    # The API auth token to use
-    auth_token: Annotated[str | None, Field(default=None)]
+    url: Annotated[str | None, Field(default=None, description="The API URL to log to")]
+
+    auth_token: Annotated[str | None, Field(default=None, description="The API auth token to use")]
 
 
 class MultiMonitorConfig(BaseConfig):
+    """Configures the monitoring system."""
+
     # All possible monitors (currently only supports one instance per type)
     file: Annotated[FileMonitorConfig, Field(default=FileMonitorConfig())]
     socket: Annotated[SocketMonitorConfig, Field(default=SocketMonitorConfig())]
     api: Annotated[APIMonitorConfig, Field(default=APIMonitorConfig())]
 
-    # Interval in seconds to log system metrics (if 0, no system metrics are logged)
-    system_log_frequency: Annotated[int, Field(default=0, ge=0)]
+    system_log_frequency: Annotated[
+        int, Field(default=0, ge=0, description="Interval in seconds to log system metrics. If 0, no system metrics are logged)")
+    ]
 
     def __str__(self) -> str:
         file_str = "disabled" if not self.file.enable else f"path={self.file.path}"

@@ -17,7 +17,7 @@ logger = get_logger("INFER")
 
 
 class LenRewardsConfig(BaseConfig):
-    """Configuration for the length reward."""
+    """Configures length reward."""
 
     reward_type: Annotated[Literal["exact", "max", "clip"], Field(default="max")]
     target_length_sampling: Annotated[Literal["discrete", "range"], Field(default="discrete")]
@@ -38,6 +38,8 @@ class LenRewardsConfig(BaseConfig):
 
 
 class RewardsConfig(BaseConfig):
+    """Configures rewards compuation"""
+
     len_reward: Annotated[LenRewardsConfig | None, Field(default=None)]
     advantage_estimation_method: Annotated[Literal["grpo", "dr_grpo", "opo"], Field(default="grpo")]
 
