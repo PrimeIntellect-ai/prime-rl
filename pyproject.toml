@@ -36,6 +36,7 @@ dependencies = [
     "reasoning-gym @ git+https://github.com/open-thought/reasoning-gym.git",
     "tomli>=2.2.1",
     "pydantic[email]>=2.11.5",
+    "verifiers[all]",
 ] 
 
 [project.optional-dependencies]
@@ -64,6 +65,9 @@ dev-dependencies = [
     "ipykernel>=6.29.5",
 ]
 no-build-isolation-package = ["flash-attn"]
+
+[tool.uv.sources]
+verifiers = { git = "https://github.com/willccbb/verifiers.git" }
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers"

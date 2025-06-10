@@ -1,0 +1,8 @@
+model_name = "willcb/Qwen2.5-0.5B-Reverse-SFT"
+dataset = "default"
+batch_size = 112
+dp = 6
+rollout_path = "outputs"
+output_path = "data_rollout"
+clean_output_path = true
+max_model_len = 2048

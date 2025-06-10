@@ -297,10 +297,6 @@ def train(config: Config):
                     metric_averager.update("sample_reward", rewards)
                 for seq_lens in batch["seq_lens"]:
                     metric_averager.update("seq_lens", seq_lens)
-                for length_penalties in batch["length_penalties"]:
-                    metric_averager.update("length_penalties", length_penalties)
-                for target_lengths in batch["target_lengths"]:
-                    metric_averager.update("target_lengths", target_lengths)
 
                 # Task-specific metrics with proper grouping
                 if "task_types" in batch:

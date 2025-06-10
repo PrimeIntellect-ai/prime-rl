@@ -1,4 +1,3 @@
-import json
 import multiprocessing as mp
 import os
 import shutil
@@ -15,15 +14,16 @@ import pyarrow.parquet as pq
 import requests
 import torch
 import torch.distributed as dist
+import verifiers as vf
 from datasets import load_dataset
 from pydantic_config import parse_argv
 from toploc.utils import sha256sum
-from vllm import LLM, SamplingParams
+from vllm import LLM
+from openai import OpenAI
 
 from zeroband.inference.config import Config
 from zeroband.inference.parquet import get_parquet_table
 from zeroband.inference.pipeline import all_reduce, patch_model_load, setup_comm, setup_hooks
-from zeroband.inference.rewards import compute_vllm_rewards
 from zeroband.inference.toploc import setup_toploc_cache
 from zeroband.utils.monitor import setup_monitor
 from zeroband.inference.utils import (
@@ -31,9 +31,8 @@ from zeroband.inference.utils import (
     reload_model_weights,
     compute_max_batch_size,
     get_inference_input_output_flops,
-    generate_target_lengths,
-    format_prompts,
 )
+from zeroband.inference.openai_wrapper import MockOpenAIServer
 from zeroband.training.mp import EnvWrapper
 from zeroband.utils.logger import get_logger
 
@@ -66,17 +65,17 @@ def inference(config: Config):
     )
     llm = LLM(
         model=config.model_name,
-        tensor_parallel_size=config.tp,
-        max_seq_len_to_capture=config.max_model_len,
+        tensor_parallel_size=config.tp,  # type: ignore
+        max_seq_len_to_capture=config.max_model_len,  # type: ignore
         max_model_len=config.max_model_len,
         quantization=config.quant,
         enforce_eager=config.enforce_eager,
         disable_async_output_proc=True,  # We have an off by 1 error in toploc without this flag when cuda graph padding is enabled.
         download_dir=config.download_dir,
-        dtype="bfloat16" if config.dtype == "bf16" else torch.float32,
+        dtype="bfloat16" if config.dtype == "bf16" else torch.float32,  # type: ignore
     )
     tokenizer = llm.get_tokenizer()
-    sampling_params = SamplingParams(**config.sampling.model_dump())
+    # sampling_params = SamplingParams(**config.sampling.model_dump())
 
     # Setup pipeline parallel communication
     node = setup_comm(config.pp)
@@ -92,12 +91,81 @@ def inference(config: Config):
         batch_size = all_reduce(node, torch.tensor(local_batch_size), config=config.pp, op=torch.min).item()
         logger.info(f"Auto-computed batch size: {batch_size}")
 
+    # Start MockOpenAI server
+    base_port = 8000
+    dp_rank = int(os.environ.get("DP_RANK", 0))
+    port = base_port + dp_rank
+
+    logger.info(f"Starting MockOpenAI server on port {port}")
+    # Create mock config for MockOpenAI server with required fields
+    from types import SimpleNamespace
+
+    mock_config = SimpleNamespace(batch_size=batch_size, max_wait_time=1.0, model_name=config.model_name)
+    oai_server = MockOpenAIServer(llm, tokenizer, mock_config)
+    oai_server.start(port=port)
+
+    # Create OpenAI client
+    import httpx
+
+    client_config = oai_server.get_client_config(port=port)
+    openai_client = OpenAI(
+        base_url=client_config["base_url"],
+        api_key=client_config["api_key"],
+        http_client=httpx.Client(
+            limits=httpx.Limits(max_connections=int(batch_size)),
+            timeout=httpx.Timeout(300.0),  # 300 second timeout
+        ),
+    )
+
     # Throw an error if the batch size is too small for the number of samples to generate per problem
     if config.sampling.n > batch_size:
         raise ValueError(f"Sampling.n ({config.sampling.n}) must be less than or equal to batch_size ({batch_size})")
 
-    # Load  dataset
-    dataset = load_dataset(config.dataset, split="train")
+    # Initialize environment
+    train_dataset = load_dataset("agentlans/wikipedia-paragraphs", split="train").map(
+        lambda x: {"question": x["text"], "answer": x["text"][::-1]}
+    )
+    parser = vf.XMLParser(["think", "answer"], answer_field="answer")
+    system_prompt = f"""Reverse the given text.
+
+    Respond in the following format:
+    {parser.get_format_str()}"""
+
+    def lcs_reward_func(completion, answer, **kwargs) -> float:
+        """
+        LCS ratio of the reversed prompt and the parsed completion.
+        """
+
+        def lcs_ratio(x: str, y: str) -> float:
+            """
+            Return the longest common subsequence ratio of x and y.
+            """
+            from difflib import SequenceMatcher
+
+            return SequenceMatcher(None, x, y).ratio()
+
+        response = parser.parse_answer(completion) or ""
+        return lcs_ratio(response, answer)
+
+    rubric = vf.Rubric(
+        funcs=[
+            lcs_reward_func,
+            parser.get_format_reward_func(),
+        ],
+        weights=[1.0, 0.2],
+    )
+
+    env = vf.SingleTurnEnv(
+        dataset=train_dataset,
+        system_prompt=system_prompt,
+        parser=parser,
+        rubric=rubric,
+        client=openai_client,
+        model=config.model_name,
+    )
+
+    # Load dataset
+    dataset = env.get_dataset()
     logger.info(f"Loaded dataset {config.dataset} with {len(dataset):,} problems")
 
     # Optionally shuffle dataset
@@ -181,6 +249,7 @@ def inference(config: Config):
             else:
                 current_step_batch_counter += 1
 
+        # Reload model weights if needed
         logger.info(f"Inference step {real_step} (Checkpoint step: {ckpt_step})")
         if config.rollout_path is not None and real_step - ckpt_step > config.async_level:
             logger.info(f"Required to reload model weights for step {ckpt_step} from {config.rollout_path}")
@@ -214,35 +283,101 @@ def inference(config: Config):
             indices = [(dataset_offset + j) % len(dataset) for j in range(problems_per_batch)]
 
         logger.debug(f"Sampling batch with indices [{' '.join(map(str, indices[:3]))}...{' '.join(map(str, indices[-3:]))}]")
-        problems = dataset.select(indices)
+        inputs = dataset.select(indices)
 
-        verification_infos = [json.loads(item["verification_info"]) for item in problems]
-        task_types = [item["task_type"] for item in problems]
-        prompts = [item["prompt"] for item in problems]
-
-        target_lengths = generate_target_lengths(config.rewards.len_reward, len(prompts))
-        for target_length, verification_info in zip(target_lengths, verification_infos):
-            verification_info["target_length"] = target_length
-
-        formatted_prompts = format_prompts(
-            prompts, target_lengths, config.rewards.len_reward, tokenizer=tokenizer, enable_thinking=config.enable_thinking
-        )
+        # Prepare expanded batch for environment
+        # Prime-RL uses vLLM's `n` parameter for multiple samples per prompt
+        # But verifiers environments expect expanded batch format (prompt repeated for each generation)
+        expanded_batch = {}
+        for key in inputs.column_names:
+            expanded_values = []
+            for value in inputs[key]:
+                for _ in range(config.sampling.n):
+                    expanded_values.append(value)
+            expanded_batch[key] = expanded_values
 
         start_time = time.time()
-        request_outputs = llm.generate(formatted_prompts, sampling_params, use_tqdm=False)
+
+        # Use environment's generate method
+        env_results = env.generate(
+            inputs=expanded_batch,
+            client=openai_client,
+            model=config.model_name,
+            score_rollouts=True,
+            max_concurrent=batch_size,
+            sampling_args={
+                "max_tokens": config.sampling.max_tokens or 4096,
+                "temperature": config.sampling.temperature,
+            },
+        )
+
         end_time = time.time()
+
+        # Extract prompts and completions from env results
+        prompts = env_results["prompt"]
+        completions = env_results["completion"]
+        rewards = env_results["reward"]
+        states = env_results.get("state", [{}] * len(prompts))
+
+        # Use process_env_results to handle tokenization
+        processed_results = env.process_env_results(
+            prompts=prompts,
+            completions=completions,
+            states=states,
+            rewards=rewards,
+            processing_class=tokenizer,
+            max_completion_length=-1,
+            mask_truncated_completions=False,
+            mask_env_responses=False,
+        )
+
+        # Convert to vLLM-like format for compatibility with rest of pipeline
+        # Create mock request_outputs structure
+        from types import SimpleNamespace
+
+        request_outputs = []
+        req_id = 0
+        for i in range(0, len(prompts), config.sampling.n):
+            # Group outputs by original prompt
+            req = SimpleNamespace()
+            req.request_id = str(req_id)
+            req.prompt = prompts[i]  # Take first prompt from group
+            req.prompt_token_ids = processed_results["prompt_ids"][i]
+            req.outputs = []
+
+            for j in range(config.sampling.n):
+                idx = i + j
+                if idx < len(completions):
+                    output = SimpleNamespace()
+                    output.index = j
+                    # Convert completion to string if it's a list of message dicts
+                    if isinstance(completions[idx], list):
+                        # Extract assistant content from message dicts
+                        completion_text = ""
+                        for msg in completions[idx]:
+                            if msg.get("role") == "assistant":
+                                completion_text += msg.get("content", "")
+                        output.text = completion_text
+                    else:
+                        output.text = completions[idx]
+                    output.token_ids = processed_results["completion_ids"][idx]
+                    output.finish_reason = "stop"
+                    req.outputs.append(output)
+
+            request_outputs.append(req)
+            req_id += 1
 
         # Dropping like this isn't ideal. But in practice, we shouldn't have any prompts that are too long.
         request_outputs = [req for req in request_outputs if len(req.outputs[0].token_ids) > 0]
-        if len(request_outputs) != len(prompts):
-            logger.warning(f"{len(prompts) - len(request_outputs)} prompts were filtered out because they were too long")
+        if len(request_outputs) != problems_per_batch:
+            logger.warning(f"{problems_per_batch - len(request_outputs)} prompts were filtered out because they were too long")
 
         # This generates proofs for the remaining sequences that haven't reached max_len.
         # We call here to give time for the proofs to be generated non-blocking in the background.
         toploc_cache.maybe_generate_proofs_in_background(force_generate=True)
 
         # Compute progress metrics
-        batch_problems = len(problems)
+        batch_problems = len(request_outputs)
         batch_samples = sum(len(req.outputs) for req in request_outputs)
         batch_input_tokens = sum(len(req.prompt_token_ids) for req in request_outputs)
         batch_output_tokens = sum(sum(len(output.token_ids) for output in req.outputs) for req in request_outputs)
@@ -253,9 +388,10 @@ def inference(config: Config):
         logger.info(f"Generated {batch_samples} samples for {batch_problems} problems for step {real_step} in {end_time - start_time:.2f}s")
 
         # Print example
-        first_prompt = tokenizer.decode(request_outputs[0].prompt_token_ids)
-        first_completion = tokenizer.decode(request_outputs[0].outputs[0].token_ids)
-        logger.debug(f"Example: {first_prompt}{first_completion}")
+        # first_prompt = tokenizer.decode(request_outputs[0].prompt_token_ids)
+        # first_completion = tokenizer.decode(request_outputs[0].outputs[0].token_ids)
+        logger.debug(f"Example prompt tokens: {len(request_outputs[0].prompt_token_ids)}")
+        logger.debug(f"Example completion tokens: {len(request_outputs[0].outputs[0].token_ids)}")
 
         # Log progress metrics
         progress_metrics = {
@@ -286,12 +422,39 @@ def inference(config: Config):
         # Generate always adds requests to the engine in the order of the prompts.
         # And returns them in the sequence they were added.
         toploc_cache.wait_for_proofs()
-        proofs = [b"".join(proofs) for _, proofs in sorted(toploc_cache.proofs.items(), key=lambda x: x[0])]
+
+        # For environments, we don't have toploc proofs, so create empty proofs for each completion
+        if config.toploc and toploc_cache.proofs:
+            proofs = [b"".join(proofs) for _, proofs in sorted(toploc_cache.proofs.items(), key=lambda x: x[0])]
+        else:
+            # Create empty proofs for each completion
+            proofs = []
+            for req in request_outputs:
+                for _ in req.outputs:
+                    proofs.append(b"")
+
         toploc_cache.reset_cache()
 
         # Compute rewards and advantages
         start = time.time()
-        request_rewards = compute_vllm_rewards(request_outputs, verification_infos, task_types, config.rewards)
+        # Create mock reward structure compatible with existing pipeline
+        request_rewards = []
+        reward_idx = 0
+        for req in request_outputs:
+            req_reward = SimpleNamespace()
+            req_reward.request_id = getattr(req, "request_id", str(reward_idx))
+            req_reward.task_type = "default"  # Could extract from env results if available
+            req_reward.rewards = []
+            for i, output in enumerate(req.outputs):
+                reward_obj = SimpleNamespace()
+                reward_obj.completion_id = i
+                reward_obj.reward = rewards[reward_idx] if reward_idx < len(rewards) else 0.0
+                reward_obj.advantage = 0.0  # Will be computed later in pipeline
+                reward_obj.task_reward = reward_obj.reward
+                reward_obj.length_penalty = 0.0
+                req_reward.rewards.append(reward_obj)
+                reward_idx += 1
+            request_rewards.append(req_reward)
         logger.info(f"Computed rewards and advantages in {time.time() - start:.2f}s")
 
         batch_rewards = sum(sum(r.reward for r in req.rewards) for req in request_rewards) / batch_samples
@@ -300,14 +463,19 @@ def inference(config: Config):
         logger.info(f"Average reward of the batch: {batch_rewards}")
 
         # Get parquet table
-        table = get_parquet_table(
-            request_outputs,
-            request_rewards,
-            prompts,
-            proofs,
-            ckpt_step,
-            target_lengths,
-        )
+        # Extract prompts list for parquet table
+        prompts_for_table = []
+        for req in request_outputs:
+            for _ in req.outputs:
+                # Convert message dicts to string if needed
+                if isinstance(req.prompt, list):
+                    # It's a list of message dicts, use apply_chat_template
+                    prompt_str = tokenizer.apply_chat_template(req.prompt, tokenize=False, add_generation_prompt=True)
+                    prompts_for_table.append(prompt_str)
+                else:
+                    prompts_for_table.append(req.prompt)
+
+        table = get_parquet_table(request_outputs, request_rewards, prompts_for_table, proofs, ckpt_step)
 
         # Save outputs to parquet file
         step_path = Path(config.output_path) / f"step_{real_step}"
@@ -341,6 +509,9 @@ def inference(config: Config):
         dataset_offset += batch_size
 
     logger.info(f"Inference finished! Generated {total_samples} samples for {total_problems} problems")
+
+    # Shutdown MockOpenAI server
+    oai_server.shutdown()
 
     # Manually destroy vLLM process group to avoid warnings
     dist.destroy_process_group()

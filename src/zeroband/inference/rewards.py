@@ -88,7 +88,6 @@ class CompletionReward(BaseModel):
     completion_id: int  # type(CompletionOutput.index)
     reward: float
     task_reward: float
-    length_penalty: float
     advantage: float | None = None
 
 
@@ -126,38 +125,8 @@ def _compute_completion_reward(
     compute_reward = get_reward_function(task_type)
     task_reward = compute_reward(completion_output.text, verification_info)
     reward = task_reward
-    length_penalty = 0
 
-    # Compute length penalty
-    length_config = config.len_reward if config is not None else None
-    if length_config is not None:
-        target_length = verification_info["target_length"]
-        if target_length > 0:
-            output_length = len(completion_output.token_ids)
-            # Penalizes absolute deviation from target length
-            if length_config.reward_type == "exact":
-                length_penalty = abs(target_length - output_length) * length_config.reward_coef
-                reward -= length_penalty
-            # Rewards for being close to target length with a maximum reward
-            elif length_config.reward_type == "max":
-                raw_value = length_config.reward_coef * (target_length - output_length) + length_config.max_reward_delta
-                length_penalty = max(0, min(1, raw_value))
-                reward *= length_penalty
-            # Zero reward if output exceeds target length
-            elif length_config.reward_type == "clip":
-                length_penalty = int(output_length > target_length)
-
-                if length_penalty == 1:
-                    reward = 0
-            else:
-                raise ValueError(f"Invalid reward type: {length_config.reward_type}")
-
-    return CompletionReward(
-        completion_id=completion_output.index,
-        reward=reward,
-        task_reward=task_reward,
-        length_penalty=length_penalty,
-    )
+    return CompletionReward(completion_id=completion_output.index, reward=reward, task_reward=task_reward)
 
 
 def _compute_request_rewards(

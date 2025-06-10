@@ -39,8 +39,6 @@ class DatasetOutput(TypedDict):
     seq_lens: Int[torch.Tensor, "1"]
     rewards: Float[torch.Tensor, "1"]
     task_rewards: Float[torch.Tensor, "1"]
-    length_penalties: Float[torch.Tensor, "1"]
-    target_lengths: Int[torch.Tensor, "1"]
     task_type: str
 
 
@@ -71,8 +69,6 @@ class FakeTokenizedDataset(IterableDataset):
                 "rewards": 0.5,
                 "loss_mask": torch.ones(len_).int(),
                 "task_rewards": 0.5,
-                "length_penalties": 0.5,
-                "target_lengths": seq_len,
                 "task_type": "fake_task",
             }
 
@@ -245,8 +241,6 @@ class ParquetDataset(IterableDataset):
                 "advantages",
                 "rewards",
                 "task_rewards",
-                "length_penalties",
-                "target_lengths",
                 "task_type",
             ]
 
@@ -261,8 +255,6 @@ class ParquetDataset(IterableDataset):
                         advantage,
                         reward,
                         task_reward,
-                        length_penalty,
-                        target_length,
                         task_type,
                     ) in zip(
                         batch["input_tokens"],
@@ -270,8 +262,6 @@ class ParquetDataset(IterableDataset):
                         batch["advantages"],
                         batch["rewards"],
                         batch["task_rewards"],
-                        batch["length_penalties"],
-                        batch["target_lengths"],
                         batch["task_type"],
                     ):
                         counter += 1
@@ -302,8 +292,6 @@ class ParquetDataset(IterableDataset):
                                 "rewards": reward_value,
                                 "loss_mask": loss_mask,
                                 "task_rewards": task_reward.as_py(),
-                                "length_penalties": length_penalty.as_py(),
-                                "target_lengths": target_length.as_py(),
                                 "task_type": task_type.as_py(),
                             }
 
@@ -381,8 +369,6 @@ class BatchOutput(TypedDict):
     seq_lens: Int[torch.Tensor, "sample"]
     rewards: Float[torch.Tensor, "sample"]
     task_rewards: Float[torch.Tensor, "sample"]
-    length_penalties: Float[torch.Tensor, "sample"]
-    target_lengths: Int[torch.Tensor, "sample"]
     task_types: list[str]
 
 
@@ -402,8 +388,6 @@ def collate_fn(samples: list[DatasetOutput], max_seq_len: int, pad_token_id: int
     rewards = [sample["rewards"] for sample in samples]
     loss_masks = [sample["loss_mask"] for sample in samples]
     task_rewards = [sample["task_rewards"] for sample in samples]
-    length_penalties = [sample["length_penalties"] for sample in samples]
-    target_lengths = [sample["target_lengths"] for sample in samples]
     task_types = [sample["task_type"] for sample in samples]
 
     seq_lens = [len(sample["input_ids"]) for sample in samples]
@@ -427,8 +411,6 @@ def collate_fn(samples: list[DatasetOutput], max_seq_len: int, pad_token_id: int
         "rewards": torch.tensor(rewards),
         "seq_lens": torch.tensor(seq_lens, dtype=torch.int32),
         "task_rewards": torch.tensor(task_rewards),
-        "length_penalties": torch.tensor(length_penalties),
-        "target_lengths": torch.tensor(target_lengths),
         "task_types": task_types,
     }
 
@@ -523,8 +505,6 @@ def merge_batches_padding(batches: list[BatchOutput]) -> BatchOutput:
         # sample level
         "seq_lens": torch.cat([b["seq_lens"] for b in batches]),
         "task_rewards": torch.cat([b["task_rewards"] for b in batches]),
-        "length_penalties": torch.cat([b["length_penalties"] for b in batches]),
-        "target_lengths": torch.cat([b["target_lengths"] for b in batches]),
         "task_types": [task_type for b in batches for task_type in b["task_types"]],
     }
 
