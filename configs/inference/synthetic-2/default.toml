@@ -1,0 +1,11 @@
+rollout_path = "/data"
+toploc = true
+
+[parallel]
+tp = "auto"
+
+[monitor.socket]
+enable = true
+
+[parallel.pp]
+connection_num_retries = 100
