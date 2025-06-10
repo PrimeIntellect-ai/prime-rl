@@ -1,14 +1,17 @@
-model_name = "deepseek-ai/DeepSeek-R1-0528"
-
-max_model_len = 32768
-tp = "auto"
-output_path = "/data"
+rollout_path = "/data"
 toploc = true
+
+[model]
+name = "deepseek-ai/DeepSeek-R1-0528"
+max_model_len = 32768
+
+[parallel]
+tp = "auto"
 
 [monitor.socket]
 enable = true
 
-[pp]
+[parallel.pp]
 connection_num_retries = 100
 
 [sampling]

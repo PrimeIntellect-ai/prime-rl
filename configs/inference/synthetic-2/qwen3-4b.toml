@@ -1,14 +1,17 @@
-model_name = "Qwen/Qwen3-4B"
-
-max_model_len = 16384
-tp = "auto"
-output_path = "/data"
+rollout_path = "/data"
 toploc = true
+
+[model]
+name = "Qwen/Qwen3-4B"
+max_model_len = 16384
+
+[parallel]
+tp = "auto"
 
 [monitor.socket]
 enable = true
 
-[pp]
+[parallel.pp]
 connection_num_retries = 100
 
 [sampling]

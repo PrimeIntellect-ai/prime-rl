@@ -13,7 +13,7 @@ ac_ckpt = true
 
 [data]
 seq_length = 16384
-path = "data_rollout"
+path = "rollouts"
 
 [optim]
 batch_size = 1024
@@ -30,5 +30,5 @@ type = "kl_cov"
 lr = 1e-6
 
 [ckpt]
-rollout_path = "outputs"
+rollout_path = "checkpoints"
 clean_rollout_path = true

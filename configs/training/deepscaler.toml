@@ -17,8 +17,8 @@ lr = 1e-6
 
 
 [data]
-path = "data_rollout"
+path = "rollouts"
 seq_length = 2048
 
 [ckpt]
-rollout_path = "outputs"
+rollout_path = "checkpoints"

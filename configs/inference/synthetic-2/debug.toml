@@ -1,8 +1,9 @@
-model_name = "Qwen/Qwen3-0.6B"
-
-max_model_len = 8192
-total_step = 5
+max_steps = 5
 toploc = true
+
+[model]
+name = "Qwen/Qwen3-0.6B"
+max_model_len = 8192
 
 [monitor.file]
 enable = true

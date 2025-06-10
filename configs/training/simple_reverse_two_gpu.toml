@@ -15,12 +15,10 @@ step_per_rollout = 2
 [optim.optim]
 lr = 3e-6
 
-
-
 [data]
-path = "data_rollout"
+path = "rollouts"
 seq_length = 128
 
 [ckpt]
-rollout_path = "outputs"
+rollout_path = "checkpoints"
 clean_rollout_path = true

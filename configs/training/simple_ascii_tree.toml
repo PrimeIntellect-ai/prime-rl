@@ -16,8 +16,8 @@ grad_norm_clip = 0.0001
 lr = 5e-6
 
 [data]
-path = "data_rollout"
+path = "rollouts"
 seq_length = 2048
 
 [ckpt]
-rollout_path = "outputs"
+rollout_path = "checkpoints"

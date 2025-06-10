@@ -11,7 +11,7 @@ ac_ckpt = true
 [data]
 seq_length = 16000
 ignore_zero_advantages = true
-path = "outputs"
+path = "rollouts"
 
 [optim]
 batch_size = 512

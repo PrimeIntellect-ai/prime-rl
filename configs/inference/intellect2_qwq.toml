@@ -1,18 +1,29 @@
-model_name = "Qwen/QwQ-32B"
-dataset = "PrimeIntellect/INTELLECT-2-RL-Dataset"
-batch_size = 96
-tp = "auto"
+max_batch_size = 96
+clean_rollout_path = true
+
+[model]
+name = "Qwen/QwQ-32B"
 max_model_len = 16_000
 
-[sampling]
-n = 16
+[data]
+name = "PrimeIntellect/INTELLECT-2-RL-Dataset"
+
+[data.difficulty_filtering]
+solve_rate_field = "solve_rate_qwen_r1_distill_7b"
+min_solve_rate = 0.1
+max_solve_rate = 0.8
 
 [rewards.len_reward]
 reward_type = "exact"
 length_prompt_location = "instruction"
 target_lengths = [2000, 4000, 6000, 8000, 10000]
 
-[difficulty_filtering]
-solve_rate_field = "solve_rate_qwen_r1_distill_7b"
-min_solve_rate = 0.1
-max_solve_rate = 0.8
+[parallel]
+tp = "auto"
+
+[sampling]
+n = 16
+
+[rl]
+ckpt_path = "checkpoints"
+clean_ckpt_path = true

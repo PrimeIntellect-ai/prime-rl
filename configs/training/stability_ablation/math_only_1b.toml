@@ -9,7 +9,7 @@ reshard_after_forward = true
 
 [data]
 seq_length = 8192
-path = "data_rollout"
+path = "rollouts"
 
 [optim]
 warmup_steps = 1
@@ -22,5 +22,5 @@ step_per_rollout = 1
 lr = 1e-6
 
 [ckpt]
-rollout_path = "outputs"
+rollout_path = "checkpoints"
 clean_rollout_path = true
