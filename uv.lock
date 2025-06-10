@@ -2090,6 +2090,8 @@ sdist = { url = "https://files.pythonhosted.org/packages/57/89/9f229ffd4243321ef
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fd/ea/d4bea6f58c526364b702be9d27eed0c9164448a996bfaa59f3ef76ab6217/prime_iroh-0.3.1-cp311-cp311-macosx_10_12_x86_64.whl", hash = "sha256:1a57f1dc0798123905e3cd495ab8aa0b94871b45aa6ab0e8e8d645ec69fdbc93", size = 7354220, upload-time = "2025-06-09T13:58:49.157Z" },
     { url = "https://files.pythonhosted.org/packages/df/4a/b9b290732028289eea4009aeafd36fb78dab9b55142804388bf21449c85f/prime_iroh-0.3.1-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:57476f193f83ae5e23ffbdade626cf97ae7683e04cb9021c521e27db3abd95c2", size = 7072355, upload-time = "2025-06-09T13:59:39.451Z" },
+    { url = "https://files.pythonhosted.org/packages/ba/88/32d53cd9e6bf3b6266f2c7c6155c97bebfa2f6aab58b9901beb789b536ef/prime_iroh-0.3.1-cp311-cp311-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:f16d71e36cb0adee50ffe3ec817f97603adeaa532de80eaa990133cd125fe03d", size = 8996647, upload-time = "2025-06-09T14:01:18.158Z" },
+    { url = "https://files.pythonhosted.org/packages/7d/fe/a5c941b6f3ae52cdaac9ab01fa4506fc24d0031b22065fad01f784dfc98d/prime_iroh-0.3.1-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:dc924f1085ef276f5cbe216e5194b34d11a15072d507fb6ae97b131ad02deb4b", size = 8579014, upload-time = "2025-06-09T14:01:03.622Z" },
 ]
 
 [[package]]
@@ -2296,11 +2298,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/b5/69/831ed22b38ff9b4b64b66569f0e5b7b97cf3638346eb95a2147fdb49ad5f/pydantic-2.11.5-py3-none-any.whl", hash = "sha256:f9c26ba06f9747749ca1e5c94d6a85cb84254577553c8785576fd38fa64dc0f7", size = 444229, upload-time = "2025-05-22T21:18:06.329Z" },
 ]
 
-[package.optional-dependencies]
-email = [
-    { name = "email-validator" },
-]
-
 [[package]]
 name = "pydantic-config"
 version = "0.2.0"
@@ -2342,6 +2339,20 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/b8/e9/1f7efbe20d0b2b10f6718944b5d8ece9152390904f29a78e68d4e7961159/pydantic_core-2.33.2-pp311-pypy311_pp73-musllinux_1_1_armv7l.whl", hash = "sha256:de4b83bb311557e439b9e186f733f6c645b9417c84e2eb8203f3f820a4b988bf", size = 2239013, upload-time = "2025-04-23T18:33:26.621Z" },
     { url = "https://files.pythonhosted.org/packages/3c/b2/5309c905a93811524a49b4e031e9851a6b00ff0fb668794472ea7746b448/pydantic_core-2.33.2-pp311-pypy311_pp73-musllinux_1_1_x86_64.whl", hash = "sha256:82f68293f055f51b51ea42fafc74b6aad03e70e191799430b90c13d643059ebb", size = 2238715, upload-time = "2025-04-23T18:33:28.656Z" },
     { url = "https://files.pythonhosted.org/packages/32/56/8a7ca5d2cd2cda1d245d34b1c9a942920a718082ae8e54e5f3e5a58b7add/pydantic_core-2.33.2-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:329467cecfb529c925cf2bbd4d60d2c509bc2fb52a20c1045bf09bb70971a9c1", size = 2066757, upload-time = "2025-04-23T18:33:30.645Z" },
+]
+
+[[package]]
+name = "pydantic-settings"
+version = "2.9.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "python-dotenv" },
+    { name = "typing-inspection" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/67/1d/42628a2c33e93f8e9acbde0d5d735fa0850f3e6a2f8cb1eb6c40b9a732ac/pydantic_settings-2.9.1.tar.gz", hash = "sha256:c509bf79d27563add44e8446233359004ed85066cd096d8b510f715e6ef5d268", size = 163234, upload-time = "2025-04-18T16:44:48.265Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b6/5f/d6d641b490fd3ec2c4c13b4244d68deea3a1b970a97be64f34fb5504ff72/pydantic_settings-2.9.1-py3-none-any.whl", hash = "sha256:59b4f431b1defb26fe620c71a7d3968a710d719f5f4cdbbdb7926edeb770f6ef", size = 44356, upload-time = "2025-04-18T16:44:46.617Z" },
 ]
 
 [[package]]
@@ -3570,8 +3581,8 @@ dependencies = [
     { name = "numpy" },
     { name = "prime-iroh" },
     { name = "pyarrow" },
-    { name = "pydantic", extra = ["email"] },
     { name = "pydantic-config" },
+    { name = "pydantic-settings" },
     { name = "pyext" },
     { name = "pylatexenc" },
     { name = "reasoning-gym" },
@@ -3623,8 +3634,8 @@ requires-dist = [
     { name = "numpy" },
     { name = "prime-iroh", specifier = ">=0.3.1" },
     { name = "pyarrow" },
-    { name = "pydantic", extras = ["email"], specifier = ">=2.11.5" },
     { name = "pydantic-config", git = "https://github.com/samsja/pydantic_config.git?rev=b7becc3" },
+    { name = "pydantic-settings", specifier = ">=2.9.1" },
     { name = "pyext", git = "https://github.com/justusmattern27/PyExt.git" },
     { name = "pylatexenc", specifier = ">=2.10" },
     { name = "reasoning-gym", git = "https://github.com/open-thought/reasoning-gym.git" },

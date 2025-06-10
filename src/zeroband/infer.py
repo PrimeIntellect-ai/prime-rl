@@ -16,12 +16,11 @@ import requests
 import torch
 import torch.distributed as dist
 from datasets import load_dataset
-from pydantic_config import parse_argv
 from toploc.utils import sha256sum
 from vllm import LLM, SamplingParams, TokensPrompt
 from huggingface_hub import snapshot_download
 
-from zeroband.inference.config import Config
+from zeroband.inference.config import Config as InferenceConfig
 from zeroband.inference.parquet import get_parquet_table
 from zeroband.inference.pipeline import all_reduce, patch_model_load, setup_comm, setup_hooks
 from zeroband.inference.rewards import compute_vllm_rewards
@@ -43,7 +42,7 @@ from zeroband.utils.logger import get_logger
 logger = get_logger("INFER")
 
 
-def inference(config: Config):
+def inference(config: InferenceConfig):
     # Initialize the logger
     logger.info("Starting inference")
     logger.info(f"Parallelism: TP={config.parallel.tp} DP={config.parallel.dp} PP={config.parallel.pp.world_size}")
@@ -66,7 +65,7 @@ def inference(config: Config):
     patch_model_load(config=config.parallel.pp)
 
     # Initialize model and tokenizer
-    logger.info(f"Initializing model and tokenizer ({config.model} tp={config.parallel.tp} seed={config.seed})")
+    logger.info(f"Initializing model and tokenizer ({config.model} tensor_parallel_size={config.parallel.tp} seed={config.seed})")
     start_time = time.time()
     llm = LLM(
         model=config.model.name,
@@ -389,7 +388,7 @@ def inference(config: Config):
     dist.destroy_process_group()
 
 
-def main(config: Config) -> list[mp.Process]:
+def main(config: InferenceConfig) -> list[mp.Process]:
     processes = []
     import zeroband.inference.envs as envs
 
@@ -420,7 +419,8 @@ def main(config: Config) -> list[mp.Process]:
 if __name__ == "__main__":
     # Set spawn method before any other multiprocessing code
     mp.set_start_method("spawn")
-    config = Config(**parse_argv())  # type: ignore
+
+    config = InferenceConfig()
 
     if config.rl and config.rl.step_endpoint is not None:
         current_step = requests.get(config.rl.step_endpoint).json()

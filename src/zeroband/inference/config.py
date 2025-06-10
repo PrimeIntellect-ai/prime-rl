@@ -1,11 +1,23 @@
+import sys
 from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+    TomlConfigSettingsSource,
+)
 
 from zeroband.inference.pipeline import PipelineConfig
 from zeroband.inference.rewards import RewardsConfig
 from zeroband.utils.monitor import MultiMonitorConfig
+
+# Dynamically extract paths to config files from CLI to pass to pydantic-settings TOML source as `toml_file` argument
+# This is a hacky workaround from https://github.com/pydantic/pydantic-settings/issues/259
+TOML_FILE_PATHS = [arg.replace("@", "").strip() for arg in sys.argv if arg.startswith("@") and arg.endswith(".toml")]
+sys.argv = [arg for arg in sys.argv if not arg.startswith("@")]
 
 
 class SamplingConfig(BaseConfig):
@@ -170,7 +182,7 @@ class RLConfig(BaseConfig):
     max_async: Annotated[int, Field(default=2)]
 
 
-class Config(BaseConfig):
+class Config(BaseSettings):
     # The model configuration
     model: Annotated[ModelConfig, Field(default=ModelConfig())]
 
@@ -220,3 +232,26 @@ class Config(BaseConfig):
         if self.model.dtype == "float32":
             self.toploc = False
         return self
+
+    # Pydantic settings configuration
+    model_config = SettingsConfigDict(env_prefix="PRIME_", cli_parse_args=True, cli_kebab_case=True)
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        # This is a hacky way to dynamically load TOML file paths from CLI
+        # https://github.com/pydantic/pydantic-settings/issues/259
+        global TOML_FILE_PATHS
+        return (
+            TomlConfigSettingsSource(settings_cls, toml_file=TOML_FILE_PATHS),
+            init_settings,
+            env_settings,
+            dotenv_settings,
+            file_secret_settings,
+        )
