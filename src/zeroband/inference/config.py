@@ -178,6 +178,8 @@ class ModelConfig(BaseConfig):
         ),
     ]
 
+    device: Annotated[Literal["auto", "cuda", "cpu"], Field(default="auto", description="Device to use for inference.")]
+
     enable_thinking: Annotated[
         bool,
         Field(default=True, description="Whether to enable thinking. Used by the `format_prompts` function to prepend a thinking prompt."),
