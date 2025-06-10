@@ -5,12 +5,12 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import aiohttp
 import psutil
 import pynvml
-from pydantic import model_validator
+from pydantic import Field
 from pydantic_config import BaseConfig
 
 import zeroband.utils.envs as envs
@@ -22,7 +22,7 @@ logger = get_logger("INFER")
 
 class MonitorConfig(BaseConfig):
     # Whether to log to this monitor
-    enable: bool = False
+    enable: Annotated[bool, Field(default=False)]
 
 
 class FileMonitorConfig(MonitorConfig):
@@ -32,30 +32,31 @@ class FileMonitorConfig(MonitorConfig):
 
 class SocketMonitorConfig(MonitorConfig):
     # The socket path to log to
-    path: str | None = None
+    path: Annotated[str | None, Field(default=None)]
 
 
 class APIMonitorConfig(MonitorConfig):
     # The API URL to log to
-    url: str | None = None
+    url: Annotated[str | None, Field(default=None)]
 
     # The API auth token to use
-    auth_token: str | None = None
+    auth_token: Annotated[str | None, Field(default=None)]
 
 
 class MultiMonitorConfig(BaseConfig):
     # All possible monitors (currently only supports one instance per type)
-    file: FileMonitorConfig = FileMonitorConfig()
-    socket: SocketMonitorConfig = SocketMonitorConfig()
-    api: APIMonitorConfig = APIMonitorConfig()
+    file: Annotated[FileMonitorConfig, Field(default=FileMonitorConfig())]
+    socket: Annotated[SocketMonitorConfig, Field(default=SocketMonitorConfig())]
+    api: Annotated[APIMonitorConfig, Field(default=APIMonitorConfig())]
 
     # Interval in seconds to log system metrics (if 0, no system metrics are logged)
-    system_log_frequency: int = 0
+    system_log_frequency: Annotated[int, Field(default=0, ge=0)]
 
-    @model_validator(mode="after")
-    def assert_valid_frequency(self):
-        assert self.system_log_frequency >= 0, "Frequency must be at least 0"
-        return self
+    def __str__(self) -> str:
+        file_str = "disabled" if not self.file.enable else f"path={self.file.path}"
+        socket_str = "disabled" if not self.socket.enable else f"path={self.socket.path}"
+        api_str = "disabled" if not self.api.enable else f"url={self.api.url}"
+        return f"file={file_str}, socket={socket_str}, api={api_str}, system_log_frequency={self.system_log_frequency}"
 
 
 class Monitor(ABC):

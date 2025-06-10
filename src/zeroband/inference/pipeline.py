@@ -1,11 +1,12 @@
 import time
 from functools import partial
-from typing import Tuple
+from typing import Annotated, Tuple
 
 import msgspec
 import torch
 import torch.nn as nn
 from prime_iroh import Node
+from pydantic import Field
 from pydantic_config import BaseConfig
 from safetensors.torch import load, save
 from vllm import LLM
@@ -22,19 +23,19 @@ logger = get_logger("INFER")
 
 class PipelineConfig(BaseConfig):
     # The rank of the current node in the pipeline
-    rank: int = 0
+    rank: Annotated[int, Field(default=0, ge=0)]
 
     # The total number of nodes in the pipeline (e.g. the number of PP model shards)
-    world_size: int = 1
+    world_size: Annotated[int, Field(default=1, ge=1)]
 
     # The seed used to create the public node address (optional, will lead to deterministic connection strings)
-    iroh_seed: int | None = None
+    iroh_seed: Annotated[int | None, Field(default=None)]
 
     # The peer ID to connect to (optional, if not provided, the user will be prompted to enter it)
-    iroh_peer_id: str | None = None
+    iroh_peer_id: Annotated[str | None, Field(default=None)]
 
     # How many times to retry connection to peer (each retry takes ~30s)
-    connection_num_retries: int = 10  # Each retry takes ~30s, so 10 retries is ~300s (5min)
+    connection_num_retries: Annotated[int, Field(default=10, ge=0)]  # Each retry takes ~30s, so 10 retries is ~300s (5min)
 
     @property
     def is_enabled(self) -> bool:
