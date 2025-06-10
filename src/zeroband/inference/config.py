@@ -85,6 +85,34 @@ class ParallelConfig(BaseConfig):
         return self
 
 
+class ModelConfig(BaseConfig):
+    """Configurations for the model to be used for inference. Most arguments are passed directly to the vLLM LLM class as engine arguments."""
+
+    # The name or path of the HF model to use
+    name: str = "Qwen/Qwen3-0.6B"
+
+    # Data type for model weights and activations. Defaults to "auto" which will use FP16 precision for FP32 and FP16 models, and BF16 precision for BF16 models
+    dtype: Literal["auto", "float16", "bfloat16", "float32"] = "auto"
+
+    # Data type for the KV cache. Defaults to "auto" which will use the model data type.
+    kv_cache_dtype: Literal["auto", "fp8", "fp8_e5m2", "fp8_e4m3"] = "auto"
+
+    # The maximum model context length. Defaults to None which will use the maximum context length as specified in the model config. Note, that the model will stop generation if the number of input and output tokens exceeds this value.
+    max_model_len: int | None = None
+
+    # Method used to quantize the weights. Defaults to None which will applies the default quantization (if any) as specified in the model config.
+    quantization: Literal["awq", "gguf", "gptq", "bitsandbytes", "fp8"] | None = None
+
+    # Whether to enforce PyTorch eager mode for the model. Defaults to False, which uses PyTorch eager and cuda graphs in hybrid for maximal performance.
+    enforce_eager: bool = False
+
+    # The device to use for inference.
+    device: Literal["auto", "cuda", "cpu"] = "auto"
+
+    # Whether to enable thinking for the model. Used by the `format_prompts` function to prepend a thinking prompt
+    enable_thinking: bool = True
+
+
 class DifficultyFilteringConfig(BaseConfig):
     solve_rate_field: str = "solve_rate_qwen_r1_distill_7b"
     min_solve_rate: float = 0.0
@@ -92,7 +120,7 @@ class DifficultyFilteringConfig(BaseConfig):
 
 
 class Config(BaseConfig):
-    model_name: str
+    model: ModelConfig = ModelConfig()
     dataset: str = "PrimeIntellect/INTELLECT-2-RL-Dataset"
 
     # The maximum number of of sequences to decode in parallel (if None, will be computed automatically)
@@ -107,28 +135,18 @@ class Config(BaseConfig):
     total_step: int | None = None
     rollout_path: str | None = None
     step_endpoint: str | None = None
-    download_dir: str | None = None
-
-    quant: Literal["fp8"] | None = None
 
     sampling: SamplingConfig = SamplingConfig()
     parallel: ParallelConfig = ParallelConfig()
     monitor: MultiMonitorConfig = MultiMonitorConfig()
-
-    # Whether to enable thinking for the model. Used by the `format_prompts` function to prepend a thinking prompt
-    enable_thinking: bool = True
-
-    enforce_eager: bool = False
-    max_model_len: int | None = None
 
     async_level: int = 2  # the amount of step for which we can be in advance
 
     gpus_ids: list[int] | None = None
     prime_log_freq: int | None = None
 
-    seed: int | None = None  # THIS ARG FOR TESTING PURPOSES ONLY
-
-    dtype: Literal["fp32", "bf16"] = "bf16"
+    # Random seed for reproducible outputs. Is used across inference components, such as the model, sampling and batching. Should only be used for debugging. Defaults to None, which skips seeding.
+    seed: int | None = None
 
     ckpt_start_path: str | None = None
 
@@ -142,6 +160,6 @@ class Config(BaseConfig):
 
     @model_validator(mode="after")
     def disable_toploc_for_fp32(self):
-        if self.dtype == "fp32":
+        if self.model.dtype == "float32":
             self.toploc = False
         return self

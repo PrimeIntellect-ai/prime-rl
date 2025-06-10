@@ -1,9 +1,11 @@
-model_name = "Qwen/Qwen3-0.6B"
 dataset = "PrimeIntellect/INTELLECT-2-RL-Dataset"
 total_step = 2
 batch_size = 16
-enforce_eager = true
 toploc = true
+
+[model]
+name = "Qwen/Qwen3-0.6B"
+enforce_eager = true
 
 [sampling]
 max_tokens = 16

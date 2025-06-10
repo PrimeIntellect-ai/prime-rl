@@ -48,7 +48,7 @@ def inference(config: Config):
     logger.info("Starting inference")
 
     # Log relevant configuration
-    logger.info(f"Model: {config.model_name}")
+    logger.info(f"Model: {config.model.name}")
     logger.info(f"Dataset: {config.dataset}")
     logger.info(f"Parallelism: TP={config.parallel.tp}, DP={config.parallel.dp}, PP={config.parallel.pp.world_size}")
 
@@ -70,18 +70,19 @@ def inference(config: Config):
 
     # Initialize vLLM and get tokenizer
     logger.info(
-        f"Initializing vLLM for {config.model_name} (max_model_len={config.max_model_len}, enforce_eager={config.enforce_eager}, dtype={config.dtype}, quant={config.quant})"
+        f"Initializing vLLM for {config.model.name} (max_model_len={config.model.max_model_len}, enforce_eager={config.model.enforce_eager}, dtype={config.model.dtype}, quant={config.model.quantization}, device={config.model.device})"
     )
     llm = LLM(
-        model=config.model_name,
+        model=config.model.name,
+        dtype=config.model.dtype,
+        kv_cache_dtype=config.model.kv_cache_dtype,
+        max_seq_len_to_capture=config.model.max_model_len,
+        max_model_len=config.model.max_model_len,
+        quantization=config.model.quantization,
+        enforce_eager=config.model.enforce_eager,
+        device=config.model.device,
         tensor_parallel_size=config.parallel.tp,
-        max_seq_len_to_capture=config.max_model_len,
-        max_model_len=config.max_model_len,
-        quantization=config.quant,
-        enforce_eager=config.enforce_eager,
         disable_async_output_proc=True,  # We have an off by 1 error in toploc without this flag when cuda graph padding is enabled.
-        download_dir=config.download_dir,
-        dtype="bfloat16" if config.dtype == "bf16" else torch.float32,
         enable_chunked_prefill=False,  # This is required for toploc2 because chunked prefill seems to allow len(seq_groups) != len(selected_token_indices) which is unexpected
     )
     if config.toploc2:
@@ -242,7 +243,12 @@ def inference(config: Config):
 
         # Get tokenized prompts as BatchEncoding
         tokenized_prompts = format_prompts(
-            prompts, target_lengths, config.rewards.len_reward, tokenizer=tokenizer, enable_thinking=config.enable_thinking, tokenize=True
+            prompts,
+            target_lengths,
+            config.rewards.len_reward,
+            tokenizer=tokenizer,
+            enable_thinking=config.model.enable_thinking,
+            tokenize=True,
         )
 
         # Convert BatchEncoding to TokensPrompt objects
@@ -348,7 +354,7 @@ def inference(config: Config):
         # Log file metadata
         sha256 = sha256sum(save_path)
         flop_counts = [
-            get_inference_input_output_flops(config.model_name, len(input_tokens), len(output_tokens))
+            get_inference_input_output_flops(config.model.name, len(input_tokens), len(output_tokens))
             for input_tokens, output_tokens in zip(table.column("input_tokens").to_pylist(), table.column("output_tokens").to_pylist())
         ]
 
