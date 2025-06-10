@@ -376,7 +376,7 @@ def inference(config: Config):
             logger.info(f"Reached max steps {config.max_steps}, stopping inference")
             break
 
-        dataset_offset += batch_size
+        dataset_offset += problems_per_batch
 
     logger.info(f"Inference finished! Generated {total_samples} samples for {total_problems} problems")
 
