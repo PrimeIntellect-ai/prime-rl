@@ -27,13 +27,13 @@ class MonitorConfig(BaseConfig):
 class FileMonitorConfig(MonitorConfig):
     """Configures logging to a file."""
 
-    path: Annotated[str | None, Field(default=None, description="The file path to log to")]
+    path: Annotated[Path | None, Field(default=None, description="The file path to log to")]
 
 
 class SocketMonitorConfig(MonitorConfig):
     """Configures logging to a Unix socket."""
 
-    path: Annotated[str | None, Field(default=None, description="The socket path to log to")]
+    path: Annotated[Path | None, Field(default=None, description="The socket path to log to")]
 
 
 class APIMonitorConfig(MonitorConfig):

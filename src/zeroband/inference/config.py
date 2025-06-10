@@ -1,4 +1,5 @@
 import sys
+from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
@@ -234,14 +235,14 @@ class RLConfig(BaseConfig):
     ]
 
     ckpt_start_path: Annotated[
-        str | None,
+        Path | None,
         Field(
             default=None,
             description="Path to the checkpoint to start from. Defaults to None, which means that the base model specified in `--model.name` is used.",
         ),
     ]
 
-    ckpt_path: Annotated[str, Field(default="checkpoints", description="Path to read new checkpoints from.")]
+    ckpt_path: Annotated[Path, Field(default=Path("checkpoints"), description="Path to read new checkpoints from.")]
 
     clean_ckpt_path: Annotated[
         bool,
@@ -316,9 +317,9 @@ class Config(BaseSettings):
     ]
 
     rollout_path: Annotated[
-        str,
+        Path,
         Field(
-            default="rollouts",
+            default=Path("rollouts"),
             description="Path to write inference outputs to. The folder will be automatically created and populated with subdirectories for each step.",
         ),
     ]
