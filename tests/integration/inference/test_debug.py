@@ -19,7 +19,7 @@ def output_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 @pytest.fixture(scope="module")
 def process(output_path: Path, run_process: Callable[[Command, Environment], ProcessResult]) -> ProcessResult:
-    return run_process(CMD + ["--output-path", str(output_path)], {})
+    return run_process(CMD + ["--rollout-path", str(output_path)], {})
 
 
 def test_no_error(process: ProcessResult):

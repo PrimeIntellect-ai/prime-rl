@@ -56,7 +56,7 @@ def output_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 @pytest.fixture(scope="module")
 def processes(output_path: Path, run_processes: Callable[[list[Command], list[Environment]], list[ProcessResult]]) -> list[ProcessResult]:
-    return run_processes([CMD0 + ["--output-path", str(output_path)], CMD1 + ["--output-path", str(output_path)]], [ENV0, ENV1])
+    return run_processes([CMD0 + ["--rollout-path", str(output_path)], CMD1 + ["--rollout-path", str(output_path)]], [ENV0, ENV1])
 
 
 def test_no_error(processes):
