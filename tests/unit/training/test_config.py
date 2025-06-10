@@ -8,7 +8,7 @@ import os
 import pytest
 import tomli
 
-from zeroband.train import Config as TrainingConfig
+from zeroband.training.config import Config as TrainingConfig
 
 
 def get_all_toml_files(directory):

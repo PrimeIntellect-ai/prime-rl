@@ -9,7 +9,7 @@ import pytest
 import tomli
 from pydantic import ValidationError
 
-from zeroband.infer import Config as InferenceConfig
+from zeroband.inference.config import Config as InferenceConfig
 
 
 def get_all_toml_files(directory):
