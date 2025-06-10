@@ -168,17 +168,23 @@ class Config(BaseConfig):
     # The data configuration
     data: DataConfig = DataConfig()
 
+    # The parallel configuration
+    parallel: ParallelConfig = ParallelConfig()
+
     # The sampling configuration
     sampling: SamplingConfig = SamplingConfig()
 
-    # The parallel configuration
-    parallel: ParallelConfig = ParallelConfig()
+    # The reward configuration
+    rewards: RewardsConfig = RewardsConfig()
 
     # The monitor configuration
     monitor: MultiMonitorConfig = MultiMonitorConfig()
 
     # The RL configuration. If None, inference will run in a non-RL setting.
     rl: RLConfig | None = None
+
+    # Whether to produce TOPLOC proofs for the inference outputs. Defaults to False. This is required in production to ensure that the inference outputs are can be verified.
+    toploc: bool = False
 
     # The maximum number of of sequences to decode in parallel. Defaults to "auto", which automatically computes the maximum batch size based on the model's context length and available KV cache.
     max_batch_size: int | Literal["auto"] = "auto"
@@ -195,16 +201,10 @@ class Config(BaseConfig):
     # Whether to clean the output path at the start of the inference. Useful for debugging. Defaults to False.
     clean_output_path: bool = False
 
-    gpus_ids: list[int] | None = None
-    prime_log_freq: int | None = None
-
     # Random seed for reproducible outputs. Is used across inference components, such as the model, sampling and batching. Should only be used for debugging. Defaults to None, which skips seeding.
     seed: int | None = None
 
-    toploc: bool = False
     toploc2: bool = True
-
-    rewards: RewardsConfig = RewardsConfig()
 
     @model_validator(mode="after")
     def disable_toploc_for_fp32(self):
