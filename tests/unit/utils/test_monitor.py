@@ -42,7 +42,7 @@ def test_invalid_api_monitor_config():
 
 
 def test_valid_file_monitor_config(tmp_path):
-    file_path = (tmp_path / "file_monitor.jsonl").as_posix()
+    file_path = tmp_path / "file_monitor.jsonl"
     output = FileMonitor(FileMonitorConfig(enable=True, path=file_path))
     assert output is not None
     assert output.file_path == file_path
@@ -50,7 +50,7 @@ def test_valid_file_monitor_config(tmp_path):
 
 
 def test_valid_socket_monitor_config(tmp_path):
-    socket_path = (tmp_path / "socket_monitor.sock").as_posix()
+    socket_path = tmp_path / "socket_monitor.sock"
     output = SocketMonitor(SocketMonitorConfig(enable=True, path=socket_path))
     assert output is not None
     assert output.socket_path == socket_path
@@ -59,7 +59,7 @@ def test_valid_socket_monitor_config(tmp_path):
 
 def test_valid_socket_monitor_config_with_env(tmp_path):
     socket_path = (tmp_path / "socket_monitor.sock").as_posix()
-    os.environ["PRIME_SOCKET_PATH"] = (tmp_path / "socket_monitor.sock").as_posix()
+    os.environ["PRIME_SOCKET_PATH"] = socket_path
     output = SocketMonitor(SocketMonitorConfig(enable=True))
     assert output is not None
     assert output.socket_path == socket_path
@@ -80,7 +80,7 @@ def test_valid_http_monitor_config():
 
 def test_file_monitor(tmp_path):
     # Create file output
-    file_path = (tmp_path / "file_monitor.jsonl").as_posix()
+    file_path = tmp_path / "file_monitor.jsonl"
     output = FileMonitor(FileMonitorConfig(enable=True, path=file_path))
     assert output is not None
     assert output.config.path == file_path

@@ -4,6 +4,7 @@ Need to be run from the root folder
 """
 
 import os
+import sys
 
 import pytest
 import tomli
@@ -25,11 +26,11 @@ def get_all_toml_files(directory):
 def test_load_inference_configs(config_file_path):
     with open(f"{config_file_path}", "rb") as f:
         content = tomli.load(f)
+    sys.argv = sys.argv[:1]  # Hack to avoid pydantic-settings from reading pytest args
     config = InferenceConfig(**content)
     assert config is not None
 
 
 def test_throw_error_for_dp_and_pp():
     with pytest.raises(ValidationError):
-        config = InferenceConfig(**{"dp": 2, "pp": {"world_size": 2}})
-        print(config)
+        InferenceConfig(**{"parallel": {"dp": 2, "pp": {"world_size": 2}}})
