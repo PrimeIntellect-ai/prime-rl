@@ -49,7 +49,7 @@ def inference(config: Config):
 
     # Log relevant configuration
     logger.info(f"Model: {config.model.name}")
-    logger.info(f"Dataset: {config.dataset}")
+    logger.info(f"Dataset: {config.data.name}")
     logger.info(f"Parallelism: TP={config.parallel.tp}, DP={config.parallel.dp}, PP={config.parallel.pp.world_size}")
 
     if config.clean_output_path and config.output_path is not None:
@@ -84,6 +84,7 @@ def inference(config: Config):
         tensor_parallel_size=config.parallel.tp,
         disable_async_output_proc=True,  # We have an off by 1 error in toploc without this flag when cuda graph padding is enabled.
         enable_chunked_prefill=False,  # This is required for toploc2 because chunked prefill seems to allow len(seq_groups) != len(selected_token_indices) which is unexpected
+        seed=config.seed,
     )
     if config.toploc2:
         llm.llm_engine.model_executor.driver_worker.model_runner.sampler = Toploc2Sampler()
@@ -92,7 +93,7 @@ def inference(config: Config):
     # Adjust sampling params based on config
     sampling_config = config.sampling.model_dump()
 
-    sampling_params = SamplingParams(**sampling_config)
+    sampling_params = SamplingParams(**sampling_config, seed=config.seed)
 
     # Setup pipeline parallel communication
     node = setup_comm(config.parallel.pp)
@@ -113,8 +114,8 @@ def inference(config: Config):
         raise ValueError(f"Sampling.n ({config.sampling.n}) must be less than or equal to batch_size ({batch_size})")
 
     # Load  dataset
-    dataset = load_dataset(config.dataset, split="train")
-    logger.info(f"Loaded dataset {config.dataset} with {len(dataset):,} problems")
+    dataset = load_dataset(config.data.name, split=config.data.split)
+    logger.info(f"Loaded dataset {config.data.name} with {len(dataset):,} problems")
 
     # Optionally shuffle dataset
     if envs.PRIME_GROUP_ID is not None:
@@ -131,18 +132,19 @@ def inference(config: Config):
         dataset = dataset.shuffle(generator=generator)
         node_address_int = None
 
-    if config.max_prompt_len:
-        dataset = filter_data_by_prompt_length(dataset, config.max_prompt_len, tokenizer)
+    # Optionally, filter out prompts that are too long
+    if config.data.max_prompt_len:
+        dataset = filter_data_by_prompt_length(dataset, config.data.max_prompt_len, tokenizer)
         logger.info(f"✨ Removed long prompts - {len(dataset)} samples remaining")
 
-    # Optionally filter dataset
-    if config.difficulty_filtering:
+    # Optionally, filter dataset for samples within difficulty range
+    if config.data.difficulty_filtering:
         logger.info(
-            f"Filtering dataset for difficulty in [{config.difficulty_filtering.min_solve_rate}, {config.difficulty_filtering.max_solve_rate}]"
+            f"Filtering dataset for difficulty in [{config.data.difficulty_filtering.min_solve_rate}, {config.data.difficulty_filtering.max_solve_rate}]"
         )
         dataset = dataset.filter(
-            lambda x: x[config.difficulty_filtering.solve_rate_field] >= config.difficulty_filtering.min_solve_rate
-            and x[config.difficulty_filtering.solve_rate_field] <= config.difficulty_filtering.max_solve_rate
+            lambda x: x[config.data.difficulty_filtering.solve_rate_field] >= config.data.difficulty_filtering.min_solve_rate
+            and x[config.data.difficulty_filtering.solve_rate_field] <= config.data.difficulty_filtering.max_solve_rate
         )
 
     # Setup TOPLOC
