@@ -46,14 +46,11 @@ logger = get_logger("INFER")
 def inference(config: Config):
     # Initialize the logger
     logger.info("Starting inference")
+    logger.info(f"Parallelism: TP={config.parallel.tp} DP={config.parallel.dp} PP={config.parallel.pp.world_size}")
 
-    # Log relevant configuration
-    logger.info(f"Model: {config.model.name}")
-    logger.info(f"Dataset: {config.data.name}")
-    logger.info(f"Parallelism: TP={config.parallel.tp}, DP={config.parallel.dp}, PP={config.parallel.pp.world_size}")
-
+    # Optionally, clean the rollout path
     if config.clean_rollout_path and config.rollout_path is not None:
-        logger.info(f"Cleaning rollout path {config.rollout_path}")
+        logger.info(f"Cleaning rollout path ({config.rollout_path})")
         shutil.rmtree(config.rollout_path, ignore_errors=True)
 
     # Pre-download the model weights
@@ -68,10 +65,9 @@ def inference(config: Config):
     # Patch vLLM's model loading to load model shard
     patch_model_load(config=config.parallel.pp)
 
-    # Initialize vLLM and get tokenizer
-    logger.info(
-        f"Initializing vLLM for {config.model.name} (max_model_len={config.model.max_model_len}, enforce_eager={config.model.enforce_eager}, dtype={config.model.dtype}, quant={config.model.quantization}, device={config.model.device})"
-    )
+    # Initialize model and tokenizer
+    logger.info(f"Initializing model and tokenizer ({config.model} tp={config.parallel.tp} seed={config.seed})")
+    start_time = time.time()
     llm = LLM(
         model=config.model.name,
         dtype=config.model.dtype,
@@ -89,33 +85,13 @@ def inference(config: Config):
     if config.toploc2:
         llm.llm_engine.model_executor.driver_worker.model_runner.sampler = Toploc2Sampler()
     tokenizer = llm.get_tokenizer()
+    logger.info(f"Initialized model and tokenizer in {time.time() - start_time:.2f}s")
 
-    # Adjust sampling params based on config
-    sampling_config = config.sampling.model_dump()
-
-    sampling_params = SamplingParams(**sampling_config, seed=config.seed)
-
-    # Setup pipeline parallel communication
-    node = setup_comm(config.parallel.pp)
-
-    # Setup pipeline parallel hooks
-    setup_hooks(llm, config.parallel.pp, node)
-
-    # Compute the maximum batch size
-    max_batch_size = config.max_batch_size
-    if max_batch_size == "auto":
-        # Automatically compute the maximum batch size
-        local_max_batch_size = compute_max_batch_size(llm)
-        max_batch_size = all_reduce(node, torch.tensor(local_max_batch_size), config=config.parallel.pp, op=torch.min).item()
-        logger.info(f"Auto-computed max batch size: {max_batch_size}")
-
-    # Throw an error if the batch size is too small for the number of samples to generate per problem
-    if config.sampling.n > max_batch_size:
-        raise ValueError(f"Sampling.n ({config.sampling.n}) must be less than or equal to max_batch_size ({max_batch_size})")
-
-    # Load  dataset
+    # Initialize dataset
+    logger.info(f"Initializing dataset (name={config.data.name}, split={config.data.split})")
+    start_time = time.time()
     dataset = load_dataset(config.data.name, split=config.data.split)
-    logger.info(f"Loaded dataset {config.data.name} with {len(dataset):,} problems")
+    logger.info(f"Initialized dataset with {len(dataset):,} problems in {time.time() - start_time:.2f}s")
 
     # Optionally shuffle dataset
     if envs.PRIME_GROUP_ID is not None:
@@ -134,18 +110,47 @@ def inference(config: Config):
 
     # Optionally, filter out prompts that are too long
     if config.data.max_prompt_len:
+        logger.info(f"Filtering out prompts with more than {config.data.max_prompt_len} tokens")
+        start_time = time.time()
         dataset = filter_data_by_prompt_length(dataset, config.data.max_prompt_len, tokenizer)
-        logger.info(f"✨ Removed long prompts - {len(dataset)} samples remaining")
+        logger.info(f"Filtered long prompts in {time.time() - start_time:.2f}s - {len(dataset)} samples remaining")
 
     # Optionally, filter dataset for samples within difficulty range
     if config.data.difficulty_filtering:
         logger.info(
             f"Filtering dataset for difficulty in [{config.data.difficulty_filtering.min_solve_rate}, {config.data.difficulty_filtering.max_solve_rate}]"
         )
+        start_time = time.time()
         dataset = dataset.filter(
             lambda x: x[config.data.difficulty_filtering.solve_rate_field] >= config.data.difficulty_filtering.min_solve_rate
             and x[config.data.difficulty_filtering.solve_rate_field] <= config.data.difficulty_filtering.max_solve_rate
         )
+        logger.info(
+            f"Filtered dataset for difficulty in [{config.data.difficulty_filtering.min_solve_rate}, {config.data.difficulty_filtering.max_solve_rate}] in {time.time() - start_time:.2f}s - {len(dataset)} samples remaining"
+        )
+
+    # Initialize sampling parameters
+    logger.info(f"Initializing sampling parameters ({config.sampling} seed={config.seed})")
+    sampling_params = SamplingParams(**config.sampling.model_dump(), seed=config.seed)
+
+    # Setup pipeline parallel communication and hook
+    node = setup_comm(config.parallel.pp)
+    setup_hooks(llm, config.parallel.pp, node)
+
+    # Compute the maximum batch size
+    max_batch_size = config.max_batch_size
+    if max_batch_size == "auto":
+        # Automatically compute the maximum batch size
+        logger.info("Auto-computing maximum batch size")
+        local_max_batch_size = compute_max_batch_size(llm)
+        max_batch_size = all_reduce(node, torch.tensor(local_max_batch_size), config=config.parallel.pp, op=torch.min).item()
+
+    logger.info(f"Maximum batch size: {max_batch_size}")
+
+    # Throw an error if the batch cannot fit number of samples to generate per problem.
+    # TODO(Mika): Circumvent this assertion by distribtuting parallel samples across multiple batches
+    if config.sampling.n > max_batch_size:
+        raise ValueError(f"Sampling.n ({config.sampling.n}) must be less than or equal to max_batch_size ({max_batch_size})")
 
     # Compute the true batch size
     problems_per_batch = max_batch_size // config.sampling.n

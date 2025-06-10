@@ -27,7 +27,7 @@ class MonitorConfig(BaseConfig):
 
 class FileMonitorConfig(MonitorConfig):
     # The file path to log to
-    path: str | None = None
+    path: Annotated[str | None, Field(default=None)]
 
 
 class SocketMonitorConfig(MonitorConfig):
@@ -172,7 +172,6 @@ class MultiMonitor:
             self.outputs.append(APIMonitor(config.api))
 
         self.disabled = len(self.outputs) == 0
-        logger.info(f"Initialized Monitor{' (disabled)' if self.disabled else ''}")
 
         # Start metrics collection thread, if system_log_frequency is greater than 0
         if config.system_log_frequency > 0:
@@ -251,4 +250,5 @@ class MultiMonitor:
 
 def setup_monitor(config: MultiMonitorConfig) -> MultiMonitor:
     """Sets up a monitor to log metrics to multiple specified outputs."""
+    logger.info(f"Initializing monitor ({config})")
     return MultiMonitor(config)

@@ -90,6 +90,9 @@ def setup_comm(config: PipelineConfig) -> Node | None:
     if not config.is_enabled:
         return None
 
+    logger.info(f"Setting up pipeline parallel communication ({config})")
+    start_time = time.time()
+
     # Setup node (with or without seed)
     if config.iroh_seed is not None:
         logger.debug(f"Using seed: {config.iroh_seed}")
@@ -98,7 +101,7 @@ def setup_comm(config: PipelineConfig) -> Node | None:
     else:
         # If no seed, create a new node
         node = Node(num_streams=1)
-    logger.info(f"Created node ({node.node_id()})")
+    logger.info(f"Initialized node ({node.node_id()})")
 
     # Connect to peer
     if config.iroh_peer_id is None:
@@ -110,10 +113,11 @@ def setup_comm(config: PipelineConfig) -> Node | None:
     # Wait for connection to sender and receiver to be established
     # Note: This requires the PP communication loop to be closed, e.g. for 4 stages:
     # 0 -> 1 -> 2 -> 3 -> 0
-    logger.info("Waiting for incoming connection...")
+    logger.info("Waiting for incoming connection")
     while not node.is_ready():
         time.sleep(0.1)
-    logger.info("All connections successful!")
+    logger.info("Incoming connection successful!")
+    logger.info(f"Pipeline parallel communication setup in {time.time() - start_time:.2f}s")
 
     return node
 
