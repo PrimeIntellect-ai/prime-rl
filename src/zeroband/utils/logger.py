@@ -21,7 +21,7 @@ class PrimeFormatter(Formatter):
         return formatter.format(record)
 
 
-ALLOWED_LEVELS = {"DEBUG": logging.DEBUG, "INFO": logging.INFO, "CRITICAL": logging.CRITICAL}
+ALLOWED_LEVELS = {"debug": logging.DEBUG, "info": logging.INFO, "warning": logging.WARNING, "critical": logging.CRITICAL}
 LoggerName = Literal["INFER", "TRAIN"]
 
 
@@ -37,13 +37,13 @@ def get_logger(name: LoggerName) -> Logger:
             world_info = get_world_info()
             if world_info.local_rank == 0:
                 # On first rank, set log level from env var
-                logger.setLevel(ALLOWED_LEVELS.get(level.upper(), logging.INFO))
+                logger.setLevel(ALLOWED_LEVELS.get(level, logging.INFO))
             else:
                 # Else, only log critical messages
                 logger.setLevel(logging.CRITICAL)
         else:
             # Set log level
-            logger.setLevel(ALLOWED_LEVELS.get(level.upper(), logging.INFO))
+            logger.setLevel(ALLOWED_LEVELS.get(level, logging.INFO))
 
         # Add handler with custom formatter
         handler = logging.StreamHandler()

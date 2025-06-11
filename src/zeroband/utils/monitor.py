@@ -16,9 +16,6 @@ import zeroband.utils.envs as envs
 from zeroband.utils.config import BaseConfig
 from zeroband.utils.logger import get_logger
 
-# Module logger
-logger = get_logger("INFER")
-
 
 class MonitorConfig(BaseConfig):
     enable: Annotated[bool, Field(default=False, description="Whether to log to this monitor")]
@@ -73,9 +70,10 @@ class Monitor(ABC):
             "task_id": envs.PRIME_TASK_ID,
         }
         self.has_metadata = any(self.metadata.values())
+        self.logger = get_logger("INFER")
         if not self.has_metadata:
-            logger.warning("No run metadata found. This is fine for local runs, but unexpected when contributing to a public run.")
-        logger.debug(f"Initializing {self.__class__.__name__} ({str(self.config).replace(' ', ', ')})")
+            self.logger.warning("No run metadata found. This is fine for local runs, but unexpected when contributing to a public run.")
+        self.logger.debug(f"Initializing {self.__class__.__name__} ({str(self.config).replace(' ', ', ')})")
 
     def _serialize_metrics(self, metrics: dict[str, Any]) -> str:
         if self.has_metadata:
@@ -100,9 +98,9 @@ class FileMonitor(Monitor):
             try:
                 with open(self.file_path, "a") as f:
                     f.write(self._serialize_metrics(metrics) + "\n")
-                logger.debug(f"Logged successfully to {self.file_path}")
+                self.logger.debug(f"Logged successfully to {self.file_path}")
             except Exception as e:
-                logger.error(f"Failed to log metrics to {self.file_path}: {e}")
+                self.logger.error(f"Failed to log metrics to {self.file_path}: {e}")
 
 
 class SocketMonitor(Monitor):
@@ -123,9 +121,9 @@ class SocketMonitor(Monitor):
                 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
                     sock.connect(self.socket_path)
                     sock.sendall(self._serialize_metrics(metrics).encode())
-                logger.debug(f"Logged successfully to {self.socket_path}")
+                self.logger.debug(f"Logged successfully to {self.socket_path}")
             except Exception as e:
-                logger.error(f"Failed to log metrics to {self.socket_path}: {e}")
+                self.logger.error(f"Failed to log metrics to {self.socket_path}: {e}")
 
 
 class APIMonitor(Monitor):
@@ -153,9 +151,9 @@ class APIMonitor(Monitor):
                     async with session.post(self.url, json=payload, headers=headers) as response:
                         if response is not None:
                             response.raise_for_status()
-                    logger.debug(f"Logged successfully to server {self.url}")
+                    self.logger.debug(f"Logged successfully to server {self.url}")
             except Exception as e:
-                logger.error(f"Failed to log metrics to {self.url}: {e}")
+                self.logger.error(f"Failed to log metrics to {self.url}: {e}")
 
         asyncio.run(_post_metrics())
 
@@ -166,6 +164,7 @@ class MultiMonitor:
     """
 
     def __init__(self, config: MultiMonitorConfig):
+        self.logger = get_logger("INFER")
         # Initialize outputs
         self.outputs = []
         if config.file.enable:
@@ -179,7 +178,7 @@ class MultiMonitor:
 
         # Start metrics collection thread, if system_log_frequency is greater than 0
         if config.system_log_frequency > 0:
-            logger.info(f"Starting thread to log system metrics every {config.system_log_frequency}s")
+            self.logger.info(f"Starting thread to log system metrics every {config.system_log_frequency}s")
             self._system_log_frequency = config.system_log_frequency
             self._has_gpu = self._set_has_gpu()
             self._thread = None
@@ -190,7 +189,7 @@ class MultiMonitor:
         """Logs metrics to all outputs."""
         if self.disabled:
             return
-        logger.info(f"Logging metrics: {metrics}")
+        self.logger.info(f"Logging metrics: {metrics}")
         for output in self.outputs:
             output.log(metrics)
 
@@ -254,5 +253,5 @@ class MultiMonitor:
 
 def setup_monitor(config: MultiMonitorConfig) -> MultiMonitor:
     """Sets up a monitor to log metrics to multiple specified outputs."""
-    logger.info(f"Initializing monitor ({config})")
+    get_logger("INFER").info(f"Initializing monitor ({config})")
     return MultiMonitor(config)

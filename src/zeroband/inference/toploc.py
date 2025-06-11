@@ -12,9 +12,6 @@ from vllm.model_executor.layers.logits_processor import _prune_hidden_states
 from zeroband.inference.pipeline import PipelineConfig
 from zeroband.utils.logger import get_logger
 
-# Get global logger
-logger = get_logger("INFER")
-
 
 class ArgsIdentity(nn.Module):
     def __init__(self):
@@ -193,6 +190,7 @@ def setup_toploc_cache(
 ) -> tuple[TopLocCache, RemovableHandle | None]:
     """Initializes the TOPLOC cache and register a hook to dynamically populate the cache during inference"""
     # Initialize the cache
+    logger = get_logger("INFER")
     logger.info(f"Initializing TOPLOC cache ({toploc_kwargs})")
     toploc_cache = TopLocCache(disable=disable, **toploc_kwargs)
 

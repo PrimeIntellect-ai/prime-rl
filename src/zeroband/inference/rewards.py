@@ -12,9 +12,6 @@ from zeroband.inference.genesys import TaskType, get_reward_function
 from zeroband.utils.config import BaseConfig
 from zeroband.utils.logger import get_logger
 
-# Global logger
-logger = get_logger("INFER")
-
 
 class LenRewardsConfig(BaseConfig):
     """Configures length reward."""
@@ -246,7 +243,7 @@ def compute_rewards(
         )
 
         if response.status_code != 200:
-            logger.error(f"Failed to compute rewards: {response.status_code} - {response.text}")
+            get_logger("INFER").error(f"Failed to compute rewards: {response.status_code} - {response.text}")
             raise RuntimeError(f"Failed to compute rewards: {response.status_code} - {response.text}")
         response = RewardsResponse.model_validate(json.loads(response.text))
         return response

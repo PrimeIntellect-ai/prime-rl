@@ -17,9 +17,6 @@ from zeroband.inference.utils import rgetattr
 from zeroband.utils.config import BaseConfig
 from zeroband.utils.logger import get_logger
 
-# Global logger
-logger = get_logger("INFER")
-
 
 class PipelineConfig(BaseConfig):
     """Configures pipeline parallel inference."""
@@ -103,6 +100,7 @@ def setup_comm(config: PipelineConfig) -> Node | None:
     if not config.is_enabled:
         return None
 
+    logger = get_logger("INFER")
     logger.info(f"Setting up pipeline parallel communication ({config})")
     start_time = time.time()
 
@@ -174,7 +172,7 @@ def patch_model_load(config: PipelineConfig) -> None:
         return start_layer, end_layer, modules
 
     # Monkey patch the function
-    logger.info(f"Patching model init for pp.rank={config.rank} in pp.world_size={config.world_size}")
+    get_logger("INFER").info(f"Patching model init for pp.rank={config.rank} in pp.world_size={config.world_size}")
     model_utils.make_layers = _patched_make_layers
 
 
@@ -282,6 +280,9 @@ def setup_hooks_driver(
     # Don't relay outputs from stage with index -2->-1
     relay = config.rank != config.world_size - 2
 
+    # Get logger
+    logger = get_logger("INFER")
+
     if config.is_first_stage:  # First stage
         # Send intermediate states to next stage (post-hook)
         last_layer.register_forward_hook(partial(send_intermediate_states, node=node))
@@ -317,7 +318,7 @@ def setup_hooks_driver(
 
         # Receive and relay outputs from last stage (post-hook)
         sampler.register_forward_hook(partial(recv_output, node=node, relay=relay))
-        logger.debug("Registered post-hook recv_output on sampler")
+        get_logger("INFER").debug("Registered post-hook recv_output on sampler")
 
 
 def setup_hooks_non_driver(
@@ -355,7 +356,7 @@ def setup_hooks_non_driver(
     if not config.is_first_stage:  # Not first stage
         # Receive intermediate states from TP driver worker (pre-hook)
         first_layer.register_forward_pre_hook(broadcast_intermediate_states)
-        logger.debug("Registered pre-hook broadcast_intermediate_states on first layer")
+        get_logger("INFER").debug("Registered pre-hook broadcast_intermediate_states on first layer")
 
 
 def broadcast_intermediate_states(_, input: Tuple) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -394,7 +395,7 @@ def send_intermediate_states(_, __, output: Tuple, node: Node) -> None:
     hidden_states, residual = output
     serialized_tensors = serialize_tensors({"hidden_states": hidden_states, "residual": residual})
     node.isend(serialized_tensors, tag=0, latency=None).wait()
-    # logger.debug(f"Sent hidden_states and residual ({hidden_states.shape}, {residual.shape}) ({len(serialized_tensors)} bytes)")
+    # get_logger("INFER").debug(f"Sent hidden_states and residual ({hidden_states.shape}, {residual.shape}) ({len(serialized_tensors)} bytes)")
 
 
 def recv_intermediate_states(_, input: Tuple, node: Node) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -416,7 +417,7 @@ def recv_intermediate_states(_, input: Tuple, node: Node) -> tuple[torch.Tensor,
     deserialized_tensors = deserialize_tensors(serialized_tensors, device)
     hidden_states = deserialized_tensors["hidden_states"]
     residuals = deserialized_tensors["residual"]
-    # logger.debug(f"Received hidden_states and residuals ({hidden_states.shape}, {residuals.shape}) ({len(serialized_tensors)} bytes)")
+    # get_logger("INFER").debug(f"Received hidden_states and residuals ({hidden_states.shape}, {residuals.shape}) ({len(serialized_tensors)} bytes)")
 
     return positions, hidden_states, residuals
 
@@ -446,10 +447,10 @@ def recv_output(_, __, output, node: Node, relay=False) -> SamplerOutput:
         The sampling outputs
     """
     serialized_output = node.irecv(tag=0).wait()
-    # logger.debug(f"Received outputs ({len(serialized_output)} bytes)")
+    # get_logger("INFER").debug(f"Received outputs ({len(serialized_output)} bytes)")
     if relay:
         node.isend(serialized_output, tag=0, latency=None).wait()
-        # logger.debug(f"Sent outputs ({len(serialized_output)} bytes)")
+        # get_logger("INFER").debug(f"Sent outputs ({len(serialized_output)} bytes)")
     output = deserialize_sampler_output(serialized_output)
     return output
 
@@ -470,7 +471,7 @@ def send_output(_, __, output: SamplerOutput, node: Node) -> None:
     """
     serialized_output = serialize_sampler_output(output)
     node.isend(serialized_output, tag=0, latency=None).wait()
-    # logger.debug(f"Sent outputs ({len(serialized_output)} bytes)")
+    # get_logger("INFER").debug(f"Sent outputs ({len(serialized_output)} bytes)")
 
 
 def all_reduce(node: Node, tensor: torch.Tensor, config: PipelineConfig, op: callable = torch.add) -> torch.Tensor:
@@ -492,14 +493,14 @@ def all_reduce(node: Node, tensor: torch.Tensor, config: PipelineConfig, op: cal
 
     result_tensor = tensor.clone()
     current_tensor = tensor.clone()
-    logger.debug(f"Initial tensor: {current_tensor}")
+    get_logger("INFER").debug(f"Initial tensor: {current_tensor}")
 
     # Ring all-reduce: each node sends/receives for (world_size - 1) iterations
     for _ in range(config.world_size - 1):
         # Serialize current tensor for transmission
         tensor_dict = {"data": current_tensor}
         send_data = serialize_tensors(tensor_dict)
-        # logger.debug(f"Sending {current_tensor} ({len(send_data)} bytes) to next node")
+        # get_logger("INFER").debug(f"Sending {current_tensor} ({len(send_data)} bytes) to next node")
         send_future = node.isend(send_data, tag=0, latency=None)
 
         # Receive tensor from previous node
@@ -517,6 +518,6 @@ def all_reduce(node: Node, tensor: torch.Tensor, config: PipelineConfig, op: cal
         # Apply the custom reduction operation
         result_tensor = op(result_tensor, current_tensor)
 
-    logger.debug(f"All-reduced tensor: {result_tensor}")
+    get_logger("INFER").debug(f"All-reduced tensor: {result_tensor}")
 
     return result_tensor

@@ -38,13 +38,12 @@ from zeroband.inference.utils import (
 from zeroband.training.mp import EnvWrapper
 from zeroband.utils.logger import get_logger
 
-# Global logger
-logger = get_logger("INFER")
-
 
 def inference(config: InferenceConfig):
     # Initialize the logger
+    logger = get_logger("INFER")
     logger.info("Starting inference")
+    logger.info(f"Log level: {config.log_level}")
     logger.info(f"Parallelism: TP={config.parallel.tp} DP={config.parallel.dp} PP={config.parallel.pp.world_size}")
 
     # Optionally, clean the rollout path
@@ -93,12 +92,12 @@ def inference(config: InferenceConfig):
     logger.info(f"Initialized dataset with {len(dataset):,} problems in {time.time() - start_time:.2f}s")
 
     # Optionally shuffle dataset
-    if envs.PRIME_GROUP_ID is not None:
+    if config.group_id is not None:
         # We dont shuffle here because we shuffle reproducibly in the sampling loop.
         assert config.seed is None, "Seed is not supported when PRIME_GROUP_ID is set"
-        assert os.environ.get("DP_RANK") is None, "DP is not supported when PRIME_GROUP_ID is set"
-        node_address_int = int(envs.PRIME_GROUP_ID, 16)
-        logger.info(f"Seeding with {node_address_int} ({envs.PRIME_GROUP_ID})")
+        assert os.environ.get("DP_RANK") is None, "DP is not supported when group ID is set"
+        node_address_int = int(config.group_id, 16)
+        logger.info(f"Seeding with {node_address_int} ({config.group_id})")
     else:
         # Seed the dataset with a random number
         seed = config.seed + int(os.environ.get("DP_RANK", 0)) if config.seed is not None else None
@@ -390,7 +389,6 @@ def inference(config: InferenceConfig):
 
 def main(config: InferenceConfig) -> list[mp.Process]:
     processes = []
-    import zeroband.inference.envs as envs
 
     if config.parallel.dp > 1:
         if config.parallel.tp == "auto":
@@ -399,8 +397,8 @@ def main(config: InferenceConfig) -> list[mp.Process]:
         gpu_ids = envs.CUDA_VISIBLE_DEVICES
         gpu_ids_per_rank = [gpu_ids[i : i + config.parallel.tp] for i in range(0, len(gpu_ids), config.parallel.tp)]
         for rank, gpu_ids in enumerate(gpu_ids_per_rank):
-            envs = {"CUDA_VISIBLE_DEVICES": ",".join(map(str, gpu_ids)), "DP_RANK": str(rank)}
-            process = mp.Process(target=EnvWrapper(inference, envs), args=(config,))
+            env = {"CUDA_VISIBLE_DEVICES": ",".join(map(str, gpu_ids)), "DP_RANK": str(rank)}
+            process = mp.Process(target=EnvWrapper(inference, env), args=(config,))
             processes.append(process)
     else:
         if config.parallel.tp == "auto":
