@@ -52,9 +52,9 @@ def inference(config: InferenceConfig):
         shutil.rmtree(config.rollout_path, ignore_errors=True)
 
     # Pre-download the model weights
-    logger.info(f"Downloading model weights for {config.model_name}")
+    logger.info(f"Downloading model weights for {config.model.name}")
     start_time = time.time()
-    snapshot_download(config.model_name)
+    snapshot_download(config.model.name)
     logger.info(f"Downloaded model weights in {time.time() - start_time:.2f}s")
 
     # Initialize metrics
