@@ -19,6 +19,7 @@ from datasets import load_dataset
 from pydantic_config import parse_argv
 from toploc.utils import sha256sum
 from vllm import LLM, SamplingParams, TokensPrompt
+from huggingface_hub import snapshot_download
 
 from zeroband.inference.config import Config
 from zeroband.inference.parquet import get_parquet_table
@@ -53,6 +54,12 @@ def inference(config: Config):
     if config.clean_output_path and config.output_path is not None:
         logger.info(f"Cleaning output path {config.output_path}")
         shutil.rmtree(config.output_path, ignore_errors=True)
+
+    # Pre-download the model weights
+    logger.info(f"Downloading model weights for {config.model_name}")
+    start_time = time.time()
+    snapshot_download(config.model_name)
+    logger.info(f"Downloaded model weights in {time.time() - start_time:.2f}s")
 
     # Initialize metrics
     monitor = setup_monitor(config.monitor)
