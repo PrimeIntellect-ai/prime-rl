@@ -282,6 +282,8 @@ class RLConfig(BaseConfig):
 
 
 class Config(BaseSettings):
+    """Configures inference."""
+
     # The model configuration
     model: Annotated[ModelConfig, Field(default=ModelConfig())]
 
@@ -408,8 +410,7 @@ class Config(BaseSettings):
     # Pydantic settings configuration
     model_config = SettingsConfigDict(
         env_prefix="PRIME_",
-        env_nested_delimiter="_",
-        env_nested_max_split=1,
+        env_nested_delimiter="__",
         cli_parse_args=True,
         cli_kebab_case=True,
         cli_avoid_json=True,
