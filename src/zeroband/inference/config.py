@@ -359,6 +359,7 @@ class Config(BaseSettings):
     # Pydantic settings configuration
     model_config = SettingsConfigDict(
         env_prefix="PRIME_",
+        env_nested_delimiter="_",
         cli_parse_args=True,
         cli_kebab_case=True,
         cli_avoid_json=True,
