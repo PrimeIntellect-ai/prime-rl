@@ -15,10 +15,27 @@ from zeroband.inference.rewards import RewardsConfig
 from zeroband.utils.config import BaseConfig
 from zeroband.utils.monitor import MultiMonitorConfig
 
-# Dynamically extract paths to config files from CLI to pass to pydantic-settings TOML source as `toml_file` argument
-# This is a hacky workaround from https://github.com/pydantic/pydantic-settings/issues/259
-TOML_FILE_PATHS = [arg.replace("@", "").strip() for arg in sys.argv if arg.startswith("@") and arg.endswith(".toml")]
-sys.argv = [arg for arg in sys.argv if not arg.startswith("@")]
+# These are two somewhat hacky workarounds inspired by https://github.com/pydantic/pydantic-settings/issues/259 to ensure backwards compatibility with our old CLI system `pydantic_config`
+
+# Extract config file paths from CLI to pass to pydantic-settings as toml source
+# This enables the use of `@` to pass config file paths to the CLI
+TOML_FILE_PATHS = []
+argv = sys.argv.copy()
+for i, (arg, next_arg) in enumerate(zip(argv, argv[1:] + [""])):
+    if arg.startswith("@"):
+        if arg == "@":  # We assume that the next argument is a toml file path
+            TOML_FILE_PATHS.append(next_arg)
+            sys.argv.remove(arg)
+            sys.argv.remove(next_arg)
+        else:  # We assume that the argument is a toml file path
+            TOML_FILE_PATHS.append(arg.replace("@", ""))
+            sys.argv.remove(arg)
+
+# Convert config keys from snake case to kebab case
+# This enables the use of snake case (e.g. `--max_batch_size`) or kebab case (e.g. `--max-batch-size`)
+for i, arg in enumerate(sys.argv):
+    if arg.startswith("--"):
+        sys.argv[i] = f"--{arg.replace('--', '').replace('_', '-')}"
 
 
 class SamplingConfig(BaseConfig):
