@@ -4,7 +4,6 @@ Need to be run from the root folder
 """
 
 import os
-import sys
 
 import pytest
 import tomli
@@ -23,10 +22,9 @@ def get_all_toml_files(directory):
 
 
 @pytest.mark.parametrize("config_file_path", get_all_toml_files("configs/inference"))
-def test_load_inference_configs(config_file_path):
-    with open(f"{config_file_path}", "rb") as f:
+def test_load_inference_configs(config_file_path, clean_argv):
+    with open(config_file_path, "rb") as f:
         content = tomli.load(f)
-    sys.argv = sys.argv[:1]  # Hack to avoid pydantic-settings from reading pytest args
     config = InferenceConfig(**content)
     assert config is not None
 
