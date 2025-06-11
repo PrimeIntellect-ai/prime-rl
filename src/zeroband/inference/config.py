@@ -384,8 +384,7 @@ class Config(BaseSettings):
         str | None,
         Field(
             default=None,
-            description="Group ID for the inference run (hex string). Set in production by protocol worker via environment variable. Not necessary for local runs.",
-            pattern=r"^0x[a-fA-F0-9]{40}$",
+            description="Group ID for the inference run. Set in production by protocol worker via environment variable. Not necessary for local runs.",
         ),
     ]
 
