@@ -34,6 +34,7 @@ class DatasetOutput(TypedDict):
     input_ids: Int[torch.Tensor, "seq"]
     advantages: Float[torch.Tensor, "seq"]
     loss_mask: Int[torch.Tensor, "seq"]
+    logprobs: Float[torch.Tensor, "seq"] | None  # logprobs from vllm (optional)
 
     # sample level
     seq_lens: Int[torch.Tensor, "1"]
@@ -45,11 +46,12 @@ class DatasetOutput(TypedDict):
 class FakeTokenizedDataset(IterableDataset):
     """A dummy dataset that generates random sequences with the full schema including new columns."""
 
-    def __init__(self, seq_len: int, vocab_size: int):
+    def __init__(self, seq_len: int, vocab_size: int, generate_logprobs: bool = True):
         self.seq_len = seq_len
         self.vocab_size = vocab_size
         assert vocab_size > 3, "Vocab size must be greater than 3"
         self.step = 0
+        self.generate_logprobs = generate_logprobs
 
     def __iter__(self) -> Generator[DatasetOutput, Any, None]:
         while True:
@@ -63,6 +65,13 @@ class FakeTokenizedDataset(IterableDataset):
             advantages = torch.randn(len_)
             self.step += 1
 
+            # Generate fake logprobs if requested
+            logprobs = None
+            if self.generate_logprobs and len_ > 1:
+                # Generate random negative values for log probabilities
+                # Exclude first token (BOS) to match expected format
+                logprobs = -torch.abs(torch.randn(len_ - 1))  # Negative values for log probs
+
             yield {
                 "input_ids": input_ids,
                 "advantages": advantages,
@@ -70,6 +79,7 @@ class FakeTokenizedDataset(IterableDataset):
                 "loss_mask": torch.ones(len_).int(),
                 "task_rewards": 0.5,
                 "task_type": "fake_task",
+                "logprobs": logprobs,
             }
 
 
@@ -195,6 +205,7 @@ class ParquetDataset(IterableDataset):
         ignore_zero_advantages: bool,
         pq_read_bs: int = 64,
         use_stable_file: bool = False,
+        use_vllm_logprobs: bool = False,
     ):
         self._logger = get_logger("TRAIN")
         self._path = path
@@ -209,6 +220,7 @@ class ParquetDataset(IterableDataset):
         self._ignore_zero_advantages = ignore_zero_advantages
 
         self._use_stable_file = use_stable_file
+        self._use_vllm_logprobs = use_vllm_logprobs
 
     def __iter__(self) -> Generator[DatasetOutput, Any, None]:
         worker_info = torch.utils.data.get_worker_info()
@@ -244,6 +256,9 @@ class ParquetDataset(IterableDataset):
                 "task_type",
             ]
 
+            if self._use_vllm_logprobs:
+                required_columns.extend(["input_logprobs", "output_logprobs"])
+
             scanner = dataset.scanner(columns=required_columns, batch_size=self._pq_read_bs)
             counter = 0
 
@@ -275,16 +290,25 @@ class ParquetDataset(IterableDataset):
                             continue
 
                         try:
-                            input_ids = torch.tensor(in_token.as_py())
-                            output_ids = torch.tensor(out_token.as_py())
+                            input_ids = torch.tensor(batch_data["input_tokens"][i].as_py())
+                            output_ids = torch.tensor(batch_data["output_tokens"][i].as_py())
 
                             ids = torch.cat([input_ids, output_ids], dim=0)
                             loss_mask = torch.cat([torch.zeros(len(input_ids)), torch.ones(len(output_ids))], dim=0).int()
 
-                            adv_value = advantage.as_py()
-                            reward_value = reward.as_py()
+                            adv_value = batch_data["advantages"][i].as_py()
+                            reward_value = batch_data["rewards"][i].as_py()
 
                             adv = torch.tensor([adv_value] * len(ids))  # advantage
+
+                            # Compute logprobs if using vllm logprobs
+                            logprobs = None
+                            if self._use_vllm_logprobs:
+                                input_logprobs = torch.tensor(batch_data["input_logprobs"][i].as_py())
+                                output_logprobs = torch.tensor(batch_data["output_logprobs"][i].as_py())
+                                # Concatenate and remove the first token (BOS)
+                                logprobs = torch.cat([input_logprobs, output_logprobs], dim=0)
+                                assert logprobs.shape == ids.shape, f"logprobs: {logprobs.shape} should be the same as ids: {ids.shape}"
 
                             data = {
                                 "input_ids": ids,
@@ -322,6 +346,7 @@ def get_dataloader(
     batch_size: int,
     data_config: DataConfig,
     step_count_init: int,
+    use_vllm_logprobs: bool = False,
 ) -> tuple[DataLoader[list[DatasetOutput]], GCPPrefetcher | None]:
     """Get a dataloader for the training dataset"""
 
@@ -338,7 +363,7 @@ def get_dataloader(
         path = data_config.local_dir
 
     if data_config.fake:
-        train_dataset = FakeTokenizedDataset(data_config.seq_length, len(tokenizer))
+        train_dataset = FakeTokenizedDataset(data_config.seq_length, len(tokenizer), generate_logprobs=use_vllm_logprobs)
     else:
         train_dataset = ParquetDataset(
             Path(path),
@@ -347,6 +372,7 @@ def get_dataloader(
             step_count_init,
             data_config.ignore_zero_advantages,
             use_stable_file=use_stable_file,
+            use_vllm_logprobs=use_vllm_logprobs,
         )
 
     loader = DataLoader(
@@ -364,6 +390,7 @@ class BatchOutput(TypedDict):
     advantages: Float[torch.Tensor, "batch seq"]
     loss_mask: Int[torch.Tensor, "batch seq"]
     position_ids: Int[torch.Tensor, "batch seq"]
+    logprobs: Float[torch.Tensor, "batch seq_minus_1"] | None  # logprobs from vllm (optional)
 
     # sample level
     seq_lens: Int[torch.Tensor, "sample"]
@@ -390,6 +417,11 @@ def collate_fn(samples: list[DatasetOutput], max_seq_len: int, pad_token_id: int
     task_rewards = [sample["task_rewards"] for sample in samples]
     task_types = [sample["task_type"] for sample in samples]
 
+    # Handle logprobs if available
+    all_logprobs = [sample["logprobs"] for sample in samples if sample["logprobs"] is not None]
+    has_logprobs = len(all_logprobs) == len(samples)
+    logprobs = all_logprobs if has_logprobs else None
+
     seq_lens = [len(sample["input_ids"]) for sample in samples]
     position_ids = [torch.arange(0, len(sample["input_ids"]), dtype=torch.int32) for sample in samples]
 
@@ -401,12 +433,23 @@ def collate_fn(samples: list[DatasetOutput], max_seq_len: int, pad_token_id: int
         loss_masks.append(torch.zeros(padding_len, dtype=loss_masks[0].dtype).int())
         position_ids.append(torch.arange(0, padding_len, dtype=torch.int32))
 
+        if has_logprobs:
+            # For logprobs, we pad with zeros (these will be masked out anyway)
+            logprobs.append(torch.zeros(padding_len, dtype=logprobs[0].dtype))
+
+    # Concatenate logprobs if available
+    concat_logprobs = None
+    if has_logprobs:
+        # we remove the first logprob because it corresponds to the bos token
+        concat_logprobs = torch.cat(logprobs, dim=0)[1:max_seq_len].unsqueeze(0)
+
     return {
         # token level
         "input_ids": torch.cat(inputs_ids, dim=0)[:max_seq_len].unsqueeze(0),
         "advantages": torch.cat(advantages, dim=0)[:max_seq_len].unsqueeze(0),
         "loss_mask": torch.cat(loss_masks, dim=0)[:max_seq_len].unsqueeze(0),
         "position_ids": torch.cat(position_ids, dim=0)[:max_seq_len].unsqueeze(0),
+        "logprobs": concat_logprobs,
         # sample level
         "rewards": torch.tensor(rewards),
         "seq_lens": torch.tensor(seq_lens, dtype=torch.int32),
@@ -495,6 +538,13 @@ def packed_batch_packing(batch_optim: list[DatasetOutput], max_seq_len: int, pad
 
 
 def merge_batches_padding(batches: list[BatchOutput]) -> BatchOutput:
+    # Check if any batch has logprobs
+    has_logprobs = any(b["logprobs"] is not None for b in batches)
+    merged_logprobs = None
+    if has_logprobs:
+        # If some batches have logprobs, all should have them
+        merged_logprobs = torch.cat([b["logprobs"] for b in batches if b["logprobs"] is not None], dim=0)
+
     return {
         # token level
         "input_ids": torch.cat([b["input_ids"] for b in batches], dim=0),
@@ -502,6 +552,7 @@ def merge_batches_padding(batches: list[BatchOutput]) -> BatchOutput:
         "rewards": torch.cat([b["rewards"] for b in batches], dim=0),
         "loss_mask": torch.cat([b["loss_mask"] for b in batches], dim=0),
         "position_ids": torch.cat([b["position_ids"] for b in batches], dim=0),
+        "logprobs": merged_logprobs,
         # sample level
         "seq_lens": torch.cat([b["seq_lens"] for b in batches]),
         "task_rewards": torch.cat([b["task_rewards"] for b in batches]),

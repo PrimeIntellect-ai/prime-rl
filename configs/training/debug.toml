@@ -1,7 +1,9 @@
 model_name = "Qwen/Qwen3-0.6B"
 wandb = false
-kl_coef = 0.02
 collate_mode = "padding"
+
+[grpo]
+kl_coef = 0.02
 
 [train]
 micro_bs = 1

@@ -13,9 +13,9 @@ path = "data_rollout"
 
 [optim]
 warmup_steps = 1
-batch_size = 512
+batch_size = 2048
 total_steps = 10000000000000000000
-step_per_rollout = 4
+step_per_rollout = 1
 
 
 [optim.optim]

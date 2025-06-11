@@ -495,8 +495,8 @@ def inference(config: Config):
             {
                 "output/save_path": save_path.as_posix(),
                 "output/sha256": sha256,
-                "output/output_flops": sum(output_flops for _, output_flops in flop_counts),
-                "output/input_flops": sum(input_flops for input_flops, _ in flop_counts),
+                "output/output_flops": sum(output_flops for _, output_flops in flop_counts) // config.pp.world_size,
+                "output/input_flops": sum(input_flops for input_flops, _ in flop_counts) // config.pp.world_size,
             }
         )
 

@@ -28,7 +28,7 @@ dependencies = [
     "asyncio>=3.4.3",
     "aiohttp>=3.10.5",
     "pyext @ git+https://github.com/justusmattern27/PyExt.git",
-    "prime-iroh>=0.3.0",
+    "prime-iroh>=0.3.1",
     "setuptools",
     "fastapi",
     "uvicorn",

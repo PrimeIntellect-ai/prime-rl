@@ -8,6 +8,7 @@ import torch
 from safetensors.torch import save_file
 from torch.distributed.checkpoint.state_dict import _get_fqns as get_fqns
 from torch.distributed.tensor import DTensor
+from transformers import AutoTokenizer
 
 from zeroband.training.world_info import get_world_info
 from zeroband.utils.logger import get_logger
@@ -94,7 +95,9 @@ def load_checkpoint_fsdp_state(
 async_ckpt_job = None
 
 
-def save_ckpt_for_rollout(model: ModelType, path: Path, dtype: torch.dtype = torch.bfloat16, async_save: bool = False) -> Path:
+def save_ckpt_for_rollout(
+    model: ModelType, tokenizer: AutoTokenizer, path: Path, dtype: torch.dtype = torch.bfloat16, async_save: bool = False
+) -> Path:
     """
     Save the checkpoint for rollout as one unified safetensors file.
 
@@ -134,6 +137,10 @@ def save_ckpt_for_rollout(model: ModelType, path: Path, dtype: torch.dtype = tor
     def _save():
         if world_info.rank == 0:
             save_file(cpu_state, path_file, metadata={"format": "pt"})
+
+            model.config.save_pretrained(path)
+            model.generation_config.save_pretrained(path)
+            tokenizer.save_pretrained(path)
 
             stable_file = path / "stable"
             stable_file.touch()
