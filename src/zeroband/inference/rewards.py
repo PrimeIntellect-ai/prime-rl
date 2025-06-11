@@ -6,10 +6,10 @@ from typing import Annotated, Any, Iterator, Literal, Sequence
 import numpy as np
 import requests
 from pydantic import BaseModel, Field
-from pydantic_config import BaseConfig
 from vllm import RequestOutput
 
 from zeroband.inference.genesys import TaskType, get_reward_function
+from zeroband.utils.config import BaseConfig
 from zeroband.utils.logger import get_logger
 
 # Global logger

@@ -3,7 +3,6 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
-from pydantic_config import BaseConfig
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -13,6 +12,7 @@ from pydantic_settings import (
 
 from zeroband.inference.pipeline import PipelineConfig
 from zeroband.inference.rewards import RewardsConfig
+from zeroband.utils.config import BaseConfig
 from zeroband.utils.monitor import MultiMonitorConfig
 
 # Dynamically extract paths to config files from CLI to pass to pydantic-settings TOML source as `toml_file` argument

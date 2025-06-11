@@ -11,9 +11,9 @@ import aiohttp
 import psutil
 import pynvml
 from pydantic import Field
-from pydantic_config import BaseConfig
 
 import zeroband.utils.envs as envs
+from zeroband.utils.config import BaseConfig
 from zeroband.utils.logger import get_logger
 
 # Module logger

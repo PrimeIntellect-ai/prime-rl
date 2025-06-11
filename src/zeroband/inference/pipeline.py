@@ -7,7 +7,6 @@ import torch
 import torch.nn as nn
 from prime_iroh import Node
 from pydantic import Field
-from pydantic_config import BaseConfig
 from safetensors.torch import load, save
 from vllm import LLM
 from vllm.distributed.parallel_state import get_tp_group
@@ -15,6 +14,7 @@ from vllm.executor.mp_distributed_executor import MultiprocessingDistributedExec
 from vllm.model_executor.layers.sampler import SamplerOutput
 
 from zeroband.inference.utils import rgetattr
+from zeroband.utils.config import BaseConfig
 from zeroband.utils.logger import get_logger
 
 # Global logger
