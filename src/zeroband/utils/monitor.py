@@ -10,7 +10,7 @@ from typing import Annotated, Any
 import aiohttp
 import psutil
 import pynvml
-from pydantic import Field, ValidationInfo, field_validator
+from pydantic import Field, model_validator
 
 from zeroband.utils.config import BaseConfig
 from zeroband.utils.logger import get_logger
@@ -25,11 +25,11 @@ class FileMonitorConfig(MonitorConfig):
 
     path: Annotated[Path | None, Field(default=None, description="The file path to log to")]
 
-    @field_validator("path")
-    def validate_path(cls, v: Path | None, info: ValidationInfo) -> Path | None:
-        if info.data.get("enable", False) and v is None:
-            raise ValueError("File path must be set when monitor is enabled")
-        return v
+    @model_validator(mode="after")
+    def validate_path(self):
+        if self.enable and self.path is None:
+            raise ValueError("File path must be set when FileMonitor is enabled. Try setting --monitor.file.path")
+        return self
 
 
 class SocketMonitorConfig(MonitorConfig):
@@ -37,11 +37,11 @@ class SocketMonitorConfig(MonitorConfig):
 
     path: Annotated[Path | None, Field(default=None, description="The socket path to log to")]
 
-    @field_validator("path")
-    def validate_path(cls, v: Path | None, info: ValidationInfo) -> Path | None:
-        if info.data.get("enable", False) and v is None:
-            raise ValueError("Socket path must be set when monitor is enabled")
-        return v
+    @model_validator(mode="after")
+    def validate_path(self):
+        if self.enable and self.path is None:
+            raise ValueError("Socket path must be set when SocketMonitor is enabled. Try setting --monitor.socket.path")
+        return self
 
 
 class APIMonitorConfig(MonitorConfig):
@@ -51,17 +51,17 @@ class APIMonitorConfig(MonitorConfig):
 
     auth_token: Annotated[str | None, Field(default=None, description="The API auth token to use")]
 
-    @field_validator("url")
-    def validate_url(cls, v: str | None, info: ValidationInfo) -> str | None:
-        if info.data.get("enable", False) and v is None:
-            raise ValueError("URL must be set when monitor is enabled")
-        return v
+    @model_validator(mode="after")
+    def validate_url(self):
+        if self.enable and self.url is None:
+            raise ValueError("URL must be set when APIMonitor is enabled. Try setting --monitor.api.url")
+        return self
 
-    @field_validator("auth_token")
-    def validate_auth_token(cls, v: str | None, info: ValidationInfo) -> str | None:
-        if info.data.get("enable", False) and v is None:
-            raise ValueError("Auth token must be set when monitor is enabled")
-        return v
+    @model_validator(mode="after")
+    def validate_auth_token(self):
+        if self.enable and self.auth_token is None:
+            raise ValueError("Auth token must be set when APIMonitor is enabled. Try setting --monitor.api.auth_token")
+        return self
 
 
 class MultiMonitorConfig(BaseConfig):
@@ -116,7 +116,7 @@ class FileMonitor(Monitor):
     def log(self, metrics: dict[str, Any]) -> None:
         with self.lock:
             try:
-                with open(self.file_path, "a") as f:
+                with open(self.file_path.as_posix(), "a") as f:
                     f.write(self._serialize_metrics(metrics) + "\n")
                 self.logger.debug(f"Logged successfully to {self.file_path}")
             except Exception as e:
@@ -134,7 +134,7 @@ class SocketMonitor(Monitor):
         with self.lock:
             try:
                 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-                    sock.connect(self.socket_path)
+                    sock.connect(self.socket_path.as_posix())
                     sock.sendall(self._serialize_metrics(metrics).encode())
                 self.logger.debug(f"Logged successfully to {self.socket_path}")
             except Exception as e:

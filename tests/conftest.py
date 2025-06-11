@@ -1,6 +1,7 @@
 import concurrent.futures
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Callable
 
@@ -24,6 +25,14 @@ from zeroband.training.world_info import reset_world_info
 from zeroband.utils.logger import reset_logger
 from zeroband.utils.models import AttnImpl
 from zeroband.utils.parquet import pa_schema
+
+
+@pytest.fixture(autouse=True)
+def clean_argv():
+    original_argv = sys.argv.copy()
+    sys.argv = sys.argv[:1]
+    yield
+    sys.argv = original_argv
 
 
 @pytest.fixture(autouse=True)

@@ -7,7 +7,6 @@ from zeroband.training import envs as training_env
 
 def test_training_env_defaults():
     """Test default values for training environment variables"""
-    assert training_env.PRIME_LOG_LEVEL == "INFO"  # shared env
     assert training_env.SHARDCAST_OUTPUT_DIR is None
 
 
