@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 from typing import Annotated, Literal
@@ -361,6 +362,37 @@ class Config(BaseSettings):
 
     toploc2: bool = True
 
+    log_level: Annotated[
+        Literal["debug", "info", "warning", "critical"],
+        Field(
+            default="info",
+            description="Logging level for the inference run.",
+        ),
+    ]
+
+    task_id: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Task ID for the inference run. Set in production by protocol worker via environment variable. Not necessary for local runs.",
+        ),
+    ]
+
+    group_id: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Group ID for the inference run (hex string). Set in production by protocol worker via environment variable. Not necessary for local runs.",
+            pattern=r"^0x[a-fA-F0-9]{40}$",
+        ),
+    ]
+
+    @model_validator(mode="after")
+    def set_log_level(self):
+        print(f"Setting log level to {self.log_level}")
+        os.environ["PRIME_LOG_LEVEL"] = self.log_level
+        return self
+
     @model_validator(mode="after")
     def enforce_eager_for_pp(self):
         if self.parallel.pp.world_size > 1:
@@ -377,6 +409,7 @@ class Config(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="PRIME_",
         env_nested_delimiter="_",
+        env_nested_max_split=1,
         cli_parse_args=True,
         cli_kebab_case=True,
         cli_avoid_json=True,
