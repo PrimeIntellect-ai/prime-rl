@@ -58,7 +58,7 @@ def inference(config: InferenceConfig):
     logger.info(f"Downloaded model weights in {time.time() - start_time:.2f}s")
 
     # Initialize metrics
-    monitor = setup_monitor(config.monitor)
+    monitor = setup_monitor(config.monitor, config.task_id)
 
     # Patch vLLM's model loading to load model shard
     patch_model_load(config=config.parallel.pp)

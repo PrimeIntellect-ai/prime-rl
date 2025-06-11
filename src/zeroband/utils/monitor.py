@@ -10,9 +10,8 @@ from typing import Annotated, Any
 import aiohttp
 import psutil
 import pynvml
-from pydantic import Field
+from pydantic import Field, ValidationInfo, field_validator
 
-import zeroband.utils.envs as envs
 from zeroband.utils.config import BaseConfig
 from zeroband.utils.logger import get_logger
 
@@ -26,11 +25,23 @@ class FileMonitorConfig(MonitorConfig):
 
     path: Annotated[Path | None, Field(default=None, description="The file path to log to")]
 
+    @field_validator("path")
+    def validate_path(cls, v: Path | None, info: ValidationInfo) -> Path | None:
+        if info.data.get("enable", False) and v is None:
+            raise ValueError("File path must be set when monitor is enabled")
+        return v
+
 
 class SocketMonitorConfig(MonitorConfig):
     """Configures logging to a Unix socket."""
 
     path: Annotated[Path | None, Field(default=None, description="The socket path to log to")]
+
+    @field_validator("path")
+    def validate_path(cls, v: Path | None, info: ValidationInfo) -> Path | None:
+        if info.data.get("enable", False) and v is None:
+            raise ValueError("Socket path must be set when monitor is enabled")
+        return v
 
 
 class APIMonitorConfig(MonitorConfig):
@@ -39,6 +50,18 @@ class APIMonitorConfig(MonitorConfig):
     url: Annotated[str | None, Field(default=None, description="The API URL to log to")]
 
     auth_token: Annotated[str | None, Field(default=None, description="The API auth token to use")]
+
+    @field_validator("url")
+    def validate_url(cls, v: str | None, info: ValidationInfo) -> str | None:
+        if info.data.get("enable", False) and v is None:
+            raise ValueError("URL must be set when monitor is enabled")
+        return v
+
+    @field_validator("auth_token")
+    def validate_auth_token(cls, v: str | None, info: ValidationInfo) -> str | None:
+        if info.data.get("enable", False) and v is None:
+            raise ValueError("Auth token must be set when monitor is enabled")
+        return v
 
 
 class MultiMonitorConfig(BaseConfig):
@@ -63,12 +86,10 @@ class MultiMonitorConfig(BaseConfig):
 class Monitor(ABC):
     """Base class for logging metrics to a single monitoring type (e.g. file, socket, API)."""
 
-    def __init__(self, config: MonitorConfig):
+    def __init__(self, config: MonitorConfig, task_id: str | None = None):
         self.config = config
         self.lock = threading.Lock()
-        self.metadata = {
-            "task_id": envs.PRIME_TASK_ID,
-        }
+        self.metadata = {"task_id": task_id}
         self.has_metadata = any(self.metadata.values())
         self.logger = get_logger("INFER")
         if not self.has_metadata:
@@ -87,10 +108,9 @@ class Monitor(ABC):
 class FileMonitor(Monitor):
     """Logs to a file. Used for debugging."""
 
-    def __init__(self, config: FileMonitorConfig):
-        super().__init__(config)
+    def __init__(self, config: FileMonitorConfig, task_id: str | None = None):
+        super().__init__(config, task_id)
         self.file_path = self.config.path
-        assert self.file_path is not None, "File path must be set for FileOutput. Set it as --monitor.file.path."
         Path(self.file_path).parent.mkdir(parents=True, exist_ok=True)
 
     def log(self, metrics: dict[str, Any]) -> None:
@@ -106,14 +126,9 @@ class FileMonitor(Monitor):
 class SocketMonitor(Monitor):
     """Logs to a Unix socket. Previously called `PrimeMetrics`."""
 
-    def __init__(self, config: SocketMonitorConfig):
-        super().__init__(config)
-        self.socket_path = self.config.path or envs.PRIME_SOCKET_PATH
-
-        # Assert that the socket path is set
-        assert self.socket_path is not None, (
-            "Socket path must be set for SocketOutput. Set it as --monitor.socket.path or PRIME_SOCKET_PATH."
-        )
+    def __init__(self, config: SocketMonitorConfig, task_id: str | None = None):
+        super().__init__(config, task_id)
+        self.socket_path = self.config.path
 
     def log(self, metrics: dict[str, Any]) -> None:
         with self.lock:
@@ -129,16 +144,10 @@ class SocketMonitor(Monitor):
 class APIMonitor(Monitor):
     """Logs to an API via HTTP. Previously called `HttpMonitor`."""
 
-    def __init__(self, config: APIMonitorConfig):
-        super().__init__(config)
-        self.url = self.config.url or envs.PRIME_API_URL
-        self.auth_token = self.config.auth_token or envs.PRIME_API_AUTH_TOKEN
-
-        # Assert that the URL and auth token are set
-        assert self.url is not None, "URL must be set for APIOutput. Set it as --monitor.api.url or PRIME_API_URL."
-        assert self.auth_token is not None, (
-            "Auth token must be set for APIOutput. Set it as --monitor.api.auth_token or PRIME_API_AUTH_TOKEN."
-        )
+    def __init__(self, config: APIMonitorConfig, task_id: str | None = None):
+        super().__init__(config, task_id)
+        self.url = self.config.url
+        self.auth_token = self.config.auth_token
 
     def log(self, metrics: dict[str, Any]) -> None:
         """Logs metrics to the server"""
@@ -163,16 +172,16 @@ class MultiMonitor:
     Log progress, performance, and system metrics to multiple (configurable) outputs.
     """
 
-    def __init__(self, config: MultiMonitorConfig):
+    def __init__(self, config: MultiMonitorConfig, task_id: str | None = None):
         self.logger = get_logger("INFER")
         # Initialize outputs
         self.outputs = []
         if config.file.enable:
-            self.outputs.append(FileMonitor(config.file))
+            self.outputs.append(FileMonitor(config.file, task_id))
         if config.socket.enable:
-            self.outputs.append(SocketMonitor(config.socket))
+            self.outputs.append(SocketMonitor(config.socket, task_id))
         if config.api.enable:
-            self.outputs.append(APIMonitor(config.api))
+            self.outputs.append(APIMonitor(config.api, task_id))
 
         self.disabled = len(self.outputs) == 0
 
@@ -251,7 +260,7 @@ class MultiMonitor:
             self._stop_metrics_thread()
 
 
-def setup_monitor(config: MultiMonitorConfig) -> MultiMonitor:
+def setup_monitor(config: MultiMonitorConfig, task_id: str | None = None) -> MultiMonitor:
     """Sets up a monitor to log metrics to multiple specified outputs."""
     get_logger("INFER").info(f"Initializing monitor ({config})")
-    return MultiMonitor(config)
+    return MultiMonitor(config, task_id)
