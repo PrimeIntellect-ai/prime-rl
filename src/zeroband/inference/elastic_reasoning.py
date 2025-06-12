@@ -42,8 +42,6 @@ def swap_think_token(_, __, kwargs, outputs, config: ElasticReasoningConfig) -> 
     Returns:
         None
     """
-    print(f"sampling_output: {outputs}")
-
     sampling_metadata: SamplingMetadata = kwargs.get("sampling_metadata", None)
     assert sampling_metadata is not None, "Sampling metadata is required for the `swap_think_token` post-hook"
     sampling_output: SamplerOutput | None = outputs
@@ -58,8 +56,6 @@ def swap_think_token(_, __, kwargs, outputs, config: ElasticReasoningConfig) -> 
                     )
                     seq_output.logprobs = {config.stop_think_token_id: seq_output.logprobs[seq_output.output_token]}
                     seq_output.output_token = config.stop_think_token_id
-
-    print(f"sampling_output: {sampling_output}")
 
     return sampling_output
 
