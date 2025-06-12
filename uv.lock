@@ -2299,15 +2299,6 @@ wheels = [
 ]
 
 [[package]]
-name = "pydantic-config"
-version = "0.2.0"
-source = { git = "https://github.com/samsja/pydantic_config.git?rev=b7becc3#b7becc34a9aecf09e4de67e61c246c2dc928ca08" }
-dependencies = [
-    { name = "pydantic" },
-    { name = "rich" },
-]
-
-[[package]]
 name = "pydantic-core"
 version = "2.33.2"
 source = { registry = "https://pypi.org/simple" }
@@ -3581,7 +3572,6 @@ dependencies = [
     { name = "numpy" },
     { name = "prime-iroh" },
     { name = "pyarrow" },
-    { name = "pydantic-config" },
     { name = "pydantic-settings" },
     { name = "pyext" },
     { name = "pylatexenc" },
@@ -3634,7 +3624,6 @@ requires-dist = [
     { name = "numpy" },
     { name = "prime-iroh", specifier = ">=0.3.1" },
     { name = "pyarrow" },
-    { name = "pydantic-config", git = "https://github.com/samsja/pydantic_config.git?rev=b7becc3" },
     { name = "pydantic-settings", specifier = ">=2.9.1" },
     { name = "pyext", git = "https://github.com/justusmattern27/PyExt.git" },
     { name = "pylatexenc", specifier = ">=2.10" },
