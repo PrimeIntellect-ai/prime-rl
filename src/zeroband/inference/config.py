@@ -1,5 +1,4 @@
 import os
-import sys
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -17,26 +16,12 @@ from zeroband.utils.config import BaseConfig
 from zeroband.utils.monitor import MultiMonitorConfig
 
 # These are two somewhat hacky workarounds inspired by https://github.com/pydantic/pydantic-settings/issues/259 to ensure backwards compatibility with our old CLI system `pydantic_config`
+TOML_PATHS: list[str] = []
 
-# Extract config file paths from CLI to pass to pydantic-settings as toml source
-# This enables the use of `@` to pass config file paths to the CLI
-TOML_FILE_PATHS = []
-argv = sys.argv.copy()
-for i, (arg, next_arg) in enumerate(zip(argv, argv[1:] + [""])):
-    if arg.startswith("@"):
-        if arg == "@":  # We assume that the next argument is a toml file path
-            TOML_FILE_PATHS.append(next_arg)
-            sys.argv.remove(arg)
-            sys.argv.remove(next_arg)
-        else:  # We assume that the argument is a toml file path
-            TOML_FILE_PATHS.append(arg.replace("@", ""))
-            sys.argv.remove(arg)
 
-# Convert config keys from snake case to kebab case
-# This enables the use of snake case (e.g. `--max_batch_size`) or kebab case (e.g. `--max-batch-size`)
-for i, arg in enumerate(sys.argv):
-    if arg.startswith("--"):
-        sys.argv[i] = f"--{arg.replace('--', '').replace('_', '-')}"
+def set_toml_paths(toml_paths: list[str]) -> None:
+    global TOML_PATHS
+    TOML_PATHS = toml_paths
 
 
 class SamplingConfig(BaseConfig):
@@ -390,7 +375,6 @@ class Config(BaseSettings):
 
     @model_validator(mode="after")
     def set_log_level(self):
-        print(f"Setting log level to {self.log_level}")
         os.environ["PRIME_LOG_LEVEL"] = self.log_level
         return self
 
@@ -410,7 +394,8 @@ class Config(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="PRIME_",
         env_nested_delimiter="__",
-        cli_parse_args=True,
+        # By default, we do not parse CLI. To activate, set `_cli_parse_args` to true or a list of arguments at init time.
+        cli_parse_args=False,
         cli_kebab_case=True,
         cli_avoid_json=True,
         cli_implicit_flags=True,
@@ -428,9 +413,9 @@ class Config(BaseSettings):
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         # This is a hacky way to dynamically load TOML file paths from CLI
         # https://github.com/pydantic/pydantic-settings/issues/259
-        global TOML_FILE_PATHS
+        global TOML_PATHS
         return (
-            TomlConfigSettingsSource(settings_cls, toml_file=TOML_FILE_PATHS),
+            TomlConfigSettingsSource(settings_cls, toml_file=TOML_PATHS),
             init_settings,
             env_settings,
             dotenv_settings,

@@ -28,14 +28,6 @@ from zeroband.utils.parquet import pa_schema
 
 
 @pytest.fixture(autouse=True)
-def clean_argv():
-    original_argv = sys.argv.copy()
-    sys.argv = sys.argv[:1]
-    yield
-    sys.argv = original_argv
-
-
-@pytest.fixture(autouse=True)
 def global_setup_and_cleanup():
     """
     Fixture to reset environment variables and singletons after each test.

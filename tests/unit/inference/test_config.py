@@ -22,7 +22,7 @@ def get_all_toml_files(directory):
 
 
 @pytest.mark.parametrize("config_file_path", get_all_toml_files("configs/inference"))
-def test_load_inference_configs(config_file_path, clean_argv):
+def test_load_inference_configs(config_file_path):
     with open(config_file_path, "rb") as f:
         content = tomli.load(f)
     config = InferenceConfig(**content)

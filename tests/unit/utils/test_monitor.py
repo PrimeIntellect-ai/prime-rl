@@ -50,7 +50,7 @@ def test_valid_file_monitor_config(tmp_path):
     assert file_monitor_config.enable
 
 
-def test_valid_file_monitor_config_with_env(tmp_path, clean_argv):
+def test_valid_file_monitor_config_with_env(tmp_path):
     file_path = tmp_path / "file_monitor.jsonl"
     os.environ["PRIME_MONITOR__FILE__ENABLE"] = "true"
     os.environ["PRIME_MONITOR__FILE__PATH"] = file_path.as_posix()
@@ -68,7 +68,7 @@ def test_valid_socket_monitor_config(tmp_path):
     assert socket_monitor_config.enable
 
 
-def test_valid_socket_monitor_config_with_env(tmp_path, clean_argv):
+def test_valid_socket_monitor_config_with_env(tmp_path):
     socket_path = tmp_path / "socket_monitor.sock"
     os.environ["PRIME_MONITOR__SOCKET__ENABLE"] = "true"
     os.environ["PRIME_MONITOR__SOCKET__PATH"] = socket_path.as_posix()
@@ -88,7 +88,7 @@ def test_valid_api_monitor_config():
     assert api_monitor_config.enable
 
 
-def test_valid_api_monitor_config_with_env(tmp_path, clean_argv):
+def test_valid_api_monitor_config_with_env():
     url = "http://localhost:8000/api/v1/metrics"
     auth_token = "test_token"
     os.environ["PRIME_MONITOR__API__ENABLE"] = "true"
