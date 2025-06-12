@@ -61,10 +61,12 @@ uv run python src/zeroband/infer.py @ configs/inference/debug.toml
 We use `pydantic-settings` to configure `prime-rl`. To get an overview of the available configurations, run the following command:
 
 ```bash
-uv run python src/zeroband/infer.py --help
+uv run python src/zeroband/train.py --help
 ```
 
-*NB: Currently, we only migrated the inference script to use the new config system. The training script will be updated soon.*
+```bash
+uv run python src/zeroband/infer.py --help
+```
 
 ### Sources
 
