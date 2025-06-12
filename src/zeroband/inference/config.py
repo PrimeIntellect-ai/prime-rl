@@ -95,9 +95,6 @@ class SamplingConfig(BaseConfig):
     ]
     min_tokens: Annotated[int, Field(default=0, ge=0, description="Minimum number of output tokens to generate per sequence.")]
 
-    # Random seed to use for generation. If None, sampling will be random.
-    seed: int | None = None
-
     @model_validator(mode="after")
     def convert_negative_logprobs_to_none(self):
         """Convert negative logprobs values to None to disable logprobs calculation."""
@@ -229,7 +226,7 @@ class DataConfig(BaseConfig):
 
 
 class RLConfig(BaseConfig):
-    """Configures inference when used in conjunction with a RL trainer. """
+    """Configures inference when used in conjunction with a RL trainer."""
 
     step_endpoint: Annotated[
         str | None,
@@ -298,6 +295,14 @@ class Config(BaseSettings):
         ),
     ]
 
+    toploc2: Annotated[
+        bool,
+        Field(
+            default=True,
+            description="Whether to use the TOPLOC2 Sampler",
+        ),
+    ]
+
     max_batch_size: Annotated[
         int | Literal["auto"],
         Field(
@@ -346,8 +351,6 @@ class Config(BaseSettings):
             description="Random seed used across inference components. If None, no seeding is used.",
         ),
     ]
-
-    toploc2: bool = True
 
     log_level: Annotated[
         Literal["debug", "info", "warning", "critical"],
