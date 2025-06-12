@@ -1,6 +1,8 @@
-model_name = "Qwen/Qwen3-0.6B"
 wandb = false
 collate_mode = "padding"
+
+[model]
+name = "Qwen/Qwen3-0.6B"
 
 [grpo]
 kl_coef = 0.02

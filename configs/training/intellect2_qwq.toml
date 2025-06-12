@@ -1,7 +1,8 @@
-model_name= "Qwen/QwQ-32B"
 project = "intellect-2"
-
 collate_mode = "packing"
+
+[model]
+name = "Qwen/QwQ-32B"
 
 [train]
 micro_bs = 1

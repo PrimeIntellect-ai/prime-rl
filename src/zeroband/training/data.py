@@ -7,12 +7,12 @@ import torch
 import torch.distributed as dist
 from jaxtyping import Float, Int
 from pyarrow import dataset as ds
-from pydantic_config import BaseConfig
 from torch.utils.data import DataLoader, IterableDataset
 
 from zeroband.training import envs
 from zeroband.training.data_prefetch import STABLE_FILE, GCPPrefetcher
 from zeroband.training.world_info import get_world_info
+from zeroband.utils.config import BaseConfig
 from zeroband.utils.logger import get_logger
 from zeroband.utils.parquet import pa_schema
 

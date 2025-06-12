@@ -1,6 +1,7 @@
 import logging
 import os
 import shutil
+import sys
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -13,13 +14,13 @@ import torch.distributed.tensor
 import wandb
 from jaxtyping import Float
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2
-from pydantic_config import parse_argv
 from torch._guards import log as torch_log
 from torch.distributed._composable.fsdp import MixedPrecisionPolicy, fully_shard  # type: ignore
 
 from zeroband.training import envs
 from zeroband.training.checkpoint import TrainingProgress, load_checkpoint_fsdp_state, save_checkpoint_fsdp_state, save_ckpt_for_rollout
-from zeroband.training.config import Config
+from zeroband.training.config import Config as TrainingConfig
+from zeroband.training.config import set_toml_paths
 from zeroband.training.data import BatchOutput, DatasetOutput, get_dataloader, packed_batch
 from zeroband.training.loss import entropy_loss, grpo_loss, kl_penalty, selective_log_softmax
 from zeroband.training.lr_scheduler import get_scheduler
@@ -36,6 +37,7 @@ from zeroband.training.utils import (
     wake_up_model_from_cpu,
 )
 from zeroband.training.world_info import WorldInfo, get_world_info
+from zeroband.utils.config import extract_toml_paths, to_kebab_case
 from zeroband.utils.logger import get_logger
 from zeroband.utils.models import ModelType, get_model_and_tokenizer
 from zeroband.utils.monitor import setup_monitor
@@ -86,7 +88,7 @@ def get_logprobs(model: ModelType, input_ids: torch.Tensor, position_ids: torch.
     return logprobs
 
 
-def train(config: Config):
+def train(config: TrainingConfig):
     if "ZERO_BAND_DEV" not in os.environ:
         torch_log.setLevel(logging.CRITICAL)
 
@@ -113,7 +115,7 @@ def train(config: Config):
         if envs.SHARDCAST_OUTPUT_DIR is not None:
             shardcast.initialize(envs.SHARDCAST_OUTPUT_DIR, max_distribution_folders=config.async_level)
 
-    model, tokenizer = get_model_and_tokenizer(config.model_name, config.train.attn_impl)
+    model, tokenizer = get_model_and_tokenizer(config.model.name, config.train.attn_impl)
 
     perf_counter = PerfCounter(window_size=min(10, 2 * config.optim.step_per_rollout), model=model, seq_len=config.data.seq_length)
 
@@ -132,11 +134,11 @@ def train(config: Config):
     apply_fsdp(model, config.train.reshard_after_forward)
 
     if config.grpo.kl_coef is not None:
-        model_reference, _ = get_model_and_tokenizer(config.model_name, config.train.attn_impl)
+        model_reference, _ = get_model_and_tokenizer(config.model.name, config.train.attn_impl)
         apply_fsdp(model_reference, config.train.reshard_after_forward)
 
     if config.recompute_logprobs:
-        model_for_logprob_only, _ = get_model_and_tokenizer(config.model_name, config.train.attn_impl)
+        model_for_logprob_only, _ = get_model_and_tokenizer(config.model.name, config.train.attn_impl)
         apply_fsdp(model_for_logprob_only, config.train.reshard_after_forward)
 
     optimizer = torch.optim.AdamW(
@@ -549,4 +551,9 @@ def train(config: Config):
 
 
 if __name__ == "__main__":
-    train(Config(**parse_argv()))
+    # Extract toml file paths from CLI arguments
+    toml_paths, cli_args = extract_toml_paths(sys.argv[1:])
+    set_toml_paths(toml_paths)
+
+    config = TrainingConfig(_cli_parse_args=to_kebab_case(cli_args))
+    train(config)

@@ -1,51 +1,68 @@
 from typing import Annotated, Literal, TypeAlias, Union
 
 from pydantic import Field, model_validator
-from pydantic_config import BaseConfig
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict, TomlConfigSettingsSource
 
 from zeroband.training.data import CollateMode, DataConfig
+from zeroband.utils.config import BaseConfig
 from zeroband.utils.models import AttnImpl
 from zeroband.utils.monitor import MultiMonitorConfig
 
+# These are two somewhat hacky workarounds inspired by https://github.com/pydantic/pydantic-settings/issues/259 to ensure backwards compatibility with our old CLI system `pydantic_config`
+TOML_PATHS: list[str] = []
+
+
+def set_toml_paths(toml_paths: list[str]) -> None:
+    global TOML_PATHS
+    TOML_PATHS = toml_paths
+
 
 class AdamConfig(BaseConfig):
-    type: Literal["adam"] = "adam"
-    lr: float = 4e-4
-    weight_decay: float = 0.01
-    betas1: float = 0.9
-    betas2: float = 0.99
+    """Configures the Adam optimizer."""
+
+    type: Annotated[Literal["adam"], Field(default="adam", description="The type of optimizer to use.")]
+    lr: Annotated[float, Field(default=4e-4, ge=0, description="The learning rate.")]
+    weight_decay: Annotated[float, Field(default=0.01, ge=0, description="The weight decay.")]
+    betas1: Annotated[float, Field(default=0.9, ge=0, description="The first beta parameter for the Adam optimizer.")]
+    betas2: Annotated[float, Field(default=0.99, ge=0, description="The second beta parameter for the Adam optimizer.")]
 
 
 class OptimConfig(BaseConfig):
-    optim: AdamConfig = AdamConfig()
-    sched_type: Literal["cosine", "linear", "wsd-sqrt"] = "linear"
-    warmup_steps: int = 1000
-    stable_steps: int = 80_000
-    total_steps: int = 88_000
-    batch_size: int = 512
-    grad_norm_clip: float = 1.0
+    """Configures the optimizer."""
 
-    step_per_rollout: int = 1
+    # The optimizer configuration
+    optim: AdamConfig = AdamConfig()
+
+    sched_type: Annotated[Literal["cosine", "linear", "wsd-sqrt"], Field(default="linear", description="The type of scheduler to use.")]
+    warmup_steps: Annotated[int, Field(default=1000, description="The number of warmup steps.")]
+    stable_steps: Annotated[int, Field(default=80_000, description="The number of stable steps.")]
+    total_steps: Annotated[int, Field(default=88_000, description="The total number of steps.")]
+    batch_size: Annotated[int, Field(default=512, description="The batch size.")]
+    grad_norm_clip: Annotated[float, Field(default=1.0, description="The gradient norm clip.")]
+    step_per_rollout: Annotated[int, Field(default=1, description="The number of steps per rollout.")]
 
 
 class TrainConfig(BaseConfig):
-    micro_bs: int = 1
-    ac_ckpt: bool | int = False
-    reshard_after_forward: bool = True  # old shard grad op True mean full shard
-    memory_profile: str | None = None
-    torch_compile: bool = False  #  disabling torch compile because its too unstable for RL
-    liger_qwen: bool = False
+    """Configures general training parameters."""
 
-    attn_impl: AttnImpl = "flash_attention_2"
+    micro_bs: Annotated[int, Field(default=1, description="The micro batch size.")]
+    ac_ckpt: Annotated[bool | int, Field(default=False, description="Whether to use AC checkpointing.")]
+    reshard_after_forward: Annotated[bool, Field(default=True, description="Whether to reshard after forward.")]
+    memory_profile: Annotated[str | None, Field(default=None, description="The path to the memory profile.")]
+    torch_compile: Annotated[bool, Field(default=False, description="Whether to use torch compile.")]  # Disabled bc too unstable atm
+    liger_qwen: Annotated[bool, Field(default=False, description="Whether to use Liger Qwen.")]
+    attn_impl: Annotated[AttnImpl, Field(default="flash_attention_2", description="The attention implementation.")]
 
 
 class CkptConfig(BaseConfig):
-    path: str | None = None
-    interval: int | None = None
-    resume: str | None = None
+    """Configures checkpointing"""
 
-    rollout_path: str | None = None  # if rollout path is set we saved at each step
-    clean_rollout_path: bool = False  # if true, the rollout path will be cleaned up before running the training
+    path: Annotated[str | None, Field(default=None, description="The path to the checkpoint.")]
+    interval: Annotated[int | None, Field(default=None, description="The interval at which to save the checkpoint.")]
+    resume: Annotated[str | None, Field(default=None, description="The path to the checkpoint to resume from.")]
+
+    rollout_path: Annotated[str | None, Field(default=None, description="The path to the rollout.")]
+    clean_rollout_path: Annotated[bool, Field(default=False, description="Whether to clean the rollout path.")]
 
     @model_validator(mode="after")
     def check_path_and_interval(self):
@@ -55,73 +72,144 @@ class CkptConfig(BaseConfig):
 
 
 class BaseGRPOVariantConfig(BaseConfig):
-    highest_entropy_ratio_loss: float = 1.0
+    """Base config class for GRPO variants."""
+
+    highest_entropy_ratio_loss: Annotated[float, Field(default=1.0, description="The highest entropy ratio loss.")]
 
 
 class KlCovConfig(BaseGRPOVariantConfig):
-    type: Literal["kl_cov"] = "kl_cov"
-    kl_coef: float = 1.0
-    k_percent: float = 0.2
+    """Configures the KL-Covariance loss."""
+
+    type: Annotated[Literal["kl_cov"], Field(default="kl_cov", description="The type of KL-Covariance loss.")]
+    kl_coef: Annotated[float, Field(default=1.0, description="The KL-Covariance loss coefficient.")]
+    k_percent: Annotated[float, Field(default=0.2, description="The K percent.")]
 
 
 class ClippingConfig(BaseGRPOVariantConfig):
-    type: Literal["clip"] = "clip"
-    epsilon_low: float = 0.2
-    epsilon_high: float = 0.2
-    clip_ratio: float = 4.0
+    """Configures the clipping loss."""
+
+    type: Annotated[Literal["clip"], Field(default="clip", description="The type of clipping loss.")]
+    epsilon_low: Annotated[float, Field(default=0.2, description="The epsilon low.")]
+    epsilon_high: Annotated[float, Field(default=0.2, description="The epsilon high.")]
+    clip_ratio: Annotated[float, Field(default=4.0, description="The clip ratio.")]
 
 
 class RatioConfig(BaseGRPOVariantConfig):
-    type: Literal["ratio"] = "ratio"
-    clip_ratio: float = 8.0
+    """Configures the ratio loss."""
+
+    type: Annotated[Literal["ratio"], Field(default="ratio", description="The type of ratio loss.")]
+    clip_ratio: Annotated[float, Field(default=8.0, description="The clip ratio.")]
 
 
 GRPOVariantsConfig: TypeAlias = Annotated[Union[ClippingConfig, KlCovConfig, RatioConfig], Field(discriminator="type")]
 
 
 class GRPOLossConfig(BaseConfig):
+    """Configures the GRPO loss."""
+
+    # The GRPO variant configuration
     off_policy: GRPOVariantsConfig = ClippingConfig()
-    kl_coef: float | None = None
-    entropy_loss_coeff: float = 0.001
+
+    kl_coef: Annotated[float | None, Field(default=None, description="The KL-Covariance loss coefficient.")]
+    entropy_loss_coeff: Annotated[float, Field(default=0.001, description="The entropy loss coefficient.")]
 
 
-class Config(BaseConfig):
-    model_name: str
+class ModelConfig(BaseConfig):
+    """Configures the model to be used for training."""
 
-    ckpt: CkptConfig = CkptConfig()
+    name: Annotated[str, Field(default="Qwen/Qwen3-0.6B", description="Name or path of the HF model to use.")]
 
-    project: str = "prime_simple"
-    wandb: bool = True
-    wandb_run_name: str | None = None
 
-    data: DataConfig = DataConfig()
-    optim: OptimConfig = OptimConfig()
+class Config(BaseSettings):
+    """Configures training"""
+
+    # The model configuration
+    model: ModelConfig = ModelConfig()
+
+    # The training configuration
     train: TrainConfig
 
+    # The optimizer configuration
+    optim: OptimConfig = OptimConfig()
+
+    # The checkpoint configuration
+    ckpt: CkptConfig = CkptConfig()
+
+    # The data configuration
+    data: DataConfig = DataConfig()
+
+    # The GRPO loss configuration
+    grpo: GRPOLossConfig = GRPOLossConfig()
+
+    # The monitor configuration
     monitor: MultiMonitorConfig = MultiMonitorConfig()
 
-    gpus_ids: list[int] | None = None
+    # W&B configurations
+    wandb: Annotated[bool, Field(default=True, description="Whether to enable W&B.")]
+    project: Annotated[str, Field(default="prime_simple", description="The project name for W&B.")]
+    wandb_run_name: Annotated[str | None, Field(default=None, description="The run name for W&B.")]
 
-    async_level: int = 2  # the amount of rollout checkpoints to keep
+    gpus_ids: Annotated[list[int] | None, Field(default=None, description="The GPU IDs to use.")]
 
-    collate_mode: CollateMode = "padding"
+    temperature: Annotated[float, Field(default=0.6, ge=0, description="The temperature for the logprobs.")]
 
-    start_step: int = 0
-    start_total_samples: int | None = None
-    start_rollout_step: int | None = None
+    async_level: Annotated[int, Field(default=2, ge=1, description="The amount of rollout checkpoints to keep.")]
 
-    stop_after_steps: int | None = None
+    collate_mode: Annotated[CollateMode, Field(default="padding", description="The collate mode to use for batching.")]
 
-    normalize_batch_to_token_count: bool = False
+    start_step: Annotated[
+        int,
+        Field(
+            default=0,
+            ge=0,
+            description="Training step to start from.",
+        ),
+    ]
 
-    recompute_logprobs: bool = True
+    start_total_samples: Annotated[
+        int | None,
+        Field(
+            default=None,
+            description="Total number of samples seen at the start of training (non-zero if resuming from a checkpoint).",
+        ),
+    ]
 
-    grpo: GRPOLossConfig = GRPOLossConfig()
+    start_rollout_step: Annotated[
+        int | None,
+        Field(
+            default=None,
+            description="Rollout step to start from.",
+        ),
+    ]
+
+    stop_after_steps: Annotated[
+        int | None,
+        Field(
+            default=None,
+            description="Stop training after this number of training steps.",
+        ),
+    ]
+
+    normalize_batch_to_token_count: Annotated[
+        bool,
+        Field(
+            default=False,
+            description="Whether to normalize the batch to the token count.",
+        ),
+    ]
+
+    recompute_logprobs: Annotated[
+        bool,
+        Field(
+            default=True,
+            description="Whether to recompute the logprobs. If false, it relies on the logprobs reported from the inference worker.",
+        ),
+    ]
 
     @model_validator(mode="after")
     def check_liger(self):
         if self.train.liger_qwen:
-            assert "Qwen" in self.model_name, "train.liger_qwen can only be applied to Qwen2 models."
+            assert "Qwen" in self.model.name, "train.liger_qwen can only be applied to Qwen2 models."
         return self
 
     @model_validator(mode="after")
@@ -129,3 +217,35 @@ class Config(BaseConfig):
         if self.ckpt.interval is not None:
             assert self.ckpt.interval % self.optim.step_per_rollout == 0, "ckpt.interval must be divisible by train.step_per_rollout"
         return self
+
+    # Pydantic settings configuration
+    model_config = SettingsConfigDict(
+        env_prefix="PRIME_",
+        env_nested_delimiter="__",
+        # By default, we do not parse CLI. To activate, set `_cli_parse_args` to true or a list of arguments at init time.
+        cli_parse_args=False,
+        cli_kebab_case=True,
+        cli_avoid_json=True,
+        cli_implicit_flags=True,
+        cli_use_class_docs_for_groups=True,
+    )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        # This is a hacky way to dynamically load TOML file paths from CLI
+        # https://github.com/pydantic/pydantic-settings/issues/259
+        global TOML_PATHS
+        return (
+            TomlConfigSettingsSource(settings_cls, toml_file=TOML_PATHS),
+            init_settings,
+            env_settings,
+            dotenv_settings,
+            file_secret_settings,
+        )
