@@ -1,12 +1,13 @@
 import time
 from pathlib import Path
-from typing import Any, Generator, Literal, TypeAlias, TypedDict
+from typing import Annotated, Any, Generator, Literal, TypeAlias, TypedDict
 
 import pyarrow.parquet as pq
 import torch
 import torch.distributed as dist
 from jaxtyping import Float, Int
 from pyarrow import dataset as ds
+from pydantic import Field
 from torch.utils.data import DataLoader, IterableDataset
 
 from zeroband.training import envs
@@ -18,15 +19,15 @@ from zeroband.utils.parquet import pa_schema
 
 
 class DataConfig(BaseConfig):
-    path: str = "datasets/fineweb-edu"
-    seq_length: int = 1024
-    fake: bool = False
-    num_workers: int = 1
-    timeout: float = 3600
+    path: Annotated[str, Field(default="datasets/fineweb-edu")]
+    seq_length: Annotated[int, Field(default=1024)]
+    fake: Annotated[bool, Field(default=False)]
+    num_workers: Annotated[int, Field(default=1)]
+    timeout: Annotated[float, Field(default=3600)]
 
-    local_dir: str = "/dev/shm/zeroband/data"  # only used if path is gcp
+    local_dir: Annotated[str, Field(default="/dev/shm/zeroband/data")]  # only used if path is gcp
 
-    ignore_zero_advantages: bool = False  # don't use in local setup
+    ignore_zero_advantages: Annotated[bool, Field(default=False)]  # don't use in local setup
 
 
 class DatasetOutput(TypedDict):
