@@ -229,7 +229,7 @@ class DataConfig(BaseConfig):
 
 
 class RLConfig(BaseConfig):
-    """Configures inference when used in conjunction with a RL trainer. If None, inference will run in a non-RL setting."""
+    """Configures inference when used in conjunction with a RL trainer. """
 
     step_endpoint: Annotated[
         str | None,
