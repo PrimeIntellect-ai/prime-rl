@@ -28,6 +28,7 @@ from zeroband.inference.pipeline import all_reduce, patch_model_load, setup_comm
 from zeroband.inference.rewards import compute_vllm_rewards
 from zeroband.inference.toploc import setup_toploc_cache
 from zeroband.inference.toploc2 import Toploc2Sampler
+from zeroband.inference.elastic_reasoning import setup_elastic_reasoning
 from zeroband.utils.monitor import setup_monitor
 from zeroband.inference.utils import (
     filter_data_by_prompt_length,
@@ -132,6 +133,10 @@ def inference(config: InferenceConfig):
     # Initialize sampling parameters
     logger.info(f"Initializing sampling parameters ({config.sampling} seed={config.seed})")
     sampling_params = SamplingParams(**config.sampling.model_dump(), seed=config.seed)
+
+    # Setup elastic reasoning
+    # Note: This hook has to be set up before the PP communication hooks to ensure that possibly modified sampler outputs are propagated to group peers
+    setup_elastic_reasoning(config.elastic_reasoning, llm=llm)
 
     # Setup pipeline parallel communication and hook
     node = setup_comm(config.parallel.pp)
