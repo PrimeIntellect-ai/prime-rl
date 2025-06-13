@@ -9,7 +9,7 @@ from vllm import LLM
 from vllm.model_executor.model_loader.loader import _process_weights_after_loading
 from vllm.transformers_utils.tokenizer import AnyTokenizer
 
-from zeroband.inference.rewards import LenRewardsConfig
+from zeroband.inference.config import LenRewardsConfig
 from zeroband.inference.work_counting import get_inference_input_output_flops  # noqa: F401
 
 

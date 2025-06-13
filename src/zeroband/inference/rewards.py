@@ -1,48 +1,16 @@
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
-from typing import Annotated, Any, Iterator, Literal, Sequence
+from typing import Any, Iterator, Sequence
 
 import numpy as np
 import requests
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from vllm import RequestOutput
 
+from zeroband.inference.config import RewardsConfig
 from zeroband.inference.genesys import TaskType, get_reward_function
-from zeroband.utils.config import BaseConfig
 from zeroband.utils.logger import get_logger
-
-
-class LenRewardsConfig(BaseConfig):
-    """Configures length reward."""
-
-    reward_type: Annotated[Literal["exact", "max", "clip"], Field(default="max")]
-    target_length_sampling: Annotated[Literal["discrete", "range"], Field(default="discrete")]
-    length_prompt_location: Annotated[Literal["system_prompt", "instruction"], Field(default="system_prompt")]
-
-    # applicable if target_length_sampling == "range"
-    min_length: Annotated[int, Field(default=1000)]
-    max_length: Annotated[int, Field(default=24000)]
-
-    # applicable if target_length_sampling == "discrete"
-    target_lengths: Annotated[list[float], Field(default=[500, 1000, 2000, 3000])]
-
-    # applicable for reward_type max and exact
-    reward_coef: Annotated[float, Field(default=0.0003)]
-
-    # only applicable for reward_type == "max"
-    max_reward_delta: Annotated[float, Field(default=0.5)]
-
-
-class RewardsConfig(BaseConfig):
-    """Configures rewards compuation"""
-
-    len_reward: Annotated[LenRewardsConfig | None, Field(default=None)]
-    advantage_estimation_method: Annotated[Literal["grpo", "dr_grpo", "opo"], Field(default="grpo")]
-
-    def __str__(self) -> str:
-        len_reward_str = "disabled" if self.len_reward is None else self.len_reward
-        return f"len_reward={len_reward_str} advantage_estimation_method={self.advantage_estimation_method}"
 
 
 class ModelCompletion(BaseModel):

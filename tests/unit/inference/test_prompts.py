@@ -1,7 +1,7 @@
 import pytest
 from transformers import AutoTokenizer
 
-from zeroband.inference.rewards import LenRewardsConfig
+from zeroband.inference.config import LenRewardsConfig
 from zeroband.inference.utils import format_prompts
 
 

@@ -10,7 +10,6 @@ from pydantic_settings import (
     TomlConfigSettingsSource,
 )
 
-from zeroband.inference.rewards import RewardsConfig
 from zeroband.utils.config import BaseConfig, MultiMonitorConfig
 
 # These are two somewhat hacky workarounds inspired by https://github.com/pydantic/pydantic-settings/issues/259 to ensure backwards compatibility with our old CLI system `pydantic_config`
@@ -177,6 +176,38 @@ class ParallelConfig(BaseConfig):
     def __str__(self) -> str:
         pp_str = f"pp.rank={self.pp.rank}, pp.world_size={self.pp.world_size}"
         return f"tp={self.tp} dp={self.dp} {pp_str}"
+
+
+class LenRewardsConfig(BaseConfig):
+    """Configures length reward."""
+
+    reward_type: Annotated[Literal["exact", "max", "clip"], Field(default="max")]
+    target_length_sampling: Annotated[Literal["discrete", "range"], Field(default="discrete")]
+    length_prompt_location: Annotated[Literal["system_prompt", "instruction"], Field(default="system_prompt")]
+
+    # applicable if target_length_sampling == "range"
+    min_length: Annotated[int, Field(default=1000)]
+    max_length: Annotated[int, Field(default=24000)]
+
+    # applicable if target_length_sampling == "discrete"
+    target_lengths: Annotated[list[float], Field(default=[500, 1000, 2000, 3000])]
+
+    # applicable for reward_type max and exact
+    reward_coef: Annotated[float, Field(default=0.0003)]
+
+    # only applicable for reward_type == "max"
+    max_reward_delta: Annotated[float, Field(default=0.5)]
+
+
+class RewardsConfig(BaseConfig):
+    """Configures rewards compuation"""
+
+    len_reward: Annotated[LenRewardsConfig | None, Field(default=None)]
+    advantage_estimation_method: Annotated[Literal["grpo", "dr_grpo", "opo"], Field(default="grpo")]
+
+    def __str__(self) -> str:
+        len_reward_str = "disabled" if self.len_reward is None else self.len_reward
+        return f"len_reward={len_reward_str} advantage_estimation_method={self.advantage_estimation_method}"
 
 
 class ModelConfig(BaseConfig):
