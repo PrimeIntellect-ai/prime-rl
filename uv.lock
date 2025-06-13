@@ -3566,7 +3566,6 @@ dependencies = [
     { name = "jaxtyping" },
     { name = "liger-kernel" },
     { name = "llmcompressor" },
-    { name = "modal" },
     { name = "ninja" },
     { name = "numpy" },
     { name = "prime-iroh" },
@@ -3594,6 +3593,9 @@ dependencies = [
 fa = [
     { name = "flash-attn" },
 ]
+kernelbench = [
+    { name = "modal" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -3616,7 +3618,7 @@ requires-dist = [
     { name = "jaxtyping" },
     { name = "liger-kernel" },
     { name = "llmcompressor" },
-    { name = "modal", specifier = ">=1.0.3" },
+    { name = "modal", marker = "extra == 'kernelbench'", specifier = ">=1.0.3" },
     { name = "ninja" },
     { name = "numpy" },
     { name = "prime-iroh", specifier = ">=0.3.1" },
@@ -3639,7 +3641,7 @@ requires-dist = [
     { name = "wandb" },
     { name = "zstandard" },
 ]
-provides-extras = ["fa"]
+provides-extras = ["fa", "kernelbench"]
 
 [package.metadata.requires-dev]
 dev = [

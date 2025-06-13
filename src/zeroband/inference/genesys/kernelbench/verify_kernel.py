@@ -5,7 +5,10 @@ GPU_ARCH_MAPPING = {"L40S": ["Ada"], "H100": ["Hopper"], "A100": ["Ampere"], "L4
 
 
 def get_app():
-    import modal
+    try:
+        import modal
+    except ImportError:
+        raise ImportError("Modal is required for kernel verification.")
 
     app = modal.App("kernelbench_eval")
 
