@@ -11,14 +11,14 @@ import aiohttp
 import psutil
 import pynvml
 
-from zeroband.utils.config import APIMonitorConfig, FileMonitorConfig, MonitorConfig, MultiMonitorConfig, SocketMonitorConfig
+from zeroband.utils.config import APIMonitorConfig, BaseConfig, FileMonitorConfig, MultiMonitorConfig, SocketMonitorConfig
 from zeroband.utils.logger import get_logger
 
 
 class Monitor(ABC):
     """Base class for logging metrics to a single monitoring type (e.g. file, socket, API)."""
 
-    def __init__(self, config: MonitorConfig, task_id: str | None = None):
+    def __init__(self, config: BaseConfig, task_id: str | None = None):
         self.config = config
         self.lock = threading.Lock()
         self.metadata = {"task_id": task_id}
@@ -108,11 +108,11 @@ class MultiMonitor:
         self.logger = get_logger("INFER")
         # Initialize outputs
         self.outputs = []
-        if config.file.enable:
+        if config.file is not None:
             self.outputs.append(FileMonitor(config.file, task_id))
-        if config.socket.enable:
+        if config.socket is not None:
             self.outputs.append(SocketMonitor(config.socket, task_id))
-        if config.api.enable:
+        if config.api is not None:
             self.outputs.append(APIMonitor(config.api, task_id))
 
         self.disabled = len(self.outputs) == 0
