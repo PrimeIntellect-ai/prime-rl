@@ -36,6 +36,7 @@ dependencies = [
     "reasoning-gym @ git+https://github.com/open-thought/reasoning-gym.git",
     "tomli>=2.2.1",
     "pydantic[email]>=2.11.5",
+    "cydifflib>=1.2.0",
 ] 
 
 [project.optional-dependencies]
