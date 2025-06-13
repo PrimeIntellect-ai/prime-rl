@@ -47,6 +47,7 @@ class TopLocCache:
         self.disable = disable
 
         self._cache: torch.Tensor | None = None
+        self._seq_id_2_cache_index: dict[int, int] = {}
         self.proofs: dict[int, list[bytes]] = {}
 
         if not disable:
