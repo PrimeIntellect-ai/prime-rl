@@ -1,33 +1,20 @@
 import time
 from pathlib import Path
-from typing import Annotated, Any, Generator, Literal, TypeAlias, TypedDict
+from typing import Any, Generator, TypedDict
 
 import pyarrow.parquet as pq
 import torch
 import torch.distributed as dist
 from jaxtyping import Float, Int
 from pyarrow import dataset as ds
-from pydantic import Field
 from torch.utils.data import DataLoader, IterableDataset
 
 from zeroband.training import envs
+from zeroband.training.config import CollateMode, DataConfig
 from zeroband.training.data_prefetch import STABLE_FILE, GCPPrefetcher
 from zeroband.training.world_info import get_world_info
-from zeroband.utils.config import BaseConfig
 from zeroband.utils.logger import get_logger
 from zeroband.utils.parquet import pa_schema
-
-
-class DataConfig(BaseConfig):
-    path: Annotated[str, Field(default="datasets/fineweb-edu")]
-    seq_length: Annotated[int, Field(default=1024)]
-    fake: Annotated[bool, Field(default=False)]
-    num_workers: Annotated[int, Field(default=1)]
-    timeout: Annotated[float, Field(default=3600)]
-
-    local_dir: Annotated[str, Field(default="/dev/shm/zeroband/data")]  # only used if path is gcp
-
-    ignore_zero_advantages: Annotated[bool, Field(default=False)]  # don't use in local setup
 
 
 class DatasetOutput(TypedDict):
@@ -676,9 +663,6 @@ def packed_batch_balancing(batch_optim: list[DatasetOutput], max_seq_len: int, p
 
 
 ###########
-
-
-CollateMode: TypeAlias = Literal["packing", "padding", "balancing"]
 
 
 def packed_batch(

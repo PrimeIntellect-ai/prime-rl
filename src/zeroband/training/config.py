@@ -3,7 +3,6 @@ from typing import Annotated, Literal, TypeAlias, Union
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict, TomlConfigSettingsSource
 
-from zeroband.training.data import CollateMode, DataConfig
 from zeroband.utils.config import BaseConfig, MultiMonitorConfig
 from zeroband.utils.models import AttnImpl
 
@@ -117,6 +116,21 @@ class ModelConfig(BaseConfig):
     """Configures the model to be used for training."""
 
     name: Annotated[str, Field(default="Qwen/Qwen3-0.6B", description="Name or path of the HF model to use.")]
+
+
+CollateMode: TypeAlias = Literal["packing", "padding", "balancing"]
+
+
+class DataConfig(BaseConfig):
+    path: Annotated[str, Field(default="datasets/fineweb-edu")]
+    seq_length: Annotated[int, Field(default=1024)]
+    fake: Annotated[bool, Field(default=False)]
+    num_workers: Annotated[int, Field(default=1)]
+    timeout: Annotated[float, Field(default=3600)]
+
+    local_dir: Annotated[str, Field(default="/dev/shm/zeroband/data")]  # only used if path is gcp
+
+    ignore_zero_advantages: Annotated[bool, Field(default=False)]  # don't use in local setup
 
 
 class Config(BaseSettings):
