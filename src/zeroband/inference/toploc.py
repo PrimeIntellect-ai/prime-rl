@@ -9,7 +9,7 @@ from vllm import LLM
 from vllm.model_executor import SamplingMetadata
 from vllm.model_executor.layers.logits_processor import _prune_hidden_states
 
-from zeroband.inference.pipeline import PipelineConfig
+from zeroband.inference.config import PipelineParallelConfig
 from zeroband.utils.logger import get_logger
 
 
@@ -186,7 +186,7 @@ def toploc_cache_hook(_, inputs: tuple, toploc_cache: TopLocCache):
 
 
 def setup_toploc_cache(
-    llm: LLM, pipeline_config: PipelineConfig, disable: bool = False, **toploc_kwargs
+    llm: LLM, pp_config: PipelineParallelConfig, disable: bool = False, **toploc_kwargs
 ) -> tuple[TopLocCache, RemovableHandle | None]:
     """Initializes the TOPLOC cache and register a hook to dynamically populate the cache during inference"""
     # Initialize the cache
@@ -200,7 +200,7 @@ def setup_toploc_cache(
     if not disable:
         handle = logits_processor.register_forward_pre_hook(partial(toploc_cache_hook, toploc_cache=toploc_cache))
 
-    if pipeline_config.is_enabled and pipeline_config.rank < pipeline_config.world_size - 1:
+    if pp_config.is_enabled and pp_config.rank < pp_config.world_size - 1:
         llm.llm_engine.model_executor.driver_worker.model_runner.model.model.norm = ArgsIdentity()
 
     return toploc_cache, handle

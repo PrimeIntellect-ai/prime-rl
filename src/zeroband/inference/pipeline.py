@@ -1,66 +1,20 @@
 import time
 from functools import partial
-from typing import Annotated, Tuple
+from typing import Tuple
 
 import msgspec
 import torch
 import torch.nn as nn
 from prime_iroh import Node
-from pydantic import Field
 from safetensors.torch import load, save
 from vllm import LLM
 from vllm.distributed.parallel_state import get_tp_group
 from vllm.executor.mp_distributed_executor import MultiprocessingDistributedExecutor
 from vllm.model_executor.layers.sampler import SamplerOutput
 
+from zeroband.inference.config import PipelineParallelConfig
 from zeroband.inference.utils import rgetattr
-from zeroband.utils.config import BaseConfig
 from zeroband.utils.logger import get_logger
-
-
-class PipelineConfig(BaseConfig):
-    """Configures pipeline parallel inference."""
-
-    rank: Annotated[int, Field(default=0, ge=0, description="Rank of the current node in the pipeline")]
-
-    world_size: Annotated[int, Field(default=1, ge=1, description="Total number of pipeline stages.")]
-
-    iroh_seed: Annotated[
-        int | None,
-        Field(
-            default=None,
-            description="Seed used to create the public node address. If None, a random seed will be used.",
-        ),
-    ]
-
-    iroh_peer_id: Annotated[
-        str | None,
-        Field(
-            default=None,
-            description="Peer address to connect to. If None, the user will be prompted to enter it.",
-        ),
-    ]
-
-    # Each retry takes ~30s, so 10 retries is ~300s (5min)
-    connection_num_retries: Annotated[
-        int,
-        Field(default=10, ge=0, description="How many times to retry connection to peer. Each retry takes ~30s."),
-    ]
-
-    @property
-    def is_enabled(self) -> bool:
-        """Returns True if pipeline parallelism is enabled (world_size > 1)."""
-        return self.world_size > 1
-
-    @property
-    def is_first_stage(self) -> bool:
-        """Returns True if the current rank is the first rank."""
-        return self.rank == 0
-
-    @property
-    def is_last_stage(self) -> bool:
-        """Returns True if the current rank is the last rank."""
-        return self.rank == self.world_size - 1
 
 
 def serialize_tensors(tensor_dict: dict[str, torch.Tensor]) -> bytes:
@@ -86,7 +40,7 @@ def deserialize_sampler_output(data: bytes) -> SamplerOutput:
     return msgspec.json.decode(data, type=SamplerOutput)
 
 
-def setup_comm(config: PipelineConfig) -> Node | None:
+def setup_comm(config: PipelineParallelConfig) -> Node | None:
     """
     Setup P2P communication via using `prime-iroh` nodes. Forms a ring topology
     between the model shards with unidirectional communication flow.
@@ -133,7 +87,7 @@ def setup_comm(config: PipelineConfig) -> Node | None:
     return node
 
 
-def patch_model_load(config: PipelineConfig) -> None:
+def patch_model_load(config: PipelineParallelConfig) -> None:
     """
     Patch the vLLM model load to only load the correct model shard.
     """
@@ -178,7 +132,7 @@ def patch_model_load(config: PipelineConfig) -> None:
 
 def setup_hooks(
     llm: LLM,
-    config: PipelineConfig,
+    config: PipelineParallelConfig,
     node: Node | None,
     start_layer_key: str = "model.start_layer",
     end_layer_key: str = "model.end_layer",
@@ -223,7 +177,7 @@ def setup_hooks(
 
 def setup_hooks_driver(
     worker,
-    config: PipelineConfig,
+    config: PipelineParallelConfig,
     node: Node | None,
     start_layer_key: str,
     end_layer_key: str,
@@ -323,7 +277,7 @@ def setup_hooks_driver(
 
 def setup_hooks_non_driver(
     worker,
-    config: PipelineConfig,
+    config: PipelineParallelConfig,
     start_layer_key: str,
     model_layers_key: str,
 ) -> None:
@@ -474,7 +428,7 @@ def send_output(_, __, output: SamplerOutput, node: Node) -> None:
     # get_logger("INFER").debug(f"Sent outputs ({len(serialized_output)} bytes)")
 
 
-def all_reduce(node: Node, tensor: torch.Tensor, config: PipelineConfig, op: callable = torch.add) -> torch.Tensor:
+def all_reduce(node: Node, tensor: torch.Tensor, config: PipelineParallelConfig, op: callable = torch.add) -> torch.Tensor:
     """
     Performs a ring all-reduce operation on tensors with a custom reduction operation.
 

@@ -10,7 +10,6 @@ from pydantic_settings import (
     TomlConfigSettingsSource,
 )
 
-from zeroband.inference.pipeline import PipelineConfig
 from zeroband.inference.rewards import RewardsConfig
 from zeroband.utils.config import BaseConfig, MultiMonitorConfig
 
@@ -102,6 +101,51 @@ class SamplingConfig(BaseConfig):
         return self
 
 
+class PipelineParallelConfig(BaseConfig):
+    """Configures pipeline parallel inference."""
+
+    rank: Annotated[int, Field(default=0, ge=0, description="Rank of the current node in the pipeline")]
+
+    world_size: Annotated[int, Field(default=1, ge=1, description="Total number of pipeline stages.")]
+
+    iroh_seed: Annotated[
+        int | None,
+        Field(
+            default=None,
+            description="Seed used to create the public node address. If None, a random seed will be used.",
+        ),
+    ]
+
+    iroh_peer_id: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Peer address to connect to. If None, the user will be prompted to enter it.",
+        ),
+    ]
+
+    # Each retry takes ~30s, so 10 retries is ~300s (5min)
+    connection_num_retries: Annotated[
+        int,
+        Field(default=10, ge=0, description="How many times to retry connection to peer. Each retry takes ~30s."),
+    ]
+
+    @property
+    def is_enabled(self) -> bool:
+        """Returns True if pipeline parallelism is enabled (world_size > 1)."""
+        return self.world_size > 1
+
+    @property
+    def is_first_stage(self) -> bool:
+        """Returns True if the current rank is the first rank."""
+        return self.rank == 0
+
+    @property
+    def is_last_stage(self) -> bool:
+        """Returns True if the current rank is the last rank."""
+        return self.rank == self.world_size - 1
+
+
 class ParallelConfig(BaseConfig):
     """Configures multi-node and multi-GPU setups through different types of parallelism (TP, DP, PP)."""
 
@@ -123,7 +167,7 @@ class ParallelConfig(BaseConfig):
     ]
 
     # The pipeline parallelism configuration
-    pp: Annotated[PipelineConfig, Field(default=PipelineConfig())]
+    pp: Annotated[PipelineParallelConfig, Field(default=PipelineParallelConfig())]
 
     @model_validator(mode="after")
     def assert_valid_parallelism(self):

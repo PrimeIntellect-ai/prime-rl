@@ -5,7 +5,8 @@ import torch
 from prime_iroh import Node
 
 import zeroband.utils.envs as envs  # noqa
-from zeroband.inference.pipeline import PipelineConfig, all_reduce, setup_comm
+from zeroband.inference.config import PipelineParallelConfig
+from zeroband.inference.pipeline import all_reduce, setup_comm
 
 # Pre-computed node IDs for different seeds (our team's favorite numbers)
 IROH_NODE_ID_MAP = {
@@ -33,7 +34,7 @@ def _test_setup_comm(rank: int, world_size: int, error_queue: Queue):
     seed = SEEDS[rank]
     peer_seed = SEEDS[(rank + 1) % world_size]
     peer_id = IROH_NODE_ID_MAP[peer_seed]
-    config = PipelineConfig(rank=rank, world_size=world_size, iroh_seed=seed, iroh_peer_id=peer_id)
+    config = PipelineParallelConfig(rank=rank, world_size=world_size, iroh_seed=seed, iroh_peer_id=peer_id)
     try:
         node = setup_comm(config)
     except Exception as e:
@@ -48,7 +49,7 @@ def _test_setup_comm(rank: int, world_size: int, error_queue: Queue):
 def test_setup_comm(world_size: int):
     # Test that setup_comm raises an error for 1 stage
     if world_size == 1:
-        assert setup_comm(PipelineConfig(world_size=world_size)) is None
+        assert setup_comm(PipelineParallelConfig(world_size=world_size)) is None
         return
 
     # Setup error queue and processes
@@ -84,7 +85,7 @@ def test_setup_comm(world_size: int):
 
 def test_all_reduce_single_node():
     """Test all_reduce with single node (world_size=1)"""
-    config = PipelineConfig(rank=0, world_size=1)
+    config = PipelineParallelConfig(rank=0, world_size=1)
     test_tensor = torch.tensor(42.0)
 
     # Create a dummy node (won't be used for communication)
@@ -104,7 +105,7 @@ def _test_all_reduce(rank: int, world_size: int, operation: str, error_queue: Qu
 
     try:
         # Create config
-        config = PipelineConfig(rank=rank, world_size=world_size, iroh_seed=seed, iroh_peer_id=peer_id)
+        config = PipelineParallelConfig(rank=rank, world_size=world_size, iroh_seed=seed, iroh_peer_id=peer_id)
 
         # Setup communication
         node = setup_comm(config)

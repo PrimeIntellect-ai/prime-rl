@@ -163,7 +163,7 @@ def inference(config: InferenceConfig):
     hidden_size = llm.llm_engine.model_executor.driver_worker.model_runner.model.config.hidden_size
     toploc_cache, _ = setup_toploc_cache(
         llm,
-        pipeline_config=config.parallel.pp,
+        pp_config=config.parallel.pp,
         disable=not config.toploc,
         max_seqs=batch_size,
         hidden_size=hidden_size,
