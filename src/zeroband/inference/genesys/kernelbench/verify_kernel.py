@@ -1,9 +1,11 @@
 import re
+from functools import lru_cache
 
 GPU = "L40S"
 GPU_ARCH_MAPPING = {"L40S": ["Ada"], "H100": ["Hopper"], "A100": ["Ampere"], "L4": ["Ada"], "T4": ["Turing"], "A10G": ["Ampere"]}
 
 
+@lru_cache(maxsize=1)
 def get_app():
     try:
         import modal
