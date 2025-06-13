@@ -5,82 +5,14 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Any
 
 import aiohttp
 import psutil
 import pynvml
-from pydantic import Field, model_validator
 
-from zeroband.utils.config import BaseConfig
+from zeroband.utils.config import APIMonitorConfig, FileMonitorConfig, MonitorConfig, MultiMonitorConfig, SocketMonitorConfig
 from zeroband.utils.logger import get_logger
-
-
-class MonitorConfig(BaseConfig):
-    enable: Annotated[bool, Field(default=False, description="Whether to log to this monitor")]
-
-
-class FileMonitorConfig(MonitorConfig):
-    """Configures logging to a file."""
-
-    path: Annotated[Path | None, Field(default=None, description="The file path to log to")]
-
-    @model_validator(mode="after")
-    def validate_path(self):
-        if self.enable and self.path is None:
-            raise ValueError("File path must be set when FileMonitor is enabled. Try setting --monitor.file.path")
-        return self
-
-
-class SocketMonitorConfig(MonitorConfig):
-    """Configures logging to a Unix socket."""
-
-    path: Annotated[Path | None, Field(default=None, description="The socket path to log to")]
-
-    @model_validator(mode="after")
-    def validate_path(self):
-        if self.enable and self.path is None:
-            raise ValueError("Socket path must be set when SocketMonitor is enabled. Try setting --monitor.socket.path")
-        return self
-
-
-class APIMonitorConfig(MonitorConfig):
-    """Configures logging to an API via HTTP."""
-
-    url: Annotated[str | None, Field(default=None, description="The API URL to log to")]
-
-    auth_token: Annotated[str | None, Field(default=None, description="The API auth token to use")]
-
-    @model_validator(mode="after")
-    def validate_url(self):
-        if self.enable and self.url is None:
-            raise ValueError("URL must be set when APIMonitor is enabled. Try setting --monitor.api.url")
-        return self
-
-    @model_validator(mode="after")
-    def validate_auth_token(self):
-        if self.enable and self.auth_token is None:
-            raise ValueError("Auth token must be set when APIMonitor is enabled. Try setting --monitor.api.auth_token")
-        return self
-
-
-class MultiMonitorConfig(BaseConfig):
-    """Configures the monitoring system."""
-
-    # All possible monitors (currently only supports one instance per type)
-    file: Annotated[FileMonitorConfig, Field(default=FileMonitorConfig())]
-    socket: Annotated[SocketMonitorConfig, Field(default=SocketMonitorConfig())]
-    api: Annotated[APIMonitorConfig, Field(default=APIMonitorConfig())]
-
-    system_log_frequency: Annotated[
-        int, Field(default=0, ge=0, description="Interval in seconds to log system metrics. If 0, no system metrics are logged)")
-    ]
-
-    def __str__(self) -> str:
-        file_str = "disabled" if not self.file.enable else f"path={self.file.path}"
-        socket_str = "disabled" if not self.socket.enable else f"path={self.socket.path}"
-        api_str = "disabled" if not self.api.enable else f"url={self.api.url}"
-        return f"file={file_str}, socket={socket_str}, api={api_str}, system_log_frequency={self.system_log_frequency}"
 
 
 class Monitor(ABC):

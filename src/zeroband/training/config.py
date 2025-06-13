@@ -4,9 +4,8 @@ from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict, TomlConfigSettingsSource
 
 from zeroband.training.data import CollateMode, DataConfig
-from zeroband.utils.config import BaseConfig
+from zeroband.utils.config import BaseConfig, MultiMonitorConfig
 from zeroband.utils.models import AttnImpl
-from zeroband.utils.monitor import MultiMonitorConfig
 
 # These are two somewhat hacky workarounds inspired by https://github.com/pydantic/pydantic-settings/issues/259 to ensure backwards compatibility with our old CLI system `pydantic_config`
 TOML_PATHS: list[str] = []

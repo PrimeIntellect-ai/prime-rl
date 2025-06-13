@@ -12,8 +12,7 @@ from pydantic_settings import (
 
 from zeroband.inference.pipeline import PipelineConfig
 from zeroband.inference.rewards import RewardsConfig
-from zeroband.utils.config import BaseConfig
-from zeroband.utils.monitor import MultiMonitorConfig
+from zeroband.utils.config import BaseConfig, MultiMonitorConfig
 
 # These are two somewhat hacky workarounds inspired by https://github.com/pydantic/pydantic-settings/issues/259 to ensure backwards compatibility with our old CLI system `pydantic_config`
 TOML_PATHS: list[str] = []

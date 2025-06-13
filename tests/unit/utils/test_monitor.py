@@ -5,13 +5,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from zeroband.inference.config import Config as InferenceConfig
+from zeroband.utils.config import APIMonitorConfig, FileMonitorConfig, SocketMonitorConfig
 from zeroband.utils.monitor import (
     APIMonitor,
-    APIMonitorConfig,
     FileMonitor,
-    FileMonitorConfig,
     SocketMonitor,
-    SocketMonitorConfig,
 )
 
 
