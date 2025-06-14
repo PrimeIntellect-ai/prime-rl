@@ -65,7 +65,9 @@ def setup_elastic_reasoning(sampling_config: SamplingConfig, llm: LLM) -> None:
     # Dynamically get the token ID of the `</think>` token from model's tokenizer
     tokenizer = llm.get_tokenizer()
     stop_think_token_id = tokenizer.convert_tokens_to_ids("</think>")
-    assert type(stop_think_token_id) == int, "`</think>` token must be a single token"
+    assert type(stop_think_token_id) == int, (
+        f"`</think>` token must be a single token, but has type {type(stop_think_token_id)} ({stop_think_token_id})"
+    )
 
     # Register the post-hook on the sampler
     sampler: nn.Module = llm.llm_engine.model_executor.driver_worker.model_runner.sampler
