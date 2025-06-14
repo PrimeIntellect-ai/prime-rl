@@ -64,10 +64,12 @@ def setup_elastic_reasoning(sampling_config: SamplingConfig, llm: LLM) -> None:
 
     # Dynamically get the token ID of the `</think>` token from model's tokenizer
     tokenizer = llm.get_tokenizer()
+    model_name = llm.llm_engine.model_config.model
     stop_think_token_id = tokenizer.convert_tokens_to_ids("</think>")
-    assert type(stop_think_token_id) == int, (
-        f"`</think>` token must be a single token, but has type {type(stop_think_token_id)} ({stop_think_token_id})"
-    )
+    if stop_think_token_id is None:
+        raise ValueError(
+            f"`</think>` token not found in tokenizer for {model_name}, so we cannot support elastic reasoning. Try running without elastic reasoning by setting `--sampling.max-solution-tokens=None`."
+        )
 
     # Register the post-hook on the sampler
     sampler: nn.Module = llm.llm_engine.model_executor.driver_worker.model_runner.sampler
