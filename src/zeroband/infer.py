@@ -90,12 +90,12 @@ def inference(config: InferenceConfig):
     logger.info(f"Initializing dataset (name={config.data.name}, split={config.data.split})")
     start_time = time.time()
     dataset = load_dataset(config.data.name, split=config.data.split)
+    num_problems = len(dataset)
+    logger.info(f"Initialized dataset with {num_problems:,} problems in {time.time() - start_time:.2f}s")
 
     if not config.rewards.compute_reward:
         logger.info("Reward computation is disabled, setting task_type to null_reward")
         dataset = dataset.map(lambda x: {"task_type": "null_reward"})
-
-    logger.info(f"Initialized dataset with {len(dataset):,} problems in {time.time() - start_time:.2f}s")
 
     # Optionally shuffle dataset
     if config.group_id is not None:
@@ -112,12 +112,15 @@ def inference(config: InferenceConfig):
         dataset = dataset.shuffle(generator=generator)
         node_address_int = None
 
-    # Optionally, filter out prompts that are too long
-    if config.data.max_prompt_len:
-        logger.info(f"Filtering out prompts with more than {config.data.max_prompt_len} tokens")
-        start_time = time.time()
-        dataset = filter_data_by_prompt_length(dataset, config.data.max_prompt_len, tokenizer)
-        logger.info(f"Filtered long prompts in {time.time() - start_time:.2f}s - {len(dataset)} samples remaining")
+    # Filter out prompts that exceed the model's context
+    max_model_len = llm.llm_engine.model_config.max_model_len
+    logger.info(f"Removing problems that exceed the model's context ({max_model_len} tokens)")
+    start_time = time.time()
+    dataset = filter_data_by_prompt_length(dataset, max_model_len, tokenizer)
+    logger.info(
+        f"Filtered out {num_problems - len(dataset)} problems in {time.time() - start_time:.2f}s {len(dataset):,} problems remaining"
+    )
+    num_problems = len(dataset)
 
     # Optionally, filter dataset for samples within difficulty range
     if config.data.difficulty_filtering:

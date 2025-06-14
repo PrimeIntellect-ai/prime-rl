@@ -270,21 +270,11 @@ class DataConfig(BaseConfig):
     ]
 
     split: Annotated[str, Field(default="train", description="Split of the dataset to use.")]
-
-    max_prompt_len: Annotated[
-        int | None,
-        Field(
-            default=None,
-            description="If set, filters out all samples with more than this number of input tokens. If None, no filtering is applied.",
-        ),
-    ]
-
     difficulty_filtering: Annotated[DifficultyFilteringConfig | None, Field(default=None)]
 
     def __str__(self) -> str:
-        max_prompt_len_str = "disabled" if self.max_prompt_len is None else self.max_prompt_len
         difficult_filter_str = "disabled" if self.difficulty_filtering is None else self.difficulty_filtering
-        return f"name={self.name} split={self.split} max_prompt_len={max_prompt_len_str} difficulty_filtering={difficult_filter_str}"
+        return f"name={self.name} split={self.split} difficulty_filtering={difficult_filter_str}"
 
 
 class RLConfig(BaseConfig):
