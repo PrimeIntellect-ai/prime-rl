@@ -77,7 +77,6 @@ uv run python src/zeroband/infer.py @ configs/inference/simple_math.toml --paral
 ```bash
 # Start trainer
 ulimit -n 4096
-export CUDA_VISIBLE_DEVICES=1
 uv  run torchrun src/zeroband/train.py @ configs/training/simple_math.toml
 ```
 
@@ -85,23 +84,22 @@ If you have 4 GPUs, run the following commands:
 
 ```bash
 # Start inference workers
-export CUDA_VISIBLE_DEVICES=0,1
+export CUDA_VISIBLE_DEVICES=1,2,3
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
-uv run python src/zeroband/infer.py @ configs/inference/simple_math.toml --parallel.dp 2 --max-batch-size 256
+uv run python src/zeroband/infer.py @ configs/inference/simple_math.toml --parallel.dp 2 --max-batch-size 192
 ```
 
 ```bash
 # Start trainer
 ulimit -n 4096
-export CUDA_VISIBLE_DEVICES=2
-uv  run torchrun src/zeroband/train.py @ configs/training/simple_math.toml
+uv run torchrun src/zeroband/train.py @ configs/training/simple_math.toml
 ```
 
 If you have 8 GPUs, run the following commands:
 
 ```bash
 # Start inference workers
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5
+export CUDA_VISIBLE_DEVICES=2,3,4,5,6,7
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 uv run python src/zeroband/infer.py @ configs/inference/simple_math.toml
 ```
@@ -109,7 +107,7 @@ uv run python src/zeroband/infer.py @ configs/inference/simple_math.toml
 ```bash
 # Start trainer
 ulimit -n 4096
-export CUDA_VISIBLE_DEVICES=6,7
+export CUDA_VISIBLE_DEVICES=0,1
 uv  run torchrun --nproc_per_node=2 src/zeroband/train.py @ configs/training/simple_math.toml --data.num_workers 2
 ```
 
