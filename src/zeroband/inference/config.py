@@ -121,13 +121,6 @@ class SamplingConfig(BaseConfig):
         """Whether elastic reasoning is enabled."""
         return self.max_solution_tokens is not None
 
-    @property
-    def max_think_tokens(self) -> int:
-        """The number of tokens the model is allowed to think for."""
-        if self.max_solution_tokens is None:
-            return self.max_tokens
-        return self.max_tokens - self.max_solution_tokens
-
 
 class PipelineParallelConfig(BaseConfig):
     """Configures pipeline parallel inference."""

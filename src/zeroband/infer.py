@@ -137,7 +137,7 @@ def inference(config: InferenceConfig):
     # Setup elastic reasoning
     # Note: This hook has to be set up before the PP communication hooks to ensure that possibly modified sampler outputs are propagated to group peers
     if config.sampling.elastic_reasoning_enabled:
-        setup_elastic_reasoning(config.sampling, llm=llm)
+        setup_elastic_reasoning(config.sampling, llm)
 
     # Setup pipeline parallel communication and hook
     node = setup_comm(config.parallel.pp)
