@@ -451,6 +451,14 @@ class Config(BaseSettings):
         ),
     ]
 
+    step_path: Annotated[
+        Path | None,
+        Field(
+            default=None,
+            description="Path to file to write the current inference step to. Used in production by protocol worker for restarting a task after re-grouping. The file will be automatically created and and only contain a single integer.",
+        ),
+    ]
+
     @model_validator(mode="after")
     def set_log_level(self):
         os.environ["PRIME_LOG_LEVEL"] = self.log_level

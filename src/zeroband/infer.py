@@ -187,6 +187,16 @@ def inference(config: InferenceConfig):
         llm = reload_model_weights(llm, path_file)
         real_step = ckpt_step
 
+    # Check if we should resume from step_path file
+    if config.step_path is not None and config.step_path.exists():
+        try:
+            saved_step = int(config.step_path.read_text().strip())
+            logger.info(f"Found existing step file at {config.step_path} with step {saved_step}")
+            real_step = saved_step
+            logger.info(f"Resuming from step {real_step} (loaded from {config.step_path})")
+        except (ValueError, IOError) as e:
+            logger.warning(f"Failed to read step from {config.step_path}: {e}")
+
     # This is used by the seeding logic to make sure we dont generate the same samples twice if we do multiple batches for a step
     current_step_batch_counter = 1
     total_problems = 0
@@ -228,6 +238,12 @@ def inference(config: InferenceConfig):
                     logger.info(f"No stable file found at {stable_file}, waiting for new checkpoint")
                 time.sleep(1)
                 attempt_count += 1
+
+        if config.step_path is not None:
+            if not config.step_path.exists():
+                config.step_path.parent.mkdir(parents=True, exist_ok=True)
+            config.step_path.write_text(str(real_step))
+            logger.info(f"Wrote current inference step ({real_step}) to {config.step_path}")
 
         # Get batch
         if node_address_int is not None:
