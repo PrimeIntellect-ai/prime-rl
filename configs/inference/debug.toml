@@ -2,6 +2,7 @@ max_steps = 2
 max_batch_size = 16
 clean_rollout_path = true
 toploc = true
+max_model_len = 8192
 
 [model]
 enforce_eager = true
