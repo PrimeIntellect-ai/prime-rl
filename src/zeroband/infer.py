@@ -229,6 +229,12 @@ def inference(config: InferenceConfig):
                 time.sleep(1)
                 attempt_count += 1
 
+        if config.step_path is not None:
+            if not config.step_path.exists():
+                config.step_path.parent.mkdir(parents=True, exist_ok=True)
+            config.step_path.write_text(str(real_step))
+            logger.info(f"Wrote current inference step ({real_step}) to {config.step_path}")
+
         # Get batch
         if node_address_int is not None:
             # TODO: What if we have multiple sample per real step?
