@@ -292,6 +292,11 @@ def inference(config: InferenceConfig):
         total_samples += batch_samples
         logger.info(f"Generated {batch_samples} samples for {batch_problems} problems for step {real_step} in {end_time - start_time:.2f}s")
 
+        # Give a warning about sequences that did not terminate
+        batch_unterminated_samples = sum(sum(1 for output in req.outputs if output.finish_reason != "stop") for req in request_outputs)
+        if batch_unterminated_samples > 0:
+            logger.warning(f"{batch_unterminated_samples}/{batch_samples} samples did not terminate.")
+
         # Print example
         first_prompt = tokenizer.decode(request_outputs[0].prompt_token_ids)
         first_completion = tokenizer.decode(request_outputs[0].outputs[0].token_ids)
