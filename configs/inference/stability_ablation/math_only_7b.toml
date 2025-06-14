@@ -10,8 +10,8 @@ name = "PrimeIntellect/INTELLECT-2-only-math"
 
 [data.difficulty_filtering]
 solve_rate_field = "solve_rate_qwen_r1_distill_7b"
-min_solve_rate = 0.6
-max_solve_rate = 1.0
+min_solve_rate = 0.1
+max_solve_rate = 0.5
 
 [parallel]
 dp = 6
