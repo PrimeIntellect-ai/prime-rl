@@ -8,8 +8,8 @@ micro_bs = 4 # change to 8 for H200
 reshard_after_forward = true
 
 [optim]
-batch_size = 128
-step_per_rollout = 4
+batch_size = 512
+step_per_rollout = 1
 
 [optim.optim]
 lr = 1e-6

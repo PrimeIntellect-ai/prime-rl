@@ -24,7 +24,7 @@ def set_toml_paths(toml_paths: list[str]) -> None:
 class SamplingConfig(BaseConfig):
     """Configures how tokens are sampled from the model. Largely follows the vLLM sampling parameters (https://docs.vllm.ai/en/latest/api/vllm.sampling_params.html)."""
 
-    n: Annotated[int, Field(default=8, ge=1, description="Number of output sequences to return for the given prompt.")]
+    n: Annotated[int, Field(default=16, ge=1, description="Number of output sequences to return for the given prompt.")]
 
     presence_penalty: Annotated[
         float,
@@ -45,7 +45,7 @@ class SamplingConfig(BaseConfig):
     temperature: Annotated[
         float,
         Field(
-            default=0.6,
+            default=1.0,
             ge=0,
             description="Scales the output probability distribution. Lower values => more deterministic, higher values => more random. If 0, will sample greedily.",
         ),
@@ -203,7 +203,7 @@ class RewardsConfig(BaseConfig):
     """Configures rewards compuation"""
 
     len_reward: Annotated[LenRewardsConfig | None, Field(default=None)]
-    advantage_estimation_method: Annotated[Literal["grpo", "dr_grpo", "opo"], Field(default="grpo")]
+    advantage_estimation_method: Annotated[Literal["grpo", "dr_grpo", "opo"], Field(default="dr_grpo")]
     compute_reward: Annotated[bool, Field(default=True, description="Whether to compute the reward. If not set, will set reward to 0.")]
 
     def __str__(self) -> str:
