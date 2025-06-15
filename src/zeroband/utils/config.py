@@ -71,6 +71,30 @@ class MultiMonitorConfig(BaseConfig):
         return f"file={file_str}, socket={socket_str}, api={api_str}, system_log_frequency={self.system_log_frequency}"
 
 
+def look_for_inheritance_in_toml(path: str) -> list[str]:
+    """
+    Look for inheritance in a toml file. Return a list of extra toml files to load.
+    """
+    path = Path(path)
+    try:
+        with open(path, "r") as f:
+            toml_str = f.readlines()
+
+        first_line = toml_str[0]
+        if first_line.startswith("# @"):
+            base_path = first_line.replace("# @", "").strip()
+
+            maybe_new_path = path.parent / base_path
+            if base_path.endswith(".toml") and maybe_new_path.exists():
+                return [str(path)] + look_for_inheritance_in_toml(str(maybe_new_path))
+            else:
+                return [str(path)]
+    except Exception as e:
+        print(f"Error reading {path}: {e}")
+
+    return [str(path)]
+
+
 # Extract config file paths from CLI to pass to pydantic-settings as toml source
 # This enables the use of `@` to pass config file paths to the CLI
 def extract_toml_paths(args: list[str]) -> tuple[list[str], list[str]]:
@@ -78,13 +102,17 @@ def extract_toml_paths(args: list[str]) -> tuple[list[str], list[str]]:
     remaining_args = args.copy()
     for arg, next_arg in zip(args, args[1:] + [""]):
         if arg.startswith("@"):
+            toml_path: str
             if arg == "@":  # We assume that the next argument is a toml file path
-                toml_paths.append(next_arg)
+                toml_path = next_arg
                 remaining_args.remove(arg)
                 remaining_args.remove(next_arg)
             else:  # We assume that the argument is a toml file path
-                toml_paths.append(arg.replace("@", ""))
                 remaining_args.remove(arg)
+                toml_path = arg.replace("@", "")
+
+        toml_paths.extend(look_for_inheritance_in_toml(toml_path))
+
     return toml_paths, remaining_args
 
 

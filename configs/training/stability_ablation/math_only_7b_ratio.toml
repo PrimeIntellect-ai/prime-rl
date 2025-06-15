@@ -1,35 +1,6 @@
-project = "math-ablation"
+# @ math_only_7b.toml
 
-collate_mode = "packing"
-recompute_logprobs = true
-
-normalize_batch_to_token_count = true
-
-[model]
-name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
-
-[train]
-micro_bs = 1
-reshard_after_forward = true
-ac_ckpt = true
-
-[data]
-seq_length = 16384
-path = "rollouts"
-
-[optim]
-batch_size = 1024
-step_per_rollout = 1
-
-[grpo]
-entropy_loss_coeff = 0
 
 [grpo.off_policy]
 type = "ratio"
 
-[optim.optim]
-lr = 1e-6
-
-[ckpt]
-rollout_path = "checkpoints"
-clean_rollout_path = true
