@@ -395,6 +395,35 @@ wheels = [
 ]
 
 [[package]]
+name = "cydifflib"
+version = "1.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/16/3d/37bd6a166e657259470ec12ad4c6fe8f544e67529c9b046f6450d6d890ed/cydifflib-1.2.0.tar.gz", hash = "sha256:b8fb1bd1a1ac4360aacd9210baed6e342a1e1a3972e033b0aeaad7f6c536d96d", size = 340192, upload-time = "2025-04-11T13:33:15.338Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e9/ae/54ee7342db88a34b93203c0bd441969b943fe828d7d2314def92ffa7e13a/cydifflib-1.2.0-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:a1fa6d28a25f8b9306b9acd0498e517533599fbf7c7b33fe0e1e993d62d7ae91", size = 219013, upload-time = "2025-04-11T13:31:30.536Z" },
+    { url = "https://files.pythonhosted.org/packages/36/eb/e2997b62ff977cbe6861d12cd4feae7421547c3dc85dbb7a21c42e222074/cydifflib-1.2.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:7631f6d3c47027cdbaf2795813d6fe4c63a1782cff4b30a7127dfd352b8ffcb6", size = 203537, upload-time = "2025-04-11T13:31:31.75Z" },
+    { url = "https://files.pythonhosted.org/packages/95/ac/9be3aa0f2a3a566e0d2382c4b72c31e227f494d7e7fad9e1a93a970abc1d/cydifflib-1.2.0-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:de386fb63a0af921846d3aa1874acb66852b1ae7a2a7b9bbe53442bc20749c16", size = 253424, upload-time = "2025-04-11T13:31:33.483Z" },
+    { url = "https://files.pythonhosted.org/packages/f2/96/01274f1396d60f3bb2d5d467d8922477dc0fe94213f6c14f3bb06984da57/cydifflib-1.2.0-cp311-cp311-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl", hash = "sha256:cb5fecc8129519a22399f85d11645cbe498cd5da261c31d4e2dae6be048164d0", size = 288163, upload-time = "2025-04-11T13:31:34.847Z" },
+    { url = "https://files.pythonhosted.org/packages/74/f6/c225bab93044fc539e7ae64d9a0b3eed43739f915d6f30db14f1b422607f/cydifflib-1.2.0-cp311-cp311-manylinux_2_17_s390x.manylinux2014_s390x.whl", hash = "sha256:e7612825459b03ee4a395d06f9ed2f1954fb895cc4b8988320242d39c92728de", size = 249866, upload-time = "2025-04-11T13:31:35.923Z" },
+    { url = "https://files.pythonhosted.org/packages/fb/f6/5b6b08ad44bcae4eac55215a21b9fd65d351afc7d02c74151b54b56a4518/cydifflib-1.2.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:966e40fac44db70f37ad5d5968f7f6b94725d162af33fb0a84c3270c01bcf666", size = 269599, upload-time = "2025-04-11T13:31:37.111Z" },
+    { url = "https://files.pythonhosted.org/packages/60/81/a59ce2d3b3de1f54ec9986e1ca554e2742611582f5d9e04c84a4b7d0643f/cydifflib-1.2.0-cp311-cp311-manylinux_2_5_i686.manylinux1_i686.manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:f7f1c3067605d4491d9ad828e5e8045b9845bda0a93edaf016898b6fb4dc4dc4", size = 272341, upload-time = "2025-04-11T13:31:39.568Z" },
+    { url = "https://files.pythonhosted.org/packages/74/17/cc4c9a63ef47fa0f9b2bec1895e3a2475dfedf987f65ed9cd32579ff0e6c/cydifflib-1.2.0-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:5e758fcfd1957b984c1a8c9bcdaaa1da39779ae735fc40707dc87094e4e61b8d", size = 1248320, upload-time = "2025-04-11T13:31:40.736Z" },
+    { url = "https://files.pythonhosted.org/packages/38/93/233e6defd402864debac4db7d8752cf3618575f09e0e42d7bd32dd3eb2c1/cydifflib-1.2.0-cp311-cp311-musllinux_1_2_i686.whl", hash = "sha256:20b7aa54f9eea08d40ca436c1406d5a93f7223df66e10bad03173245975308b4", size = 1425806, upload-time = "2025-04-11T13:31:41.998Z" },
+    { url = "https://files.pythonhosted.org/packages/6a/4c/e10715716109306006b6848d40ae65919b18e256645f06d781124ee7bf35/cydifflib-1.2.0-cp311-cp311-musllinux_1_2_ppc64le.whl", hash = "sha256:b417975c096a89a332f68aa38699972a471cad2b4400dcb63e509341ca92cc9d", size = 1359823, upload-time = "2025-04-11T13:31:43.273Z" },
+    { url = "https://files.pythonhosted.org/packages/13/a1/cb03eca57dd43f78edc5e2f8f4c7de13a4f6b67011ed956ae654aa8e286f/cydifflib-1.2.0-cp311-cp311-musllinux_1_2_s390x.whl", hash = "sha256:b5fdf93494113bcad1a205f7a9fa6815e1bf66c1408bc9edd5592d9f1f8e9c1e", size = 1478344, upload-time = "2025-04-11T13:31:45.069Z" },
+    { url = "https://files.pythonhosted.org/packages/1b/43/b6a94a16554f193d3b2f35fc849807704ad8ecc2d06edc45ab558b0d3d91/cydifflib-1.2.0-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:989aa93b003957fbb15defef84ccf51344b1da2a22aed6bf30de76fea9cd9fb8", size = 1323028, upload-time = "2025-04-11T13:31:46.421Z" },
+    { url = "https://files.pythonhosted.org/packages/ef/01/2f5e2f6a39547d6924901400e556e330dfab6d46a0d4935cb07568d71a92/cydifflib-1.2.0-cp311-cp311-win32.whl", hash = "sha256:4b6893e26ed74ce8a94b5110e88b050684b7d5f5995160056506ea20954e78a4", size = 175008, upload-time = "2025-04-11T13:31:48.376Z" },
+    { url = "https://files.pythonhosted.org/packages/9d/33/12dcaa637861f2ea9ef194bff91c3fee4876d0fd691bf166f1a29a4a9672/cydifflib-1.2.0-cp311-cp311-win_amd64.whl", hash = "sha256:fbe056c54ac0b52f8949cfdbd43e9171bf9023615ff28f8e5dbc692c0dca800c", size = 203561, upload-time = "2025-04-11T13:31:50.631Z" },
+    { url = "https://files.pythonhosted.org/packages/9b/66/e8bb4787b5bebcfd96252c4360062b19c850f1267906c465b52cb7a751ff/cydifflib-1.2.0-cp311-cp311-win_arm64.whl", hash = "sha256:5b70977ceaa58d8859ae8f5a66c636e832a2f33fbdf5ce1424b2fa894008946e", size = 167761, upload-time = "2025-04-11T13:31:51.774Z" },
+    { url = "https://files.pythonhosted.org/packages/2e/24/527aab1b0e6b3c96685db9e905f34618b9c59f274cef7b28a016cf2bc689/cydifflib-1.2.0-pp311-pypy311_pp73-macosx_10_15_x86_64.whl", hash = "sha256:6f0e75811066042b71d09c085d9c1818f00a9744787304a036e5b572e34030b0", size = 182426, upload-time = "2025-04-11T13:33:01.068Z" },
+    { url = "https://files.pythonhosted.org/packages/f4/70/69fa491298b4a45c654145e08931d34509f3688baef62af2cb5414e99736/cydifflib-1.2.0-pp311-pypy311_pp73-macosx_11_0_arm64.whl", hash = "sha256:d307c4d29cd5cb7ec7cc4e140404d2f7dde2a03dac42989a6da11ece9f3c0a6e", size = 173258, upload-time = "2025-04-11T13:33:02.184Z" },
+    { url = "https://files.pythonhosted.org/packages/a7/f6/43549d686e97c7166337a2875975069d480a2d77510deabc0e669a28e6c5/cydifflib-1.2.0-pp311-pypy311_pp73-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:fadbd858462bbfdda579d0ffd6fb0d4985fe06867ce145e52e14db4c0fe47277", size = 193719, upload-time = "2025-04-11T13:33:03.402Z" },
+    { url = "https://files.pythonhosted.org/packages/28/c9/389bf571deb096dc043e7c3d632ebc403f5ff4f8c121960f48f8b0e3ef57/cydifflib-1.2.0-pp311-pypy311_pp73-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:ba4a7c8610faa359abb688904565bea406a9bd64c83101950db29666399db216", size = 201046, upload-time = "2025-04-11T13:33:04.567Z" },
+    { url = "https://files.pythonhosted.org/packages/eb/b2/c6c6b4d0af900ed52729e0900587fd29da4768d2c7d4cfaa5094f1736868/cydifflib-1.2.0-pp311-pypy311_pp73-manylinux_2_5_i686.manylinux1_i686.manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:3c4db6b5aae473327d843018ea1bcf0aeaf261349256d56151e6ae642b0df168", size = 211350, upload-time = "2025-04-11T13:33:05.671Z" },
+    { url = "https://files.pythonhosted.org/packages/dc/22/98a6ad7e9b75589805a0fdde5a4c8534b5a108fda4565bd3cb2e9e93d383/cydifflib-1.2.0-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:14600ae907b7bc2a2bbdaccd1decd36ed21cb3f848a2f0016748cc6a505734b0", size = 178930, upload-time = "2025-04-11T13:33:06.888Z" },
+]
+
+[[package]]
 name = "datasets"
 version = "3.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2298,6 +2327,11 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/b5/69/831ed22b38ff9b4b64b66569f0e5b7b97cf3638346eb95a2147fdb49ad5f/pydantic-2.11.5-py3-none-any.whl", hash = "sha256:f9c26ba06f9747749ca1e5c94d6a85cb84254577553c8785576fd38fa64dc0f7", size = 444229, upload-time = "2025-05-22T21:18:06.329Z" },
 ]
 
+[package.optional-dependencies]
+email = [
+    { name = "email-validator" },
+]
+
 [[package]]
 name = "pydantic-core"
 version = "2.33.2"
@@ -3562,6 +3596,7 @@ dependencies = [
     { name = "aiohttp" },
     { name = "asyncio" },
     { name = "beartype" },
+    { name = "cydifflib" },
     { name = "datasets" },
     { name = "fastapi" },
     { name = "google-cloud-storage" },
@@ -3572,6 +3607,7 @@ dependencies = [
     { name = "numpy" },
     { name = "prime-iroh" },
     { name = "pyarrow" },
+    { name = "pydantic", extra = ["email"] },
     { name = "pydantic-settings" },
     { name = "pyext" },
     { name = "pylatexenc" },
@@ -3612,6 +3648,7 @@ requires-dist = [
     { name = "aiohttp", specifier = ">=3.10.5" },
     { name = "asyncio", specifier = ">=3.4.3" },
     { name = "beartype" },
+    { name = "cydifflib", specifier = ">=1.2.0" },
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "fastapi" },
     { name = "flash-attn", marker = "extra == 'fa'", specifier = ">=2.7.4" },
@@ -3624,6 +3661,7 @@ requires-dist = [
     { name = "numpy" },
     { name = "prime-iroh", specifier = ">=0.3.1" },
     { name = "pyarrow" },
+    { name = "pydantic", extras = ["email"], specifier = ">=2.11.5" },
     { name = "pydantic-settings", specifier = ">=2.9.1" },
     { name = "pyext", git = "https://github.com/justusmattern27/PyExt.git" },
     { name = "pylatexenc", specifier = ">=2.10" },
