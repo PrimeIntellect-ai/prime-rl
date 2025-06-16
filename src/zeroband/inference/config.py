@@ -87,6 +87,33 @@ class SamplingConfig(BaseConfig):
         return self
 
 
+class DataParallelConfig(BaseConfig):
+    """Configures data parallel inference."""
+
+    rank: Annotated[
+        int | None,
+        Field(
+            default=None,
+            description="Rank of the current node in the data parallel group. This value is set automatically to the rank of each of the dp.world_size processes and should not be set manually. If set, will throw an error.",
+        ),
+    ]
+
+    world_size: Annotated[int, Field(default=1, ge=1, description="Total number of data parallel processes.")]
+
+    @property
+    def is_enabled(self) -> bool:
+        """Returns True if data parallelism is enabled (world_size > 1)."""
+        return self.world_size > 1
+
+    @model_validator(mode="after")
+    def set_default_rank(self):
+        if self.rank is not None:
+            raise ValueError("DP rank should not be set manually.")
+        if self.rank is None:
+            self.rank = 0
+        return self
+
+
 class PipelineParallelConfig(BaseConfig):
     """Configures pipeline parallel inference."""
 
@@ -143,26 +170,21 @@ class ParallelConfig(BaseConfig):
         ),
     ]
 
-    dp: Annotated[
-        int,
-        Field(
-            default=1,
-            ge=1,
-            description="Number of local GPUs to use for data parallelism. It is used to spawn multiple processes running vLLM instances independently.",
-        ),
-    ]
+    # The data parallelism configuration
+    dp: Annotated[DataParallelConfig, Field(default=DataParallelConfig())]
 
     # The pipeline parallelism configuration
     pp: Annotated[PipelineParallelConfig, Field(default=PipelineParallelConfig())]
 
     @model_validator(mode="after")
     def assert_valid_parallelism(self):
-        assert not (self.dp > 1 and self.pp.world_size > 1), "Cannot use PP and DP together"
+        assert not (self.dp.world_size > 1 and self.pp.world_size > 1), "Cannot use PP and DP together"
         return self
 
     def __str__(self) -> str:
         pp_str = f"pp.rank={self.pp.rank}, pp.world_size={self.pp.world_size}"
-        return f"tp={self.tp} dp={self.dp} {pp_str}"
+        dp_str = f"dp.rank={self.dp.rank}, dp.world_size={self.dp.world_size}"
+        return f"tp={self.tp} {dp_str} {pp_str}"
 
 
 class LenRewardsConfig(BaseConfig):
