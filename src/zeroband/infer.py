@@ -312,7 +312,7 @@ def inference(config: InferenceConfig):
         # Print example
         first_prompt = tokenizer.decode(request_outputs[0].prompt_token_ids)
         first_completion = tokenizer.decode(request_outputs[0].outputs[0].token_ids)
-        logger.debug(f"Example: {first_prompt}{first_completion}")
+        logger.debug(f"Showing example (first completion):\n{first_prompt}{first_completion}")
 
         # Log progress metrics
         progress_metrics = {
