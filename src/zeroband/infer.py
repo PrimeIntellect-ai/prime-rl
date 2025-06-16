@@ -36,8 +36,8 @@ from zeroband.inference.utils import (
     format_prompts,
 )
 from zeroband.training.mp import EnvWrapper
-from zeroband.utils.logger import get_logger
 from zeroband.utils.utils import ensure_process_group_cleanup
+from zeroband.inference.logger import get_logger
 
 
 @ensure_process_group_cleanup

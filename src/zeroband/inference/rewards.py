@@ -10,7 +10,7 @@ from vllm import RequestOutput
 
 from zeroband.inference.config import RewardsConfig
 from zeroband.inference.genesys import TaskType, get_reward_function
-from zeroband.training.logger import get_logger
+from zeroband.inference.logger import get_logger
 
 
 class ModelCompletion(BaseModel):

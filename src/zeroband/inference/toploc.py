@@ -10,7 +10,7 @@ from vllm.model_executor import SamplingMetadata
 from vllm.model_executor.layers.logits_processor import _prune_hidden_states
 
 from zeroband.inference.config import PipelineParallelConfig
-from zeroband.training.logger import get_logger
+from zeroband.inference.logger import get_logger
 
 
 class ArgsIdentity(nn.Module):
