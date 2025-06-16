@@ -29,7 +29,6 @@ from zeroband.inference.toploc import setup_toploc_cache
 from zeroband.inference.toploc2 import Toploc2Sampler
 from zeroband.utils.monitor import setup_monitor
 from zeroband.inference.utils import (
-    filter_data_by_prompt_length,
     reload_model_weights,
     compute_max_batch_size,
     get_inference_input_output_flops,
@@ -115,10 +114,19 @@ def inference(config: InferenceConfig):
     # Filter out prompts that exceed the model's context
     max_model_len = llm.llm_engine.model_config.max_model_len
     logger.info(f"Removing problems that exceed the model's context ({max_model_len} tokens)")
+    if not tokenizer.is_fast:
+        logger.warning("Tokenizer is not fast, using slow tokenization")
+
     start_time = time.time()
-    dataset = filter_data_by_prompt_length(dataset, max_model_len, tokenizer)
+    dataset = dataset.map(
+        lambda x: {"token_length": tokenizer(x["prompt"], padding=False, truncation=False, return_length=True).length},
+        batched=True,
+        num_proc=os.cpu_count() // (config.parallel.dp * config.parallel.tp),
+        desc="Computing tokenized prompt lengths",
+    )
+    dataset = dataset.filter(lambda x: x["token_length"] <= max_model_len, desc=f"Filtering out problems with >{max_model_len} tokens")
     logger.info(
-        f"Filtered out {num_problems - len(dataset)} problems in {time.time() - start_time:.2f}s {len(dataset):,} problems remaining"
+        f"Filtered out {num_problems - len(dataset)} problems in {time.time() - start_time:.2f}s ({len(dataset):,} problems remaining)"
     )
     num_problems = len(dataset)
 

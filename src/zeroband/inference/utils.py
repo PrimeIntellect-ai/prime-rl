@@ -1,9 +1,7 @@
 from typing import Any
 
 import torch
-from datasets import Dataset
 from safetensors import safe_open
-from transformers import AutoTokenizer
 from transformers.tokenization_utils_base import BatchEncoding
 from vllm import LLM
 from vllm.model_executor.model_loader.loader import _process_weights_after_loading
@@ -11,25 +9,6 @@ from vllm.transformers_utils.tokenizer import AnyTokenizer
 
 from zeroband.inference.config import LenRewardsConfig
 from zeroband.inference.work_counting import get_inference_input_output_flops  # noqa: F401
-
-
-def filter_data_by_prompt_length(data: Dataset, max_length: int, tokenizer: AutoTokenizer, tokenize_batch_size: int = 10000):
-    def _add_token_lengths_batched(examples):
-        prompts = examples["prompt"]
-        tokenized = tokenizer(prompts, padding=False, truncation=False)
-        token_lengths = [len(ids) for ids in tokenized.input_ids]
-        return {"token_length": token_lengths}
-
-    data = data.map(
-        _add_token_lengths_batched,
-        batched=True,
-        batch_size=tokenize_batch_size,
-        desc=f"Calculating prompt lengths to filter out lengths > {max_length}",
-    )
-
-    data = data.filter(lambda x: x["token_length"] <= max_length)
-
-    return data
 
 
 def reload_model_weights(llm: LLM, ckpt_path: str):
