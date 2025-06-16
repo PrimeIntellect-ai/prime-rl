@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     # HF
     HF_HUB_CACHE: str
     HF_HUB_DISABLE_PROGRESS_BARS: str
+    HF_HUB_ETAG_TIMEOUT: int
 
     # Rust
     RUST_LOG: str
@@ -28,6 +29,7 @@ _INFERENCE_ENV_PARSERS = {
     "VLLM_CONFIGURE_LOGGING": str,
     "HF_HUB_CACHE": str,
     "HF_HUB_DISABLE_PROGRESS_BARS": str,
+    "HF_HUB_ETAG_TIMEOUT": int,
     "RUST_LOG": str,
     "SHARDCAST_SERVERS": lambda x: x.split(","),
     "SHARDCAST_BACKLOG_VERSION": int,
@@ -40,6 +42,7 @@ _INFERENCE_ENV_DEFAULTS = {
     "VLLM_USE_V1": "0",  # Use v0 engine (TOPLOC and PP do not support v1 yet)
     "RUST_LOG": "off",  # Disable Rust logs (from prime-iroh)
     "HF_HUB_DISABLE_PROGRESS_BARS": "1",  # Disable HF progress bars
+    "HF_HUB_ETAG_TIMEOUT": 500,  # 5 minutes
 }
 
 set_defaults(_INFERENCE_ENV_DEFAULTS)
