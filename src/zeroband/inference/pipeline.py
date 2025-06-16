@@ -14,7 +14,7 @@ from vllm.model_executor.layers.sampler import SamplerOutput
 
 from zeroband.inference.config import PipelineParallelConfig
 from zeroband.inference.utils import rgetattr
-from zeroband.utils.logger import get_logger
+from zeroband.training.logger import get_logger
 
 
 def serialize_tensors(tensor_dict: dict[str, torch.Tensor]) -> bytes:

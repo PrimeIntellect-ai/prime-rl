@@ -3,7 +3,7 @@ import os
 
 import pytest
 
-from zeroband.utils.logger import ALLOWED_LEVELS, LoggerName, PrimeFormatter, get_logger
+from zeroband.training.logger import ALLOWED_LEVELS, LoggerName, PrimeFormatter, get_logger
 
 
 def test_init_with_default_args():

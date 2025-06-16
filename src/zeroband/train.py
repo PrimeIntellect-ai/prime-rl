@@ -20,6 +20,7 @@ from zeroband.training import envs
 from zeroband.training.checkpoint import TrainingProgress, load_checkpoint_fsdp_state, save_checkpoint_fsdp_state, save_ckpt_for_rollout
 from zeroband.training.config import Config as TrainingConfig
 from zeroband.training.data import BatchOutput, DatasetOutput, get_dataloader, packed_batch
+from zeroband.training.logger import get_logger
 from zeroband.training.loss import entropy_loss, grpo_loss, kl_penalty, selective_log_softmax
 from zeroband.training.utils import (
     MetricsAverager,
@@ -34,7 +35,6 @@ from zeroband.training.utils import (
     wake_up_model_from_cpu,
 )
 from zeroband.training.world_info import WorldInfo, get_world_info
-from zeroband.utils.logger import get_logger
 from zeroband.utils.models import ModelType, get_model_and_tokenizer
 from zeroband.utils.monitor import setup_monitor
 from zeroband.utils.pydantic_config import parse_argv

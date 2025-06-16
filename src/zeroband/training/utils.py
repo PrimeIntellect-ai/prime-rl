@@ -16,8 +16,8 @@ from transformers import (
     PreTrainedTokenizer,
 )
 
+from zeroband.training.logger import get_logger
 from zeroband.training.world_info import get_world_info
-from zeroband.utils.logger import get_logger
 from zeroband.utils.models import ModelType
 
 

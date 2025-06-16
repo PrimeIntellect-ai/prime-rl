@@ -12,8 +12,8 @@ from torch.utils.data import DataLoader, IterableDataset
 from zeroband.training import envs
 from zeroband.training.config import CollateMode, DataConfig
 from zeroband.training.data_prefetch import STABLE_FILE, GCPPrefetcher
+from zeroband.training.logger import get_logger
 from zeroband.training.world_info import get_world_info
-from zeroband.utils.logger import get_logger
 from zeroband.utils.parquet import pa_schema
 
 

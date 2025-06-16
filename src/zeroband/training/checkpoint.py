@@ -10,8 +10,8 @@ from torch.distributed.checkpoint.state_dict import _get_fqns as get_fqns
 from torch.distributed.tensor import DTensor
 from transformers import AutoTokenizer
 
+from zeroband.training.logger import get_logger
 from zeroband.training.world_info import get_world_info
-from zeroband.utils.logger import get_logger
 from zeroband.utils.models import ModelType
 
 

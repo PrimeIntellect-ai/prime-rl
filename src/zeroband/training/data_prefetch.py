@@ -5,7 +5,7 @@ from pathlib import Path
 
 from google.cloud import storage
 
-from zeroband.utils.logger import get_logger
+from zeroband.training.logger import get_logger
 
 STABLE_FILE = "stable"
 
