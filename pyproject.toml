@@ -36,8 +36,8 @@ dependencies = [
     "tomli>=2.2.1",
     "pydantic-settings>=2.9.1",
     "cydifflib>=1.2.0",
-] 
-
+    "loguru>=0.7.3",
+]
 
 [project.optional-dependencies]
 fa = ["flash-attn>=2.7.4"]

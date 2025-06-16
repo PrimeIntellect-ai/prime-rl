@@ -196,7 +196,7 @@ def setup_toploc_cache(
 ) -> tuple[TopLocCache, RemovableHandle | None]:
     """Initializes the TOPLOC cache and register a hook to dynamically populate the cache during inference"""
     # Initialize the cache
-    logger = get_logger("INFER")
+    logger = get_logger()
     logger.info(f"Initializing TOPLOC cache ({toploc_kwargs})")
     toploc_cache = TopLocCache(disable=disable, **toploc_kwargs)
 
