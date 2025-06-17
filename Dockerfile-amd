@@ -58,3 +58,7 @@ ENV PYTORCH_ROCM_ARCH="gfx90a;gfx942"
 RUN ../venv/bin/pip install --no-cache-dir -r requirements/rocm.txt
 RUN ../venv/bin/python setup.py develop
 
+# entry point for zeroband
+WORKDIR /app
+ENV PATH="/app/venv/bin:$PATH"
+ENTRYPOINT ["python", "src/zeroband/infer.py"]
