@@ -16,8 +16,8 @@ from transformers import (
     PreTrainedTokenizer,
 )
 
-from zeroband.training.logger import get_logger
 from zeroband.training.world_info import get_world_info
+from zeroband.utils.logger import get_logger
 from zeroband.utils.models import ModelType
 
 
@@ -27,7 +27,7 @@ def apply_ac_ckpt(model: ModelType, num: int):
 
     Example if `num=2` only half of the layers are checkpointed.
     """
-    logger = get_logger("TRAIN")
+    logger = get_logger()
 
     layers_ckpt = 0
 

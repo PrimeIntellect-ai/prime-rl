@@ -5,7 +5,7 @@ from pathlib import Path
 
 from google.cloud import storage
 
-from zeroband.training.logger import get_logger
+from zeroband.utils.logger import get_logger
 
 STABLE_FILE = "stable"
 
@@ -50,7 +50,7 @@ class _GCPPrefetcherInternal:
         max_buffer_steps: int | None,
         max_workers: int,
     ):
-        self.logger = get_logger("TRAIN")
+        self.logger = get_logger()
 
         self.gcs_path = gcp_path.replace("gs://", "")
         self.local_dir = Path(local_dir)

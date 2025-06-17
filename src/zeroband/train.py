@@ -20,7 +20,7 @@ from zeroband.training import envs
 from zeroband.training.checkpoint import TrainingProgress, load_checkpoint_fsdp_state, save_checkpoint_fsdp_state, save_ckpt_for_rollout
 from zeroband.training.config import Config as TrainingConfig
 from zeroband.training.data import BatchOutput, DatasetOutput, get_dataloader, packed_batch
-from zeroband.training.logger import get_logger
+from zeroband.training.logger import setup_logger
 from zeroband.training.loss import entropy_loss, grpo_loss, kl_penalty, selective_log_softmax
 from zeroband.training.utils import (
     MetricsAverager,
@@ -91,8 +91,8 @@ def train(config: TrainingConfig):
     if "ZERO_BAND_DEV" not in os.environ:
         torch_log.setLevel(logging.CRITICAL)
 
-    logger = get_logger("TRAIN")
     world_info = get_world_info()
+    logger = setup_logger(config.log, world_info)
     wandb_sample_history = None
 
     if config.ckpt.clean_rollout_path and config.ckpt.rollout_path is not None:

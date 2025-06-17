@@ -1,61 +1,75 @@
-import logging
-import os
-from logging import Formatter, Logger
-from typing import Literal
+import sys
 
-from zeroband.training.world_info import WorldInfo, get_world_info
+from loguru import logger
+from loguru._logger import Logger
 
+from zeroband.training.config import LogConfig
+from zeroband.training.world_info import WorldInfo
+from zeroband.utils.logger import get_logger, set_logger
 
-class PrimeFormatter(Formatter):
-    def __init__(self, world_info: WorldInfo | None = None):
-        super().__init__()
-        self.world_info = world_info
-
-    def format(self, record):
-        if self.world_info is not None:
-            record.rank = self.world_info.rank
-            log_format = "{asctime} [{name}] [Rank {rank}] [{levelname}] [{filename}:{lineno}] {message}"
-        else:
-            log_format = "{asctime} [{name}] [{levelname}] {message}"
-        formatter = logging.Formatter(log_format, style="{", datefmt="%m-%d %H:%M:%S")
-        return formatter.format(record)
+NO_BOLD = "\033[22m"
+RESET = "\033[0m"
 
 
-ALLOWED_LEVELS = {"debug": logging.DEBUG, "info": logging.INFO, "warning": logging.WARNING, "critical": logging.CRITICAL}
-LoggerName = Literal["INFER", "TRAIN"]
+def setup_logger(log_config: LogConfig, world_info: WorldInfo) -> Logger:
+    if get_logger() is not None:
+        raise RuntimeError("Logger already setup. Call reset_logger first.")
 
+    # Define the time format for the logger.
+    time = "<fg 0>{time:zz HH:mm:ss}</fg 0>"
+    if log_config.utc:
+        time = "<fg 0>{time:zz HH:mm:ss!UTC}</fg 0>"
 
-def get_logger(name: LoggerName) -> Logger:
-    # Get logger from Python's built-in registry
-    logger = logging.getLogger(name)
+    # Define the colorized log level and message
+    message = "".join(
+        [
+            "<level>{level: >8}</level>",
+            f" <level>{NO_BOLD}",
+            "{message}",
+            f"{RESET}</level>",
+        ]
+    )
 
-    # Only configure the logger if it hasn't been configured yet
-    if not logger.handlers:
-        level = os.environ.get("PRIME_LOG_LEVEL", "info")
-        world_info = None
-        if name == "TRAIN":
-            world_info = get_world_info()
-            if world_info.local_rank == 0:
-                # On first rank, set log level from env var
-                logger.setLevel(ALLOWED_LEVELS.get(level, logging.INFO))
-            else:
-                # Else, only log critical messages
-                logger.setLevel(logging.CRITICAL)
-        else:
-            # Set log level
-            logger.setLevel(ALLOWED_LEVELS.get(level, logging.INFO))
+    # Define the debug information in debug mode
+    debug = "PID={process.id} | TID={thread.id} | {file}::{line}" if log_config.level.upper() == "DEBUG" else ""
 
-        # Add handler with custom formatter
-        handler = logging.StreamHandler()
-        handler.setFormatter(PrimeFormatter(world_info=world_info))
-        logger.addHandler(handler)
+    # Add parallel information to the format
+    if world_info.num_gpus > 1:
+        parallel = f"Rank {world_info.rank}"
+        if debug:
+            debug += " | "
+        debug += parallel
+    if debug:
+        debug = f"[{debug}]"
 
-        # Prevent the log messages from being propagated to the root logger
-        logger.propagate = False
+    # Assemble the final format
+    format = f"{time} {debug} {message}"
+
+    # Remove all default handlers
+    logger.remove()
+
+    # Install new handler on all ranks, if specified. Otherwise, only install on the main rank
+    if log_config.all_ranks or world_info.rank == 0:
+        logger.add(sys.stdout, format=format, level=log_config.level.upper(), enqueue=True, backtrace=True, diagnose=True)
+
+    # Bind the logger to access the rank
+    set_logger(logger)
 
     return logger
 
 
-def reset_logger(name: str | None = None) -> None:
-    logger = logging.getLogger(name)
-    logger.handlers.clear()
+if __name__ == "__main__":
+    from zeroband.training.world_info import get_world_info
+
+    world_info = get_world_info()
+    logger = setup_logger(log_config=LogConfig(utc=True, all_ranks=True), world_info=world_info)
+    logger.debug("Debug message")
+    logger.info("Info message")
+    logger.success("Success message")
+    logger.warning("Warning message")
+    logger.error("Error message")
+    logger.critical("Critical message")
+    try:
+        a = 1 / 0
+    except Exception as e:
+        logger.exception(e)

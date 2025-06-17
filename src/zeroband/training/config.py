@@ -3,7 +3,6 @@ from typing import Annotated, Literal, TypeAlias, Union
 from pydantic import Field, model_validator
 
 from zeroband.utils.config import MultiMonitorConfig
-from zeroband.utils.logger import get_logger
 from zeroband.utils.models import AttnImpl
 from zeroband.utils.pydantic_config import BaseConfig, BaseSettings
 
@@ -31,8 +30,8 @@ class OptimConfig(BaseConfig):
     @model_validator(mode="after")
     def warn_step_per_rollout(self):
         if self.step_per_rollout > 1:
-            get_logger("TRAIN").info(
-                f"step_per_rollout is set to {self.step_per_rollout}. The recommended value is 1, any other value should be either to run a legacy run or a experiment.."
+            raise UserWarning(
+                f"step_per_rollout is set to {self.step_per_rollout}. The recommended value is 1, any other value should be either to run a legacy run or a experiment."
             )
         return self
 
@@ -130,6 +129,27 @@ class DataConfig(BaseConfig):
     ignore_zero_advantages: Annotated[bool, Field(default=False)]  # don't use in local setup
 
 
+class LogConfig(BaseConfig):
+    """Configures the logger."""
+
+    level: Annotated[
+        Literal["debug", "info"],
+        Field(default="info", description="Logging level for the inference run. Will determine the logging verbosity and format."),
+    ]
+
+    all_ranks: Annotated[
+        bool, Field(default=False, description="Whether to log from all DP ranks. If False, will only log from the main rank (DP rank 0).")
+    ]
+
+    utc: Annotated[
+        bool,
+        Field(
+            default=False,
+            description="Whether to use UTC time in the logger. If False, it will default to the local time. If the local time is wrong, you can set it by setting the `TZ` environment variable. For example, `TZ=America/Los_Angeles` will set the local time to SF time.",
+        ),
+    ]
+
+
 class Config(BaseSettings):
     """Configures training"""
 
@@ -150,6 +170,9 @@ class Config(BaseSettings):
 
     # The GRPO loss configuration
     grpo: GRPOLossConfig = GRPOLossConfig()
+
+    # The logging configuration
+    log: LogConfig = LogConfig()
 
     # The monitor configuration
     monitor: MultiMonitorConfig = MultiMonitorConfig()

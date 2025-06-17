@@ -10,8 +10,8 @@ from torch.distributed.checkpoint.state_dict import _get_fqns as get_fqns
 from torch.distributed.tensor import DTensor
 from transformers import AutoTokenizer
 
-from zeroband.training.logger import get_logger
 from zeroband.training.world_info import get_world_info
+from zeroband.utils.logger import get_logger
 from zeroband.utils.models import ModelType
 
 
@@ -99,7 +99,7 @@ def save_ckpt_for_rollout(
     Return:
         Path to the saved checkpoint safetensor
     """
-    logger = get_logger("TRAIN")
+    logger = get_logger()
     world_info = get_world_info()
 
     if not path.exists():
