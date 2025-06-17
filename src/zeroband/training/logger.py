@@ -52,6 +52,9 @@ def setup_logger(log_config: LogConfig, world_info: WorldInfo) -> Logger:
     if log_config.all_ranks or world_info.rank == 0:
         logger.add(sys.stdout, format=format, level=log_config.level.upper(), enqueue=True, backtrace=True, diagnose=True)
 
+    # Disable critical logging
+    logger.critical = lambda _: None
+
     # Bind the logger to access the rank
     set_logger(logger)
 
