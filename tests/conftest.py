@@ -8,7 +8,6 @@ from typing import Callable
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-import torch
 import torch.distributed as dist
 from huggingface_hub import HfApi
 from pyarrow import Table
@@ -20,26 +19,43 @@ Environment = dict[str, str]
 Command = list[str]
 
 
+from loguru import logger
+
 from zeroband.training.data import STABLE_FILE
-from zeroband.training.logger import reset_logger
 from zeroband.training.world_info import reset_world_info
+from zeroband.utils.logger import reset_logger, set_logger
 from zeroband.utils.models import AttnImpl
 from zeroband.utils.parquet import pa_schema
 
 
 @pytest.fixture(autouse=True)
-def global_setup_and_cleanup():
+def setup_logger():
     """
-    Fixture to reset environment variables and singletons after each test.
+    Fixture to set and reset the logger after each test.
+    """
+    set_logger(logger)  # Use the default loguru.logger
+    yield
+    reset_logger()
+
+
+@pytest.fixture(autouse=True)
+def setup_env():
+    """
+    Fixture to reset environment variables after each test.
     """
     original_env = dict(os.environ)
     yield
     os.environ.clear()
     os.environ.update(original_env)
+
+
+@pytest.fixture(autouse=True)
+def setup_world_info():
+    """
+    Fixture to reset the world info after each test.
+    """
+    yield
     reset_world_info()
-    reset_logger("TRAIN")
-    reset_logger("INFER")
-    torch.cuda.empty_cache()
 
 
 @pytest.fixture(params=["eager", "sdpa", "flash_attention_2"])

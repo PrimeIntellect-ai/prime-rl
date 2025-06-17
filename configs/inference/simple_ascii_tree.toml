@@ -8,8 +8,8 @@ max_model_len = 2048
 [data]
 name = "kalomaze/ascii-tree-mix-it1"
 
-[parallel]
-dp = 4
+[parallel.dp]
+world_size = 4
 
 [rl]
 ckpt_path = "checkpoints"

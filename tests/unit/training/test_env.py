@@ -12,9 +12,8 @@ def test_training_env_defaults():
 
 def test_training_env_custom_values():
     """Test custom values for training environment variables"""
-    os.environ.update({"PRIME_LOG_LEVEL": "DEBUG", "SHARDCAST_OUTPUT_DIR": "path/to/dir"})
+    os.environ.update({"SHARDCAST_OUTPUT_DIR": "path/to/dir"})
 
-    assert training_env.PRIME_LOG_LEVEL == "DEBUG"
     assert training_env.SHARDCAST_OUTPUT_DIR == "path/to/dir"
 
 

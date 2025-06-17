@@ -1,3 +1,4 @@
+import warnings
 from typing import Annotated, Literal, TypeAlias, Union
 
 from pydantic import Field, model_validator
@@ -30,8 +31,10 @@ class OptimConfig(BaseConfig):
     @model_validator(mode="after")
     def warn_step_per_rollout(self):
         if self.step_per_rollout > 1:
-            raise UserWarning(
-                f"step_per_rollout is set to {self.step_per_rollout}. The recommended value is 1, any other value should be either to run a legacy run or a experiment."
+            warnings.warn(
+                UserWarning(
+                    f"step_per_rollout is set to {self.step_per_rollout}. The recommended value is 1, any other value should be either to run a legacy run or a experiment."
+                )
             )
         return self
 

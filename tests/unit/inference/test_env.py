@@ -12,9 +12,8 @@ def test_inference_env_defaults():
 
 def test_inference_env_custom_values():
     """Test custom values for inference environment variables"""
-    os.environ.update({"PRIME_LOG_LEVEL": "DEBUG", "SHARDCAST_SERVERS": "server1,server2"})
+    os.environ.update({"SHARDCAST_SERVERS": "server1,server2"})
 
-    assert inference_env.PRIME_LOG_LEVEL == "DEBUG"
     assert inference_env.SHARDCAST_SERVERS == ["server1", "server2"]
 
 
