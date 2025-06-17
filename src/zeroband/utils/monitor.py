@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import socket
 import threading
 import time
@@ -35,7 +36,7 @@ class Monitor(ABC):
         self.logger = get_logger()
         if not self.has_metadata:
             self.logger.warning("No run metadata found. This is fine for local runs, but unexpected when contributing to a public run.")
-        self.logger.debug(f"Initializing {self.__class__.__name__} ({str(self.config).replace(' ', ', ')})")
+        self.logger.info(f"Initializing {self.__class__.__name__} ({config})")
 
     def _serialize_metrics(self, metrics: dict[str, Any]) -> str:
         if self.has_metadata:
@@ -113,12 +114,19 @@ class WandbMonitor(Monitor):
 
     def __init__(self, config: WandbMonitorConfig, task_id: str | None = None, run_config: BaseSettings | None = None):
         super().__init__(config, task_id)
+        rank = os.environ.get("RANK", os.environ.get("DP_RANK", "0"))
+        self.enabled = rank == "0"
+        if not self.enabled:
+            self.logger.warning(f"Skipping WandbMonitor initialization from non-master rank ({rank})")
+            return
         self.wandb = wandb.init(
             project=config.project, group=config.group, name=config.name, dir=config.dir, config=run_config.model_dump()
         )
         self.prefix = f"{config.prefix}/" if config.prefix else ""
 
     def log(self, metrics: dict[str, Any]) -> None:
+        if not self.enabled:
+            return
         step = metrics.pop("step", None)
         metrics = {f"{self.prefix}{k}": v for k, v in metrics.items()}
         wandb.log(metrics, step=step)
@@ -134,6 +142,7 @@ class MultiMonitor:
 
     def __init__(self, config: MultiMonitorConfig, task_id: str | None = None, run_config: BaseSettings | None = None):
         self.logger = get_logger()
+        self.logger.info(f"Initializing MultiMonitor ({config})")
         # Initialize outputs
         self.outputs: dict[MonitorType, Monitor] = {}
         if config.file is not None:
@@ -225,5 +234,4 @@ class MultiMonitor:
 
 def setup_monitor(config: MultiMonitorConfig, task_id: str | None = None, run_config: BaseSettings | None = None) -> MultiMonitor:
     """Sets up a monitor to log metrics to multiple specified outputs."""
-    get_logger().info(f"Initializing monitor ({config})")
     return MultiMonitor(config, task_id, run_config)

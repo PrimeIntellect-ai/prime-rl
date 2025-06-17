@@ -93,12 +93,5 @@ class MultiMonitorConfig(BaseConfig):
     ]
 
     def __str__(self) -> str:
-        file_str = "disabled" if self.file is None else f"(path={self.file.path})"
-        socket_str = "disabled" if self.socket is None else f"(path={self.socket.path})"
-        api_str = "disabled" if self.api is None else f"(url={self.api.url})"
-        wandb_str = (
-            "disabled"
-            if self.wandb is None
-            else f"(project={self.wandb.project}, group={self.wandb.group}, name={self.wandb.name}, dir={self.wandb.dir})"
-        )
-        return f"file={file_str}, socket={socket_str}, api={api_str}, wandb={wandb_str}, system_log_frequency={self.system_log_frequency}"
+        is_enabled = lambda x: "enabled" if x is not None else "disabled"
+        return f"file={is_enabled(self.file)}, socket={is_enabled(self.socket)}, api={is_enabled(self.api)}, wandb={is_enabled(self.wandb)}, system_log_frequency={self.system_log_frequency}"
