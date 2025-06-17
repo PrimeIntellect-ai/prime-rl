@@ -5,6 +5,7 @@ import shutil
 import time
 from pathlib import Path
 import uuid
+from copy import deepcopy
 
 # Import environment before any other imports
 # ruff: noqa: I001
@@ -419,7 +420,7 @@ def main(config: InferenceConfig) -> list[mp.Process]:
         gpu_ids = envs.CUDA_VISIBLE_DEVICES
         gpu_ids_per_rank = [gpu_ids[i : i + config.parallel.tp] for i in range(0, len(gpu_ids), config.parallel.tp)]
         for rank, gpu_ids in enumerate(gpu_ids_per_rank):
-            config_copy = config.model_copy()
+            config_copy = deepcopy(config)
             config_copy.parallel.dp.rank = rank
             env = {"CUDA_VISIBLE_DEVICES": ",".join(map(str, gpu_ids))}
             process = mp.Process(target=EnvWrapper(inference, env), args=(config_copy,))

@@ -46,7 +46,8 @@ def setup_logger(level: str, parallel_config: ParallelConfig) -> Logger:
     format = f"{time} {debug} {message}"
 
     logger.remove()
-    logger.add(sys.stdout, format=format, level=level.upper(), enqueue=True, backtrace=True, diagnose=True)
+    if parallel_config.dp.rank == 0:  # Only log from the main DP rank
+        logger.add(sys.stdout, format=format, level=level.upper(), enqueue=True, backtrace=True, diagnose=True)
 
     _LOGGER = logger.bind(dp_rank=parallel_config.dp.rank, pp_rank=parallel_config.pp.rank)
     return _LOGGER
