@@ -1,9 +1,9 @@
 import logging
+import os
 from logging import Formatter, Logger
 from typing import Literal
 
 from zeroband.training.world_info import WorldInfo, get_world_info
-from zeroband.utils import envs
 
 
 class PrimeFormatter(Formatter):
@@ -31,7 +31,7 @@ def get_logger(name: LoggerName) -> Logger:
 
     # Only configure the logger if it hasn't been configured yet
     if not logger.handlers:
-        level = envs.PRIME_LOG_LEVEL
+        level = os.environ.get("PRIME_LOG_LEVEL", "info")
         world_info = None
         if name == "TRAIN":
             world_info = get_world_info()

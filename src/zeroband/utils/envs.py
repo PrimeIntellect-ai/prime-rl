@@ -2,15 +2,12 @@ import os
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
-    # Prime
-    PRIME_LOG_LEVEL: str
     # PyTorch
     CUDA_VISIBLE_DEVICES: list[int]
 
 
 # All environment variables with their type parsers
 _ENV_PARSERS: dict[str, Callable[[str], Any]] = {
-    "PRIME_LOG_LEVEL": str,
     "CUDA_VISIBLE_DEVICES": lambda x: list(map(int, x.split(","))),
 }
 
