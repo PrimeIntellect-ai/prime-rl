@@ -4,12 +4,6 @@ from typing import TYPE_CHECKING, Any, Callable
 if TYPE_CHECKING:
     # Prime
     PRIME_LOG_LEVEL: str
-    PRIME_API_URL: str
-    PRIME_API_AUTH_TOKEN: str
-    PRIME_SOCKET_PATH: str
-    PRIME_TASK_ID: str
-    PRIME_GROUP_ID: str
-
     # PyTorch
     CUDA_VISIBLE_DEVICES: list[int]
 
@@ -17,18 +11,11 @@ if TYPE_CHECKING:
 # All environment variables with their type parsers
 _ENV_PARSERS: dict[str, Callable[[str], Any]] = {
     "PRIME_LOG_LEVEL": str,
-    "PRIME_API_URL": str,
-    "PRIME_API_AUTH_TOKEN": str,
-    "PRIME_SOCKET_PATH": str,
-    "PRIME_TASK_ID": str,
-    "PRIME_GROUP_ID": str,
     "CUDA_VISIBLE_DEVICES": lambda x: list(map(int, x.split(","))),
 }
 
 # Subset of environment variables with default values
-_ENV_DEFAULTS: dict[str, str] = {
-    "PRIME_LOG_LEVEL": "INFO",
-}
+_ENV_DEFAULTS: dict[str, str] = {}
 
 
 # Initialize environment variables that have defaults

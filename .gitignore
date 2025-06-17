@@ -6,7 +6,8 @@ datasets/*
 output/*
 outputs/*
 data/*
-data_rollout/*
+rollouts/*
+checkpoints/*
 *.ipynb
 
 # Byte-compiled / optimized / DLL files

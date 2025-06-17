@@ -1,6 +1,8 @@
-model_name = "willcb/Qwen2.5-0.5B-Reverse-SFT"
 project = "reverse-debug"
 stop_after_steps = 100
+
+[model]
+name = "willcb/Qwen2.5-0.5B-Reverse-SFT"
 
 [train]
 micro_bs = 32
@@ -8,19 +10,15 @@ reshard_after_forward = true
 
 [optim]
 batch_size = 64
-warmup_steps = 1
-total_steps = 100000000000000
 step_per_rollout = 2
 
 [optim.optim]
 lr = 3e-6
 
-
-
 [data]
-path = "data_rollout"
+path = "rollouts"
 seq_length = 128
 
 [ckpt]
-rollout_path = "outputs"
+rollout_path = "checkpoints"
 clean_rollout_path = true

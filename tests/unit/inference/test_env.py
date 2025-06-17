@@ -7,7 +7,6 @@ from zeroband.inference import envs as inference_env
 
 def test_inference_env_defaults():
     """Test default values for inference environment variables"""
-    assert inference_env.PRIME_LOG_LEVEL == "INFO"  # shared env
     assert inference_env.SHARDCAST_SERVERS is None  # inference specific
 
 

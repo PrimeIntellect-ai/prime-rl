@@ -3,8 +3,8 @@ import multiprocessing as mp
 import os
 import shutil
 import time
-import uuid
 from pathlib import Path
+import uuid
 
 # Import environment before any other imports
 # ruff: noqa: I001
@@ -16,15 +16,17 @@ import requests
 import torch
 import torch.distributed as dist
 from datasets import load_dataset
-from pydantic_config import parse_argv
 from toploc.utils import sha256sum
-from vllm import LLM, SamplingParams
+from vllm import LLM, SamplingParams, TokensPrompt
+from huggingface_hub import snapshot_download
 
-from zeroband.inference.config import Config
+from zeroband.utils.pydantic_config import parse_argv
+from zeroband.inference.config import Config as InferenceConfig
 from zeroband.inference.parquet import get_parquet_table
 from zeroband.inference.pipeline import all_reduce, patch_model_load, setup_comm, setup_hooks
 from zeroband.inference.rewards import compute_vllm_rewards
 from zeroband.inference.toploc import setup_toploc_cache
+from zeroband.inference.toploc2 import Toploc2Sampler
 from zeroband.utils.monitor import setup_monitor
 from zeroband.inference.utils import (
     filter_data_by_prompt_length,
@@ -37,76 +39,71 @@ from zeroband.inference.utils import (
 from zeroband.training.mp import EnvWrapper
 from zeroband.utils.logger import get_logger
 
-# Global logger
-logger = get_logger("INFER")
 
-
-def inference(config: Config):
+def inference(config: InferenceConfig):
     # Initialize the logger
+    logger = get_logger("INFER")
     logger.info("Starting inference")
+    logger.info(f"Log level: {config.log_level}")
+    logger.info(f"Parallelism: TP={config.parallel.tp} DP={config.parallel.dp} PP={config.parallel.pp.world_size}")
 
-    # Log relevant configuration
-    logger.info(f"Model: {config.model_name}")
-    logger.info(f"Dataset: {config.dataset}")
-    logger.info(f"Parallelism: TP={config.tp}, DP={config.dp}, PP={config.pp.world_size}")
+    # Optionally, clean the rollout path
+    if config.clean_rollout_path and config.rollout_path is not None:
+        logger.info(f"Cleaning rollout path ({config.rollout_path})")
+        shutil.rmtree(config.rollout_path, ignore_errors=True)
 
-    if config.clean_output_path and config.output_path is not None:
-        logger.info(f"Cleaning output path {config.output_path}")
-        shutil.rmtree(config.output_path, ignore_errors=True)
+    # Pre-download the model weights
+    logger.info(f"Downloading model weights for {config.model.name}")
+    start_time = time.time()
+    snapshot_download(config.model.name)
+    logger.info(f"Downloaded model weights in {time.time() - start_time:.2f}s")
 
     # Initialize metrics
-    monitor = setup_monitor(config.monitor)
+    monitor = setup_monitor(config.monitor, config.task_id)
 
     # Patch vLLM's model loading to load model shard
-    patch_model_load(config=config.pp)
+    patch_model_load(config=config.parallel.pp)
 
-    # Initialize vLLM and get tokenizer
-    logger.info(
-        f"Initializing vLLM for {config.model_name} (max_model_len={config.max_model_len}, enforce_eager={config.enforce_eager}, dtype={config.dtype}, quant={config.quant})"
-    )
+    # Initialize model and tokenizer
+    logger.info(f"Initializing model and tokenizer ({config.model} tensor_parallel_size={config.parallel.tp} seed={config.seed})")
+    start_time = time.time()
     llm = LLM(
-        model=config.model_name,
-        tensor_parallel_size=config.tp,
-        max_seq_len_to_capture=config.max_model_len,
-        max_model_len=config.max_model_len,
-        quantization=config.quant,
-        enforce_eager=config.enforce_eager,
+        model=config.model.name,
+        dtype=config.model.dtype,
+        kv_cache_dtype=config.model.kv_cache_dtype,
+        max_seq_len_to_capture=config.model.max_model_len,
+        max_model_len=config.model.max_model_len,
+        quantization=config.model.quantization,
+        enforce_eager=config.model.enforce_eager,
+        device=config.model.device,
+        tensor_parallel_size=config.parallel.tp,
         disable_async_output_proc=True,  # We have an off by 1 error in toploc without this flag when cuda graph padding is enabled.
-        download_dir=config.download_dir,
-        dtype="bfloat16" if config.dtype == "bf16" else torch.float32,
+        enable_chunked_prefill=False,  # This is required for toploc2 because chunked prefill seems to allow len(seq_groups) != len(selected_token_indices) which is unexpected
+        seed=config.seed,
     )
+    if config.toploc.enable_toploc2:
+        llm.llm_engine.model_executor.driver_worker.model_runner.sampler = Toploc2Sampler()
     tokenizer = llm.get_tokenizer()
-    sampling_params = SamplingParams(**config.sampling.model_dump())
+    logger.info(f"Initialized model and tokenizer in {time.time() - start_time:.2f}s")
 
-    # Setup pipeline parallel communication
-    node = setup_comm(config.pp)
+    # Initialize dataset
+    logger.info(f"Initializing dataset (name={config.data.name}, split={config.data.split})")
+    start_time = time.time()
+    dataset = load_dataset(config.data.name, split=config.data.split)
 
-    # Setup pipeline parallel hooks
-    setup_hooks(llm, config.pp, node)
+    if not config.rewards.compute_reward:
+        logger.info("Reward computation is disabled, setting task_type to null_reward")
+        dataset = dataset.map(lambda x: {"task_type": "null_reward"})
 
-    # Compute the maximum batch size
-    batch_size = config.batch_size
-    if batch_size == "auto":
-        # Automatically compute the maximum batch size
-        local_batch_size = compute_max_batch_size(llm)
-        batch_size = all_reduce(node, torch.tensor(local_batch_size), config=config.pp, op=torch.min).item()
-        logger.info(f"Auto-computed batch size: {batch_size}")
-
-    # Throw an error if the batch size is too small for the number of samples to generate per problem
-    if config.sampling.n > batch_size:
-        raise ValueError(f"Sampling.n ({config.sampling.n}) must be less than or equal to batch_size ({batch_size})")
-
-    # Load  dataset
-    dataset = load_dataset(config.dataset, split="train")
-    logger.info(f"Loaded dataset {config.dataset} with {len(dataset):,} problems")
+    logger.info(f"Initialized dataset with {len(dataset):,} problems in {time.time() - start_time:.2f}s")
 
     # Optionally shuffle dataset
-    if envs.PRIME_GROUP_ID is not None:
+    if config.group_id is not None:
         # We dont shuffle here because we shuffle reproducibly in the sampling loop.
         assert config.seed is None, "Seed is not supported when PRIME_GROUP_ID is set"
-        assert os.environ.get("DP_RANK") is None, "DP is not supported when PRIME_GROUP_ID is set"
-        node_address_int = int(envs.PRIME_GROUP_ID, 16)
-        logger.info(f"Seeding with {node_address_int} ({envs.PRIME_GROUP_ID})")
+        assert os.environ.get("DP_RANK") is None, "DP is not supported when group ID is set"
+        node_address_int = int(config.group_id, 16)
+        logger.info(f"Seeding with {node_address_int} ({config.group_id})")
     else:
         # Seed the dataset with a random number
         seed = config.seed + int(os.environ.get("DP_RANK", 0)) if config.seed is not None else None
@@ -115,35 +112,73 @@ def inference(config: Config):
         dataset = dataset.shuffle(generator=generator)
         node_address_int = None
 
-    if config.max_prompt_len:
-        dataset = filter_data_by_prompt_length(dataset, config.max_prompt_len, tokenizer)
-        logger.info(f"✨ Removed long prompts - {len(dataset)} samples remaining")
+    # Optionally, filter out prompts that are too long
+    if config.data.max_prompt_len:
+        logger.info(f"Filtering out prompts with more than {config.data.max_prompt_len} tokens")
+        start_time = time.time()
+        dataset = filter_data_by_prompt_length(dataset, config.data.max_prompt_len, tokenizer)
+        logger.info(f"Filtered long prompts in {time.time() - start_time:.2f}s - {len(dataset)} samples remaining")
 
-    # Optionally filter dataset
-    if config.difficulty_filtering:
+    # Optionally, filter dataset for samples within difficulty range
+    if config.data.difficulty_filtering:
         logger.info(
-            f"Filtering dataset for difficulty in [{config.difficulty_filtering.min_solve_rate}, {config.difficulty_filtering.max_solve_rate}]"
+            f"Filtering dataset for difficulty in [{config.data.difficulty_filtering.min_solve_rate}, {config.data.difficulty_filtering.max_solve_rate}]"
         )
+        start_time = time.time()
         dataset = dataset.filter(
-            lambda x: x[config.difficulty_filtering.solve_rate_field] >= config.difficulty_filtering.min_solve_rate
-            and x[config.difficulty_filtering.solve_rate_field] <= config.difficulty_filtering.max_solve_rate
+            lambda x: x[config.data.difficulty_filtering.solve_rate_field] >= config.data.difficulty_filtering.min_solve_rate
+            and x[config.data.difficulty_filtering.solve_rate_field] <= config.data.difficulty_filtering.max_solve_rate
         )
+        logger.info(
+            f"Filtered dataset for difficulty in [{config.data.difficulty_filtering.min_solve_rate}, {config.data.difficulty_filtering.max_solve_rate}] in {time.time() - start_time:.2f}s - {len(dataset)} samples remaining"
+        )
+
+    # Initialize sampling parameters
+    logger.info(f"Initializing sampling parameters ({config.sampling} seed={config.seed})")
+    sampling_params = SamplingParams(**config.sampling.model_dump(), seed=config.seed)
+
+    # Setup pipeline parallel communication and hook
+    node = setup_comm(config.parallel.pp)
+    setup_hooks(llm, config.parallel.pp, node)
+
+    # Compute the maximum batch size
+    max_batch_size = config.max_batch_size
+    if max_batch_size == "auto":
+        # Automatically compute the maximum batch size
+        logger.info("Auto-computing maximum batch size")
+        local_max_batch_size = compute_max_batch_size(llm)
+        max_batch_size = all_reduce(node, torch.tensor(local_max_batch_size), config=config.parallel.pp, op=torch.min).item()
+
+    logger.info(f"Maximum batch size: {max_batch_size}")
+
+    # Throw an error if the batch cannot fit number of samples to generate per problem.
+    # TODO(Mika): Circumvent this assertion by distribtuting parallel samples across multiple batches
+    if config.sampling.n > max_batch_size:
+        raise ValueError(f"Sampling.n ({config.sampling.n}) must be less than or equal to max_batch_size ({max_batch_size})")
+
+    # Compute the true batch size
+    problems_per_batch = max_batch_size // config.sampling.n
+    batch_size = problems_per_batch * config.sampling.n
+    logger.info(
+        f"Problems per batch: {max_batch_size} // {config.sampling.n} = {problems_per_batch}, batch size: {problems_per_batch} * {config.sampling.n} = {batch_size} (missing: {max_batch_size % config.sampling.n})"
+    )
 
     # Setup TOPLOC
     hidden_size = llm.llm_engine.model_executor.driver_worker.model_runner.model.config.hidden_size
     toploc_cache, _ = setup_toploc_cache(
         llm,
-        pipeline_config=config.pp,
-        disable=not config.toploc,
+        pp_config=config.parallel.pp,
+        disable=not config.toploc.enable_toploc1,
         max_seqs=batch_size,
         hidden_size=hidden_size,
+        topk=config.toploc.topk,
     )
 
     ckpt_step = 0
-    real_step = config.start_step or 0
-    if config.ckpt_start_path is not None:
-        logger.info(f"Resuming from checkpoint {config.ckpt_start_path}")
-        path = Path(config.ckpt_start_path)
+    real_step = config.start_step
+    if config.rl and config.rl.ckpt_start_path is not None:
+        logger.info(f"Resuming from checkpoint {config.rl.ckpt_start_path}")
+        path = Path(config.rl.ckpt_start_path)
         path_file = path / "model.safetensors"
         if not path_file.exists():
             raise FileNotFoundError(f"Checkpoint file {path_file} does not exist")
@@ -152,25 +187,30 @@ def inference(config: Config):
         llm = reload_model_weights(llm, path_file)
         real_step = ckpt_step
 
+    # Check if we should resume from step_path file
+    if config.step_path is not None and config.step_path.exists():
+        try:
+            saved_step = int(config.step_path.read_text().strip())
+            logger.info(f"Found existing step file at {config.step_path} with step {saved_step}")
+            real_step = saved_step
+            logger.info(f"Resuming from step {real_step} (loaded from {config.step_path})")
+        except (ValueError, IOError) as e:
+            logger.warning(f"Failed to read step from {config.step_path}: {e}")
+
     # This is used by the seeding logic to make sure we dont generate the same samples twice if we do multiple batches for a step
     current_step_batch_counter = 1
     total_problems = 0
     total_samples = 0
     total_tokens = 0
 
-    # Compute the maximum number of problems and problems per batch
-    problems_per_batch = batch_size // config.sampling.n
-    logger.info(
-        f"Problems per batch: {batch_size} // {config.sampling.n} = {problems_per_batch} (missing: {batch_size % config.sampling.n})"
-    )
-
-    for i in range(0, config.max_samples or len(dataset), batch_size):
-        if config.step_endpoint is not None:
+    dataset_offset = 0
+    while True:
+        if config.rl and config.rl.step_endpoint is not None:
             # We get the step from the endpoint at the start of each batch to know what to work on
             try:
-                new_real_step = requests.get(config.step_endpoint).json()
+                new_real_step = requests.get(config.rl.step_endpoint).json()
             except Exception as e:
-                logger.warning(f"Failed to get step from endpoint {config.step_endpoint}: {e}")
+                logger.warning(f"Failed to get step from endpoint {config.rl.step_endpoint}: {e}")
                 time.sleep(10)
                 continue
 
@@ -181,15 +221,15 @@ def inference(config: Config):
                 current_step_batch_counter += 1
 
         logger.info(f"Inference step {real_step} (Checkpoint step: {ckpt_step})")
-        if config.rollout_path is not None and real_step - ckpt_step > config.async_level:
-            logger.info(f"Required to reload model weights for step {ckpt_step} from {config.rollout_path}")
-            ckpt_step = real_step - config.async_level
+        if config.rl and real_step - ckpt_step > config.rl.max_async:
+            logger.info(f"Required to reload model weights for step {ckpt_step} from {config.rl.ckpt_path}")
+            ckpt_step = real_step - config.rl.max_async
             attempt_count = 0
             while True:
-                stable_file = Path(config.rollout_path) / f"step_{ckpt_step}/stable"
+                stable_file = Path(config.rl.ckpt_path) / f"step_{ckpt_step}/stable"
                 if stable_file.exists():
                     logger.info(f"Reloading model weights for step {ckpt_step} from {stable_file}")
-                    llm = reload_model_weights(llm, Path(config.rollout_path) / f"step_{ckpt_step}/model.safetensors")
+                    llm = reload_model_weights(llm, Path(config.rl.ckpt_path) / f"step_{ckpt_step}/model.safetensors")
                     total_problems = 0
                     total_tokens = 0
                     logger.info(f"Reloaded model weights for step {ckpt_step} from {stable_file}")
@@ -198,6 +238,12 @@ def inference(config: Config):
                     logger.info(f"No stable file found at {stable_file}, waiting for new checkpoint")
                 time.sleep(1)
                 attempt_count += 1
+
+        if config.step_path is not None:
+            if not config.step_path.exists():
+                config.step_path.parent.mkdir(parents=True, exist_ok=True)
+            config.step_path.write_text(str(real_step))
+            logger.info(f"Wrote current inference step ({real_step}) to {config.step_path}")
 
         # Get batch
         if node_address_int is not None:
@@ -208,8 +254,10 @@ def inference(config: Config):
             # This would work even if the node restarts and resumes from the current step.
             generator = np.random.default_rng(node_address_int * current_step_batch_counter + real_step)
             indices = generator.integers(0, len(dataset), problems_per_batch)
+            sampling_params.seed = int(generator.integers(2**32))
         else:
-            indices = list(range(i, min(i + problems_per_batch, len(dataset))))
+            # Use modulo to cycle through the dataset instead of terminating
+            indices = [(dataset_offset + j) % len(dataset) for j in range(problems_per_batch)]
 
         logger.debug(f"Sampling batch with indices [{' '.join(map(str, indices[:3]))}...{' '.join(map(str, indices[-3:]))}]")
         problems = dataset.select(indices)
@@ -222,12 +270,21 @@ def inference(config: Config):
         for target_length, verification_info in zip(target_lengths, verification_infos):
             verification_info["target_length"] = target_length
 
-        formatted_prompts = format_prompts(
-            prompts, target_lengths, config.rewards.len_reward, tokenizer=tokenizer, enable_thinking=config.enable_thinking
+        # Get tokenized prompts as BatchEncoding
+        tokenized_prompts = format_prompts(
+            prompts,
+            target_lengths,
+            config.rewards.len_reward,
+            tokenizer=tokenizer,
+            enable_thinking=config.model.enable_thinking,
+            tokenize=True,
         )
 
+        # Convert BatchEncoding to TokensPrompt objects
+        token_prompts = [TokensPrompt(prompt_token_ids=input_ids) for input_ids in tokenized_prompts]
+
         start_time = time.time()
-        request_outputs = llm.generate(formatted_prompts, sampling_params, use_tqdm=False)
+        request_outputs = llm.generate(token_prompts, sampling_params, use_tqdm=False)
         end_time = time.time()
 
         # Dropping like this isn't ideal. But in practice, we shouldn't have any prompts that are too long.
@@ -297,6 +354,11 @@ def inference(config: Config):
         monitor.log({"rewards/batch_rewards": batch_rewards})
         logger.info(f"Average reward of the batch: {batch_rewards}")
 
+        if sampling_params.seed is not None:
+            sampling_seeds = [sampling_params.seed + i for i in range(sampling_params.n)] * problems_per_batch
+        else:
+            sampling_seeds = [None] * batch_samples
+
         # Get parquet table
         table = get_parquet_table(
             request_outputs,
@@ -305,10 +367,14 @@ def inference(config: Config):
             proofs,
             ckpt_step,
             target_lengths,
+            problems,
+            enable_logprobs=config.sampling.logprobs is not None,
+            seeds=sampling_seeds,
+            temperature=sampling_params.temperature,
         )
 
         # Save outputs to parquet file
-        step_path = Path(config.output_path) / f"step_{real_step}"
+        step_path = Path(config.rollout_path) / f"step_{real_step}"
         step_path.mkdir(parents=True, exist_ok=True)
         save_path = step_path / f"{uuid.uuid4()}.parquet"
         pq.write_table(table, save_path)
@@ -317,7 +383,7 @@ def inference(config: Config):
         # Log file metadata
         sha256 = sha256sum(save_path)
         flop_counts = [
-            get_inference_input_output_flops(config.model_name, len(input_tokens), len(output_tokens))
+            get_inference_input_output_flops(config.model.name, len(input_tokens), len(output_tokens))
             for input_tokens, output_tokens in zip(table.column("input_tokens").to_pylist(), table.column("output_tokens").to_pylist())
         ]
 
@@ -325,16 +391,18 @@ def inference(config: Config):
             {
                 "output/save_path": save_path.as_posix(),
                 "output/sha256": sha256,
-                "output/output_flops": sum(output_flops for _, output_flops in flop_counts),
-                "output/input_flops": sum(input_flops for input_flops, _ in flop_counts),
+                "output/output_flops": sum(output_flops for _, output_flops in flop_counts) // config.parallel.pp.world_size,
+                "output/input_flops": sum(input_flops for input_flops, _ in flop_counts) // config.parallel.pp.world_size,
             }
         )
 
         real_step += 1
 
-        if config.total_step is not None and real_step > config.total_step:
-            logger.info(f"Reached total step {config.total_step}, stopping inference")
+        if config.max_steps is not None and real_step > config.max_steps:
+            logger.info(f"Reached max steps {config.max_steps}, stopping inference")
             break
+
+        dataset_offset += problems_per_batch
 
     logger.info(f"Inference finished! Generated {total_samples} samples for {total_problems} problems")
 
@@ -342,23 +410,22 @@ def inference(config: Config):
     dist.destroy_process_group()
 
 
-def main(config: Config) -> list[mp.Process]:
+def main(config: InferenceConfig) -> list[mp.Process]:
     processes = []
-    import zeroband.inference.envs as envs
 
-    if config.dp > 1:
-        if config.tp == "auto":
-            assert torch.cuda.device_count() % config.dp == 0, "Number of GPUs must be divisible by DP"
-            config.tp = torch.cuda.device_count() // config.dp
+    if config.parallel.dp > 1:
+        if config.parallel.tp == "auto":
+            assert torch.cuda.device_count() % config.parallel.dp == 0, "Number of GPUs must be divisible by DP"
+            config.parallel.tp = torch.cuda.device_count() // config.parallel.dp
         gpu_ids = envs.CUDA_VISIBLE_DEVICES
-        gpu_ids_per_rank = [gpu_ids[i : i + config.tp] for i in range(0, len(gpu_ids), config.tp)]
+        gpu_ids_per_rank = [gpu_ids[i : i + config.parallel.tp] for i in range(0, len(gpu_ids), config.parallel.tp)]
         for rank, gpu_ids in enumerate(gpu_ids_per_rank):
-            envs = {"CUDA_VISIBLE_DEVICES": ",".join(map(str, gpu_ids)), "DP_RANK": str(rank)}
-            process = mp.Process(target=EnvWrapper(inference, envs), args=(config,))
+            env = {"CUDA_VISIBLE_DEVICES": ",".join(map(str, gpu_ids)), "DP_RANK": str(rank)}
+            process = mp.Process(target=EnvWrapper(inference, env), args=(config,))
             processes.append(process)
     else:
-        if config.tp == "auto":
-            config.tp = torch.cuda.device_count()
+        if config.parallel.tp == "auto":
+            config.parallel.tp = torch.cuda.device_count()
         inference(config)
 
     # Start all processes
@@ -373,25 +440,27 @@ def main(config: Config) -> list[mp.Process]:
 if __name__ == "__main__":
     # Set spawn method before any other multiprocessing code
     mp.set_start_method("spawn")
-    config = Config(**parse_argv())  # type: ignore
 
-    if config.step_endpoint is not None:
-        current_step = requests.get(config.step_endpoint).json()
+    config = parse_argv(InferenceConfig)
+
+    if config.rl and config.rl.step_endpoint is not None:
+        current_step = requests.get(config.rl.step_endpoint).json()
         assert isinstance(current_step, int), "Current step must be an integer"
 
     # Maybe start shardcast downloader
     from zeroband.inference import envs as inference_envs
 
     if inference_envs.SHARDCAST_SERVERS is not None:
+        assert config.rl is not None, "RL config is required when SHARDCAST_SERVERS is set"
         from zeroband.inference.shardcast_downloader import run_main_bg
 
         shardcast_process = run_main_bg(
             inference_envs.SHARDCAST_SERVERS,
-            config.rollout_path,
-            config.async_level + 1,
+            config.rl.ckpt_path,
+            config.rl.max_async + 1,
             # TODO: maybe +1 because we most likely won't download the current step in time?
             # We could deadlock though.
-            max(current_step - config.async_level, 1),
+            max(current_step - config.rl.max_async, 1),
         )
     else:
         shardcast_process = None

@@ -4,11 +4,12 @@ Need to be run from the root folder
 """
 
 import os
+import sys
 
 import pytest
-import tomli
 
-from zeroband.train import Config as TrainingConfig
+from zeroband.training.config import Config as TrainingConfig
+from zeroband.utils.pydantic_config import parse_argv
 
 
 def get_all_toml_files(directory):
@@ -22,7 +23,6 @@ def get_all_toml_files(directory):
 
 @pytest.mark.parametrize("config_file_path", get_all_toml_files("configs/training"))
 def test_load_train_configs(config_file_path):
-    with open(f"{config_file_path}", "rb") as f:
-        content = tomli.load(f)
-    config = TrainingConfig(**content)
+    sys.argv = ["train.py", "@" + config_file_path]
+    config = parse_argv(TrainingConfig)
     assert config is not None

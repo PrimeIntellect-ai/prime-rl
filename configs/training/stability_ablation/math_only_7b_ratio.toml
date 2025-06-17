@@ -1,0 +1,6 @@
+
+toml_files = ["math_only_7b.toml"]
+
+[grpo.off_policy]
+type = "ratio"
+

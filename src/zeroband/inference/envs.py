@@ -12,6 +12,11 @@ if TYPE_CHECKING:
     VLLM_USE_V1: str
     VLLM_CONFIGURE_LOGGING: str
 
+    # HF
+    HF_HUB_CACHE: str
+    HF_HUB_DISABLE_PROGRESS_BARS: str
+    HF_HUB_ETAG_TIMEOUT: int
+
     # Rust
     RUST_LOG: str
 
@@ -22,9 +27,12 @@ if TYPE_CHECKING:
 _INFERENCE_ENV_PARSERS = {
     "VLLM_USE_V1": str,
     "VLLM_CONFIGURE_LOGGING": str,
+    "HF_HUB_CACHE": str,
+    "HF_HUB_DISABLE_PROGRESS_BARS": str,
+    "HF_HUB_ETAG_TIMEOUT": int,
+    "RUST_LOG": str,
     "SHARDCAST_SERVERS": lambda x: x.split(","),
     "SHARDCAST_BACKLOG_VERSION": int,
-    "RUST_LOG": str,
     **_BASE_ENV_PARSERS,
 }
 
@@ -33,6 +41,8 @@ _INFERENCE_ENV_DEFAULTS = {
     "VLLM_CONFIGURE_LOGGING": "0",  # Disable vLLM logging unless explicitly enabled
     "VLLM_USE_V1": "0",  # Use v0 engine (TOPLOC and PP do not support v1 yet)
     "RUST_LOG": "off",  # Disable Rust logs (from prime-iroh)
+    "HF_HUB_DISABLE_PROGRESS_BARS": "1",  # Disable HF progress bars
+    "HF_HUB_ETAG_TIMEOUT": "500",  # Set request timeout to 500s to avoid model download issues
 }
 
 set_defaults(_INFERENCE_ENV_DEFAULTS)

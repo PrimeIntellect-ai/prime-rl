@@ -3,7 +3,7 @@ import torch
 from toploc import verify_proofs_bytes
 from vllm import SamplingParams, TokensPrompt
 
-from zeroband.inference.pipeline import PipelineConfig
+from zeroband.inference.config import PipelineParallelConfig
 from zeroband.inference.toploc import TopLocCache, setup_toploc_cache
 
 BYTES_PER_PROOF = 258
@@ -95,7 +95,7 @@ def test_toploc_with_hook(llm, max_seqs: int, num_output_tokens: int):
     hidden_size = model.config.hidden_size
     max_len = 32
     toploc_cache, hook_handle = setup_toploc_cache(
-        llm, pipeline_config=PipelineConfig(world_size=1), max_seqs=max_seqs, hidden_size=hidden_size, max_len=max_len
+        llm, pp_config=PipelineParallelConfig(world_size=1), max_seqs=max_seqs, hidden_size=hidden_size, max_len=max_len
     )
     assert toploc_cache.disable is False
     assert toploc_cache.proofs == {}

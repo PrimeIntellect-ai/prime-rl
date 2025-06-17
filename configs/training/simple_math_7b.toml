@@ -1,0 +1,26 @@
+project = "math-debug"
+
+[model]
+name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+
+[train]
+micro_bs = 2 # change to 8 for H200
+reshard_after_forward = true
+ac_ckpt = true
+
+[optim]
+batch_size = 512
+step_per_rollout = 1
+
+[optim.optim]
+lr = 1e-6
+
+
+
+[data]
+path = "rollouts"
+seq_length = 2048
+
+[ckpt]
+rollout_path = "checkpoints"
+clean_rollout_path = true

@@ -4,7 +4,10 @@ pa_schema = pa.schema(
     [
         ("input_tokens", pa.list_(pa.int32())),
         ("output_tokens", pa.list_(pa.int32())),
+        ("input_logprobs", pa.list_(pa.float32())),  # Optional - can be null
+        ("output_logprobs", pa.list_(pa.float32())),  # Optional - can be null
         ("prompt", pa.string()),
+        ("problem_id", pa.string()),
         ("completion", pa.string()),
         ("advantages", pa.float32()),
         ("rewards", pa.float32()),
@@ -14,5 +17,7 @@ pa_schema = pa.schema(
         ("step", pa.int32()),
         ("target_lengths", pa.int32()),
         ("task_type", pa.string()),
+        ("seed", pa.int64()),  # Optional - can be null
+        ("temperature", pa.float32()),
     ]
 )

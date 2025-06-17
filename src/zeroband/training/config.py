@@ -1,51 +1,63 @@
-from typing import Literal
+from typing import Annotated, Literal, TypeAlias, Union
 
-from pydantic import model_validator
-from pydantic_config import BaseConfig
+from pydantic import Field, model_validator
 
-from zeroband.training.data import CollateMode, DataConfig
+from zeroband.utils.config import MultiMonitorConfig
+from zeroband.utils.logger import get_logger
 from zeroband.utils.models import AttnImpl
-from zeroband.utils.monitor import MultiMonitorConfig
+from zeroband.utils.pydantic_config import BaseConfig, BaseSettings
 
 
 class AdamConfig(BaseConfig):
-    type: Literal["adam"] = "adam"
-    lr: float = 4e-4
-    weight_decay: float = 0.01
-    betas1: float = 0.9
-    betas2: float = 0.99
+    """Configures the Adam optimizer."""
+
+    type: Annotated[Literal["adam"], Field(default="adam")]
+    lr: Annotated[float, Field(default=4e-4, ge=0)]
+    weight_decay: Annotated[float, Field(default=0.01, ge=0)]
+    betas1: Annotated[float, Field(default=0.9, ge=0)]
+    betas2: Annotated[float, Field(default=0.99, ge=0)]
 
 
 class OptimConfig(BaseConfig):
-    optim: AdamConfig = AdamConfig()
-    sched_type: Literal["cosine", "linear", "wsd-sqrt"] = "linear"
-    warmup_steps: int = 1000
-    stable_steps: int = 80_000
-    total_steps: int = 88_000
-    batch_size: int = 512
-    grad_norm_clip: float = 1.0
+    """Configures the optimizer."""
 
-    step_per_rollout: int = 1
+    # The optimizer configuration
+    optim: AdamConfig = AdamConfig()
+
+    batch_size: Annotated[int, Field(default=512)]
+    grad_norm_clip: Annotated[float, Field(default=1.0)]
+    step_per_rollout: Annotated[int, Field(default=1)]
+
+    @model_validator(mode="after")
+    def warn_step_per_rollout(self):
+        if self.step_per_rollout > 1:
+            get_logger("TRAIN").info(
+                f"step_per_rollout is set to {self.step_per_rollout}. The recommended value is 1, any other value should be either to run a legacy run or a experiment.."
+            )
+        return self
 
 
 class TrainConfig(BaseConfig):
-    micro_bs: int = 1
-    ac_ckpt: bool | int = False
-    reshard_after_forward: bool = True  # old shard grad op True mean full shard
-    memory_profile: str | None = None
-    torch_compile: bool = False  #  disabling torch compile because its too unstable for RL
-    liger_qwen: bool = False
+    """Configures general training parameters."""
 
-    attn_impl: AttnImpl = "flash_attention_2"
+    micro_bs: Annotated[int, Field(default=1)]
+    ac_ckpt: Annotated[bool | int, Field(default=False)]
+    reshard_after_forward: Annotated[bool, Field(default=True)]
+    memory_profile: Annotated[str | None, Field(default=None)]
+    torch_compile: Annotated[bool, Field(default=False)]  # Disabled bc too unstable atm
+    liger_qwen: Annotated[bool, Field(default=False)]
+    attn_impl: Annotated[AttnImpl, Field(default="flash_attention_2")]
 
 
 class CkptConfig(BaseConfig):
-    path: str | None = None
-    interval: int | None = None
-    resume: str | None = None
+    """Configures checkpointing"""
 
-    rollout_path: str | None = None  # if rollout path is set we saved at each step
-    clean_rollout_path: bool = False  # if true, the rollout path will be cleaned up before running the training
+    path: Annotated[str | None, Field(default=None)]
+    interval: Annotated[int | None, Field(default=None)]
+    resume: Annotated[str | None, Field(default=None)]
+
+    rollout_path: Annotated[str | None, Field(default=None)]
+    clean_rollout_path: Annotated[bool, Field(default=False)]
 
     @model_validator(mode="after")
     def check_path_and_interval(self):
@@ -54,46 +66,123 @@ class CkptConfig(BaseConfig):
         return self
 
 
-class Config(BaseConfig):
-    model_name: str
+class BaseGRPOVariantConfig(BaseConfig):
+    """Base config class for GRPO variants."""
 
-    ckpt: CkptConfig = CkptConfig()
+    highest_entropy_ratio_loss: Annotated[float, Field(default=1.0)]
 
-    project: str = "prime_simple"
-    wandb: bool = True
-    wandb_run_name: str | None = None
 
-    data: DataConfig = DataConfig()
-    optim: OptimConfig = OptimConfig()
+class KlCovConfig(BaseGRPOVariantConfig):
+    """Configures the KL-Covariance loss."""
+
+    type: Annotated[Literal["kl_cov"], Field(default="kl_cov")]
+    kl_coef: Annotated[float, Field(default=1.0)]
+    k_percent: Annotated[float, Field(default=0.2)]
+
+
+class ClippingConfig(BaseGRPOVariantConfig):
+    """Configures the clipping loss."""
+
+    type: Annotated[Literal["clip"], Field(default="clip")]
+    epsilon_low: Annotated[float, Field(default=0.2)]
+    epsilon_high: Annotated[float, Field(default=0.2)]
+    clip_ratio: Annotated[float, Field(default=4.0)]
+
+
+class RatioConfig(BaseGRPOVariantConfig):
+    """Configures the ratio loss."""
+
+    type: Annotated[Literal["ratio"], Field(default="ratio")]
+    clip_ratio: Annotated[float, Field(default=8.0)]
+
+
+GRPOVariantsConfig: TypeAlias = Union[ClippingConfig, KlCovConfig, RatioConfig]
+
+
+class GRPOLossConfig(BaseConfig):
+    """Configures the GRPO loss."""
+
+    # The GRPO variant configuration
+    off_policy: GRPOVariantsConfig = ClippingConfig()
+
+    kl_coef: Annotated[float | None, Field(default=None)]
+    entropy_loss_coeff: Annotated[float, Field(default=0)]
+
+
+class ModelConfig(BaseConfig):
+    """Configures the model to be used for training."""
+
+    name: Annotated[str, Field(default="Qwen/Qwen3-0.6B", description="Name or path of the HF model to use.")]
+
+
+CollateMode: TypeAlias = Literal["packing", "padding", "balancing"]
+
+
+class DataConfig(BaseConfig):
+    path: Annotated[str, Field(default="datasets/fineweb-edu")]
+    seq_length: Annotated[int, Field(default=1024)]
+    fake: Annotated[bool, Field(default=False)]
+    num_workers: Annotated[int, Field(default=1)]
+    timeout: Annotated[float, Field(default=3600)]
+
+    local_dir: Annotated[str, Field(default="/dev/shm/zeroband/data")]  # only used if path is gcp
+
+    ignore_zero_advantages: Annotated[bool, Field(default=False)]  # don't use in local setup
+
+
+class Config(BaseSettings):
+    """Configures training"""
+
+    # The model configuration
+    model: ModelConfig = ModelConfig()
+
+    # The training configuration
     train: TrainConfig
 
+    # The optimizer configuration
+    optim: OptimConfig = OptimConfig()
+
+    # The checkpoint configuration
+    ckpt: CkptConfig = CkptConfig()
+
+    # The data configuration
+    data: DataConfig = DataConfig()
+
+    # The GRPO loss configuration
+    grpo: GRPOLossConfig = GRPOLossConfig()
+
+    # The monitor configuration
     monitor: MultiMonitorConfig = MultiMonitorConfig()
 
-    gpus_ids: list[int] | None = None
+    # W&B configurations
+    wandb: Annotated[bool, Field(default=True)]
 
-    temperature: float = 0.6  # todo remove this and add this to the data
+    project: Annotated[str, Field(default="prime_simple")]
 
-    grpo_epsilon_low: float = 0.2
-    grpo_epsilon_high: float = 0.2
-    entropy_loss_coeff: float = 0.001
-    clamp_log_prob_coef: float = 4.0
+    wandb_run_name: Annotated[str | None, Field(default=None)]
 
-    max_async_level: int = 2  # the amount of rollout checkpoints to keep
+    gpus_ids: Annotated[list[int] | None, Field(default=None)]
 
-    collate_mode: CollateMode = "padding"
+    async_level: Annotated[int, Field(default=2, ge=1)]
 
-    kl_coef: float | None = None
+    collate_mode: Annotated[CollateMode, Field(default="padding")]
 
-    start_step: int = 0
-    start_total_samples: int | None = None
-    start_rollout_step: int | None = None
+    start_step: Annotated[int, Field(default=0, ge=0)]
 
-    stop_after_steps: int | None = None
+    start_total_samples: Annotated[int | None, Field(default=None)]
+
+    start_rollout_step: Annotated[int | None, Field(default=None)]
+
+    stop_after_steps: Annotated[int | None, Field(default=None)]
+
+    normalize_batch_to_token_count: Annotated[bool, Field(default=True)]
+
+    recompute_logprobs: Annotated[bool, Field(default=True)]
 
     @model_validator(mode="after")
     def check_liger(self):
         if self.train.liger_qwen:
-            assert "Qwen" in self.model_name, "train.liger_qwen can only be applied to Qwen2 models."
+            assert "Qwen" in self.model.name, "train.liger_qwen can only be applied to Qwen2 models."
         return self
 
     @model_validator(mode="after")

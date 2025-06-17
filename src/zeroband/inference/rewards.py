@@ -1,42 +1,16 @@
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Iterator, Literal, Sequence
+from typing import Any, Iterator, Sequence
 
 import numpy as np
 import requests
 from pydantic import BaseModel
-from pydantic_config import BaseConfig
 from vllm import RequestOutput
 
+from zeroband.inference.config import RewardsConfig
 from zeroband.inference.genesys import TaskType, get_reward_function
 from zeroband.utils.logger import get_logger
-
-# Global logger
-logger = get_logger("INFER")
-
-
-class LenRewardsConfig(BaseConfig):
-    reward_type: Literal["exact", "max", "clip"] = "max"
-    target_length_sampling: Literal["discrete", "range"] = "discrete"
-    length_prompt_location: Literal["system_prompt", "instruction"] = "system_prompt"
-
-    # applicable if target_length_sampling == "range"
-    min_length: int = 1000
-    max_length: int = 24000
-
-    # applicable if target_length_sampling == "discrete"
-    target_lengths: list[float] = [500, 1000, 2000, 3000]
-
-    # applicable for reward_type max and exact
-    reward_coef: float = 0.0003
-
-    # only applicable for reward_type == "max"
-    max_reward_delta: float = 0.5
-
-
-class RewardsConfig(BaseConfig):
-    len_reward: LenRewardsConfig | None = None
 
 
 class ModelCompletion(BaseModel):
@@ -188,7 +162,22 @@ def _compute_request_rewards(
 
     # Compute advantage (normalized rewards)
     reward_array = np.array([reward.reward for reward in completion_rewards], dtype=np.float32)
-    advantage_array = (reward_array - reward_array.mean()) / (reward_array.std(ddof=1) + 1e-6)
+
+    if config.advantage_estimation_method == "dr_grpo":
+        advantage_array = reward_array - reward_array.mean()
+
+    elif config.advantage_estimation_method == "grpo":
+        advantage_array = (reward_array - reward_array.mean()) / (reward_array.std(ddof=1) + 1e-6)
+
+    elif config.advantage_estimation_method == "opo":
+        lengths = np.array([len(r.token_ids) for r in request_output.outputs], dtype=np.float32)
+        weights = lengths / lengths.sum()
+        weighted_mean = (reward_array * weights).sum()
+        advantage_array = reward_array - weighted_mean
+
+    else:
+        raise ValueError(f"{config.advantage_estimation_method} is not supported for advantage estimation")
+
     for completion_reward, advantage in zip(completion_rewards, advantage_array):
         completion_reward.advantage = float(advantage)
 
@@ -222,7 +211,7 @@ def compute_rewards(
         )
 
         if response.status_code != 200:
-            logger.error(f"Failed to compute rewards: {response.status_code} - {response.text}")
+            get_logger("INFER").error(f"Failed to compute rewards: {response.status_code} - {response.text}")
             raise RuntimeError(f"Failed to compute rewards: {response.status_code} - {response.text}")
         response = RewardsResponse.model_validate(json.loads(response.text))
         return response

@@ -1,0 +1,16 @@
+clean_rollout_path = true
+max_batch_size = 88
+
+[model]
+name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+max_model_len = 2048
+
+[data]
+name = "justus27/math-hendrycks-genesys-format"
+
+[parallel]
+dp = 6
+
+[rl]
+ckpt_path = "checkpoints"
+clean_ckpt_path = true

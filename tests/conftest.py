@@ -1,6 +1,7 @@
 import concurrent.futures
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Callable
 
@@ -104,6 +105,11 @@ def create_dummy_parquet_table(batch_size: int, seq_len: int) -> Table:
         "step": pa.array([0] * batch_size, type=pa.int32()),
         "target_lengths": pa.array([seq_len] * batch_size, type=pa.int32()),
         "task_type": pa.array(["test_task"] * batch_size, type=pa.string()),
+        "problem_id": pa.array(["0"] * batch_size, type=pa.string()),
+        "input_logprobs": pa.array([[0.1] * seq_len for _ in range(batch_size)], type=pa.list_(pa.float32())),
+        "output_logprobs": pa.array([[0.1] * seq_len for _ in range(batch_size)], type=pa.list_(pa.float32())),
+        "seed": pa.array([42] * batch_size, type=pa.int64()),
+        "temperature": pa.array([1.0] * batch_size, type=pa.float32()),
     }
 
     # Create table directly from dictionary

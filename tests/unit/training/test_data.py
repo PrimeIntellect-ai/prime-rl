@@ -20,7 +20,7 @@ def test_pq_dataset(fake_rollout_files_dir):
 
     dataset = ParquetDataset(path, 8 * 4, timeout=2, step_count_init=0, ignore_zero_advantages=False)
 
-    dataloader = DataLoader(dataset, batch_size=10, num_workers=2)
+    dataloader = DataLoader(dataset, batch_size=10, num_workers=2, collate_fn=lambda x: x)
 
     with pytest.raises(TimeoutError, match="Timeout waiting for step 4 to be created"):
         for _ in dataloader:
@@ -126,6 +126,7 @@ def test_packing_vs_padding():
             "length_penalties": torch.ones(1),
             "target_lengths": torch.ones(1),
             "task_type": "test_task",
+            "temperature": torch.ones(1),
         }
 
         batch_rollout.append(data)

@@ -1,9 +1,12 @@
-model_name = "Qwen/Qwen3-0.6B"
-dataset = "PrimeIntellect/INTELLECT-2-RL-Dataset"
-max_samples = 32
-batch_size = 16
+max_steps = 2
+max_batch_size = 16
+clean_rollout_path = true
+
+[toploc]
+enable_toploc1 = true
+
+[model]
 enforce_eager = true
-toploc = true
 max_model_len = 8192
 
 [sampling]

@@ -10,13 +10,12 @@ dependencies = [
     "setuptools",
     "transformers>=4.51.0",
     "datasets>=3.0.0",
-    "pydantic_config @ git+https://github.com/samsja/pydantic_config.git@b7becc3",
     "torchdata>=0.8.0",
     "ninja",
     "zstandard",
     "pyarrow",
     "wandb",
-    "vllm>=0.8.5",
+    "vllm~=0.8.5",
     "jaxtyping",
     "beartype",
     "toploc>=0.1.6",
@@ -28,18 +27,21 @@ dependencies = [
     "asyncio>=3.4.3",
     "aiohttp>=3.10.5",
     "pyext @ git+https://github.com/justusmattern27/PyExt.git",
-    "prime-iroh>=0.3.0",
+    "prime-iroh>=0.3.1",
     "setuptools",
     "fastapi",
     "uvicorn",
     "requests",
     "reasoning-gym @ git+https://github.com/open-thought/reasoning-gym.git",
     "tomli>=2.2.1",
-    "pydantic[email]>=2.11.5",
+    "pydantic-settings>=2.9.1",
+    "cydifflib>=1.2.0",
 ] 
+
 
 [project.optional-dependencies]
 fa = ["flash-attn>=2.7.4"]
+kernelbench = ["modal>=1.0.3"]
 
 [build-system]
 requires = ["hatchling"]

@@ -1,0 +1,14 @@
+rollout_path = "/data"
+rl = "None"
+
+[toploc]
+enable_toploc1 = true
+
+[parallel]
+tp = "auto"
+
+[parallel.pp]
+connection_num_retries = 100
+
+[rewards]
+compute_reward = false

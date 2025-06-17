@@ -71,7 +71,7 @@ If you have 2 GPUs, run the following commands:
 # Start inference worker
 export CUDA_VISIBLE_DEVICES=0
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
-uv run python src/zeroband/infer.py @ configs/inference/simple_math.toml --dp 1 --batch-size 512
+uv run python src/zeroband/infer.py @ configs/inference/simple_math.toml --parallel.dp 1 --max-batch-size 512
 ```
 
 ```bash
@@ -87,7 +87,7 @@ If you have 4 GPUs, run the following commands:
 # Start inference workers
 export CUDA_VISIBLE_DEVICES=0,1
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
-uv run python src/zeroband/infer.py @ configs/inference/simple_math.toml --dp 2 --batch-size 256
+uv run python src/zeroband/infer.py @ configs/inference/simple_math.toml --parallel.dp 2 --max-batch-size 256
 ```
 
 ```bash
@@ -148,13 +148,13 @@ CUDA_VISIBLE_DEVICES=0 uv run python src/zeroband/infer.py @ configs/inference/d
 Only TP (TP=2, PP=1, DP=1, *requires 2 GPUs*)
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/infer.py @ configs/inference/debug.toml --tp 2
+CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/infer.py @ configs/inference/debug.toml --parallel.tp 2
 ```
 
 Only DP (DP=2, TP=1, PP=1, *requires 2 GPUs*)
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/infer.py @ configs/inference/debug.toml --dp 2
+CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/infer.py @ configs/inference/debug.toml --parallel.dp 2
 ```
 
 Only PP (DP=1, TP=1, PP=2, *requires 2 GPUs*)
@@ -162,20 +162,16 @@ Only PP (DP=1, TP=1, PP=2, *requires 2 GPUs*)
 ```bash
 # Node 1
 CUDA_VISIBLE_DEVICES=0 uv run python src/zeroband/infer.py @ configs/inference/debug.toml \
-	--pp.rank 0 \
-	--pp.world-size 2 \
-	--pp.iroh-seed 0 \
-	--pp.iroh-peer-id ff87a0b0a3c7c0ce827e9cada5ff79e75a44a0633bfcb5b50f99307ddb26b337 \
+	--parallel.pp.rank 0 \
+	--parallel.pp.world-size 2 \
 	--seed 69
 ```
 
 ```bash
 # Node 2
 CUDA_VISIBLE_DEVICES=1 uv run python src/zeroband/infer.py @ configs/inference/debug.toml \
-	--pp.rank 1 \
-	--pp.world-size 2 \
-	--pp.iroh-seed 1 \
-	--pp.iroh-peer-id ee1aa49a4459dfe813a3cf6eb882041230c7b2558469de81f87c9bf23bf10a03 \
+	--parallel.pp.rank 1 \
+	--parallel.pp.world-size 2 \
 	--seed 69
 ```
 
@@ -184,7 +180,7 @@ CUDA_VISIBLE_DEVICES=1 uv run python src/zeroband/infer.py @ configs/inference/d
 DP+TP (DP=2, TP=2, PP=1, *requires 4 GPUs*)
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 uv run python src/zeroband/infer.py @ configs/inference/debug.toml --dp 2 --tp auto
+CUDA_VISIBLE_DEVICES=0,1,2,3 uv run python src/zeroband/infer.py @ configs/inference/debug.toml --parallel.dp 2 --parallel.tp auto
 ```
 
 PP+TP (DP=1, TP=2, PP=2, *requires 4 GPUs*)
@@ -192,22 +188,18 @@ PP+TP (DP=1, TP=2, PP=2, *requires 4 GPUs*)
 ```bash
 # Node 1
 CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/infer.py @ configs/inference/debug.toml \
-	--tp auto \
-	--pp.rank 0 \
-	--pp.world-size 2 \
-	--pp.iroh-seed 0 \
-	--pp.iroh-peer-id ff87a0b0a3c7c0ce827e9cada5ff79e75a44a0633bfcb5b50f99307ddb26b337 \
+	--parallel.tp auto \
+	--parallel.pp.rank 0 \
+	--parallel.pp.world-size 2 \
 	--seed 69
 ```
 
 ```bash
 # Node 2
 CUDA_VISIBLE_DEVICES=2,3 uv run python src/zeroband/infer.py @ configs/inference/debug.toml \
-	--tp auto \
-	--pp.rank 1 \
-	--pp.world-size 2 \
-	--pp.iroh-seed 1 \
-	--pp.iroh-peer-id ee1aa49a4459dfe813a3cf6eb882041230c7b2558469de81f87c9bf23bf10a03 \
+	--parallel.tp auto \
+	--parallel.pp.rank 1 \
+	--parallel.pp.world-size 2 \
 	--seed 69
 ```
 
@@ -246,6 +238,53 @@ To run fast tests, use the inverse of the `slow` marker:
 ```bash
 uv run pytest -v -m "not slow"
 ```
+
+## Configs
+
+We use `pydantic-settings` to configure `prime-rl`. To get an overview of the available configurations, run the following command:
+
+```bash
+uv run python src/zeroband/train.py --help
+```
+
+```bash
+uv run python src/zeroband/infer.py --help
+```
+
+### Sources
+
+We support the following sources for configuration, in this order of precedence:
+
+1. **Command-line arguments**: You can pass (nested) arguments as `--key.subkey value` to the script. For example, to set the model name you can run `--model.name`
+
+2. **Config files**: You can pass `.toml` config files (defined in the `configs` directory) using the `@` prefix. For example, to use the `debug.toml` config file, you can run `uv run python src/zeroband/infer.py @ configs/inference/debug.toml`. (*If you leave a space between the `@` and the config file, you will get shell path auto-completions.*)
+
+3. **Environment variables**: You can set environment variables to override the config values. All environment variables must be prefixed with `PRIME_` and use the `__` delimiter to nest the keys. For example, to set the model name you can run `export PRIME_MODEL__NAME=Qwen/Qwen3-0.6B`.
+
+4. **Defaults**: For almost all config arguments, we have a default value which will be used if no other source is provided.
+
+In general we recommend setting configurations via config files to define reproducible experiments and use command-line arguments to override the config values to run variants of the same experiment. Environment variables are usually only used in production settings to communicate with the [Prime Protocol](https://github.com/PrimeIntellect-ai/protocol) worker. In most cases, you should not need to use environment variables.
+
+The precendence order will be important if multiple sources try to configure the same argument. For example, in the following command, all sources will define a model name
+
+```toml
+# qwen8b.toml
+[model]
+name = "Qwen/Qwen3-8B"
+```
+
+```toml
+# qwen14b.toml
+[model]
+name = "Qwen/Qwen-14B"
+```
+
+```bash
+PRIME_MODEL__NAME=Qwen/Qwen3-4B uv run src/zeroband/infer.py @qwen8b.toml @qwen14b.toml --model.name Qwen/Qwen3-32B
+```
+
+In this example, the CLI argument `--model.name Qwen/Qwen3-32B` will take precendence and the script will use `Qwen/Qwen3-32B` as the model name. If the CLI argument wasn't set, then the second config file would take precedence and the script would use `Qwen/Qwen-14B` as the model name. If the second config file wasn't set, then the first config file would take precedence and the script would use `Qwen/Qwen3-8B` as the model name. Finally, if the first config file wasn't set, then the environment variable would take precedence and the script would use `Qwen/Qwen-4B` as the model name. If the environment variable wasn't set, then the default value would be used and the script would use `Qwen/Qwen3-0.6B` as the model name.
+
 
 ## Citation
 

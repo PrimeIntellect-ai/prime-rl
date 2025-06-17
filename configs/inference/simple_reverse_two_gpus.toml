@@ -1,9 +1,14 @@
-model_name = "willcb/Qwen2.5-0.5B-Reverse-SFT"
-dataset = "mikasenghaas/reverse_text_dataset_debug_50_seq_len"
-batch_size = 128
-dp = 1
-rollout_path = "outputs"
-output_path = "data_rollout"
+max_steps = 50
+max_batch_size = 128
+clean_rollout_path = true
+
+[model]
+name = "willcb/Qwen2.5-0.5B-Reverse-SFT"
 max_model_len = 128
-clean_output_path = true
-total_step = 50
+
+[data]
+name = "mikasenghaas/reverse_text_dataset_debug_50_seq_len"
+
+[rl]
+ckpt_path = "checkpoints"
+clean_ckpt_path = true

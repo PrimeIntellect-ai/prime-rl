@@ -9,7 +9,8 @@ from vllm import LLM
 from vllm.model_executor import SamplingMetadata
 from vllm.model_executor.layers.logits_processor import _prune_hidden_states
 
-from zeroband.inference.pipeline import PipelineConfig
+from zeroband.inference.config import PipelineParallelConfig
+from zeroband.utils.logger import get_logger
 
 
 class ArgsIdentity(nn.Module):
@@ -38,14 +39,18 @@ class TopLocCache:
         disable (bool): If True, disable the TOPLOC cache. Defaults to False.
     """
 
-    def __init__(self, max_seqs: int, hidden_size: int, max_len: int = 32, device: torch.device | None = None, disable: bool = False):
+    def __init__(
+        self, max_seqs: int, hidden_size: int, max_len: int = 32, topk: int = 128, device: torch.device | None = None, disable: bool = False
+    ):
         self.max_seqs = max_seqs
         self.max_len = max_len
         self.hidden_size = hidden_size
         self.device = device
         self.disable = disable
+        self.topk = topk
 
         self._cache: torch.Tensor | None = None
+        self._seq_id_2_cache_index: dict[int, int] = {}
         self.proofs: dict[int, list[bytes]] = {}
 
         if not disable:
@@ -141,7 +146,9 @@ class TopLocCache:
             cache_index (int): Index of the sequence in the cache tensor
             seq_len (int): Length of the sequence to process
         """
-        proof = build_proofs_bytes(self._cache[cache_index, :seq_len], decode_batching_size=self.max_len, topk=128, skip_prefill=True)[0]
+        proof = build_proofs_bytes(
+            self._cache[cache_index, :seq_len], decode_batching_size=self.max_len, topk=self.topk, skip_prefill=True
+        )[0]
         self.proofs[seq_id].append(proof)
 
     def wait_for_proofs(self):
@@ -185,10 +192,12 @@ def toploc_cache_hook(_, inputs: tuple, toploc_cache: TopLocCache):
 
 
 def setup_toploc_cache(
-    llm: LLM, pipeline_config: PipelineConfig, disable: bool = False, **toploc_kwargs
+    llm: LLM, pp_config: PipelineParallelConfig, disable: bool = False, **toploc_kwargs
 ) -> tuple[TopLocCache, RemovableHandle | None]:
     """Initializes the TOPLOC cache and register a hook to dynamically populate the cache during inference"""
     # Initialize the cache
+    logger = get_logger("INFER")
+    logger.info(f"Initializing TOPLOC cache ({toploc_kwargs})")
     toploc_cache = TopLocCache(disable=disable, **toploc_kwargs)
 
     # Register hook to add hidden states to TOPLOC cache
@@ -197,7 +206,7 @@ def setup_toploc_cache(
     if not disable:
         handle = logits_processor.register_forward_pre_hook(partial(toploc_cache_hook, toploc_cache=toploc_cache))
 
-    if pipeline_config.is_enabled and pipeline_config.rank < pipeline_config.world_size - 1:
+    if pp_config.is_enabled and pp_config.rank < pp_config.world_size - 1:
         llm.llm_engine.model_executor.driver_worker.model_runner.model.model.norm = ArgsIdentity()
 
     return toploc_cache, handle

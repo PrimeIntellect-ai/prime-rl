@@ -15,15 +15,13 @@ CMD0 = [
     "run",
     "src/zeroband/infer.py",
     "@configs/inference/debug.toml",
-    "--model-name",
-    "mikasenghaas/Qwen3-0.6B-0.2",
-    "--pp.rank",
+    "--parallel.pp.rank",
     "0",
-    "--pp.world_size",
+    "--parallel.pp.world-size",
     "2",
-    "--pp.iroh_seed",
+    "--parallel.pp.iroh-seed",
     "0",
-    "--pp.iroh_peer_id",
+    "--parallel.pp.iroh-peer-id",
     "ff87a0b0a3c7c0ce827e9cada5ff79e75a44a0633bfcb5b50f99307ddb26b337",
     "--seed",
     "69",
@@ -34,15 +32,13 @@ CMD1 = [
     "run",
     "src/zeroband/infer.py",
     "@configs/inference/debug.toml",
-    "--model-name",
-    "mikasenghaas/Qwen3-0.6B-1.2",
-    "--pp.rank",
+    "--parallel.pp.rank",
     "1",
-    "--pp.world_size",
+    "--parallel.pp.world-size",
     "2",
-    "--pp.iroh_seed",
+    "--parallel.pp.iroh-seed",
     "1",
-    "--pp.iroh_peer_id",
+    "--parallel.pp.iroh-peer-id",
     "ee1aa49a4459dfe813a3cf6eb882041230c7b2558469de81f87c9bf23bf10a03",
     "--seed",
     "69",
@@ -56,7 +52,7 @@ def output_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 @pytest.fixture(scope="module")
 def processes(output_path: Path, run_processes: Callable[[list[Command], list[Environment]], list[ProcessResult]]) -> list[ProcessResult]:
-    return run_processes([CMD0 + ["--output-path", str(output_path)], CMD1 + ["--output-path", str(output_path)]], [ENV0, ENV1])
+    return run_processes([CMD0 + ["--rollout-path", str(output_path)], CMD1 + ["--rollout-path", str(output_path)]], [ENV0, ENV1])
 
 
 def test_no_error(processes):
@@ -68,13 +64,14 @@ def test_output_directories_exist(output_path: Path):
     # Ensure processes have completed before checking output
     assert output_path.joinpath("step_0").exists()
     assert output_path.joinpath("step_1").exists()
-    assert not output_path.joinpath("step_2").exists()
+    assert output_path.joinpath("step_2").exists()
+    assert not output_path.joinpath("step_3").exists()
 
 
 def test_output_files_have_correct_schemas(output_path: Path):
     # Ensure processes have completed before checking output
     files = list(output_path.rglob("*.parquet"))
-    assert len(files) == 4, f"Expected 4 files, got {len(files)}"
+    assert len(files) == 6, f"Expected 6 files, got {len(files)}"
     for file in files:
         assert pq.read_schema(file).equals(pa_schema)
 

@@ -1,15 +1,18 @@
-model_name = "Qwen/Qwen3-0.6B"
 wandb = false
-kl_coef = 0.02
 collate_mode = "padding"
+stop_after_steps = 2
+
+[model]
+name = "Qwen/Qwen3-0.6B"
+
+[grpo]
+kl_coef = 0.02
 
 [train]
 micro_bs = 1
 
 [optim]
 batch_size = 2
-warmup_steps = 10
-total_steps = 2
 
 [data]
 fake = true
