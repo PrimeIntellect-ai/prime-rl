@@ -3,6 +3,7 @@ rl = "None"
 
 [toploc]
 enable_toploc1 = true
+enable_toploc2 = true
 
 [model]
 name = "Qwen/Qwen3-0.6B"

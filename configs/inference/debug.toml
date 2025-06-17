@@ -5,6 +5,7 @@ rl = "None"
 
 [toploc]
 enable_toploc1 = true
+enable_toploc2 = true
 
 [model]
 enforce_eager = true
