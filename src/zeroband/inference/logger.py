@@ -9,6 +9,8 @@ from zeroband.inference.config import ParallelConfig, PipelineParallelConfig
 ALLOWED_LEVELS = {"debug": logging.DEBUG, "info": logging.INFO, "warning": logging.WARNING, "critical": logging.CRITICAL}
 
 _LOGGER: Logger | None = None
+NO_BOLD = "\033[22m"
+RESET = "\033[0m"
 
 
 def setup_logger(level: str, parallel_config: ParallelConfig) -> Logger:
@@ -18,7 +20,14 @@ def setup_logger(level: str, parallel_config: ParallelConfig) -> Logger:
 
     # Define the base format for the logger
     time = "<fg 0>{time:HH:mm:ss}</fg 0>"
-    message = "<fg 0>[</fg 0> <level>{level: >8}</level> <fg 0>]</fg 0> <level>{message}</level>"
+    message = "".join(
+        [
+            "<level>{level: >8}</level>",
+            f" <level>{NO_BOLD}",
+            "{message}",
+            f"{RESET}</level>",
+        ]
+    )
     debug = "PID={process.id} | TID={thread.id} | {file}::{line}" if level.upper() == "DEBUG" else ""
 
     # Add parallel information to the format
@@ -31,6 +40,8 @@ def setup_logger(level: str, parallel_config: ParallelConfig) -> Logger:
         if debug:
             debug += " | "
         debug += f"{' | '.join(parallel)}"
+    if debug:
+        debug = f"[{debug}]"
 
     format = f"{time} {debug} {message}"
 
