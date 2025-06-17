@@ -59,17 +59,3 @@ def setup_logger(log_config: LogConfig, parallel_config: ParallelConfig, dp_rank
     set_logger(logger)
 
     return logger
-
-
-if __name__ == "__main__":
-    logger = setup_logger(log_config=LogConfig(level="debug"), parallel_config=ParallelConfig(), dp_rank=0)
-    logger.debug("Debug message")
-    logger.info("Info message")
-    logger.success("Success message")
-    logger.warning("Warning message")
-    logger.error("Error message")
-    logger.critical("Critical message")
-    try:
-        a = 1 / 0
-    except Exception as e:
-        logger.exception(e)

@@ -56,20 +56,3 @@ def setup_logger(log_config: LogConfig, world_info: WorldInfo) -> Logger:
     set_logger(logger)
 
     return logger
-
-
-if __name__ == "__main__":
-    from zeroband.training.world_info import get_world_info
-
-    world_info = get_world_info()
-    logger = setup_logger(log_config=LogConfig(utc=True, all_ranks=True), world_info=world_info)
-    logger.debug("Debug message")
-    logger.info("Info message")
-    logger.success("Success message")
-    logger.warning("Warning message")
-    logger.error("Error message")
-    logger.critical("Critical message")
-    try:
-        a = 1 / 0
-    except Exception as e:
-        logger.exception(e)
