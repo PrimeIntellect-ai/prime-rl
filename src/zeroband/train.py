@@ -516,7 +516,7 @@ def train(config: TrainingConfig):
             tensor_offloaded_repository[training_progress.step // config.optim.step_per_rollout] = copy_model_to_cpu(model)
 
         time_rollout_step = time.time() - time_start
-        logger.info(f"Finished rollout {rollout_step} step {training_progress.step}")
+        logger.success(f"Finished training step {training_progress.step} in {time_rollout_step:.2f}s")
         if world_info.rank == 0 and config.wandb:
             new_metrics = {
                 "rollout_step": rollout_step,
@@ -534,8 +534,8 @@ def train(config: TrainingConfig):
     if prefetcher is not None:
         prefetcher.shutdown()
 
-    logger.info("Training finished, exiting ...")
-    logger.info(f"Max memory: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB")
+    logger.info(f"Peak memory: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB")
+    logger.success("Training finished!")
 
 
 if __name__ == "__main__":
