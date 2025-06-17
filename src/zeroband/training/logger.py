@@ -23,7 +23,7 @@ def setup_logger(log_config: LogConfig, world_info: WorldInfo) -> Logger:
     # Define the colorized log level and message
     message = "".join(
         [
-            "<level>{level: >8}</level>",
+            " <level>{level: >7}</level>",
             f" <level>{NO_BOLD}",
             "{message}",
             f"{RESET}</level>",
@@ -40,10 +40,10 @@ def setup_logger(log_config: LogConfig, world_info: WorldInfo) -> Logger:
             debug += " | "
         debug += parallel
     if debug:
-        debug = f"[{debug}]"
+        debug = f" [{debug}]"
 
     # Assemble the final format
-    format = f"{time} {debug} {message}"
+    format = time + debug + message
 
     # Remove all default handlers
     logger.remove()
