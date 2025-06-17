@@ -8,8 +8,8 @@ max_model_len = 2048
 [data]
 name = "justus27/math-hendrycks-genesys-format"
 
-[parallel.dp]
-world_size = 6
+[parallel]
+dp = 6
 
 [rl]
 ckpt_path = "checkpoints"

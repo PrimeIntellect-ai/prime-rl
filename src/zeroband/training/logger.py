@@ -31,7 +31,7 @@ def setup_logger(log_config: LogConfig, world_info: WorldInfo) -> Logger:
     )
 
     # Define the debug information in debug mode
-    debug = "PID={process.id} | TID={thread.id} | {file}::{line}" if log_config.level.upper() == "DEBUG" else ""
+    debug = "PID={process.id} | {file}::{line}" if log_config.level.upper() == "DEBUG" else ""
 
     # Add parallel information to the format
     if world_info.num_gpus > 1:

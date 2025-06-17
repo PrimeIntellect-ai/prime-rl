@@ -71,7 +71,7 @@ If you have 2 GPUs, run the following commands:
 # Start inference worker
 export CUDA_VISIBLE_DEVICES=0
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
-uv run python src/zeroband/infer.py @ configs/inference/simple_math.toml --parallel.dp.world-size 1 --max-batch-size 512
+uv run python src/zeroband/infer.py @ configs/inference/simple_math.toml --parallel.dp 1 --max-batch-size 512
 ```
 
 ```bash
@@ -87,7 +87,7 @@ If you have 4 GPUs, run the following commands:
 # Start inference workers
 export CUDA_VISIBLE_DEVICES=0,1
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
-uv run python src/zeroband/infer.py @ configs/inference/simple_math.toml --parallel.dp.world-size 2 --max-batch-size 256
+uv run python src/zeroband/infer.py @ configs/inference/simple_math.toml --parallel.dp 2 --max-batch-size 256
 ```
 
 ```bash
@@ -154,7 +154,7 @@ CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/infer.py @ configs/inference
 Only DP (DP=2, TP=1, PP=1, *requires 2 GPUs*)
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/infer.py @ configs/inference/debug.toml --parallel.dp.world-size 2
+CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/infer.py @ configs/inference/debug.toml --parallel.dp 2
 ```
 
 Only PP (DP=1, TP=1, PP=2, *requires 2 GPUs*)
@@ -180,7 +180,7 @@ CUDA_VISIBLE_DEVICES=1 uv run python src/zeroband/infer.py @ configs/inference/d
 DP+TP (DP=2, TP=2, PP=1, *requires 4 GPUs*)
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 uv run python src/zeroband/infer.py @ configs/inference/debug.toml --parallel.dp.world-size 2 --parallel.tp auto
+CUDA_VISIBLE_DEVICES=0,1,2,3 uv run python src/zeroband/infer.py @ configs/inference/debug.toml --parallel.dp 2 --parallel.tp auto
 ```
 
 PP+TP (DP=1, TP=2, PP=2, *requires 4 GPUs*)

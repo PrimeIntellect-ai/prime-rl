@@ -55,7 +55,7 @@ def setup_comm(config: PipelineParallelConfig) -> Node | None:
         return None
 
     logger = get_logger()
-    logger.info(f"Setting up pipeline parallel communication ({config})")
+    logger.info(f"Initializing pipeline parallel node ({config})")
     start_time = time.time()
 
     # Setup node (with or without seed)
@@ -66,23 +66,21 @@ def setup_comm(config: PipelineParallelConfig) -> Node | None:
     else:
         # If no seed, create a new node
         node = Node(num_streams=1)
-    logger.info(f"Initialized node ({node.node_id()})")
+    logger.success(f"Initialized node ({node.node_id()}) in {time.time() - start_time:.2f}s")
 
     # Connect to peer
     if config.iroh_peer_id is None:
-        config.iroh_peer_id = input("Enter peer address: ").strip()
-    logger.info(f"Setting up outgoing connection to {config.iroh_peer_id}")
+        logger.info("Enter peer address:")
+        config.iroh_peer_id = input().strip()
+    logger.info("Setting up connections")
     node.connect(config.iroh_peer_id, num_retries=config.connection_num_retries)
-    logger.info(f"Outgoing connection to {config.iroh_peer_id} successful!")
 
     # Wait for connection to sender and receiver to be established
     # Note: This requires the PP communication loop to be closed, e.g. for 4 stages:
     # 0 -> 1 -> 2 -> 3 -> 0
-    logger.info("Waiting for incoming connection")
     while not node.is_ready():
         time.sleep(0.1)
-    logger.info("Incoming connection successful!")
-    logger.info(f"Pipeline parallel communication setup in {time.time() - start_time:.2f}s")
+    logger.success(f"Connected to peer in {time.time() - start_time:.2f}s")
 
     return node
 
@@ -330,7 +328,7 @@ def broadcast_intermediate_states(_, input: Tuple) -> tuple[torch.Tensor, torch.
         residual = torch.zeros_like(hidden_states, device=hidden_states.device, dtype=hidden_states.dtype)
     get_tp_group().broadcast(hidden_states)
     get_tp_group().broadcast(residual)
-    # logger.debug("Broadcasted hidden_states and residual")
+    # get_logger().debug("Broadcasted hidden_states and residual")
 
     return positions, hidden_states, residual
 
@@ -454,7 +452,6 @@ def all_reduce(node: Node, tensor: torch.Tensor, config: PipelineParallelConfig,
         # Serialize current tensor for transmission
         tensor_dict = {"data": current_tensor}
         send_data = serialize_tensors(tensor_dict)
-        # get_logger().debug(f"Sending {current_tensor} ({len(send_data)} bytes) to next node")
         send_future = node.isend(send_data, tag=0, latency=None)
 
         # Receive tensor from previous node
@@ -466,7 +463,6 @@ def all_reduce(node: Node, tensor: torch.Tensor, config: PipelineParallelConfig,
 
         # Deserialize received tensor and apply reduction operation
         received_tensors = deserialize_tensors(recv_data)
-        # get_logger().debug(f"Received {received_tensors['data']} ({len(recv_data)} bytes) from previous node")
         current_tensor = received_tensors["data"]
 
         # Apply the custom reduction operation

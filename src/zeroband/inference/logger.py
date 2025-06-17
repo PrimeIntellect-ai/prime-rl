@@ -10,7 +10,7 @@ NO_BOLD = "\033[22m"
 RESET = "\033[0m"
 
 
-def setup_logger(log_config: LogConfig, parallel_config: ParallelConfig) -> Logger:
+def setup_logger(log_config: LogConfig, parallel_config: ParallelConfig, dp_rank: int) -> Logger:
     if get_logger() is not None:
         raise RuntimeError("Logger already setup. Call reset_logger first.")
 
@@ -30,14 +30,14 @@ def setup_logger(log_config: LogConfig, parallel_config: ParallelConfig) -> Logg
     )
 
     # Define the debug information in debug mode
-    debug = "PID={process.id} | TID={thread.id} | {file}::{line}" if log_config.level.upper() == "DEBUG" else ""
+    debug = "PID={process.id} | {file}::{line}" if log_config.level.upper() == "DEBUG" else ""
 
     # Add parallel information to the format
     parallel = []
-    if parallel_config.dp.is_enabled:
-        parallel.append("DP={dp_rank}")
+    if parallel_config.dp > 1:
+        parallel.append(f"DP={dp_rank}")
     if parallel_config.pp.is_enabled:
-        parallel.append("PP={pp_rank}")
+        parallel.append(f"PP={parallel_config.pp.rank}")
     if parallel:
         if debug:
             debug += " | "
@@ -52,7 +52,7 @@ def setup_logger(log_config: LogConfig, parallel_config: ParallelConfig) -> Logg
     logger.remove()
 
     # Install new handler on all ranks, if specified. Otherwise, only install on the main rank
-    if log_config.all_ranks or parallel_config.dp.rank == 0:
+    if log_config.all_ranks or dp_rank == 0:
         logger.add(sys.stdout, format=format, level=log_config.level.upper(), enqueue=True, backtrace=True, diagnose=True)
 
     # Bind the logger to access the DP and PP rank
@@ -62,7 +62,7 @@ def setup_logger(log_config: LogConfig, parallel_config: ParallelConfig) -> Logg
 
 
 if __name__ == "__main__":
-    logger = setup_logger(log_config=LogConfig(utc=True), parallel_config=ParallelConfig())
+    logger = setup_logger(log_config=LogConfig(level="debug"), parallel_config=ParallelConfig(), dp_rank=0)
     logger.debug("Debug message")
     logger.info("Info message")
     logger.success("Success message")

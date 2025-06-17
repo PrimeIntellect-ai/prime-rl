@@ -5,7 +5,6 @@ import shutil
 import time
 from pathlib import Path
 import uuid
-from copy import deepcopy
 
 # Import environment before any other imports
 # ruff: noqa: I001
@@ -44,14 +43,14 @@ from zeroband.inference.logger import setup_logger
 @ensure_process_group_cleanup
 def inference(config: InferenceConfig):
     # Initialize the logger
-    logger = setup_logger(config.log, config.parallel)
+    dp_rank = int(os.environ.get("DP_RANK", 0))
+    logger = setup_logger(config.log, parallel_config=config.parallel, dp_rank=dp_rank)
     logger.info("Starting inference")
 
     # Optionally, clean the rollout path
     if config.clean_rollout_path and config.rollout_path is not None:
         logger.info(f"Cleaning rollout path ({config.rollout_path})")
         shutil.rmtree(config.rollout_path, ignore_errors=True)
-        logger.success(f"Cleaned rollout path ({config.rollout_path})")
 
     # Pre-download the model weights
     logger.info(f"Downloading model weights for {config.model.name}")
@@ -102,12 +101,12 @@ def inference(config: InferenceConfig):
     if config.group_id is not None:
         # We dont shuffle here because we shuffle reproducibly in the sampling loop.
         assert config.seed is None, "Seed is not supported when PRIME_GROUP_ID is set"
-        assert config.parallel.dp.rank is None, "DP is not supported when group ID is set"
+        assert os.environ.get("DP_RANK") is None, "DP is not supported when group ID is set"
         node_address_int = int(config.group_id, 16)
         logger.info(f"Seeding with {node_address_int} ({config.group_id})")
     else:
         # Seed the dataset with a random number
-        seed = config.seed + config.parallel.dp.rank if config.seed is not None else None
+        seed = config.seed + int(os.environ.get("DP_RANK", 0)) if config.seed is not None else None
         generator = np.random.default_rng(seed)
         logger.info(f"Shuffling dataset with seed {seed}")
         dataset = dataset.shuffle(generator=generator)
@@ -125,13 +124,9 @@ def inference(config: InferenceConfig):
         logger.info(
             f"Filtering dataset for difficulty in [{config.data.difficulty_filtering.min_solve_rate}, {config.data.difficulty_filtering.max_solve_rate}]"
         )
-        start_time = time.time()
         dataset = dataset.filter(
             lambda x: x[config.data.difficulty_filtering.solve_rate_field] >= config.data.difficulty_filtering.min_solve_rate
             and x[config.data.difficulty_filtering.solve_rate_field] <= config.data.difficulty_filtering.max_solve_rate
-        )
-        logger.success(
-            f"Filtered dataset for difficulty in [{config.data.difficulty_filtering.min_solve_rate}, {config.data.difficulty_filtering.max_solve_rate}] in {time.time() - start_time:.2f}s - {len(dataset)} samples remaining"
         )
 
     # Initialize sampling parameters
@@ -413,17 +408,15 @@ def inference(config: InferenceConfig):
 def main(config: InferenceConfig) -> list[mp.Process]:
     processes = []
 
-    if config.parallel.dp.world_size > 1:
+    if config.parallel.dp > 1:
         if config.parallel.tp == "auto":
             assert torch.cuda.device_count() % config.parallel.dp == 0, "Number of GPUs must be divisible by DP"
             config.parallel.tp = torch.cuda.device_count() // config.parallel.dp
         gpu_ids = envs.CUDA_VISIBLE_DEVICES
         gpu_ids_per_rank = [gpu_ids[i : i + config.parallel.tp] for i in range(0, len(gpu_ids), config.parallel.tp)]
         for rank, gpu_ids in enumerate(gpu_ids_per_rank):
-            config_copy = deepcopy(config)
-            config_copy.parallel.dp.rank = rank
-            env = {"CUDA_VISIBLE_DEVICES": ",".join(map(str, gpu_ids))}
-            process = mp.Process(target=EnvWrapper(inference, env), args=(config_copy,))
+            env = {"CUDA_VISIBLE_DEVICES": ",".join(map(str, gpu_ids)), "DP_RANK": str(rank)}
+            process = mp.Process(target=EnvWrapper(inference, env), args=(config,))
             processes.append(process)
     else:
         if config.parallel.tp == "auto":

@@ -5,4 +5,4 @@ from zeroband.utils.logger import reset_logger
 
 def test_setup_default():
     reset_logger()
-    setup_logger(LogConfig(), ParallelConfig())
+    setup_logger(LogConfig(), ParallelConfig(), dp_rank=0)
