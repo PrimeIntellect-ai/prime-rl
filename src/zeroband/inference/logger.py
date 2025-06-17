@@ -1,6 +1,6 @@
 import sys
 
-from loguru import logger as loguru_logger
+from loguru import logger
 from loguru._logger import Logger
 
 from zeroband.inference.config import LogConfig, ParallelConfig
@@ -35,9 +35,9 @@ def setup_logger(log_config: LogConfig, parallel_config: ParallelConfig) -> Logg
     # Add parallel information to the format
     parallel = []
     if parallel_config.dp.is_enabled:
-        parallel.append(f"DP={parallel_config.dp.rank}")
+        parallel.append("DP={dp_rank}")
     if parallel_config.pp.is_enabled:
-        parallel.append(f"PP={parallel_config.pp.rank}")
+        parallel.append("PP={pp_rank}")
     if parallel:
         if debug:
             debug += " | "
@@ -49,14 +49,13 @@ def setup_logger(log_config: LogConfig, parallel_config: ParallelConfig) -> Logg
     format = f"{time} {debug} {message}"
 
     # Remove all default handlers
-    loguru_logger.remove()
+    logger.remove()
 
     # Install new handler on all ranks, if specified. Otherwise, only install on the main rank
     if log_config.all_ranks or parallel_config.dp.rank == 0:
-        loguru_logger.add(sys.stdout, format=format, level=log_config.level.upper(), enqueue=True, backtrace=True, diagnose=True)
+        logger.add(sys.stdout, format=format, level=log_config.level.upper(), enqueue=True, backtrace=True, diagnose=True)
 
     # Bind the logger to access the DP and PP rank
-    logger = loguru_logger.bind(dp_rank=parallel_config.dp.rank, pp_rank=parallel_config.pp.rank)
     set_logger(logger)
 
     return logger
