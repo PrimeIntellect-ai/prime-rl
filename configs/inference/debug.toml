@@ -1,6 +1,7 @@
 max_steps = 2
 max_batch_size = 16
 clean_rollout_path = true
+rl = "None"
 
 [toploc]
 enable_toploc1 = true
