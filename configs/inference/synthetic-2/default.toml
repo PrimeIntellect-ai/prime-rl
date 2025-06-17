@@ -1,5 +1,7 @@
 rollout_path = "/data"
-toploc = true
+
+[toploc]
+enable_toploc1 = true
 
 rl = "None"
 

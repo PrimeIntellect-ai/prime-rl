@@ -325,6 +325,14 @@ class RLConfig(BaseConfig):
     ]
 
 
+class TopLocConfig(BaseConfig):
+    """Configures TOPLOC."""
+
+    topk: Annotated[int, Field(default=128, description="Number of top tokens to consider.")]
+    enable_toploc1: Annotated[bool, Field(default=False, description="Whether to enable toploc proofs")]
+    enable_toploc2: Annotated[bool, Field(default=False, description="Whether to use the toploc2 sampler.")]
+
+
 class Config(BaseSettings):
     """Configures inference."""
 
@@ -349,21 +357,7 @@ class Config(BaseSettings):
     # The RL configuration. If None, inference will run in a non-RL setting.
     rl: Annotated[RLConfig | None, Field(default=RLConfig())]
 
-    toploc: Annotated[
-        bool,
-        Field(
-            default=False,
-            description="Whether to produce TOPLOC proofs for the inference outputs.",
-        ),
-    ]
-
-    toploc2: Annotated[
-        bool,
-        Field(
-            default=True,
-            description="Whether to use the TOPLOC2 Sampler",
-        ),
-    ]
+    toploc: Annotated[TopLocConfig, Field(default=TopLocConfig())]
 
     max_batch_size: Annotated[
         int | Literal["auto"],
@@ -460,5 +454,5 @@ class Config(BaseSettings):
     @model_validator(mode="after")
     def disable_toploc_for_fp32(self):
         if self.model.dtype == "float32":
-            self.toploc = False
+            self.toploc.enable_toploc1 = False
         return self

@@ -39,12 +39,15 @@ class TopLocCache:
         disable (bool): If True, disable the TOPLOC cache. Defaults to False.
     """
 
-    def __init__(self, max_seqs: int, hidden_size: int, max_len: int = 32, device: torch.device | None = None, disable: bool = False):
+    def __init__(
+        self, max_seqs: int, hidden_size: int, max_len: int = 32, topk: int = 128, device: torch.device | None = None, disable: bool = False
+    ):
         self.max_seqs = max_seqs
         self.max_len = max_len
         self.hidden_size = hidden_size
         self.device = device
         self.disable = disable
+        self.topk = topk
 
         self._cache: torch.Tensor | None = None
         self._seq_id_2_cache_index: dict[int, int] = {}
@@ -143,7 +146,9 @@ class TopLocCache:
             cache_index (int): Index of the sequence in the cache tensor
             seq_len (int): Length of the sequence to process
         """
-        proof = build_proofs_bytes(self._cache[cache_index, :seq_len], decode_batching_size=self.max_len, topk=128, skip_prefill=True)[0]
+        proof = build_proofs_bytes(
+            self._cache[cache_index, :seq_len], decode_batching_size=self.max_len, topk=self.topk, skip_prefill=True
+        )[0]
         self.proofs[seq_id].append(proof)
 
     def wait_for_proofs(self):

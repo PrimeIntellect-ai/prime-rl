@@ -1,5 +1,7 @@
 max_steps = 5
-toploc = true
+
+[toploc]
+enable_toploc1 = true
 
 [model]
 name = "Qwen/Qwen3-0.6B"

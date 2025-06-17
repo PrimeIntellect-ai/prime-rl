@@ -81,7 +81,7 @@ def inference(config: InferenceConfig):
         enable_chunked_prefill=False,  # This is required for toploc2 because chunked prefill seems to allow len(seq_groups) != len(selected_token_indices) which is unexpected
         seed=config.seed,
     )
-    if config.toploc2:
+    if config.toploc.enable_toploc2:
         llm.llm_engine.model_executor.driver_worker.model_runner.sampler = Toploc2Sampler()
     tokenizer = llm.get_tokenizer()
     logger.info(f"Initialized model and tokenizer in {time.time() - start_time:.2f}s")
@@ -168,9 +168,10 @@ def inference(config: InferenceConfig):
     toploc_cache, _ = setup_toploc_cache(
         llm,
         pp_config=config.parallel.pp,
-        disable=not config.toploc,
+        disable=not config.toploc.enable_toploc1,
         max_seqs=batch_size,
         hidden_size=hidden_size,
+        topk=config.toploc.topk,
     )
 
     ckpt_step = 0
