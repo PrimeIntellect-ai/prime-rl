@@ -1,9 +1,10 @@
-project = "math-ablation"
-
 collate_mode = "packing"
 
 [model]
 name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+
+[monitor.wandb]
+project = "math-ablation"
 
 [train]
 micro_bs = 1 # change to 8 for H200

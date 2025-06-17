@@ -1,3 +1,4 @@
+[monitor.wandb]
 project = "formatask-debug"
 
 [model]
