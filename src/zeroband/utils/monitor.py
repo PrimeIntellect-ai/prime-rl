@@ -11,8 +11,8 @@ import aiohttp
 import psutil
 import pynvml
 
-from zeroband.training.logger import get_logger
 from zeroband.utils.config import APIMonitorConfig, BaseConfig, FileMonitorConfig, MultiMonitorConfig, SocketMonitorConfig
+from zeroband.utils.logger import get_logger
 
 
 class Monitor(ABC):
@@ -23,7 +23,7 @@ class Monitor(ABC):
         self.lock = threading.Lock()
         self.metadata = {"task_id": task_id}
         self.has_metadata = any(self.metadata.values())
-        self.logger = get_logger("INFER")
+        self.logger = get_logger()
         if not self.has_metadata:
             self.logger.warning("No run metadata found. This is fine for local runs, but unexpected when contributing to a public run.")
         self.logger.debug(f"Initializing {self.__class__.__name__} ({str(self.config).replace(' ', ', ')})")
@@ -105,7 +105,7 @@ class MultiMonitor:
     """
 
     def __init__(self, config: MultiMonitorConfig, task_id: str | None = None):
-        self.logger = get_logger("INFER")
+        self.logger = get_logger()
         # Initialize outputs
         self.outputs = []
         if config.file is not None:
@@ -194,5 +194,5 @@ class MultiMonitor:
 
 def setup_monitor(config: MultiMonitorConfig, task_id: str | None = None) -> MultiMonitor:
     """Sets up a monitor to log metrics to multiple specified outputs."""
-    get_logger("INFER").info(f"Initializing monitor ({config})")
+    get_logger().info(f"Initializing monitor ({config})")
     return MultiMonitor(config, task_id)

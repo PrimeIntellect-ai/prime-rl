@@ -10,7 +10,7 @@ from vllm import RequestOutput
 
 from zeroband.inference.config import RewardsConfig
 from zeroband.inference.genesys import TaskType, get_reward_function
-from zeroband.inference.logger import get_logger
+from zeroband.utils.logger import get_logger
 
 
 class ModelCompletion(BaseModel):
@@ -211,7 +211,7 @@ def compute_rewards(
         )
 
         if response.status_code != 200:
-            get_logger("INFER").error(f"Failed to compute rewards: {response.status_code} - {response.text}")
+            get_logger().error(f"Failed to compute rewards: {response.status_code} - {response.text}")
             raise RuntimeError(f"Failed to compute rewards: {response.status_code} - {response.text}")
         response = RewardsResponse.model_validate(json.loads(response.text))
         return response

@@ -1,18 +1,17 @@
 import sys
 
-from loguru import logger
+from loguru import logger as loguru_logger
 from loguru._logger import Logger
 
 from zeroband.inference.config import LogConfig, ParallelConfig
+from zeroband.utils.logger import get_logger, set_logger
 
-_LOGGER: Logger | None = None
 NO_BOLD = "\033[22m"
 RESET = "\033[0m"
 
 
 def setup_logger(log_config: LogConfig, parallel_config: ParallelConfig) -> Logger:
-    global _LOGGER
-    if _LOGGER is not None:
+    if get_logger() is not None:
         raise RuntimeError("Logger already setup. Call reset_logger first.")
 
     # Define the time format for the logger.
@@ -50,29 +49,17 @@ def setup_logger(log_config: LogConfig, parallel_config: ParallelConfig) -> Logg
     format = f"{time} {debug} {message}"
 
     # Remove all default handlers
-    logger.remove()
+    loguru_logger.remove()
 
     # Install new handler on all ranks, if specified. Otherwise, only install on the main rank
     if log_config.all_ranks or parallel_config.dp.rank == 0:
-        logger.add(sys.stdout, format=format, level=log_config.level.upper(), enqueue=True, backtrace=True, diagnose=True)
+        loguru_logger.add(sys.stdout, format=format, level=log_config.level.upper(), enqueue=True, backtrace=True, diagnose=True)
 
     # Bind the logger to access the DP and PP rank
-    _LOGGER = logger.bind(dp_rank=parallel_config.dp.rank, pp_rank=parallel_config.pp.rank)
+    logger = loguru_logger.bind(dp_rank=parallel_config.dp.rank, pp_rank=parallel_config.pp.rank)
+    set_logger(logger)
 
-    return _LOGGER
-
-
-def get_logger() -> Logger:
-    global _LOGGER
-    if _LOGGER is None:
-        raise RuntimeError("Logger not setup. Call setup_logger first.")
-
-    return _LOGGER
-
-
-def reset_logger() -> None:
-    global _LOGGER
-    _LOGGER = None
+    return logger
 
 
 if __name__ == "__main__":
