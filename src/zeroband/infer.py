@@ -59,7 +59,7 @@ def inference(config: InferenceConfig):
     logger.success(f"Downloaded model weights in {time.time() - start_time:.2f}s")
 
     # Initialize metrics
-    monitor = setup_monitor(config.monitor, config.task_id)
+    monitor = setup_monitor(config.monitor, config.task_id, config)
 
     # Patch vLLM's model loading to load model shard
     patch_model_load(config=config.parallel.pp)
@@ -314,6 +314,7 @@ def inference(config: InferenceConfig):
             "progress/batch_problems": batch_problems,
             "progress/batch_samples": batch_samples,
             "progress/batch_tokens": batch_tokens,
+            "step": real_step,
         }
         monitor.log(progress_metrics)
 
@@ -330,6 +331,7 @@ def inference(config: InferenceConfig):
             "performance/batch_tokens_per_second": batch_tokens_per_second,
             "performance/batch_samples_per_minute": batch_samples_per_minute,
             "performance/batch_avg_seq_length": batch_avg_seq_length,
+            "step": real_step,
         }
         monitor.log(perf_metrics)
 
@@ -346,7 +348,7 @@ def inference(config: InferenceConfig):
         request_rewards = compute_vllm_rewards(request_outputs, verification_infos, task_types, config.rewards)
         batch_rewards = sum(sum(r.reward for r in req.rewards) for req in request_rewards) / batch_samples
         logger.info(f"Average reward of the batch: {batch_rewards:.2f}")
-        monitor.log({"rewards/batch_rewards": batch_rewards})
+        monitor.log({"rewards/batch_rewards": batch_rewards, "step": real_step})
 
         if sampling_params.seed is not None:
             sampling_seeds = [sampling_params.seed + i for i in range(sampling_params.n)] * problems_per_batch
@@ -381,14 +383,13 @@ def inference(config: InferenceConfig):
             for input_tokens, output_tokens in zip(table.column("input_tokens").to_pylist(), table.column("output_tokens").to_pylist())
         ]
 
-        monitor.log(
-            {
-                "output/save_path": save_path.as_posix(),
-                "output/sha256": sha256,
-                "output/output_flops": sum(output_flops for _, output_flops in flop_counts) // config.parallel.pp.world_size,
-                "output/input_flops": sum(input_flops for input_flops, _ in flop_counts) // config.parallel.pp.world_size,
-            }
-        )
+        outputs_metrics = {
+            "output/output_flops": sum(output_flops for _, output_flops in flop_counts) // config.parallel.pp.world_size,
+            "output/input_flops": sum(input_flops for input_flops, _ in flop_counts) // config.parallel.pp.world_size,
+            "step": real_step,
+        }
+        monitor.log(outputs_metrics)
+        monitor.log({"output/save_path": save_path.as_posix(), "output/sha256": sha256, "step": real_step}, exclude=["wandb"])
 
         real_step += 1
 
