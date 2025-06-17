@@ -366,6 +366,14 @@ class LogConfig(BaseConfig):
         bool, Field(default=False, description="Whether to log from all DP ranks. If False, will only log from the main rank (DP rank 0).")
     ]
 
+    utc: Annotated[
+        bool,
+        Field(
+            default=False,
+            description="Whether to use UTC time in the logger. If False, it will default to the local time. If the local time is wrong, you can set it by setting the `TZ` environment variable. For example, `TZ=America/Los_Angeles` will set the local time to SF time.",
+        ),
+    ]
+
 
 class Config(BaseSettings):
     """Configures inference."""

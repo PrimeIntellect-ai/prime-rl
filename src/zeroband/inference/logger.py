@@ -3,7 +3,7 @@ import sys
 from loguru import logger
 from loguru._logger import Logger
 
-from zeroband.inference.config import LogConfig, ParallelConfig, PipelineParallelConfig
+from zeroband.inference.config import LogConfig, ParallelConfig
 
 _LOGGER: Logger | None = None
 NO_BOLD = "\033[22m"
@@ -15,8 +15,12 @@ def setup_logger(log_config: LogConfig, parallel_config: ParallelConfig) -> Logg
     if _LOGGER is not None:
         raise RuntimeError("Logger already setup. Call reset_logger first.")
 
-    # Define the base format for the logger
-    time = "<fg 0>{time:HH:mm:ss}</fg 0>"
+    # Define the time format for the logger.
+    time = "<fg 0>{time:zz HH:mm:ss}</fg 0>"
+    if log_config.utc:
+        time = "<fg 0>{time:zz HH:mm:ss!UTC}</fg 0>"
+
+    # Define the colorized log level and message
     message = "".join(
         [
             "<level>{level: >8}</level>",
@@ -25,6 +29,8 @@ def setup_logger(log_config: LogConfig, parallel_config: ParallelConfig) -> Logg
             f"{RESET}</level>",
         ]
     )
+
+    # Define the debug information in debug mode
     debug = "PID={process.id} | TID={thread.id} | {file}::{line}" if log_config.level.upper() == "DEBUG" else ""
 
     # Add parallel information to the format
@@ -40,6 +46,7 @@ def setup_logger(log_config: LogConfig, parallel_config: ParallelConfig) -> Logg
     if debug:
         debug = f"[{debug}]"
 
+    # Assemble the final format
     format = f"{time} {debug} {message}"
 
     # Remove all default handlers
@@ -69,7 +76,7 @@ def reset_logger() -> None:
 
 
 if __name__ == "__main__":
-    logger = setup_logger(level="debug", parallel_config=ParallelConfig(pp=PipelineParallelConfig(world_size=2)))
+    logger = setup_logger(log_config=LogConfig(utc=True), parallel_config=ParallelConfig())
     logger.debug("Debug message")
     logger.info("Info message")
     logger.success("Success message")
