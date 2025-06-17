@@ -82,6 +82,7 @@ def inference(config: InferenceConfig):
     )
     if config.toploc.enable_toploc2:
         llm.llm_engine.model_executor.driver_worker.model_runner.sampler = Toploc2Sampler()
+        logger.info("Using toploc2 sampler")
     tokenizer = llm.get_tokenizer()
     logger.success(f"Initialized model and tokenizer in {time.time() - start_time:.2f}s")
 
