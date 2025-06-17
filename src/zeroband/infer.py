@@ -44,7 +44,7 @@ from zeroband.inference.logger import setup_logger
 @ensure_process_group_cleanup
 def inference(config: InferenceConfig):
     # Initialize the logger
-    logger = setup_logger(config.log_level, config.parallel)
+    logger = setup_logger(config.log, config.parallel)
     logger.info("Starting inference")
 
     # Optionally, clean the rollout path

@@ -1,19 +1,16 @@
-import logging
 import sys
 
 from loguru import logger
 from loguru._logger import Logger
 
-from zeroband.inference.config import ParallelConfig, PipelineParallelConfig
-
-ALLOWED_LEVELS = {"debug": logging.DEBUG, "info": logging.INFO, "warning": logging.WARNING, "critical": logging.CRITICAL}
+from zeroband.inference.config import LogConfig, ParallelConfig, PipelineParallelConfig
 
 _LOGGER: Logger | None = None
 NO_BOLD = "\033[22m"
 RESET = "\033[0m"
 
 
-def setup_logger(level: str, parallel_config: ParallelConfig) -> Logger:
+def setup_logger(log_config: LogConfig, parallel_config: ParallelConfig) -> Logger:
     global _LOGGER
     if _LOGGER is not None:
         raise RuntimeError("Logger already setup. Call reset_logger first.")
@@ -28,7 +25,7 @@ def setup_logger(level: str, parallel_config: ParallelConfig) -> Logger:
             f"{RESET}</level>",
         ]
     )
-    debug = "PID={process.id} | TID={thread.id} | {file}::{line}" if level.upper() == "DEBUG" else ""
+    debug = "PID={process.id} | TID={thread.id} | {file}::{line}" if log_config.level.upper() == "DEBUG" else ""
 
     # Add parallel information to the format
     parallel = []
@@ -45,11 +42,16 @@ def setup_logger(level: str, parallel_config: ParallelConfig) -> Logger:
 
     format = f"{time} {debug} {message}"
 
+    # Remove all default handlers
     logger.remove()
-    if parallel_config.dp.rank == 0:  # Only log from the main DP rank
-        logger.add(sys.stdout, format=format, level=level.upper(), enqueue=True, backtrace=True, diagnose=True)
 
+    # Install new handler on all ranks, if specified. Otherwise, only install on the main rank
+    if log_config.all_ranks or parallel_config.dp.rank == 0:
+        logger.add(sys.stdout, format=format, level=log_config.level.upper(), enqueue=True, backtrace=True, diagnose=True)
+
+    # Bind the logger to access the DP and PP rank
     _LOGGER = logger.bind(dp_rank=parallel_config.dp.rank, pp_rank=parallel_config.pp.rank)
+
     return _LOGGER
 
 
