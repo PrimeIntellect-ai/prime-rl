@@ -187,13 +187,6 @@ class Config(BaseSettings):
     # The monitor configuration
     monitor: MultiMonitorConfig = MultiMonitorConfig()
 
-    # W&B configurations
-    wandb: Annotated[bool, Field(default=True)]
-
-    project: Annotated[str, Field(default="prime_simple")]
-
-    wandb_run_name: Annotated[str | None, Field(default=None)]
-
     gpus_ids: Annotated[list[int] | None, Field(default=None)]
 
     async_level: Annotated[int, Field(default=2, ge=1)]

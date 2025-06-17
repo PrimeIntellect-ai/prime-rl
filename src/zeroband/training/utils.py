@@ -1,7 +1,7 @@
 import socket
 import time
 from itertools import chain
-from typing import Any, TypeAlias
+from typing import TypeAlias
 
 import pandas as pd
 import torch
@@ -255,56 +255,6 @@ def reshard_module(model: torch.nn.Module):
     for module in model.modules():
         if isinstance(module, FSDPModule):
             module.reshard()
-
-
-def log_to_wandb(
-    metrics_dict: dict[str, Any],
-    tokenizer: PreTrainedTokenizer | None = None,
-    batch: dict[str, torch.Tensor] | None = None,
-    step: int | None = None,
-) -> None:
-    """Log our metrics to wandb, grouped by type."""
-    # Initialize dictionary
-    wandb_metrics = {}
-
-    categories = {
-        "train/": ["step", "rollout_step", "inner_lr", "total_tokens", "total_samples"],
-        "losses/": ["Loss", "pg_loss", "entropy_loss", "kl", "grad_norm", "clip_ratio"],
-        "rewards/": ["sample_reward", "task_reward", "batch_reward", "batch_task_reward"],
-        "lengths/": [
-            "seq_lens",
-            "batch_seq_lens",
-            "target_lengths",
-            "batch_target_lengths",
-            "padding_proportion",
-            "length_penalties",
-            "batch_length_penalties",
-        ],
-        "perf/": [
-            "tokens_per_second",
-            "tokens_per_second_per_gpu",
-            "mfu",
-            "time_rollout_step",
-            "time_logprob",
-            "time_data_loading",
-            "time_packing",
-        ],
-        "task_rewards/": [],
-    }
-
-    # Add metrics to respective groups
-    for prefix, keys in categories.items():
-        for k in keys:
-            if k in metrics_dict and metrics_dict[k] is not None:
-                wandb_metrics[f"{prefix}{k}"] = metrics_dict[k]
-
-    # Handle task-specific metrics based on the prefix
-    for key, value in metrics_dict.items():
-        if key.startswith("individual_task_"):
-            wandb_metrics[f"task_rewards/{key.replace('individual_task_', '')}"] = value
-
-    # Log everything
-    wandb.log(wandb_metrics, step=metrics_dict.get("step", step))
 
 
 def log_prompt_response_samples(
