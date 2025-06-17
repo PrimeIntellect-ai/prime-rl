@@ -100,8 +100,8 @@ def inference(config: InferenceConfig):
     # Optionally shuffle dataset
     if config.group_id is not None:
         # We dont shuffle here because we shuffle reproducibly in the sampling loop.
-        assert config.seed is None, "Seed is not supported when PRIME_GROUP_ID is set"
-        assert os.environ.get("DP_RANK") is None, "DP is not supported when group ID is set"
+        assert config.seed is None, "Seed is not supported when group ID is set"
+        assert config.parallel.dp == 1, "DP is not supported when group ID is set"
         node_address_int = int(config.group_id, 16)
         logger.info(f"Seeding with {node_address_int} ({config.group_id})")
     else:
@@ -145,7 +145,7 @@ def inference(config: InferenceConfig):
         local_max_batch_size = compute_max_batch_size(llm)
         max_batch_size = all_reduce(node, torch.tensor(local_max_batch_size), config=config.parallel.pp, op=torch.min).item()
 
-    logger.info(f"Maximum batch size: {max_batch_size}")
+    logger.info(f"Using maximum batch size: {max_batch_size}")
 
     # Throw an error if the batch cannot fit number of samples to generate per problem.
     # TODO(Mika): Circumvent this assertion by distribtuting parallel samples across multiple batches
@@ -279,6 +279,7 @@ def inference(config: InferenceConfig):
         # Convert BatchEncoding to TokensPrompt objects
         token_prompts = [TokensPrompt(prompt_token_ids=input_ids) for input_ids in tokenized_prompts]
 
+        logger.info(f"Generating {len(token_prompts)} samples for {len(problems)} problems")
         start_time = time.time()
         request_outputs = llm.generate(token_prompts, sampling_params, use_tqdm=False)
         end_time = time.time()
@@ -301,9 +302,7 @@ def inference(config: InferenceConfig):
         total_tokens += batch_tokens
         total_problems += batch_problems
         total_samples += batch_samples
-        logger.success(
-            f"Generated {batch_samples} samples for {batch_problems} problems for step {real_step} in {end_time - start_time:.2f}s"
-        )
+        logger.success(f"Generated {batch_samples} samples for {batch_problems} problems in {end_time - start_time:.2f}s")
 
         # Print example
         first_prompt = tokenizer.decode(request_outputs[0].prompt_token_ids)
@@ -342,15 +341,12 @@ def inference(config: InferenceConfig):
         proofs = [b"".join(proofs) for _, proofs in sorted(toploc_cache.proofs.items(), key=lambda x: x[0])]
         toploc_cache.reset_cache()
 
-        # Compute rewards and advantages
-        start = time.time()
+        # Compute and log rewards and advantages
+        logger.info("Computing rewards and advantages")
         request_rewards = compute_vllm_rewards(request_outputs, verification_infos, task_types, config.rewards)
-        logger.success(f"Computed rewards and advantages in {time.time() - start:.2f}s")
-
         batch_rewards = sum(sum(r.reward for r in req.rewards) for req in request_rewards) / batch_samples
-
+        logger.info(f"Average reward of the batch: {batch_rewards:.2f}")
         monitor.log({"rewards/batch_rewards": batch_rewards})
-        logger.info(f"Average reward of the batch: {batch_rewards}")
 
         if sampling_params.seed is not None:
             sampling_seeds = [sampling_params.seed + i for i in range(sampling_params.n)] * problems_per_batch
@@ -375,8 +371,8 @@ def inference(config: InferenceConfig):
         step_path = Path(config.rollout_path) / f"step_{real_step}"
         step_path.mkdir(parents=True, exist_ok=True)
         save_path = step_path / f"{uuid.uuid4()}.parquet"
+        logger.info(f"Saving batch outputs to {save_path}")
         pq.write_table(table, save_path)
-        logger.success(f"Saved batch outputs to {save_path}")
 
         # Log file metadata
         sha256 = sha256sum(save_path)
