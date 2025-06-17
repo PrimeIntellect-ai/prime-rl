@@ -14,7 +14,6 @@ import numpy as np
 import pyarrow.parquet as pq
 import requests
 import torch
-import torch.distributed as dist
 from datasets import load_dataset
 from toploc.utils import sha256sum
 from vllm import LLM, SamplingParams, TokensPrompt
@@ -38,8 +37,10 @@ from zeroband.inference.utils import (
 )
 from zeroband.training.mp import EnvWrapper
 from zeroband.utils.logger import get_logger
+from zeroband.utils.utils import ensure_process_group_cleanup
 
 
+@ensure_process_group_cleanup
 def inference(config: InferenceConfig):
     # Initialize the logger
     logger = get_logger("INFER")
@@ -405,9 +406,6 @@ def inference(config: InferenceConfig):
         dataset_offset += problems_per_batch
 
     logger.info(f"Inference finished! Generated {total_samples} samples for {total_problems} problems")
-
-    # Manually destroy vLLM process group to avoid warnings
-    dist.destroy_process_group()
 
 
 def main(config: InferenceConfig) -> list[mp.Process]:
