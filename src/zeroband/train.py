@@ -38,7 +38,7 @@ from zeroband.training.world_info import WorldInfo, get_world_info
 from zeroband.utils.models import ModelType, get_model_and_tokenizer
 from zeroband.utils.monitor import setup_monitor
 from zeroband.utils.pydantic_config import parse_argv
-from zeroband.utils.utils import ensure_process_group_cleanup
+from zeroband.utils.utils import clean_exit
 
 
 def get_local_batch_size(batch_size: int, micro_bs: int, data_workers: int, world_info: WorldInfo) -> int:
@@ -86,7 +86,7 @@ def get_logprobs(model: ModelType, input_ids: torch.Tensor, position_ids: torch.
     return logprobs
 
 
-@ensure_process_group_cleanup
+@clean_exit
 def train(config: TrainingConfig):
     if "ZERO_BAND_DEV" not in os.environ:
         torch_log.setLevel(logging.CRITICAL)

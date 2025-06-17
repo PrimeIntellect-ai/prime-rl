@@ -36,11 +36,11 @@ from zeroband.inference.utils import (
     format_prompts,
 )
 from zeroband.training.mp import EnvWrapper
-from zeroband.utils.utils import ensure_process_group_cleanup
+from zeroband.utils.utils import clean_exit
 from zeroband.inference.logger import setup_logger
 
 
-@ensure_process_group_cleanup
+@clean_exit
 def inference(config: InferenceConfig):
     # Initialize the logger
     dp_rank = int(os.environ.get("DP_RANK", 0))

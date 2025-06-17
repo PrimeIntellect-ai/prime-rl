@@ -1,9 +1,10 @@
 import functools
 
 import torch.distributed as dist
+import wandb
 
 
-def ensure_process_group_cleanup(func):
+def clean_exit(func):
     """
     A decorator that ensures the a torch.distributed process group is properly
     cleaned up after the decorated function runs or raises an exception.
@@ -18,7 +19,12 @@ def ensure_process_group_cleanup(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         try:
-            return func(*args, **kwargs)
+            ret = func(*args, **kwargs)
+            wandb.finish()
+            return ret
+        except Exception as e:
+            wandb.finish(exit_code=1)
+            raise e
         finally:
             if dist.is_initialized():
                 dist.destroy_process_group()
