@@ -6,7 +6,7 @@ from safetensors import safe_open
 from transformers import AutoTokenizer
 from transformers.tokenization_utils_base import BatchEncoding
 from vllm import LLM
-from vllm.model_executor.model_loader.loader import _process_weights_after_loading
+from vllm.model_executor.model_loader.utils import process_weights_after_loading
 from vllm.transformers_utils.tokenizer import AnyTokenizer
 
 from zeroband.inference.config import LenRewardsConfig
@@ -51,7 +51,7 @@ def reload_model_weights(llm: LLM, ckpt_path: str):
     # Process weights after loading (important for some models)
     model_config = llm.llm_engine.model_config
     device = next(model.parameters()).device
-    _process_weights_after_loading(model, model_config, device)
+    process_weights_after_loading(model, model_config, device)
 
     return llm
 
