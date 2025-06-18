@@ -130,8 +130,8 @@ def inference(config: InferenceConfig):
         )
 
     # Initialize sampling parameters
-    logger.info(f"Initializing sampling parameters ({config.sampling} seed={config.seed})")
-    sampling_params = SamplingParams(**config.sampling.model_dump(), seed=config.seed)
+    logger.info(f"Initializing sampling parameters ({config.sampling})")
+    sampling_params = SamplingParams(**config.sampling.model_dump())
 
     # Setup pipeline parallel communication and hook
     node = setup_comm(config.parallel.pp)
@@ -254,6 +254,7 @@ def inference(config: InferenceConfig):
         else:
             # Use modulo to cycle through the dataset instead of terminating
             indices = [(dataset_offset + j) % len(dataset) for j in range(problems_per_batch)]
+            sampling_params.seed = seed + real_step * 1_000_000  # 1M is needed to avoid collision from sampling.n
 
         logger.debug(f"Sampling batch with indices [{' '.join(map(str, indices[:3]))}...{' '.join(map(str, indices[-3:]))}]")
         problems = dataset.select(indices)
