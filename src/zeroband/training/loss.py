@@ -153,7 +153,10 @@ def grpo_loss_ratio(
 
     loss = _apply_mask(per_token_loss, loss_mask, max_tokens)
 
-    return loss, None
+    with torch.no_grad():
+        ratio_avg = _apply_mask(ratio, loss_mask, max_tokens)
+
+    return loss, ratio_avg
 
 
 # beartype here just make sure we have the correct shape
