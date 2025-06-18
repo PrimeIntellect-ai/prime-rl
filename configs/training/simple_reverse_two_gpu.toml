@@ -1,4 +1,4 @@
-stop_after_steps = 100
+stop_after_steps = 50
 
 [monitor.wandb]
 project = "reverse-debug"

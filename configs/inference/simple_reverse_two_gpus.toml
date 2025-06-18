@@ -1,4 +1,4 @@
-max_steps = 100
+max_steps = 50
 max_batch_size = 128
 clean_rollout_path = true
 
