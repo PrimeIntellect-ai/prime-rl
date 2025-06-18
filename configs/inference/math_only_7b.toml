@@ -5,6 +5,9 @@ clean_rollout_path = true
 name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
 max_model_len = 16384
 
+[monitor.wandb]
+project = "math-ablation"
+
 [data]
 name = "PrimeIntellect/INTELLECT-2-only-math"
 

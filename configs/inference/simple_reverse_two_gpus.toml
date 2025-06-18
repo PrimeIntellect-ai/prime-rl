@@ -2,6 +2,9 @@ max_steps = 50
 max_batch_size = 128
 clean_rollout_path = true
 
+[monitor.wandb]
+project = "reverse-debug"
+
 [model]
 name = "willcb/Qwen2.5-0.5B-Reverse-SFT"
 max_model_len = 128

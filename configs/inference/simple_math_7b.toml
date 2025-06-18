@@ -1,6 +1,9 @@
 clean_rollout_path = true
 max_batch_size = 96
 
+[monitor.wandb]
+project = "math-debug"
+
 [model]
 name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
 max_model_len = 2048
