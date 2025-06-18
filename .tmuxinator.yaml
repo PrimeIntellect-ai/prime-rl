@@ -6,17 +6,7 @@ windows:
       panes:
         - Inference:
           - export CUDA_VISIBLE_DEVICES=${INFER_GPUS:-0}
-          - uv run src/zeroband/infer.py ${INFER_ARGS:-@configs/inference/simple_reverse_two_gpus.toml} --monitor.file.path infer-monitor.jsonl --monitor.wandb.group ${WANDB_GROUP:-$(date +%y%m%d-%H%M%S)} --monitor.wandb.prefix infer
+          - uv run src/zeroband/infer.py ${INFER_ARGS:-@configs/inference/simple_reverse_two_gpus.toml} --monitor.wandb.group ${WANDB_GROUP:-$(date +%y%m%d-%H%M%S)} --monitor.wandb.prefix infer
         - Training: 
           - export CUDA_VISIBLE_DEVICES=${TRAIN_GPUS:-1}
-          - uv run torchrun src/zeroband/train.py ${TRAIN_ARGS:-@configs/training/simple_reverse_two_gpu.toml} --monitor.file.path train-monitor.jsonl --monitor.wandb.group ${WANDB_GROUP:-$(date +%y%m%d-%H%M%S)}
-  - Monitor:
-      layout: even-horizontal
-      panes:
-        - Training Logs: watch -n 1 "cat train-monitor.jsonl | tail -n 10"
-        - Inference Logs: watch -n 1 "cat infer-monitor.jsonl | tail -n 10"
-  - System:
-      layout: even-horizontal
-      panes:
-        - CPU Monitor: htop
-        - GPU Monitor: nvtop
+          - uv run torchrun src/zeroband/train.py ${TRAIN_ARGS:-@configs/training/simple_reverse_two_gpu.toml} --monitor.wandb.group ${WANDB_GROUP:-$(date +%y%m%d-%H%M%S)}
