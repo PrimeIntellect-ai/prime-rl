@@ -254,7 +254,8 @@ def inference(config: InferenceConfig):
         else:
             # Use modulo to cycle through the dataset instead of terminating
             indices = [(dataset_offset + j) % len(dataset) for j in range(problems_per_batch)]
-            sampling_params.seed = seed + real_step * 1_000_000  # 1M is needed to avoid collision from sampling.n
+            if seed is not None:
+                sampling_params.seed = seed + real_step * 1_000_000  # 1M is needed to avoid collision from sampling.n
 
         logger.debug(f"Sampling batch with indices [{' '.join(map(str, indices[:3]))}...{' '.join(map(str, indices[-3:]))}]")
         problems = dataset.select(indices)
