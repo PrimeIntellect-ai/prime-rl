@@ -12,7 +12,6 @@ reshard_after_forward = true
 
 [optim]
 batch_size = 64
-step_per_rollout = 2
 
 [optim.optim]
 lr = 3e-6
