@@ -71,7 +71,6 @@ def inference(config: InferenceConfig):
         model=config.model.name,
         dtype=config.model.dtype,
         kv_cache_dtype=config.model.kv_cache_dtype,
-        max_seq_len_to_capture=config.model.max_model_len,
         max_model_len=config.model.max_model_len,
         quantization=config.model.quantization,
         enforce_eager=config.model.enforce_eager,
