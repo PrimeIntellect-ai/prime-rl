@@ -169,7 +169,7 @@ class MultiMonitor:
         """Logs metrics to all outputs."""
         if self.disabled:
             return
-        self.logger.info(f"Logging metrics: {metrics}")
+        self.logger.debug(f"Logging metrics: {metrics}")
         for output_type, output in self.outputs.items():
             if output_type not in exclude:
                 output.log(metrics)
