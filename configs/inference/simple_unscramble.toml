@@ -8,9 +8,6 @@ project = "unscramble-debug"
 name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
 max_model_len = 2048
 
-[monitor.wandb]
-project = "unscramble-debug"
-
 [data]
 name = "kalomaze/fwedu-unscramble-mix-it1"
 
