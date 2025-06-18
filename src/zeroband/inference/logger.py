@@ -62,8 +62,3 @@ def setup_logger(log_config: LogConfig, parallel_config: ParallelConfig, dp_rank
     set_logger(logger)
 
     return logger
-
-
-if __name__ == "__main__":
-    setup_logger(LogConfig(), ParallelConfig(), 0)
-    logger.info("Hello, world!")
