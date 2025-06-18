@@ -47,7 +47,7 @@ def processes(run_processes: Callable[[list[Command], list[Environment]], list[P
         project = "ci_run_prime_rl_local"
         wandb_run_name = f"{username}-{branch_name}-{commit_hash}"
 
-    training_cmd = TRAINING_CMD + ["--wandb_run_name", wandb_run_name, "--project", project]
+    training_cmd = TRAINING_CMD + ["--monitor.wandb.name", wandb_run_name, "--monitor.wandb.project", project]
     inference_cmd = INFERENCE_CMD
 
     return run_processes([training_cmd, inference_cmd], [TRAINING_ENV, INFERENCE_ENV], timeout=600)
