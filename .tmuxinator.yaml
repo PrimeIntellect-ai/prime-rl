@@ -4,14 +4,12 @@ windows:
   - RL:
       layout: even-horizontal
       panes:
-        - Training: 
-          - export CUDA_VISIBLE_DEVICES=0 
-          - clear
-          - uv run torchrun src/zeroband/train.py @ configs/training/simple_reverse_two_gpu.toml --monitor.file.path train-monitor.jsonl
         - Inference:
-          - export CUDA_VISIBLE_DEVICES=1 
-          - clear
-          - uv run src/zeroband/infer.py @ configs/inference/simple_reverse_two_gpus.toml --monitor.file.path infer-monitor.jsonl --monitor.wandb.prefix infer
+          - export CUDA_VISIBLE_DEVICES=${INFER_GPUS:-0}
+          - uv run src/zeroband/infer.py ${INFER_ARGS:-@configs/inference/simple_reverse_two_gpus.toml} --monitor.file.path infer-monitor.jsonl --monitor.wandb.group ${WANDB_GROUP:-$(date +%y%m%d-%H%M%S)} --monitor.wandb.prefix infer
+        - Training: 
+          - export CUDA_VISIBLE_DEVICES=${TRAIN_GPUS:-1}
+          - uv run torchrun src/zeroband/train.py ${TRAIN_ARGS:-@configs/training/simple_reverse_two_gpu.toml} --monitor.file.path train-monitor.jsonl --monitor.wandb.group ${WANDB_GROUP:-$(date +%y%m%d-%H%M%S)}
   - Monitor:
       layout: even-horizontal
       panes:
