@@ -83,7 +83,7 @@ def hf_api() -> HfApi:
     return HfApi()
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def llm(model_name: str) -> "LLM":
     """
     vLLM LLM instance to use for tests. Incurs significant startup time, hence reused across tests.
