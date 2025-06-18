@@ -16,9 +16,9 @@ def setup_logger(log_config: LogConfig, world_info: WorldInfo) -> Logger:
         raise RuntimeError("Logger already setup. Call reset_logger first.")
 
     # Define the time format for the logger.
-    time = "<fg 0>{time:HH:mm:ss}</fg 0>"
+    time = "<dim>{time:HH:mm:ss}</dim>"
     if log_config.utc:
-        time = "<fg 0>{time:zz HH:mm:ss!UTC}</fg 0>"
+        time = "<dim>{time:zz HH:mm:ss!UTC}</dim>"
 
     # Define the colorized log level and message
     message = "".join(

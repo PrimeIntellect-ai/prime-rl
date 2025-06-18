@@ -15,9 +15,9 @@ def setup_logger(log_config: LogConfig, parallel_config: ParallelConfig, dp_rank
         raise RuntimeError("Logger already setup. Call reset_logger first.")
 
     # Define the time format for the logger.
-    time = "<fg 0>{time:HH:mm:ss}</fg 0>"
+    time = "<dim>{time:HH:mm:ss}</dim>"
     if log_config.utc:
-        time = "<fg 0>{time:zz HH:mm:ss!UTC}</fg 0>"
+        time = "<dim>{time:zz HH:mm:ss!UTC}</dim>"
 
     # Define the colorized log level and message
     message = "".join(
@@ -62,3 +62,8 @@ def setup_logger(log_config: LogConfig, parallel_config: ParallelConfig, dp_rank
     set_logger(logger)
 
     return logger
+
+
+if __name__ == "__main__":
+    setup_logger(LogConfig(), ParallelConfig(), 0)
+    logger.info("Hello, world!")
