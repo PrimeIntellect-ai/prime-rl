@@ -9,4 +9,4 @@ windows:
           - uv run src/zeroband/infer.py ${INFER_ARGS:-@configs/inference/simple_reverse_two_gpus.toml} --monitor.wandb.group ${WANDB_GROUP:-$(date +%y%m%d-%H%M%S)} --monitor.wandb.prefix infer
         - Training: 
           - export CUDA_VISIBLE_DEVICES=${TRAIN_GPUS:-1}
-          - uv run torchrun src/zeroband/train.py ${TRAIN_ARGS:-@configs/training/simple_reverse_two_gpu.toml} --monitor.wandb.group ${WANDB_GROUP:-$(date +%y%m%d-%H%M%S)}
+          - uv run torchrun --nproc_per_node=$(echo ${TRAIN_GPUS:-1} | tr ',' '\n' | wc -l) src/zeroband/train.py ${TRAIN_ARGS:-@configs/training/simple_reverse_two_gpu.toml} --monitor.wandb.group ${WANDB_GROUP:-$(date +%y%m%d-%H%M%S)}
