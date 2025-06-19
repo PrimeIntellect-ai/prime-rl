@@ -11,9 +11,5 @@ max_model_len = 8192
 [monitor.file]
 path = "monitor.jsonl"
 
-[sampling]
-max_tokens = 1000
-n = 1
-
 [rewards]
 compute_reward = false
