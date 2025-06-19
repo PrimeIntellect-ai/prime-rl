@@ -1,4 +1,5 @@
 max_steps = 5
+rl = "None"
 
 [toploc]
 enable_toploc1 = true
@@ -8,8 +9,11 @@ name = "Qwen/Qwen3-0.6B"
 max_model_len = 8192
 
 [monitor.file]
-path = "file_monitor.jsonl"
+path = "monitor.jsonl"
 
 [sampling]
 max_tokens = 1000
 n = 1
+
+[rewards]
+compute_reward = false

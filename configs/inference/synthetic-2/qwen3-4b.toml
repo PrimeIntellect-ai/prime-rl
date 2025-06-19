@@ -1,5 +1,3 @@
-toml_files = ["default.toml"]
-
 [model]
 name = "Qwen/Qwen3-4B"
 max_model_len = 16384

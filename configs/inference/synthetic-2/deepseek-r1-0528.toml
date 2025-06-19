@@ -1,5 +1,3 @@
-toml_files = ["default.toml"]
-
 [model]
 name = "deepseek-ai/DeepSeek-R1-0528"
 max_model_len = 32768
