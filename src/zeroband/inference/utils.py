@@ -52,6 +52,7 @@ def reload_model_weights(llm: LLM, ckpt_path: str):
     model_config = llm.llm_engine.model_config
     device = next(model.parameters()).device
     process_weights_after_loading(model, model_config, device)
+
     return llm
 
 
