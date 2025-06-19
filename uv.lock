@@ -671,13 +671,13 @@ wheels = [
 
 [[package]]
 name = "flash-attn"
-version = "2.7.4.post1"
+version = "2.8.0.post2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "einops" },
     { name = "torch" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/11/34/9bf60e736ed7bbe15055ac2dab48ec67d9dbd088d2b4ae318fd77190ab4e/flash_attn-2.7.4.post1.tar.gz", hash = "sha256:f03485c9a49a4d68d0733acdcad80ab0e72afa025a777fdc2966ceccf9d51765", size = 5986610, upload-time = "2025-01-30T06:39:51.93Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/32/5c/c7610beeb2fc0e70d0c09a93490bb2d07fb6c8fa1f80ef9617b0cd556d76/flash_attn-2.8.0.post2.tar.gz", hash = "sha256:b51d7015eb78f7ab2c332ec7c36681d7e97834f010b52eb4db1f118351982f58", size = 7857730, upload-time = "2025-06-15T01:39:32.219Z" }
 
 [[package]]
 name = "fonttools"
@@ -3681,7 +3681,7 @@ requires-dist = [
     { name = "cydifflib", specifier = ">=1.2.0" },
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "fastapi" },
-    { name = "flash-attn", marker = "extra == 'fa'", specifier = ">=2.7.4" },
+    { name = "flash-attn", marker = "extra == 'fa'", specifier = ">=2.8.0" },
     { name = "google-cloud-storage" },
     { name = "jaxtyping" },
     { name = "liger-kernel" },
