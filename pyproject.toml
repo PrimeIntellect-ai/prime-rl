@@ -3,7 +3,7 @@ name = "zeroband"
 version = "0.1.0"
 description = "ZeroBand is a production ready codebase for decentralized training of LLM"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = "==3.11.*"
 dependencies = [
     "torch",
     "numpy",
