@@ -1,3 +1,4 @@
+import time
 from multiprocessing import Process, Queue
 
 import pytest
@@ -30,13 +31,21 @@ def test_node_seeding(seed):
     assert node.node_id() == IROH_NODE_ID_MAP[seed]
 
 
-def _test_setup_comm(rank: int, world_size: int, error_queue: Queue):
-    seed = SEEDS[rank]
-    peer_seed = SEEDS[(rank + 1) % world_size]
-    peer_id = IROH_NODE_ID_MAP[peer_seed]
-    config = PipelineParallelConfig(rank=rank, world_size=world_size, iroh_seed=seed, iroh_peer_id=peer_id)
+def _test_setup_comm(rank: int, world_size: int, queues: list, error_queue: Queue):
     try:
-        node = setup_comm(config)
+        node = Node(num_streams=1)
+        time.sleep(1)  # Give some time for the address to be registerd with discovery service
+        node_id = node.node_id()
+
+        # Send our ID to the next rank in the ring
+        next_rank = (rank + 1) % world_size
+        queues[next_rank].put(node_id)
+
+        # Receive ID from the previous rank in the ring
+        peer_id = queues[rank].get()
+        node.connect(peer_id, num_retries=3)
+        while not node.is_ready():
+            time.sleep(0.1)
     except Exception as e:
         error_queue.put((rank, str(e)))
         raise e
@@ -52,11 +61,13 @@ def test_setup_comm(world_size: int):
         assert setup_comm(PipelineParallelConfig(world_size=world_size)) is None
         return
 
-    # Setup error queue and processes
+    # Setup error queue and communication queues for ring topology
     error_queue = Queue()
+    queues = [Queue() for _ in range(world_size)]
     processes = []
+
     for rank in range(world_size):
-        process = Process(target=_test_setup_comm, args=(rank, world_size, error_queue))
+        process = Process(target=_test_setup_comm, args=(rank, world_size, queues, error_queue))
         processes.append(process)
 
     # Start processes
@@ -97,18 +108,24 @@ def test_all_reduce_single_node():
         node.close()
 
 
-def _test_all_reduce(rank: int, world_size: int, operation: str, error_queue: Queue, result_queue: Queue):
+def _test_all_reduce(rank: int, world_size: int, operation: str, queues: list[Queue], error_queue: Queue, result_queue: Queue):
     """Helper function to test all_reduce in a subprocess"""
-    seed = SEEDS[rank]
-    peer_seed = SEEDS[(rank + 1) % world_size]
-    peer_id = IROH_NODE_ID_MAP[peer_seed]
 
     try:
-        # Create config
-        config = PipelineParallelConfig(rank=rank, world_size=world_size, iroh_seed=seed, iroh_peer_id=peer_id)
+        config = PipelineParallelConfig(rank=rank, world_size=world_size)
+        node = Node(num_streams=1)
+        time.sleep(1)  # Give some time for the address to be registerd with discovery service
+        node_id = node.node_id()
 
-        # Setup communication
-        node = setup_comm(config)
+        # Send our ID to the next rank in the ring
+        next_rank = (rank + 1) % world_size
+        queues[next_rank].put(node_id)
+
+        # Receive ID from the previous rank in the ring
+        peer_id = queues[rank].get()
+        node.connect(peer_id, num_retries=3)
+        while not node.is_ready():
+            time.sleep(0.1)
 
         # Create test tensor - each rank contributes rank + 1
         test_tensor = torch.tensor(float(rank + 1))
@@ -142,11 +159,12 @@ def test_all_reduce(world_size: int, operation: str):
     # Setup error and result queues
     error_queue = Queue()
     result_queue = Queue()
+    queues = [Queue() for _ in range(world_size)]
     processes = []
 
     # Start processes
     for rank in range(world_size):
-        process = Process(target=_test_all_reduce, args=(rank, world_size, operation, error_queue, result_queue))
+        process = Process(target=_test_all_reduce, args=(rank, world_size, operation, queues, error_queue, result_queue))
         processes.append(process)
         process.start()
 
