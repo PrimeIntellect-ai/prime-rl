@@ -383,13 +383,13 @@ def inference(config: InferenceConfig):
             for input_tokens, output_tokens in zip(table.column("input_tokens").to_pylist(), table.column("output_tokens").to_pylist())
         ]
 
-        outputs_metrics = {
+        work_submission = {
             "output/output_flops": sum(output_flops for _, output_flops in flop_counts) // config.parallel.pp.world_size,
             "output/input_flops": sum(input_flops for input_flops, _ in flop_counts) // config.parallel.pp.world_size,
-            "step": real_step,
+            "output/save_path": save_path.as_posix(),
+            "output/sha256": sha256,
         }
-        monitor.log(outputs_metrics)
-        monitor.log({"output/save_path": save_path.as_posix(), "output/sha256": sha256, "step": real_step}, exclude=["wandb"])
+        monitor.log(work_submission, exclude=["wandb"])
 
         real_step += 1
 
