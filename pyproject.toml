@@ -40,7 +40,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-fa = ["flash-attn>=2.7.4"]
+fa = ["flash-attn>=2.8.0"]
 kernelbench = ["modal>=1.0.3"]
 
 [build-system]
