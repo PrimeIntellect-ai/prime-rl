@@ -12,3 +12,6 @@ connection_num_retries = 100
 
 [rewards]
 compute_reward = false
+
+[sampling]
+n = 1

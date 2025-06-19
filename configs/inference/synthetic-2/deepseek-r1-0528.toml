@@ -3,6 +3,5 @@ name = "deepseek-ai/DeepSeek-R1-0528"
 max_model_len = 32768
 
 [sampling]
-n = 8
 temperature = 0.6
 top_p = 0.95
