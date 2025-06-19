@@ -1,0 +1,20 @@
+max_batch_size = 180
+clean_rollout_path = true
+
+[model] 
+name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+max_model_len = 16384
+
+[monitor.wandb]
+project = "codeforces-debug"
+
+[data]
+name = "apaz/codeforces-genesys"
+
+[parallel]
+dp = 3
+tp = 2
+
+[sampling]
+temperature = 1.0
+n = 16

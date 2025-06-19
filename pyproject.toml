@@ -34,6 +34,7 @@ dependencies = [
     "requests",
     "reasoning-gym @ git+https://github.com/open-thought/reasoning-gym.git",
     "tomli>=2.2.1",
+    "prime_code_sandbox @ git+https://github.com/PrimeIntellect-ai/code-sandbox.git",
     "pydantic-settings>=2.9.1",
     "cydifflib>=1.2.0",
     "loguru>=0.7.3",

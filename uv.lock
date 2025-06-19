@@ -27,6 +27,15 @@ wheels = [
 ]
 
 [[package]]
+name = "aiofiles"
+version = "24.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/0b/03/a88171e277e8caa88a4c77808c20ebb04ba74cc4681bf1e9416c862de237/aiofiles-24.1.0.tar.gz", hash = "sha256:22a075c9e5a3810f0c2e48f3008c94d68c65d763b9b03857924c99e57355166c", size = 30247, upload-time = "2024-06-24T11:02:03.584Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a5/45/30bb92d442636f570cb5651bc661f52b610e2eec3f891a5dc3a4c3667db0/aiofiles-24.1.0-py3-none-any.whl", hash = "sha256:b4ec55f4195e3eb5d7abd1bf7e061763e864dd4954231fb8539a0ef8bb8260e5", size = 15896, upload-time = "2024-06-24T11:02:01.529Z" },
+]
+
+[[package]]
 name = "aiohappyeyeballs"
 version = "2.6.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2112,6 +2121,19 @@ wheels = [
 ]
 
 [[package]]
+name = "prime-code-sandbox"
+version = "0.1.0"
+source = { git = "https://github.com/PrimeIntellect-ai/code-sandbox.git#7ae49db7654a8d4a22ab828990c5b7b32d04cf22" }
+dependencies = [
+    { name = "aiofiles" },
+    { name = "psutil" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+    { name = "requests" },
+    { name = "structlog" },
+]
+
+[[package]]
 name = "prime-iroh"
 version = "0.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2917,6 +2939,15 @@ wheels = [
 ]
 
 [[package]]
+name = "structlog"
+version = "25.4.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/79/b9/6e672db4fec07349e7a8a8172c1a6ae235c58679ca29c3f86a61b5e59ff3/structlog-25.4.0.tar.gz", hash = "sha256:186cd1b0a8ae762e29417095664adf1d6a31702160a46dacb7796ea82f7409e4", size = 1369138, upload-time = "2025-06-02T08:21:12.971Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a0/4a/97ee6973e3a73c74c8120d59829c3861ea52210667ec3e7a16045c62b64d/structlog-25.4.0-py3-none-any.whl", hash = "sha256:fe809ff5c27e557d14e613f45ca441aabda051d119ee5a0102aaba6ce40eed2c", size = 68720, upload-time = "2025-06-02T08:21:11.43Z" },
+]
+
+[[package]]
 name = "sympy"
 version = "1.13.1"
 source = { registry = "https://pypi.org/simple" }
@@ -3601,6 +3632,7 @@ dependencies = [
     { name = "loguru" },
     { name = "ninja" },
     { name = "numpy" },
+    { name = "prime-code-sandbox" },
     { name = "prime-iroh" },
     { name = "pyarrow" },
     { name = "pydantic-settings" },
@@ -3655,6 +3687,7 @@ requires-dist = [
     { name = "modal", marker = "extra == 'kernelbench'", specifier = ">=1.0.3" },
     { name = "ninja" },
     { name = "numpy" },
+    { name = "prime-code-sandbox", git = "https://github.com/PrimeIntellect-ai/code-sandbox.git" },
     { name = "prime-iroh", specifier = ">=0.3.1" },
     { name = "pyarrow" },
     { name = "pydantic-settings", specifier = ">=2.9.1" },
