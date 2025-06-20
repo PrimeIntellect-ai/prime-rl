@@ -4,7 +4,6 @@ import torch
 from datasets import Dataset
 from safetensors import safe_open
 from transformers import AutoTokenizer
-from transformers.tokenization_utils_base import BatchEncoding
 from vllm import LLM
 from vllm.model_executor.model_loader.utils import process_weights_after_loading
 from vllm.transformers_utils.tokenizer import AnyTokenizer
@@ -107,8 +106,7 @@ def format_prompts(
     len_rewards_config: LenRewardsConfig | None,
     tokenizer: AnyTokenizer,
     enable_thinking: bool = True,
-    tokenize: bool = False,
-) -> list[str] | BatchEncoding:
+) -> list[list[int]]:
     """
     Formats a batch of raw prompts. Relies on the default chat template of the
     LLM's tokenizer to call `apply_chat_template`. We call with
@@ -149,16 +147,9 @@ def format_prompts(
         messages = [[{"role": "user", "content": prompt}] for prompt in prompts]
 
     # Apply chat template
-    formatted_prompts = tokenizer.apply_chat_template(
-        messages, tokenize=tokenize, add_generation_prompt=True, enable_thinking=enable_thinking
-    )
+    tokenized_prompts = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, enable_thinking=enable_thinking)
 
-    if not tokenize:
-        for i, _formatted_prompt in enumerate(formatted_prompts):
-            if tokenizer.bos_token and _formatted_prompt.startswith(tokenizer.bos_token):
-                formatted_prompts[i] = _formatted_prompt[len(tokenizer.bos_token) :]
-
-    return formatted_prompts
+    return tokenized_prompts
 
 
 def compute_max_batch_size(llm: LLM) -> int:

@@ -16,7 +16,7 @@ import requests
 import torch
 from datasets import load_dataset
 from toploc.utils import sha256sum
-from vllm import LLM, SamplingParams, TokensPrompt
+from vllm import SamplingParams, TokensPrompt
 from huggingface_hub import snapshot_download
 
 from zeroband.utils.pydantic_config import parse_argv
@@ -28,6 +28,7 @@ from zeroband.inference.toploc import setup_toploc_cache
 from zeroband.inference.toploc2 import Toploc2Sampler
 from zeroband.utils.monitor import setup_monitor
 from zeroband.inference.utils import (
+    setup_model,
     filter_data_by_prompt_length,
     reload_model_weights,
     compute_max_batch_size,
@@ -67,24 +68,12 @@ def inference(config: InferenceConfig):
     # Initialize model and tokenizer
     logger.info(f"Initializing model and tokenizer ({config.model} tensor_parallel_size={config.parallel.tp} seed={config.seed})")
     start_time = time.time()
-    llm = LLM(
-        model=config.model.name,
-        dtype=config.model.dtype,
-        kv_cache_dtype=config.model.kv_cache_dtype,
-        max_model_len=config.model.max_model_len,
-        quantization=config.model.quantization,
-        enforce_eager=config.model.enforce_eager,
-        device=config.model.device,
-        tensor_parallel_size=config.parallel.tp,
-        disable_async_output_proc=True,  # We have an off by 1 error in toploc without this flag when cuda graph padding is enabled.
-        enable_chunked_prefill=False,  # This is required for toploc2 because chunked prefill seems to allow len(seq_groups) != len(selected_token_indices) which is unexpected
-        seed=config.seed,
-    )
+    llm, tokenizer = setup_model(config.model, tp=config.parallel.tp, seed=config.seed)
+    logger.success(f"Initialized model and tokenizer in {time.time() - start_time:.2f}s")
+
     if config.toploc.enable_toploc2:
         llm.llm_engine.model_executor.driver_worker.model_runner.sampler = Toploc2Sampler()
         logger.info("Using toploc2 sampler")
-    tokenizer = llm.get_tokenizer()
-    logger.success(f"Initialized model and tokenizer in {time.time() - start_time:.2f}s")
 
     # Initialize dataset
     logger.info(f"Initializing dataset (name={config.data.name}, split={config.data.split})")
