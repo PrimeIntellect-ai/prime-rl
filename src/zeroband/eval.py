@@ -1,5 +1,6 @@
 # Import environment before any other imports
 # ruff: noqa
+from pathlib import Path
 from zeroband.inference import envs
 from typing import cast
 
@@ -13,7 +14,7 @@ from zeroband.utils.monitor import setup_monitor
 from zeroband.utils.pydantic_config import parse_argv
 from zeroband.inference.eval.config import Config as EvalConfig
 from zeroband.inference.eval.registry import get_benchmark_dataset, get_benchmark_display_name
-from zeroband.inference.utils import setup_model, format_prompts
+from zeroband.inference.utils import setup_model, format_prompts, reload_model_weights
 from zeroband.inference.rewards import compute_vllm_rewards
 from zeroband.inference.eval.logger import setup_logger
 from zeroband.inference.eval.registry import Benchmark
@@ -143,6 +144,37 @@ def main(config: EvalConfig):
     logger.info(f"Running benchmarks on base model {config.model.name}")
     for benchmark in config.eval.benchmarks:
         run_benchmark(llm, benchmark, config)
+
+    # If specified, run online evaluation
+    if config.eval.online:
+        logger.info(
+            f"Running online evaluation on {config.model.name} every {config.eval.online.interval} steps from checkpoint directory {config.eval.online.ckpt_path}"
+        )
+        while True:
+            step, num_attempts = config.eval.online.interval, 0
+            while True:
+                ckpt_path = Path(config.eval.online.ckpt_path) / f"step_{step}"
+                stable_file = ckpt_path / "stable"
+                if stable_file.exists():
+                    logger.info(f"Found checkpoint for step {step} at {stable_file}. Reloading model weights.")
+                    llm = reload_model_weights(llm, ckpt_path / "model.safetensors")
+                    break
+                if num_attempts % 30 == 0:  # Every 30s
+                    logger.info(f"Waiting for checkpoint for step {step} at {stable_file}")
+                time.sleep(1)
+                num_attempts += 1
+
+            # Run benchmarks on updated model
+            logger.info(f"Running benchmarks for checkpoint step {step}")
+            for benchmark in config.eval.benchmarks:
+                run_benchmark(llm, benchmark, config)
+
+            # Wait for the next step
+            step += config.eval.online.interval
+
+            if config.eval.online.max_steps and step > config.eval.online.max_steps:
+                logger.info(f"Reached maximum number of steps ({config.eval.online.max_steps}). Stopping online evaluation.")
+                break
 
     logger.info("Evaluation finished!")
 

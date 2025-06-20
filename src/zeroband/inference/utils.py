@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -50,7 +51,7 @@ def setup_model(model_config: ModelConfig, tp: int, seed: int | None):
     return llm, tokenizer
 
 
-def reload_model_weights(llm: LLM, ckpt_path: str):
+def reload_model_weights(llm: LLM, ckpt_path: Path):
     # Access the internal model from vLLM
     model = llm.llm_engine.model_executor.driver_worker.model_runner.model
     # Load state dict

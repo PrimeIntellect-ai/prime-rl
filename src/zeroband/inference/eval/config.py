@@ -54,6 +54,14 @@ class OnlineEvalConfig(BaseConfig):
         ),
     ]
 
+    max_steps: Annotated[
+        int | None,
+        Field(
+            default=None,
+            description="Maximum number of steps to run online evaluation for. If None, will run indefinitely.",
+        ),
+    ]
+
 
 class EvalConfig(BaseConfig):
     """Configures evaluation."""
