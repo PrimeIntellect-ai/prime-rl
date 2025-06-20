@@ -1,4 +1,3 @@
-import warnings
 from functools import lru_cache
 
 import torch
@@ -7,6 +6,8 @@ from transformers.configuration_utils import PretrainedConfig
 from transformers.models.deepseek_v3.configuration_deepseek_v3 import DeepseekV3Config
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 from transformers.models.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig
+
+from zeroband.utils.logger import get_logger
 
 # Note: Only matmuls are counted
 
@@ -154,9 +155,8 @@ def get_inference_input_output_flops(model_name_or_path: str, num_input_tokens: 
     elif isinstance(config, DeepseekV3Config):
         return get_inference_input_output_flops_deepseek_v3(config, num_input_tokens, num_output_tokens)
     else:
-        warnings.warn(
-            f"Model {type(config).__name__} flop calculation not specifically supported. Using fallback calculation based on parameter count.",
-            UserWarning,
+        get_logger().warning(
+            f"Model {type(config).__name__} flop calculation not specifically supported. Using fallback calculation based on parameter count."
         )
         num_params = _get_num_params(model_name_or_path)
         return 2 * num_params * num_input_tokens, 2 * num_params * num_output_tokens
