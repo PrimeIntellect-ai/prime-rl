@@ -14,11 +14,11 @@ ENV PATH=$PATH:/usr/local/cuda/bin
 
 # Install packages
 RUN apt-get update && apt-get install -y --no-install-recommends --force-yes \
-  build-essential \
-  curl \
-  sudo \
-  git \
-  && apt-get clean autoclean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+    build-essential \
+    curl \
+    sudo \
+    git \
+    && apt-get clean autoclean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # Download the latest installer
 ADD https://astral.sh/uv/install.sh /uv-installer.sh
@@ -49,7 +49,7 @@ RUN --mount=type=cache,target=/app/.cache/uv \
 RUN --mount=type=cache,target=/app/.cache/uv \
     uv sync --extra fa --locked --no-dev
 
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 RUN apt-get update && apt-get install -y \
     --no-install-recommends \
@@ -78,7 +78,7 @@ COPY --from=builder --chown=appuser:appuser /app /app
 
 RUN rm /app/.venv/bin/python && ln -s /usr/local/bin/python /app/.venv/bin/python
 RUN rm /app/.venv/bin/python3 && ln -s /usr/local/bin/python /app/.venv/bin/python3
-RUN rm /app/.venv/bin/python3.11 && ln -s /usr/local/bin/python /app/.venv/bin/python3.11
+RUN rm /app/.venv/bin/python3.12 && ln -s /usr/local/bin/python /app/.venv/bin/python3.12
 
 
 # Place executables in the environment at the front of the path
