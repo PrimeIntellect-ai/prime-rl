@@ -165,10 +165,12 @@ class MultiMonitor:
             self._stop_event = threading.Event()
             self._start_metrics_thread()
 
-    def log(self, metrics: dict[str, Any], exclude: list[MonitorType] = []) -> None:
+    def log(self, metrics: dict[str, Any], prefix: str | None = None, exclude: list[MonitorType] = []) -> None:
         """Logs metrics to all outputs."""
         if self.disabled:
             return
+        if prefix is not None:
+            metrics = {f"{prefix}/{k}": v for k, v in metrics.items()}
         self.logger.debug(f"Logging metrics: {metrics}")
         for output_type, output in self.outputs.items():
             if output_type not in exclude:
@@ -232,6 +234,21 @@ class MultiMonitor:
             self._stop_metrics_thread()
 
 
+_MONITOR: MultiMonitor | None = None
+
+
+def get_monitor() -> MultiMonitor:
+    """Returns the global monitor."""
+    global _MONITOR
+    if _MONITOR is None:
+        raise RuntimeError("Monitor not initialized. Please call `setup_monitor` first.")
+    return _MONITOR
+
+
 def setup_monitor(config: MultiMonitorConfig, task_id: str | None = None, run_config: BaseSettings | None = None) -> MultiMonitor:
     """Sets up a monitor to log metrics to multiple specified outputs."""
-    return MultiMonitor(config, task_id, run_config)
+    global _MONITOR
+    if _MONITOR is not None:
+        raise RuntimeError("Monitor already initialized. Please call `setup_monitor` only once.")
+    _MONITOR = MultiMonitor(config, task_id, run_config)
+    return _MONITOR

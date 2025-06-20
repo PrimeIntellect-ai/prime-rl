@@ -8,6 +8,7 @@ from zeroband.inference import envs
 from pydantic import Field
 
 from zeroband.inference.config import LogConfig, ModelConfig, SamplingConfig as InferenceSamplingConfig
+from zeroband.inference.eval.registry import Benchmark
 from zeroband.utils.config import MultiMonitorConfig
 from zeroband.utils.pydantic_config import BaseConfig, BaseSettings
 
@@ -33,31 +34,49 @@ class ParallelConfig(BaseConfig):
     ]
 
 
-class DataConfig(BaseConfig):
-    """Configures the data to be used for inference."""
+class OnlineEvalConfig(BaseConfig):
+    """Configures online evaluation."""
 
-    name: Annotated[
-        str,
+    ckpt_path: Annotated[
+        Path,
         Field(
-            default="PrimeIntellect/INTELLECT-2-RL-Dataset",
-            description="Name of the HF dataset to use.",
+            default=Path("checkpoints"),
+            description="Path to read checkpoints from when doing online evaluation. Expects subdirectories named 'step_x' within the directory.",
         ),
     ]
 
-    split: Annotated[str, Field(default="train", description="Split of the dataset to use.")]
+    interval: Annotated[
+        int,
+        Field(
+            default=100,
+            ge=0,
+            description="Interval at which to evaluate the model.",
+        ),
+    ]
+
+
+class EvalConfig(BaseConfig):
+    """Configures evaluation."""
+
+    benchmarks: Annotated[
+        list[Benchmark],
+        Field(
+            default=["math500"],
+            description="Benchmarks to evaluate on. By default, it will evaluate only on the MATH-500 benchmark.",
+        ),
+    ]
+
+    online: Annotated[OnlineEvalConfig | None, Field(default=None)]
 
 
 class Config(BaseSettings):
-    """Configures evaluation."""
+    """Configures offline evaluation."""
 
     # The model configuration
     model: Annotated[ModelConfig, Field(default=ModelConfig())]
 
     # The sampling configuration
     sampling: Annotated[SamplingConfig, Field(default=SamplingConfig())]
-
-    # The data configuration
-    data: Annotated[DataConfig, Field(default=DataConfig())]
 
     # The parallel configuration
     parallel: Annotated[ParallelConfig, Field(default=ParallelConfig())]
@@ -68,13 +87,10 @@ class Config(BaseSettings):
     # The logging configuration
     log: Annotated[LogConfig, Field(default=LogConfig())]
 
-    ckpt_path: Annotated[
-        Path | None,
-        Field(
-            default=None,
-            description="Path to read checkpoints from when doing online evaluation. Expects subdirectories named 'step_x' within the directory.",
-        ),
-    ]
+    # The evaluation configuration
+    eval: Annotated[EvalConfig, Field(default=EvalConfig())]
+
+    use_tqdm: Annotated[bool, Field(default=False, description="Whether to use tqdm to display progress bars during model generation.")]
 
     seed: Annotated[
         int | None,
