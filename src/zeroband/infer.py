@@ -281,7 +281,7 @@ def inference(config: InferenceConfig):
         # Convert BatchEncoding to TokensPrompt objects
         token_prompts = [TokensPrompt(prompt_token_ids=input_ids) for input_ids in tokenized_prompts]
 
-        logger.info(f"Generating {len(token_prompts)} samples for {len(problems)} problems")
+        logger.info(f"Generating {batch_size} samples for {problems_per_batch} problems")
         start_time = time.time()
         request_outputs = llm.generate(token_prompts, sampling_params)
         end_time = time.time()
