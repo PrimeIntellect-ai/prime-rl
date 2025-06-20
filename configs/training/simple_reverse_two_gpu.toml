@@ -11,7 +11,7 @@ micro_bs = 32
 reshard_after_forward = true
 
 [optim]
-batch_size = 128
+batch_size = 64
 
 [optim.optim]
 lr = 3e-6

@@ -1,5 +1,5 @@
 max_steps = 50
-max_batch_size = 128
+max_batch_size = 64
 clean_rollout_path = true
 
 [monitor.wandb]
