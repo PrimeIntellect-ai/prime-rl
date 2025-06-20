@@ -13,7 +13,7 @@ from huggingface_hub import snapshot_download
 from zeroband.utils.monitor import setup_monitor
 from zeroband.utils.pydantic_config import parse_argv
 from zeroband.inference.eval.config import Config as EvalConfig
-from zeroband.inference.utils import setup_model, format_prompts, filter_data_by_prompt_length
+from zeroband.inference.utils import setup_model, format_prompts
 from zeroband.inference.rewards import compute_vllm_rewards
 from zeroband.inference.eval.logger import setup_logger
 from zeroband.utils.utils import clean_exit
@@ -53,7 +53,7 @@ def main(config: EvalConfig):
 
     # Initialize sampling parameters
     logger.info(f"Initializing sampling parameters ({config.sampling} seed={config.seed})")
-    sampling_params = SamplingParams(n=1, max_tokens=None)  # SamplingParams(**config.sampling.model_dump(), seed=config.seed)
+    sampling_params = SamplingParams(**config.sampling.model_dump(), seed=config.seed)
 
     # Format prompts
     tokenized_prompts = format_prompts(
@@ -62,6 +62,7 @@ def main(config: EvalConfig):
         len_rewards_config=None,
         tokenizer=tokenizer,
         enable_thinking=config.model.enable_thinking,
+        tokenize=True,
     )
     prompts = [TokensPrompt(prompt_token_ids=cast(list[int], input_ids)) for input_ids in tokenized_prompts]
 

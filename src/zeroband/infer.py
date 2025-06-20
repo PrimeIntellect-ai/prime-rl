@@ -264,6 +264,7 @@ def inference(config: InferenceConfig):
             config.rewards.len_reward,
             tokenizer=tokenizer,
             enable_thinking=config.model.enable_thinking,
+            tokenize=True,
         )
 
         # Convert BatchEncoding to TokensPrompt objects

@@ -106,7 +106,8 @@ def format_prompts(
     len_rewards_config: LenRewardsConfig | None,
     tokenizer: AnyTokenizer,
     enable_thinking: bool = True,
-) -> list[list[int]]:
+    tokenize: bool = False,
+) -> list[str] | list[list[int]]:
     """
     Formats a batch of raw prompts. Relies on the default chat template of the
     LLM's tokenizer to call `apply_chat_template`. We call with
@@ -147,9 +148,16 @@ def format_prompts(
         messages = [[{"role": "user", "content": prompt}] for prompt in prompts]
 
     # Apply chat template
-    tokenized_prompts = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, enable_thinking=enable_thinking)
+    formatted_prompts = tokenizer.apply_chat_template(
+        messages, tokenize=tokenize, add_generation_prompt=True, enable_thinking=enable_thinking
+    )
 
-    return tokenized_prompts
+    if not tokenize:
+        for i, _formatted_prompt in enumerate(formatted_prompts):
+            if tokenizer.bos_token and _formatted_prompt.startswith(tokenizer.bos_token):
+                formatted_prompts[i] = _formatted_prompt[len(tokenizer.bos_token) :]
+
+    return formatted_prompts
 
 
 def compute_max_batch_size(llm: LLM) -> int:
