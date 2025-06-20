@@ -120,7 +120,6 @@ def test_socket_monitor(mock_socket):
     test_metrics = {"step": 1, "loss": 3.14}
     socket_monitor.log(test_metrics)
 
-    assert mock_socket.connect.called_once
     assert mock_socket.sendall.called
 
     # Get the data that was sent
@@ -148,7 +147,6 @@ def test_api_monitor(mock_api):
     test_metrics = {"step": 1, "loss": 3.14}
     api_monitor.log(test_metrics)
 
-    assert mock_api.post.called_once
     assert mock_api.post.called_with(api_monitor_config.url, json=test_metrics, headers=api_monitor_config.headers)
 
     # Get the data that was sent
