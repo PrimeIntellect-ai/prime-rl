@@ -7,11 +7,11 @@ project = "reverse-debug"
 name = "willcb/Qwen2.5-0.5B-Reverse-SFT"
 
 [train]
-micro_bs = 32
+micro_bs = 16
 reshard_after_forward = true
 
 [optim]
-batch_size = 64
+batch_size = 128
 
 [optim.optim]
 lr = 3e-6
