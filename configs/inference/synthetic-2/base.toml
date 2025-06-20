@@ -1,5 +1,6 @@
 rollout_path = "/data"
 rl = "None"
+use_tqdm = true
 
 [toploc]
 enable_toploc1 = true

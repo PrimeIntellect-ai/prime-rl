@@ -283,7 +283,7 @@ def inference(config: InferenceConfig):
 
         logger.info(f"Generating {batch_size} samples for {problems_per_batch} problems")
         start_time = time.time()
-        request_outputs = llm.generate(token_prompts, sampling_params)
+        request_outputs = llm.generate(token_prompts, sampling_params, use_tqdm=config.use_tqdm)
         end_time = time.time()
 
         # Dropping like this isn't ideal. But in practice, we shouldn't have any prompts that are too long.

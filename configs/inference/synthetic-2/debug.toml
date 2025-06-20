@@ -1,5 +1,6 @@
 max_steps = 5
 rl = "None"
+use_tqdm = true
 
 [toploc]
 enable_toploc1 = true

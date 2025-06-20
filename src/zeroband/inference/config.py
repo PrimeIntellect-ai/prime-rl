@@ -423,6 +423,14 @@ class Config(BaseSettings):
         ),
     ]
 
+    use_tqdm: Annotated[
+        bool,
+        Field(
+            default=False,
+            description="Whether to use tqdm to display progress bars during generation.",
+        ),
+    ]
+
     seed: Annotated[
         int | None,
         Field(
