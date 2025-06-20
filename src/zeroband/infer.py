@@ -283,7 +283,7 @@ def inference(config: InferenceConfig):
 
         logger.info(f"Generating {len(token_prompts)} samples for {len(problems)} problems")
         start_time = time.time()
-        request_outputs = llm.generate(token_prompts, sampling_params, use_tqdm=False)
+        request_outputs = llm.generate(token_prompts, sampling_params)
         end_time = time.time()
 
         # Dropping like this isn't ideal. But in practice, we shouldn't have any prompts that are too long.
