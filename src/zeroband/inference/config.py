@@ -69,6 +69,15 @@ class SamplingConfig(BaseConfig):
         ),
     ]
 
+    max_solution_tokens: Annotated[
+        int | None,
+        Field(
+            default=None,
+            description="Maximum number of output tokens to generate for the solution. The difference between `max_tokens` and `max_solution_tokens` is the number of tokens the model is allowed to think for. If this budget is reached, we replace the last sampled token forcefully terminate the thinking processes by swapping in the `stop_think_token_id`. If None, the model is allowed to think for the entire `max_tokens` budget. (https://arxiv.org/abs/2505.05315)",
+            exclude=True,  # Do not include in JSON dump because not part of vLLM sampling parameters
+        ),
+    ]
+
     max_tokens: Annotated[
         int | None,
         Field(
@@ -76,6 +85,7 @@ class SamplingConfig(BaseConfig):
             description="Maximum number of output tokens to generate per sequence. If None, will generate until maximum context length or EOS token is hit.",
         ),
     ]
+
     min_tokens: Annotated[int, Field(default=0, ge=0, description="Minimum number of output tokens to generate per sequence.")]
 
     @model_validator(mode="after")
@@ -84,6 +94,18 @@ class SamplingConfig(BaseConfig):
         if self.logprobs is not None and self.logprobs < 0:
             self.logprobs = None
         return self
+
+    def assert_valid_max_tokens(self):
+        if self.max_solution_tokens is not None:
+            assert self.max_solution_tokens <= self.max_tokens, (
+                f"`max_solution_tokens` ({self.max_solution_tokens}) must be at most `max_tokens` ({self.max_tokens})"
+            )
+        return self
+
+    @property
+    def elastic_reasoning_enabled(self) -> bool:
+        """Whether elastic reasoning is enabled."""
+        return self.max_solution_tokens is not None
 
 
 class PipelineParallelConfig(BaseConfig):
@@ -319,6 +341,7 @@ class RLConfig(BaseConfig):
         int,
         Field(
             default=2,
+            ge=0,
             description="Maximum number of steps that inference can be ahead of training.",
         ),
     ]
@@ -380,6 +403,7 @@ class Config(BaseSettings):
     # The RL configuration. If None, inference will run in a non-RL setting.
     rl: Annotated[RLConfig | None, Field(default=RLConfig())]
 
+    # The TOPLOC configuration
     toploc: Annotated[TopLocConfig, Field(default=TopLocConfig())]
 
     max_batch_size: Annotated[

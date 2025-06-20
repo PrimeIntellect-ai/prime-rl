@@ -111,6 +111,10 @@ def create_dummy_parquet_table(batch_size: int, seq_len: int) -> Table:
     data = {
         "input_tokens": pa.array([[1] * seq_len for _ in range(batch_size)], type=pa.list_(pa.int32())),
         "output_tokens": pa.array([[1] * seq_len for _ in range(batch_size)], type=pa.list_(pa.int32())),
+        "input_logprobs": pa.array([[0.1] * seq_len for _ in range(batch_size)], type=pa.list_(pa.float32())),
+        "output_logprobs": pa.array([[0.1] * seq_len for _ in range(batch_size)], type=pa.list_(pa.float32())),
+        "input_mask": pa.array([[True] * seq_len for _ in range(batch_size)], type=pa.list_(pa.bool_())),
+        "output_mask": pa.array([[True] * seq_len for _ in range(batch_size)], type=pa.list_(pa.bool_())),
         "prompt": pa.array(["prompt" for _ in range(batch_size)], type=pa.string()),
         "completion": pa.array(["completion" for _ in range(batch_size)], type=pa.string()),
         "advantages": pa.array([1] * batch_size, type=pa.float32()),
@@ -122,8 +126,6 @@ def create_dummy_parquet_table(batch_size: int, seq_len: int) -> Table:
         "target_lengths": pa.array([seq_len] * batch_size, type=pa.int32()),
         "task_type": pa.array(["test_task"] * batch_size, type=pa.string()),
         "problem_id": pa.array(["0"] * batch_size, type=pa.string()),
-        "input_logprobs": pa.array([[0.1] * seq_len for _ in range(batch_size)], type=pa.list_(pa.float32())),
-        "output_logprobs": pa.array([[0.1] * seq_len for _ in range(batch_size)], type=pa.list_(pa.float32())),
         "seed": pa.array([42] * batch_size, type=pa.int64()),
         "temperature": pa.array([1.0] * batch_size, type=pa.float32()),
     }

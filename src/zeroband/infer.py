@@ -24,8 +24,10 @@ from zeroband.inference.config import Config as InferenceConfig
 from zeroband.inference.parquet import get_parquet_table
 from zeroband.inference.pipeline import all_reduce, patch_model_load, setup_comm, setup_hooks
 from zeroband.inference.rewards import compute_vllm_rewards
+from zeroband.inference.mask import get_mask_cache
 from zeroband.inference.toploc import setup_toploc_cache
 from zeroband.inference.toploc2 import Toploc2Sampler
+from zeroband.inference.elastic_reasoning import setup_elastic_reasoning
 from zeroband.utils.monitor import setup_monitor
 from zeroband.inference.utils import (
     filter_data_by_prompt_length,
@@ -132,6 +134,11 @@ def inference(config: InferenceConfig):
     # Initialize sampling parameters
     logger.info(f"Initializing sampling parameters ({config.sampling})")
     sampling_params = SamplingParams(**config.sampling.model_dump())
+
+    # Setup elastic reasoning
+    # Note: This hook has to be set up before the PP communication hooks to ensure that possibly modified sampler outputs are propagated to group peers
+    if config.sampling.elastic_reasoning_enabled:
+        setup_elastic_reasoning(config.sampling, llm)
 
     # Setup pipeline parallel communication and hook
     node = setup_comm(config.parallel.pp)
@@ -306,6 +313,11 @@ def inference(config: InferenceConfig):
         total_samples += batch_samples
         logger.success(f"Generated {batch_samples} samples for {batch_problems} problems in {end_time - start_time:.2f}s")
 
+        # Give a warning about sequences that did not terminate
+        batch_unterminated_samples = sum(sum(1 for output in req.outputs if output.finish_reason != "stop") for req in request_outputs)
+        if batch_unterminated_samples > 0:
+            logger.warning(f"{batch_unterminated_samples}/{batch_samples} samples did not terminate.")
+
         # Print example
         first_prompt = tokenizer.decode(request_outputs[0].prompt_token_ids)
         first_completion = tokenizer.decode(request_outputs[0].outputs[0].token_ids)
@@ -357,10 +369,17 @@ def inference(config: InferenceConfig):
         else:
             sampling_seeds = [None] * batch_samples
 
+        # Get the masked out tokens for this batch
+        output_masks = get_mask_cache().construct_masks(request_outputs)
+        num_masked_tokens = sum(len(mask) - sum(mask) for mask in output_masks)
+        if num_masked_tokens > 0:
+            logger.info(f"Masked out {num_masked_tokens} tokens")
+
         # Get parquet table
         table = get_parquet_table(
             request_outputs,
             request_rewards,
+            output_masks,
             prompts,
             proofs,
             ckpt_step,

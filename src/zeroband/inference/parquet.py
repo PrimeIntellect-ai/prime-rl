@@ -37,6 +37,7 @@ def extract_logprobs(sample_logprobs: SampleLogprobs | None) -> list[float] | No
 def get_parquet_table(
     request_outputs: list[RequestOutput],
     request_rewards: list[RequestRewards],
+    output_masks: list[list[bool]],
     prompts: list[str],
     proofs: list[bytes],
     step: int,
@@ -48,24 +49,31 @@ def get_parquet_table(
 ) -> pa.Table:
     # Iterator over proofs
     proof_iter = iter(proofs)
+    sampling_n = len(request_outputs[0].outputs)
 
     # Create flattened list of records for PyArrow table
     records = []
-    for request_output, request_rewards, prompt, target_length, problem in zip(
-        request_outputs,
-        request_rewards,
-        prompts,
-        target_lengths,
-        problems,
+    for i, (request_output, request_rewards, prompt, target_length, problem) in enumerate(
+        zip(
+            request_outputs,
+            request_rewards,
+            prompts,
+            target_lengths,
+            problems,
+        )
     ):
         assert request_output.request_id == request_rewards.request_id
-        for output, reward, seed in zip(request_output.outputs, request_rewards.rewards, seeds):
+        for j, (output, reward, seed) in enumerate(zip(request_output.outputs, request_rewards.rewards, seeds)):
             assert output.index == reward.completion_id
 
             # Extract logprobs if enabled and available
             output_logprobs = extract_logprobs(output.logprobs) if enable_logprobs else None
             # For input logprobs, we don't need them for training as the input logprobs are masked, so set to None or zeros
             input_logprobs = [0.0] * len(request_output.prompt_token_ids) if output_logprobs is not None else None
+
+            # Extract the mask for the current output
+            input_mask = [True] * len(request_output.prompt_token_ids)
+            output_mask = output_masks[i * sampling_n + j]
 
             records.append(
                 {
@@ -74,6 +82,8 @@ def get_parquet_table(
                     "output_tokens": output.token_ids,
                     "input_logprobs": input_logprobs,
                     "output_logprobs": output_logprobs,
+                    "input_mask": input_mask,
+                    "output_mask": output_mask,
                     "prompt": prompt,
                     "completion": output.text,
                     "advantages": reward.advantage,

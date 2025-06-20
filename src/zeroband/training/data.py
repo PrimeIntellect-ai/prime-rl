@@ -244,6 +244,8 @@ class ParquetDataset(IterableDataset):
             required_columns = [
                 "input_tokens",
                 "output_tokens",
+                "input_mask",
+                "output_mask",
                 "advantages",
                 "rewards",
                 "task_rewards",
@@ -261,22 +263,6 @@ class ParquetDataset(IterableDataset):
 
             for j, batch in enumerate(scanner.to_batches()):
                 if all(col in batch.column_names for col in required_columns):
-                    batch_data = {
-                        "input_tokens": batch["input_tokens"],
-                        "output_tokens": batch["output_tokens"],
-                        "advantages": batch["advantages"],
-                        "rewards": batch["rewards"],
-                        "task_rewards": batch["task_rewards"],
-                        "length_penalties": batch["length_penalties"],
-                        "target_lengths": batch["target_lengths"],
-                        "task_type": batch["task_type"],
-                        "temperature": batch["temperature"],
-                    }
-
-                    if self._use_vllm_logprobs:
-                        batch_data["input_logprobs"] = batch["input_logprobs"]
-                        batch_data["output_logprobs"] = batch["output_logprobs"]
-
                     for i in range(len(batch["input_tokens"])):
                         counter += 1
                         if _should_skip_index(
@@ -289,37 +275,38 @@ class ParquetDataset(IterableDataset):
                             continue
 
                         try:
-                            input_ids = torch.tensor(batch_data["input_tokens"][i].as_py())
-                            output_ids = torch.tensor(batch_data["output_tokens"][i].as_py())
+                            input_tokens = torch.tensor(batch["input_tokens"][i].as_py())
+                            output_tokens = torch.tensor(batch["output_tokens"][i].as_py())
+                            tokens = torch.cat([input_tokens, output_tokens], dim=0)
 
-                            ids = torch.cat([input_ids, output_ids], dim=0)
-                            loss_mask = torch.cat([torch.zeros(len(input_ids)), torch.ones(len(output_ids))], dim=0).int()
+                            input_mask = torch.tensor(batch["input_mask"][i].as_py())
+                            output_mask = torch.tensor(batch["output_mask"][i].as_py())
+                            mask = torch.cat([input_mask, output_mask], dim=0).int()
 
-                            adv_value = batch_data["advantages"][i].as_py()
-                            reward_value = batch_data["rewards"][i].as_py()
-
-                            adv = torch.tensor([adv_value] * len(ids))  # advantage
+                            advantages = torch.tensor([batch["advantages"][i].as_py()] * len(tokens))  # advantage
 
                             # Compute logprobs if using vllm logprobs
                             logprobs = None
                             if self._use_vllm_logprobs:
-                                input_logprobs = torch.tensor(batch_data["input_logprobs"][i].as_py())
-                                output_logprobs = torch.tensor(batch_data["output_logprobs"][i].as_py())
+                                input_logprobs = torch.tensor(batch["input_logprobs"][i].as_py())
+                                output_logprobs = torch.tensor(batch["output_logprobs"][i].as_py())
                                 # Concatenate and remove the first token (BOS)
                                 logprobs = torch.cat([input_logprobs, output_logprobs], dim=0)
-                                assert logprobs.shape == ids.shape, f"logprobs: {logprobs.shape} should be the same as ids: {ids.shape}"
+                                assert logprobs.shape == tokens.shape, (
+                                    f"logprobs: {logprobs.shape} should be the same as tokens: {tokens.shape}"
+                                )
 
                             data = {
-                                "input_ids": ids,
-                                "advantages": adv,
-                                "rewards": reward_value,
-                                "loss_mask": loss_mask,
-                                "task_rewards": batch_data["task_rewards"][i].as_py(),
-                                "length_penalties": batch_data["length_penalties"][i].as_py(),
-                                "target_lengths": batch_data["target_lengths"][i].as_py(),
-                                "task_type": batch_data["task_type"][i].as_py(),
+                                "input_ids": tokens,
+                                "loss_mask": mask,
                                 "logprobs": logprobs,
-                                "temperature": batch_data["temperature"][i].as_py(),
+                                "advantages": advantages,
+                                "rewards": batch["rewards"][i].as_py(),
+                                "task_rewards": batch["task_rewards"][i].as_py(),
+                                "length_penalties": batch["length_penalties"][i].as_py(),
+                                "target_lengths": batch["target_lengths"][i].as_py(),
+                                "task_type": batch["task_type"][i].as_py(),
+                                "temperature": batch["temperature"][i].as_py(),
                             }
 
                         except Exception as e:
