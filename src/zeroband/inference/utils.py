@@ -9,7 +9,7 @@ from vllm import LLM
 from vllm.model_executor.model_loader.utils import process_weights_after_loading
 from vllm.transformers_utils.tokenizer import AnyTokenizer
 
-from zeroband.inference.config import LenRewardsConfig
+from zeroband.inference.config import LenRewardsConfig, ModelConfig
 from zeroband.inference.work_counting import get_inference_input_output_flops  # noqa: F401
 
 
@@ -30,6 +30,25 @@ def filter_data_by_prompt_length(data: Dataset, max_length: int, tokenizer: Auto
     data = data.filter(lambda x: x["token_length"] <= max_length)
 
     return data
+
+
+def setup_model(model_config: ModelConfig, tp: int, seed: int | None):
+    llm = LLM(
+        model=model_config.name,
+        dtype=model_config.dtype,
+        kv_cache_dtype=model_config.kv_cache_dtype,
+        max_model_len=model_config.max_model_len,
+        quantization=model_config.quantization,
+        enforce_eager=model_config.enforce_eager,
+        device=model_config.device,
+        tensor_parallel_size=tp,
+        disable_async_output_proc=True,  # We have an off by 1 error in toploc without this flag when cuda graph padding is enabled.
+        enable_chunked_prefill=False,  # This is required for toploc2 because chunked prefill seems to allow len(seq_groups) != len(selected_token_indices) which is unexpected
+        seed=seed,
+    )
+    tokenizer = llm.get_tokenizer()
+
+    return llm, tokenizer
 
 
 def reload_model_weights(llm: LLM, ckpt_path: str):
