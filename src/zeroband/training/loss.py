@@ -62,7 +62,8 @@ def grpo_loss(
         raise ValueError(f"Invalid grpo_loss_type: {grpo_loss_config.type}")
 
 
-@jaxtyped(typechecker=typechecker)
+# @jaxtyped(typechecker=typechecker)
+@torch.compile
 def grpo_loss_clip(
     logits: Float[Tensor, "batch seq vocab"],
     input_ids: Int[Tensor, "batch seq"],
@@ -118,8 +119,8 @@ def grpo_loss_clip(
     return loss, clip_ratio
 
 
-# beartype here just make sure we have the correct shape
-@jaxtyped(typechecker=typechecker)
+# @jaxtyped(typechecker=typechecker)
+@torch.compile
 def grpo_loss_ratio(
     logits: Float[Tensor, "batch seq vocab"],
     input_ids: Int[Tensor, "batch seq"],
@@ -159,8 +160,8 @@ def grpo_loss_ratio(
     return loss, ratio_avg
 
 
-# beartype here just make sure we have the correct shape
-@jaxtyped(typechecker=typechecker)
+# @jaxtyped(typechecker=typechecker)
+@torch.compile
 def grpo_loss_kl_cov(
     logits: Float[Tensor, "batch seq vocab"],
     input_ids: Int[Tensor, "batch seq"],
@@ -226,6 +227,7 @@ def grpo_loss_kl_cov(
     return pg_loss, ppo_kl_abs
 
 
+@torch.compile
 def selective_log_softmax(logits, index):
     """
     credits to https://github.com/huggingface/trl/blob/07cfe1677e552b7d5c92b7740e5b2f0b057661d8/trl/trainer/utils.py#L1659
@@ -263,15 +265,11 @@ def selective_log_softmax(logits, index):
     return per_token_logps
 
 
-@jaxtyped(typechecker=typechecker)
+# @jaxtyped(typechecker=typechecker)
+@torch.compile
 def entropy_loss(
     logits: Float[Tensor, "batch seq vocab"], loss_mask: Int[Tensor, "batch seq"], temperature: float, max_tokens: int
 ) -> Tensor:
-    return _compile_entropy_loss(logits=logits, loss_mask=loss_mask, temperature=temperature, max_tokens=max_tokens)
-
-
-# @torch.compile
-def _compile_entropy_loss(logits: torch.Tensor, loss_mask: torch.Tensor, temperature: float, max_tokens: int):
     logits = logits[:, :-1, :]
     logits = logits / temperature
 
@@ -282,7 +280,8 @@ def _compile_entropy_loss(logits: torch.Tensor, loss_mask: torch.Tensor, tempera
     return _apply_mask(entropy, loss_mask, max_tokens)
 
 
-@jaxtyped(typechecker=typechecker)
+# @jaxtyped(typechecker=typechecker)
+@torch.compile
 def kl_penalty(
     logprob: Float[Tensor, "batch seq_minus_1"],
     ref_logprob: Float[Tensor, "batch seq_minus_1"],
@@ -316,6 +315,7 @@ def _apply_mask(tensor: torch.Tensor, mask: torch.Tensor, max_tokens: int) -> to
     return (tensor * mask).sum() / max_tokens
 
 
+@torch.compile
 @jaxtyped(typechecker=typechecker)
 def highest_entropy_mask(
     logits: Float[Tensor, "batch seq vocab"],

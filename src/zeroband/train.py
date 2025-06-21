@@ -101,6 +101,11 @@ def train(config: TrainingConfig):
 
     # Allow eager fallback during production so that training runs don't die if compile fails
     torch._dynamo.config.suppress_errors = "ZERO_BAND_DEV" not in os.environ  # type: ignore
+
+    # Disable torch.compile globally if requested
+    if not config.train.torch_compile:
+        torch._dynamo.config.disable = True
+
     torch.set_float32_matmul_precision("high")
     torch.manual_seed(42)
 
