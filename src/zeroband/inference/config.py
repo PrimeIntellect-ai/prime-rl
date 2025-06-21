@@ -386,7 +386,16 @@ class Config(BaseSettings):
         int | Literal["auto"],
         Field(
             default="auto",
-            description="Maximum number of of sequences to decode in parallel. If 'auto', the maximum batch size is automatically computed.",
+            description="Maximum number of of sequences to decode in parallel. If 'auto', it will compute a conservative estimate that never triggers cache eviction assuming that all sequences reach the maximum context length.",
+        ),
+    ]
+
+    scale_factor: Annotated[
+        float,
+        Field(
+            default=1.0,
+            ge=1,
+            description="Scale factor for the automatically computed maximum batch size. By default, we use the maximum batch size as is which will never trigger cache eviction. Can be set >1 to allow for more sequences to be decoded in parallel in case sequences are typically shorter than the maximum context length.",
         ),
     ]
 

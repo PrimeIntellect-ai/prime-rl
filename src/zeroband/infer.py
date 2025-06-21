@@ -144,6 +144,9 @@ def inference(config: InferenceConfig):
         logger.info("Auto-computing maximum batch size")
         local_max_batch_size = compute_max_batch_size(llm)
         max_batch_size = all_reduce(node, torch.tensor(local_max_batch_size), config=config.parallel.pp, op=torch.min).item()
+        logger.info(f"Auto-computed maximum batch size: {max_batch_size}")
+        max_batch_size = int(max_batch_size * config.scale_factor)
+        logger.info(f"Scaled maximum batch size by {config.scale_factor} to {max_batch_size}")
 
     logger.info(f"Using maximum batch size: {max_batch_size}")
 
