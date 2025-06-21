@@ -393,6 +393,7 @@ def inference(config: InferenceConfig):
             "output/input_flops": sum(input_flops for input_flops, _ in flop_counts) // config.parallel.pp.world_size,
             "output/save_path": save_path.as_posix(),
             "output/sha256": sha256,
+            "output/step": real_step,
         }
         monitor.log(work_submission, exclude=["wandb"])
 
