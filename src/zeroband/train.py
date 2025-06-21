@@ -3,6 +3,7 @@ import os
 import shutil
 import time
 from collections import defaultdict
+from contextlib import nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -296,7 +297,7 @@ def train(config: TrainingConfig):
             num_grad_acc_steps = len(data_per_rollout)
 
             # Collect samples for WandB logging - do this ONCE per step
-            if world_info.rank == 0 and config.monitor.wandb:
+            if config.monitor.wandb is not None and config.monitor.wandb.log_samples and world_info.rank == 0:
                 # Use the first batch for logging (could be configurable if needed)
                 batch = data_per_rollout[0]
 
@@ -372,7 +373,8 @@ def train(config: TrainingConfig):
                     config.grpo.off_policy,
                 )
 
-                entropy = entropy_loss(logits, loss_mask, batch["temperature"], max_tokens)
+                with torch.no_grad() if config.grpo.entropy_loss_coeff == 0 else nullcontext():
+                    entropy = entropy_loss(logits, loss_mask, batch["temperature"], max_tokens)
 
                 loss = pg_loss - config.grpo.entropy_loss_coeff * entropy
 
