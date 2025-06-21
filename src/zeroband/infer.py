@@ -139,7 +139,7 @@ def inference(config: InferenceConfig):
 
     # Compute the maximum batch size
     max_batch_size = config.max_batch_size
-    if max_batch_size == "auto":
+    if max_batch_size == "auto" or (config.syn2 and config.parallel.pp.is_enabled):
         # Automatically compute the maximum batch size
         logger.info("Auto-computing maximum batch size")
         local_max_batch_size = compute_max_batch_size(llm)

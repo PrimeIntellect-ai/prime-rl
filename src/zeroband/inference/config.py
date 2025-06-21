@@ -382,6 +382,8 @@ class Config(BaseSettings):
 
     toploc: Annotated[TopLocConfig, Field(default=TopLocConfig())]
 
+    syn2: Annotated[bool, Field(default=False, description="A flag for SYNTHETIC-2 run. Will enforce auto-computing the max batch size for groups.")]
+
     max_batch_size: Annotated[
         int | Literal["auto"],
         Field(

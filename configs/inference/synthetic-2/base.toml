@@ -1,6 +1,8 @@
 rollout_path = "/data"
 rl = "None"
 use_tqdm = true
+syn2 = true
+max_batch_size = 256
 
 [toploc]
 enable_toploc1 = true
