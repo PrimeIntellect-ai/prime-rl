@@ -1,15 +1,15 @@
+from pathlib import Path
 from typing import Any
 
 import torch
 from datasets import Dataset
 from safetensors import safe_open
 from transformers import AutoTokenizer
-from transformers.tokenization_utils_base import BatchEncoding
 from vllm import LLM
 from vllm.model_executor.model_loader.utils import process_weights_after_loading
 from vllm.transformers_utils.tokenizer import AnyTokenizer
 
-from zeroband.inference.config import LenRewardsConfig
+from zeroband.inference.config import LenRewardsConfig, ModelConfig
 from zeroband.inference.work_counting import get_inference_input_output_flops  # noqa: F401
 
 
@@ -32,7 +32,26 @@ def filter_data_by_prompt_length(data: Dataset, max_length: int, tokenizer: Auto
     return data
 
 
-def reload_model_weights(llm: LLM, ckpt_path: str):
+def setup_model(model_config: ModelConfig, tp: int, seed: int | None):
+    llm = LLM(
+        model=model_config.name,
+        dtype=model_config.dtype,
+        kv_cache_dtype=model_config.kv_cache_dtype,
+        max_model_len=model_config.max_model_len,
+        quantization=model_config.quantization,
+        enforce_eager=model_config.enforce_eager,
+        device=model_config.device,
+        tensor_parallel_size=tp,
+        disable_async_output_proc=True,  # We have an off by 1 error in toploc without this flag when cuda graph padding is enabled.
+        enable_chunked_prefill=False,  # This is required for toploc2 because chunked prefill seems to allow len(seq_groups) != len(selected_token_indices) which is unexpected
+        seed=seed,
+    )
+    tokenizer = llm.get_tokenizer()
+
+    return llm, tokenizer
+
+
+def reload_model_weights(llm: LLM, ckpt_path: Path):
     # Access the internal model from vLLM
     model = llm.llm_engine.model_executor.driver_worker.model_runner.model
     # Load state dict
@@ -89,7 +108,7 @@ def format_prompts(
     tokenizer: AnyTokenizer,
     enable_thinking: bool = True,
     tokenize: bool = False,
-) -> list[str] | BatchEncoding:
+) -> list[str] | list[list[int]]:
     """
     Formats a batch of raw prompts. Relies on the default chat template of the
     LLM's tokenizer to call `apply_chat_template`. We call with
