@@ -47,7 +47,6 @@ from zeroband.inference.logger import setup_logger
 @clean_exit
 def inference(config: InferenceConfig):
     # Initialize the logger
-
     dp_rank = int(os.environ.get("DP_RANK", 0))
     logger = setup_logger(config.log, parallel_config=config.parallel, dp_rank=dp_rank)
     logger.info("Starting inference")
@@ -57,16 +56,14 @@ def inference(config: InferenceConfig):
         logger.info(f"Cleaning rollout path ({config.rollout_path})")
         shutil.rmtree(config.rollout_path, ignore_errors=True)
 
-    # Initialize metrics
-    monitor = setup_monitor(config.monitor, config.task_id, config)
-
-    monitor.log({"weight_downloaded": 0})
-
     # Pre-download the model weights
     logger.info(f"Downloading model weights for {config.model.name}")
     start_time = time.time()
     snapshot_download(config.model.name)
     logger.success(f"Downloaded model weights in {time.time() - start_time:.2f}s")
+
+    # Initialize metrics
+    monitor = setup_monitor(config.monitor, config.task_id, config)
 
     # Patch vLLM's model loading to load model shard
     patch_model_load(config=config.parallel.pp)
@@ -92,7 +89,6 @@ def inference(config: InferenceConfig):
         logger.info("Using toploc2 sampler")
     tokenizer = llm.get_tokenizer()
     logger.success(f"Initialized model and tokenizer in {time.time() - start_time:.2f}s")
-    monitor.log({"weight_downloaded": 1})
 
     # Initialize dataset
     logger.info(f"Initializing dataset (name={config.data.name}, split={config.data.split})")
