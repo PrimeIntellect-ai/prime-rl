@@ -9,6 +9,7 @@ from zeroband.inference.rewards import RewardRequest, RewardsResponse, compute_r
 
 app = FastAPI(title="Prime Rewards API")
 
+
 @app.post("/compute_rewards")
 async def compute_rewards_endpoint(request: Request):
     if request.headers.get("Authorization") != f"Bearer {AUTH}":
@@ -21,20 +22,14 @@ async def compute_rewards_endpoint(request: Request):
         reward_json = reward_response.model_dump_json()
 
         return Response(
-            content=reward_json,
-            media_type="application/json",
-            headers={"Content-Disposition": "attachment; filename=compute_rewards.json"}
+            content=reward_json, media_type="application/json", headers={"Content-Disposition": "attachment; filename=compute_rewards.json"}
         )
 
     except Exception as e:
-        return Response(
-            content=f"Error processing json: {str(e)}",
-            status_code=400
-        )
+        return Response(content=f"Error processing json: {str(e)}", status_code=400)
 
 
 if __name__ == "__main__":
-
     # Parse CLI args
     parser = argparse.ArgumentParser(description="Prime Rewards API Server")
     parser.add_argument("--port", type=int, help="Port to run the server on")
@@ -53,7 +48,7 @@ if __name__ == "__main__":
 
     # Print the server URL
     try:
-        ip_addr = get('https://api.ipify.org').content.decode('utf8')
+        ip_addr = get("https://api.ipify.org").content.decode("utf8")
         print(f"IP Address: {ip_addr}")
         print(f"Port: {PORT}")
         print(f"To connect to the server, use the following URL: http://{ip_addr}:{PORT}/compute_rewards")
@@ -61,4 +56,5 @@ if __name__ == "__main__":
         print(f"Could not determine IP address: {e}")
 
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=PORT)

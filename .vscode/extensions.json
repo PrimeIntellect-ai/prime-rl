@@ -1,0 +1,10 @@
+{
+    "recommendations": [
+        "ms-python.python",
+        "anysphere.cursorpyright",
+        "ms-toolsai.jupyter",
+        "charliermarsh.ruff",
+        "bungcip.better-toml",
+    ],
+    "unwantedRecommendations": []
+}

@@ -1,47 +1,47 @@
 # (Jack): This is an umerged patch to fix a bug in vllm https://github.com/vllm-project/vllm/pull/19940
 # This can be removed once the patch is merged and vllm is updated.
-import zeroband.inference.monkeypatch_sampling_metadata  # noqa: F401
-
 import json
 import multiprocessing as mp
 import os
 import shutil
 import time
-from pathlib import Path
 import uuid
-
-# Import environment before any other imports
-# ruff: noqa: I001
-from zeroband.inference import envs
+from pathlib import Path
 
 import numpy as np
 import pyarrow.parquet as pq
 import requests
 import torch
 from datasets import load_dataset
+from huggingface_hub import snapshot_download
 from toploc.utils import sha256sum
 from vllm import LLM, SamplingParams, TokensPrompt
-from huggingface_hub import snapshot_download
 
-from zeroband.utils.pydantic_config import parse_argv
+from zeroband.inference import envs
 from zeroband.inference.config import Config as InferenceConfig
+from zeroband.inference.logger import setup_logger
 from zeroband.inference.parquet import get_parquet_table
-from zeroband.inference.pipeline import all_reduce, patch_model_load, setup_comm, setup_hooks
+from zeroband.inference.pipeline import (
+    all_reduce,
+    patch_model_load,
+    setup_comm,
+    setup_hooks,
+)
 from zeroband.inference.rewards import compute_vllm_rewards
 from zeroband.inference.toploc import setup_toploc_cache
 from zeroband.inference.toploc2 import Toploc2Sampler
-from zeroband.utils.monitor import setup_monitor
 from zeroband.inference.utils import (
-    filter_data_by_prompt_length,
-    reload_model_weights,
     compute_max_batch_size,
-    get_inference_input_output_flops,
-    generate_target_lengths,
+    filter_data_by_prompt_length,
     format_prompts,
+    generate_target_lengths,
+    get_inference_input_output_flops,
+    reload_model_weights,
 )
 from zeroband.training.mp import EnvWrapper
+from zeroband.utils.monitor import setup_monitor
+from zeroband.utils.pydantic_config import parse_argv
 from zeroband.utils.utils import clean_exit
-from zeroband.inference.logger import setup_logger
 
 
 @clean_exit
@@ -380,7 +380,7 @@ def inference(config: InferenceConfig):
 
             # Order the request outputs by prompt_id to pretend like we generated all samples in one go
             # request_outputs = list(dict(sorted(unordered_request_outputs.items(), key=lambda x: x[0])).values())
-            from vllm.outputs import RequestOutput, CompletionOutput
+            from vllm.outputs import CompletionOutput, RequestOutput
 
             request_outputs = []
             for prompt_id in unordered_output_token_ids.keys():
