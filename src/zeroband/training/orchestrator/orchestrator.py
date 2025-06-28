@@ -7,13 +7,17 @@ from pathlib import Path
 import pyarrow.parquet as pq
 from datasets import Dataset, load_dataset
 from openai import AsyncOpenAI
+from transformers import AutoTokenizer
 
 from zeroband.training.orchestrator.config import OrchestratorConfig
 from zeroband.training.orchestrator.logger import setup_logger
 from zeroband.training.orchestrator.utils import (
+    compute_advantages,
+    compute_rewards,
     generate_completion,
     get_parquet,
     health_check,
+    load_checkpoint,
 )
 from zeroband.utils.monitor import setup_monitor
 from zeroband.utils.pydantic_config import parse_argv
@@ -30,11 +34,11 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info("Starting orchestrator")
 
     # Prepare paths to communicate with the trainer
-    if config.rollout.cleanup:
+    if config.rollout.clean:
         logger.info(f"Cleaning rollout path ({config.rollout.path})")
         shutil.rmtree(config.rollout.path, ignore_errors=True)
 
-    if config.checkpoints.cleanup:
+    if config.checkpoints.clean:
         logger.info(f"Cleaning checkpoints path ({config.checkpoints.path})")
         shutil.rmtree(config.checkpoints.path, ignore_errors=True)
 
@@ -43,6 +47,9 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup client
     client = AsyncOpenAI(base_url=config.client.base_url, api_key=config.client.api_key)
+
+    # Load tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(config.completion.model)
 
     # Check health of the client
     await health_check(client)
@@ -64,46 +71,68 @@ async def orchestrate(config: OrchestratorConfig):
         # Get the batch
         problems_per_batch = config.batch_size // config.samples_per_problem
         indices = range(step * problems_per_batch, (step + 1) * problems_per_batch)
-        problems = dataset.select(indices)
-        prompts = [
-            problem["prompt"] for problem in problems
-        ] * config.samples_per_problem
+        problems = dataset.select(indices).to_list() * config.samples_per_problem
+        prompts = [problem["prompt"] for problem in problems]
         batch_messages = [[{"role": "user", "content": prompt}] for prompt in prompts]
 
         # Optionally, update the checkpoint step if we are ahead
         # TODO(Mika): This seems silly
         if step - 1 - ckpt_step > config.async_level:
+            wait_time = 0
             ckpt_step = step - 1 - config.async_level
-            logger.info(
-                f"Hit async level {config.async_level}, updating checkpoint step to {ckpt_step}"
-            )
+            logger.info(f"Hit async barrier, waiting for checkpoint step {ckpt_step}")
+            while True:
+                stable_file = (
+                    Path(config.checkpoints.path) / f"step_{ckpt_step}" / "stable"
+                )
+                if stable_file.exists():
+                    logger.info(
+                        f"Found checkpoint for step {ckpt_step} at {stable_file}. Reloading model weights."
+                    )
+                    await load_checkpoint(client, config.checkpoints.path, ckpt_step)
+                    break
+                if wait_time % 10 == 0 and wait_time > 0:  # Every log_interval seconds
+                    logger.info(
+                        f"Waiting for checkpoint for step {ckpt_step} at {stable_file} for {wait_time} seconds"
+                    )
+                time.sleep(1)
+                wait_time += 1
 
         # Get the completions for the batch
         logger.info(
             f"Sending {len(batch_messages)} inference requests for training step {step} (checkpoint step: {ckpt_step})"
         )
         start_time = time.time()
-        completions = await asyncio.gather(
+        chat_completions = await asyncio.gather(
             *(
-                generate_completion(client, config.completion, ckpt_step, messages)
+                generate_completion(client, config.completion, messages)
                 for messages in batch_messages
             )
         )
         generate_time = time.time() - start_time
         logger.success(
-            f"Received {len(completions)} completions in {generate_time:.2f}s"
+            f"Received {len(chat_completions)} completions in {generate_time:.2f}s"
         )
 
         # Get the rewards for the completions
         # TODO: How are we getting the rewards? Is this handled in verifiers or does the orchestrator make a request to a dedicated reward server? For now, we use dummy rewards
-        rewards = [0.0] * len(completions)
+        completions = [
+            chat_completion.choices[0].message.content
+            for chat_completion in chat_completions
+        ]
+        task_types = [problem["task_type"] for problem in problems]
+        verification_infos = [problem["verification_info"] for problem in problems]
+        rewards = compute_rewards(completions, task_types, verification_infos)
+
+        # Compute advantages
+        advantages = compute_advantages(rewards, config.samples_per_problem)
 
         # Compute batch metrics
         num_input_tokens = sum(
-            completion.usage.prompt_tokens for completion in completions
+            completion.usage.prompt_tokens for completion in chat_completions
         )
         num_output_tokens = sum(
-            completion.usage.completion_tokens for completion in completions
+            completion.usage.completion_tokens for completion in chat_completions
         )
         num_tokens = num_input_tokens + num_output_tokens
         throughput = num_tokens / generate_time
@@ -135,7 +164,14 @@ async def orchestrate(config: OrchestratorConfig):
         monitor.log(progress_metrics)
 
         # Write step parquet file
-        table = get_parquet(completions, rewards)
+        table = get_parquet(
+            prompts=prompts,
+            completions=completions,
+            rewards=rewards,
+            advantages=advantages,
+            temperature=config.completion.temperature,
+            tokenizer=tokenizer,
+        )
 
         # Save outputs to parquet file
         step_path = Path(config.rollout.path)

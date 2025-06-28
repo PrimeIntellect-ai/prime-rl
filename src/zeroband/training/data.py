@@ -68,7 +68,9 @@ def validate_schema_pa_file(file: Path):
         return False
 
 
-def _should_skip_index(index: int, world_size: int, rank: int, num_workers: int, workers_id: int) -> bool:
+def _should_skip_index(
+    index: int, world_size: int, rank: int, num_workers: int, workers_id: int
+) -> bool:
     """
     This function is used to skip the index if it is not the responsibility of the current worker.
     It take into account the number of workers as well as rank.
@@ -117,7 +119,9 @@ class ParquetDataset(IterableDataset):
 
         self._world_info = get_world_info()
 
-        self._step_count = step_count_init - 1  # we immediately bump the step count by one later
+        self._step_count = (
+            step_count_init  # we immediately bump the step count by one later
+        )
 
     def __iter__(self) -> Generator[DatasetOutput, Any, None]:
         worker_info = torch.utils.data.get_worker_info()
@@ -134,7 +138,9 @@ class ParquetDataset(IterableDataset):
                 time.sleep(0.1)
 
             if not validate_schema_pa_file(file):
-                raise ValueError(f"Schema of file {file} is not the same as the schema of the pa_schema")
+                raise ValueError(
+                    f"Schema of file {file} is not the same as the schema of the pa_schema"
+                )
 
             dataset = ds.dataset(file, format="parquet")
 
@@ -147,7 +153,9 @@ class ParquetDataset(IterableDataset):
                 "temperature",
             ]
 
-            scanner = dataset.scanner(columns=required_columns, batch_size=self._pq_read_bs)
+            scanner = dataset.scanner(
+                columns=required_columns, batch_size=self._pq_read_bs
+            )
             counter = 0
 
             for batch in scanner.to_batches():
@@ -166,7 +174,10 @@ class ParquetDataset(IterableDataset):
                     output_ids = torch.tensor(batch["output_tokens"][i].as_py())
 
                     ids = torch.cat([input_ids, output_ids], dim=0)
-                    loss_mask = torch.cat([torch.zeros(len(input_ids)), torch.ones(len(output_ids))], dim=0).int()
+                    loss_mask = torch.cat(
+                        [torch.zeros(len(input_ids)), torch.ones(len(output_ids))],
+                        dim=0,
+                    ).int()
 
                     adv_value = batch["advantages"][i].as_py()
 
@@ -176,7 +187,9 @@ class ParquetDataset(IterableDataset):
                     output_logprobs = torch.tensor(batch["output_logprobs"][i].as_py())
                     # Concatenate and remove the first token (BOS)
                     logprobs = torch.cat([input_logprobs, output_logprobs], dim=0)
-                    assert logprobs.shape == ids.shape, f"logprobs: {logprobs.shape} should be the same as ids: {ids.shape}"
+                    assert logprobs.shape == ids.shape, (
+                        f"logprobs: {logprobs.shape} should be the same as ids: {ids.shape}"
+                    )
 
                     data = {
                         "input_ids": ids,
@@ -208,8 +221,7 @@ def get_dataloader(
     else:
         train_dataset = ParquetDataset(
             Path(path),
-            batch_size,
-            step_count_init,
+            step_count_init=step_count_init,
         )
 
     loader = DataLoader(
@@ -236,7 +248,9 @@ class BatchOutput(TypedDict):
 ### colate
 
 
-def collate_fn(samples: list[DatasetOutput], max_seq_len: int, pad_token_id: int) -> BatchOutput:
+def collate_fn(
+    samples: list[DatasetOutput], max_seq_len: int, pad_token_id: int
+) -> BatchOutput:
     """
     This take a list of samples that should be packed together along the sequence dimension. Will add padding at the end if needed and
     clipped to max_seq_len
@@ -249,19 +263,30 @@ def collate_fn(samples: list[DatasetOutput], max_seq_len: int, pad_token_id: int
     loss_masks = [sample["loss_mask"] for sample in samples]
 
     # Handle logprobs if available
-    all_logprobs = [sample["logprobs"] for sample in samples if sample["logprobs"] is not None]
+    all_logprobs = [
+        sample["logprobs"] for sample in samples if sample["logprobs"] is not None
+    ]
     has_logprobs = len(all_logprobs) == len(samples)
     logprobs = all_logprobs if has_logprobs else None
 
-    position_ids = [torch.arange(0, len(sample["input_ids"]), dtype=torch.int32) for sample in samples]
+    position_ids = [
+        torch.arange(0, len(sample["input_ids"]), dtype=torch.int32)
+        for sample in samples
+    ]
     temperatures = [sample["temperature"] for sample in samples]
-    assert all(temperature == temperatures[0] for temperature in temperatures), "all temperatures must be the same"
+    assert all(temperature == temperatures[0] for temperature in temperatures), (
+        "all temperatures must be the same"
+    )
     temperature = temperatures[0]
 
     if total_len < max_seq_len:
         padding_len = max_seq_len - total_len
 
-        inputs_ids.append(torch.full((padding_len,), fill_value=pad_token_id, dtype=inputs_ids[0].dtype))
+        inputs_ids.append(
+            torch.full(
+                (padding_len,), fill_value=pad_token_id, dtype=inputs_ids[0].dtype
+            )
+        )
         advantages.append(torch.zeros(padding_len, dtype=advantages[0].dtype))
         loss_masks.append(torch.zeros(padding_len, dtype=loss_masks[0].dtype).int())
         position_ids.append(torch.arange(0, padding_len, dtype=torch.int32))
@@ -291,7 +316,9 @@ def collate_fn(samples: list[DatasetOutput], max_seq_len: int, pad_token_id: int
 ### sequence packing
 
 
-def pack_datatset_outputs_efficiently(batch_optim: list[DatasetOutput], max_seq_len: int) -> list[list[DatasetOutput]]:
+def pack_datatset_outputs_efficiently(
+    batch_optim: list[DatasetOutput], max_seq_len: int
+) -> list[list[DatasetOutput]]:
     """
     This function will pack the batch into a single batch in a efficient manner
     """
@@ -334,7 +361,9 @@ def data_parallel_rebalancing(micro_batches: list[BatchOutput]) -> list[BatchOut
 
     max_grad_acc_step = num_grad_acc_steps
     if dist.is_initialized():
-        max_grad_acc_step = torch.tensor(num_grad_acc_steps, dtype=torch.int32).to("cuda")
+        max_grad_acc_step = torch.tensor(num_grad_acc_steps, dtype=torch.int32).to(
+            "cuda"
+        )
         dist.all_reduce(max_grad_acc_step, op=dist.ReduceOp.MAX, group=None)
         max_grad_acc_step = int(max_grad_acc_step.item())
 
@@ -354,7 +383,9 @@ def data_parallel_rebalancing(micro_batches: list[BatchOutput]) -> list[BatchOut
     return micro_batches
 
 
-def packed_batch_packing(batch_optim: list[DatasetOutput], max_seq_len: int, pad_token_id: int, micro_bs: int) -> list[BatchOutput]:
+def packed_batch_packing(
+    batch_optim: list[DatasetOutput], max_seq_len: int, pad_token_id: int, micro_bs: int
+) -> list[BatchOutput]:
     """
     this function will pack the batch into [1, seq_len] microbatch tensors with positions ids for calling fa2 with sequence packing
     """
@@ -362,7 +393,10 @@ def packed_batch_packing(batch_optim: list[DatasetOutput], max_seq_len: int, pad
 
     batches = pack_datatset_outputs_efficiently(batch_optim, max_seq_len=max_seq_len)
 
-    micro_batches = [collate_fn(bin, pad_token_id=pad_token_id, max_seq_len=max_seq_len) for bin in batches]
+    micro_batches = [
+        collate_fn(bin, pad_token_id=pad_token_id, max_seq_len=max_seq_len)
+        for bin in batches
+    ]
 
     return data_parallel_rebalancing(micro_batches)
 
@@ -373,11 +407,15 @@ def merge_batches_padding(batches: list[BatchOutput]) -> BatchOutput:
     merged_logprobs = None
     if has_logprobs:
         # If some batches have logprobs, all should have them
-        merged_logprobs = torch.cat([b["logprobs"] for b in batches if b["logprobs"] is not None], dim=0)
+        merged_logprobs = torch.cat(
+            [b["logprobs"] for b in batches if b["logprobs"] is not None], dim=0
+        )
 
     # All batches should have the same temperature
     temperatures = [b["temperature"] for b in batches]
-    assert all(temp == temperatures[0] for temp in temperatures), "all temperatures must be the same"
+    assert all(temp == temperatures[0] for temp in temperatures), (
+        "all temperatures must be the same"
+    )
 
     return {
         # token level
@@ -392,15 +430,23 @@ def merge_batches_padding(batches: list[BatchOutput]) -> BatchOutput:
     }
 
 
-def packed_batch_padding(batch_optim: list[DatasetOutput], max_seq_len: int, pad_token_id: int, micro_bs: int) -> list[BatchOutput]:
+def packed_batch_padding(
+    batch_optim: list[DatasetOutput], max_seq_len: int, pad_token_id: int, micro_bs: int
+) -> list[BatchOutput]:
     """
     This function will pad the batch to the max_seq_len
     """
     assert len(batch_optim) % micro_bs == 0, "batch_optim must be divisible by micro_bs"
 
-    sample_padded_batch = [collate_fn([sample_batch], max_seq_len, pad_token_id) for sample_batch in batch_optim]
+    sample_padded_batch = [
+        collate_fn([sample_batch], max_seq_len, pad_token_id)
+        for sample_batch in batch_optim
+    ]
 
-    micro_batches = [merge_batches_padding(sample_padded_batch[i : i + micro_bs]) for i in range(0, len(sample_padded_batch), micro_bs)]
+    micro_batches = [
+        merge_batches_padding(sample_padded_batch[i : i + micro_bs])
+        for i in range(0, len(sample_padded_batch), micro_bs)
+    ]
 
     return micro_batches
 
@@ -449,12 +495,16 @@ def pack_datatset_outputs_balancing(
     return batches_and_max_seq_len
 
 
-def packed_batch_balancing(batch_optim: list[DatasetOutput], max_seq_len: int, pad_token_id: int, micro_bs: int) -> list[BatchOutput]:
+def packed_batch_balancing(
+    batch_optim: list[DatasetOutput], max_seq_len: int, pad_token_id: int, micro_bs: int
+) -> list[BatchOutput]:
     """
     this function will take a list of sample and try to balance by seq len the microbatches to avoid too much padding
     """
 
-    batches_and_max_seq_len = pack_datatset_outputs_balancing(batch_optim, max_seq_len, micro_bs)
+    batches_and_max_seq_len = pack_datatset_outputs_balancing(
+        batch_optim, max_seq_len, micro_bs
+    )
 
     micro_batches = []
 
@@ -474,7 +524,11 @@ def packed_batch_balancing(batch_optim: list[DatasetOutput], max_seq_len: int, p
 
 
 def packed_batch(
-    batch_optim: list[DatasetOutput], max_seq_len: int, pad_token_id: int, micro_bs: int, collate_mode: CollateMode
+    batch_optim: list[DatasetOutput],
+    max_seq_len: int,
+    pad_token_id: int,
+    micro_bs: int,
+    collate_mode: CollateMode,
 ) -> list[BatchOutput]:
     """
     Take a list of sample and return a list of microbatches
@@ -482,10 +536,16 @@ def packed_batch(
 
     match collate_mode:
         case "packing":
-            return packed_batch_packing(batch_optim, max_seq_len, pad_token_id, micro_bs)
+            return packed_batch_packing(
+                batch_optim, max_seq_len, pad_token_id, micro_bs
+            )
         case "padding":
-            return packed_batch_padding(batch_optim, max_seq_len, pad_token_id, micro_bs)
+            return packed_batch_padding(
+                batch_optim, max_seq_len, pad_token_id, micro_bs
+            )
         case "balancing":
-            return packed_batch_balancing(batch_optim, max_seq_len, pad_token_id, micro_bs)
+            return packed_batch_balancing(
+                batch_optim, max_seq_len, pad_token_id, micro_bs
+            )
         case _:
             raise ValueError(f"Invalid collate mode: {collate_mode}")

@@ -73,7 +73,9 @@ class CkptConfig(BaseConfig):
     @model_validator(mode="after")
     def check_path_and_interval(self):
         if (self.path is None) != (self.interval is None):
-            raise ValueError("path and interval must be either both None or both not None")
+            raise ValueError(
+                "path and interval must be either both None or both not None"
+            )
         return self
 
 
@@ -123,7 +125,13 @@ class GRPOLossConfig(BaseConfig):
 class ModelConfig(BaseConfig):
     """Configures the model to be used for training."""
 
-    name: Annotated[str, Field(default="Qwen/Qwen3-0.6B", description="Name or path of the HF model to use.")]
+    name: Annotated[
+        str,
+        Field(
+            default="Qwen/Qwen3-0.6B",
+            description="Name or path of the HF model to use.",
+        ),
+    ]
 
 
 CollateMode: TypeAlias = Literal["packing", "padding", "balancing"]
@@ -134,9 +142,13 @@ class DataConfig(BaseConfig):
     seq_length: Annotated[int, Field(default=1024)]
     fake: Annotated[bool, Field(default=False)]
 
-    local_dir: Annotated[str, Field(default="/dev/shm/zeroband/data")]  # only used if path is gcp
+    local_dir: Annotated[
+        str, Field(default="/dev/shm/zeroband/data")
+    ]  # only used if path is gcp
 
-    ignore_zero_advantages: Annotated[bool, Field(default=False)]  # don't use in local setup
+    ignore_zero_advantages: Annotated[
+        bool, Field(default=False)
+    ]  # don't use in local setup
 
 
 class PathConfig(BaseConfig):
@@ -144,7 +156,13 @@ class PathConfig(BaseConfig):
 
     path: Annotated[Path, Field(description="Path to write to.")]
 
-    cleanup: Annotated[bool, Field(default=True, description="Whether to clean the at the beginning of the run.")]
+    clean: Annotated[
+        bool,
+        Field(
+            default=True,
+            description="Whether to clean the at the beginning of the run.",
+        ),
+    ]
 
 
 class LogConfig(BaseConfig):
@@ -152,11 +170,18 @@ class LogConfig(BaseConfig):
 
     level: Annotated[
         Literal["debug", "info"],
-        Field(default="info", description="Logging level for the inference run. Will determine the logging verbosity and format."),
+        Field(
+            default="info",
+            description="Logging level for the inference run. Will determine the logging verbosity and format.",
+        ),
     ]
 
     all_ranks: Annotated[
-        bool, Field(default=False, description="Whether to log from all DP ranks. If False, will only log from the main rank (DP rank 0).")
+        bool,
+        Field(
+            default=False,
+            description="Whether to log from all DP ranks. If False, will only log from the main rank (DP rank 0).",
+        ),
     ]
 
     utc: Annotated[
@@ -216,11 +241,15 @@ class Config(BaseSettings):
     @model_validator(mode="after")
     def check_liger(self):
         if self.train.liger_qwen:
-            assert "Qwen" in self.model.name, "train.liger_qwen can only be applied to Qwen2 models."
+            assert "Qwen" in self.model.name, (
+                "train.liger_qwen can only be applied to Qwen2 models."
+            )
         return self
 
     @model_validator(mode="after")
     def check_ckpt_interval(self):
         if self.ckpt.interval is not None:
-            assert self.ckpt.interval % self.optim.step_per_rollout == 0, "ckpt.interval must be divisible by train.step_per_rollout"
+            assert self.ckpt.interval % self.optim.step_per_rollout == 0, (
+                "ckpt.interval must be divisible by train.step_per_rollout"
+            )
         return self
