@@ -125,6 +125,7 @@ def save_ckpt_for_rollout(
             cpu_state[key] = value.to("cpu", non_blocking=False)
             # TODO(SAMI) keeping blocking here to avoid race condition, should be faster to make it non blocking tho
 
+    torch.cuda.synchronize()
     torch.distributed.barrier()
 
     logger.info(f"gathering full tensor checkpointing in {time.time() - start_time:.2f} seconds")

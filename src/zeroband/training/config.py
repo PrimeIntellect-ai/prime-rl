@@ -12,7 +12,7 @@ class AdamConfig(BaseConfig):
     """Configures the Adam optimizer."""
 
     type: Annotated[Literal["adam"], Field(default="adam")]
-    lr: Annotated[float, Field(default=4e-4, ge=0)]
+    lr: Annotated[float, Field(default=1e-6, ge=0)]
     weight_decay: Annotated[float, Field(default=0.01, ge=0)]
     betas1: Annotated[float, Field(default=0.9, ge=0)]
     betas2: Annotated[float, Field(default=0.99, ge=0)]
