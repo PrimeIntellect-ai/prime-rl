@@ -85,9 +85,7 @@ async def orchestrate(config: OrchestratorConfig):
             logger.info(f"Hit async barrier, waiting for checkpoint step {ckpt_step}")
             while True:
                 ckpt_path = (
-                    Path(config.checkpoints.path)
-                    / f"step_{ckpt_step}"
-                    / "model.safetensors"
+                    Path(config.checkpoints.path) / f"step_{ckpt_step}" / "model.pt"
                 )
                 if ckpt_path.exists():
                     logger.info(
