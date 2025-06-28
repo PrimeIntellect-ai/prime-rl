@@ -48,6 +48,12 @@ infer = [
 orchestrator = [
     "openai>=1.92.2",
 ]
+rewards = [
+    "cydifflib>=1.2.0",
+    "pyext",
+    "pylatexenc>=2.10",
+    "reasoning_gym",
+]
 
 [tool.uv]
 no-build-isolation-package = ["flash-attn"]
@@ -56,6 +62,8 @@ no-build-isolation-package = ["flash-attn"]
 torch = [
   { index = "pytorch-cu128", extra = "cu128" }
 ]
+pyext = { git = "git+https://github.com/justusmattern27/PyExt.git" }
+reasoning_gym = { git = " git+https://github.com/open-thought/reasoning-gym.git" }
 
 [[tool.uv.index]]
 name = "pytorch-cu128"

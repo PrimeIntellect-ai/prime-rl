@@ -44,12 +44,12 @@ async def run_server(args: Namespace) -> None:
     app = build_app(args)
 
     # Inject a custom endpoint
-    @app.get("/test_rpc")
+    @app.get("/v1/test_rpc")
     async def _test_rpc(request: Request):
         await engine.collective_rpc("test_rpc")
         return {"status": "ok"}
 
-    @app.post("/load_checkpoint")
+    @app.post("/v1/load_checkpoint")
     async def _load_checkpoint(request: Request):
         data = await request.json()
         ckpt_path = data.get("ckpt_path")

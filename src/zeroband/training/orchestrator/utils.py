@@ -2,12 +2,14 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from openai import AsyncOpenAI
 from openai.types.chat.chat_completion import ChatCompletion
 from pyarrow import Table
 from transformers import AutoTokenizer
 
 from zeroband.training.orchestrator.config import CompletionConfig
+from zeroband.training.orchestrator.genesys import get_reward_function
 from zeroband.training.parquet import SCHEMA
 from zeroband.utils.logger import get_logger
 
@@ -36,12 +38,10 @@ async def health_check(
 
 async def load_checkpoint(client: AsyncOpenAI, ckpt_path: Path, step: int) -> None:
     """Make a HTTP post request to the vLLM server to load a checkpoint."""
-    await client._client.post(
-        url=f"{client.base_url}load_checkpoint",
-        json={
-            "ckpt_path": (ckpt_path / f"step_{step}" / "model.safetensors").as_posix()
-        },
-    )
+    logger = get_logger()
+    url = str(client.base_url) + "load_checkpoint"
+    logger.info(f"Sending load checkpoint request to {url} with ckpt_path {ckpt_path}")
+    await client._client.post(url=url, json={"ckpt_path": ckpt_path.as_posix()})
 
 
 async def generate_completion(
@@ -81,7 +81,6 @@ def get_parquet(
                 "temperature": temperature,
             }
         )
-    print(rows[0])
     return Table.from_pylist(rows, schema=SCHEMA)
 
 
@@ -90,9 +89,24 @@ def compute_rewards(
     task_types: list[str],
     verification_infos: list[dict[str, Any]],
 ) -> list[float]:
-    pass
+    rewards = []
+    for completion, task_type, verification_info in zip(
+        completions, task_types, verification_infos
+    ):
+        compute_reward = get_reward_function(task_type)
+        reward = compute_reward(completion, verification_info)
+        rewards.append(reward)
+    return rewards
 
 
 def compute_advantages(rewards: list[float], samples_per_problem: int) -> list[float]:
-    pass
-    # per_problem_rewards = [rewards[i:i+samples_per_problem] for i in range(0, len(rewards), samples_per_problem)]
+    per_problem_rewards = [
+        rewards[i : i + samples_per_problem]
+        for i in range(0, len(rewards), samples_per_problem)
+    ]
+    advantages = []
+    for problem_rewards in per_problem_rewards:
+        reward_array = np.array(problem_rewards)
+        problem_advantages = reward_array - reward_array.mean()
+        advantages.extend(problem_advantages.tolist())
+    return advantages

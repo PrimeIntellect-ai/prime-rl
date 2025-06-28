@@ -1,9 +1,11 @@
 import asyncio
+import json
 import math
 import shutil
 import time
 from pathlib import Path
 
+import numpy as np
 import pyarrow.parquet as pq
 from datasets import Dataset, load_dataset
 from openai import AsyncOpenAI
@@ -82,18 +84,20 @@ async def orchestrate(config: OrchestratorConfig):
             ckpt_step = step - 1 - config.async_level
             logger.info(f"Hit async barrier, waiting for checkpoint step {ckpt_step}")
             while True:
-                stable_file = (
-                    Path(config.checkpoints.path) / f"step_{ckpt_step}" / "stable"
+                ckpt_path = (
+                    Path(config.checkpoints.path)
+                    / f"step_{ckpt_step}"
+                    / "model.safetensors"
                 )
-                if stable_file.exists():
+                if ckpt_path.exists():
                     logger.info(
-                        f"Found checkpoint for step {ckpt_step} at {stable_file}. Reloading model weights."
+                        f"Found checkpoint for step {ckpt_step} at {ckpt_path}. Reloading model weights."
                     )
-                    await load_checkpoint(client, config.checkpoints.path, ckpt_step)
+                    await load_checkpoint(client, ckpt_path, ckpt_step)
                     break
                 if wait_time % 10 == 0 and wait_time > 0:  # Every log_interval seconds
                     logger.info(
-                        f"Waiting for checkpoint for step {ckpt_step} at {stable_file} for {wait_time} seconds"
+                        f"Waiting for checkpoint for step {ckpt_step} at {ckpt_path} for {wait_time} seconds"
                     )
                 time.sleep(1)
                 wait_time += 1
@@ -121,11 +125,12 @@ async def orchestrate(config: OrchestratorConfig):
             for chat_completion in chat_completions
         ]
         task_types = [problem["task_type"] for problem in problems]
-        verification_infos = [problem["verification_info"] for problem in problems]
+        verification_infos = [
+            json.loads(problem["verification_info"]) for problem in problems
+        ]
         rewards = compute_rewards(completions, task_types, verification_infos)
-
-        # Compute advantages
         advantages = compute_advantages(rewards, config.samples_per_problem)
+        logger.info(f"Computed rewards (average reward: {np.mean(rewards):.2f}")
 
         # Compute batch metrics
         num_input_tokens = sum(
@@ -176,9 +181,10 @@ async def orchestrate(config: OrchestratorConfig):
         # Save outputs to parquet file
         step_path = Path(config.rollout.path)
         step_path.mkdir(parents=True, exist_ok=True)
-        save_path = step_path / f"step_{step}.parquet"
+        save_path = step_path / f"step_{step}.parquet.tmp"
         logger.info(f"Saving batch outputs to {save_path}")
         pq.write_table(table, save_path)
+        save_path.rename(save_path.with_suffix(""))
 
     logger.success("Training completed.")
 

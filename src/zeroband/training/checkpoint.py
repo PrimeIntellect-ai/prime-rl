@@ -110,7 +110,7 @@ def save_ckpt_for_rollout(
     if not path.exists():
         path.mkdir(parents=True, exist_ok=True)
 
-    path_file = path / "model.pt"
+    path_file = path / "model.pt.tmp"
 
     start_time = time.time()
     logger.info(f"Saving rollout ckpt at {path}")
@@ -144,8 +144,7 @@ def save_ckpt_for_rollout(
             model.generation_config.save_pretrained(path)
             tokenizer.save_pretrained(path)
 
-            stable_file = path / "stable"
-            stable_file.touch()
+            path_file.rename(path_file.with_suffix(""))
 
             logger.info(
                 f"Full Rollout ckpt saved at {path} in {time.time() - start_time:.2f} seconds"
