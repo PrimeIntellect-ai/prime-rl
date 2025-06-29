@@ -1,10 +1,14 @@
+from typing import TypeAlias, Union
+
 import torch
 import torch.nn.functional as F
 from beartype import beartype as typechecker
 from jaxtyping import Float, Int, jaxtyped
 from torch import Tensor
 
-from zeroband.training.config import ClippingConfig, GRPOVariantsConfig, RatioConfig
+from zeroband.training.config import ClippingConfig, RatioConfig
+
+GRPOVariantsConfig: TypeAlias = Union[ClippingConfig, RatioConfig]
 
 
 @jaxtyped(typechecker=typechecker)
@@ -79,9 +83,7 @@ def grpo_loss_clip(
     loss_mask = loss_mask[:, 1:]
 
     # from the logits we drop the last logits because it corresponds to the next token that will be sample but is not here yet
-    logits = logits[
-        :, :-1, :
-    ]  # (B, L-1, V), exclude the last logit: it corresponds to the next token prediction
+    logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token prediction
 
     # Divide logits by sampling temperature.
     # See https://huggingface.co/blog/the_n_implementation_details_of_rlhf_with_ppo#policy-training-implementation-details
@@ -125,9 +127,7 @@ def grpo_loss_ratio(
     loss_mask = loss_mask[:, 1:]
 
     # from the logits we drop the last logits because it corresponds to the next token that will be sample but is not here yet
-    logits = logits[
-        :, :-1, :
-    ]  # (B, L-1, V), exclude the last logit: it corresponds to the next token prediction
+    logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token prediction
 
     # Divide logits by sampling temperature.
     # See https://huggingface.co/blog/the_n_implementation_details_of_rlhf_with_ppo#policy-training-implementation-details
@@ -171,24 +171,16 @@ def selective_log_softmax(logits, index):
             Gathered log probabilities with the same shape as `index`.
     """
     if logits.dtype in [torch.float32, torch.float64]:
-        selected_logits = torch.gather(
-            logits, dim=-1, index=index.unsqueeze(-1)
-        ).squeeze(-1)
+        selected_logits = torch.gather(logits, dim=-1, index=index.unsqueeze(-1)).squeeze(-1)
         # loop to reduce peak mem consumption
         logsumexp_values = torch.stack([torch.logsumexp(lg, dim=-1) for lg in logits])
-        per_token_logps = (
-            selected_logits - logsumexp_values
-        )  # log_softmax(x_i) = x_i - logsumexp(x)
+        per_token_logps = selected_logits - logsumexp_values  # log_softmax(x_i) = x_i - logsumexp(x)
     else:
         # logsumexp approach is unstable with bfloat16, fall back to slightly less efficient approach
         per_token_logps = []
-        for row_logits, row_labels in zip(
-            logits, index
-        ):  # loop to reduce peak mem consumption
+        for row_logits, row_labels in zip(logits, index):  # loop to reduce peak mem consumption
             row_logps = F.log_softmax(row_logits, dim=-1)
-            row_per_token_logps = row_logps.gather(
-                dim=-1, index=row_labels.unsqueeze(-1)
-            ).squeeze(-1)
+            row_per_token_logps = row_logps.gather(dim=-1, index=row_labels.unsqueeze(-1)).squeeze(-1)
             per_token_logps.append(row_per_token_logps)
         per_token_logps = torch.stack(per_token_logps)
     return per_token_logps
@@ -211,9 +203,7 @@ def entropy_loss(
     return _apply_mask(entropy, loss_mask, max_tokens)
 
 
-def _apply_mask(
-    tensor: torch.Tensor, mask: torch.Tensor, max_tokens: int
-) -> torch.Tensor:
+def _apply_mask(tensor: torch.Tensor, mask: torch.Tensor, max_tokens: int) -> torch.Tensor:
     return (tensor * mask).sum() / max_tokens
 
 
@@ -235,9 +225,7 @@ def highest_entropy_mask(
         mask: Tensor of shape (batch, seq), dtype=torch.bool
     """
     pd = torch.nn.functional.softmax(logits, dim=-1)
-    entropy = torch.logsumexp(logits, dim=-1) - torch.sum(
-        pd * logits, dim=-1
-    )  # (batch, seq)
+    entropy = torch.logsumexp(logits, dim=-1) - torch.sum(pd * logits, dim=-1)  # (batch, seq)
 
     valid_entropy = entropy[loss_mask.bool()]
     k = int(percent * valid_entropy.numel())
