@@ -113,8 +113,6 @@ def train(config: TrainingConfig):
     torch.set_float32_matmul_precision("high")
     torch.manual_seed(42)
 
-    torch.cuda.set_device(get_device_placement(config.gpus_ids, world_info))
-
     local_batch_size = get_local_batch_size(config.optim.batch_size, config.train.micro_bs, world_info)
 
     if config.ckpt.rollout_path is not None and world_info.rank == 0:

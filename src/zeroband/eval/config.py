@@ -6,10 +6,9 @@ from zeroband.training.orchestrator.config import (
     ClientConfig,
     EvalConfig,
     LogConfig,
-    ModelConfig,
     SamplingConfig,
 )
-from zeroband.utils.config import MultiMonitorConfig
+from zeroband.utils.config import ModelConfig, MultiMonitorConfig
 from zeroband.utils.pydantic_config import BaseSettings
 
 

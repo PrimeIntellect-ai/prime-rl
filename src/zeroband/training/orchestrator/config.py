@@ -265,7 +265,7 @@ class OrchestratorConfig(BaseSettings):
     rollout: Annotated[
         PathConfig,
         Field(
-            default=PathConfig(path=Path("rollouts")),
+            default=PathConfig(path=Path("rollouts"), clean=True),
             description="Path to write inference outputs to. Will be populated by the orchestrator with responses from inference pool.",
         ),
     ]
@@ -273,7 +273,7 @@ class OrchestratorConfig(BaseSettings):
     checkpoints: Annotated[
         PathConfig,
         Field(
-            default=PathConfig(path=Path("checkpoints")),
+            default=PathConfig(path=Path("checkpoints"), clean=True),
             description="Path to read new model checkpoints from. Will be populated by the trainer.",
         ),
     ]

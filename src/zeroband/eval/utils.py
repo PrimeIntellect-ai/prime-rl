@@ -72,29 +72,21 @@ async def run_benchmark(
     logger.info(f"Generating completions for {len(dataset)} problems")
     generate_start_time = time.time()
     chat_completions = await asyncio.gather(
-        *(
-            generate_completion(client, model_config, sampling_config, messages)
-            for messages in batch_messages
-        )
+        *(generate_completion(client, model_config, sampling_config, messages) for messages in batch_messages)
     )
     generate_time = time.time() - generate_start_time
 
     # Compute rewards
     logger.info("Computing rewards")
     reward_start_time = time.time()
-    completions = [
-        chat_completion.choices[0].message.content
-        for chat_completion in chat_completions
-    ]
+    completions = [chat_completion.choices[0].message.content for chat_completion in chat_completions]
     task_types = [item["task_type"] for item in dataset]
     verification_infos = [json.loads(item["verification_info"]) for item in dataset]
     rewards = compute_rewards(completions, task_types, verification_infos)
 
     # Collect rewards
     rows = []
-    for problem_id, prompt, completion, reward in zip(
-        problem_ids, prompts, completions, rewards
-    ):
+    for problem_id, prompt, completion, reward in zip(problem_ids, prompts, completions, rewards):
         logger.debug(f"Problem ID: {problem_id}\n{prompt}\n{completion}")
         row = {"problem_id": problem_id, "reward": reward}
         rows.append(row)
@@ -110,9 +102,7 @@ async def run_benchmark(
             .apply(pd.Series)
         )
     else:
-        logger.warning(
-            "Skipping computing pass@k rates because the task rewards appear to be non-binary"
-        )
+        logger.warning("Skipping computing pass@k rates because the task rewards appear to be non-binary")
     reward_time = time.time() - reward_start_time
 
     # Log statistics
