@@ -1,12 +1,25 @@
+import copy
+from typing import TypedDict
 import torch
+from jaxtyping import Float, Int
 from transformers import AutoTokenizer
 
 from zeroband.training.data import MicroBatch
 
 
+class Sample(TypedDict):
+    input_ids: Int[torch.Tensor, "seq"]
+    advantages: Float[torch.Tensor, "seq"]
+    loss_mask: Int[torch.Tensor, "seq"]
+    position_ids: Float[torch.Tensor, "seq"]
+    logprobs: Float[torch.Tensor, "seq"]
+
+    total_tokens: int
+
+
 def prepare_sample(
     prompt: str, completion: str, advantage: float, max_seq_len: int, tokenizer: AutoTokenizer, pad: bool
-):
+) -> Sample:
     """
     Prepare a problem and pad it for training.
     Tokenize and
@@ -101,6 +114,54 @@ def prepare_batch_padding(
     return batches_per_gpu
 
 
+def packed_samples_into_micro_bs(samples: list[Sample], max_seq_len: int) -> list[list[Sample]]:
+    """
+    Pack samples into micro_batch efficiently.
+    We follow the First Fit Decreasing algorithm to pack the samples into bins and minimize potential padding while never truncating.
+    """
+    sorted_samples = sorted(samples, key=lambda x: x["total_tokens"], reverse=True)
+
+    ## we create bins
+    micro_batches = []
+
+    for sample in sorted_samples:
+        # Try to find a bin that can fit this sequence
+        bin_found = False
+        for bin_idx, bin_content in enumerate(micro_batches):
+            # Calculate current bin length
+            bin_len = sum(s["total_tokens"] for s in bin_content)
+            # Check if sequence fits in this bin
+            if bin_len + sample["total_tokens"] <= max_seq_len:
+                micro_batches[bin_idx].append(sample)
+                bin_found = True
+                break
+
+        # If no suitable bin found, create a new bin
+        if not bin_found:
+            micro_batches.append([sample])
+
+    return micro_batches
+
+
+def prepare_micro_batch_packing(samples: list[Sample], max_seq_len: int, temperature: float) -> BatchOutput:
+    """
+    Prepare a micro batch for packing mode. take multi sample and return a batch of shape [1, micro_bs * max_seq_len].
+    Would additionally pad the batch to the max sequence length.
+    """
+    micro_batch = {}
+    assert sum([sample["total_tokens"] for sample in samples]) <= max_seq_len, (
+        "Total tokens of samples is greater than max sequence length"
+    )
+
+    for key in ["input_ids", "advantages", "loss_mask", "position_ids", "logprobs"]:
+        micro_batch[key] = torch.cat([sample[key] for sample in samples], dim=0).unsqueeze(0)
+
+    micro_batch["temperature"] = temperature
+    micro_batch["total_tokens"] = sum([sample["total_tokens"] for sample in samples])
+
+    return micro_batch
+
+
 def prepare_batch_packing(
     prompts: list[str],
     completions: list[str],
@@ -116,38 +177,46 @@ def prepare_batch_packing(
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
     Each micro batch is shape [1, micro_bs * max_seq_len], the namber of sample is not fixed per micro batch.
     """
-    raise NotImplementedError("Packing mode is not implemented yet")
-    # assert len(prompts) == len(completions) == len(advantages), (
-    #     "Prompts, completions, and advantages must have the same length"
-    # )
+    assert config.collate_mode == "packing", "Packing mode is not supported for this collate mode"
 
-    # all_samples = [
-    #     prepare_sample(prompt, completion, advantage, config.max_seq_len, tokenizer, pad=False)
-    #     for prompt, completion, advantage in zip(prompts, completions, advantages)
-    # ]
+    assert len(prompts) == len(completions) == len(advantages), (
+        "Prompts, completions, and advantages must have the same length"
+    )
 
-    # sorted_samples = sorted(all_samples, key=lambda x: x["total_tokens"], reverse=True)
+    max_seq_len = config.max_seq_len * config.micro_bs
 
-    # ## we create bins
-    # bins = []
+    all_samples = [
+        prepare_sample(prompt, completion, advantage, max_seq_len, tokenizer, pad=False)
+        for prompt, completion, advantage in zip(prompts, completions, advantages)
+    ]
 
-    # for seq_len, sample in sorted_samples:
-    #     # Try to find a bin that can fit this sequence
-    #     bin_found = False
-    #     for bin_idx, bin_content in enumerate(bins):
-    #         # Calculate current bin length
-    #         bin_len = sum(s["total_tokens"] for s in bin_content)
-    #         # Check if sequence fits in this bin
-    #         if bin_len + sample["total_tokens"] <= config.max_seq_len:
-    #             bins[bin_idx].append(sample)
-    #             bin_found = True
-    #             break
+    micro_batches_list = packed_samples_into_micro_bs(all_samples, max_seq_len)
+    micro_batches = [
+        prepare_micro_batch_packing(micro_batch, max_seq_len, temperature) for micro_batch in micro_batches_list
+    ]
 
-    #     # If no suitable bin found, create a new bin
-    #     if not bin_found:
-    #         batches.append([sample])
+    num_padding_batch = config.n_data_ranks - len(micro_batches) % config.n_data_ranks
 
-    # return batches
+    # because of fsdp we need to make sure that each data ran has the same number of micro batches otherwise training will hang.
+    # We create fake micro batches to fill the gap with real data but zero advantages, they would not contribute to the loss.
+    if num_padding_batch > 0:
+        padded_batch = copy.deepcopy(micro_batches[0])
+        padded_batch["advantages"] = torch.zeros_like(padded_batch["advantages"])
+        micro_batches.extend([padded_batch for _ in range(num_padding_batch)])
+
+    assert len(micro_batches) % config.n_data_ranks == 0, (
+        "Number of micro batches is not divisible by number of data ranks"
+    )
+
+    per_gpu_micro_batches = len(micro_batches) // config.n_data_ranks
+    batches_per_gpu = []
+    for _ in range(config.n_data_ranks):
+        batches = []
+        for _ in range(per_gpu_micro_batches):
+            batches.append(micro_batches.pop(0))
+        batches_per_gpu.append(batches)
+
+    return batches_per_gpu
 
 
 def prepare_batch(
@@ -165,6 +234,6 @@ def prepare_batch(
         case "padding":
             return prepare_batch_padding(prompts, completions, advantages, temperature, tokenizer, config)
         case "packing":
-            raise NotImplementedError("Packing mode is not implemented yet")
+            return prepare_batch_packing(prompts, completions, advantages, temperature, tokenizer, config)
         case _:
             raise ValueError(f"Invalid collate mode: {config.collate_mode}")
