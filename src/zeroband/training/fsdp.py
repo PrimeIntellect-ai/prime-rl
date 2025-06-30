@@ -3,10 +3,12 @@ import torch.nn as nn
 from torch.distributed._composable.fsdp import FSDPModule
 from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
 
-from zeroband.utils.models import ModelType
+from zeroband.training.config import FSDPConfig
+from zeroband.utils.models import Model
 
 
-def apply_fsdp(model: ModelType, reshard_after_forward: bool):
+def apply_fsdp(model: Model, config: FSDPConfig):
+    reshard_after_forward = config.reshard
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
 
     for layer_id, transformer_block in enumerate(model.model.layers):

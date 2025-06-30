@@ -5,16 +5,24 @@ from pydantic import Field, model_validator
 
 from zeroband.utils.config import ModelConfig as BaseModelConfig
 from zeroband.utils.config import MultiMonitorConfig, PathConfig
-from zeroband.utils.models import AttnImpl
+from zeroband.utils.models import AttnImplementation
 from zeroband.utils.pydantic_config import BaseConfig, BaseSettings
 
 
 class ModelConfig(BaseModelConfig):
     """Configures the model for training."""
 
-    attn: Annotated[AttnImpl, Field(default="flash_attention_2")]
+    attn: Annotated[
+        AttnImplementation, Field(default="flash_attention_2", description="The attention implementation to use.")
+    ]
 
-    compile: Annotated[bool, Field(default=False, description="Whether to compile the model using `torch.compile`.")]
+    compile: Annotated[
+        bool,
+        Field(
+            default=False,
+            description="Whether to compile the model using `torch.compile`. Currently discouraged because it was found to destabilize training.",
+        ),
+    ]
 
 
 class OptimizerConfig(BaseConfig):
@@ -24,20 +32,6 @@ class OptimizerConfig(BaseConfig):
     weight_decay: Annotated[float, Field(default=0.01, ge=0)]
     betas1: Annotated[float, Field(default=0.9, ge=0)]
     betas2: Annotated[float, Field(default=0.99, ge=0)]
-
-
-class CkptPathConfig(PathConfig):
-    """Configures a checkpoint path."""
-
-    interval: Annotated[int, Field(default=100, ge=0, description="Interval at which to save the checkpoint.")]
-
-    save_async: Annotated[
-        bool,
-        Field(
-            default=False,
-            description="Whether to save the checkpoint asynchronously.",
-        ),
-    ]
 
 
 class CheckpointConfig(PathConfig):
@@ -57,9 +51,21 @@ class CheckpointConfig(PathConfig):
 class WeightCheckpointConfig(BaseConfig):
     """Configures checkpointing the model weights for updating the inference engines."""
 
-    path: Annotated[Path, Field(default=Path("weights"), description="Path to write weights to. Will write ")]
+    path: Annotated[
+        Path,
+        Field(
+            default=Path("weights"),
+            description="Path to write weights to. Will write to `{path}/step_{step}` at every training step, which will be read by the orchestrator to update the inference engines.",
+        ),
+    ]
 
-    interval: Annotated[int, Field(default=1, ge=1, description="Interval at which to save the checkpoint.")]
+    interval: Annotated[
+        int | None,
+        Field(
+            default=None,
+            description="Interval of checkpoints to save. If None, will automatically delete weight checkpoints that are more than `max_async_level` steps old. This is useful to keep some weight-only checkpoints for online evals.",
+        ),
+    ]
 
     save_async: Annotated[
         bool,
@@ -139,6 +145,12 @@ class ActivationCheckpointConfig(BaseConfig):
     ]
 
 
+class FSDPConfig(BaseConfig):
+    """Configures FSDP."""
+
+    reshard: Annotated[bool, Field(default=True, description="Whether to reshard the model after each forward pass.")]
+
+
 class LogConfig(BaseConfig):
     """Configures the training logger."""
 
@@ -191,6 +203,9 @@ class Config(BaseSettings):
     # The activation checkpoint configuration
     ac: Annotated[ActivationCheckpointConfig | None, Field(default=None)]
 
+    # The FSDP config
+    fsdp: Annotated[FSDPConfig, Field(default=FSDPConfig())]
+
     # The logging configuration
     log: LogConfig = LogConfig()
 
@@ -225,7 +240,5 @@ class Config(BaseSettings):
     ]
 
     normalize_batch_to_token_count: Annotated[bool, Field(default=True)]
-
-    reshard_after_forward: Annotated[bool, Field(default=True)]
 
     seed: Annotated[int | None, Field(default=None, description="Random seed for the training.")]

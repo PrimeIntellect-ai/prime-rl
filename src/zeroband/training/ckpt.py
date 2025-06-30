@@ -11,7 +11,7 @@ from transformers import AutoTokenizer
 
 from zeroband.training.world import get_world
 from zeroband.utils.logger import get_logger
-from zeroband.utils.models import ModelType
+from zeroband.utils.models import Model
 
 
 @dataclass
@@ -22,7 +22,7 @@ class TrainingProgress:
 
 
 def save_full_checkpoint(
-    model: ModelType,
+    model: Model,
     optimizers: list[Optimizer],
     progress: TrainingProgress,
     path: Path,
@@ -48,7 +48,7 @@ def save_full_checkpoint(
 
 
 def load_full_checkpoint(
-    model: ModelType,
+    model: Model,
     optimizers: list[Optimizer],
     progress: TrainingProgress,
     path: Path,
@@ -81,7 +81,7 @@ def load_full_checkpoint(
 
 
 def save_weight_checkpoint(
-    model: ModelType,
+    model: Model,
     tokenizer: AutoTokenizer,
     path: Path,
     dtype: torch.dtype = torch.bfloat16,

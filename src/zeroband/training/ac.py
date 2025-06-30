@@ -4,10 +4,10 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoi
 
 from zeroband.training.config import ActivationCheckpointConfig
 from zeroband.utils.logger import get_logger
-from zeroband.utils.models import ModelType
+from zeroband.utils.models import Model
 
 
-def setup_ac(model: ModelType, ac_config: ActivationCheckpointConfig):
+def setup_ac(model: Model, ac_config: ActivationCheckpointConfig):
     logger = get_logger()
     logger.info(f"Applying activation checkpointing to every {ac_config.interval} layers")
     layers_ckpt = 0

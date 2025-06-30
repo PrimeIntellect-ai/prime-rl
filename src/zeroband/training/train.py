@@ -33,7 +33,7 @@ from zeroband.training.utils import (
     wake_up_model_from_cpu,
 )
 from zeroband.training.world import get_world
-from zeroband.utils.models import ModelType, get_model_and_tokenizer
+from zeroband.utils.models import Model, get_model_and_tokenizer
 from zeroband.utils.monitor import setup_monitor
 from zeroband.utils.pydantic_config import parse_argv
 from zeroband.utils.utils import clean_exit
@@ -83,23 +83,23 @@ def train(config: TrainingConfig):
         setup_ac(model, config.ac)
 
     # Shard the model for training using FSDP
-    apply_fsdp(model, config.reshard_after_forward)
+    apply_fsdp(model, config.fsdp)
 
     # Optionally, compile the model
     if config.model.compile:
-        model = torch.compile(model)
+        model: Model = torch.compile(model)
 
     # Optionally, initialize a model to compute logprobs
     if config.recompute_logprobs:
         logprob_model, _ = get_model_and_tokenizer(config.model.name, config.model.attn)
-        apply_fsdp(logprob_model, config.reshard_after_forward)
+        apply_fsdp(logprob_model, config.fsdp)
 
         # Offload the logprob model to CPU
         tensor_offloaded_repository: dict[int, OffloadedTensor] = {}
         tensor_offloaded_repository[0] = offload_model_to_cpu(logprob_model)
 
         if config.model.compile:
-            logprob_model: ModelType = torch.compile(logprob_model)
+            logprob_model: Model = torch.compile(logprob_model)
 
     # Set up the optimizer
     optimizer = torch.optim.AdamW(
@@ -307,7 +307,7 @@ def train(config: TrainingConfig):
             path_to_delete = active_weight_checkpoint_paths.pop(0)
             ckpt_step = int(path_to_delete.name.split("_")[-1])
             should_keep = config.weights.interval and ckpt_step % config.weights.interval == 0
-            if path_to_delete.exists() and not should_keep:
+            if not should_keep:
                 logger.info(f"Removing past weight checkpoint at {path_to_delete}")
                 shutil.rmtree(path_to_delete, ignore_errors=True)
 

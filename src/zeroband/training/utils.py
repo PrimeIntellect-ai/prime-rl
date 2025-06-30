@@ -13,7 +13,7 @@ from transformers import (
 )
 
 from zeroband.training.loss import selective_log_softmax
-from zeroband.utils.models import ModelType
+from zeroband.utils.models import Model
 
 
 def seed_everything(seed: int):
@@ -60,7 +60,7 @@ def get_real_tensor(tensor: torch.Tensor | DTensor):
 
 
 def compute_logprobs(
-    model: ModelType,
+    model: Model,
     input_ids: torch.Tensor,
     position_ids: torch.Tensor,
     temperature: float,
@@ -79,7 +79,7 @@ def compute_logprobs(
 OffloadedTensor: TypeAlias = list[tuple[torch.Tensor, int]]
 
 
-def offload_model_to_cpu(model: ModelType) -> OffloadedTensor:
+def offload_model_to_cpu(model: Model) -> OffloadedTensor:
     """
     Retun a list of cpu tensor representing the model weight.
     Also reduce to 0 the gpu memory usage.
@@ -96,7 +96,7 @@ def offload_model_to_cpu(model: ModelType) -> OffloadedTensor:
     return tensors_offloaded
 
 
-def copy_model_to_cpu(model: ModelType) -> OffloadedTensor:
+def copy_model_to_cpu(model: Model) -> OffloadedTensor:
     """
     Retun a list of cpu tensor representing the model weight.
     Keep gpu memory intact.
@@ -112,7 +112,7 @@ def copy_model_to_cpu(model: ModelType) -> OffloadedTensor:
     return tensors_offloaded
 
 
-def wake_up_model_from_cpu(model: ModelType, tensors: OffloadedTensor):
+def wake_up_model_from_cpu(model: Model, tensors: OffloadedTensor):
     for param, (cpu_data, storage_size) in zip(chain(model.parameters(), model.buffers()), tensors):
         data = get_real_tensor(param.data)
         data.untyped_storage().resize_(storage_size)

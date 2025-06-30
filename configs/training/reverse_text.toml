@@ -1,5 +1,4 @@
 max_steps = 50
-reshard_after_forward = true
 
 [model]
 name = "willcb/Qwen2.5-0.5B-Reverse-SFT"
