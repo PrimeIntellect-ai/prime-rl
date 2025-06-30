@@ -30,9 +30,6 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project.optional-dependencies]
-# Platform-specific dependencies
-cu128 = ["torch>=2.7.0"]
-
 # Entrypoint-specific dependencies
 train = [
     "flash-attn>=2.8.0",
@@ -59,9 +56,7 @@ rewards = [
 no-build-isolation-package = ["flash-attn"]
 
 [tool.uv.sources]
-torch = [
-  { index = "pytorch-cu128", extra = "cu128" }
-]
+torch = [{ index = "pytorch-cu128" }]
 pyext = { git = "git+https://github.com/justusmattern27/PyExt.git" }
 reasoning_gym = { git = " git+https://github.com/open-thought/reasoning-gym.git" }
 

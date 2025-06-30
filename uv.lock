@@ -3259,9 +3259,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-cu128 = [
-    { name = "torch" },
-]
 infer = [
     { name = "uvloop" },
     { name = "vllm" },
@@ -3310,14 +3307,13 @@ requires-dist = [
     { name = "reasoning-gym", marker = "extra == 'rewards'", git = "https://github.com/open-thought/reasoning-gym.git" },
     { name = "shardcast", marker = "extra == 'train'", specifier = ">=0.3.1" },
     { name = "tomli", specifier = ">=2.2.1" },
-    { name = "torch", specifier = ">=2.7.0" },
-    { name = "torch", marker = "extra == 'cu128'", specifier = ">=2.7.0", index = "https://download.pytorch.org/whl/cu128", conflict = { package = "zeroband", extra = "cu128" } },
+    { name = "torch", specifier = ">=2.7.0", index = "https://download.pytorch.org/whl/cu128" },
     { name = "transformers", specifier = ">=4.53.0" },
     { name = "uvloop", marker = "extra == 'infer'", specifier = ">=0.21.0" },
     { name = "vllm", marker = "extra == 'infer'", specifier = ">=0.9.1" },
     { name = "wandb", specifier = ">=0.20.1" },
 ]
-provides-extras = ["cu128", "train", "infer", "orchestrator", "rewards"]
+provides-extras = ["train", "infer", "orchestrator", "rewards"]
 
 [package.metadata.requires-dev]
 dev = [
