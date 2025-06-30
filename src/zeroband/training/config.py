@@ -98,8 +98,9 @@ GRPOVariantsConfig: TypeAlias = Union[ClippingConfig, RatioConfig]
 class GRPOLossConfig(BaseConfig):
     """Configures the GRPO loss."""
 
-    # The GRPO variant configuration
-    variant: GRPOVariantsConfig = RatioConfig()
+    variant: Annotated[GRPOVariantsConfig, Field(default=RatioConfig())]
+
+    max_norm: Annotated[float, Field(default=1.0, ge=0, description="Maximum gradient norm to clip.")]
 
 
 class FakeDataLoaderConfig(BaseConfig):
@@ -206,14 +207,18 @@ class Config(BaseSettings):
         ),
     ]
 
+    profile_path: Annotated[Path | None, Field(default=None, description="Path to write memory profile to.")]
+
+    recompute_logprobs: Annotated[
+        bool,
+        Field(
+            default=True,
+            description="Whether to recompute the logprobs. If True, will always recompute logprobs and overwrite those potentially found in the training batch.",
+        ),
+    ]
+
     normalize_batch_to_token_count: Annotated[bool, Field(default=True)]
 
-    grad_norm_clip: Annotated[float, Field(default=1.0)]
-
-    recompute_logprobs: Annotated[bool, Field(default=True)]
-
     reshard_after_forward: Annotated[bool, Field(default=True)]
-
-    memory_profile: Annotated[str | None, Field(default=None)]
 
     seed: Annotated[int | None, Field(default=None, description="Random seed for the training.")]

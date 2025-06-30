@@ -179,7 +179,7 @@ def train(config: TrainingConfig):
     #     )
 
     logger.info("Starting training loop")
-    weight_checkpoint_paths = []
+    active_weight_checkpoint_paths: list[Path] = []
     while True:
         train_step_start_time = time.time()
         logger.info(f"Starting training step {progress.step}")
@@ -191,6 +191,7 @@ def train(config: TrainingConfig):
         logger.info(f"Loaded batch in {load_data_time:.2f} seconds")
 
         # Optionally, Compute the logprobs for the training batch
+        compute_logprobs_time = 0
         if config.recompute_logprobs:
             logger.info(f"Starting recomputing logprobs for step {progress.step}")
             compute_logprobs_start_time = time.time()
@@ -221,7 +222,7 @@ def train(config: TrainingConfig):
             compute_logprobs_time = time.time() - compute_logprobs_start_time
             logger.info(f"Computed logprobs in {compute_logprobs_time:.2f} seconds")
 
-        if config.memory_profile and world.rank == 0:
+        if config.profile_path and world.rank == 0:
             torch.cuda.memory._record_memory_history()
 
         batch_metrics = BatchMetrics()
@@ -284,33 +285,36 @@ def train(config: TrainingConfig):
         batch_metrics.sync()
 
         # Optionally, clip the gradients
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_norm_clip).full_tensor()  # type: ignore (is a dtensor)
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.loss.max_norm).full_tensor()  # type: ignore (is a dtensor)
+        batch_metrics.update("loss/grad_norm", grad_norm.detach().clone())
 
+        # Update the model parameters
         optimizer.step()
         optimizer.zero_grad()
-
         progress.step += 1
-        inner_lr = [group["lr"] for group in optimizer.param_groups][0]
 
-        token_per_gpu = micro_batch_size * seq_len * num_micro_batches
-        new_tokens = world.world_size * token_per_gpu
-        # perf_counter.count_tokens(new_tokens)
-        # progress.total_tokens += new_tokens
-        # progress.total_samples += len()
+        # Update progress
+        num_local_tokens = micro_batch_size * seq_len * num_micro_batches
+        num_tokens = world.world_size * num_local_tokens
+        batch_size = micro_batch_size * num_micro_batches
+        progress.total_tokens += num_tokens
+        progress.total_samples += batch_size
 
-        metrics = {
+        # Log
+        progress_metrics = {
             "step": progress.step,
-            "train/total_tokens": progress.total_tokens,
-            "train/total_samples": progress.total_samples,
-            "train/inner_lr": inner_lr,
-            "losses/grad_norm": grad_norm.item(),
+            "progress/num_tokens": progress.total_tokens,
+            "progress/num_samples": progress.total_samples,
         }
+        if world.rank == 0:
+            monitor.log(progress_metrics)
 
-        for key, value in batch_metrics.items():
-            metrics[key] = value.item()
+        # Performance metrics
+        loss_metrics = {key: value.item() for key, value in batch_metrics.items()}
+        if world.rank == 0:
+            monitor.log(loss_metrics)
 
-        log = f"Step: {progress.step}, loss: {batch_metrics['loss/loss'].item():.4f}, "
-
+        # TODO(Mika): Bring back performance counter
         # tokens_per_second = perf_counter.get_tokens_per_second()
         # if tokens_per_second is not None:
         #     tokens_per_second_per_gpu = tokens_per_second / world_info.world_size
@@ -325,71 +329,62 @@ def train(config: TrainingConfig):
 
         # log += f", tokens_per_second: {tokens_per_second:.2f}, tokens_per_second_per_gpu: {tokens_per_second_per_gpu:.2f}, mfu: {mfu:.2f}"
 
-        if world.rank == 0:
-            monitor.log(metrics)
+        # Save the weight checkpoint
+        step_path = Path(config.weights.path) / f"step_{progress.step}"
+        save_weights_start_time = time.time()
+        model_path = save_weight_checkpoint(model, tokenizer, step_path, async_save=config.weights.save_async)
+        active_weight_checkpoint_paths.append(step_path)
+        save_weights_time = time.time() - save_weights_start_time
 
-        logger.info(log)
+        # Optionally, broadcast the weight checkpoint from master rank
+        if world.rank == 0 and envs.SHARDCAST_OUTPUT_DIR is not None:
+            logger.info(f"Broadcasting {model_path} via shardcast")
+            shardcast.broadcast(model_path)  # TODO: Is this blocking?
 
-        time_rollout_ckpt = None
-        time_shardcast = None
-        time_rollout_delete = None
+        # Optionally, remove old weight checkpoints to save space
+        if len(active_weight_checkpoint_paths) > config.max_async_level:
+            path_to_delete = active_weight_checkpoint_paths.pop(0)
+            ckpt_step = int(path_to_delete.name.split("_")[-1])
+            should_keep = config.weights.interval and ckpt_step % config.weights.interval == 0
+            if path_to_delete.exists() and not should_keep:
+                logger.info(f"Removing past weight checkpoint at {path_to_delete}")
+                shutil.rmtree(path_to_delete, ignore_errors=True)
 
-        # Lets do this first so that clients can start downloading as soon as possible
-        if config.weights.path:
-            step_path = Path(config.weights.path) / f"step_{progress.step}"
-            weight_checkpoint_paths.append(step_path)
-            t0 = time.time()
-            model_path = save_weight_checkpoint(model, tokenizer, step_path, async_save=config.weights.save_async)
-            time_rollout_ckpt = time.time() - t0
-
-            time_shardcast = time.time()
-            if world.rank == 0:
-                if envs.SHARDCAST_OUTPUT_DIR is not None:
-                    logger.info(f"Broadcasting {model_path}")
-                    shardcast.broadcast(model_path)  # TODO: Is this blocking?
-            time_shardcast = time.time() - time_shardcast
-
-            if len(weight_checkpoint_paths) > config.max_async_level:
-                path_to_delete = weight_checkpoint_paths.pop(0)
-                ckpt_step = int(str(path_to_delete).split("_")[-1])
-
-                should_keep = config.weights.interval and ckpt_step % config.weights.interval == 0
-                if path_to_delete.exists() and not should_keep:
-                    logger.info(f"Removing past weight checkpoint at {path_to_delete}")
-                    shutil.rmtree(path_to_delete, ignore_errors=True)
-
-        if config.memory_profile and (progress.step == 2) and world.rank == 0:
-            logger.info("Dumping memory snapshot.")
-            pickle_path: str = config.memory_profile
-            if not pickle_path.endswith(".pickle"):
-                pickle_path += ".pickle"
-            torch.cuda.memory._dump_snapshot(pickle_path)
+        # Optionally, dump memory snapshot
+        if config.profile_path and progress.step == 2 and world.rank == 0:
+            logger.info("Dumping memory snapshot")
+            profile_path = config.profile_path
+            if not profile_path.endswith(".pickle"):
+                profile_path += ".pickle"
+            torch.cuda.memory._dump_snapshot(profile_path)
             torch.cuda.memory._record_memory_history(enabled=False)
 
-        if config.ckpt.interval is not None and progress.step % config.ckpt.interval == 0:
+        # Optionally, save the full checkpoint
+        save_ckpt_time = 0
+        if config.ckpt and config.ckpt.interval and progress.step % config.ckpt.interval == 0:
             logger.info(f"Saving checkpoint at step {progress.step}")
+            save_ckpt_start_time = time.time()
             save_full_checkpoint(model, [optimizer], progress, config.ckpt.path)
+            save_ckpt_time = time.time() - save_ckpt_start_time
 
+        # Update the CPU logprob model to updated model
         if config.recompute_logprobs:
             reshard_module(logprob_model)
             tensor_offloaded_repository[progress.step] = copy_model_to_cpu(model)
 
         train_step_time = time.time() - train_step_start_time
         logger.success(f"Finished training step {progress.step} in {train_step_time:.2f}s")
-        if world.rank == 0:
-            time_metrics = {
-                "step": progress.step,
-                "perf/time_train_step": train_step_time,
-                "perf/time_data_loading": load_data_time,
-                "perf/time_logprob": compute_logprobs_time,
-            }
-            if time_rollout_ckpt is not None:
-                time_metrics["perf/time_rollout_ckpt"] = time_rollout_ckpt
-            if time_shardcast is not None:
-                time_metrics["perf/time_shardcast"] = time_shardcast
-            if time_rollout_delete is not None:
-                time_metrics["perf/time_rollout_delete"] = time_rollout_delete
 
+        # Log time metrics
+        time_metrics = {
+            "step": progress.step,
+            "time/step": train_step_time,
+            "time/load_data": load_data_time,
+            "time/save_weights": save_weights_time,
+            "time/compute_logprobs": compute_logprobs_time,
+            "time/save_ckpt": save_ckpt_time,
+        }
+        if world.rank == 0:
             monitor.log(time_metrics)
 
         if config.max_steps and progress.step >= config.max_steps:
