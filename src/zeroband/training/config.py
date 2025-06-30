@@ -1,9 +1,8 @@
 from pathlib import Path
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Literal, TypeAlias, Union
 
 from pydantic import Field, model_validator
 
-from zeroband.training.loss import GRPOVariantsConfig
 from zeroband.utils.config import ModelConfig, MultiMonitorConfig, PathConfig
 from zeroband.utils.models import AttnImpl
 from zeroband.utils.pydantic_config import BaseConfig, BaseSettings
@@ -74,6 +73,9 @@ class RatioConfig(BaseGRPOVariantConfig):
     clip_ratio: Annotated[float, Field(default=8.0)]
 
 
+GRPOVariantsConfig: TypeAlias = Union[ClippingConfig, RatioConfig]
+
+
 class GRPOLossConfig(BaseConfig):
     """Configures the GRPO loss."""
 
@@ -124,8 +126,8 @@ class Config(BaseSettings):
     # The model configuration
     model: Annotated[ModelConfig, Field(default=ModelConfig())]
 
-    # The data loader configuration
-    loader: Annotated[DataLoaderConfig, Field(default=DataLoaderConfig())]
+    # The data configuration
+    data: Annotated[DataConfig, Field(default=DataConfig())]
 
     # The optimizer configuration
     optim: Annotated[OptimConfig, Field(default=OptimConfig())]

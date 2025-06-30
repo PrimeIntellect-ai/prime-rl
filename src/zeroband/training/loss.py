@@ -1,14 +1,10 @@
-from typing import TypeAlias, Union
-
 import torch
 import torch.nn.functional as F
 from beartype import beartype as typechecker
 from jaxtyping import Float, Int, jaxtyped
 from torch import Tensor
 
-from zeroband.training.config import ClippingConfig, RatioConfig
-
-GRPOVariantsConfig: TypeAlias = Union[ClippingConfig, RatioConfig]
+from zeroband.training.config import ClippingConfig, GRPOVariantsConfig, RatioConfig
 
 
 @jaxtyped(typechecker=typechecker)

@@ -21,8 +21,8 @@ from zeroband.training.checkpoint import (
     save_checkpoint_fsdp_state,
     save_ckpt_for_rollout,
 )
-from zeroband.training.data import FakeDataLoader, DataLoader
 from zeroband.training.config import Config as TrainingConfig
+from zeroband.training.data import DataLoader, FakeDataLoader
 from zeroband.training.logger import setup_logger
 from zeroband.training.loss import entropy_loss, grpo_loss, selective_log_softmax
 from zeroband.training.utils import (

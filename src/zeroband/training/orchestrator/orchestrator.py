@@ -6,11 +6,13 @@ import time
 from pathlib import Path
 
 import numpy as np
+import torch
 from datasets import Dataset, load_dataset
 from transformers import AutoTokenizer
 
 from zeroband.eval.utils import run_benchmark
 from zeroband.training.orchestrator.config import OrchestratorConfig
+from zeroband.training.orchestrator.data import prepare_batch
 from zeroband.training.orchestrator.logger import setup_logger
 from zeroband.training.orchestrator.utils import (
     compute_advantages,
@@ -18,14 +20,12 @@ from zeroband.training.orchestrator.utils import (
     generate_completion,
     health_check,
     load_checkpoint,
-    prepare_batch,
     setup_client,
     wait_for_checkpoint,
 )
 from zeroband.utils.monitor import setup_monitor
 from zeroband.utils.pydantic_config import parse_argv
 from zeroband.utils.utils import clean_exit
-import torch
 
 # todo: add sample to wandb
 # todo: add reward, seqlen, task specific reward to wandb
@@ -175,18 +175,17 @@ async def orchestrate(config: OrchestratorConfig):
             advantages=advantages,
             temperature=config.sampling.temperature,
             tokenizer=tokenizer,
-            micro_bs=config.train.micro_bs,
-            max_seq_len=config.train.max_seq_len,
-            n_data_ranks=config.train.n_data_ranks,
+            train_config=config.train,
         )
 
         for i, batches in enumerate(all_data_ranks_batches):
             save_folder = Path(config.rollout.path) / f"step_{step}"
             save_folder.mkdir(parents=True, exist_ok=True)
-            save_path = save_folder / f"data_rank_{i}.pt.tmp"
-            torch.save(batches, save_path)
-            logger.info(f"Saving batch outputs to {save_path}")
-            save_path.rename(save_path.with_suffix(""))
+            save_path = save_folder / f"rollout_{i}.pt"
+            tmp_path = save_path.with_suffix(".tmp")
+            torch.save(batches, tmp_path)
+            tmp_path.rename(save_path)
+            logger.info(f"Saved rollouts for step {step} to {save_path}")
 
     logger.success("Training completed.")
 

@@ -206,11 +206,40 @@ class EvalConfig(BaseConfig):
 
 
 class TrainConfig(BaseConfig):
-    # this name is temporary and map one one to the current training data config
-    max_seq_len: Annotated[int, Field(default=1024)]
-    micro_bs: Annotated[int, Field(default=1)]
-    batch_size: Annotated[int, Field(default=128)]
-    n_data_ranks: Annotated[int, Field(default=1)]  # todo should be automatic
+    """Configures how to feed the data to the trainer."""
+
+    batch_size: Annotated[int, Field(default=128, ge=1, description="Number of samples to train on per step.")]
+
+    micro_batch_size: Annotated[
+        int,
+        Field(
+            default=128,
+            ge=1,
+            description="Number of samples to train on per micro batch. This value should be tuned based on the hardware available. Usually, to the largest value divisble by the training batch size.",
+        ),
+    ]
+
+    seq_len: Annotated[
+        int,
+        Field(
+            default=1024,
+            description="Sequence length to use for training. If a sample is shorter than this, it will be padded. If a sequence is longer than this, it will be truncated.",
+        ),
+    ]
+
+    # TODO(Mika): This should be automatic from the number of ZMQ connections
+    num_train_workers: Annotated[
+        int,
+        Field(default=1, ge=1, description="Number of training workers to use for training."),
+    ]
+
+    @model_validator(mode="after")
+    def validate_batch_size(self):
+        if self.batch_size % self.micro_batch_size != 0:
+            raise ValueError("Batch size must be divisible by micro batch size")
+        if self.batch_size < self.micro_batch_size:
+            raise ValueError("Batch size must be greater than or equal to micro batch size")
+        return self
 
 
 class OrchestratorConfig(BaseSettings):
