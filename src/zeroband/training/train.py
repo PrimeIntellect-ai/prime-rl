@@ -122,12 +122,6 @@ def train(config: TrainingConfig):
     if config.data.fake:
         dataloader = FakeDataLoader(config.data.fake)
 
-    # TODO(Mika): Add this back but without dependency on the seq_len
-    # if config.data.fake:
-    #     train_dataloader = FakeDataLoader(
-    #         config.data.seq_length, tokenizer.pad_token_id, config.train.micro_bs, local_batch_size
-    #     )
-
     logger.info("Starting training loop")
     active_weight_checkpoint_paths: list[Path] = []
     while True:
