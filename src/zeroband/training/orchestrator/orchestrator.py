@@ -18,10 +18,10 @@ from zeroband.training.orchestrator.utils import (
     generate_completion,
     health_check,
     load_checkpoint,
-    prepare_batch,
     setup_client,
     wait_for_checkpoint,
 )
+from zeroband.training.orchestrator.training_data import prepare_batch
 from zeroband.utils.monitor import setup_monitor
 from zeroband.utils.pydantic_config import parse_argv
 from zeroband.utils.utils import clean_exit
