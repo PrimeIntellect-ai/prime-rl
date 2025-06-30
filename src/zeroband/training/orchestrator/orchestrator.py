@@ -168,7 +168,7 @@ async def orchestrate(config: OrchestratorConfig):
         }
         monitor.log(progress_metrics)
 
-        # Write step parquet file
+        # Write serialized batch to disk
         all_data_ranks_batches = prepare_batch(
             prompts=prompts,
             completions=completions,
