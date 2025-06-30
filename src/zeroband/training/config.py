@@ -119,10 +119,6 @@ class DataConfig(BaseConfig):
     seq_length: Annotated[int, Field(default=1024)]
     fake: Annotated[bool, Field(default=False)]
 
-    local_dir: Annotated[str, Field(default="/dev/shm/zeroband/data")]  # only used if path is gcp
-
-    ignore_zero_advantages: Annotated[bool, Field(default=False)]  # don't use in local setup
-
 
 class PathConfig(BaseConfig):
     """Configures a path used for input/ output operations"""
