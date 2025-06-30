@@ -25,6 +25,7 @@ from zeroband.training.data import DataLoader
 from zeroband.training.logger import setup_logger
 from zeroband.training.loss import entropy_loss, grpo_loss, selective_log_softmax
 from zeroband.training.metrics import BatchMetrics
+from zeroband.training.perf import get_perf_counter
 from zeroband.training.utils import (
     OffloadedTensor,
     copy_model_to_cpu,
@@ -161,7 +162,6 @@ def train(config: TrainingConfig):
     )
 
     # TODO(Mika): Add this back but without dependency on the seq_len
-    # perf_counter = PerfCounter(window_size=10, model=model, seq_len=config.data.seq_length)
 
     # Optionally, resume training from a checkpoint
     progress = TrainingProgress(total_tokens=0, step=0, total_samples=0)
@@ -246,6 +246,7 @@ def train(config: TrainingConfig):
                 max_tokens = input_ids.shape[0] * input_ids.shape[1]
 
             # Forward pass
+            logger.debug(f"Forwarding on micro batch {micro_step} / {num_micro_batches}")
             logits: Float[torch.Tensor, "batch seq vocab"] = model(
                 input_ids=input_ids, position_ids=position_ids
             ).logits.contiguous()
@@ -264,6 +265,7 @@ def train(config: TrainingConfig):
 
             # Compute the entropy
             with torch.no_grad():
+                logger.debug(f"Computing entropy on micro batch {micro_step} / {num_micro_batches}")
                 entropy = entropy_loss(logits, loss_mask, temperature, max_tokens)
 
             # Now we can delete the micro batch CUDA tensors
@@ -273,22 +275,30 @@ def train(config: TrainingConfig):
             loss = loss / num_micro_batches
 
             # Backward pass (ensures loss reduction across FSDP ranks)
+            logger.debug(f"Backward pass on micro batch {micro_step} / {num_micro_batches}")
             loss.backward()
 
             batch_metrics.update("loss/loss", loss.detach().clone())
             batch_metrics.update("loss/entropy", entropy.detach().clone())
             batch_metrics.update("loss/clip_ratio", clip_ratio.detach().clone())
 
+            logger.debug(
+                f"Finished training on micro batch {micro_step} / {num_micro_batches} (loss: {loss.item():.2f}, entropy: {entropy.item():.2f}, clip_ratio: {clip_ratio.item():.2f})"
+            )
+
             del loss, entropy, clip_ratio
 
         # Synchronize the batch metrics across all ranks
+        logger.info("Synchronizing batch metrics across all ranks")
         batch_metrics.sync()
 
         # Optionally, clip the gradients
+        logger.info(f"Clipping gradients with max norm {config.loss.max_norm}")
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.loss.max_norm).full_tensor()  # type: ignore (is a dtensor)
         batch_metrics.update("loss/grad_norm", grad_norm.detach().clone())
 
         # Update the model parameters
+        logger.info("Updating model parameters")
         optimizer.step()
         optimizer.zero_grad()
         progress.step += 1
@@ -299,8 +309,7 @@ def train(config: TrainingConfig):
         batch_size = micro_batch_size * num_micro_batches
         progress.total_tokens += num_tokens
         progress.total_samples += batch_size
-
-        # Log
+        # Log progress metrics
         progress_metrics = {
             "step": progress.step,
             "progress/num_tokens": progress.total_tokens,
@@ -309,25 +318,27 @@ def train(config: TrainingConfig):
         if world.rank == 0:
             monitor.log(progress_metrics)
 
-        # Performance metrics
+        # Update the performance counter
+        perf_counter = get_perf_counter(model, seq_len)
+        perf_counter.count_tokens(num_tokens)
+
+        # Loss loss metrics
         loss_metrics = {key: value.item() for key, value in batch_metrics.items()}
         if world.rank == 0:
             monitor.log(loss_metrics)
 
-        # TODO(Mika): Bring back performance counter
-        # tokens_per_second = perf_counter.get_tokens_per_second()
-        # if tokens_per_second is not None:
-        #     tokens_per_second_per_gpu = tokens_per_second / world_info.world_size
-        #     mfu = perf_counter.get_mfu()
-        #     metrics.update(
-        #         {
-        #             "perf/tokens_per_second": tokens_per_second,
-        #             "perf/tokens_per_second_per_gpu": tokens_per_second_per_gpu,
-        #             "perf/mfu": mfu,
-        #         }
-        #     )
-
-        # log += f", tokens_per_second: {tokens_per_second:.2f}, tokens_per_second_per_gpu: {tokens_per_second_per_gpu:.2f}, mfu: {mfu:.2f}"
+        # Log Performance metrics
+        tokens_per_second = perf_counter.get_tokens_per_second() or 0
+        mfu = perf_counter.get_mfu() or 0
+        tokens_per_second_per_gpu = tokens_per_second / world.world_size
+        perf_metrics = {
+            "step": progress.step,
+            "perf/tokens_per_second": tokens_per_second,
+            "perf/tokens_per_second_per_gpu": tokens_per_second_per_gpu,
+            "perf/mfu": mfu,
+        }
+        if world.rank == 0:
+            monitor.log(perf_metrics)
 
         # Save the weight checkpoint
         step_path = Path(config.weights.path) / f"step_{progress.step}"
@@ -373,7 +384,9 @@ def train(config: TrainingConfig):
             tensor_offloaded_repository[progress.step] = copy_model_to_cpu(model)
 
         train_step_time = time.time() - train_step_start_time
-        logger.success(f"Finished training step {progress.step} in {train_step_time:.2f}s")
+        logger.success(
+            f"Finished training step {progress.step} in {train_step_time:.2f}s (Loss: {loss_metrics['loss/loss']:.2f}, Entropy: {loss_metrics['loss/entropy']:.2f}, Clip Ratio: {loss_metrics['loss/clip_ratio']:.2f}, Throughput: {tokens_per_second:.2f} tokens/s, MFU: {mfu:.2f}%)"
+        )
 
         # Log time metrics
         time_metrics = {
