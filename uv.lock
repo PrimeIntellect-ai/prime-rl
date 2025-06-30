@@ -3280,6 +3280,7 @@ train = [
     { name = "flash-attn" },
     { name = "jaxtyping" },
     { name = "liger-kernel" },
+    { name = "pyzmq" },
     { name = "shardcast" },
 ]
 
@@ -3307,6 +3308,7 @@ requires-dist = [
     { name = "pyext", marker = "extra == 'rewards'", git = "https://github.com/justusmattern27/PyExt.git" },
     { name = "pylatexenc", marker = "extra == 'rewards'", specifier = ">=2.10" },
     { name = "pynvml", specifier = ">=12.0.0" },
+    { name = "pyzmq", marker = "extra == 'train'", specifier = ">=27.0.0" },
     { name = "reasoning-gym", marker = "extra == 'rewards'", git = "https://github.com/open-thought/reasoning-gym.git" },
     { name = "shardcast", marker = "extra == 'train'", specifier = ">=0.3.1" },
     { name = "tomli", specifier = ">=2.2.1" },
