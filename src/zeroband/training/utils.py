@@ -8,7 +8,6 @@ import torch
 import torch.distributed as dist
 import wandb
 from torch.distributed._composable.fsdp import FSDPModule
-from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
 from torch.distributed.tensor import DTensor
 from transformers import (
     LlamaConfig,
@@ -17,28 +16,7 @@ from transformers import (
 )
 
 from zeroband.training.world_info import get_world_info
-from zeroband.utils.logger import get_logger
 from zeroband.utils.models import ModelType
-
-
-def apply_ac_ckpt(model: ModelType, num: int):
-    """Apply activation checkpointing to the model.
-    Apply to layers multiple of `num`.
-
-    Example if `num=2` only half of the layers are checkpointed.
-    """
-    logger = get_logger()
-
-    layers_ckpt = 0
-
-    for layer_id, transformer_block in model.model.layers.named_children():
-        if layers_ckpt % num == 0:
-            transformer_block = checkpoint_wrapper(transformer_block, preserve_rng_state=False)
-            model.model.layers.register_module(layer_id, transformer_block)
-            layers_ckpt += 1
-
-    logger.debug(f"Applied activation checkpointing to {layers_ckpt} layers")
-
 
 ### code above inspired and copied from https://github.com/pytorch/torchtitan/blob/4b3f2e41a084bf79a8540068ed525539d1244edd/torchtitan/utils.py#L119
 
@@ -305,7 +283,11 @@ def log_prompt_response_samples(
 
         if step >= sample_history["last_logged_step"] + 5:
             # Create table data dictionary (we are forced to remake it each time)
-            table_data = {"step": sample_history["step"], "prompt": sample_history["prompt"], "completion": sample_history["completion"]}
+            table_data = {
+                "step": sample_history["step"],
+                "prompt": sample_history["prompt"],
+                "completion": sample_history["completion"],
+            }
 
             if sample_history["rewards"] is not None:
                 table_data["reward"] = sample_history["rewards"]

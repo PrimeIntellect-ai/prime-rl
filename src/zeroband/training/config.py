@@ -118,6 +118,19 @@ class DataLoaderConfig(BaseConfig):
     fake: Annotated[FakeDataLoaderConfig | None, Field(default=None)]
 
 
+class ActivationCheckpointConfig(BaseConfig):
+    """Configures activation checkpointing."""
+
+    interval: Annotated[
+        int,
+        Field(
+            default=1,
+            ge=1,
+            description="Interval at which to checkpoint the model layers. Will apply activation checkpointing to every `interval` layers. For example, if `interval=2`, every other half of the layers will be checkpointed.",
+        ),
+    ]
+
+
 class LogConfig(BaseConfig):
     """Configures the training logger."""
 
@@ -167,6 +180,9 @@ class Config(BaseSettings):
     # The loss configuration
     loss: Annotated[GRPOLossConfig, Field(default=GRPOLossConfig())]
 
+    # The activation checkpoint configuration
+    ac: Annotated[ActivationCheckpointConfig | None, Field(default=None)]
+
     # The logging configuration
     log: LogConfig = LogConfig()
 
@@ -196,8 +212,8 @@ class Config(BaseSettings):
 
     recompute_logprobs: Annotated[bool, Field(default=True)]
 
-    ac_ckpt: Annotated[bool | int, Field(default=False)]
-
     reshard_after_forward: Annotated[bool, Field(default=True)]
 
     memory_profile: Annotated[str | None, Field(default=None)]
+
+    seed: Annotated[int | None, Field(default=None, description="Random seed for the training.")]
