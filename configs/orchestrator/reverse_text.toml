@@ -9,3 +9,6 @@ name = "mikasenghaas/reverse_text_dataset_debug_50_seq_len"
 
 [sampling]
 n = 16
+
+[train]
+n_data_ranks = 1

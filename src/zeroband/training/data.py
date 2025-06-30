@@ -1,7 +1,11 @@
+from pathlib import Path
 from typing import TypedDict
 
 from jaxtyping import Float, Int
 import torch
+
+from zeroband.training.world_info import get_world_info
+from zeroband.training.logger import get_logger
 
 
 class BatchOutput(TypedDict):
@@ -17,7 +21,7 @@ class BatchOutput(TypedDict):
     total_tokens: int
 
 
-class DataLoader:
+class FakeDataLoader:
     def __init__(self, max_seq_len: int, pad_token_id: int, micro_bs: int, batch_size: int):
         self.max_seq_len = max_seq_len
         self.pad_token_id = pad_token_id
@@ -40,3 +44,24 @@ class DataLoader:
             "temperature": 1.0,
             "total_tokens": self.micro_bs * self.max_seq_len,
         }
+
+
+class DataLoader:
+    """
+    Simply load the data from the data path.
+    """
+
+    def __init__(self, data_path: Path, start_step: int):
+        self.data_path = data_path
+        self.current_step = start_step
+        self.world_info = get_world_info()
+
+    def get_batch(self) -> list[BatchOutput]:
+        get_logger().info(f"Loading data from path {self.data_path}")
+        while True:
+            # here adding step + 1 because orchestator count step is offset by 1 bc of @mika
+            step_path = self.data_path / f"step_{self.current_step + 1}" / f"data_rank_{self.world_info.rank}.pt"
+            if step_path.exists():
+                batches = torch.load(step_path)
+                self.current_step += 1
+                return batches

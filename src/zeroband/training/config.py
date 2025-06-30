@@ -115,7 +115,7 @@ CollateMode: TypeAlias = Literal["packing", "padding", "balancing"]
 
 
 class DataConfig(BaseConfig):
-    path: Annotated[str, Field(default="datasets/fineweb-edu")]
+    path: Annotated[Path, Field(default=Path("rollouts"))]
     seq_length: Annotated[int, Field(default=1024)]
     fake: Annotated[bool, Field(default=False)]
 

@@ -21,7 +21,7 @@ from zeroband.training.checkpoint import (
     save_checkpoint_fsdp_state,
     save_ckpt_for_rollout,
 )
-from zeroband.training.data import DataLoader
+from zeroband.training.data import FakeDataLoader, DataLoader
 from zeroband.training.config import Config as TrainingConfig
 from zeroband.training.logger import setup_logger
 from zeroband.training.loss import entropy_loss, grpo_loss, selective_log_softmax
@@ -174,9 +174,12 @@ def train(config: TrainingConfig):
         logger.info(f"loading checkpoint from {config.ckpt.resume}")
         load_checkpoint_fsdp_state(model, [optimizer], training_progress, config.ckpt.resume)
 
-    train_dataloader = DataLoader(
-        config.data.seq_length, tokenizer.pad_token_id, config.train.micro_bs, local_batch_size
-    )
+    if config.data.fake:
+        train_dataloader = FakeDataLoader(
+            config.data.seq_length, tokenizer.pad_token_id, config.train.micro_bs, local_batch_size
+        )
+    else:
+        train_dataloader = DataLoader(config.data.path, config.start_step)
 
     previous_ckpt_rollout = []
 
@@ -261,7 +264,7 @@ def train(config: TrainingConfig):
 
             # Gather args for grpo loss
             advantages = batch["advantages"].to("cuda")
-            loss_mask = loss_mask.to("cuda")
+            loss_mask = loss_mask.int().to("cuda")
             original_logprobs = batch["logprobs"].to("cuda")
 
             # Loss
