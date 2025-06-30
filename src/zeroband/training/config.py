@@ -3,6 +3,7 @@ from typing import Annotated, Literal, TypeAlias, Union
 
 from pydantic import Field, model_validator
 
+from zeroband.training.orchestrator.config import OrchestratorConfig
 from zeroband.utils.config import MultiMonitorConfig
 from zeroband.utils.pydantic_config import BaseConfig, BaseSettings
 
@@ -197,6 +198,9 @@ class LogConfig(BaseConfig):
 class Config(BaseSettings):
     """Configures training"""
 
+    # The orchestrator configuration
+    orchestrator: Annotated[OrchestratorConfig | None, Field(default=None)]
+
     # The model configuration
     model: Annotated[ModelConfig, Field(default=ModelConfig())]
 
@@ -247,3 +251,12 @@ class Config(BaseSettings):
             description="Whether to recompute the logprobs. If True, will always recompute logprobs and overwrite those potentially found in the training batch.",
         ),
     ]
+
+    @model_validator(mode="after")
+    def validate_orchestrator(self):
+        # Ensures that shared configs are consistent between the trainers and orchestrator
+        if self.orchestrator:
+            self.orchestrator.max_steps = self.max_steps
+            self.orchestrator.model.name = self.model.name
+            self.orchestrator.async_level = self.max_async_level
+        return self
