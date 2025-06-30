@@ -2,16 +2,25 @@ import socket
 from itertools import chain
 from typing import TypeAlias
 
+import numpy as np
 import pandas as pd
 import torch
 import wandb
-from torch.distributed._composable.fsdp import FSDPModule
+from jaxtyping import Float
 from torch.distributed.tensor import DTensor
 from transformers import (
     PreTrainedTokenizer,
 )
 
+from zeroband.training.loss import selective_log_softmax
 from zeroband.utils.models import ModelType
+
+
+def seed_everything(seed: int):
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 
 def get_random_available_port_list(num_port):
@@ -48,6 +57,23 @@ def get_real_tensor(tensor: torch.Tensor | DTensor):
     if isinstance(tensor, DTensor):
         return tensor.to_local()
     return tensor
+
+
+def compute_logprobs(
+    model: ModelType,
+    input_ids: torch.Tensor,
+    position_ids: torch.Tensor,
+    temperature: float,
+) -> torch.Tensor:
+    logits: Float[torch.Tensor, "batch seq vocab"] = model(
+        input_ids=input_ids, position_ids=position_ids
+    ).logits.contiguous()
+
+    input_ids_shifted = input_ids[:, 1:]
+    logits_shifted = logits[:, :-1, :] / temperature
+    logprobs = selective_log_softmax(logits_shifted, input_ids_shifted)
+    del logits, logits_shifted
+    return logprobs
 
 
 OffloadedTensor: TypeAlias = list[tuple[torch.Tensor, int]]
@@ -92,12 +118,6 @@ def wake_up_model_from_cpu(model: ModelType, tensors: OffloadedTensor):
         data.untyped_storage().resize_(storage_size)
         data.copy_(cpu_data, non_blocking=True)
     torch.cuda.synchronize()
-
-
-def reshard_module(model: torch.nn.Module):
-    for module in model.modules():
-        if isinstance(module, FSDPModule):
-            module.reshard()
 
 
 def log_prompt_response_samples(

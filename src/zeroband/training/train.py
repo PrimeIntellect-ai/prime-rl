@@ -4,13 +4,10 @@ import shutil
 import time
 from pathlib import Path
 
-import numpy as np
 import shardcast
 import torch
-import torch.distributed.tensor
 from jaxtyping import Float
 from torch._guards import log as torch_log
-from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
 
 from zeroband.training import envs
 from zeroband.training.ac import setup_ac
@@ -22,73 +19,24 @@ from zeroband.training.ckpt import (
 )
 from zeroband.training.config import Config as TrainingConfig
 from zeroband.training.data import DataLoader, FakeDataLoader
+from zeroband.training.fsdp import apply_fsdp, reshard_module
 from zeroband.training.logger import setup_logger
-from zeroband.training.loss import entropy_loss, grpo_loss, selective_log_softmax
+from zeroband.training.loss import entropy_loss, grpo_loss
 from zeroband.training.metrics import BatchMetrics
 from zeroband.training.perf import get_perf_counter
 from zeroband.training.utils import (
     OffloadedTensor,
+    compute_logprobs,
     copy_model_to_cpu,
     offload_model_to_cpu,
-    reshard_module,
+    seed_everything,
     wake_up_model_from_cpu,
 )
-from zeroband.training.world import World, get_world
+from zeroband.training.world import get_world
 from zeroband.utils.models import ModelType, get_model_and_tokenizer
 from zeroband.utils.monitor import setup_monitor
 from zeroband.utils.pydantic_config import parse_argv
 from zeroband.utils.utils import clean_exit
-
-
-def get_local_batch_size(batch_size: int, micro_bs: int, world: World) -> int:
-    assert batch_size % world.world_size == 0
-    batch_size = batch_size // world.world_size
-
-    assert batch_size % micro_bs == 0, str(
-        f"The micro batch size ({micro_bs}) must divide the number of samples on each GPU ({batch_size})"
-    )
-
-    return batch_size
-
-
-def apply_fsdp(model: ModelType, reshard_after_forward: bool):
-    mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
-
-    for layer_id, transformer_block in enumerate(model.model.layers):
-        if reshard_after_forward:
-            layer_reshard_after_forward = layer_id < len(model.model.layers) - 1
-        else:
-            layer_reshard_after_forward = False
-        fully_shard(
-            transformer_block,
-            mp_policy=mp_policy,
-            reshard_after_forward=layer_reshard_after_forward,
-        )
-    fully_shard(model, mp_policy=mp_policy, reshard_after_forward=reshard_after_forward)
-
-
-def get_logprobs(
-    model: ModelType,
-    input_ids: torch.Tensor,
-    position_ids: torch.Tensor,
-    temperature: float,
-) -> torch.Tensor:
-    logits: Float[torch.Tensor, "batch seq vocab"] = model(
-        input_ids=input_ids, position_ids=position_ids
-    ).logits.contiguous()
-
-    input_ids_shifted = input_ids[:, 1:]
-    logits_shifted = logits[:, :-1, :] / temperature
-    logprobs = selective_log_softmax(logits_shifted, input_ids_shifted)
-    del logits, logits_shifted
-    return logprobs
-
-
-def seed_everything(seed: int):
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
 
 
 @clean_exit
@@ -213,7 +161,7 @@ def train(config: TrainingConfig):
                     position_ids = micro_batch["position_ids"].to("cuda")
                     temperature = micro_batch["temperature"]
 
-                    logprobs = get_logprobs(logprob_model, input_ids, position_ids, temperature)
+                    logprobs = compute_logprobs(logprob_model, input_ids, position_ids, temperature)
                     micro_batch["logprobs"] = logprobs.to("cpu")
 
             # here we sepcifically don't save the tensor offloaded, they are alreay consumed and we will never use it again.
