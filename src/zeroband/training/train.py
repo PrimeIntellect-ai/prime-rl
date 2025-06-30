@@ -7,7 +7,6 @@ from pathlib import Path
 import numpy as np
 import shardcast
 import torch
-import torch.distributed as dist
 import torch.distributed.tensor
 from jaxtyping import Float
 from torch._guards import log as torch_log
@@ -225,7 +224,6 @@ def train(config: TrainingConfig):
         if config.memory_profile and world.rank == 0:
             torch.cuda.memory._record_memory_history()
 
-        batch_loss = torch.tensor(0.0, device="cuda")
         batch_metrics = BatchMetrics()
         num_micro_batches = len(micro_batches)
         for micro_step, micro_batch in enumerate(micro_batches, start=1):
@@ -251,7 +249,7 @@ def train(config: TrainingConfig):
                 input_ids=input_ids, position_ids=position_ids
             ).logits.contiguous()
 
-            # Loss
+            # Compute loss
             loss, clip_ratio = grpo_loss(
                 logits,
                 input_ids,
@@ -273,25 +271,19 @@ def train(config: TrainingConfig):
             # Scale the loss by the number of micro batches (=gradient accumulation steps)
             loss = loss / num_micro_batches
 
-            # Backward
+            # Backward pass (ensures loss reduction across FSDP ranks)
             loss.backward()
-            batch_loss += loss.detach().clone()
 
             batch_metrics.update("loss/loss", loss.detach().clone())
             batch_metrics.update("loss/entropy", entropy.detach().clone())
-            if clip_ratio is not None:
-                batch_metrics.update("losses/clip_ratio", clip_ratio.detach().clone())
+            batch_metrics.update("loss/clip_ratio", clip_ratio.detach().clone())
 
             del loss, entropy, clip_ratio
 
         # Synchronize the batch metrics across all ranks
         batch_metrics.sync()
 
-        # All reduce the batch loss after gradient accumulation
-        assert batch_loss.item() == batch_metrics["loss/loss"].item()
-        dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)
-
-        # Optinally, clip the gradients
+        # Optionally, clip the gradients
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_norm_clip).full_tensor()  # type: ignore (is a dtensor)
 
         optimizer.step()
@@ -308,7 +300,6 @@ def train(config: TrainingConfig):
 
         metrics = {
             "step": progress.step,
-            "losses/loss": batch_loss.item(),
             "train/total_tokens": progress.total_tokens,
             "train/total_samples": progress.total_samples,
             "train/inner_lr": inner_lr,
@@ -318,9 +309,7 @@ def train(config: TrainingConfig):
         for key, value in batch_metrics.items():
             metrics[key] = value.item()
 
-        log = f"Step: {progress.step}, loss: {batch_loss.item():.4f}, "
-
-        del batch_loss, grad_norm
+        log = f"Step: {progress.step}, loss: {batch_metrics['loss/loss'].item():.4f}, "
 
         # tokens_per_second = perf_counter.get_tokens_per_second()
         # if tokens_per_second is not None:
