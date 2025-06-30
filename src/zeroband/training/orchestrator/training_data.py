@@ -21,14 +21,12 @@ def prepare_sample(
     advantages = torch.tensor(advantage).repeat(inputs_ids.shape[0]).float()
     position_ids = torch.arange(inputs_ids.shape[0]).float()
     logprobs = torch.ones_like(inputs_ids).float()  # todo add real logprobs
-    total_tokens = inputs_ids.shape[0]
+    total_tokens = inputs_ids.shape[0]  # total token should always be before padding
 
     if inputs_ids.shape[0] > max_seq_len:
-        inputs_ids = inputs_ids[:max_seq_len]
-        loss_mask = loss_mask[:max_seq_len].int()
-        advantages = advantages[:max_seq_len]
-        position_ids = position_ids[:max_seq_len]
-        total_tokens = max_seq_len
+        raise ValueError(f"Sequence length {inputs_ids.shape[0]} is greater than max sequence length {max_seq_len}")
+        # not we should never truncate as it would create a really bad learning signal in a grpo style rl run.
+        # we should make sure that we always train with at least the max sequence length as we are using for inference.
 
     elif pad:
         padding_len = max_seq_len - inputs_ids.shape[0]
@@ -37,7 +35,6 @@ def prepare_sample(
         advantages = torch.cat([advantages, torch.zeros(padding_len)]).float()
         position_ids = torch.cat([position_ids, torch.arange(padding_len)]).float()
         logprobs = torch.cat([logprobs, torch.ones(padding_len)]).float()
-        total_tokens = max_seq_len
 
     return {
         "input_ids": inputs_ids,
@@ -114,7 +111,6 @@ def prepare_batch_packing(
     Each micro batch is shape [1, micro_bs * max_seq_len], the namber of sample is not fixed per micro batch.
     """
     raise NotImplementedError("Packing mode is not implemented yet")
-
     # assert len(prompts) == len(completions) == len(advantages), (
     #     "Prompts, completions, and advantages must have the same length"
     # )
