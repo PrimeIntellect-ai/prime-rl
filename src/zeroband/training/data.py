@@ -5,7 +5,7 @@ import torch
 from jaxtyping import Float, Int
 
 from zeroband.training.logger import get_logger
-from zeroband.training.world_info import get_world_info
+from zeroband.training.world import get_world
 
 
 class MicroBatch(TypedDict):
@@ -52,13 +52,13 @@ class DataLoader:
     def __init__(self, data_path: Path, start_step: int):
         self.data_path = data_path
         self.current_step = start_step
-        self.world_info = get_world_info()
+        self.world = get_world()
 
     def get_batch(self) -> list[MicroBatch]:
         get_logger().info(f"Loading data from path {self.data_path}")
         while True:
             # here adding step + 1 because orchestrator count step is offset by 1 bc of @mika
-            step_path = self.data_path / f"step_{self.current_step + 1}" / f"rank_{self.world_info.rank}.pt"
+            step_path = self.data_path / f"step_{self.current_step + 1}" / f"rank_{self.world.rank}.pt"
             if step_path.exists():
                 batches = torch.load(step_path)
                 self.current_step += 1

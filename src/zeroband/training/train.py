@@ -25,24 +25,24 @@ from zeroband.training.config import Config as TrainingConfig
 from zeroband.training.data import DataLoader
 from zeroband.training.logger import setup_logger
 from zeroband.training.loss import entropy_loss, grpo_loss, selective_log_softmax
+from zeroband.training.metrics import BatchMetrics
 from zeroband.training.utils import (
-    MetricsAverager,
     OffloadedTensor,
     copy_model_to_cpu,
     offload_model_to_cpu,
     reshard_module,
     wake_up_model_from_cpu,
 )
-from zeroband.training.world_info import WorldInfo, get_world_info
+from zeroband.training.world import World, get_world
 from zeroband.utils.models import ModelType, get_model_and_tokenizer
 from zeroband.utils.monitor import setup_monitor
 from zeroband.utils.pydantic_config import parse_argv
 from zeroband.utils.utils import clean_exit
 
 
-def get_local_batch_size(batch_size: int, micro_bs: int, world_info: WorldInfo) -> int:
-    assert batch_size % world_info.world_size == 0
-    batch_size = batch_size // world_info.world_size
+def get_local_batch_size(batch_size: int, micro_bs: int, world: World) -> int:
+    assert batch_size % world.world_size == 0
+    batch_size = batch_size // world.world_size
 
     assert batch_size % micro_bs == 0, str(
         f"The micro batch size ({micro_bs}) must divide the number of samples on each GPU ({batch_size})"
@@ -94,7 +94,7 @@ def seed_everything(seed: int):
 @clean_exit
 def train(config: TrainingConfig):
     # Get world info as populated by torchrun
-    world = get_world_info()
+    world = get_world()
 
     # Setup logger
     logger = setup_logger(config.log, world)
@@ -222,12 +222,11 @@ def train(config: TrainingConfig):
             compute_logprobs_time = time.time() - compute_logprobs_start_time
             logger.info(f"Computed logprobs in {compute_logprobs_time:.2f} seconds")
 
-        metric_averager = MetricsAverager()
-
         if config.memory_profile and world.rank == 0:
             torch.cuda.memory._record_memory_history()
 
         batch_loss = torch.tensor(0.0, device="cuda")
+        batch_metrics = BatchMetrics()
         num_micro_batches = len(micro_batches)
         for micro_step, micro_batch in enumerate(micro_batches, start=1):
             logger.debug(f"Training on micro batch {micro_step} / {num_micro_batches}")
@@ -264,6 +263,7 @@ def train(config: TrainingConfig):
                 config.loss.variant,
             )
 
+            # Compute the entropy
             with torch.no_grad():
                 entropy = entropy_loss(logits, loss_mask, temperature, max_tokens)
 
@@ -277,17 +277,18 @@ def train(config: TrainingConfig):
             loss.backward()
             batch_loss += loss.detach().clone()
 
-            metric_averager.update("losses/loss", loss.detach().clone())
-            metric_averager.update("losses/entropy", entropy.detach().clone())
+            batch_metrics.update("loss/loss", loss.detach().clone())
+            batch_metrics.update("loss/entropy", entropy.detach().clone())
             if clip_ratio is not None:
-                metric_averager.update("losses/clip_ratio", clip_ratio.detach().clone())
+                batch_metrics.update("losses/clip_ratio", clip_ratio.detach().clone())
 
             del loss, entropy, clip_ratio
 
-        # Synchronize
-        metric_averager.sync()
+        # Synchronize the batch metrics across all ranks
+        batch_metrics.sync()
 
         # All reduce the batch loss after gradient accumulation
+        assert batch_loss.item() == batch_metrics["loss/loss"].item()
         dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)
 
         # Optinally, clip the gradients
@@ -314,7 +315,7 @@ def train(config: TrainingConfig):
             "losses/grad_norm": grad_norm.item(),
         }
 
-        for key, value in metric_averager.items():
+        for key, value in batch_metrics.items():
             metrics[key] = value.item()
 
         log = f"Step: {progress.step}, loss: {batch_loss.item():.4f}, "

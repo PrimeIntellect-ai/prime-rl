@@ -9,7 +9,7 @@ from torch.distributed.tensor import DTensor
 from torch.optim.optimizer import Optimizer
 from transformers import AutoTokenizer
 
-from zeroband.training.world_info import get_world_info
+from zeroband.training.world import get_world
 from zeroband.utils.logger import get_logger
 from zeroband.utils.models import ModelType
 
@@ -41,7 +41,7 @@ def save_full_checkpoint(
 
     # Create checkpoint directory if it doesn't exist
     path.mkdir(parents=True, exist_ok=True)
-    local_path = path / f"local_rank_{get_world_info().local_rank}"
+    local_path = path / f"local_rank_{get_world().local_rank}"
     with open(local_path, "wb") as f:
         torch.save(ckpt_state, f)
     logger.info(f"Checkpoint saved at {path} in {time.time() - start_time:.2f} seconds")
@@ -59,7 +59,7 @@ def load_full_checkpoint(
     logger.info(f"Loading checkpoint from {path}")
 
     # Check local step path exists
-    local_path = path / f"local_rank_{get_world_info().local_rank}"
+    local_path = path / f"local_rank_{get_world().local_rank}"
     if not local_path.exists():
         raise FileNotFoundError(f"Checkpoint step {progress.step} not found at {local_path}")
 
@@ -94,7 +94,7 @@ def save_weight_checkpoint(
     """
     # Get logger and world info
     logger = get_logger()
-    is_master = get_world_info().rank == 0
+    is_master = get_world().rank == 0
 
     # Create checkpoint directory if it doesn't exist
     if not path.exists():

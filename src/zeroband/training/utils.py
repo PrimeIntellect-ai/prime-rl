@@ -5,7 +5,6 @@ from typing import TypeAlias
 
 import pandas as pd
 import torch
-import torch.distributed as dist
 import wandb
 from torch.distributed._composable.fsdp import FSDPModule
 from torch.distributed.tensor import DTensor
@@ -15,7 +14,7 @@ from transformers import (
     PreTrainedTokenizer,
 )
 
-from zeroband.training.world_info import get_world_info
+from zeroband.training.world import get_world
 from zeroband.utils.models import ModelType
 
 ### code above inspired and copied from https://github.com/pytorch/torchtitan/blob/4b3f2e41a084bf79a8540068ed525539d1244edd/torchtitan/utils.py#L119
@@ -82,7 +81,7 @@ class PerfCounter:
         self.num_params = get_num_params(model, exclude_embedding=True)
         self.num_flop_per_token = get_num_flop_per_token(self.num_params, model.config, seq_len=seq_len)
 
-        self._world_info = get_world_info()
+        self._world = get_world()
 
     def count_tokens(self, tokens: int):
         self.tokens.append(tokens)
@@ -100,7 +99,7 @@ class PerfCounter:
         tokens_per_second = self.get_tokens_per_second()
         if tokens_per_second is None:
             return None
-        return 100 * self.num_flop_per_token * tokens_per_second / self.gpu_peak_flops / self._world_info.world_size
+        return 100 * self.num_flop_per_token * tokens_per_second / self.gpu_peak_flops / self._world.world_size
 
 
 def get_random_available_port_list(num_port):
@@ -131,52 +130,6 @@ class FakeTokenizer(object):
 
     def __len__(self):
         return self.vocab_size
-
-
-class MetricsAverager:
-    """
-    Simple class that keep track of metrics over multiple gradient accumulation steps and sync across gpu when calling sync()
-    """
-
-    def __init__(self):
-        self.metrics = {}
-        self.count = {}
-        self.world_info = get_world_info()
-
-    @torch.no_grad()
-    def update(self, key, value: torch.Tensor | list[torch.Tensor]):
-        if isinstance(value, torch.Tensor):
-            self._update(key, value)
-        else:
-            for v in value:
-                self._update(key, v)
-
-    def _update(self, key, value: torch.Tensor):
-        if key not in self.metrics:
-            self.metrics[key] = value
-            self.count[key] = 1
-        else:
-            self.metrics[key] += value
-            self.count[key] += 1
-
-    @torch.no_grad()
-    def sync(self):
-        for key in self.metrics:
-            value = self.metrics[key].clone()
-            count = torch.tensor(self.count[key])
-
-            dist.all_reduce(value.to("cuda"), op=dist.ReduceOp.SUM)
-            dist.all_reduce(count.to("cuda"), op=dist.ReduceOp.SUM)
-
-            value = value / count
-
-            self.metrics[key] = value
-
-    def __getitem__(self, key):
-        return self.metrics[key]
-
-    def items(self):
-        return self.metrics.items()
 
 
 def get_real_tensor(tensor: torch.Tensor | DTensor):

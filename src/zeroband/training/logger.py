@@ -4,14 +4,14 @@ from loguru import logger
 from loguru._logger import Logger
 
 from zeroband.training.config import LogConfig
-from zeroband.training.world_info import WorldInfo
+from zeroband.training.world import World
 from zeroband.utils.logger import get_logger, set_logger
 
 NO_BOLD = "\033[22m"
 RESET = "\033[0m"
 
 
-def setup_logger(log_config: LogConfig, world_info: WorldInfo) -> Logger:
+def setup_logger(log_config: LogConfig, world: World) -> Logger:
     if get_logger() is not None:
         raise RuntimeError("Logger already setup. Call reset_logger first.")
 
@@ -34,8 +34,8 @@ def setup_logger(log_config: LogConfig, world_info: WorldInfo) -> Logger:
     debug = "PID={process.id} | {file}::{line}" if log_config.level.upper() == "DEBUG" else ""
 
     # Add parallel information to the format
-    if world_info.num_gpus > 1:
-        parallel = f"Rank {world_info.rank}"
+    if world.num_gpus > 1:
+        parallel = f"Rank {world.rank}"
         if debug:
             debug += " | "
         debug += parallel
@@ -49,8 +49,10 @@ def setup_logger(log_config: LogConfig, world_info: WorldInfo) -> Logger:
     logger.remove()
 
     # Install new handler on all ranks, if specified. Otherwise, only install on the main rank
-    if log_config.all_ranks or world_info.rank == 0:
-        logger.add(sys.stdout, format=format, level=log_config.level.upper(), enqueue=True, backtrace=True, diagnose=True)
+    if log_config.all_ranks or world.rank == 0:
+        logger.add(
+            sys.stdout, format=format, level=log_config.level.upper(), enqueue=True, backtrace=True, diagnose=True
+        )
 
     # Disable critical logging
     logger.critical = lambda _: None
