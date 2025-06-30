@@ -242,6 +242,8 @@ class OrchestratorConfig(BaseSettings):
     # The monitor configuration
     monitor: Annotated[MultiMonitorConfig, Field(default=MultiMonitorConfig())]
 
+    collate_mode: Annotated[Literal["packing", "padding"], Field(default="padding")]
+
     batch_size: Annotated[int, Field(default=128, ge=1, description="Number of samples to train on per step.")]
 
     micro_batch_size: Annotated[
