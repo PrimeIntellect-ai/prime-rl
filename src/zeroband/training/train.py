@@ -3,7 +3,6 @@ import os
 import shutil
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import numpy as np
 import shardcast
@@ -131,9 +130,6 @@ def train(config: TrainingConfig):
     # Initialize the model and tokenizer
     model, tokenizer = get_model_and_tokenizer(config.model.name, config.model.attn)
 
-    # TODO(Mika): Add this back but without dependency on the seq_len
-    # perf_counter = PerfCounter(window_size=10, model=model, seq_len=config.data.seq_length)
-
     # Optionally, apply activation checkpointing
     if config.ac:
         setup_ac(model, config.ac)
@@ -141,21 +137,21 @@ def train(config: TrainingConfig):
     # Shard the model for training using FSDP
     apply_fsdp(model, config.reshard_after_forward)
 
-    # Optionally, initialize a model to compute logprobs
-    if config.recompute_logprobs:
-        model_for_logprob_only, _ = get_model_and_tokenizer(config.model.name, config.model.attn)
-        apply_fsdp(model_for_logprob_only, config.reshard_after_forward)
-
-    tensor_offloaded_repository: dict[int, OffloadedTensor] = {}
-    if config.recompute_logprobs:
-        tensor_offloaded_repository[0] = offload_model_to_cpu(model_for_logprob_only)
-
     # Optionally, compile the model
     if config.model.compile:
-        model = torch.compile(model) if not TYPE_CHECKING else model
+        model = torch.compile(model)
 
-        if config.recompute_logprobs:
-            model_for_logprob_only: ModelType = torch.compile(model_for_logprob_only)
+    # Optionally, initialize a model to compute logprobs
+    if config.recompute_logprobs:
+        logprob_model, _ = get_model_and_tokenizer(config.model.name, config.model.attn)
+        apply_fsdp(logprob_model, config.reshard_after_forward)
+
+        # Offload the logprob model to CPU
+        tensor_offloaded_repository: dict[int, OffloadedTensor] = {}
+        tensor_offloaded_repository[0] = offload_model_to_cpu(logprob_model)
+
+        if config.model.compile:
+            logprob_model: ModelType = torch.compile(logprob_model)
 
     # Set up the optimizer
     optimizer = torch.optim.AdamW(
@@ -164,6 +160,9 @@ def train(config: TrainingConfig):
         weight_decay=config.optim.weight_decay,
         betas=(config.optim.betas1, config.optim.betas2),
     )
+
+    # TODO(Mika): Add this back but without dependency on the seq_len
+    # perf_counter = PerfCounter(window_size=10, model=model, seq_len=config.data.seq_length)
 
     # Optionally, resume training from a checkpoint
     progress = TrainingProgress(total_tokens=0, step=0, total_samples=0)
@@ -180,8 +179,8 @@ def train(config: TrainingConfig):
     #         config.data.seq_length, tokenizer.pad_token_id, config.train.micro_bs, local_batch_size
     #     )
 
-    weight_checkpoint_paths = []
     logger.info("Starting training loop")
+    weight_checkpoint_paths = []
     while True:
         train_step_start_time = time.time()
         logger.info(f"Starting training step {progress.step}")
@@ -193,63 +192,52 @@ def train(config: TrainingConfig):
         logger.info(f"Loaded batch in {load_data_time:.2f} seconds")
 
         # Optionally, Compute the logprobs for the training batch
-        compute_logprobs_start_time = time.time()
-        with torch.no_grad():
-            if config.recompute_logprobs:
-                og_infer_step = progress.step - config.max_async_level
-                infer_step = max(og_infer_step, 0)
-                wake_up_model_from_cpu(model_for_logprob_only, tensor_offloaded_repository[infer_step])
-
-                if og_infer_step == infer_step:
-                    del tensor_offloaded_repository[infer_step]
-
+        if config.recompute_logprobs:
             logger.info(f"Starting recomputing logprobs for step {progress.step}")
+            compute_logprobs_start_time = time.time()
+            og_infer_step = progress.step - config.max_async_level
+            infer_step = max(og_infer_step, 0)
 
-            num_grad_acc_steps = len(micro_batches)
+            # Wake up the logprob model from CPU
+            wake_up_model_from_cpu(logprob_model, tensor_offloaded_repository[infer_step])
+            if og_infer_step == infer_step:
+                del tensor_offloaded_repository[infer_step]
 
-            for grad_acc_step in range(num_grad_acc_steps):
-                batch = micro_batches[grad_acc_step]
+            with torch.no_grad():
+                num_micro_batches = len(micro_batches)
+                for micro_step, micro_batch in enumerate(micro_batches, start=1):
+                    logger.debug(f"Computing logprobs for micro batch {micro_step} / {num_micro_batches}")
+                    input_ids = micro_batch["token_ids"].to("cuda")
+                    position_ids = micro_batch["position_ids"].to("cuda")
+                    temperature = micro_batch["temperature"]
 
-                # Only compute logprobs if not using vllm logprobs or if the batch doesn't have them
-                if config.recompute_logprobs:
-                    logger.debug(
-                        f"log prob grad_acc_step {grad_acc_step} / {num_grad_acc_steps}, batch: {batch['token_ids'].shape}"
-                    )
+                    logprobs = get_logprobs(logprob_model, input_ids, position_ids, temperature)
+                    micro_batch["logprobs"] = logprobs.to("cpu")
 
-                    input_ids = batch["token_ids"].to("cuda")
+            # here we sepcifically don't save the tensor offloaded, they are alreay consumed and we will never use it again.
+            # this avoid having to make sure we don't keep too much tensor offloaded in cpu memory
+            reshard_module(logprob_model)
+            offload_model_to_cpu(logprob_model)
 
-                    model_for_logprob = model_for_logprob_only if config.recompute_logprobs else model
-                    per_token_logps = get_logprobs(
-                        model_for_logprob, input_ids, batch["position_ids"], batch["temperature"]
-                    )
-
-                    batch["logprobs"] = per_token_logps.to("cpu")
-
-            if config.recompute_logprobs:
-                # here we sepcifically don't save the tensor offloaded, they are alreay consumed and we will never use it again.
-                # this avoid having to make sure we don't keep too much tensor offloaded in cpu memory
-                reshard_module(model_for_logprob_only)
-                offload_model_to_cpu(model_for_logprob_only)
-
-        compute_logprobs_time = time.time() - compute_logprobs_start_time
-        logger.info(f"Recomputed logprobs in {compute_logprobs_time:.2f} seconds")
+            compute_logprobs_time = time.time() - compute_logprobs_start_time
+            logger.info(f"Computed logprobs in {compute_logprobs_time:.2f} seconds")
 
         metric_averager = MetricsAverager()
-        loss_batch = torch.tensor(0.0, device="cuda")
 
         if config.memory_profile and world.rank == 0:
             torch.cuda.memory._record_memory_history()
 
+        batch_loss = torch.tensor(0.0, device="cuda")
         num_micro_batches = len(micro_batches)
-        for micro_batch_idx, micro_batch in enumerate(micro_batches, start=1):
-            logger.debug(f"Starting training on micro batch {micro_batch_idx} / {num_grad_acc_steps}")
+        for micro_step, micro_batch in enumerate(micro_batches, start=1):
+            logger.debug(f"Training on micro batch {micro_step} / {num_micro_batches}")
             input_ids = micro_batch["token_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
             loss_mask = (
                 torch.ones_like(input_ids).int().to("cuda")
             )  # TODO(Mika): Remove this from loss computation, then here
-            original_logprobs = micro_batch["logprobs"].to("cuda")
+            logprobs = micro_batch["logprobs"].to("cuda")
             temperature = micro_batch["temperature"]
             total_tokens = micro_batch["total_tokens"]
             micro_batch_size, seq_len = input_ids.shape
@@ -269,9 +257,9 @@ def train(config: TrainingConfig):
                 logits,
                 input_ids,
                 advantages,
-                original_logprobs,
+                logprobs,
                 loss_mask,
-                batch["temperature"],
+                temperature,
                 max_tokens,
                 config.loss.variant,
             )
@@ -279,27 +267,28 @@ def train(config: TrainingConfig):
             with torch.no_grad():
                 entropy = entropy_loss(logits, loss_mask, temperature, max_tokens)
 
+            # Now we can delete the micro batch CUDA tensors
+            del logits, input_ids, position_ids, advantages, loss_mask, logprobs
+
             # Scale the loss by the number of micro batches (=gradient accumulation steps)
             loss = loss / num_micro_batches
 
-            # Now we can delete the batch data
-            del batch, logits, input_ids, advantages, loss_mask, original_logprobs
-
             # Backward
             loss.backward()
-            loss_batch += loss.detach().clone()
+            batch_loss += loss.detach().clone()
 
-            metric_averager.update("losses/entropy_loss", entropy.detach().clone())
-
+            metric_averager.update("losses/loss", loss.detach().clone())
+            metric_averager.update("losses/entropy", entropy.detach().clone())
             if clip_ratio is not None:
                 metric_averager.update("losses/clip_ratio", clip_ratio.detach().clone())
 
             del loss, entropy, clip_ratio
 
+        # Synchronize
         metric_averager.sync()
 
-        # All reduce the loss after gradient accumulation
-        dist.all_reduce(loss_batch, op=dist.ReduceOp.AVG)
+        # All reduce the batch loss after gradient accumulation
+        dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)
 
         # Optinally, clip the gradients
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_norm_clip).full_tensor()  # type: ignore (is a dtensor)
@@ -318,9 +307,9 @@ def train(config: TrainingConfig):
 
         metrics = {
             "step": progress.step,
+            "losses/loss": batch_loss.item(),
             "train/total_tokens": progress.total_tokens,
             "train/total_samples": progress.total_samples,
-            "losses/loss": loss_batch.item(),
             "train/inner_lr": inner_lr,
             "losses/grad_norm": grad_norm.item(),
         }
@@ -328,9 +317,9 @@ def train(config: TrainingConfig):
         for key, value in metric_averager.items():
             metrics[key] = value.item()
 
-        log = f"Step: {progress.step}, loss: {loss_batch.item():.4f}, "
+        log = f"Step: {progress.step}, loss: {batch_loss.item():.4f}, "
 
-        del loss_batch, grad_norm
+        del batch_loss, grad_norm
 
         # tokens_per_second = perf_counter.get_tokens_per_second()
         # if tokens_per_second is not None:
@@ -392,7 +381,7 @@ def train(config: TrainingConfig):
             save_full_checkpoint(model, [optimizer], progress, config.ckpt.path)
 
         if config.recompute_logprobs:
-            reshard_module(model_for_logprob_only)
+            reshard_module(logprob_model)
             tensor_offloaded_repository[progress.step] = copy_model_to_cpu(model)
 
         train_step_time = time.time() - train_step_start_time

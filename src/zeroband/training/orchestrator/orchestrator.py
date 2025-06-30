@@ -134,7 +134,7 @@ async def orchestrate(config: OrchestratorConfig):
         verification_infos = [json.loads(problem["verification_info"]) for problem in problems]
         rewards = compute_rewards(completions, task_types, verification_infos)
         advantages = compute_advantages(rewards, config.sampling.n)
-        logger.info(f"Computed rewards (average reward: {np.mean(rewards):.2f}")
+        logger.info(f"Computed rewards (average reward: {np.mean(rewards):.2f})")
 
         # Compute batch metrics
         num_input_tokens = sum(completion.usage.prompt_tokens for completion in chat_completions)
