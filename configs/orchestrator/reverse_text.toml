@@ -11,4 +11,7 @@ name = "mikasenghaas/reverse_text_dataset_debug_50_seq_len"
 n = 16
 
 [train]
+batch_size = 128
+micro_bs = 16
+max_seq_len = 128
 n_data_ranks = 1
