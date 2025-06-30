@@ -266,6 +266,7 @@ class OrchestratorConfig(BaseSettings):
         int,
         Field(
             default=2,
+            ge=0,
             description="Maximum number of async levels to use. If 0, will do synchronous RL. Else, it will allow to go `async_level` steps ahead of training.",
         ),
     ]

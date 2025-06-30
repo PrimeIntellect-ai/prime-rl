@@ -25,6 +25,12 @@ class ModelConfig(BaseModelConfig):
     ]
 
 
+class FSDPConfig(BaseConfig):
+    """Configures FSDP."""
+
+    reshard: Annotated[bool, Field(default=True, description="Whether to reshard the model after each forward pass.")]
+
+
 class OptimizerConfig(BaseConfig):
     """Configures the Adam optimizer."""
 
@@ -67,10 +73,18 @@ class WeightCheckpointConfig(BaseConfig):
         ),
     ]
 
+    buffer_size: Annotated[
+        int,
+        Field(
+            default=1,
+            description="Number of weight checkpoint steps to keep in memory. This is useful to keep some weight-only checkpoints for online evals.",
+        ),
+    ]
+
     save_async: Annotated[
         bool,
         Field(
-            default=True,
+            default=False,
             description="Whether to save the checkpoint asynchronously.",
         ),
     ]
@@ -145,12 +159,6 @@ class ActivationCheckpointConfig(BaseConfig):
     ]
 
 
-class FSDPConfig(BaseConfig):
-    """Configures FSDP."""
-
-    reshard: Annotated[bool, Field(default=True, description="Whether to reshard the model after each forward pass.")]
-
-
 class LogConfig(BaseConfig):
     """Configures the training logger."""
 
@@ -223,9 +231,9 @@ class Config(BaseSettings):
     max_async_level: Annotated[
         int,
         Field(
-            default=1,
+            default=2,
             ge=0,
-            description="Maximum number of steps that inference can be ahead of training. Determines how 'off-policy' the inference engines can be. Higher values yield better throughput through async execution, but may yield lower powerofrmance. If 0, will be fully synchronous. .",
+            description="Maximum number of steps that inference can be ahead of training. Determines how 'off-policy' the inference engines can be. Higher values yield better throughput through async execution, but may yield lower powerofrmance. If 0, will be fully synchronous.",
         ),
     ]
 
@@ -242,3 +250,8 @@ class Config(BaseSettings):
     normalize_batch_to_token_count: Annotated[bool, Field(default=True)]
 
     seed: Annotated[int | None, Field(default=None, description="Random seed for the training.")]
+
+    @model_validator(mode="after")
+    def validate_buffer_size(self):
+        if self.weights.buffer_size < self.max_async_level:
+            self.weights.buffer_size = self.max_async_level

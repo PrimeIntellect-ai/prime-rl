@@ -303,7 +303,7 @@ def train(config: TrainingConfig):
             shardcast.broadcast(model_path)  # TODO: Is this blocking?
 
         # Optionally, remove old weight checkpoints to save space
-        if len(active_weight_checkpoint_paths) > config.max_async_level:
+        if len(active_weight_checkpoint_paths) > config.weights.buffer_size:
             path_to_delete = active_weight_checkpoint_paths.pop(0)
             ckpt_step = int(path_to_delete.name.split("_")[-1])
             should_keep = config.weights.interval and ckpt_step % config.weights.interval == 0

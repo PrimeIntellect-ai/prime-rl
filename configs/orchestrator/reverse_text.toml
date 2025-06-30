@@ -1,5 +1,5 @@
 batch_size = 128
-micro_batch_size = 128
+micro_batch_size = 64
 seq_len = 128
 max_steps = 50
 
