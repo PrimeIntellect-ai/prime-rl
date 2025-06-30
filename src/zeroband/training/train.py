@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import multiprocessing as mp
 import os
 import shutil
 import time
@@ -23,6 +25,7 @@ from zeroband.training.fsdp import apply_fsdp, reshard_module
 from zeroband.training.logger import setup_logger
 from zeroband.training.loss import entropy_loss, grpo_loss
 from zeroband.training.metrics import BatchMetrics
+from zeroband.training.orchestrator.orchestrator import orchestrate
 from zeroband.training.perf import get_perf_counter
 from zeroband.training.utils import (
     OffloadedTensor,
@@ -39,6 +42,13 @@ from zeroband.utils.pydantic_config import parse_argv
 from zeroband.utils.utils import clean_exit
 
 
+def run_orchestrator_in_subprocess(orchestrator_config):
+    """Run the orchestrator in a completely separate process with its own event loop."""
+    # This function runs in a separate process, so it has its own memory space
+    # and can initialize its own logger/monitor without conflicts
+    asyncio.run(orchestrate(orchestrator_config))
+
+
 @clean_exit
 def train(config: TrainingConfig):
     # Get world info as populated by torchrun
@@ -50,6 +60,15 @@ def train(config: TrainingConfig):
 
     # Setup the monitor
     monitor = setup_monitor(config.monitor, run_config=config)
+
+    # Optionally, sidecar the orchestrator
+    orchestrator = None
+    if config.orchestrator and world.rank == 0:
+        logger.info("Starting orchestrator in a separate process")
+        orchestrator = mp.get_context("spawn").Process(
+            target=run_orchestrator_in_subprocess, args=(config.orchestrator,), daemon=True
+        )
+        orchestrator.start()
 
     # Optionally, clean the checkpoints path
     if config.ckpt.clean:
@@ -349,6 +368,16 @@ def train(config: TrainingConfig):
 
     logger.info(f"Peak memory: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB")
     logger.success("Training finished!")
+
+    # Clean up orchestrator process if it was started
+    if orchestrator and orchestrator.is_alive():
+        logger.info("Terminating orchestrator process")
+        orchestrator.terminate()
+        orchestrator.join(timeout=5)
+        if orchestrator.is_alive():
+            logger.warning("Orchestrator process did not terminate gracefully, forcing kill")
+            orchestrator.kill()
+            orchestrator.join()
 
 
 def main():

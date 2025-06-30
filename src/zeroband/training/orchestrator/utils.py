@@ -7,9 +7,9 @@ import numpy as np
 from openai import AsyncOpenAI
 from openai.types.chat.chat_completion import ChatCompletion
 
-from zeroband.training.config import ModelConfig
 from zeroband.training.orchestrator.config import ClientConfig, SamplingConfig
 from zeroband.training.orchestrator.genesys import get_reward_function
+from zeroband.utils.config import ModelConfig
 from zeroband.utils.logger import get_logger
 
 
