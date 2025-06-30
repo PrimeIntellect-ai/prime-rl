@@ -115,13 +115,9 @@ CollateMode: TypeAlias = Literal["packing", "padding", "balancing"]
 
 
 class DataConfig(BaseConfig):
-    path: Annotated[str, Field(default="datasets/fineweb-edu")]
+    path: Annotated[Path, Field(default=Path("rollouts"))]
     seq_length: Annotated[int, Field(default=1024)]
     fake: Annotated[bool, Field(default=False)]
-
-    local_dir: Annotated[str, Field(default="/dev/shm/zeroband/data")]  # only used if path is gcp
-
-    ignore_zero_advantages: Annotated[bool, Field(default=False)]  # don't use in local setup
 
 
 class PathConfig(BaseConfig):

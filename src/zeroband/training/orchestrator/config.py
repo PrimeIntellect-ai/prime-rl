@@ -131,9 +131,7 @@ class DataConfig(BaseConfig):
         ),
     ]
 
-    split: Annotated[
-        str, Field(default="train", description="Split of the dataset to use.")
-    ]
+    split: Annotated[str, Field(default="train", description="Split of the dataset to use.")]
 
 
 class LogConfig(BaseConfig):
@@ -207,6 +205,14 @@ class EvalConfig(BaseConfig):
     online: Annotated[OnlineEvalConfig | None, Field(default=None)]
 
 
+class TrainConfig(BaseConfig):
+    # this name is temporary and map one one to the current training data config
+    max_seq_len: Annotated[int, Field(default=1024)]
+    micro_bs: Annotated[int, Field(default=1)]
+    batch_size: Annotated[int, Field(default=128)]
+    n_data_ranks: Annotated[int, Field(default=1)]  # todo should be automatic
+
+
 class OrchestratorConfig(BaseSettings):
     """Configures the orchestrator for RL training."""
 
@@ -272,14 +278,12 @@ class OrchestratorConfig(BaseSettings):
         ),
     ]
 
-    seed: Annotated[
-        int | None, Field(default=None, description="Random seed for the orchestrator.")
-    ]
+    seed: Annotated[int | None, Field(default=None, description="Random seed for the orchestrator.")]
+
+    train: Annotated[TrainConfig, Field(default=TrainConfig())]
 
     @model_validator(mode="after")
     def validate_batch_size(self):
         if self.batch_size % self.sampling.n != 0:
-            raise ValueError(
-                "Batch size must be divisible by the number of samples per problem"
-            )
+            raise ValueError("Batch size must be divisible by the number of samples per problem")
         return self

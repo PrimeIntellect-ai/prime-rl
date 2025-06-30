@@ -6,7 +6,6 @@ import time
 from pathlib import Path
 
 import numpy as np
-import pyarrow.parquet as pq
 from datasets import Dataset, load_dataset
 from transformers import AutoTokenizer
 
@@ -17,15 +16,16 @@ from zeroband.training.orchestrator.utils import (
     compute_advantages,
     compute_rewards,
     generate_completion,
-    get_parquet,
     health_check,
     load_checkpoint,
+    prepare_batch,
     setup_client,
     wait_for_checkpoint,
 )
 from zeroband.utils.monitor import setup_monitor
 from zeroband.utils.pydantic_config import parse_argv
 from zeroband.utils.utils import clean_exit
+import torch
 
 # todo: add sample to wandb
 # todo: add reward, seqlen, task specific reward to wandb
@@ -169,22 +169,24 @@ async def orchestrate(config: OrchestratorConfig):
         monitor.log(progress_metrics)
 
         # Write step parquet file
-        table = get_parquet(
+        all_data_ranks_batches = prepare_batch(
             prompts=prompts,
             completions=completions,
-            rewards=rewards,
             advantages=advantages,
             temperature=config.sampling.temperature,
             tokenizer=tokenizer,
+            micro_bs=config.train.micro_bs,
+            max_seq_len=config.train.max_seq_len,
+            n_data_ranks=config.train.n_data_ranks,
         )
 
-        # Save outputs to parquet file
-        step_path = Path(config.rollout.path)
-        step_path.mkdir(parents=True, exist_ok=True)
-        save_path = step_path / f"step_{step}.parquet.tmp"
-        logger.info(f"Saving batch outputs to {save_path}")
-        pq.write_table(table, save_path)
-        save_path.rename(save_path.with_suffix(""))
+        for i, batches in enumerate(all_data_ranks_batches):
+            save_folder = Path(config.rollout.path) / f"step_{step}"
+            save_folder.mkdir(parents=True, exist_ok=True)
+            save_path = save_folder / f"data_rank_{i}.pt.tmp"
+            torch.save(batches, save_path)
+            logger.info(f"Saving batch outputs to {save_path}")
+            save_path.rename(save_path.with_suffix(""))
 
     logger.success("Training completed.")
 
