@@ -15,11 +15,11 @@ from torch._guards import log as torch_log
 from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
 
 from zeroband.training import envs
-from zeroband.training.checkpoint import (
+from zeroband.training.ckpt import (
     TrainingProgress,
-    load_checkpoint_fsdp_state,
-    save_checkpoint_fsdp_state,
-    save_ckpt_for_rollout,
+    load_full_checkpoint,
+    save_full_checkpoint,
+    save_weight_checkpoint,
 )
 from zeroband.training.config import Config as TrainingConfig
 from zeroband.training.data import (
@@ -158,8 +158,7 @@ def train(config: TrainingConfig):
         betas=(config.optim.optim.betas1, config.optim.optim.betas2),
     )
 
-    total_samples = config.start_total_samples if config.start_total_samples is not None else 0
-    training_progress = TrainingProgress(total_tokens=0, step=config.start_step, total_samples=total_samples)
+    progress = TrainingProgress()
 
     # Setup the monitor
     monitor = setup_monitor(config.monitor, run_config=config)
@@ -176,17 +175,15 @@ def train(config: TrainingConfig):
         tensor_offloaded_repository[0] = offload_model_to_cpu(model_for_logprob_only)
 
     if config.ckpt.resume:
-        logger.info(f"loading checkpoint from {config.ckpt.resume}")
-        load_checkpoint_fsdp_state(model, [optimizer], training_progress, config.ckpt.resume)
-
-    step_count_init = config.start_step if config.start_step is not None else training_progress.step
+        logger.info(f"Resuming training from checkpoint {config.ckpt.resume}")
+        load_full_checkpoint(model, [optimizer], progress, config.ckpt.resume)
 
     train_dataloader = get_dataloader(
         tokenizer=tokenizer,
         local_batch_size=local_batch_size,
         batch_size=config.optim.batch_size,
         data_config=config.data,
-        step_count_init=step_count_init,
+        step_count_init=progress.step,
     )
     train_dataloader_iterator = iter(train_dataloader)
 
@@ -203,7 +200,7 @@ def train(config: TrainingConfig):
         # here we want to pre-compute the logprobs with the model before update
         with torch.no_grad():
             if config.recompute_logprobs:
-                og_infer_step = training_progress.step - config.max_async_level
+                og_infer_step = progress.step - config.max_async_level
                 infer_step = max(og_infer_step, 0)
                 wake_up_model_from_cpu(model_for_logprob_only, tensor_offloaded_repository[infer_step])
 
@@ -212,7 +209,7 @@ def train(config: TrainingConfig):
 
             data: list[list[BatchOutput]] = []
 
-            logger.info(f"start logprob recomputation step {training_progress.step}")
+            logger.info(f"start logprob recomputation step {progress.step}")
             time_data_loading = time.time()
 
             batch_rollout: list[DatasetOutput] = next(train_dataloader_iterator)
@@ -270,7 +267,7 @@ def train(config: TrainingConfig):
             logger.info(f"Time to compute logprobs: {total_time_logprob:.2f} seconds")
             logger.info(f"Total time data preprocessing: {total_time:.2f} seconds")
 
-        logger.info(f"start training step {training_progress.step}")
+        logger.info(f"start training step {progress.step}")
 
         metric_averager = MetricsAverager()
         loss_batch = torch.tensor(0.0, device="cuda")
@@ -350,28 +347,28 @@ def train(config: TrainingConfig):
 
         logger.debug("optimizer step")
 
-        training_progress.step += 1
+        progress.step += 1
         inner_lr = [group["lr"] for group in optimizer.param_groups][0]
 
         token_per_gpu = inputs_ids_shape[0] * inputs_ids_shape[1] * num_grad_acc_steps
         new_tokens = world_info.world_size * token_per_gpu
         perf_counter.count_tokens(new_tokens)
-        training_progress.total_tokens += new_tokens
-        training_progress.total_samples += config.optim.batch_size
+        progress.total_tokens += new_tokens
+        progress.total_samples += config.optim.batch_size
 
         metrics = {
-            "step": training_progress.step,
+            "step": progress.step,
             "losses/Loss": loss_batch.item(),
             "train/inner_lr": inner_lr,
-            "train/total_tokens": training_progress.total_tokens,
-            "train/total_samples": training_progress.total_samples,
+            "train/total_tokens": progress.total_tokens,
+            "train/total_samples": progress.total_samples,
             "losses/grad_norm": grad_norm.item(),
         }
 
         for key, value in metric_averager.items():
             metrics[key] = value.item()
 
-        log = f"step: {training_progress.step}, loss: {loss_batch.item():.4f}, "
+        log = f"step: {progress.step}, loss: {loss_batch.item():.4f}, "
 
         del loss_batch, grad_norm
 
@@ -400,18 +397,17 @@ def train(config: TrainingConfig):
 
         # Lets do this first so that clients can start downloading as soon as possible
         if config.ckpt.rollout_path is not None:
-            logger.debug("saving rollout ckpt")
-            path = Path(config.ckpt.rollout_path) / f"step_{training_progress.step}"
-            previous_ckpt_rollout.append(path)
+            step_path = Path(config.ckpt.rollout_path) / f"step_{progress.step}"
+            previous_ckpt_rollout.append(step_path)
             t0 = time.time()
-            safetensor_path = save_ckpt_for_rollout(model, tokenizer, path, async_save=config.ckpt.async_save)
+            model_path = save_weight_checkpoint(model, tokenizer, step_path, async_save=config.ckpt.async_save)
             time_rollout_ckpt = time.time() - t0
 
             time_shardcast = time.time()
             if world_info.rank == 0:
                 if envs.SHARDCAST_OUTPUT_DIR is not None:
-                    logger.info(f"Broadcasting {safetensor_path}")
-                    shardcast.broadcast(safetensor_path)  # TODO: Is this blocking?
+                    logger.info(f"Broadcasting {model_path}")
+                    shardcast.broadcast(model_path)  # TODO: Is this blocking?
             time_shardcast = time.time() - time_shardcast
 
             time_rollout_delete = time.time()
@@ -424,7 +420,7 @@ def train(config: TrainingConfig):
                     logger.info(f"Removing past rollout ckpt at {path_to_delete}")
                     shutil.rmtree(path_to_delete, ignore_errors=True)
             time_rollout_delete = time.time() - time_rollout_delete
-        if config.train.memory_profile and (training_progress.step == 2) and world_info.rank == 0:
+        if config.train.memory_profile and (progress.step == 2) and world_info.rank == 0:
             logger.info("Dumping memory snapshot.")
             pickle_path: str = config.train.memory_profile
             if not pickle_path.endswith(".pickle"):
@@ -432,19 +428,19 @@ def train(config: TrainingConfig):
             torch.cuda.memory._dump_snapshot(pickle_path)
             torch.cuda.memory._record_memory_history(enabled=False)
 
-        if config.ckpt.interval is not None and training_progress.step % config.ckpt.interval == 0:
-            logger.info(f"Saving checkpoint at step {training_progress.step}")
-            save_checkpoint_fsdp_state(model, [optimizer], training_progress, config.ckpt.path)
+        if config.ckpt.interval and progress.step % config.ckpt.interval == 0:
+            step_path = config.ckpt.path / f"step_{progress.step}"
+            save_full_checkpoint(model, [optimizer], progress, step_path)
 
         if config.recompute_logprobs:
             reshard_module(model_for_logprob_only)
-            tensor_offloaded_repository[training_progress.step] = copy_model_to_cpu(model)
+            tensor_offloaded_repository[progress.step] = copy_model_to_cpu(model)
 
         time_rollout_step = time.time() - time_start
-        logger.success(f"Finished training step {training_progress.step} in {time_rollout_step:.2f}s")
+        logger.success(f"Finished training step {progress.step} in {time_rollout_step:.2f}s")
         if world_info.rank == 0:
             time_metrics = {
-                "step": training_progress.step,
+                "step": progress.step,
                 "perf/time_rollout_step": time_rollout_step,
                 "perf/time_logprob": total_time_logprob,
                 "perf/time_data_loading": total_time_data_loading,
@@ -461,7 +457,7 @@ def train(config: TrainingConfig):
 
             monitor.log(time_metrics)
 
-        if config.stop_after_steps is not None and training_progress.step >= config.stop_after_steps:
+        if config.stop_after_steps is not None and progress.step >= config.stop_after_steps:
             break
 
     logger.info(f"Peak memory: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB")

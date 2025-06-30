@@ -43,12 +43,12 @@ class TrainConfig(BaseConfig):
 class CkptConfig(BaseConfig):
     """Configures checkpointing"""
 
-    path: Annotated[str | None, Field(default=None)]
+    path: Annotated[Path | None, Field(default=None)]
     interval: Annotated[int | None, Field(default=None)]
     interval_rollout: Annotated[int | None, Field(default=None)]
-    resume: Annotated[str | None, Field(default=None)]
+    resume: Annotated[Path | None, Field(default=None)]
 
-    rollout_path: Annotated[str | None, Field(default=None)]
+    rollout_path: Annotated[Path | None, Field(default=None)]
     clean_rollout_path: Annotated[bool, Field(default=False)]
     async_save: Annotated[
         bool,
