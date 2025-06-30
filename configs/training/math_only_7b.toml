@@ -1,4 +1,3 @@
-collate_mode = "packing"
 recompute_logprobs = true
 
 normalize_batch_to_token_count = true

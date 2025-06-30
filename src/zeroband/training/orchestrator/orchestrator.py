@@ -175,9 +175,7 @@ async def orchestrate(config: OrchestratorConfig):
             advantages=advantages,
             temperature=config.sampling.temperature,
             tokenizer=tokenizer,
-            micro_bs=config.train.micro_bs,
-            max_seq_len=config.train.max_seq_len,
-            n_data_ranks=config.train.n_data_ranks,
+            config=config.train,
         )
 
         for i, batches in enumerate(all_data_ranks_batches):

@@ -111,9 +111,6 @@ class ModelConfig(BaseConfig):
     ]
 
 
-CollateMode: TypeAlias = Literal["packing", "padding", "balancing"]
-
-
 class DataConfig(BaseConfig):
     path: Annotated[Path, Field(default=Path("rollouts"))]
     seq_length: Annotated[int, Field(default=1024)]
@@ -192,8 +189,6 @@ class Config(BaseSettings):
     gpus_ids: Annotated[list[int] | None, Field(default=None)]
 
     max_async_level: Annotated[int, Field(default=2, ge=1)]
-
-    collate_mode: Annotated[CollateMode, Field(default="padding")]
 
     start_step: Annotated[int, Field(default=0, ge=0, description="Step to start training from.")]
 

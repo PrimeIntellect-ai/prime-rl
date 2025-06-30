@@ -1,4 +1,3 @@
-collate_mode = "padding"
 stop_after_steps = 1
 
 [model]

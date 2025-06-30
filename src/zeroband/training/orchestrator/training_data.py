@@ -1,6 +1,7 @@
 import torch
 from transformers import AutoTokenizer
 from zeroband.training.data import BatchOutput
+from zeroband.training.orchestrator.config import TrainConfig
 
 
 def prepare_sample(prompt: str, completion: str, advantage: float, max_seq_len: int, tokenizer: AutoTokenizer):
@@ -61,9 +62,7 @@ def prepare_batch(
     advantages: list[float],
     temperature: float,
     tokenizer: AutoTokenizer,
-    micro_bs: int,
-    max_seq_len: int,
-    n_data_ranks: int,
+    config: TrainConfig,
 ) -> list[list[BatchOutput]]:
     """
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
@@ -74,16 +73,18 @@ def prepare_batch(
     )
     batch_size = len(prompts)
 
-    assert batch_size % (micro_bs * n_data_ranks) == 0, "Batch size must be divisible by micro batch size"
-    per_gpu_micro_batches = batch_size // (n_data_ranks * micro_bs)
+    assert batch_size % (config.micro_bs * config.n_data_ranks) == 0, "Batch size must be divisible by micro batch size"
+    per_gpu_micro_batches = batch_size // (config.n_data_ranks * config.micro_bs)
 
     batches_per_gpu = []
-    for _ in range(n_data_ranks):
+    for _ in range(config.n_data_ranks):
         batches = []
         for _ in range(per_gpu_micro_batches):
             micro_batches = []
-            for _ in range(micro_bs):
-                sample = prepare_sample(prompts.pop(), completions.pop(), advantages.pop(), max_seq_len, tokenizer)
+            for _ in range(config.micro_bs):
+                sample = prepare_sample(
+                    prompts.pop(), completions.pop(), advantages.pop(), config.max_seq_len, tokenizer
+                )
                 micro_batches.append(sample)
             batches.append(prepare_micro_batch(micro_batches, temperature))
 

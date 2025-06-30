@@ -211,6 +211,7 @@ class TrainConfig(BaseConfig):
     micro_bs: Annotated[int, Field(default=1)]
     batch_size: Annotated[int, Field(default=128)]
     n_data_ranks: Annotated[int, Field(default=1)]  # todo should be automatic
+    collate_mode: Annotated[Literal["packing", "padding"], Field(default="padding")]
 
 
 class OrchestratorConfig(BaseSettings):
