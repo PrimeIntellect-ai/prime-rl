@@ -1,53 +1,49 @@
+import time
 from pathlib import Path
 from typing import TypedDict
 
 import torch
 from jaxtyping import Float, Int
 
-from zeroband.training.logger import get_logger
+from zeroband.training.config import FakeDataLoaderConfig
 from zeroband.training.world import get_world
 
 
 class MicroBatch(TypedDict):
-    # token level
+    # Token level
     token_ids: Int[torch.Tensor, "micro_bs seq"]
     position_ids: Int[torch.Tensor, "micro_bs seq"]
     advantages: Float[torch.Tensor, "micro_bs seq"]
     logprobs: Float[torch.Tensor, "micro_bs seq_minus_1"]
 
-    # batch level
+    # Batch level
     temperature: float
     total_tokens: int
 
 
 class FakeDataLoader:
-    def __init__(self, max_seq_len: int, pad_token_id: int, micro_bs: int, batch_size: int):
-        self.max_seq_len = max_seq_len
-        self.pad_token_id = pad_token_id
-        self.micro_bs = micro_bs
-        self.batch_size = batch_size
+    def __init__(self, config: FakeDataLoaderConfig):
+        self.batch_size = config.batch_size
+        self.micro_batch_size = config.micro_batch_size
+        self.num_micro_batches = self.batch_size // self.micro_batch_size
+        self.seq_len = config.seq_len
 
     def get_batch(self) -> list[MicroBatch]:
-        micro_batches = []
-        for _ in range(self.batch_size // self.micro_bs):
-            micro_batches.append(self._get_micro_batch())
-        return micro_batches
+        return [self._get_micro_batch() for _ in range(self.num_micro_batches)]
 
     def _get_micro_batch(self) -> MicroBatch:
         return {
-            "token_ids": torch.randint(0, 100, (self.micro_bs, self.max_seq_len)),
-            "position_ids": torch.stack([torch.arange(self.max_seq_len)] * self.micro_bs, dim=0),
-            "advantages": torch.randn(self.micro_bs, self.max_seq_len),
-            "logprobs": torch.randn(self.micro_bs, self.max_seq_len - 1),
+            "token_ids": torch.randint(0, 100, (self.micro_batch_size, self.seq_len)),
+            "position_ids": torch.stack([torch.arange(self.seq_len)] * self.micro_batch_size, dim=0),
+            "advantages": torch.randn(self.micro_batch_size, self.seq_len),
+            "logprobs": torch.randn(self.micro_batch_size, self.seq_len - 1),
             "temperature": 1.0,
-            "total_tokens": self.micro_bs * self.max_seq_len,
+            "total_tokens": self.micro_batch_size * self.seq_len,
         }
 
 
 class DataLoader:
-    """
-    Simply load the data from the data path.
-    """
+    """Loads serialized data from a data path written by the orchestrator."""
 
     def __init__(self, data_path: Path, start_step: int):
         self.data_path = data_path
@@ -55,7 +51,6 @@ class DataLoader:
         self.world = get_world()
 
     def get_batch(self) -> list[MicroBatch]:
-        get_logger().info(f"Loading data from path {self.data_path}")
         while True:
             # here adding step + 1 because orchestrator count step is offset by 1 bc of @mika
             step_path = self.data_path / f"step_{self.current_step + 1}" / f"rank_{self.world.rank}.pt"
@@ -63,3 +58,5 @@ class DataLoader:
                 batches = torch.load(step_path)
                 self.current_step += 1
                 return batches
+            # Prevent busy waiting
+            time.sleep(0.01)

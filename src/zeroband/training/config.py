@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias, Union
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from zeroband.utils.config import ModelConfig as BaseModelConfig
 from zeroband.utils.config import MultiMonitorConfig, PathConfig
@@ -104,11 +104,18 @@ class GRPOLossConfig(BaseConfig):
 
 
 class FakeDataLoaderConfig(BaseConfig):
-    """Configures the fake data loader used for training."""
+    """Configures a fake data loader sampling random micro batches for debugging."""
 
-    batch_size: Annotated[int, Field(default=128)]
-    micro_batch_size: Annotated[int, Field(default=128)]
-    seq_len: Annotated[int, Field(default=1024)]
+    micro_batch_size: Annotated[int, Field(default=8, ge=1)]
+    batch_size: Annotated[int, Field(default=8, ge=1)]
+    seq_len: Annotated[int, Field(default=128, ge=1)]
+
+    @model_validator(mode="after")
+    def validate_batch_size(self):
+        if self.batch_size % self.micro_batch_size != 0:
+            raise ValueError("Batch size must be divisible by micro batch size")
+        if self.batch_size < self.micro_batch_size:
+            raise ValueError("Batch size must be greater than or equal to micro batch size")
 
 
 class DataLoaderConfig(BaseConfig):

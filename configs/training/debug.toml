@@ -1,15 +1,7 @@
-collate_mode = "padding"
-stop_after_steps = 1
+max_steps = 5
 
-[model]
-name = "Qwen/Qwen3-0.6B"
+[data.fake]
+batch_size = 16
+micro_batch_size = 8
+seq_len = 128
 
-[train]
-micro_bs = 1
-
-[optim]
-batch_size = 2
-
-[data]
-fake = true
-seq_length = 128

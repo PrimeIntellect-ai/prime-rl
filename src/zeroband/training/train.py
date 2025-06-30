@@ -21,7 +21,7 @@ from zeroband.training.ckpt import (
     save_weight_checkpoint,
 )
 from zeroband.training.config import Config as TrainingConfig
-from zeroband.training.data import DataLoader
+from zeroband.training.data import DataLoader, FakeDataLoader
 from zeroband.training.logger import setup_logger
 from zeroband.training.loss import entropy_loss, grpo_loss, selective_log_softmax
 from zeroband.training.metrics import BatchMetrics
@@ -169,8 +169,10 @@ def train(config: TrainingConfig):
         logger.info(f"Resuming training from checkpoint {config.ckpt.resume_path}")
         load_full_checkpoint(model, [optimizer], progress, config.ckpt.resume_path)
 
-    # Set up the data loader
-    train_dataloader = DataLoader(config.data.path, progress.step)
+    # Set up the data loader (Optionally, use a fake data loader for debugging)
+    dataloader = DataLoader(config.data.path, progress.step)
+    if config.data.fake:
+        dataloader = FakeDataLoader(config.data.fake)
 
     # TODO(Mika): Add this back but without dependency on the seq_len
     # if config.data.fake:
@@ -186,7 +188,7 @@ def train(config: TrainingConfig):
 
         # Load the training batch
         load_data_start_time = time.time()
-        micro_batches = train_dataloader.get_batch()
+        micro_batches = dataloader.get_batch()
         load_data_time = time.time() - load_data_start_time
         logger.info(f"Loaded batch in {load_data_time:.2f} seconds")
 
