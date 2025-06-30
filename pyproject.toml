@@ -13,7 +13,7 @@ dependencies = [
     "pydantic-settings>=2.10.1",
     "pynvml>=12.0.0",
     "tomli>=2.2.1",
-    "torch>=2.7.0",
+    "torch>=2.5.1",
     "transformers>=4.53.0",
     "wandb>=0.20.1",
 ]
@@ -32,6 +32,7 @@ build-backend = "hatchling.build"
 [project.optional-dependencies]
 # Platform-specific dependencies
 cu128 = ["torch>=2.7.0"]
+rocm = ["torch>=2.5.1", "pytorch-triton-rocm>=3.1.0"]
 
 # Entrypoint-specific dependencies
 train = [
@@ -57,17 +58,30 @@ rewards = [
 
 [tool.uv]
 no-build-isolation-package = ["flash-attn"]
+conflicts = [
+    [
+      { extra = "cu128" },
+      { extra = "rocm" },
+    ],
+]
 
 [tool.uv.sources]
 torch = [
-  { index = "pytorch-cu128", extra = "cu128" }
+    { index = "pytorch-cu128", extra = "cu128" },
+    { index = "pytorch-rocm", extra = "rocm" },
 ]
+pytorch-triton-rocm = [{ index = "pytorch-rocm", extra = "rocm" }]
 pyext = { git = "git+https://github.com/justusmattern27/PyExt.git" }
 reasoning_gym = { git = " git+https://github.com/open-thought/reasoning-gym.git" }
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-rocm"
+url = "https://download.pytorch.org/whl/rocm6.2"
 explicit = true
 
 [dependency-groups]
