@@ -2,7 +2,6 @@ import torch
 from transformers import AutoTokenizer
 
 from zeroband.training.data import MicroBatch
-from zeroband.training.orchestrator.config import TrainConfig
 
 
 def prepare_sample(prompt: str, completion: str, advantage: float, seq_len: int, tokenizer: AutoTokenizer):
@@ -58,26 +57,25 @@ def prepare_batch(
     advantages: list[float],
     temperature: float,
     tokenizer: AutoTokenizer,
-    train_config: TrainConfig,
+    batch_size: int,
+    micro_batch_size: int,
+    num_train_workers: int,
+    seq_len: int,
 ) -> list[list[MicroBatch]]:
     assert len(prompts) == len(completions) == len(advantages), (
         "Prompts, completions, and advantages must have the same length"
     )
     batch_size = len(prompts)
-    assert batch_size % (train_config.micro_batch_size * train_config.num_train_workers) == 0, (
-        "Batch size must be divisible by micro batch size"
-    )
-    per_gpu_micro_batches = batch_size // (train_config.num_train_workers * train_config.micro_batch_size)
+    assert batch_size % (micro_batch_size * num_train_workers) == 0, "Batch size must be divisible by micro batch size"
+    per_gpu_micro_batches = batch_size // (num_train_workers * micro_batch_size)
 
     all_batches = []
-    for _ in range(train_config.num_train_workers):
+    for _ in range(num_train_workers):
         batches = []
         for _ in range(per_gpu_micro_batches):
             micro_batches = []
-            for _ in range(train_config.micro_batch_size):
-                sample = prepare_sample(
-                    prompts.pop(), completions.pop(), advantages.pop(), train_config.seq_len, tokenizer
-                )
+            for _ in range(micro_batch_size):
+                sample = prepare_sample(prompts.pop(), completions.pop(), advantages.pop(), seq_len, tokenizer)
                 micro_batches.append(sample)
             batches.append(prepare_micro_batch(micro_batches, temperature))
 

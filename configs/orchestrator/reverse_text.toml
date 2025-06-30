@@ -1,4 +1,6 @@
 batch_size = 128
+micro_batch_size = 128
+seq_len = 128
 max_steps = 50
 
 [model]
@@ -9,8 +11,3 @@ name = "mikasenghaas/reverse_text_dataset_debug_50_seq_len"
 
 [sampling]
 n = 16
-
-[train]
-batch_size = 128
-micro_batch_size = 128
-seq_len = 128

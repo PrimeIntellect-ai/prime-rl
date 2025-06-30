@@ -19,9 +19,9 @@ from zeroband.training.orchestrator.utils import (
     compute_rewards,
     generate_completion,
     health_check,
-    load_checkpoint,
+    reload_weights,
     setup_client,
-    wait_for_checkpoint,
+    wait_for_weight_checkpoint,
 )
 from zeroband.utils.monitor import setup_monitor
 from zeroband.utils.pydantic_config import parse_argv
@@ -42,9 +42,9 @@ async def orchestrate(config: OrchestratorConfig):
         logger.info(f"Cleaning rollout path ({config.rollout.path})")
         shutil.rmtree(config.rollout.path, ignore_errors=True)
 
-    if config.checkpoints.clean:
-        logger.info(f"Cleaning checkpoints path ({config.checkpoints.path})")
-        shutil.rmtree(config.checkpoints.path, ignore_errors=True)
+    if config.weights.clean:
+        logger.info(f"Cleaning weights path ({config.weights.path})")
+        shutil.rmtree(config.weights.path, ignore_errors=True)
 
     # Setup monitor
     logger.info(f"Initializing monitor ({config.monitor})")
@@ -94,8 +94,8 @@ async def orchestrate(config: OrchestratorConfig):
         if async_level > config.async_level:
             ckpt_step = step - 1 - config.async_level
             logger.info(f"Hit async barrier {async_level} > {config.async_level}")
-            wait_for_checkpoint(config.checkpoints.path, ckpt_step)
-            await load_checkpoint(client, config.checkpoints.path, ckpt_step)
+            wait_for_weight_checkpoint(config.weights.path, ckpt_step)
+            await reload_weights(client, config.weights.path, ckpt_step)
 
         # Optionally, run online evals at the specified interval
         if (
@@ -175,13 +175,16 @@ async def orchestrate(config: OrchestratorConfig):
             advantages=advantages,
             temperature=config.sampling.temperature,
             tokenizer=tokenizer,
-            train_config=config.train,
+            batch_size=config.batch_size,
+            micro_batch_size=config.micro_batch_size,
+            num_train_workers=config.num_train_workers,
+            seq_len=config.seq_len,
         )
 
         for i, batches in enumerate(all_data_ranks_batches):
             save_folder = Path(config.rollout.path) / f"step_{step}"
             save_folder.mkdir(parents=True, exist_ok=True)
-            save_path = save_folder / f"rollout_{i}.pt"
+            save_path = save_folder / f"rank_{i}.pt"
             tmp_path = save_path.with_suffix(".tmp")
             torch.save(batches, tmp_path)
             tmp_path.rename(save_path)

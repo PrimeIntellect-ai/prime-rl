@@ -205,8 +205,29 @@ class EvalConfig(BaseConfig):
     online: Annotated[OnlineEvalConfig | None, Field(default=None)]
 
 
-class TrainConfig(BaseConfig):
-    """Configures how to feed the data to the trainer."""
+class OrchestratorConfig(BaseSettings):
+    """Configures the orchestrator for RL training."""
+
+    # The OAI client configuration
+    client: Annotated[ClientConfig, Field(default=ClientConfig())]
+
+    # The model configuration
+    model: Annotated[ModelConfig, Field(default=ModelConfig())]
+
+    # The sampling configuration
+    sampling: Annotated[SamplingConfig, Field(default=SamplingConfig())]
+
+    # The data configuration
+    data: Annotated[DataConfig, Field(default=DataConfig())]
+
+    # The evaluation configuration
+    eval: Annotated[EvalConfig | None, Field(default=None)]
+
+    # The logging configuration
+    log: Annotated[LogConfig, Field(default=LogConfig())]
+
+    # The monitor configuration
+    monitor: Annotated[MultiMonitorConfig, Field(default=MultiMonitorConfig())]
 
     batch_size: Annotated[int, Field(default=128, ge=1, description="Number of samples to train on per step.")]
 
@@ -233,48 +254,6 @@ class TrainConfig(BaseConfig):
         Field(default=1, ge=1, description="Number of training workers to use for training."),
     ]
 
-    @model_validator(mode="after")
-    def validate_batch_size(self):
-        if self.batch_size % self.micro_batch_size != 0:
-            raise ValueError("Batch size must be divisible by micro batch size")
-        if self.batch_size < self.micro_batch_size:
-            raise ValueError("Batch size must be greater than or equal to micro batch size")
-        return self
-
-
-class OrchestratorConfig(BaseSettings):
-    """Configures the orchestrator for RL training."""
-
-    # The OAI client configuration
-    client: Annotated[ClientConfig, Field(default=ClientConfig())]
-
-    # The model configuration
-    model: Annotated[ModelConfig, Field(default=ModelConfig())]
-
-    # The sampling configuration
-    sampling: Annotated[SamplingConfig, Field(default=SamplingConfig())]
-
-    # The data configuration
-    data: Annotated[DataConfig, Field(default=DataConfig())]
-
-    # The evaluation configuration
-    eval: Annotated[EvalConfig | None, Field(default=None)]
-
-    # The logging configuration
-    log: Annotated[LogConfig, Field(default=LogConfig())]
-
-    # The monitor configuration
-    monitor: Annotated[MultiMonitorConfig, Field(default=MultiMonitorConfig())]
-
-    # The training configuration
-    batch_size: Annotated[
-        int,
-        Field(
-            default=128,
-            description="Number of samples to train on per step.",
-        ),
-    ]
-
     max_steps: Annotated[
         int | None,
         Field(
@@ -299,20 +278,22 @@ class OrchestratorConfig(BaseSettings):
         ),
     ]
 
-    checkpoints: Annotated[
+    weights: Annotated[
         PathConfig,
         Field(
-            default=PathConfig(path=Path("checkpoints"), clean=True),
-            description="Path to read new model checkpoints from. Will be populated by the trainer.",
+            default=PathConfig(path=Path("weights"), clean=True),
+            description="Path to read updated model weights from. Will be populated by the trainer.",
         ),
     ]
 
     seed: Annotated[int | None, Field(default=None, description="Random seed for the orchestrator.")]
 
-    train: Annotated[TrainConfig, Field(default=TrainConfig())]
-
     @model_validator(mode="after")
     def validate_batch_size(self):
         if self.batch_size % self.sampling.n != 0:
             raise ValueError("Batch size must be divisible by the number of samples per problem")
+        if self.batch_size % self.micro_batch_size != 0:
+            raise ValueError("Batch size must be divisible by micro batch size")
+        if self.batch_size < self.micro_batch_size:
+            raise ValueError("Batch size must be greater than or equal to micro batch size")
         return self

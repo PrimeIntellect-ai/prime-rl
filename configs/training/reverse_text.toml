@@ -1,22 +1,8 @@
-stop_after_steps = 50
+max_steps = 50
+reshard_after_forward = true
 
 [model]
 name = "willcb/Qwen2.5-0.5B-Reverse-SFT"
 
-[train]
-micro_bs = 16
-reshard_after_forward = true
-
 [optim]
-batch_size = 128
-
-[optim.optim]
 lr = 3e-6
-
-[data]
-path = "rollouts"
-seq_length = 128
-
-[ckpt]
-rollout_path = "checkpoints"
-clean_rollout_path = true

@@ -35,13 +35,13 @@ async def health_check(client: AsyncOpenAI, timeout: int = 60, interval: int = 1
     raise TimeoutError(msg)
 
 
-async def load_checkpoint(client: AsyncOpenAI, ckpt_path: Path, step: int) -> None:
-    """Make a HTTP post request to the vLLM server to load a checkpoint."""
+async def reload_weights(client: AsyncOpenAI, path: Path, step: int) -> None:
+    """Make a HTTP post request to the vLLM server to reload the weights."""
     logger = get_logger()
-    url = str(client.base_url) + "load_checkpoint"
-    ckpt_path = ckpt_path / f"step_{step}" / "model.pt"
-    logger.info(f"Sending load checkpoint request to {url} with ckpt_path {ckpt_path}")
-    await client._client.post(url=url, json={"ckpt_path": ckpt_path.as_posix()})
+    url = str(client.base_url) + "reload_weights"
+    model_path = path / f"step_{step}" / "model.pt"
+    logger.info(f"Sending request to {url} to reload weights from {model_path}")
+    await client._client.post(url=url, json={"model_path": model_path.as_posix()})
 
 
 async def generate_completion(
@@ -68,17 +68,17 @@ async def generate_completion(
     return response
 
 
-def wait_for_checkpoint(ckpt_path: Path, step: int, interval: int = 1, log_interval: int = 10) -> None:
+def wait_for_weight_checkpoint(path: Path, step: int, interval: int = 1, log_interval: int = 10) -> None:
     logger = get_logger()
     wait_time = 0
-    ckpt_path = Path(ckpt_path) / f"step_{step}" / "model.pt"
-    logger.info(f"Waiting for checkpoint for step {step} at {ckpt_path}")
+    model_path = Path(path) / f"step_{step}" / "model.pt"
+    logger.info(f"Waiting for checkpoint for step {step} at {model_path}")
     while True:
-        if ckpt_path.exists():
-            logger.info(f"Found checkpoint for step {step} at {ckpt_path}")
+        if model_path.exists():
+            logger.info(f"Found checkpoint for step {step} at {model_path}")
             break
         if wait_time % log_interval == 0 and wait_time > 0:  # Every log_interval seconds
-            logger.info(f"Waiting for checkpoint for step {step} at {ckpt_path} for {wait_time} seconds")
+            logger.info(f"Waiting for checkpoint for step {step} at {model_path} for {wait_time} seconds")
         time.sleep(interval)
         wait_time += interval
 

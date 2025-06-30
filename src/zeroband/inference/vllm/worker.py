@@ -16,9 +16,9 @@ class CheckpointWorker:
         print("RPC call test successful")
         return True
 
-    def load_checkpoint(self, ckpt_path: Path) -> None:
-        """Load a checkpoint from a specified directory."""
-        state_dict = torch.load(ckpt_path, map_location="cpu")
+    def reload_weights(self, model_path: Path) -> None:
+        """Reload the weights from a specified path."""
+        state_dict = torch.load(model_path, map_location="cpu")
 
         def weights_iterator():
             for key, value in state_dict.items():
@@ -32,6 +32,4 @@ class CheckpointWorker:
         from vllm.model_executor.model_loader.utils import process_weights_after_loading
 
         device = next(self.model_runner.model.parameters()).device
-        process_weights_after_loading(
-            self.model_runner.model, self.model_runner.model_config, device
-        )
+        process_weights_after_loading(self.model_runner.model, self.model_runner.model_config, device)

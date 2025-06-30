@@ -13,7 +13,6 @@ class MicroBatch(TypedDict):
     token_ids: Int[torch.Tensor, "micro_bs seq"]
     position_ids: Int[torch.Tensor, "micro_bs seq"]
     advantages: Float[torch.Tensor, "micro_bs seq"]
-    loss_mask: Int[torch.Tensor, "micro_bs seq"]
     logprobs: Float[torch.Tensor, "micro_bs seq_minus_1"]
 
     # batch level
@@ -36,10 +35,9 @@ class FakeDataLoader:
 
     def _get_micro_batch(self) -> MicroBatch:
         return {
-            "input_ids": torch.randint(0, 100, (self.micro_bs, self.max_seq_len)),
-            "advantages": torch.randn(self.micro_bs, self.max_seq_len),
-            "loss_mask": torch.randint(0, 2, (self.micro_bs, self.max_seq_len)),
+            "token_ids": torch.randint(0, 100, (self.micro_bs, self.max_seq_len)),
             "position_ids": torch.stack([torch.arange(self.max_seq_len)] * self.micro_bs, dim=0),
+            "advantages": torch.randn(self.micro_bs, self.max_seq_len),
             "logprobs": torch.randn(self.micro_bs, self.max_seq_len - 1),
             "temperature": 1.0,
             "total_tokens": self.micro_bs * self.max_seq_len,
@@ -53,13 +51,14 @@ class DataLoader:
 
     def __init__(self, data_path: Path, start_step: int):
         self.data_path = data_path
+        self.current_step = start_step
         self.world_info = get_world_info()
 
     def get_batch(self) -> list[MicroBatch]:
         get_logger().info(f"Loading data from path {self.data_path}")
         while True:
-            # here adding step + 1 because orchestator count step is offset by 1 bc of @mika
-            step_path = self.data_path / f"step_{self.current_step + 1}" / f"data_rank_{self.world_info.rank}.pt"
+            # here adding step + 1 because orchestrator count step is offset by 1 bc of @mika
+            step_path = self.data_path / f"step_{self.current_step + 1}" / f"rank_{self.world_info.rank}.pt"
             if step_path.exists():
                 batches = torch.load(step_path)
                 self.current_step += 1

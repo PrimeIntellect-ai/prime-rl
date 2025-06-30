@@ -49,11 +49,11 @@ async def run_server(args: Namespace) -> None:
         await engine.collective_rpc("test_rpc")
         return {"status": "ok"}
 
-    @app.post("/v1/load_checkpoint")
-    async def _load_checkpoint(request: Request):
+    @app.post("/v1/reload_weights")
+    async def _reload_weights(request: Request):
         data = await request.json()
-        ckpt_path = data.get("ckpt_path")
-        await engine.collective_rpc("load_checkpoint", args=(ckpt_path,))
+        model_path = data.get("model_path")
+        await engine.collective_rpc("reload_weights", args=(model_path,))
         return {"status": "ok"}
 
     vllm_config = await engine.get_vllm_config()
@@ -78,9 +78,7 @@ async def run_server(args: Namespace) -> None:
 
 
 def server(config: InferenceConfig, vllm_args: list[str]):
-    parser = FlexibleArgumentParser(
-        description="vLLM OpenAI-Compatible RESTful API server."
-    )
+    parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")
     parser = make_arg_parser(parser)
     args = parser.parse_args(args=vllm_args, namespace=config.to_vllm())
     validate_parsed_serve_args(args)

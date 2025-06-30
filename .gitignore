@@ -8,6 +8,7 @@ outputs/*
 data/*
 rollouts/*
 checkpoints/*
+weights/*
 *.ipynb
 *.jsonl
 
