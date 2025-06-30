@@ -131,9 +131,7 @@ class DataConfig(BaseConfig):
         ),
     ]
 
-    split: Annotated[
-        str, Field(default="train", description="Split of the dataset to use.")
-    ]
+    split: Annotated[str, Field(default="train", description="Split of the dataset to use.")]
 
 
 class LogConfig(BaseConfig):
@@ -259,7 +257,7 @@ class OrchestratorConfig(BaseSettings):
     rollout: Annotated[
         PathConfig,
         Field(
-            default=PathConfig(path=Path("rollouts")),
+            default=PathConfig(path=Path("rollouts"), clean=True),
             description="Path to write inference outputs to. Will be populated by the orchestrator with responses from inference pool.",
         ),
     ]
@@ -267,19 +265,15 @@ class OrchestratorConfig(BaseSettings):
     checkpoints: Annotated[
         PathConfig,
         Field(
-            default=PathConfig(path=Path("checkpoints")),
+            default=PathConfig(path=Path("checkpoints"), clean=True),
             description="Path to read new model checkpoints from. Will be populated by the trainer.",
         ),
     ]
 
-    seed: Annotated[
-        int | None, Field(default=None, description="Random seed for the orchestrator.")
-    ]
+    seed: Annotated[int | None, Field(default=None, description="Random seed for the orchestrator.")]
 
     @model_validator(mode="after")
     def validate_batch_size(self):
         if self.batch_size % self.sampling.n != 0:
-            raise ValueError(
-                "Batch size must be divisible by the number of samples per problem"
-            )
+            raise ValueError("Batch size must be divisible by the number of samples per problem")
         return self
