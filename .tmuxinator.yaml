@@ -1,0 +1,15 @@
+name: RL
+enable_pane_titles: true
+windows:
+  - RL:
+      layout: even-horizontal
+      panes:
+        - Inference:
+          - export CUDA_VISIBLE_DEVICES=0
+          - uv run infer @ configs/inference/reverse_text.toml --disable-log-requests
+        - Orchestrator:
+          - less -R +F logs/orchestrator.log
+        - Training:
+          - export CUDA_VISIBLE_DEVICES=1
+          - uv run train @ configs/training/reverse_text.toml > /dev/null & 
+          - less -R +F logs/train.log
