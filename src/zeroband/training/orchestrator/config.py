@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 from pydantic import Field, model_validator
 
 from zeroband.eval.registry import Benchmark
-from zeroband.utils.config import ModelConfig, MultiMonitorConfig, WandbMonitorConfig
+from zeroband.utils.config import ModelConfig, MultiMonitorConfig
 from zeroband.utils.pydantic_config import BaseConfig, BaseSettings
 
 
@@ -76,14 +76,6 @@ class SamplingConfig(BaseConfig):
         ),
     ]
 
-    logprobs: Annotated[
-        int | None,
-        Field(
-            default=0,
-            description="Number of tokens to return log probabilities for. If None, no probability is returned. For all other values, the result includes the log probabilities of the specified number of most likely tokens, as well as the chosen tokens (e.g. 0 returns only the logprob of the chosen token)",
-        ),
-    ]
-
     max_tokens: Annotated[
         int | None,
         Field(
@@ -108,13 +100,6 @@ class SamplingConfig(BaseConfig):
             description="Random seed to use for sampling. If None, no seeding is used.",
         ),
     ]
-
-    @model_validator(mode="after")
-    def convert_negative_logprobs_to_none(self):
-        """Convert negative logprobs values to None to disable logprobs calculation."""
-        if self.logprobs is not None and self.logprobs < 0:
-            self.logprobs = None
-        return self
 
 
 # TODO(Mika, Will): Change data config to verifiers environment
@@ -240,9 +225,7 @@ class OrchestratorConfig(BaseSettings):
     log: Annotated[LogConfig, Field(default=LogConfig())]
 
     # The monitor configuration
-    monitor: Annotated[
-        MultiMonitorConfig, Field(default=MultiMonitorConfig(wandb=WandbMonitorConfig(name="orchestrator")))
-    ]
+    monitor: Annotated[MultiMonitorConfig, Field(default=MultiMonitorConfig())]
 
     collate_mode: Annotated[Literal["packing", "padding"], Field(default="padding")]
 

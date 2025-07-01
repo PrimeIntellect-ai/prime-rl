@@ -8,7 +8,7 @@ from zeroband.training.orchestrator.config import (
     LogConfig,
     SamplingConfig,
 )
-from zeroband.utils.config import ModelConfig, MultiMonitorConfig, WandbMonitorConfig
+from zeroband.utils.config import ModelConfig, MultiMonitorConfig
 from zeroband.utils.pydantic_config import BaseSettings
 
 
@@ -28,7 +28,7 @@ class Config(BaseSettings):
     eval: Annotated[EvalConfig, Field(default=EvalConfig())]
 
     # The monitor configuration
-    monitor: Annotated[MultiMonitorConfig, Field(default=MultiMonitorConfig(wandb=WandbMonitorConfig(name="eval")))]
+    monitor: Annotated[MultiMonitorConfig, Field(default=MultiMonitorConfig())]
 
     # The logging configuration
     log: Annotated[LogConfig, Field(default=LogConfig())]
