@@ -21,12 +21,11 @@ from zeroband.training.config import Config as TrainingConfig
 from zeroband.training.data import DataLoader, FakeDataLoader
 from zeroband.training.fsdp import apply_fsdp, reshard_module
 from zeroband.training.logger import setup_logger
-from zeroband.training.loss import entropy_loss, grpo_loss
+from zeroband.training.loss import compute_logprobs, entropy_loss, grpo_loss
 from zeroband.training.metrics import BatchMetrics
 from zeroband.training.perf import get_perf_counter
 from zeroband.training.utils import (
     OffloadedTensor,
-    compute_logprobs,
     copy_model_to_cpu,
     offload_model_to_cpu,
     seed_everything,

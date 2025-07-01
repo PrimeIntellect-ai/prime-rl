@@ -6,13 +6,11 @@ import numpy as np
 import pandas as pd
 import torch
 import wandb
-from jaxtyping import Float
 from torch.distributed.tensor import DTensor
 from transformers import (
     PreTrainedTokenizer,
 )
 
-from zeroband.training.loss import selective_log_softmax
 from zeroband.utils.models import Model
 
 
@@ -57,23 +55,6 @@ def get_real_tensor(tensor: torch.Tensor | DTensor):
     if isinstance(tensor, DTensor):
         return tensor.to_local()
     return tensor
-
-
-def compute_logprobs(
-    model: Model,
-    input_ids: torch.Tensor,
-    position_ids: torch.Tensor,
-    temperature: float,
-) -> torch.Tensor:
-    logits: Float[torch.Tensor, "batch seq vocab"] = model(
-        input_ids=input_ids, position_ids=position_ids
-    ).logits.contiguous()
-
-    input_ids_shifted = input_ids[:, 1:]
-    logits_shifted = logits[:, :-1, :] / temperature
-    logprobs = selective_log_softmax(logits_shifted, input_ids_shifted)
-    del logits, logits_shifted
-    return logprobs
 
 
 OffloadedTensor: TypeAlias = list[tuple[torch.Tensor, int]]
