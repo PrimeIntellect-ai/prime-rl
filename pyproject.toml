@@ -36,7 +36,7 @@ train = [
     "jaxtyping>=0.3.2",
     "beartype>=0.21.0",
     "liger-kernel>=0.5.10",
-    "shardcast>=0.3.1",
+    "shardcast>=0.3.2",
 ]
 infer = [
     "vllm>=0.9.1",

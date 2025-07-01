@@ -6,11 +6,12 @@ import shutil
 import time
 from pathlib import Path
 
-# import shardcast # TODO(Mika): This sets the global logging level to INFO
+import shardcast
 import torch
 from jaxtyping import Float
 from torch._guards import log as torch_log
 
+from zeroband.training import envs
 from zeroband.training.ckpt import (
     TrainingProgress,
     load_full_checkpoint,
@@ -78,13 +79,12 @@ def train(config: TrainingConfig):
 
     torch.set_float32_matmul_precision("high")
 
-    # TODO(Mika): Bring back
-    # if config.weights.path and world.rank == 0:
-    #     if envs.SHARDCAST_OUTPUT_DIR is not None:
-    #         shardcast.initialize(
-    #             envs.SHARDCAST_OUTPUT_DIR,
-    #             max_distribution_folders=config.max_async_level,
-    #         )
+    if config.weights.path and world.rank == 0:
+        if envs.SHARDCAST_OUTPUT_DIR is not None:
+            shardcast.initialize(
+                envs.SHARDCAST_OUTPUT_DIR,
+                max_distribution_folders=config.async_level + 1,
+            )
 
     # Initialize the model and tokenizer
     model = setup_model(config.model)
@@ -288,11 +288,10 @@ def train(config: TrainingConfig):
         active_weight_checkpoint_paths.append(step_path)
         save_weights_time = time.time() - save_weights_start_time
 
-        # TODO(Mika): Bring back
         # Optionally, broadcast the weight checkpoint from master rank
-        # if world.rank == 0 and envs.SHARDCAST_OUTPUT_DIR is not None:
-        #     logger.info(f"Broadcasting {model_path} via shardcast")
-        #     shardcast.broadcast(model_path)  # TODO: Is this blocking?
+        if world.rank == 0 and envs.SHARDCAST_OUTPUT_DIR is not None:
+            logger.info(f"Broadcasting {model_path} via shardcast")
+            shardcast.broadcast(model_path)  # TODO: Is this blocking?
 
         # Optionally, remove old weight checkpoints to save space
         # +1 to ensure to not delete current checkpoint when async_level=0

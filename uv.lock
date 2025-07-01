@@ -2595,11 +2595,14 @@ wheels = [
 
 [[package]]
 name = "shardcast"
-version = "0.3.1"
+version = "0.3.2"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/8a/4f/c8b9f2a3d6542c5f7ea417433507b01566bc7199c4d0f40821502a34f651/shardcast-0.3.1.tar.gz", hash = "sha256:1a0b6c602041aa80e7ac29e0b4800c9a723235616a161cd7a8363b5613923118", size = 18919, upload-time = "2025-04-13T21:44:52.101Z" }
+dependencies = [
+    { name = "blake3" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/2c/e2/de8cb58aae10895fe461d7897b7de0d62f6eb52a0b05c7b3d1ed83a8c8f1/shardcast-0.3.2.tar.gz", hash = "sha256:460c9404e2538d7bd74b29ee5b65f5a7bea2e5cdd9235a95224633bf7caecbce", size = 19073, upload-time = "2025-07-01T00:59:51.397Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/cf/aa/20875856507e032ddb7625e1b6a0d29d705fc4e098c971d98e2109a60600/shardcast-0.3.1-py3-none-any.whl", hash = "sha256:36518a3777e407f132a451232a04123e45094bcaec9223e2f00df7e8e414b1b6", size = 23093, upload-time = "2025-04-13T21:44:50.816Z" },
+    { url = "https://files.pythonhosted.org/packages/15/64/53149aff8d17df76047fa8057fedb18ec2cf24a0a048a806195f35554939/shardcast-0.3.2-py3-none-any.whl", hash = "sha256:0078d58eaac06b3f5f4d2972f595364dda98230ed67397873830c8a49cd53b96", size = 23206, upload-time = "2025-07-01T00:59:50.192Z" },
 ]
 
 [[package]]
@@ -3307,7 +3310,7 @@ requires-dist = [
     { name = "pylatexenc", marker = "extra == 'rewards'", specifier = ">=2.10" },
     { name = "pynvml", specifier = ">=12.0.0" },
     { name = "reasoning-gym", marker = "extra == 'rewards'", git = "https://github.com/open-thought/reasoning-gym.git" },
-    { name = "shardcast", marker = "extra == 'train'", specifier = ">=0.3.1" },
+    { name = "shardcast", marker = "extra == 'train'", specifier = ">=0.3.2" },
     { name = "tomli", specifier = ">=2.2.1" },
     { name = "torch", specifier = ">=2.7.0", index = "https://download.pytorch.org/whl/cu128" },
     { name = "transformers", specifier = ">=4.53.0" },

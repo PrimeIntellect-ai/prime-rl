@@ -94,7 +94,7 @@ class WeightCheckpointConfig(BaseConfig):
         int | None,
         Field(
             default=None,
-            description="Interval of checkpoints to save. If None, will automatically delete weight checkpoints that are more than `max_async_level` steps old. This is useful to keep some weight-only checkpoints for online evals.",
+            description="Interval of checkpoints to save. If None, will automatically delete weight checkpoints that are more than `async_level` steps old. This is useful to keep some weight-only checkpoints for online evals.",
         ),
     ]
 
@@ -258,5 +258,5 @@ class Config(BaseSettings):
         if self.orchestrator:
             self.orchestrator.max_steps = self.max_steps
             self.orchestrator.model.name = self.model.name
-            self.orchestrator.async_level = self.max_async_level
+            self.orchestrator.async_level = self.async_level
         return self
