@@ -5,10 +5,10 @@ class World:
     """This class stores topology information for distributed training and inference settings by parsing environment variables set by torchrun."""
 
     def __init__(self):
-        self.rank = envs.RANK or 0
-        self.world_size = envs.WORLD_SIZE or 1
-        self.local_rank = envs.LOCAL_RANK or 0
-        self.local_world_size = envs.LOCAL_WORLD_SIZE or 1
+        self.rank = envs.RANK
+        self.world_size = envs.WORLD_SIZE
+        self.local_rank = envs.LOCAL_RANK
+        self.local_world_size = envs.LOCAL_WORLD_SIZE
         self._check_world()
         self.num_nodes = self.world_size // self.local_world_size
 
