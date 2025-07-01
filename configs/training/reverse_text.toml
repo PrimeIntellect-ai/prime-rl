@@ -6,9 +6,6 @@ name = "willcb/Qwen2.5-0.5B-Reverse-SFT"
 [optim]
 lr = 3e-6
 
-[monitor.wandb]
-project = "reverse-text"
-
 [orchestrator]
 batch_size = 128
 micro_batch_size = 128
