@@ -59,12 +59,23 @@ def train(config: TrainingConfig):
     if config.orchestrator and world.rank == 0:
         logger.info("Starting orchestrator in a separate process")
 
-        orchestrator = mp.get_context("spawn").Process(
+        # Create a queue for orchestrator to signal when setup is complete
+        ctx = mp.get_context("spawn")
+        setup_queue = ctx.Queue()
+        orchestrator = ctx.Process(
             target=run_orchestrator,
-            args=(config.orchestrator,),
+            args=(config.orchestrator, setup_queue),
             daemon=True,
         )
         orchestrator.start()
+
+        # Wait for orchestrator to signal that setup is complete
+        logger.info("Waiting for orchestrator to complete setup...")
+        signal = setup_queue.get()
+        if signal == "ready":
+            logger.success("Orchestrator setup complete, continuing with training")
+        else:
+            raise RuntimeError(f"Unexpected signal from orchestrator: {signal}")
 
     # Optionally, clean the checkpoints path
     if config.ckpt.clean:

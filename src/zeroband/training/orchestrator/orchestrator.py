@@ -1,6 +1,7 @@
 import asyncio
 import json
 import math
+import multiprocessing as mp
 import shutil
 import time
 from pathlib import Path
@@ -39,7 +40,7 @@ from zeroband.utils.utils import clean_exit
 
 
 @clean_exit
-async def orchestrate(config: OrchestratorConfig):
+async def orchestrate(config: OrchestratorConfig, setup_queue: mp.Queue | None = None):
     # Initialize the logger
     logger = setup_logger(config.log)
     logger.info("Starting orchestrator")
@@ -79,6 +80,11 @@ async def orchestrate(config: OrchestratorConfig):
     # Reset weights to base model to allow reusing inference server across runs
     logger.info("Resetting weights to base model")
     await reset_weights(client)
+
+    # Signal that setup is complete
+    if setup_queue is not None:
+        logger.info("Signaling trainer that orchestrator setup is complete")
+        setup_queue.put("ready")
 
     # Optionally, run evals on base model
     if config.eval:
@@ -227,11 +233,11 @@ async def orchestrate(config: OrchestratorConfig):
     logger.success("Orchestrator finished.")
 
 
-def run_orchestrator(config: OrchestratorConfig):
+def run_orchestrator(config: OrchestratorConfig, setup_queue: mp.Queue | None = None):
     """Utility function to run the orchestrator as a sidecar process in a synchronous context."""
     import asyncio
 
-    asyncio.run(orchestrate(config))
+    asyncio.run(orchestrate(config, setup_queue))
 
 
 def main():
