@@ -129,7 +129,7 @@ def train(config: TrainingConfig):
                 num_micro_batches = len(micro_batches)
                 for micro_step, micro_batch in enumerate(micro_batches, start=1):
                     logger.debug(f"Computing logprobs for micro batch {micro_step} / {num_micro_batches}")
-                    input_ids = micro_batch["token_ids"].to("cuda")
+                    input_ids = micro_batch["input_ids"].to("cuda")
                     position_ids = micro_batch["position_ids"].to("cuda")
                     temperature = micro_batch["temperature"]
 
@@ -151,7 +151,7 @@ def train(config: TrainingConfig):
         num_micro_batches = len(micro_batches)
         for micro_step, micro_batch in enumerate(micro_batches, start=1):
             logger.debug(f"Training on micro batch {micro_step} / {num_micro_batches}")
-            input_ids = micro_batch["token_ids"].to("cuda")
+            input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
             loss_mask = (

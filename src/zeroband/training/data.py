@@ -11,7 +11,7 @@ from zeroband.training.world import get_world
 
 class MicroBatch(TypedDict):
     # Token level
-    token_ids: Int[torch.Tensor, "micro_bs seq"]
+    input_ids: Int[torch.Tensor, "micro_bs seq"]
     position_ids: Int[torch.Tensor, "micro_bs seq"]
     advantages: Float[torch.Tensor, "micro_bs seq"]
     logprobs: Float[torch.Tensor, "micro_bs seq_minus_1"]
@@ -33,7 +33,7 @@ class FakeDataLoader:
 
     def _get_micro_batch(self) -> MicroBatch:
         return {
-            "token_ids": torch.randint(0, 100, (self.micro_batch_size, self.seq_len)),
+            "input_ids": torch.randint(0, 100, (self.micro_batch_size, self.seq_len)),
             "position_ids": torch.stack([torch.arange(self.seq_len)] * self.micro_batch_size, dim=0),
             "advantages": torch.randn(self.micro_batch_size, self.seq_len),
             "logprobs": torch.randn(self.micro_batch_size, self.seq_len - 1),
