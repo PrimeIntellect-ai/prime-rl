@@ -6,12 +6,11 @@ import shutil
 import time
 from pathlib import Path
 
-import shardcast
+# import shardcast # TODO(Mika): This sets the global logging level to INFO
 import torch
 from jaxtyping import Float
 from torch._guards import log as torch_log
 
-from zeroband.training import envs
 from zeroband.training.ac import setup_ac
 from zeroband.training.ckpt import (
     TrainingProgress,
@@ -85,14 +84,13 @@ def train(config: TrainingConfig):
     if config.seed:
         seed_everything(config.seed)
 
-    # local_batch_size = get_local_batch_size(config.optim.batch_size, config.train.micro_bs, world_info)
-
-    if config.weights.path and world.rank == 0:
-        if envs.SHARDCAST_OUTPUT_DIR is not None:
-            shardcast.initialize(
-                envs.SHARDCAST_OUTPUT_DIR,
-                max_distribution_folders=config.max_async_level,
-            )
+    # TODO(Mika): Bring back
+    # if config.weights.path and world.rank == 0:
+    #     if envs.SHARDCAST_OUTPUT_DIR is not None:
+    #         shardcast.initialize(
+    #             envs.SHARDCAST_OUTPUT_DIR,
+    #             max_distribution_folders=config.max_async_level,
+    #         )
 
     # Initialize the model and tokenizer
     model, tokenizer = get_model_and_tokenizer(config.model.name, config.model.attn)
@@ -310,10 +308,11 @@ def train(config: TrainingConfig):
         active_weight_checkpoint_paths.append(step_path)
         save_weights_time = time.time() - save_weights_start_time
 
+        # TODO(Mika): Bring back
         # Optionally, broadcast the weight checkpoint from master rank
-        if world.rank == 0 and envs.SHARDCAST_OUTPUT_DIR is not None:
-            logger.info(f"Broadcasting {model_path} via shardcast")
-            shardcast.broadcast(model_path)  # TODO: Is this blocking?
+        # if world.rank == 0 and envs.SHARDCAST_OUTPUT_DIR is not None:
+        #     logger.info(f"Broadcasting {model_path} via shardcast")
+        #     shardcast.broadcast(model_path)  # TODO: Is this blocking?
 
         # Optionally, remove old weight checkpoints to save space
         if len(active_weight_checkpoint_paths) > config.weights.buffer_size:
