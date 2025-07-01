@@ -39,8 +39,16 @@ async def reload_weights(client: AsyncOpenAI, path: Path, step: int) -> None:
     logger = get_logger()
     url = str(client.base_url) + "reload_weights"
     model_path = path / f"step_{step}" / "model.pt"
-    logger.info(f"Sending request to {url} to reload weights from {model_path}")
+    logger.debug(f"Sending request to {url} to reload weights from {model_path}")
     await client._client.post(url=url, json={"model_path": model_path.as_posix()})
+
+
+async def reset_weights(client: AsyncOpenAI) -> None:
+    """Make a HTTP post request to the vLLM server to reset weights to the base model."""
+    logger = get_logger()
+    url = str(client.base_url) + "reset_weights"
+    logger.debug(f"Sending request to {url} to reset weights to base model")
+    await client._client.post(url=url, json={})
 
 
 async def generate_completion(

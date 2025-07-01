@@ -56,6 +56,11 @@ async def run_server(args: Namespace) -> None:
         await engine.collective_rpc("reload_weights", args=(model_path,))
         return {"status": "ok"}
 
+    @app.post("/v1/reset_weights")
+    async def _reset_weights(request: Request):
+        await engine.collective_rpc("reset_weights")
+        return {"status": "ok"}
+
     vllm_config = await engine.get_vllm_config()
     await init_app_state(engine, vllm_config, app.state, args)
 

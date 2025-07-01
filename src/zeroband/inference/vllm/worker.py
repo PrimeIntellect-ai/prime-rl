@@ -33,3 +33,6 @@ class CheckpointWorker:
 
         device = next(self.model_runner.model.parameters()).device
         process_weights_after_loading(self.model_runner.model, self.model_runner.model_config, device)
+
+    def reset_weights(self) -> None:
+        self.load_model()

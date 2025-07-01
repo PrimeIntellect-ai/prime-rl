@@ -20,6 +20,7 @@ from zeroband.training.orchestrator.utils import (
     generate_completion,
     health_check,
     reload_weights,
+    reset_weights,
     setup_client,
     wait_for_weight_checkpoint,
 )
@@ -59,7 +60,12 @@ async def orchestrate(config: OrchestratorConfig):
     tokenizer = AutoTokenizer.from_pretrained(config.model.name)
 
     # Check health of the client
+    logger.info("Checking health of the client")
     await health_check(client)
+
+    # Reset weights to base model to allow reusing inference server across runs
+    logger.info("Resetting weights to base model")
+    await reset_weights(client)
 
     # Optionally, run evals on base model
     if config.eval:
