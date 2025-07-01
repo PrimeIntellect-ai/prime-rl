@@ -31,7 +31,7 @@ class Config(BaseSettings):
     monitor: Annotated[MultiMonitorConfig, Field(default=MultiMonitorConfig())]
 
     # The logging configuration
-    log: Annotated[LogConfig, Field(default=LogConfig())]
+    log: Annotated[LogConfig, Field(default=LogConfig(path=Path("logs/eval")))]
 
     use_tqdm: Annotated[
         bool,
