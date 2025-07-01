@@ -3,7 +3,6 @@ from typing import Annotated, Literal
 
 from pydantic import Field
 
-from zeroband.utils.config import ModelConfig as BaseModelConfig
 from zeroband.utils.pydantic_config import BaseConfig, BaseSettings, get_all_fields
 from zeroband.utils.utils import rgetattr, rsetattr
 
@@ -41,8 +40,16 @@ class ParallelConfig(BaseConfig):
         return f"tp={self.tp} dp={self.dp}"
 
 
-class ModelConfig(BaseModelConfig):
+class ModelConfig(BaseConfig):
     """Configures the inference model. Most arguments are passed directly to the vLLM LLM class (https://docs.vllm.ai/en/latest/api/vllm.LLM.html)."""
+
+    name: Annotated[
+        str,
+        Field(
+            default="Qwen/Qwen3-0.6B",
+            description="Name or path of the HF model to use.",
+        ),
+    ]
 
     dtype: Annotated[
         Literal["auto", "float16", "bfloat16", "float32"],

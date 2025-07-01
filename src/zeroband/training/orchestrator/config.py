@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 from pydantic import Field, model_validator
 
 from zeroband.eval.registry import Benchmark
-from zeroband.utils.config import ModelConfig, MultiMonitorConfig, PathConfig
+from zeroband.utils.config import ModelConfig, MultiMonitorConfig
 from zeroband.utils.pydantic_config import BaseConfig, BaseSettings
 
 
@@ -157,6 +157,20 @@ class LogConfig(BaseConfig):
         Field(
             default=False,
             description="Whether to use UTC time in the logger. If False, it will default to the local time. If the local time is wrong, you can set it by setting the `TZ` environment variable. For example, `TZ=America/Los_Angeles` will set the local time to SF time.",
+        ),
+    ]
+
+
+class PathConfig(BaseConfig):
+    """Configures a path used for input/ output operations"""
+
+    path: Annotated[Path, Field(description="Path to write to.")]
+
+    clean: Annotated[
+        bool,
+        Field(
+            default=False,
+            description="Whether to clean the path at the beginning of the run. If True, will delete the entire directory.",
         ),
     ]
 

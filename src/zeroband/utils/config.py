@@ -18,20 +18,6 @@ class ModelConfig(BaseConfig):
     ]
 
 
-class PathConfig(BaseConfig):
-    """Configures a path used for input/ output operations"""
-
-    path: Annotated[Path, Field(description="Path to write to.")]
-
-    clean: Annotated[
-        bool,
-        Field(
-            default=False,
-            description="Whether to clean the path at the beginning of the run. If True, will delete the entire directory.",
-        ),
-    ]
-
-
 class FileMonitorConfig(BaseConfig):
     """Configures logging to a file."""
 

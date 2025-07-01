@@ -3,15 +3,22 @@ from typing import Annotated, Literal, TypeAlias, Union
 
 from pydantic import Field, model_validator
 
-from zeroband.utils.config import ModelConfig as BaseModelConfig
-from zeroband.utils.config import MultiMonitorConfig, PathConfig
+from zeroband.utils.config import MultiMonitorConfig
 from zeroband.utils.pydantic_config import BaseConfig, BaseSettings
 
 AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2"]
 
 
-class ModelConfig(BaseModelConfig):
+class ModelConfig(BaseConfig):
     """Configures the model for training."""
+
+    name: Annotated[
+        str,
+        Field(
+            default="Qwen/Qwen3-0.6B",
+            description="Name or path of the HF model to use.",
+        ),
+    ]
 
     attn: Annotated[
         AttnImplementation, Field(default="flash_attention_2", description="The attention implementation to use.")
@@ -47,8 +54,18 @@ class OptimizerConfig(BaseConfig):
     betas2: Annotated[float, Field(default=0.99, ge=0)]
 
 
-class CheckpointConfig(PathConfig):
+class CheckpointConfig(BaseConfig):
     """Configures checkpointing the full model, optimizer and training state for resuming training."""
+
+    path: Annotated[Path, Field(default=Path("checkpoints"))]
+
+    clean: Annotated[
+        bool,
+        Field(
+            default=False,
+            description="Whether to clean the path at the beginning of the run. If True, will delete the entire directory.",
+        ),
+    ]
 
     interval: Annotated[int, Field(default=50, ge=1, description="Interval at which to save the checkpoint.")]
 
