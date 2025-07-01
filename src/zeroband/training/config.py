@@ -250,7 +250,7 @@ class Config(BaseSettings):
         bool,
         Field(
             default=True,
-            description="Whether to recompute the logprobs. If True, will always recompute logprobs and overwrite those potentially found in the training batch.",
+            description="Whether to recompute the logprobs. If True, will always recompute logprobs and overwrite those found in the training batch.",
         ),
     ]
 
