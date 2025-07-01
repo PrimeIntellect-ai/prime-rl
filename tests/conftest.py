@@ -10,15 +10,13 @@ import pyarrow.parquet as pq
 import pytest
 import torch.distributed as dist
 from huggingface_hub import HfApi
+from loguru import logger
 from pyarrow import Table
 
-from loguru import logger
-
 from zeroband.training.data import STABLE_FILE
+from zeroband.training.parquet import SCHEMA
 from zeroband.training.world_info import reset_world_info
 from zeroband.utils.logger import reset_logger, set_logger
-from zeroband.utils.models import AttnImpl
-from zeroband.training.parquet import SCHEMA
 
 TIMEOUT = 120
 
@@ -113,33 +111,21 @@ def create_dummy_parquet_table(batch_size: int, seq_len: int) -> Table:
     """
     # Create data dictionary with typed arrays
     data = {
-        "input_tokens": pa.array(
-            [[1] * seq_len for _ in range(batch_size)], type=pa.list_(pa.int32())
-        ),
-        "output_tokens": pa.array(
-            [[1] * seq_len for _ in range(batch_size)], type=pa.list_(pa.int32())
-        ),
+        "input_tokens": pa.array([[1] * seq_len for _ in range(batch_size)], type=pa.list_(pa.int32())),
+        "output_tokens": pa.array([[1] * seq_len for _ in range(batch_size)], type=pa.list_(pa.int32())),
         "prompt": pa.array(["prompt" for _ in range(batch_size)], type=pa.string()),
-        "completion": pa.array(
-            ["completion" for _ in range(batch_size)], type=pa.string()
-        ),
+        "completion": pa.array(["completion" for _ in range(batch_size)], type=pa.string()),
         "advantages": pa.array([1] * batch_size, type=pa.float32()),
         "rewards": pa.array([1] * batch_size, type=pa.float32()),
         "task_rewards": pa.array([0] * batch_size, type=pa.float32()),
         "length_penalties": pa.array([0] * batch_size, type=pa.float32()),
-        "proofs": pa.array(
-            [b"I am toploc proof, handcrafted by jack"] * batch_size, type=pa.binary()
-        ),
+        "proofs": pa.array([b"I am toploc proof, handcrafted by jack"] * batch_size, type=pa.binary()),
         "step": pa.array([0] * batch_size, type=pa.int32()),
         "target_lengths": pa.array([seq_len] * batch_size, type=pa.int32()),
         "task_type": pa.array(["test_task"] * batch_size, type=pa.string()),
         "problem_id": pa.array(["0"] * batch_size, type=pa.string()),
-        "input_logprobs": pa.array(
-            [[0.1] * seq_len for _ in range(batch_size)], type=pa.list_(pa.float32())
-        ),
-        "output_logprobs": pa.array(
-            [[0.1] * seq_len for _ in range(batch_size)], type=pa.list_(pa.float32())
-        ),
+        "input_logprobs": pa.array([[0.1] * seq_len for _ in range(batch_size)], type=pa.list_(pa.float32())),
+        "output_logprobs": pa.array([[0.1] * seq_len for _ in range(batch_size)], type=pa.list_(pa.float32())),
         "seed": pa.array([42] * batch_size, type=pa.int64()),
         "temperature": pa.array([1.0] * batch_size, type=pa.float32()),
     }
@@ -190,9 +176,7 @@ class ProcessResult:
         self.pid = pid
 
 
-def run_subprocess(
-    command: Command, env: Environment, timeout: int = TIMEOUT
-) -> ProcessResult:
+def run_subprocess(command: Command, env: Environment, timeout: int = TIMEOUT) -> ProcessResult:
     """Run a subprocess with given command and environment with a timeout"""
     try:
         process = subprocess.Popen(command, env={**os.environ, **env})
@@ -215,19 +199,14 @@ def run_subprocesses_in_parallel(
     """Start multiple processes in parallel using ProcessPoolExecutor and wait for completion."""
     assert len(commands) == len(envs), "Should have an environment for each command"
     with concurrent.futures.ProcessPoolExecutor(max_workers=len(commands)) as executor:
-        futures = [
-            executor.submit(run_subprocess, cmd, env, timeout)
-            for cmd, env in zip(commands, envs)
-        ]
+        futures = [executor.submit(run_subprocess, cmd, env, timeout) for cmd, env in zip(commands, envs)]
         results = []
         for i, future in enumerate(futures):
             try:
                 result = future.result(timeout=timeout)
                 results.append(result)
             except concurrent.futures.TimeoutError:
-                raise TimeoutError(
-                    f"Process {i} did not complete within {timeout} seconds"
-                )
+                raise TimeoutError(f"Process {i} did not complete within {timeout} seconds")
 
     return results
 
@@ -239,8 +218,6 @@ def run_process() -> Callable[[Command, Environment], ProcessResult]:
 
 
 @pytest.fixture(scope="module")
-def run_processes() -> Callable[
-    [list[Command], list[Environment]], list[ProcessResult]
-]:
+def run_processes() -> Callable[[list[Command], list[Environment]], list[ProcessResult]]:
     """Factory fixture for running multiple processes in parallel. Used for parallel inference tests and RL training tests."""
     return run_subprocesses_in_parallel

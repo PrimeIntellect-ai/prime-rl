@@ -10,7 +10,6 @@ from jaxtyping import Float
 from torch._guards import log as torch_log
 
 from zeroband.training import envs
-from zeroband.training.ac import setup_ac
 from zeroband.training.ckpt import (
     TrainingProgress,
     load_full_checkpoint,
@@ -19,10 +18,10 @@ from zeroband.training.ckpt import (
 )
 from zeroband.training.config import Config as TrainingConfig
 from zeroband.training.data import DataLoader, FakeDataLoader
-from zeroband.training.fsdp import apply_fsdp, reshard_module
 from zeroband.training.logger import setup_logger
 from zeroband.training.loss import compute_logprobs, entropy_loss, grpo_loss
 from zeroband.training.metrics import BatchMetrics
+from zeroband.training.model import get_tokenizer, reshard_module, setup_model
 from zeroband.training.perf import get_perf_counter
 from zeroband.training.utils import (
     OffloadedTensor,
@@ -32,7 +31,6 @@ from zeroband.training.utils import (
     wake_up_model_from_cpu,
 )
 from zeroband.training.world import get_world
-from zeroband.utils.models import Model, get_model_and_tokenizer
 from zeroband.utils.monitor import setup_monitor
 from zeroband.utils.pydantic_config import parse_argv
 from zeroband.utils.utils import clean_exit
@@ -75,30 +73,16 @@ def train(config: TrainingConfig):
             )
 
     # Initialize the model and tokenizer
-    model, tokenizer = get_model_and_tokenizer(config.model.name, config.model.attn)
-
-    # Optionally, apply activation checkpointing
-    if config.ac:
-        setup_ac(model, config.ac)
-
-    # Shard the model for training using FSDP
-    apply_fsdp(model, config.fsdp)
-
-    # Optionally, compile the model
-    if config.model.compile:
-        model: Model = torch.compile(model)
+    model = setup_model(config.model)
+    tokenizer = get_tokenizer(config.model)
 
     # Optionally, initialize a model to compute logprobs
     if config.recompute_logprobs:
-        logprob_model, _ = get_model_and_tokenizer(config.model.name, config.model.attn)
-        apply_fsdp(logprob_model, config.fsdp)
+        logprob_model = setup_model(config.model)
 
         # Offload the logprob model to CPU
         tensor_offloaded_repository: dict[int, OffloadedTensor] = {}
         tensor_offloaded_repository[0] = offload_model_to_cpu(logprob_model)
-
-        if config.model.compile:
-            logprob_model: Model = torch.compile(logprob_model)
 
     # Set up the optimizer
     optimizer = torch.optim.AdamW(
@@ -183,10 +167,10 @@ def train(config: TrainingConfig):
             total_tokens = micro_batch["total_tokens"]
             micro_batch_size, seq_len = input_ids.shape
 
-            if config.normalize_batch_to_token_count:
+            # Optionally, normalize the loss to the token count
+            max_tokens = micro_batch_size * seq_len
+            if config.loss.normalize_to_token_count:
                 max_tokens = int(total_tokens)
-            else:
-                max_tokens = input_ids.shape[0] * input_ids.shape[1]
 
             # Forward pass
             logger.debug(f"Forwarding on micro batch {micro_step} / {num_micro_batches}")

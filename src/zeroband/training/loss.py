@@ -5,6 +5,7 @@ from jaxtyping import Float, Int, jaxtyped
 from torch import Tensor
 
 from zeroband.training.config import ClippingConfig, GRPOVariantsConfig, RatioConfig
+from zeroband.training.model import Model
 
 
 @jaxtyped(typechecker=typechecker)
@@ -180,6 +181,23 @@ def selective_log_softmax(logits, index):
             per_token_logps.append(row_per_token_logps)
         per_token_logps = torch.stack(per_token_logps)
     return per_token_logps
+
+
+def compute_logprobs(
+    model: Model,
+    input_ids: torch.Tensor,
+    position_ids: torch.Tensor,
+    temperature: float,
+) -> torch.Tensor:
+    logits: Float[torch.Tensor, "batch seq vocab"] = model(
+        input_ids=input_ids, position_ids=position_ids
+    ).logits.contiguous()
+
+    input_ids_shifted = input_ids[:, 1:]
+    logits_shifted = logits[:, :-1, :] / temperature
+    logprobs = selective_log_softmax(logits_shifted, input_ids_shifted)
+    del logits, logits_shifted
+    return logprobs
 
 
 @jaxtyped(typechecker=typechecker)

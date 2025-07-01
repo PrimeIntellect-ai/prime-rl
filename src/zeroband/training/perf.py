@@ -2,8 +2,8 @@ import time
 
 import torch
 
+from zeroband.training.model import Model
 from zeroband.training.world import get_world
-from zeroband.utils.models import Model
 
 
 class PerfCounter:

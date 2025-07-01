@@ -5,8 +5,9 @@ from pydantic import Field, model_validator
 
 from zeroband.utils.config import ModelConfig as BaseModelConfig
 from zeroband.utils.config import MultiMonitorConfig, PathConfig
-from zeroband.utils.models import AttnImplementation
 from zeroband.utils.pydantic_config import BaseConfig, BaseSettings
+
+AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2"]
 
 
 class ModelConfig(BaseModelConfig):
@@ -24,9 +25,13 @@ class ModelConfig(BaseModelConfig):
         ),
     ]
 
-
-class FSDPConfig(BaseConfig):
-    """Configures FSDP."""
+    ac: Annotated[
+        bool,
+        Field(
+            default=False,
+            description="Whether to apply activation checkpointing to the model.",
+        ),
+    ]
 
     reshard_after_forward: Annotated[
         bool, Field(default=True, alias="reshard", description="Whether to reshard the model after each forward pass.")
@@ -79,6 +84,7 @@ class WeightCheckpointConfig(BaseConfig):
         int,
         Field(
             default=1,
+            ge=1,
             description="Number of weight checkpoint steps to keep in memory. This is useful to keep some weight-only checkpoints for online evals.",
         ),
     ]
@@ -124,6 +130,10 @@ class GRPOLossConfig(BaseConfig):
 
     max_norm: Annotated[float, Field(default=1.0, ge=0, description="Maximum gradient norm to clip.")]
 
+    normalize_to_token_count: Annotated[
+        bool, Field(default=True, description="Whether to normalize the batch to token count.")
+    ]
+
 
 class FakeDataLoaderConfig(BaseConfig):
     """Configures a fake data loader sampling random micro batches for debugging."""
@@ -146,19 +156,6 @@ class DataLoaderConfig(BaseConfig):
     path: Annotated[Path, Field(default=Path("rollouts"))]
 
     fake: Annotated[FakeDataLoaderConfig | None, Field(default=None)]
-
-
-class ActivationCheckpointConfig(BaseConfig):
-    """Configures activation checkpointing."""
-
-    interval: Annotated[
-        int,
-        Field(
-            default=1,
-            ge=1,
-            description="Interval at which to checkpoint the model layers. Will apply activation checkpointing to every `interval` layers. For example, if `interval=2`, every other half of the layers will be checkpointed.",
-        ),
-    ]
 
 
 class LogConfig(BaseConfig):
@@ -210,12 +207,6 @@ class Config(BaseSettings):
     # The loss configuration
     loss: Annotated[GRPOLossConfig, Field(default=GRPOLossConfig())]
 
-    # The activation checkpoint configuration
-    ac: Annotated[ActivationCheckpointConfig | None, Field(default=None)]
-
-    # The FSDP config
-    fsdp: Annotated[FSDPConfig, Field(default=FSDPConfig())]
-
     # The logging configuration
     log: LogConfig = LogConfig()
 
@@ -248,8 +239,6 @@ class Config(BaseSettings):
             description="Whether to recompute the logprobs. If True, will always recompute logprobs and overwrite those potentially found in the training batch.",
         ),
     ]
-
-    normalize_batch_to_token_count: Annotated[bool, Field(default=True)]
 
     seed: Annotated[int | None, Field(default=None, description="Random seed for the training.")]
 

@@ -11,7 +11,7 @@ from transformers import (
     PreTrainedTokenizer,
 )
 
-from zeroband.utils.models import Model
+from zeroband.training.model import Model
 
 
 def seed_everything(seed: int):

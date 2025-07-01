@@ -9,9 +9,9 @@ from torch.distributed.tensor import DTensor
 from torch.optim.optimizer import Optimizer
 from transformers import AutoTokenizer
 
+from zeroband.training.model import Model
 from zeroband.training.world import get_world
 from zeroband.utils.logger import get_logger
-from zeroband.utils.models import Model
 
 
 @dataclass
