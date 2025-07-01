@@ -28,7 +28,9 @@ class ModelConfig(BaseModelConfig):
 class FSDPConfig(BaseConfig):
     """Configures FSDP."""
 
-    reshard: Annotated[bool, Field(default=True, description="Whether to reshard the model after each forward pass.")]
+    reshard_after_forward: Annotated[
+        bool, Field(default=True, alias="reshard", description="Whether to reshard the model after each forward pass.")
+    ]
 
 
 class OptimizerConfig(BaseConfig):
