@@ -3,23 +3,21 @@ project = "math-debug"
 
 [model]
 name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
-
-[train]
-micro_bs = 4 # change to 8 for H200
-reshard_after_forward = true
+reshard = true
 
 [optim]
-batch_size = 512
-
-[optim.optim]
 lr = 1e-6
 
 
+[orchestrator]
+batch_size = 512
+micro_batch_size = 4
+seq_len = 2048
 
-[data]
-path = "rollouts"
-seq_length = 2048
+[orchestrator.data]
+name = "justus27/math-hendrycks-genesys-format"
+
+[orchestrator.sampling]
+n = 16
 
 [ckpt]
-rollout_path = "checkpoints"
-clean_rollout_path = true
