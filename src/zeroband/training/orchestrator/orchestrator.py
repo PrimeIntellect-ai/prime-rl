@@ -97,18 +97,34 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
     dataset = dataset.shuffle(seed=config.seed)
 
     # Iterate over dataset in batches
-    total_steps = min(config.max_steps or math.inf, len(dataset) // config.batch_size)
-    logger.info(f"Starting training loop ({total_steps=}, {config.batch_size=})")
+    max_steps = config.max_steps or math.inf
+    steps_per_epoch = len(dataset) // (config.batch_size // config.sampling.n)
+    logger.info(f"Starting training loop (max_steps={max_steps}, steps_per_epoch={steps_per_epoch})")
     total_tokens, total_samples = 0, 0
     ckpt_step = 0
     last_eval_step = -1
-    for step in range(1, total_steps + 1):
-        logger.info(f"Orchestrator step {step} (checkpoint step: {ckpt_step})")
+    epoch = 0
+    step = 0
+
+    while step < max_steps:
+        # Check if we need to start a new epoch
+        epoch_step = step % steps_per_epoch
+        if epoch_step == 0:
+            epoch += 1
+            logger.info(f"Starting epoch {epoch}")
+            # Reshuffle dataset at the beginning of each epoch
+            dataset = dataset.shuffle(seed=(config.seed or 0) + epoch - 1)
+
+        step += 1
+        logger.info(
+            f"Orchestrator step {step} (epoch: {epoch}, epoch_step: {epoch_step + 1}/{steps_per_epoch}, checkpoint step: {ckpt_step})"
+        )
         step_start_time = time.time()
 
         # Get the batch
         problems_per_batch = config.batch_size // config.sampling.n
-        indices = range(step * problems_per_batch, (step + 1) * problems_per_batch)
+        start_idx = epoch_step * problems_per_batch
+        indices = range(start_idx, start_idx + problems_per_batch)
         problems = dataset.select(indices).to_list() * config.sampling.n
         prompts = [problem["prompt"] for problem in problems]
         batch_messages = [[{"role": "user", "content": prompt}] for prompt in prompts]
@@ -205,6 +221,8 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
             "progress/infer/total_tokens": total_tokens,
             "progress/infer/total_samples": total_samples,
             "progress/train/step": ckpt_step,  # Shared W&B axis
+            "progress/train/epoch": epoch,
+            "progress/train/epoch_step": epoch_step + 1,
             "step": step,
         }
         monitor.log(progress_metrics)
