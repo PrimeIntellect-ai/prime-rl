@@ -1,9 +1,9 @@
 import asyncio
 import json
 import math
-import multiprocessing as mp
 import shutil
 import time
+from multiprocessing.queues import Queue
 from pathlib import Path
 
 import numpy as np
@@ -40,7 +40,7 @@ from zeroband.utils.utils import clean_exit
 
 
 @clean_exit
-async def orchestrate(config: OrchestratorConfig, setup_queue: mp.Queue | None = None):
+async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = None):
     # Initialize the logger
     logger = setup_logger(config.log)
     logger.info("Starting orchestrator")
@@ -233,7 +233,7 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: mp.Queue | None =
     logger.success("Orchestrator finished.")
 
 
-def run_orchestrator(config: OrchestratorConfig, setup_queue: mp.Queue | None = None):
+def run_orchestrator(config: OrchestratorConfig, setup_queue: Queue | None = None):
     """Utility function to run the orchestrator as a sidecar process in a synchronous context."""
     import asyncio
 
