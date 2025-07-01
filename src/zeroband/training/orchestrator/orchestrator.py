@@ -22,7 +22,14 @@ from zeroband.training.orchestrator.client import (
 from zeroband.training.orchestrator.config import OrchestratorConfig
 from zeroband.training.orchestrator.data import prepare_batch
 from zeroband.training.orchestrator.logger import setup_logger
-from zeroband.training.orchestrator.utils import compute_advantages, compute_rewards, wait_for_weight_checkpoint
+from zeroband.training.orchestrator.utils import (
+    compute_advantages,
+    compute_rewards,
+    parse_completions,
+    parse_logprobs,
+    parse_output_tokens,
+    wait_for_weight_checkpoint,
+)
 from zeroband.utils.monitor import setup_monitor
 from zeroband.utils.pydantic_config import parse_argv
 from zeroband.utils.utils import clean_exit
@@ -142,7 +149,7 @@ async def orchestrate(config: OrchestratorConfig):
         # TODO: Integrate with async scoring function from verifiers
         logger.info(f"Computing rewards for step {step}")
         compute_rewards_start_time = time.time()
-        completions = [chat_completion.choices[0].message.content for chat_completion in chat_completions]
+        completions = parse_completions(chat_completions)
         task_types = [problem["task_type"] for problem in problems]
         verification_infos = [json.loads(problem["verification_info"]) for problem in problems]
         rewards = compute_rewards(completions, task_types, verification_infos)
@@ -161,7 +168,8 @@ async def orchestrate(config: OrchestratorConfig):
         # Write serialized batch to disk for trainer workers to consume
         all_data_ranks_batches = prepare_batch(
             prompts=prompts,
-            completions=completions,
+            output_tokens=parse_output_tokens(chat_completions),
+            output_logprobs=parse_logprobs(chat_completions),
             advantages=advantages,
             temperature=config.sampling.temperature,
             tokenizer=tokenizer,

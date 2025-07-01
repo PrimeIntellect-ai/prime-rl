@@ -69,12 +69,13 @@ async def generate_completion(
         temperature=sampling_config.temperature,
         top_p=sampling_config.top_p,
         max_tokens=sampling_config.max_tokens,
-        logprobs=sampling_config.logprobs,
         seed=sampling_config.seed,
+        logprobs=True,
         extra_body={
             "top_k": sampling_config.top_k,
             "min_p": sampling_config.min_p,
             "min_tokens": sampling_config.min_tokens,
+            "return_tokens_as_token_ids": True,
         },
     )
     assert len(response.choices) == 1, "Response should always have one choice"

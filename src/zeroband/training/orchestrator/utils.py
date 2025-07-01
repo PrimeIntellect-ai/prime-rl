@@ -3,9 +3,43 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from openai import ChatCompletion
 
 from zeroband.training.orchestrator.genesys import get_reward_function
 from zeroband.utils.logger import get_logger
+
+
+def parse_logprobs(chat_completions: list[ChatCompletion]) -> list[list[float]]:
+    """Parses the logprobs from a list of chat completions returned by vLLM OAI server."""
+    logprobs = []
+    for chat_completion in chat_completions:
+        assert len(chat_completion.choices) == 1, "Response should always have one choice"
+        assert chat_completion.choices[0].logprobs is not None, (
+            "Logprobs should not be None. Make sure to set logprobs=True when making the request to /v1/chat/completions"
+        )
+        logprobs.append([logprob.logprob for logprob in chat_completion.choices[0].logprobs.content])
+    return logprobs
+
+
+def parse_output_tokens(chat_completions: list[ChatCompletion]) -> list[list[int]]:
+    """Parses the output token ids from a list of chat completions returned by vLLM OAI server."""
+    tokens = []
+    for chat_completion in chat_completions:
+        assert len(chat_completion.choices) == 1, "Response should always have one choice"
+        assert chat_completion.choices[0].logprobs is not None, (
+            "Logprobs should not be None. Make sure to set return_tokens_as_token_ids=True in the extra body when making the request to /v1/chat/completions"
+        )
+        tokens.append([int(token.token.split(":")[-1]) for token in chat_completion.choices[0].logprobs.content])
+    return tokens
+
+
+def parse_completions(chat_completions: list[ChatCompletion]) -> list[str]:
+    """Parses the completions from a list of chat completions returned by vLLM OAI server."""
+    completions = []
+    for chat_completion in chat_completions:
+        assert len(chat_completion.choices) == 1, "Response should always have one choice"
+        completions.append(chat_completion.choices[0].message.content)
+    return completions
 
 
 def wait_for_weight_checkpoint(path: Path, step: int, interval: int = 1, log_interval: int = 10) -> None:

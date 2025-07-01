@@ -13,13 +13,19 @@ class Sample(TypedDict):
     advantages: Float[torch.Tensor, "seq"]
     loss_mask: Int[torch.Tensor, "seq"]
     position_ids: Float[torch.Tensor, "seq"]
-    logprobs: Float[torch.Tensor, "seq"]
+    logprobs: Float[torch.Tensor, "seq_minus_1"]
 
     total_tokens: int
 
 
 def prepare_sample(
-    prompt: str, completion: str, advantage: float, max_seq_len: int, tokenizer: AutoTokenizer, pad: bool
+    prompt: str,
+    output_tokens: list[int],
+    output_logprobs: list[float],
+    advantage: float,
+    seq_len: int,
+    tokenizer: AutoTokenizer,
+    pad: bool,
 ) -> Sample:
     """
     Prepare a problem and pad it for training.
@@ -27,29 +33,31 @@ def prepare_sample(
     """
 
     input_tokens = torch.tensor(tokenizer.encode(prompt))
-    output_tokens = torch.tensor(tokenizer.encode(completion))
+    output_tokens = torch.tensor(output_tokens)
+    inputs_ids = torch.cat([input_tokens, output_tokens], dim=0).int()
+    total_tokens = inputs_ids.shape[0]
+    logprobs = torch.cat([torch.zeros(len(input_tokens) - 1), torch.tensor(output_logprobs)]).float()
+    loss_mask = torch.cat([torch.zeros(len(input_tokens)), torch.ones(len(output_tokens))]).int()
+    position_ids = torch.arange(total_tokens).float()
+    advantages = torch.tensor(advantage).repeat(total_tokens).float()
 
-    inputs_ids = torch.cat([input_tokens, output_tokens], dim=0)
+    if total_tokens > seq_len:
+        # We should never truncate as it would create a really bad learning signal. Instead, always set the maximum sequence length
+        # on the inference worker accordingly, e.g. by setting the `max_tokens` parameter.
+        raise ValueError(
+            f"Number of tokens {total_tokens} is greater than sequence length {seq_len}. This should not happen."
+        )
 
-    loss_mask = torch.cat([torch.zeros(len(input_tokens)), torch.ones(len(output_tokens))], dim=0).int()
-    advantages = torch.tensor(advantage).repeat(inputs_ids.shape[0]).float()
-    position_ids = torch.arange(inputs_ids.shape[0]).float()
-    logprobs = torch.ones_like(inputs_ids).float()  # todo add real logprobs
-    total_tokens = inputs_ids.shape[0]  # total token should always be before padding
+    # Pad the sequence to the sequence length
+    if pad:
+        num_padding_tokens = seq_len - total_tokens
+        inputs_ids = torch.cat([inputs_ids, torch.full((num_padding_tokens,), tokenizer.pad_token_id)])
+        logprobs = torch.cat([logprobs, torch.zeros(num_padding_tokens)]).float()
+        loss_mask = torch.cat([loss_mask, torch.zeros(num_padding_tokens)]).int()
+        advantages = torch.cat([advantages, torch.zeros(num_padding_tokens)]).float()
+        position_ids = torch.cat([position_ids, torch.zeros(num_padding_tokens)]).float()
 
-    if inputs_ids.shape[0] > max_seq_len:
-        raise ValueError(f"Sequence length {inputs_ids.shape[0]} is greater than max sequence length {max_seq_len}")
-        # not we should never truncate as it would create a really bad learning signal in a grpo style rl run.
-        # we should make sure that we always train with at least the max sequence length as we are using for inference.
-
-    elif pad:
-        padding_len = max_seq_len - inputs_ids.shape[0]
-        inputs_ids = torch.cat([inputs_ids, torch.full((padding_len,), tokenizer.pad_token_id)])
-        loss_mask = torch.cat([loss_mask, torch.zeros(padding_len)]).int()
-        advantages = torch.cat([advantages, torch.zeros(padding_len)]).float()
-        position_ids = torch.cat([position_ids, torch.arange(padding_len)]).float()
-        logprobs = torch.cat([logprobs, torch.ones(padding_len)]).float()
-
+    assert len(inputs_ids) == len(advantages) == len(loss_mask) == len(position_ids) == len(logprobs) + 1
     return {
         "input_ids": inputs_ids,
         "advantages": advantages,
@@ -63,7 +71,7 @@ def prepare_sample(
 def prepare_micro_batch(samples: list[MicroBatch], temperature: float):
     micro_batch = {}
 
-    for key in ["input_ids", "advantages", "loss_mask", "position_ids", "logprobs"]:
+    for key in ["input_ids", "advantages", "loss_mask", "logprobs", "position_ids"]:
         micro_batch[key] = torch.stack([sample[key] for sample in samples], dim=0)
 
     micro_batch["temperature"] = temperature
@@ -74,7 +82,8 @@ def prepare_micro_batch(samples: list[MicroBatch], temperature: float):
 
 def prepare_batch_padding(
     prompts: list[str],
-    completions: list[str],
+    output_tokens: list[list[int]],
+    output_logprobs: list[list[float]],
     advantages: list[float],
     temperature: float,
     tokenizer: AutoTokenizer,
@@ -87,8 +96,8 @@ def prepare_batch_padding(
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
     Each micro batch is shape [micro_bs, max_seq_len] and contains micro_bs samples that are padded to the max lenght
     """
-    assert len(prompts) == len(completions) == len(advantages), (
-        "Prompts, completions, and advantages must have the same length"
+    assert len(prompts) == len(output_tokens) == len(output_logprobs) == len(advantages), (
+        "Prompts, output_tokens, output_logprobs, and advantages must have the same length"
     )
     batch_size = len(prompts)
 
@@ -102,7 +111,13 @@ def prepare_batch_padding(
             micro_batches = []
             for _ in range(micro_batch_size):
                 sample = prepare_sample(
-                    prompts.pop(), completions.pop(), advantages.pop(), seq_len, tokenizer, pad=True
+                    prompts.pop(),
+                    output_tokens.pop(),
+                    output_logprobs.pop(),
+                    advantages.pop(),
+                    seq_len,
+                    tokenizer,
+                    pad=True,
                 )
                 micro_batches.append(sample)
             batches.append(prepare_micro_batch(micro_batches, temperature))
@@ -162,7 +177,8 @@ def prepare_micro_batch_packing(samples: list[Sample], max_seq_len: int, tempera
 
 def prepare_batch_packing(
     prompts: list[str],
-    completions: list[str],
+    output_tokens: list[list[int]],
+    output_logprobs: list[list[float]],
     advantages: list[float],
     temperature: float,
     tokenizer: AutoTokenizer,
@@ -175,15 +191,15 @@ def prepare_batch_packing(
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
     Each micro batch is shape [1, micro_bs * max_seq_len], the namber of sample is not fixed per micro batch.
     """
-    assert len(prompts) == len(completions) == len(advantages), (
-        "Prompts, completions, and advantages must have the same length"
+    assert len(prompts) == len(output_tokens) == len(output_logprobs) == len(advantages), (
+        "Prompts, output_tokens, output_logprobs, and advantages must have the same length"
     )
 
     max_seq_len = seq_len * micro_batch_size
 
     all_samples = [
-        prepare_sample(prompt, completion, advantage, max_seq_len, tokenizer, pad=False)
-        for prompt, completion, advantage in zip(prompts, completions, advantages)
+        prepare_sample(prompt, output_token, output_logprob, advantage, max_seq_len, tokenizer, pad=False)
+        for prompt, output_token, output_logprob, advantage in zip(prompts, output_tokens, output_logprobs, advantages)
     ]
 
     micro_batches_list = packed_samples_into_micro_bs(all_samples, max_seq_len)
@@ -217,7 +233,8 @@ def prepare_batch_packing(
 
 def prepare_batch(
     prompts: list[str],
-    completions: list[str],
+    output_tokens: list[list[int]],
+    output_logprobs: list[list[float]],
     advantages: list[float],
     temperature: float,
     tokenizer: AutoTokenizer,
@@ -234,7 +251,8 @@ def prepare_batch(
         case "padding":
             return prepare_batch_padding(
                 prompts,
-                completions,
+                output_tokens,
+                output_logprobs,
                 advantages,
                 temperature,
                 tokenizer,
@@ -246,7 +264,8 @@ def prepare_batch(
         case "packing":
             return prepare_batch_packing(
                 prompts,
-                completions,
+                output_tokens,
+                output_logprobs,
                 advantages,
                 temperature,
                 tokenizer,
