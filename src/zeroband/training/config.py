@@ -80,15 +80,6 @@ class WeightCheckpointConfig(BaseConfig):
         ),
     ]
 
-    buffer_size: Annotated[
-        int,
-        Field(
-            default=1,
-            ge=1,
-            description="Number of weight checkpoint steps to keep in memory. This is useful to keep some weight-only checkpoints for online evals.",
-        ),
-    ]
-
     save_async: Annotated[
         bool,
         Field(
@@ -221,7 +212,7 @@ class Config(BaseSettings):
         ),
     ]
 
-    max_async_level: Annotated[
+    async_level: Annotated[
         int,
         Field(
             default=2,
@@ -239,8 +230,3 @@ class Config(BaseSettings):
             description="Whether to recompute the logprobs. If True, will always recompute logprobs and overwrite those potentially found in the training batch.",
         ),
     ]
-
-    @model_validator(mode="after")
-    def validate_buffer_size(self):
-        if self.weights.buffer_size < self.max_async_level:
-            self.weights.buffer_size = self.max_async_level
