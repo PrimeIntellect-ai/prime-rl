@@ -44,19 +44,19 @@ async def run_server(args: Namespace) -> None:
     app = build_app(args)
 
     # Inject a custom endpoint
-    @app.get("/v1/test_rpc")
+    @app.get("/test_rpc")
     async def _test_rpc(request: Request):
         await engine.collective_rpc("test_rpc")
         return {"status": "ok"}
 
-    @app.post("/v1/reload_weights")
+    @app.post("/reload_weights")
     async def _reload_weights(request: Request):
         data = await request.json()
         model_path = data.get("model_path")
         await engine.collective_rpc("reload_weights", args=(model_path,))
         return {"status": "ok"}
 
-    @app.post("/v1/reset_weights")
+    @app.post("/reset_weights")
     async def _reset_weights(request: Request):
         await engine.collective_rpc("reset_weights")
         return {"status": "ok"}

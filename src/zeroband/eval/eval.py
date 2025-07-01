@@ -2,13 +2,15 @@ import asyncio
 
 from zeroband.eval.config import Config as EvalConfig
 from zeroband.eval.utils import run_benchmark
-from zeroband.training.orchestrator.logger import setup_logger
-from zeroband.training.orchestrator.utils import (
-    health_check,
-    load_checkpoint,
+from zeroband.training.orchestrator.client import (
+    check_has_model,
+    check_health,
+    reload_weights,
+    reset_weights,
     setup_client,
-    wait_for_checkpoint,
 )
+from zeroband.training.orchestrator.logger import setup_logger
+from zeroband.training.orchestrator.utils import wait_for_weight_checkpoint
 from zeroband.utils.monitor import setup_monitor
 from zeroband.utils.pydantic_config import parse_argv
 from zeroband.utils.utils import clean_exit
@@ -32,7 +34,12 @@ async def eval(config: EvalConfig):
     logger.info(f"Initialized OpenAI client ({config.client.base_url})")
 
     # Check health of the client
-    await health_check(client)
+    await check_health(client)
+    await check_has_model(client, config.model.name)
+
+    # Reset weights to base model to allow reusing inference server across runs
+    logger.info("Resetting weights to base model")
+    await reset_weights(client)
 
     # Run benchmarks on base model
     logger.info(f"Running evals on base model {config.model.name}")
@@ -54,8 +61,8 @@ async def eval(config: EvalConfig):
         step = config.eval.online.interval
         while True:
             # Wait for checkpoint to be available
-            wait_for_checkpoint(config.eval.online.ckpt_path, step)
-            await load_checkpoint(client, config.eval.online.ckpt_path, step)
+            wait_for_weight_checkpoint(config.eval.online.ckpt_path, step)
+            await reload_weights(client, config.eval.online.ckpt_path, step)
 
             # Run benchmarks on new checkpoint
             logger.info(f"Running evals for checkpoint step {step}")
