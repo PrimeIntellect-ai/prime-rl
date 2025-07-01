@@ -27,8 +27,8 @@ from zeroband.utils.monitor import setup_monitor
 from zeroband.utils.pydantic_config import parse_argv
 from zeroband.utils.utils import clean_exit
 
-# todo: add sample to wandb
-# todo: add reward, seqlen, task specific reward to wandb
+# TODO: Log samples to wandb
+# TODO: Add reward, seqlen, task specific reward to wandb
 
 
 @clean_exit
@@ -179,6 +179,7 @@ async def orchestrate(config: OrchestratorConfig):
             micro_batch_size=config.micro_batch_size,
             num_train_workers=config.num_train_workers,
             seq_len=config.seq_len,
+            collate_mode=config.collate_mode,
         )
 
         for i, batches in enumerate(all_data_ranks_batches):

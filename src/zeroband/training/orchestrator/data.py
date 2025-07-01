@@ -1,5 +1,6 @@
 import copy
-from typing import TypedDict
+from typing import Literal, TypedDict
+
 import torch
 from jaxtyping import Float, Int
 from transformers import AutoTokenizer
@@ -86,9 +87,6 @@ def prepare_batch_padding(
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
     Each micro batch is shape [micro_bs, max_seq_len] and contains micro_bs samples that are padded to the max lenght
     """
-
-    assert config.collate_mode == "padding", "Padding mode is not supported for this collate mode"
-
     assert len(prompts) == len(completions) == len(advantages), (
         "Prompts, completions, and advantages must have the same length"
     )
@@ -143,7 +141,7 @@ def packed_samples_into_micro_bs(samples: list[Sample], max_seq_len: int) -> lis
     return micro_batches
 
 
-def prepare_micro_batch_packing(samples: list[Sample], max_seq_len: int, temperature: float) -> BatchOutput:
+def prepare_micro_batch_packing(samples: list[Sample], max_seq_len: int, temperature: float) -> MicroBatch:
     """
     Prepare a micro batch for packing mode. take multi sample and return a batch of shape [1, micro_bs * max_seq_len].
     Would additionally pad the batch to the max sequence length.
@@ -177,13 +175,11 @@ def prepare_batch_packing(
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
     Each micro batch is shape [1, micro_bs * max_seq_len], the namber of sample is not fixed per micro batch.
     """
-    assert config.collate_mode == "packing", "Packing mode is not supported for this collate mode"
-
     assert len(prompts) == len(completions) == len(advantages), (
         "Prompts, completions, and advantages must have the same length"
     )
 
-    max_seq_len = config.max_seq_len * config.micro_bs
+    max_seq_len = seq_len * micro_batch_size
 
     all_samples = [
         prepare_sample(prompt, completion, advantage, max_seq_len, tokenizer, pad=False)
@@ -195,7 +191,7 @@ def prepare_batch_packing(
         prepare_micro_batch_packing(micro_batch, max_seq_len, temperature) for micro_batch in micro_batches_list
     ]
 
-    num_padding_batch = config.n_data_ranks - len(micro_batches) % config.n_data_ranks
+    num_padding_batch = num_train_workers - len(micro_batches) % num_train_workers
 
     # because of fsdp we need to make sure that each data ran has the same number of micro batches otherwise training will hang.
     # We create fake micro batches to fill the gap with real data but zero advantages, they would not contribute to the loss.
@@ -204,13 +200,13 @@ def prepare_batch_packing(
         padded_batch["advantages"] = torch.zeros_like(padded_batch["advantages"])
         micro_batches.extend([padded_batch for _ in range(num_padding_batch)])
 
-    assert len(micro_batches) % config.n_data_ranks == 0, (
+    assert len(micro_batches) % num_train_workers == 0, (
         "Number of micro batches is not divisible by number of data ranks"
     )
 
-    per_gpu_micro_batches = len(micro_batches) // config.n_data_ranks
+    per_gpu_micro_batches = len(micro_batches) // num_train_workers
     batches_per_gpu = []
-    for _ in range(config.n_data_ranks):
+    for _ in range(num_train_workers):
         batches = []
         for _ in range(per_gpu_micro_batches):
             batches.append(micro_batches.pop(0))
@@ -225,15 +221,39 @@ def prepare_batch(
     advantages: list[float],
     temperature: float,
     tokenizer: AutoTokenizer,
-    config: TrainConfig,
-) -> list[list[BatchOutput]]:
+    batch_size: int,
+    micro_batch_size: int,
+    seq_len: int,
+    num_train_workers: int,
+    collate_mode: Literal["packing", "padding"],
+) -> list[list[MicroBatch]]:
     """
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
     """
-    match config.collate_mode:
+    match collate_mode:
         case "padding":
-            return prepare_batch_padding(prompts, completions, advantages, temperature, tokenizer, config)
+            return prepare_batch_padding(
+                prompts,
+                completions,
+                advantages,
+                temperature,
+                tokenizer,
+                batch_size,
+                micro_batch_size,
+                seq_len,
+                num_train_workers,
+            )
         case "packing":
-            return prepare_batch_packing(prompts, completions, advantages, temperature, tokenizer, config)
+            return prepare_batch_packing(
+                prompts,
+                completions,
+                advantages,
+                temperature,
+                tokenizer,
+                batch_size,
+                micro_batch_size,
+                seq_len,
+                num_train_workers,
+            )
         case _:
-            raise ValueError(f"Invalid collate mode: {config.collate_mode}")
+            raise ValueError(f"Invalid collate mode: {collate_mode}")
