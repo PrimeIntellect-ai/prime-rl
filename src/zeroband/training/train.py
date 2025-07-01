@@ -27,7 +27,6 @@ from zeroband.training.utils import (
     OffloadedTensor,
     copy_model_to_cpu,
     offload_model_to_cpu,
-    seed_everything,
     wake_up_model_from_cpu,
 )
 from zeroband.training.world import get_world
@@ -60,10 +59,6 @@ def train(config: TrainingConfig):
         torch._dynamo.config.suppress_errors = True
 
     torch.set_float32_matmul_precision("high")
-    if config.seed:
-        seed_everything(config.seed)
-
-    # local_batch_size = get_local_batch_size(config.optim.batch_size, config.train.micro_bs, world_info)
 
     if config.weights.path and world.rank == 0:
         if envs.SHARDCAST_OUTPUT_DIR is not None:

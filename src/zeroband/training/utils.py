@@ -1,7 +1,6 @@
 from itertools import chain
 from typing import TypeAlias
 
-import numpy as np
 import pandas as pd
 import torch
 import wandb
@@ -11,13 +10,6 @@ from transformers import (
 )
 
 from zeroband.training.model import Model
-
-
-def seed_everything(seed: int):
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
 
 
 class FakeTokenizer(object):

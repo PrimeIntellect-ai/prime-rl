@@ -240,8 +240,6 @@ class Config(BaseSettings):
         ),
     ]
 
-    seed: Annotated[int | None, Field(default=None, description="Random seed for the training.")]
-
     @model_validator(mode="after")
     def validate_buffer_size(self):
         if self.weights.buffer_size < self.max_async_level:
