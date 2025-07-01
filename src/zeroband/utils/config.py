@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
@@ -7,13 +7,41 @@ from zeroband.utils.pydantic_config import BaseConfig
 
 
 class ModelConfig(BaseConfig):
-    """Configures the model to be used for training."""
+    """Configures the model."""
 
     name: Annotated[
         str,
         Field(
             default="Qwen/Qwen3-0.6B",
             description="Name or path of the HF model to use.",
+        ),
+    ]
+
+
+class LogConfig(BaseConfig):
+    """Configures the logger."""
+
+    level: Annotated[
+        Literal["debug", "info"],
+        Field(
+            default="info",
+            description="Logging level for the process. Will determine the logging verbosity and format.",
+        ),
+    ]
+
+    path: Annotated[
+        Path | None,
+        Field(
+            default=Path("logs"),
+            description="The file path to log to. If None, will only log to stdout. This field is particularly useful to distinguish logs when multi-processing.",
+        ),
+    ]
+
+    utc: Annotated[
+        bool,
+        Field(
+            default=False,
+            description="Whether to use UTC time in the logger. If False, it will default to the local time. If the local time is wrong, you can set it by setting the `TZ` environment variable. For example, `TZ=America/Los_Angeles` will set the local time to SF time.",
         ),
     ]
 

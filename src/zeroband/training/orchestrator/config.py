@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 from pydantic import Field, model_validator
 
 from zeroband.eval.registry import Benchmark
-from zeroband.utils.config import ModelConfig, MultiMonitorConfig
+from zeroband.utils.config import LogConfig, ModelConfig, MultiMonitorConfig
 from zeroband.utils.pydantic_config import BaseConfig, BaseSettings
 
 
@@ -118,34 +118,6 @@ class DataConfig(BaseConfig):
     split: Annotated[str, Field(default="train", description="Split of the dataset to use.")]
 
 
-class LogConfig(BaseConfig):
-    """Configures the logger."""
-
-    level: Annotated[
-        Literal["debug", "info"],
-        Field(
-            default="info",
-            description="Logging level for the inference run. Will determine the logging verbosity and format.",
-        ),
-    ]
-
-    all_ranks: Annotated[
-        bool,
-        Field(
-            default=False,
-            description="Whether to log from all DP ranks. If False, will only log from the main rank (DP rank 0).",
-        ),
-    ]
-
-    utc: Annotated[
-        bool,
-        Field(
-            default=False,
-            description="Whether to use UTC time in the logger. If False, it will default to the local time. If the local time is wrong, you can set it by setting the `TZ` environment variable. For example, `TZ=America/Los_Angeles` will set the local time to SF time.",
-        ),
-    ]
-
-
 class PathConfig(BaseConfig):
     """Configures a path used for input/ output operations"""
 
@@ -222,7 +194,7 @@ class OrchestratorConfig(BaseSettings):
     eval: Annotated[EvalConfig | None, Field(default=None)]
 
     # The logging configuration
-    log: Annotated[LogConfig, Field(default=LogConfig())]
+    log: Annotated[LogConfig, Field(default=LogConfig(path=Path("logs/orchestrator")))]
 
     # The monitor configuration
     monitor: Annotated[MultiMonitorConfig, Field(default=MultiMonitorConfig())]

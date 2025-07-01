@@ -5,7 +5,7 @@ from typing import Annotated, Literal, TypeAlias, Union
 from pydantic import Field, model_validator
 
 from zeroband.training.orchestrator.config import OrchestratorConfig
-from zeroband.utils.config import MultiMonitorConfig
+from zeroband.utils.config import LogConfig, MultiMonitorConfig
 from zeroband.utils.pydantic_config import BaseConfig, BaseSettings
 
 AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2"]
@@ -169,34 +169,6 @@ class DataLoaderConfig(BaseConfig):
     fake: Annotated[FakeDataLoaderConfig | None, Field(default=None)]
 
 
-class LogConfig(BaseConfig):
-    """Configures the training logger."""
-
-    level: Annotated[
-        Literal["debug", "info"],
-        Field(
-            default="info",
-            description="Logging level for the inference run. Will determine the logging verbosity and format.",
-        ),
-    ]
-
-    all_ranks: Annotated[
-        bool,
-        Field(
-            default=False,
-            description="Whether to log from all DP ranks. If False, will only log from the main rank (DP rank 0).",
-        ),
-    ]
-
-    utc: Annotated[
-        bool,
-        Field(
-            default=False,
-            description="Whether to use UTC time in the logger. If False, it will default to the local time. If the local time is wrong, you can set it by setting the `TZ` environment variable. For example, `TZ=America/Los_Angeles` will set the local time to SF time.",
-        ),
-    ]
-
-
 class Config(BaseSettings):
     """Configures training"""
 
@@ -222,7 +194,7 @@ class Config(BaseSettings):
     loss: Annotated[GRPOLossConfig, Field(default=GRPOLossConfig())]
 
     # The logging configuration
-    log: LogConfig = LogConfig()
+    log: Annotated[LogConfig, Field(default=LogConfig(path=Path("logs/train")))]
 
     # The monitor configuration
     monitor: Annotated[MultiMonitorConfig, Field(default=MultiMonitorConfig())]
