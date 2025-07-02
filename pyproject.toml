@@ -27,6 +27,7 @@ dependencies = [
     "wandb>=0.20.1",
     "pyext",
     "reasoning_gym",
+    "flashinfer-python>=0.2.7.post1",
 ]
 
 [project.scripts]
