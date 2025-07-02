@@ -120,7 +120,7 @@ def vllm_server() -> Generator[None, None, None]:
 
     # Start the server as a subprocess
     env = {**os.environ, **VLLM_SERVER_ENV}
-    process = subprocess.Popen(VLLM_SERVER_CMD, env=env)
+    process = subprocess.Popen(VLLM_SERVER_CMD, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     # Default vLLM server URL
     base_url = "http://localhost:8000"
