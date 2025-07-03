@@ -4,8 +4,8 @@ import shutil
 import time
 from multiprocessing.queues import Queue
 from pathlib import Path
-import lovely_tensors as lt
 
+import lovely_tensors as lt
 import numpy as np
 import torch
 from datasets import Dataset, load_dataset
@@ -16,10 +16,10 @@ from zeroband.training.orchestrator.client import (
     check_has_model,
     check_health,
     generate_completion,
-    tokenize,
     reload_weights,
     reset_weights,
     setup_client,
+    tokenize,
 )
 from zeroband.training.orchestrator.config import OrchestratorConfig
 from zeroband.training.orchestrator.data import prepare_batch
@@ -35,6 +35,7 @@ from zeroband.training.orchestrator.utils import (
 from zeroband.utils.monitor import setup_monitor
 from zeroband.utils.pydantic_config import parse_argv
 from zeroband.utils.utils import clean_exit
+
 
 @clean_exit
 async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = None):
@@ -89,7 +90,7 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
         for benchmark in config.eval.benchmarks:
             await run_benchmark(client, benchmark, config.model, config.sampling, step=0, use_tqdm=True)
 
-    # Load dataset 
+    # Load dataset
     # TODO: Change to verifiers environment
     dataset: Dataset = load_dataset(config.data.name, split=config.data.split)
     dataset = dataset.shuffle(seed=config.seed)
@@ -160,7 +161,10 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
         generate_completions_start_time = time.time()
         input_tokens = await asyncio.gather(*(tokenize(client, config.model, messages) for messages in batch_messages))
         chat_completions = await asyncio.gather(
-            *(generate_completion(client, config.model, config.sampling, messages, len(input_tokens)) for messages, input_tokens in zip(batch_messages, input_tokens))
+            *(
+                generate_completion(client, config.model, config.sampling, messages, len(input_tokens))
+                for messages, input_tokens in zip(batch_messages, input_tokens)
+            )
         )
         generate_completions_time = time.time() - generate_completions_start_time
 
@@ -190,7 +194,7 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
         total_samples += config.batch_size
         throughput = num_tokens / (generate_completions_time + compute_rewards_time)
         avg_seq_length = num_tokens / config.batch_size
-        
+
         # Log samples to W&B table if enabled
         if monitor.wandb:
             monitor.wandb.log_samples(
