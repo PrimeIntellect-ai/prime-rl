@@ -17,7 +17,7 @@ def create_sample(seq_len: int) -> Sample:
     return {
         "input_ids": torch.randint(0, 100, (seq_len,)),
         "advantages": torch.randn(seq_len),
-        "loss_mask": torch.ones(seq_len),
+        "loss_mask": torch.ones(seq_len, dtype=torch.int32),
         "position_ids": torch.zeros(seq_len),
         "logprobs": torch.randn(seq_len - 1),
         "total_tokens": seq_len,
