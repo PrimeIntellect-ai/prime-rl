@@ -5,6 +5,7 @@ import shutil
 import time
 from pathlib import Path
 
+import lovely_tensors as lt
 import shardcast
 import torch
 from jaxtyping import Float
@@ -213,9 +214,14 @@ def train(config: TrainingConfig):
 
             # Forward pass
             logger.debug(f"Forward pass on micro batch {micro_step} / {num_micro_batches}")
+            logger.debug(f"input_ids: {lt.lovely(input_ids)}")
+            logger.debug(f"position_ids: {lt.lovely(position_ids)}")
+            logger.debug(f"loss_mask: {lt.lovely(loss_mask)}")
+            forward_start_time = time.time()
             logits: Float[torch.Tensor, "batch seq vocab"] = model(
                 input_ids=input_ids, position_ids=position_ids
             ).logits.contiguous()
+            forward_time = time.time() - forward_start_time
 
             # Compute loss
             loss, clip_ratio = grpo_loss(
@@ -231,7 +237,6 @@ def train(config: TrainingConfig):
 
             # Compute the entropy
             with torch.no_grad():
-                logger.debug(f"Computing entropy on micro batch {micro_step} / {num_micro_batches}")
                 entropy = entropy_loss(logits, loss_mask, temperature, max_tokens)
 
             # Now we can delete the micro batch CUDA tensors
@@ -241,15 +246,18 @@ def train(config: TrainingConfig):
             loss = loss / num_micro_batches
 
             # Backward pass (ensures loss reduction across FSDP ranks)
-            logger.debug(f"Backward pass on micro batch {micro_step} / {num_micro_batches}")
+            backward_start_time = time.time()
             loss.backward()
+            backward_time = time.time() - backward_start_time
 
             batch_metrics.update("loss/loss", loss.detach().clone())
             batch_metrics.update("loss/entropy", entropy.detach().clone())
             batch_metrics.update("loss/clip_ratio", clip_ratio.detach().clone())
+            batch_metrics.update("time/train/forward", torch.tensor(forward_time))
+            batch_metrics.update("time/train/backward", torch.tensor(backward_time))
 
-            logger.debug(
-                f"Finished training on micro batch {micro_step} / {num_micro_batches} (loss: {loss.item():.2f}, entropy: {entropy.item():.2f}, clip_ratio: {clip_ratio.item():.2f})"
+            logger.info(
+                f"Finished training on micro batch {micro_step} / {num_micro_batches} (loss: {loss.item():.2f}, entropy: {entropy.item():.2f}, clip_ratio: {clip_ratio.item():.2f}, forward: {forward_time:.2f}s, backward: {backward_time:.2f}s)"
             )
 
             del loss, entropy, clip_ratio
