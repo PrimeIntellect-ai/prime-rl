@@ -9,6 +9,7 @@ from tests import Command, Environment, ProcessResult
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
 
+TIMEOUT = 600 # 10 minutes
 TRAINING_CMD = [
     "uv",
     "run",
@@ -18,7 +19,7 @@ TRAINING_CMD = [
 
 
 @pytest.fixture(scope="module")
-def train_process(vllm_server: str, run_process: Callable[[Command, Environment], ProcessResult]) -> ProcessResult:
+def train_process(vllm_server: str, run_process: Callable[[Command, Environment, int], ProcessResult]) -> ProcessResult:
     # Parse git information
     username = os.environ.get("USERNAME_CI", os.getlogin())
     branch_name_ = os.environ.get("GITHUB_REF_NAME", None)
@@ -40,6 +41,7 @@ def train_process(vllm_server: str, run_process: Callable[[Command, Environment]
     return run_process(
         TRAINING_CMD + ["--monitor.wandb.project", project, "--monitor.wandb.name", run_name],
         {},
+        TIMEOUT,
     )
 
 
