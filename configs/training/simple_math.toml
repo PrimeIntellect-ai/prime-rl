@@ -8,16 +8,33 @@ reshard = true
 [optim]
 lr = 1e-6
 
+[log]
+level = "debug"
+
+### Orchestrator ###
 
 [orchestrator]
 batch_size = 512
 micro_batch_size = 4
 seq_len = 2048
 
+[orchestrator.log]
+level = "debug"
+
+[orchestrator.model]
+name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+
 [orchestrator.data]
 name = "justus27/math-hendrycks-genesys-format"
 
 [orchestrator.sampling]
 n = 16
+
+[orchestrator.monitor.wandb]
+project = "math-debug"
+
+[orchestrator.monitor.wandb.log_samples]
+interval = 50
+num_samples = 16
 
 [ckpt]

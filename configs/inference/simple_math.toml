@@ -1,7 +1,3 @@
 [model]
 name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 max_model_len = 2048 
-
-
-[parallel]
-dp = 6
