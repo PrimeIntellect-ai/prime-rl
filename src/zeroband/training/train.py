@@ -143,9 +143,11 @@ def train(config: TrainingConfig):
         # Check if orchestrator is still alive (only on rank 0)
         if orchestrator and world.rank == 0:
             if not orchestrator.is_alive():
-                exit_code = orchestrator.exitcode
-                logger.error(f"Orchestrator process died with exit code {exit_code}")
-                raise RuntimeError(f"Orchestrator process died with exit code {exit_code}")
+                if orchestrator.exitcode == 0:
+                    logger.info(f"Detected that orchestrator is finished!")
+                else:
+                    logger.error(f"Orchestrator process died with exit code {orchestrator.exitcode}")
+                    raise RuntimeError(f"Orchestrator process died with exit code {orchestrator.exitcode}")
 
         # Load the training batch
         logger.debug("Loading training batch")
