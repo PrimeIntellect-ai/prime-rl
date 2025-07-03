@@ -198,14 +198,11 @@ def train(config: TrainingConfig):
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
-            loss_mask = (
-                torch.ones_like(input_ids).int().to("cuda")
-            )  # TODO(Mika): Remove this from loss computation, then here
+            loss_mask = micro_batch["loss_mask"].to("cuda")
             logprobs = micro_batch["logprobs"].to("cuda")
             temperature = micro_batch["temperature"]
             total_tokens = micro_batch["total_tokens"]
             micro_batch_size, seq_len = input_ids.shape
-            logger.debug(f"Training on micro batch {micro_step}/{num_micro_batches} ({micro_batch_size=}, {seq_len=})")
 
             # Optionally, normalize the loss to the token count
             max_tokens = micro_batch_size * seq_len
@@ -213,10 +210,9 @@ def train(config: TrainingConfig):
                 max_tokens = int(total_tokens)
 
             # Forward pass
-            logger.debug(f"Forward pass on micro batch {micro_step} / {num_micro_batches}")
-            logger.debug(f"input_ids: {lt.lovely(input_ids)}")
-            logger.debug(f"position_ids: {lt.lovely(position_ids)}")
-            logger.debug(f"loss_mask: {lt.lovely(loss_mask)}")
+            logger.debug(
+                f"Forward pass {micro_step}/{num_micro_batches} (input_ids={lt.lovely(input_ids)}, position_ids={lt.lovely(position_ids)})"
+            )
             forward_start_time = time.time()
             logits: Float[torch.Tensor, "batch seq vocab"] = model(
                 input_ids=input_ids, position_ids=position_ids
@@ -224,6 +220,9 @@ def train(config: TrainingConfig):
             forward_time = time.time() - forward_start_time
 
             # Compute loss
+            logger.debug(
+                f"Computing loss {micro_step}/{num_micro_batches} (logits={lt.lovely(logits)}, advantages={lt.lovely(advantages)}, logprobs={lt.lovely(logprobs)}, loss_mask={lt.lovely(loss_mask)}, {temperature=}, {max_tokens=})"
+            )
             loss, clip_ratio = grpo_loss(
                 logits,
                 input_ids,

@@ -13,6 +13,7 @@ class MicroBatch(TypedDict):
     # Token level
     input_ids: Int[torch.Tensor, "micro_bs seq"]
     position_ids: Int[torch.Tensor, "micro_bs seq"]
+    loss_mask: Int[torch.Tensor, "micro_bs seq"]
     advantages: Float[torch.Tensor, "micro_bs seq"]
     logprobs: Float[torch.Tensor, "micro_bs seq_minus_1"]
 
@@ -35,6 +36,9 @@ class FakeDataLoader:
         return {
             "input_ids": torch.randint(0, 100, (self.micro_batch_size, self.seq_len)),
             "position_ids": torch.stack([torch.arange(self.seq_len)] * self.micro_batch_size, dim=0),
+            "loss_mask": torch.ones_like(
+                torch.stack([torch.arange(self.seq_len)] * self.micro_batch_size, dim=0)
+            ).int(),
             "advantages": torch.randn(self.micro_batch_size, self.seq_len),
             "logprobs": torch.randn(self.micro_batch_size, self.seq_len - 1),
             "temperature": 1.0,
