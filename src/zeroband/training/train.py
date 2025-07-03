@@ -140,6 +140,13 @@ def train(config: TrainingConfig):
         logger.info(f"Training step {progress.step}")
         step_start_time = time.time()
 
+        # Check if orchestrator is still alive (only on rank 0)
+        if orchestrator and world.rank == 0:
+            if not orchestrator.is_alive():
+                exit_code = orchestrator.exitcode
+                logger.error(f"Orchestrator process died with exit code {exit_code}")
+                raise RuntimeError(f"Orchestrator process died with exit code {exit_code}")
+
         # Load the training batch
         logger.debug("Loading training batch")
         load_data_start_time = time.time()
