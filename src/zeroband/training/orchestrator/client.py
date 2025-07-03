@@ -1,7 +1,6 @@
 import asyncio
 from pathlib import Path
 
-import httpx
 from openai import AsyncOpenAI
 from openai.types.chat.chat_completion import ChatCompletion
 
@@ -10,23 +9,7 @@ from zeroband.utils.logger import get_logger
 
 
 def setup_client(client_config: ClientConfig) -> AsyncOpenAI:
-    http_client = httpx.AsyncClient(
-        # Increase timeout configuration (default: 5s)
-        timeout=httpx.Timeout(
-            connect=30.0,
-            read=120.0,
-            write=30.0,
-            pool=30.0
-        ),
-        # Increase number of retries for connection errors (default: 0)
-        transport=httpx.AsyncHTTPTransport(retries=3)
-    )
-    
-    return AsyncOpenAI(
-        base_url=client_config.base_url,
-        api_key=client_config.api_key,
-        http_client=http_client,
-    )
+    return AsyncOpenAI(base_url=client_config.base_url, api_key=client_config.api_key)
 
 
 async def check_health(client: AsyncOpenAI, interval: int = 1, log_interval: int = 10, timeout: int = 60) -> None:
@@ -72,6 +55,7 @@ async def reset_weights(client: AsyncOpenAI) -> None:
     url = str(client.base_url)[:-4] + "/reset_weights"
     logger.debug(f"Sending request to {url} to reset weights to base model")
     await client._client.post(url=url, json={})
+
 
 async def tokenize(client: AsyncOpenAI, model_config: ModelConfig, messages: list[dict[str, str]]) -> list[int]:
     url = str(client.base_url)[:-4] + "/tokenize"
