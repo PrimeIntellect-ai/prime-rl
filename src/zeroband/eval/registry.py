@@ -15,7 +15,7 @@ _BENCHMARK_DISPLAY_NAMES: dict[Benchmark, str] = {
     "math500": "MATH-500",
     "aime24": "AIME-24",
     "aime25": "AIME-25",
-    "livecodebench-v5": "LiveCodeBench-V5"
+    "livecodebench-v5": "LiveCodeBench-V5",
 }
 
 

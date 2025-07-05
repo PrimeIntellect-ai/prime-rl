@@ -108,7 +108,7 @@ def save_weight_checkpoint(
         if isinstance(value, DTensor):
             value = value.to(dtype)
             # only gather after the downcast to dtype as it will be faster
-            value = value.full_tensor()  # type: ignore
+            value = value.full_tensor()
 
         if is_master:
             key = get_fqns(model, key)
@@ -139,7 +139,7 @@ def save_weight_checkpoint(
             if not model.generation_config:
                 raise ValueError("Model has no generation config")
             model.generation_config.save_pretrained(path)
-            tokenizer.save_pretrained(path)  # type: ignore
+            tokenizer.save_pretrained(path)
 
             logger.debug(f"Saved weights to {path} in {time.time() - start_time:.2f} seconds")
 

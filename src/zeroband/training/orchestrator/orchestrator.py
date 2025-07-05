@@ -92,7 +92,7 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
 
     # Load dataset
     # TODO: Change to verifiers environment
-    dataset: Dataset = load_dataset(config.data.name, split=config.data.split)  # type: ignore
+    dataset: Dataset = load_dataset(config.data.name, split=config.data.split)
     dataset = dataset.shuffle(seed=config.seed)
 
     # Iterate over dataset in batches
@@ -186,8 +186,8 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
         compute_rewards_time = time.time() - compute_rewards_start_time
 
         # Compute batch metrics
-        num_input_tokens = sum(completion.usage.prompt_tokens for completion in chat_completions)  # type: ignore
-        num_output_tokens = sum(completion.usage.completion_tokens for completion in chat_completions)  # type: ignore
+        num_input_tokens = sum(completion.usage.prompt_tokens for completion in chat_completions)
+        num_output_tokens = sum(completion.usage.completion_tokens for completion in chat_completions)
         num_tokens = num_input_tokens + num_output_tokens
         total_tokens += num_tokens
         total_samples += config.batch_size

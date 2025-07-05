@@ -26,13 +26,13 @@ class CheckpointWorker:
                     continue
                 yield key, value
 
-        self.model_runner.model.load_weights(weights_iterator())  # type: ignore
+        self.model_runner.model.load_weights(weights_iterator())
 
         # Process weights after loading (important for some models)
         from vllm.model_executor.model_loader.utils import process_weights_after_loading
 
-        device = next(self.model_runner.model.parameters()).device  # type: ignore
-        process_weights_after_loading(self.model_runner.model, self.model_runner.model_config, device)  # type: ignore
+        device = next(self.model_runner.model.parameters()).device
+        process_weights_after_loading(self.model_runner.model, self.model_runner.model_config, device)
 
     def reset_weights(self) -> None:
-        self.load_model()  # type: ignore
+        self.load_model()

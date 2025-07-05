@@ -229,7 +229,9 @@ def run_test(in_outs, test=None, debug=False, timeout=15):
                 in_outs["outputs"][index] = json.loads(in_outs["outputs"][index])
 
                 truncate_line_size = 300 // (raw_inputs.count("\n") + 1)
-                raw_inputs = "\n".join([truncatefn(line, truncate_line_size) for line in raw_inputs.strip().split("\n")])
+                raw_inputs = "\n".join(
+                    [truncatefn(line, truncate_line_size) for line in raw_inputs.strip().split("\n")]
+                )
                 raw_outputs = truncatefn(raw_outputs, 200)
             else:
                 raw_inputs = truncatefn(raw_inputs)
@@ -252,7 +254,9 @@ def run_test(in_outs, test=None, debug=False, timeout=15):
                 True
 
             if debug:
-                print(f"time: {datetime.now().time()} testing index = {index}  inputs = {inputs}, {type(inputs)}. type = {which_type}")
+                print(
+                    f"time: {datetime.now().time()} testing index = {index}  inputs = {inputs}, {type(inputs)}. type = {which_type}"
+                )
             if which_type == CODE_TYPE.call_based:  # Call-based
                 signal.alarm(timeout)
                 faulthandler.enable()
@@ -408,7 +412,9 @@ def run_test(in_outs, test=None, debug=False, timeout=15):
                 if isinstance(in_outs["outputs"][index], list):
                     for tmp_index, i in enumerate(in_outs["outputs"][index]):
                         in_outs["outputs"][index][tmp_index] = i.split("\n")
-                        in_outs["outputs"][index][tmp_index] = [x.strip() for x in in_outs["outputs"][index][tmp_index] if x]
+                        in_outs["outputs"][index][tmp_index] = [
+                            x.strip() for x in in_outs["outputs"][index][tmp_index] if x
+                        ]
                 else:
                     in_outs["outputs"][index] = in_outs["outputs"][index].split("\n")
                     in_outs["outputs"][index] = list(filter(len, in_outs["outputs"][index]))
@@ -462,13 +468,23 @@ def run_test(in_outs, test=None, debug=False, timeout=15):
                     print(f"{tmp_result=} @b")
 
                 try:
-                    all_ints = all(combined_int_check(e1) and combined_int_check(e2) for e1, e2 in zip(output, in_outs["outputs"][index]))
+                    all_ints = all(
+                        combined_int_check(e1) and combined_int_check(e2)
+                        for e1, e2 in zip(output, in_outs["outputs"][index])
+                    )
                     if not all_ints:
                         if debug:
-                            print([combined_int_check(e1) and combined_int_check(e2) for e1, e2 in zip(output, in_outs["outputs"][index])])
+                            print(
+                                [
+                                    combined_int_check(e1) and combined_int_check(e2)
+                                    for e1, e2 in zip(output, in_outs["outputs"][index])
+                                ]
+                            )
                         output_float = [float(e) for e in output]
                         gt_float = [float(e) for e in in_outs["outputs"][index]]
-                        tmp_result = tmp_result or ((len(output_float) == len(gt_float)) and np.allclose(output_float, gt_float))
+                        tmp_result = tmp_result or (
+                            (len(output_float) == len(gt_float)) and np.allclose(output_float, gt_float)
+                        )
                 except Exception:
                     pass
 
@@ -478,12 +494,15 @@ def run_test(in_outs, test=None, debug=False, timeout=15):
                 try:
                     if isinstance(output[0], list):
                         all_ints = all(
-                            combined_int_check(e1) and combined_int_check(e2) for e1, e2 in zip(output[0], in_outs["outputs"][index])
+                            combined_int_check(e1) and combined_int_check(e2)
+                            for e1, e2 in zip(output[0], in_outs["outputs"][index])
                         )
                         if not all_ints:
                             output_float = [float(e) for e in output[0]]
                             gt_float = [float(e) for e in in_outs["outputs"][index][0]]
-                            tmp_result = tmp_result or ((len(output_float) == len(gt_float)) and np.allclose(output_float, gt_float))
+                            tmp_result = tmp_result or (
+                                (len(output_float) == len(gt_float)) and np.allclose(output_float, gt_float)
+                            )
                 except Exception:
                     pass
 
@@ -675,7 +694,7 @@ def reliability_guard(maximum_memory_bytes=None):
 
     import subprocess
 
-    subprocess.Popen = None  # type: ignore
+    subprocess.Popen = None
 
     __builtins__["help"] = None
 

@@ -75,7 +75,7 @@ async def generate_completion(
         sampling_config.max_tokens = sampling_config.max_seq_len - num_input_tokens
 
     response = await client.chat.completions.create(
-        messages=messages,  # type: ignore
+        messages=messages,
         model=model_config.name,
         temperature=sampling_config.temperature,
         top_p=sampling_config.top_p,

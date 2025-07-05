@@ -251,7 +251,7 @@ def train(config: TrainingConfig):
             dist.all_reduce(value.to("cuda"), op=dist.ReduceOp.AVG)
             loss_metrics[key] = value
         # Optionally, clip the gradients
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.loss.max_norm).full_tensor()  # type: ignore
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.loss.max_norm).full_tensor()
         loss_metrics["loss/grad_norm"] += grad_norm.detach().clone()
 
         # Update the model parameters

@@ -180,7 +180,7 @@ def get_all_fields(model: BaseModel | type) -> list[str]:
         field_type = field.annotation
         fields.append(name)
         if hasattr(field_type, "model_fields"):
-            sub_fields = get_all_fields(field_type)  # type: ignore
+            sub_fields = get_all_fields(field_type)
             fields.extend(f"{name}.{sub}" for sub in sub_fields)
     return fields
 
@@ -246,7 +246,7 @@ def parse_argv(config_cls: Type[T], allow_extras: bool = False) -> T:
     config_cls.set_toml_files(toml_paths)
     if allow_extras:
         cli_args, unknown_args = parse_unknown_args(cli_args, config_cls)
-    config = config_cls(_cli_parse_args=to_kebab_case(cli_args))  # type: ignore
+    config = config_cls(_cli_parse_args=to_kebab_case(cli_args))
     config_cls.clear_toml_files()
     if allow_extras:
         config.set_unknown_args(unknown_args)

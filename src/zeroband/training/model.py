@@ -71,7 +71,7 @@ def setup_model(config: ModelConfig) -> Model:
     if config.compile:
         model = torch.compile(model)
     # TODO: This should be type-hinted as FSDP version of the model
-    return model  # type: ignore
+    return model
 
 
 @jaxtyped(typechecker=typechecker)

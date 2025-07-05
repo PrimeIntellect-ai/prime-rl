@@ -27,7 +27,7 @@ async def eval(config: EvalConfig):
 
     # Initialize the monitor
     logger.info(f"Initializing monitor ({config.monitor})")
-    setup_monitor(config.monitor, None, config)
+    setup_monitor(config.monitor, None, run_config=config)
 
     # Setup client
     logger.info(f"Initializing OpenAI client ({config.client.base_url})")
@@ -75,7 +75,6 @@ async def eval(config: EvalConfig):
                     config.model,
                     config.sampling,
                     step,
-                    seed=config.seed,
                     use_tqdm=config.use_tqdm,
                 )
 
