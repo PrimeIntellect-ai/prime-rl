@@ -86,7 +86,7 @@ uv run orchestrator @ configs/training/orchestrator/debug.toml
 
 ### RL
 
-**Level: Easy**
+**Reverse Text**
 
 Train a tiny model (`willcb/Qwen2.5-0.5B-Reverse-SFT`) to learn to reverse a small chunk of text. Training is extremely quick because we allow a maximum context of 128 tokens. With two small GPUs (e.g. RTX 3090/ 4090), this experiment should finish in less than 5 minutes.
 
@@ -102,7 +102,7 @@ Then, start the trainer which will spawn the orchestrator as a subprocess
 CUDA_VISIBLE_DEVICES=1 uv run train @ configs/training/reverse_text.toml
 ```
 
-**Level: Medium**
+**Simple Math**
 
 Train a small model (`deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B`) on high-school level math questions. It is recommended to have at least 2xA100-80GB GPUs or more for this experiment.
 
@@ -119,10 +119,6 @@ CUDA_VISIBLE_DEVICES=1 uv run train @ configs/training/simple_math.toml
 ```
 
 *NB: If you have more than 2 GPUs available, the best way to speed up the run is to increase the DP size of the inference worker, i.e. adjusting the `--parallel.dp` argument.*
-
-**Level: Expert**
-
-*TBD*
 
 ### Evals
 
