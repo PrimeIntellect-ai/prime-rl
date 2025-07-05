@@ -29,6 +29,9 @@ class FakeDataLoader:
         self.num_micro_batches = self.batch_size // self.micro_batch_size
         self.seq_len = config.seq_len
 
+    def wait_for_batch(self) -> None:
+        return
+
     def get_batch(self) -> list[MicroBatch]:
         return [self._get_micro_batch() for _ in range(self.num_micro_batches)]
 
@@ -55,7 +58,7 @@ class DataLoader:
     def get_batch_path(self) -> Path:
         return self.data_path / f"step_{self.current_step}" / f"rank_{self.world.rank}.pt"
 
-    def wait_for_batch(self) -> bool:
+    def wait_for_batch(self) -> None:
         wait_for_path(self.get_batch_path())
 
     def get_batch(self) -> list[MicroBatch]:
