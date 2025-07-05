@@ -19,8 +19,6 @@ PRIME-RL: Decentralized RL Training at Scale
 curl -sSL https://raw.githubusercontent.com/PrimeIntellect-ai/prime-rl/main/install.sh | bash
 ```
 
-After, enter the project directory and, optionally, install pre-commit hooks (see below).
-
 <details>
 <summary>
 Manual Installation
