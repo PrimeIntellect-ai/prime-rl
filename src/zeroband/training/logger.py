@@ -9,7 +9,7 @@ from zeroband.utils.logger import format_debug, format_message, format_time, get
 
 
 def setup_logger(log_config: LogConfig, world: World) -> Logger:
-    if get_logger() is not None:
+    if get_logger():
         raise RuntimeError("Logger already setup. Call reset_logger first.")
 
     message = format_message()
