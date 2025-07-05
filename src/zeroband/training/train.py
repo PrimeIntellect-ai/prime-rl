@@ -351,7 +351,7 @@ def train(config: TrainingConfig):
         # Log time metrics
         time_metrics = {
             "time/train": step_time,
-            "time/train/wait_for_batch": wait_time,
+            "time/train/wait_for_batch": wait_for_batch_time,
             "time/train/load_data": load_data_time,
             "time/train/save_weights": save_weights_time,
             "time/train/compute_logprobs": compute_logprobs_time,
