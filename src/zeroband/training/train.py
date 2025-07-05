@@ -239,9 +239,9 @@ def train(config: TrainingConfig):
             logger.debug(f"Backward pass on micro batch {micro_step} / {num_micro_batches}")
             loss.backward()
 
-            loss_metrics["loss/loss"] += loss.detach().clone().item()
-            loss_metrics["loss/entropy"] += entropy.detach().clone().item()
-            loss_metrics["loss/clip_ratio"] += clip_ratio.detach().clone().item()
+            loss_metrics["loss/loss"] += loss.detach().clone()
+            loss_metrics["loss/entropy"] += entropy.detach().clone()
+            loss_metrics["loss/clip_ratio"] += clip_ratio.detach().clone()
 
             del loss, entropy, clip_ratio
 
@@ -251,7 +251,7 @@ def train(config: TrainingConfig):
             loss_metrics[key] = value
         # Optionally, clip the gradients
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.loss.max_norm).full_tensor()
-        loss_metrics["loss/grad_norm"] += grad_norm.detach().clone().item()
+        loss_metrics["loss/grad_norm"] += grad_norm.detach().clone()
 
         # Update the model parameters
         logger.debug("Updating model")
