@@ -9,13 +9,8 @@ from tests import Command, Environment, ProcessResult
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
 
-TIMEOUT = 600 # 10 minutes
-TRAINING_CMD = [
-    "uv",
-    "run",
-    "train",
-    "@configs/training/reverse_text.toml",
-]
+TIMEOUT = 600  # 10 minutes
+TRAINING_CMD = ["uv", "run", "train", "@configs/training/reverse_text.toml", "--infer", "None"]
 
 
 @pytest.fixture(scope="module")

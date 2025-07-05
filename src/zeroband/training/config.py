@@ -4,6 +4,7 @@ from typing import Annotated, Literal, TypeAlias, Union
 from pydantic import Field, model_validator
 
 from zeroband.training.orchestrator.config import OrchestratorConfig
+from zeroband.inference.config import InferenceConfig
 from zeroband.utils.config import LogConfig, MultiMonitorConfig
 from zeroband.utils.pydantic_config import BaseConfig, BaseSettings
 
@@ -171,31 +172,30 @@ class DataLoaderConfig(BaseConfig):
 class TrainingConfig(BaseSettings):
     """Configures training"""
 
-    # The orchestrator configuration
-    orchestrator: Annotated[OrchestratorConfig | None, Field(default=None)]
+    orchestrator: Annotated[
+        OrchestratorConfig | None,
+        Field(default=None, description="If provided, will run the orchestrator in a separate process."),
+    ]
 
-    # The model configuration
+    infer: Annotated[
+        InferenceConfig | None,
+        Field(default=None, description="If provided, will run the inference server in a separate process."),
+    ]
+
     model: Annotated[ModelConfig, Field(default=ModelConfig())]
 
-    # The data configuration
     data: Annotated[DataLoaderConfig, Field(default=DataLoaderConfig())]
 
-    # The optimizer configuration
     optim: Annotated[OptimizerConfig, Field(default=OptimizerConfig())]
 
-    # The checkpoint configuration
     ckpt: Annotated[CheckpointConfig, Field(default=CheckpointConfig(path="checkpoints", clean=True))]
 
-    # The weight checkpoint configuration
     weights: Annotated[WeightCheckpointConfig, Field(default=WeightCheckpointConfig())]
 
-    # The loss configuration
     loss: Annotated[GRPOLossConfig, Field(default=GRPOLossConfig())]
 
-    # The logging configuration
     log: Annotated[LogConfig, Field(default=LogConfig(path=Path("logs/train")))]
 
-    # The monitor configuration
     monitor: Annotated[MultiMonitorConfig, Field(default=MultiMonitorConfig())]
 
     max_steps: Annotated[
@@ -240,4 +240,15 @@ class TrainingConfig(BaseSettings):
     def check_model_name_orchestrator(self):
         if self.orchestrator:
             self.orchestrator.model.name = self.model.name
+        return self
+
+    @model_validator(mode="after")
+    def check_inference(self):
+        if self.infer is not None:
+            if self.orchestrator is None:
+                raise ValueError("Inference requires an orchestrator")
+
+            self.infer.model.name = self.model.name
+            self.infer.model.max_model_len = self.orchestrator.seq_len
+
         return self

@@ -1,3 +1,5 @@
+## launch by doing torchrun --nproc_per_node=1 src/zeroband/training/train.py @ configs/training/reverse_text.toml
+## You need two GPUs for this to work
 max_steps = 50
 
 [model]
@@ -27,3 +29,6 @@ max_seq_len = 128
 [orchestrator.monitor.wandb.log_samples]
 interval = 10
 num_samples = 8
+
+[infer.parallel]
+dp = 1

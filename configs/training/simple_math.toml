@@ -1,3 +1,6 @@
+## launch by doing torchrun --nproc_per_node=2 src/zeroband/training/train.py @ configs/training/reverse_text.toml
+## You need 8 gpus for this to work
+
 [monitor.wandb]
 project = "math-debug"
 
@@ -26,3 +29,6 @@ interval = 50
 num_samples = 16
 
 [ckpt]
+
+[infer.parallel]
+dp = 6

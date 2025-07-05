@@ -115,3 +115,6 @@ class InferenceConfig(BaseSettings):
             rsetattr(namespace, to_vllm.get(key, key), value)
 
         return namespace
+
+    def num_gpus(self) -> int:
+        return self.parallel.tp * self.parallel.dp

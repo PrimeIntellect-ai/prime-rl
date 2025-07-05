@@ -1,6 +1,5 @@
 from collections import defaultdict
 import logging
-import multiprocessing as mp
 import os
 import shutil
 import time
@@ -24,12 +23,14 @@ from zeroband.training.data import DataLoader, FakeDataLoader
 from zeroband.training.logger import setup_logger
 from zeroband.training.loss import compute_logprobs, entropy_loss, grpo_loss
 from zeroband.training.model import get_tokenizer, reshard_module, setup_model
-from zeroband.training.orchestrator.orchestrator import run_orchestrator
 from zeroband.training.perf import get_perf_counter
 from zeroband.training.utils import (
     OffloadedTensor,
     copy_model_to_cpu,
     offload_model_to_cpu,
+    setup_inference_sidecar,
+    setup_orchestrator_sidecar,
+    terminate_sidecar,
     wake_up_model_from_cpu,
 )
 from zeroband.training.world import get_world
@@ -50,35 +51,21 @@ def train(config: TrainingConfig):
     logger.debug(f"CheckpointConfig({config.ckpt})")
     logger.debug(f"WeightCheckpointConfig({config.weights})")
     logger.debug(f"GRPOLossConfig({config.loss})")
+    logger.debug(f"InferenceConfig({config.infer})")
 
     # Setup the monitor
     logger.info(f"Initializing monitor ({config.monitor})")
     monitor = setup_monitor(config.monitor, run_config=config)
 
+    # Optionally, sidecar the inference
+    inference_sidecar = None
+    if config.infer is not None and world.rank == 0:
+        inference_sidecar = setup_inference_sidecar(config.infer)
+
     # Optionally, sidecar the orchestrator
-    orchestrator = None
-    if config.orchestrator and world.rank == 0:
-        config.orchestrator.num_train_workers = world.world_size
-
-        logger.info("Starting orchestrator in a separate process")
-
-        # Create a queue for orchestrator to signal when setup is complete
-        ctx = mp.get_context("spawn")
-        setup_queue = ctx.Queue()
-        orchestrator = ctx.Process(
-            target=run_orchestrator,
-            args=(config.orchestrator, setup_queue),
-            daemon=True,
-        )
-        orchestrator.start()
-
-        # Wait for orchestrator to signal that setup is complete
-        logger.info("Waiting for orchestrator to complete setup...")
-        signal = setup_queue.get()
-        if signal == "ready":
-            logger.success("Orchestrator setup complete, continuing with training")
-        else:
-            raise RuntimeError(f"Unexpected signal from orchestrator: {signal}")
+    orchestrator_sidecar = None
+    if config.orchestrator is not None and world.rank == 0:
+        orchestrator_sidecar = setup_orchestrator_sidecar(config.orchestrator)
 
     # Optionally, clean the checkpoints path
     if config.ckpt.clean:
@@ -143,13 +130,13 @@ def train(config: TrainingConfig):
         step_start_time = time.time()
 
         # Check if orchestrator is still alive (only on rank 0)
-        if orchestrator and world.rank == 0:
-            if not orchestrator.is_alive():
-                if orchestrator.exitcode == 0:
+        if orchestrator_sidecar and world.rank == 0:
+            if not orchestrator_sidecar.is_alive():
+                if orchestrator_sidecar.exitcode == 0:
                     logger.info("Detected that orchestrator is finished!")
                 else:
-                    logger.error(f"Orchestrator process died with exit code {orchestrator.exitcode}")
-                    raise RuntimeError(f"Orchestrator process died with exit code {orchestrator.exitcode}")
+                    logger.error(f"Orchestrator process died with exit code {orchestrator_sidecar.exitcode}")
+                    raise RuntimeError(f"Orchestrator process died with exit code {orchestrator_sidecar.exitcode}")
 
         # Load the training batch
         logger.debug("Loading training batch")
@@ -321,7 +308,6 @@ def train(config: TrainingConfig):
         # Log step metrics
         step_time = time.time() - step_start_time
         step_message = f"Training     | step {progress.step} | Time:{step_time:.2f}s | Loss: {loss_metrics['loss/loss']:.2f} | Entropy: {loss_metrics['loss/entropy']:.2f} | Clip: {loss_metrics['loss/clip_ratio']:.2f} | {throughput:.0f} tokens/s | MFU: {mfu:.1f}%"
-
         logger.success(step_message)
 
         # Log progress metrics
@@ -365,14 +351,11 @@ def train(config: TrainingConfig):
     logger.success("Training finished!")
 
     # Clean up orchestrator process if it was started
-    if orchestrator and orchestrator.is_alive():
-        logger.info("Terminating orchestrator process")
-        orchestrator.terminate()
-        orchestrator.join(timeout=5)
-        if orchestrator.is_alive():
-            logger.warning("Orchestrator process did not terminate gracefully, forcing kill")
-            orchestrator.kill()
-            orchestrator.join()
+    if orchestrator_sidecar:
+        terminate_sidecar(orchestrator_sidecar, "orchestrator")
+
+    if inference_sidecar:
+        terminate_sidecar(inference_sidecar, "inference")
 
 
 def main():
