@@ -124,11 +124,8 @@ def prepare_batch_padding(
                     tokenizer,
                     pad=True,
                 )
-                print(sample["position_ids"].dtype)
                 micro_batches.append(sample)
-            print(micro_batches[0]["position_ids"].dtype)
             batches.append(prepare_micro_batch(micro_batches, temperature))
-        print(batches[0][0]["position_ids"].dtype)
 
         batches_per_gpu.append(batches)
 
