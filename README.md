@@ -1,205 +1,160 @@
-# prime-rl - decentralized RL training at scale
+<p align="center">
+</p>
 
-prime-rl is a codebase for decentralized RL training at scale.
+<img src="https://github.com/user-attachments/assets/51e44795-5206-49d6-a12a-ecacd2799df2" alt="Prime Intellect" style="width: 100%; height: auto;"/>
 
+---
 
+<h3 align="center">
+PRIME-RL: Decentralized RL Training at Scale
+</h3>
 
-## install
-quick install
+---
+
+## Installation
+
+### Setup
+
+**Quick Installation (Recommended)**
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/PrimeIntellect-ai/prime-rl/main/install.sh | bash
 ```
 
+After, enter the project repository and optionally install pre-commit hooks (see below).
 
-## Dev
+**Manual Installation**
 
-
-1. Clone: 
+1. Clone the repository
 
 ```bash
 git clone git@github.com:PrimeIntellect-ai/prime-rl.git
 cd prime-rl
 ```
 
-2. Install `uv`:
+2. Install `uv`
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 source $HOME/.local/bin/env
 ```
 
-3. Set up the environment (will default to Python 3.12)
+3. Synchronize the environment
 
 ```bash
 uv sync && uv sync --extra fa
 ```
 
-You can check that `flash_attn` is installed correctly by running `uv run python -c "import flash_attn"` and ensure no error is thrown.
-
-4. Precommit install
+4. Install pre-commit hooks
 
 ```bash
 uv run pre-commit install
 ```
 
-5. debug run 
+*Note: For now, development is only possible on CUDA-enabled devices. However, we build production-ready images for both CUDA (NVIDIA) and ROCM (AMD) GPUs that should work out of the box.*
 
-inference
-```bash
-uv run python src/zeroband/inference/server.py @ configs/inference/debug.toml
-```
 
-training
-```bash
-uv run torchrun --nproc_per_node=2 src/zeroband/training/train.py @ configs/training/debug.toml
-```
+### Validation
 
-## Simple Math Run
-
-This debug run trains `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` on the `justus27/math-hendrycks-genesys-format` dataset using separate inference and training processes.
-Depending on the number of available GPUs, we have to adjust the number of generated samples on the inference workers to match the batch size of the training process.
-
-Training samples per step: `batch_size`
-Inference samples per step: `batch_size * dp`
-
-If you have 2 GPUs, run the following commands:
+1. Check that environment uses Python 3.12
 
 ```bash
-# Start inference server
-export CUDA_VISIBLE_DEVICES=0
-uv run python src/zeroband/inference/server.py @ configs/inference/simple_math.toml --parallel.dp 1 --max-batch-size 512
+uv run python -V
 ```
+
+2. Check that `flash-attn` is installed
 
 ```bash
-# Start trainer
-ulimit -n 65536
-export CUDA_VISIBLE_DEVICES=1
-uv run torchrun src/zeroband/training/train.py @ configs/training/simple_math.toml
+uv run python -c "import flash_attn"
 ```
 
-If you have 4 GPUs, run the following commands:
+3. Check that you can run training debug mode 
 
 ```bash
-# Start inference workers
-export CUDA_VISIBLE_DEVICES=0,1,2
-uv run python src/zeroband/inference/server.py @ configs/inference/simple_math.toml --parallel.dp 3 --max-batch-size 256
+uv run train @ configs/training/debug.toml
 ```
+
+4. Check that you can run the orchestrator against an inference server
 
 ```bash
-# Start trainer
-ulimit -n 65536
-export CUDA_VISIBLE_DEVICES=3
-uv run torchrun src/zeroband/training/train.py @ configs/training/simple_math.toml
+uv run infer @ configs/inference/debug.toml
+```
+```bash
+uv run orchestrator @ configs/training/orchestrator/debug.toml
 ```
 
-If you have 8 GPUs, run the following commands:
+## 
+
+## RL
+
+To evaluate a base model or your model checkpoint, you have to use the `eval` endpoint which queries into an inference engine.
+
+### Level: Easy
+
+Train a tiny model (`willcb/Qwen2.5-0.5B-Reverse-SFT`) to learn to reverse a small chunk of text. Training is extremely cheap and quick to run because we allow a maximum context of 128 tokens and train on small chunks of text. With two small GPUs (e.g. RTX 3090/ 4090), this experiment should finish in less than 5 minutes.
+
+First, start the inference server
 
 ```bash
-# Start inference workers
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5
-uv run python src/zeroband/inference/server.py @ configs/inference/simple_math.toml
+uv run infer @ configs/inference/reverse_text.toml
 ```
+
+Then, start the trainer which will spawn the orchestrator as a subprocess
 
 ```bash
-# Start trainer
-ulimit -n 65536
-export CUDA_VISIBLE_DEVICES=6,7
-uv  run torchrun --nproc_per_node=2 src/zeroband/training/train.py @ configs/training/simple_math.toml --data.num_workers 2
+CUDA_VISIBLE_DEVICES=1 uv run train @ configs/training/reverse_text.toml
 ```
 
+### Level: Medium
 
-## 2k seq length run
+Train a small model (`deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B`) on high-school level math questions and a relatively small context of 2048 tokens. 
 
-on two different terminal do:
+First, start the inference server
 
 ```bash
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5
-uv run python src/zeroband/inference/server.py @ configs/inference/deepscaler.toml
+uv run infer @ configs/inference/simple_math.toml --parallel.dp 1
 ```
 
-then start the trainer
+Then, start the trainer which will spawn the orchestrator as a subprocess
 
 ```bash
-ulimit -n 65536
-export CUDA_VISIBLE_DEVICES=6,7
-uv  run torchrun --nproc_per_node=2 src/zeroband/training/train.py @ configs/training/deepscaler.toml
+uv run train @ configs/training/simple_math.toml
 ```
 
-if running on h100 node instead of H200 you should add ` --train.micro_bs 4`
+*NB: If you have more than 2 GPUs available, the best way to speed up the run is to increase the DP size of the inference worker, i.e. adjusting the `--parallel.dp` argument.*
 
-## Distributed inference
+### Level: Expert
 
-Inference supports running in multi-node multi-GPU setups supporting DP, TP and PP, and sensible combinations of these.
-Below are examples of how to run inference for different parallelization strategies.
+*TBD*
 
-Single Node (DP=1, TP=1, PP=1, *requires 1 GPU*)
+## Evals
+
+*TBD*
+
+## Synthetic Data
+
+To generate synthetic data, simply spin up an inference server and write a script that uses an OAI client to query into the pool.
+
+## Contributing
+
+Before starting to work on your PR, make sure to install prec=
+
+1. Install pre-commit hooks
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 uv run python src/zeroband/inference/server.py @ configs/inference/debug.toml
+uv run pre-commit install
 ```
 
-Only TP (TP=2, PP=1, DP=1, *requires 2 GPUs*)
+2. Run tests
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/inference/server.py @ configs/inference/debug.toml --parallel.tp 2
+uv run pytest
 ```
 
-Only DP (DP=2, TP=1, PP=1, *requires 2 GPUs*)
+*The above runs the full test suite*
 
-```bash
-CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/inference/server.py @ configs/inference/debug.toml --parallel.dp 2
-```
+3. Open PR
 
-Only PP (DP=1, TP=1, PP=2, *requires 2 GPUs*)
-
-```bash
-# Node 1
-CUDA_VISIBLE_DEVICES=0 uv run python src/zeroband/inference/server.py @ configs/inference/debug.toml \
-	--parallel.pp.rank 0 \
-	--parallel.pp.world-size 2 \
-	--seed 69
-```
-
-```bash
-# Node 2
-CUDA_VISIBLE_DEVICES=1 uv run python src/zeroband/inference/server.py @ configs/inference/debug.toml \
-	--parallel.pp.rank 1 \
-	--parallel.pp.world-size 2 \
-	--seed 69
-```
-
-*Note: Setting the seed here is important to ensure model shards work on the same data shards.*
-
-DP+TP (DP=2, TP=2, PP=1, *requires 4 GPUs*)
-
-```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 uv run python src/zeroband/inference/server.py @ configs/inference/debug.toml --parallel.dp 2 --parallel.tp auto
-```
-
-PP+TP (DP=1, TP=2, PP=2, *requires 4 GPUs*)
-
-```bash
-# Node 1
-CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/inference/server.py @ configs/inference/debug.toml \
-	--parallel.tp auto \
-	--parallel.pp.rank 0 \
-	--parallel.pp.world-size 2 \
-	--seed 69
-```
-
-```bash
-# Node 2
-CUDA_VISIBLE_DEVICES=2,3 uv run python src/zeroband/inference/server.py @ configs/inference/debug.toml \
-	--parallel.tp auto \
-	--parallel.pp.rank 1 \
-	--parallel.pp.world-size 2 \
-	--seed 69
-```
-
-*Note: To check the logs of `prime-iroh` (used for connecting PP nodes), you can add the `RUST_LOG=prime_iroh=info` environment variable.*
-
-We don't support DP+PP and so that configuration will raise an exception.
 
 ## Tests
 
@@ -282,16 +237,4 @@ In this example, the CLI argument `--model.name Qwen/Qwen3-32B` will take precen
 
 ## Citation
 
-If you find `prime-rl` useful, feel free to cite our work:
-
-```bash
-@misc{primeintellectteam2025intellect2reasoningmodeltrained,
-      title={INTELLECT-2: A Reasoning Model Trained Through Globally Decentralized Reinforcement Learning}, 
-      author={Prime Intellect Team and Sami Jaghouar and Justus Mattern and Jack Min Ong and Jannik Straube and Manveer Basra and Aaron Pazdera and Kushal Thaman and Matthew Di Ferrante and Felix Gabriel and Fares Obeid and Kemal Erdem and Michael Keiblinger and Johannes Hagemann},
-      year={2025},
-      eprint={2505.07291},
-      archivePrefix={arXiv},
-      primaryClass={cs.LG},
-      url={https://arxiv.org/abs/2505.07291}, 
-}
-```
+*TBD*
