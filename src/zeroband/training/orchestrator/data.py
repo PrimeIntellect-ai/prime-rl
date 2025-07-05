@@ -10,9 +10,9 @@ from zeroband.training.data import MicroBatch
 
 class Sample(TypedDict):
     input_ids: Int[torch.Tensor, "seq"]
-    advantages: Float[torch.Tensor, "seq"]
+    position_ids: Int[torch.Tensor, "seq"]
     loss_mask: Int[torch.Tensor, "seq"]
-    position_ids: Float[torch.Tensor, "seq"]
+    advantages: Float[torch.Tensor, "seq"]
     logprobs: Float[torch.Tensor, "seq_minus_1"]
 
     total_tokens: int
@@ -32,13 +32,13 @@ def prepare_sample(
     Tokenize and
     """
 
-    input_tokens = torch.tensor(input_tokens)
-    output_tokens = torch.tensor(output_tokens)
-    inputs_ids = torch.cat([input_tokens, output_tokens], dim=0).int()
-    total_tokens = inputs_ids.shape[0]
+    input_token_ids = torch.tensor(input_tokens).long()
+    output_token_ids = torch.tensor(output_tokens).long()
+    input_ids = torch.cat([input_token_ids, output_token_ids]).long()
+    total_tokens = input_ids.shape[0]
     logprobs = torch.cat([torch.zeros(len(input_tokens) - 1), torch.tensor(output_logprobs)]).float()
-    loss_mask = torch.cat([torch.zeros(len(input_tokens)), torch.ones(len(output_tokens))]).int()
-    position_ids = torch.arange(total_tokens).float()
+    loss_mask = torch.cat([torch.zeros(len(input_tokens)), torch.ones(len(output_tokens))]).long()
+    position_ids = torch.arange(total_tokens).long()
     advantages = torch.tensor(advantage).repeat(total_tokens).float()
 
     if total_tokens > seq_len:
@@ -51,15 +51,15 @@ def prepare_sample(
     # Pad the sequence to the sequence length
     if pad:
         num_padding_tokens = seq_len - total_tokens
-        inputs_ids = torch.cat([inputs_ids, torch.full((num_padding_tokens,), tokenizer.pad_token_id)])
+        input_ids = torch.cat([input_ids, torch.full((num_padding_tokens,), tokenizer.pad_token_id)])
+        loss_mask = torch.cat([loss_mask, torch.zeros(num_padding_tokens)]).long()
+        position_ids = torch.cat([position_ids, torch.zeros(num_padding_tokens)]).long()
         logprobs = torch.cat([logprobs, torch.zeros(num_padding_tokens)]).float()
-        loss_mask = torch.cat([loss_mask, torch.zeros(num_padding_tokens)]).int()
         advantages = torch.cat([advantages, torch.zeros(num_padding_tokens)]).float()
-        position_ids = torch.cat([position_ids, torch.zeros(num_padding_tokens)]).float()
 
-    assert len(inputs_ids) == len(advantages) == len(loss_mask) == len(position_ids) == len(logprobs) + 1
+    assert len(input_ids) == len(advantages) == len(loss_mask) == len(position_ids) == len(logprobs) + 1
     return {
-        "input_ids": inputs_ids,
+        "input_ids": input_ids,
         "advantages": advantages,
         "loss_mask": loss_mask,
         "position_ids": position_ids,
@@ -124,8 +124,11 @@ def prepare_batch_padding(
                     tokenizer,
                     pad=True,
                 )
+                print(sample["position_ids"].dtype)
                 micro_batches.append(sample)
+            print(micro_batches[0]["position_ids"].dtype)
             batches.append(prepare_micro_batch(micro_batches, temperature))
+        print(batches[0][0]["position_ids"].dtype)
 
         batches_per_gpu.append(batches)
 
