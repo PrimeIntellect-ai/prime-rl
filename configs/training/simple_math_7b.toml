@@ -3,7 +3,6 @@ project = "math-debug"
 
 [model]
 name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
-reshard_after_forward = true
 ac = true
 
 [optim]
