@@ -2,12 +2,13 @@ from itertools import chain
 from typing import TypeAlias
 
 import torch
+from torch import Tensor
 from torch.distributed.tensor import DTensor
 
 from zeroband.training.model import Model
 
 
-class FakeTokenizer(object):
+class FakeTokenizer:
     def __init__(self):
         self.vocab_size = 1000
         self.bos_token_id = 0
@@ -18,13 +19,13 @@ class FakeTokenizer(object):
         return self.vocab_size
 
 
-def get_real_tensor(tensor: torch.Tensor | DTensor):
+def get_real_tensor(tensor: Tensor | DTensor) -> Tensor:
     if isinstance(tensor, DTensor):
         return tensor.to_local()
     return tensor
 
 
-OffloadedTensor: TypeAlias = list[tuple[torch.Tensor, int]]
+OffloadedTensor: TypeAlias = list[tuple[Tensor, int]]
 
 
 def offload_model_to_cpu(model: Model) -> OffloadedTensor:

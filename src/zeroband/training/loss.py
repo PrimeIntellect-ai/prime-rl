@@ -95,14 +95,14 @@ def grpo_loss_clip(
     per_token_loss = torch.max(per_token_loss1, per_token_loss2)
 
     is_clipped = (per_token_loss1 < per_token_loss2).float()
-    clip_ratio = _apply_mask(is_clipped, loss_mask, max_tokens)
+    clip_ratio_tensor = _apply_mask(is_clipped, loss_mask, max_tokens)
 
     if highest_entropy_percentage < 1.0:
         loss_mask = highest_entropy_mask(logits, loss_mask, highest_entropy_percentage)
 
     loss = _apply_mask(per_token_loss, loss_mask, max_tokens)
 
-    return loss, clip_ratio
+    return loss, clip_ratio_tensor
 
 
 # beartype here just make sure we have the correct shape
@@ -217,7 +217,7 @@ def entropy_loss(
     return _apply_mask(entropy, loss_mask, max_tokens)
 
 
-def _apply_mask(tensor: torch.Tensor, mask: torch.Tensor, max_tokens: int) -> torch.Tensor:
+def _apply_mask(tensor: Tensor, mask: Tensor, max_tokens: int) -> Tensor:
     return (tensor * mask).sum() / max_tokens
 
 

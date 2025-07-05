@@ -44,7 +44,7 @@ class PerfCounter:
             return None
         return 100 * self.num_flop_per_token * tokens_per_second / self.gpu_peak_flops / self._world.world_size
 
-    def _get_peak_flops(self, device_name: str) -> int:
+    def _get_peak_flops(self, device_name: str) -> float:
         """Peak BF16 MatMul FLOPs"""
         if "A100" in device_name:
             # https://www.nvidia.com/en-us/data-center/a100/

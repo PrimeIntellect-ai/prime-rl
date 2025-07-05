@@ -9,6 +9,7 @@ from pathlib import Path
 import shardcast
 import torch
 import torch.distributed as dist
+from torch import Tensor
 from torch._guards import log as torch_log
 
 from zeroband.training import envs
@@ -191,7 +192,7 @@ def train(config: TrainingConfig):
         if config.profile_path and world.rank == 0:
             torch.cuda.memory._record_memory_history()
 
-        loss_metrics = defaultdict(float)
+        loss_metrics = defaultdict(Tensor)
         num_micro_batches = len(micro_batches)
         for micro_step, micro_batch in enumerate(micro_batches, start=1):
             input_ids = micro_batch["input_ids"].to("cuda")
@@ -250,7 +251,7 @@ def train(config: TrainingConfig):
             dist.all_reduce(value.to("cuda"), op=dist.ReduceOp.AVG)
             loss_metrics[key] = value
         # Optionally, clip the gradients
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.loss.max_norm).full_tensor()
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.loss.max_norm).full_tensor()  # type: ignore
         loss_metrics["loss/grad_norm"] += grad_norm.detach().clone()
 
         # Update the model parameters
@@ -268,7 +269,7 @@ def train(config: TrainingConfig):
         # Optionally, broadcast the weight checkpoint from master rank
         if world.rank == 0 and envs.SHARDCAST_OUTPUT_DIR is not None:
             logger.info(f"Broadcasting weights from {model_path} via shardcast")
-            shardcast.broadcast(model_path)  # TODO: Is this blocking?
+            shardcast.broadcast(model_path.as_posix())  # TODO: Is this blocking?
 
         # Optionally, remove old weight checkpoints to save space
         # +1 to ensure to not delete current checkpoint when async_level=0
@@ -284,9 +285,9 @@ def train(config: TrainingConfig):
         if config.profile_path and progress.step == 2 and world.rank == 0:
             logger.debug("Dumping memory snapshot")
             profile_path = config.profile_path
-            if not profile_path.endswith(".pickle"):
-                profile_path += ".pickle"
-            torch.cuda.memory._dump_snapshot(profile_path)
+            if not profile_path.suffix == ".pickle":
+                profile_path = profile_path.with_suffix(".pickle")
+            torch.cuda.memory._dump_snapshot(profile_path.as_posix())
             torch.cuda.memory._record_memory_history(enabled=False)
 
         # Optionally, save the full checkpoint

@@ -18,10 +18,11 @@ def setup_logger(log_config: LogConfig, world: World) -> Logger:
     format = time + message + debug
 
     # Setup the logger handlers
-    if world.world_size > 1:
-        log_config.path = Path(log_config.path.as_posix() + str(world.rank))
-    log_config.path = Path(log_config.path.as_posix() + ".log")
-    logger = setup_handlers(loguru_logger, format, log_config, rank=world.rank)
+    if log_config.path:
+        if world.world_size > 1:
+            log_config.path = Path(log_config.path.as_posix() + str(world.rank))
+        log_config.path = Path(log_config.path.as_posix() + ".log")
+    logger = setup_handlers(loguru_logger, format, log_config, rank=world.rank)  # type: ignore
     set_logger(logger)
 
     return logger

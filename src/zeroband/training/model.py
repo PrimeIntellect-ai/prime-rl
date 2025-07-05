@@ -70,7 +70,8 @@ def setup_model(config: ModelConfig) -> Model:
     setup_ac(model, config)
     if config.compile:
         model = torch.compile(model)
-    return model
+    # TODO: This should be type-hinted as FSDP version of the model
+    return model  # type: ignore
 
 
 @jaxtyped(typechecker=typechecker)

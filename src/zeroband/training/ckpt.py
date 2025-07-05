@@ -106,12 +106,12 @@ def save_weight_checkpoint(
     cpu_state = {}
     for key, value in model.state_dict().items():
         if isinstance(value, DTensor):
-            value: DTensor = value.to(dtype)
+            value = value.to(dtype)
             # only gather after the downcast to dtype as it will be faster
-            value = value.full_tensor()  # ideally would only be gathered on rank 0
+            value = value.full_tensor()  # type: ignore
 
         if is_master:
-            key: set[str] = get_fqns(model, key)
+            key = get_fqns(model, key)
             assert len(key) == 1
             key = next(iter(key))
             # TODO(Sami) Blocking to avoid race condition, should make non-blocking long-term tho
@@ -136,8 +136,10 @@ def save_weight_checkpoint(
 
             # Save model config, generation arguments and tokenizer
             model.config.save_pretrained(path)
+            if not model.generation_config:
+                raise ValueError("Model has no generation config")
             model.generation_config.save_pretrained(path)
-            tokenizer.save_pretrained(path)
+            tokenizer.save_pretrained(path)  # type: ignore
 
             logger.debug(f"Saved weights to {path} in {time.time() - start_time:.2f} seconds")
 
