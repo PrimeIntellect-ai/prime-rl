@@ -51,7 +51,7 @@ uv run pre-commit install
 
 *For now, development is only possible on CUDA-enabled devices. However, we build production-ready images for both CUDA (NVIDIA) and ROCM (AMD) GPUs that should work out of the box.*
 
-These are some useful checks to do to test the environment setup.
+These are some useful checks to test the environment setup.
 
 1. Check that environment uses Python 3.12
 
@@ -86,7 +86,7 @@ uv run orchestrator @ configs/training/orchestrator/debug.toml
 
 **Level: Easy**
 
-Train a tiny model (`willcb/Qwen2.5-0.5B-Reverse-SFT`) to learn to reverse a small chunk of text. Training is extremely cheap and quick to run because we allow a maximum context of 128 tokens and train on small chunks of text. With two small GPUs (e.g. RTX 3090/ 4090), this experiment should finish in less than 5 minutes.
+Train a tiny model (`willcb/Qwen2.5-0.5B-Reverse-SFT`) to learn to reverse a small chunk of text. Training is extremely quick because we allow a maximum context of 128 tokens. With two small GPUs (e.g. RTX 3090/ 4090), this experiment should finish in less than 5 minutes.
 
 First, start the inference server
 
@@ -102,7 +102,7 @@ CUDA_VISIBLE_DEVICES=1 uv run train @ configs/training/reverse_text.toml
 
 **Level: Medium**
 
-Train a small model (`deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B`) on high-school level math questions and a relatively small context of 2048 tokens. 
+Train a small model (`deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B`) on high-school level math questions. It is recommended to have at least 2xA100-80GB GPUs or more for this experiment.
 
 First, start the inference server
 
@@ -113,7 +113,7 @@ uv run infer @ configs/inference/simple_math.toml --parallel.dp 1
 Then, start the trainer which will spawn the orchestrator as a subprocess
 
 ```bash
-uv run train @ configs/training/simple_math.toml
+CUDA_VISIBLE_DEVICES=1 uv run train @ configs/training/simple_math.toml
 ```
 
 *NB: If you have more than 2 GPUs available, the best way to speed up the run is to increase the DP size of the inference worker, i.e. adjusting the `--parallel.dp` argument.*
