@@ -43,19 +43,17 @@ You can check that `flash_attn` is installed correctly by running `uv run python
 uv run pre-commit install
 ```
 
-6. debug run 
-
-training
-
-```bash
-uv run torchrun --nproc_per_node=2 src/zeroband/train.py @ configs/training/debug.toml
-```
+5. debug run 
 
 inference
 ```bash
-uv run python src/zeroband/infer.py @ configs/inference/debug.toml
+uv run python src/zeroband/inference/server.py @ configs/inference/debug.toml
 ```
 
+training
+```bash
+uv run torchrun --nproc_per_node=2 src/zeroband/training/train.py @ configs/training/debug.toml
+```
 
 ## Simple Math Run
 
@@ -68,33 +66,31 @@ Inference samples per step: `batch_size * dp`
 If you have 2 GPUs, run the following commands:
 
 ```bash
-# Start inference worker
+# Start inference server
 export CUDA_VISIBLE_DEVICES=0
-export VLLM_WORKER_MULTIPROC_METHOD=spawn
-uv run python src/zeroband/infer.py @ configs/inference/simple_math.toml --parallel.dp 1 --max-batch-size 512
+uv run python src/zeroband/inference/server.py @ configs/inference/simple_math.toml --parallel.dp 1 --max-batch-size 512
 ```
 
 ```bash
 # Start trainer
 ulimit -n 65536
 export CUDA_VISIBLE_DEVICES=1
-uv  run torchrun src/zeroband/train.py @ configs/training/simple_math.toml
+uv run torchrun src/zeroband/training/train.py @ configs/training/simple_math.toml
 ```
 
 If you have 4 GPUs, run the following commands:
 
 ```bash
 # Start inference workers
-export CUDA_VISIBLE_DEVICES=0,1
-export VLLM_WORKER_MULTIPROC_METHOD=spawn
-uv run python src/zeroband/infer.py @ configs/inference/simple_math.toml --parallel.dp 2 --max-batch-size 256
+export CUDA_VISIBLE_DEVICES=0,1,2
+uv run python src/zeroband/inference/server.py @ configs/inference/simple_math.toml --parallel.dp 3 --max-batch-size 256
 ```
 
 ```bash
 # Start trainer
 ulimit -n 65536
-export CUDA_VISIBLE_DEVICES=2
-uv  run torchrun src/zeroband/train.py @ configs/training/simple_math.toml
+export CUDA_VISIBLE_DEVICES=3
+uv run torchrun src/zeroband/training/train.py @ configs/training/simple_math.toml
 ```
 
 If you have 8 GPUs, run the following commands:
@@ -102,15 +98,14 @@ If you have 8 GPUs, run the following commands:
 ```bash
 # Start inference workers
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5
-export VLLM_WORKER_MULTIPROC_METHOD=spawn
-uv run python src/zeroband/infer.py @ configs/inference/simple_math.toml
+uv run python src/zeroband/inference/server.py @ configs/inference/simple_math.toml
 ```
 
 ```bash
 # Start trainer
 ulimit -n 65536
 export CUDA_VISIBLE_DEVICES=6,7
-uv  run torchrun --nproc_per_node=2 src/zeroband/train.py @ configs/training/simple_math.toml --data.num_workers 2
+uv  run torchrun --nproc_per_node=2 src/zeroband/training/train.py @ configs/training/simple_math.toml --data.num_workers 2
 ```
 
 
@@ -120,8 +115,7 @@ on two different terminal do:
 
 ```bash
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5
-export VLLM_WORKER_MULTIPROC_METHOD=spawn
-uv run python src/zeroband/infer.py @ configs/inference/deepscaler.toml
+uv run python src/zeroband/inference/server.py @ configs/inference/deepscaler.toml
 ```
 
 then start the trainer
@@ -129,7 +123,7 @@ then start the trainer
 ```bash
 ulimit -n 65536
 export CUDA_VISIBLE_DEVICES=6,7
-uv  run torchrun --nproc_per_node=2 src/zeroband/train.py @ configs/training/deepscaler.toml
+uv  run torchrun --nproc_per_node=2 src/zeroband/training/train.py @ configs/training/deepscaler.toml
 ```
 
 if running on h100 node instead of H200 you should add ` --train.micro_bs 4`
@@ -142,26 +136,26 @@ Below are examples of how to run inference for different parallelization strateg
 Single Node (DP=1, TP=1, PP=1, *requires 1 GPU*)
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 uv run python src/zeroband/infer.py @ configs/inference/debug.toml
+CUDA_VISIBLE_DEVICES=0 uv run python src/zeroband/inference/server.py @ configs/inference/debug.toml
 ```
 
 Only TP (TP=2, PP=1, DP=1, *requires 2 GPUs*)
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/infer.py @ configs/inference/debug.toml --parallel.tp 2
+CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/inference/server.py @ configs/inference/debug.toml --parallel.tp 2
 ```
 
 Only DP (DP=2, TP=1, PP=1, *requires 2 GPUs*)
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/infer.py @ configs/inference/debug.toml --parallel.dp 2
+CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/inference/server.py @ configs/inference/debug.toml --parallel.dp 2
 ```
 
 Only PP (DP=1, TP=1, PP=2, *requires 2 GPUs*)
 
 ```bash
 # Node 1
-CUDA_VISIBLE_DEVICES=0 uv run python src/zeroband/infer.py @ configs/inference/debug.toml \
+CUDA_VISIBLE_DEVICES=0 uv run python src/zeroband/inference/server.py @ configs/inference/debug.toml \
 	--parallel.pp.rank 0 \
 	--parallel.pp.world-size 2 \
 	--seed 69
@@ -169,7 +163,7 @@ CUDA_VISIBLE_DEVICES=0 uv run python src/zeroband/infer.py @ configs/inference/d
 
 ```bash
 # Node 2
-CUDA_VISIBLE_DEVICES=1 uv run python src/zeroband/infer.py @ configs/inference/debug.toml \
+CUDA_VISIBLE_DEVICES=1 uv run python src/zeroband/inference/server.py @ configs/inference/debug.toml \
 	--parallel.pp.rank 1 \
 	--parallel.pp.world-size 2 \
 	--seed 69
@@ -180,14 +174,14 @@ CUDA_VISIBLE_DEVICES=1 uv run python src/zeroband/infer.py @ configs/inference/d
 DP+TP (DP=2, TP=2, PP=1, *requires 4 GPUs*)
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 uv run python src/zeroband/infer.py @ configs/inference/debug.toml --parallel.dp 2 --parallel.tp auto
+CUDA_VISIBLE_DEVICES=0,1,2,3 uv run python src/zeroband/inference/server.py @ configs/inference/debug.toml --parallel.dp 2 --parallel.tp auto
 ```
 
 PP+TP (DP=1, TP=2, PP=2, *requires 4 GPUs*)
 
 ```bash
 # Node 1
-CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/infer.py @ configs/inference/debug.toml \
+CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/inference/server.py @ configs/inference/debug.toml \
 	--parallel.tp auto \
 	--parallel.pp.rank 0 \
 	--parallel.pp.world-size 2 \
@@ -196,7 +190,7 @@ CUDA_VISIBLE_DEVICES=0,1 uv run python src/zeroband/infer.py @ configs/inference
 
 ```bash
 # Node 2
-CUDA_VISIBLE_DEVICES=2,3 uv run python src/zeroband/infer.py @ configs/inference/debug.toml \
+CUDA_VISIBLE_DEVICES=2,3 uv run python src/zeroband/inference/server.py @ configs/inference/debug.toml \
 	--parallel.tp auto \
 	--parallel.pp.rank 1 \
 	--parallel.pp.world-size 2 \
@@ -244,11 +238,11 @@ uv run pytest -v -m "not slow"
 We use `pydantic-settings` to configure `prime-rl`. To get an overview of the available configurations, run the following command:
 
 ```bash
-uv run python src/zeroband/train.py --help
+uv run python src/zeroband/training/train.py --help
 ```
 
 ```bash
-uv run python src/zeroband/infer.py --help
+uv run python src/zeroband/inference/server.py --help
 ```
 
 ### Sources
@@ -257,7 +251,7 @@ We support the following sources for configuration, in this order of precedence:
 
 1. **Command-line arguments**: You can pass (nested) arguments as `--key.subkey value` to the script. For example, to set the model name you can run `--model.name`
 
-2. **Config files**: You can pass `.toml` config files (defined in the `configs` directory) using the `@` prefix. For example, to use the `debug.toml` config file, you can run `uv run python src/zeroband/infer.py @ configs/inference/debug.toml`. (*If you leave a space between the `@` and the config file, you will get shell path auto-completions.*)
+2. **Config files**: You can pass `.toml` config files (defined in the `configs` directory) using the `@` prefix. For example, to use the `debug.toml` config file, you can run `uv run python src/zeroband/inference/server.py @ configs/inference/debug.toml`. (*If you leave a space between the `@` and the config file, you will get shell path auto-completions.*)
 
 3. **Environment variables**: You can set environment variables to override the config values. All environment variables must be prefixed with `PRIME_` and use the `__` delimiter to nest the keys. For example, to set the model name you can run `export PRIME_MODEL__NAME=Qwen/Qwen3-0.6B`.
 
@@ -280,7 +274,7 @@ name = "Qwen/Qwen-14B"
 ```
 
 ```bash
-PRIME_MODEL__NAME=Qwen/Qwen3-4B uv run src/zeroband/infer.py @qwen8b.toml @qwen14b.toml --model.name Qwen/Qwen3-32B
+PRIME_MODEL__NAME=Qwen/Qwen3-4B uv run src/zeroband/inference/server.py @qwen8b.toml @qwen14b.toml --model.name Qwen/Qwen3-32B
 ```
 
 In this example, the CLI argument `--model.name Qwen/Qwen3-32B` will take precendence and the script will use `Qwen/Qwen3-32B` as the model name. If the CLI argument wasn't set, then the second config file would take precedence and the script would use `Qwen/Qwen-14B` as the model name. If the second config file wasn't set, then the first config file would take precedence and the script would use `Qwen/Qwen3-8B` as the model name. Finally, if the first config file wasn't set, then the environment variable would take precedence and the script would use `Qwen/Qwen-4B` as the model name. If the environment variable wasn't set, then the default value would be used and the script would use `Qwen/Qwen3-0.6B` as the model name.
