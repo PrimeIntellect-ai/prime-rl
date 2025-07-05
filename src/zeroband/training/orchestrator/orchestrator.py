@@ -4,8 +4,8 @@ import shutil
 import time
 from multiprocessing.queues import Queue
 from pathlib import Path
-import lovely_tensors as lt
 
+import lovely_tensors as lt
 import numpy as np
 import torch
 from datasets import Dataset, load_dataset
@@ -16,10 +16,10 @@ from zeroband.training.orchestrator.client import (
     check_has_model,
     check_health,
     generate_completion,
-    tokenize,
     reload_weights,
     reset_weights,
     setup_client,
+    tokenize,
 )
 from zeroband.training.orchestrator.config import OrchestratorConfig
 from zeroband.training.orchestrator.data import prepare_batch
@@ -92,7 +92,7 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
 
     # Load dataset
     # TODO: Change to verifiers environment
-    dataset: Dataset = load_dataset(config.data.name, split=config.data.split)
+    dataset: Dataset = load_dataset(config.data.name, split=config.data.split)  # type: ignore
     dataset = dataset.shuffle(seed=config.seed)
 
     # Iterate over dataset in batches
@@ -152,7 +152,6 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
                     config.model,
                     config.sampling,
                     ckpt_step,
-                    use_tqdm=config.use_tqdm,
                 )
 
         # Get the completions for the batch
@@ -187,8 +186,8 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
         compute_rewards_time = time.time() - compute_rewards_start_time
 
         # Compute batch metrics
-        num_input_tokens = sum(completion.usage.prompt_tokens for completion in chat_completions)
-        num_output_tokens = sum(completion.usage.completion_tokens for completion in chat_completions)
+        num_input_tokens = sum(completion.usage.prompt_tokens for completion in chat_completions)  # type: ignore
+        num_output_tokens = sum(completion.usage.completion_tokens for completion in chat_completions)  # type: ignore
         num_tokens = num_input_tokens + num_output_tokens
         total_tokens += num_tokens
         total_samples += config.batch_size

@@ -2,7 +2,7 @@ import asyncio
 from pathlib import Path
 
 from openai import AsyncOpenAI
-from openai.types.chat.chat_completion import ChatCompletion
+from openai.types.chat import ChatCompletion
 
 from zeroband.training.orchestrator.config import ClientConfig, ModelConfig, SamplingConfig
 from zeroband.utils.logger import get_logger
@@ -75,7 +75,7 @@ async def generate_completion(
         sampling_config.max_tokens = sampling_config.max_seq_len - num_input_tokens
 
     response = await client.chat.completions.create(
-        messages=messages,
+        messages=messages,  # type: ignore
         model=model_config.name,
         temperature=sampling_config.temperature,
         top_p=sampling_config.top_p,

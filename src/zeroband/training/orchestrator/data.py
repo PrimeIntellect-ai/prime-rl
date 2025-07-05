@@ -51,7 +51,7 @@ def prepare_sample(
     # Pad the sequence to the sequence length
     if pad:
         num_padding_tokens = seq_len - total_tokens
-        input_ids = torch.cat([input_ids, torch.full((num_padding_tokens,), tokenizer.pad_token_id)])
+        input_ids = torch.cat([input_ids, torch.full((num_padding_tokens,), tokenizer.pad_token_id)])  # type: ignore
         loss_mask = torch.cat([loss_mask, torch.zeros(num_padding_tokens)]).long()
         position_ids = torch.cat([position_ids, torch.zeros(num_padding_tokens)]).long()
         logprobs = torch.cat([logprobs, torch.zeros(num_padding_tokens)]).float()
@@ -177,7 +177,7 @@ def prepare_micro_batch_packing(samples: list[Sample], max_seq_len: int, tempera
     micro_batch["temperature"] = temperature
     micro_batch["total_tokens"] = sum([sample["total_tokens"] for sample in samples])
 
-    return micro_batch
+    return micro_batch  # type: ignore
 
 
 def prepare_batch_packing(
