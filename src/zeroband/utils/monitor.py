@@ -6,7 +6,6 @@ import socket
 import threading
 import time
 from abc import ABC, abstractmethod
-from pathlib import Path
 from typing import Any, Literal
 
 import aiohttp
@@ -57,8 +56,8 @@ class FileMonitor(Monitor):
 
     def __init__(self, config: FileMonitorConfig, task_id: str | None = None):
         super().__init__(config, task_id)
-        self.file_path = self.config.path
-        Path(self.file_path).parent.mkdir(parents=True, exist_ok=True)
+        self.file_path = config.path
+        self.file_path.parent.mkdir(parents=True, exist_ok=True)
 
     def log(self, metrics: dict[str, Any]) -> None:
         with self.lock:
@@ -75,7 +74,7 @@ class SocketMonitor(Monitor):
 
     def __init__(self, config: SocketMonitorConfig, task_id: str | None = None):
         super().__init__(config, task_id)
-        self.socket_path = self.config.path
+        self.socket_path = config.path
 
     def log(self, metrics: dict[str, Any]) -> None:
         with self.lock:
@@ -142,7 +141,7 @@ class WandbMonitor(Monitor):
             config=run_config.model_dump() if run_config else None,
             mode="offline" if config.offline else None,
         )
-        
+
         # Optionally, initialize sample logging attributes
         if config.log_samples:
             assert tokenizer is not None, "Tokenizer is required for sample logging"
@@ -154,7 +153,7 @@ class WandbMonitor(Monitor):
         if not self.is_master:
             return
         wandb.log(metrics, step=metrics.get("step", None))
-    
+
     def log_samples(
         self,
         input_tokens: list[list[int]],
@@ -164,10 +163,10 @@ class WandbMonitor(Monitor):
         step: int,
     ) -> None:
         """Log prompt/response samples to W&B table.
-        
+
         Args:
             input_tokens: List of input token sequences
-            output_tokens: List of output token sequences  
+            output_tokens: List of output token sequences
             rewards: List of rewards for each sample
             task_rewards: Optional list of task-specific rewards
             step: Current training step
@@ -177,12 +176,12 @@ class WandbMonitor(Monitor):
             return
         assert self.tokenizer is not None, "Tokenizer is required for sample logging"
         assert self.last_log_step < step, "Step must be greater than last logged step"
-            
+
         self.logger.debug(f"Logging {self.config.log_samples.num_samples} samples to W&B table at step {step}")
         start_time = time.time()
         batch_size = len(input_tokens)
         num_samples = min(self.config.log_samples.num_samples, batch_size)
-            
+
         # Randomly select and log samples
         indices = random.sample(range(batch_size), num_samples)
         for idx in indices:
@@ -199,7 +198,7 @@ class WandbMonitor(Monitor):
                 "advantage": float(advantages[idx]),
             }
             self.samples.append(sample)
-            
+
         # Log to W&B table at configured intervals
         df = pd.DataFrame(self.samples)
         table = wandb.Table(dataframe=df)
@@ -227,13 +226,13 @@ class MultiMonitor:
         # Initialize outputs
         self.outputs: dict[MonitorType, Monitor] = {}
         self.wandb = None
-        if config.file is not None:
+        if config.file:
             self.outputs["file"] = FileMonitor(config.file, task_id)
-        if config.socket is not None:
+        if config.socket:
             self.outputs["socket"] = SocketMonitor(config.socket, task_id)
-        if config.api is not None:
+        if config.api:
             self.outputs["api"] = APIMonitor(config.api, task_id)
-        if config.wandb is not None:
+        if config.wandb:
             self.wandb = WandbMonitor(config.wandb, tokenizer, task_id, run_config=run_config)
             self.outputs["wandb"] = self.wandb
 
@@ -267,7 +266,7 @@ class MultiMonitor:
                         "step": step,
                     }
                 output.log(metrics)
-    
+
     def _set_has_gpu(self) -> bool:
         """Determines if a GPU is available at runtime"""
         try:

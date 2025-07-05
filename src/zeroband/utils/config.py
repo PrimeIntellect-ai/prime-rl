@@ -38,45 +38,21 @@ class LogConfig(BaseConfig):
 class FileMonitorConfig(BaseConfig):
     """Configures logging to a file."""
 
-    path: Annotated[Path | None, Field(description="The file path to log to")] = None
-
-    @model_validator(mode="after")
-    def validate_path(self):
-        if self.path is None:
-            raise ValueError("File path must be set when FileMonitor is enabled. Try setting --monitor.file.path")
-        return self
+    path: Annotated[Path, Field(description="The file path to log to")]
 
 
 class SocketMonitorConfig(BaseConfig):
     """Configures logging to a Unix socket."""
 
-    path: Annotated[Path | None, Field(description="The socket path to log to")] = None
-
-    @model_validator(mode="after")
-    def validate_path(self):
-        if self.path is None:
-            raise ValueError("Socket path must be set when SocketMonitor is enabled. Try setting --monitor.socket.path")
-        return self
+    path: Annotated[Path, Field(description="The socket path to log to")]
 
 
 class APIMonitorConfig(BaseConfig):
     """Configures logging to an API via HTTP."""
 
-    url: Annotated[str | None, Field(description="The API URL to log to")] = None
+    url: Annotated[str, Field(description="The API URL to log to")]
 
-    auth_token: Annotated[str | None, Field(description="The API auth token to use")] = None
-
-    @model_validator(mode="after")
-    def validate_url(self):
-        if self.url is None:
-            raise ValueError("URL must be set when APIMonitor is enabled. Try setting --monitor.api.url")
-        return self
-
-    @model_validator(mode="after")
-    def validate_auth_token(self):
-        if self.auth_token is None:
-            raise ValueError("Auth token must be set when APIMonitor is enabled. Try setting --monitor.api.auth_token")
-        return self
+    auth_token: Annotated[str, Field(description="The API auth token to use")]
 
 
 class SampleLoggingConfig(BaseConfig):

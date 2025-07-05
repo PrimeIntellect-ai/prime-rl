@@ -38,10 +38,9 @@ class BaseSettings(PydanticBaseSettings, BaseConfig):
     toml_files: Annotated[
         list[str] | None,
         Field(
-            default=None,
             description="List of extra TOML files to load (paths are relative to the TOML file containing this field). If provided, will override all other config files. Note: This field is only read from within configuration files - setting --toml-files from CLI has no effect.",
         ),
-    ]
+    ] = None
 
     @classmethod
     def set_toml_files(cls, toml_files: list[str]) -> None:
@@ -94,7 +93,7 @@ class BaseSettings(PydanticBaseSettings, BaseConfig):
     )
 
 
-def check_path_and_handle_inheritance(path: str, seen_files: list[str]) -> bool:
+def check_path_and_handle_inheritance(path: Path, seen_files: list[Path]) -> bool | None:
     """
     Recursively look for inheritance in a toml file. Return a list of all toml files to load.
 
@@ -108,12 +107,10 @@ def check_path_and_handle_inheritance(path: str, seen_files: list[str]) -> bool:
     if path in seen_files:
         return
 
-    path = Path(path)
-
     if not path.exists():
         raise FileNotFoundError(f"TOML file {path} does not exist")
 
-    seen_files.append(str(path))
+    seen_files.append(path)
 
     with open(path, "rb") as f:
         data = tomli.load(f)
@@ -126,7 +123,7 @@ def check_path_and_handle_inheritance(path: str, seen_files: list[str]) -> bool:
         # todo which should probably look for infinite inheritance loops here
         for file in files:
             recurence = True
-            check_path_and_handle_inheritance(str(file), seen_files)
+            check_path_and_handle_inheritance(file, seen_files)
 
     return recurence
 
@@ -149,7 +146,7 @@ def extract_toml_paths(args: list[str]) -> tuple[list[str], list[str]]:
                 remaining_args.remove(arg)
                 toml_path = arg.replace("@", "")
 
-            recurence = recurence or check_path_and_handle_inheritance(toml_path, toml_paths)
+            recurence = recurence or check_path_and_handle_inheritance(Path(toml_path), toml_paths)
             cli_toml_file_count += 1
 
     if recurence and cli_toml_file_count > 1:
@@ -172,9 +169,6 @@ def to_kebab_case(args: list[str]) -> list[str]:
     return args
 
 
-T = TypeVar("T", bound=BaseSettings)
-
-
 def get_all_fields(model: BaseModel | type) -> list[str]:
     if isinstance(model, BaseModel):
         model_cls = model.__class__
@@ -186,12 +180,12 @@ def get_all_fields(model: BaseModel | type) -> list[str]:
         field_type = field.annotation
         fields.append(name)
         if hasattr(field_type, "model_fields"):
-            sub_fields = get_all_fields(field_type)
+            sub_fields = get_all_fields(field_type)  # type: ignore
             fields.extend(f"{name}.{sub}" for sub in sub_fields)
     return fields
 
 
-def parse_unknown_args(args: list[str], config_cls: type) -> list[str]:
+def parse_unknown_args(args: list[str], config_cls: type) -> tuple[list[str], list[str]]:
     known_fields = get_all_fields(config_cls)
     known_args = []
     unknown_args = []
@@ -229,6 +223,10 @@ def parse_unknown_args(args: list[str], config_cls: type) -> list[str]:
     return known_args, unknown_args
 
 
+T = TypeVar("T", bound=BaseSettings)
+
+
+# Class[BaseSettings]
 def parse_argv(config_cls: Type[T], allow_extras: bool = False) -> T:
     """
     Parse CLI arguments and TOML configuration files into a pydantic settings instance.
@@ -248,7 +246,7 @@ def parse_argv(config_cls: Type[T], allow_extras: bool = False) -> T:
     config_cls.set_toml_files(toml_paths)
     if allow_extras:
         cli_args, unknown_args = parse_unknown_args(cli_args, config_cls)
-    config = config_cls(_cli_parse_args=to_kebab_case(cli_args))
+    config = config_cls(_cli_parse_args=to_kebab_case(cli_args))  # type: ignore
     config_cls.clear_toml_files()
     if allow_extras:
         config.set_unknown_args(unknown_args)
