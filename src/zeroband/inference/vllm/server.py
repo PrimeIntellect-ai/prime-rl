@@ -3,19 +3,17 @@ from argparse import Namespace
 
 import uvloop
 from fastapi import Request
+from vllm.engine.arg_utils import AsyncEngineArgs
+from vllm.engine.async_llm_engine import AsyncLLMEngine
+from vllm.entrypoints.launcher import serve_http
 from vllm.entrypoints.openai.api_server import (
-    AsyncEngineArgs,
-    AsyncLLMEngine,
-    FlexibleArgumentParser,
-    UsageContext,
     build_app,
     create_server_socket,
     init_app_state,
-    make_arg_parser,
-    serve_http,
-    set_ulimit,
-    validate_parsed_serve_args,
 )
+from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
+from vllm.usage.usage_lib import UsageContext
+from vllm.utils import FlexibleArgumentParser, set_ulimit
 
 from zeroband.inference.config import InferenceConfig
 
@@ -86,5 +84,6 @@ def server(config: InferenceConfig, vllm_args: list[str]):
     parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")
     parser = make_arg_parser(parser)
     args = parser.parse_args(args=vllm_args, namespace=config.to_vllm())
+    assert args is not None
     validate_parsed_serve_args(args)
     uvloop.run(run_server(args))
