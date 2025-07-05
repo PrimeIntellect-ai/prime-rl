@@ -9,7 +9,7 @@ from tests import Command, Environment, ProcessResult
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
 
-TIMEOUT = 600 # 10 minutes
+TIMEOUT = 600  # 10 minutes
 TRAINING_CMD = [
     "uv",
     "run",
@@ -36,10 +36,10 @@ def train_process(vllm_server: str, run_process: Callable[[Command, Environment,
     project = "ci-reverse-text"
     if username != "CI_RUNNER":
         project += "-local"
-    run_name = f"{branch_name}-{commit_hash}"
+    group_name = f"{branch_name}-{commit_hash}"
 
     return run_process(
-        TRAINING_CMD + ["--monitor.wandb.project", project, "--monitor.wandb.name", run_name],
+        TRAINING_CMD + ["--monitor.wandb.project", project, "--monitor.wandb.group", group_name],
         {},
         TIMEOUT,
     )
