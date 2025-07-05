@@ -128,6 +128,7 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
 
         # Optionally, wait for the next checkpoint to be available
         async_level = step - 1 - ckpt_step  # How many steps training ahead
+        wait_for_ckpt_time = 0
         if async_level > config.async_level:
             ckpt_step = step - 1 - config.async_level
             logger.debug(
