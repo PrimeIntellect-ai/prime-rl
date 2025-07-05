@@ -2,6 +2,9 @@ from typing import TypeAlias
 
 import torch
 import torch.nn as nn
+from beartype import beartype as typechecker
+from jaxtyping import Float, Int, jaxtyped
+from torch import Tensor
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, fully_shard
 from transformers import (
@@ -68,3 +71,10 @@ def setup_model(config: ModelConfig) -> Model:
     if config.compile:
         model = torch.compile(model)
     return model
+
+
+@jaxtyped(typechecker=typechecker)
+def forward(
+    model: Model, input_ids: Int[Tensor, "batch seq"], position_ids: Int[Tensor, "batch seq"]
+) -> Float[Tensor, "batch seq vocab"]:
+    return model(input_ids=input_ids, position_ids=position_ids).logits

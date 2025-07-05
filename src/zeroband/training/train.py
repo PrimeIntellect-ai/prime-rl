@@ -1,16 +1,15 @@
-from collections import defaultdict
 import logging
 import multiprocessing as mp
 import os
 import shutil
 import time
+from collections import defaultdict
 from pathlib import Path
 
 import shardcast
 import torch
-from jaxtyping import Float
-from torch._guards import log as torch_log
 import torch.distributed as dist
+from torch._guards import log as torch_log
 
 from zeroband.training import envs
 from zeroband.training.ckpt import (
@@ -23,7 +22,7 @@ from zeroband.training.config import TrainingConfig
 from zeroband.training.data import DataLoader, FakeDataLoader
 from zeroband.training.logger import setup_logger
 from zeroband.training.loss import compute_logprobs, entropy_loss, grpo_loss
-from zeroband.training.model import get_tokenizer, reshard_module, setup_model
+from zeroband.training.model import forward, get_tokenizer, reshard_module, setup_model
 from zeroband.training.orchestrator.orchestrator import run_orchestrator
 from zeroband.training.perf import get_perf_counter
 from zeroband.training.utils import (
@@ -210,9 +209,7 @@ def train(config: TrainingConfig):
                 max_tokens = int(total_tokens)
 
             # Forward pass
-            logits: Float[torch.Tensor, "batch seq vocab"] = model(
-                input_ids=input_ids, position_ids=position_ids
-            ).logits.contiguous()
+            logits = forward(model, input_ids, position_ids).contiguous()
 
             # Compute loss
             loss, clip_ratio = grpo_loss(
