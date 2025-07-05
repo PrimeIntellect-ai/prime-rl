@@ -1,13 +1,11 @@
-import time
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 from openai.types.chat import ChatCompletion
 
-from zeroband.training.orchestrator.genesys import TaskType
-from zeroband.training.orchestrator.genesys import get_reward_function
-from zeroband.utils.logger import get_logger
+from zeroband.training.orchestrator.genesys import TaskType, get_reward_function
+from zeroband.utils.utils import wait_for_path
 
 
 def parse_logprobs(chat_completions: list[ChatCompletion]) -> list[list[float]]:
@@ -50,18 +48,8 @@ def parse_completions(chat_completions: list[ChatCompletion]) -> list[str]:
 
 
 def wait_for_weight_checkpoint(path: Path, step: int, interval: int = 1, log_interval: int = 10) -> None:
-    logger = get_logger()
-    wait_time = 0
     model_path = Path(path) / f"step_{step}" / "model.pt"
-    logger.debug(f"Waiting for checkpoint for step {step} at {model_path}")
-    while True:
-        if model_path.exists():
-            logger.debug(f"Found checkpoint for step {step} at {model_path}")
-            break
-        if wait_time % log_interval == 0 and wait_time > 0:  # Every log_interval seconds
-            logger.debug(f"Waiting for checkpoint for step {step} at {model_path} for {wait_time} seconds")
-        time.sleep(interval)
-        wait_time += interval
+    wait_for_path(model_path, interval, log_interval)
 
 
 def compute_rewards(

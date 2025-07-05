@@ -1,8 +1,12 @@
 import functools
+import time
+from pathlib import Path
 from typing import Any
 
 import torch.distributed as dist
 import wandb
+
+from zeroband.utils.logger import get_logger
 
 
 def rgetattr(obj: Any, attr_path: str) -> Any:
@@ -39,9 +43,7 @@ def rgetattr(obj: Any, attr_path: str) -> Any:
 
     for attr in attrs:
         if not hasattr(current, attr):
-            raise AttributeError(
-                f"'{type(current).__name__}' object has no attribute '{attr}'"
-            )
+            raise AttributeError(f"'{type(current).__name__}' object has no attribute '{attr}'")
         current = getattr(current, attr)
 
     return current
@@ -109,3 +111,17 @@ def clean_exit(func):
                 dist.destroy_process_group()
 
     return wrapper
+
+
+def wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:
+    logger = get_logger()
+    wait_time = 0
+    logger.debug(f"Waiting for path `{path}`")
+    while True:
+        if path.exists():
+            logger.debug(f"Found path `{path}`")
+            break
+        if wait_time % log_interval == 0 and wait_time > 0:  # Every log_interval seconds
+            logger.debug(f"Waiting for path `{path}` for {wait_time} seconds")
+        time.sleep(interval)
+        wait_time += interval

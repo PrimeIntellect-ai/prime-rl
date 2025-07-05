@@ -150,6 +150,12 @@ def train(config: TrainingConfig):
                     logger.error(f"Orchestrator process died with exit code {orchestrator.exitcode}")
                     raise RuntimeError(f"Orchestrator process died with exit code {orchestrator.exitcode}")
 
+        # Wait for the batch to be available
+        wait_for_batch_start_time = time.time()
+        dataloader.wait_for_batch()
+        wait_for_batch_time = time.time() - wait_for_batch_start_time
+        logger.debug(f"Waited for batch to arrive for {wait_for_batch_time:.2f} seconds")
+
         # Load the training batch
         logger.debug("Loading training batch")
         load_data_start_time = time.time()
@@ -345,6 +351,7 @@ def train(config: TrainingConfig):
         # Log time metrics
         time_metrics = {
             "time/train": step_time,
+            "time/train/wait_for_batch": wait_time,
             "time/train/load_data": load_data_time,
             "time/train/save_weights": save_weights_time,
             "time/train/compute_logprobs": compute_logprobs_time,
