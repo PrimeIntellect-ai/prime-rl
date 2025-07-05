@@ -18,9 +18,9 @@ def grpo_loss(
     temperature: float,
     max_tokens: int,
     grpo_loss_config: GRPOVariantsConfig,
-) -> tuple[Tensor, Tensor]:
+) -> tuple[Tensor, dict[str, Tensor]]:
     if isinstance(grpo_loss_config, ClippingConfig):
-        return grpo_loss_clip(
+        loss, clip_ratio = grpo_loss_clip(
             logits,
             input_ids,
             advantages,
@@ -33,8 +33,9 @@ def grpo_loss(
             max_tokens,
             grpo_loss_config.highest_entropy_ratio_loss,
         )
+        return loss, {"clip_ratio": clip_ratio}
     elif isinstance(grpo_loss_config, RatioConfig):
-        return grpo_loss_ratio(
+        loss, average_ratio = grpo_loss_ratio(
             logits,
             input_ids,
             advantages,
@@ -45,6 +46,7 @@ def grpo_loss(
             grpo_loss_config.clip_ratio,
             grpo_loss_config.highest_entropy_ratio_loss,
         )
+        return loss, {"mean_ratio": average_ratio}
     else:
         raise ValueError(f"Invalid grpo_loss_type: {grpo_loss_config.type}")
 

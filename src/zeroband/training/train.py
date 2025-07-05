@@ -212,7 +212,7 @@ def train(config: TrainingConfig):
             logits = forward(model, input_ids, position_ids).contiguous()
 
             # Compute loss
-            loss, clip_ratio = grpo_loss(
+            loss, ratio_info = grpo_loss(
                 logits,
                 input_ids,
                 advantages,
@@ -233,7 +233,6 @@ def train(config: TrainingConfig):
             # Scale loss, entropy, and clip ratio by the number of micro batches (=gradient accumulation steps)
             loss = loss / num_micro_batches
             entropy = entropy / num_micro_batches
-            clip_ratio = clip_ratio / num_micro_batches
 
             # Backward pass (ensures loss reduction across FSDP ranks)
             logger.debug(f"Backward pass on micro batch {micro_step} / {num_micro_batches}")
@@ -241,9 +240,11 @@ def train(config: TrainingConfig):
 
             loss_metrics["loss/loss"] += loss.detach().clone()
             loss_metrics["loss/entropy"] += entropy.detach().clone()
-            loss_metrics["loss/clip_ratio"] += clip_ratio.detach().clone()
 
-            del loss, entropy, clip_ratio
+            for key, value in ratio_info.items():
+                loss_metrics[f"loss/{key}"] += value.detach().clone() / num_micro_batches
+
+            del loss, entropy
 
         # Synchronize the batch metrics across all ranks
         for key, value in loss_metrics.items():
