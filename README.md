@@ -21,7 +21,10 @@ curl -sSL https://raw.githubusercontent.com/PrimeIntellect-ai/prime-rl/main/inst
 
 After, enter the project directory and, optionally, install pre-commit hooks (see below).
 
-**Manual Installation**
+<details>
+<summary>
+Manual Installation
+</summary>
 
 1. Clone the repository
 
@@ -42,16 +45,13 @@ source $HOME/.local/bin/env
 ```bash
 uv sync && uv sync --extra fa
 ```
+</details>
 
-4. Optionally, install [pre-commit](https://pre-commit.com) hooks
 
-```bash
-uv run pre-commit install
-```
-
-*For now, development is only possible on CUDA-enabled devices. However, we build production-ready images for both CUDA (NVIDIA) and ROCM (AMD) GPUs that should work out of the box.*
-
-These are some useful checks to test the environment setup.
+<details>
+<summary>
+Validate your environment setup
+</summary>
 
 1. Check that environment uses Python 3.12
 
@@ -79,6 +79,8 @@ uv run infer @ configs/inference/debug.toml
 ```bash
 uv run orchestrator @ configs/training/orchestrator/debug.toml
 ```
+</details>
+
 
 ## Entrypoints
 
@@ -133,6 +135,96 @@ CUDA_VISIBLE_DEVICES=1 uv run train @ configs/training/simple_math.toml
 ### Benchmark
 
 *TBD*
+
+## Contributing
+
+*For now, development is only possible on CUDA-enabled devices. However, we build production-ready images for both CUDA (NVIDIA) and ROCM (AMD) GPUs that should work out of the box.*
+
+### Setup
+
+1. Optionally, install [pre-commit](https://pre-commit.com) hooks
+
+```bash
+uv run pre-commit install
+```
+
+### Config System
+
+We use `pydantic-settings` to configure `prime-rl`. To get an overview of the available configurations, run the following command:
+
+```bash
+uv run python src/zeroband/training/train.py --help
+```
+
+```bash
+uv run python src/zeroband/inference/server.py --help
+```
+
+**Sources**
+
+We support the following sources for configuration, in this order of precedence:
+
+1. **Command-line arguments**: You can pass (nested) arguments as `--key.subkey value` to the script. For example, to set the model name you can run `--model.name`
+
+2. **Config files**: You can pass `.toml` config files (defined in the `configs` directory) using the `@` prefix. For example, to use the `debug.toml` config file, you can run `uv run python src/zeroband/inference/server.py @ configs/inference/debug.toml`. (*If you leave a space between the `@` and the config file, you will get shell path auto-completions.*)
+
+3. **Environment variables**: You can set environment variables to override the config values. All environment variables must be prefixed with `PRIME_` and use the `__` delimiter to nest the keys. For example, to set the model name you can run `export PRIME_MODEL__NAME=Qwen/Qwen3-0.6B`.
+
+4. **Defaults**: For almost all config arguments, we have a default value which will be used if no other source is provided.
+
+In general we recommend setting configurations via config files to define reproducible experiments and use command-line arguments to override the config values to run variants of the same experiment. Environment variables are usually only used in production settings to communicate with the [Prime Protocol](https://github.com/PrimeIntellect-ai/protocol) worker. In most cases, you should not need to use environment variables.
+
+The precendence order will be important if multiple sources try to configure the same argument. For example, in the following command, all sources will define a model name
+
+```toml
+# qwen8b.toml
+[model]
+name = "Qwen/Qwen3-8B"
+```
+
+```toml
+# qwen14b.toml
+[model]
+name = "Qwen/Qwen-14B"
+```
+
+```bash
+PRIME_MODEL__NAME=Qwen/Qwen3-4B uv run src/zeroband/inference/server.py @qwen8b.toml @qwen14b.toml --model.name Qwen/Qwen3-32B
+```
+
+In this example, the CLI argument `--model.name Qwen/Qwen3-32B` will take precendence and the script will use `Qwen/Qwen3-32B` as the model name. If the CLI argument wasn't set, then the second config file would take precedence and the script would use `Qwen/Qwen-14B` as the model name. If the second config file wasn't set, then the first config file would take precedence and the script would use `Qwen/Qwen3-8B` as the model name. Finally, if the first config file wasn't set, then the environment variable would take precedence and the script would use `Qwen/Qwen-4B` as the model name. If the environment variable wasn't set, then the default value would be used and the script would use `Qwen/Qwen3-0.6B` as the model name.
+
+### Tests
+
+Run the full test suite 
+
+```bash
+uv run pytest -v
+```
+
+To run unit tests, run
+
+```bash
+uv run pytest tests/unit -v
+```
+
+To run integration tests, run
+
+```bash
+uv run pytest tests/integration -v
+```
+
+To run CPU-only tests, use the inverse of the `gpu` marker:
+
+```bash
+uv run pytest -v -m "not gpu"
+```
+
+To run fast tests, use the inverse of the `slow` marker:
+
+```bash
+uv run pytest -v -m "not slow"
+```
 
 ## Citation
 

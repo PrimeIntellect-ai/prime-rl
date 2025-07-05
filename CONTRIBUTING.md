@@ -2,6 +2,12 @@
 
 ## Setup
 
+1. Optionally, install [pre-commit](https://pre-commit.com) hooks
+
+```bash
+uv run pre-commit install
+```
+
 ## Config System
 
 We use `pydantic-settings` to configure `prime-rl`. To get an overview of the available configurations, run the following command:
