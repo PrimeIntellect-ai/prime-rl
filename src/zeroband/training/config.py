@@ -4,7 +4,7 @@ from typing import Annotated, Literal, TypeAlias, Union
 from pydantic import Field, model_validator
 
 from zeroband.training.orchestrator.config import OrchestratorConfig
-from zeroband.utils.config import LogConfig, MultiMonitorConfig
+from zeroband.utils.config import LogConfig, MultiMonitorConfig, WandbMonitorConfig
 from zeroband.utils.pydantic_config import BaseConfig, BaseSettings
 
 AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2"]
@@ -216,6 +216,8 @@ class TrainingConfig(BaseSettings):
     def auto_name_wandb(self):
         # Automatically use same W&B project
         if self.orchestrator and self.monitor.wandb:
+            if not self.orchestrator.monitor.wandb:
+                self.orchestrator.monitor.wandb = WandbMonitorConfig()
             self.orchestrator.monitor.wandb.project = self.monitor.wandb.project
 
             # If group is set, use it and auto-generate run names
