@@ -136,8 +136,6 @@ def save_weight_checkpoint(
 
             # Save model config, generation arguments and tokenizer
             model.config.save_pretrained(path)
-            if not model.generation_config:
-                raise ValueError("Model has no generation config")
             model.generation_config.save_pretrained(path)
             tokenizer.save_pretrained(path)
 

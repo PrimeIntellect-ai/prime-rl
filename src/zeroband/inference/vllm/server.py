@@ -84,6 +84,5 @@ def server(config: InferenceConfig, vllm_args: list[str]):
     parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")
     parser = make_arg_parser(parser)
     args = parser.parse_args(args=vllm_args, namespace=config.to_vllm())
-    assert args is not None
     validate_parsed_serve_args(args)
     uvloop.run(run_server(args))
