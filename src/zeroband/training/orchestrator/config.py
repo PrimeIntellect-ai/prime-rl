@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 from pydantic import Field, model_validator
 
 from zeroband.eval.registry import Benchmark
-from zeroband.utils.config import LogConfig, ModelConfig, MultiMonitorConfig, SampleLoggingConfig, WandbMonitorConfig
+from zeroband.utils.config import LogConfig, ModelConfig, MultiMonitorConfig
 from zeroband.utils.pydantic_config import BaseConfig, BaseSettings
 
 
@@ -14,17 +14,16 @@ class ClientConfig(BaseConfig):
     base_url: Annotated[
         str,
         Field(
-            default="http://localhost:8000/v1",
             description="Base URL of the OpenAI API. By default, it is set to a local inference server.",
         ),
-    ]
+    ] = "http://localhost:8000/v1"
+
     api_key: Annotated[
         str,
         Field(
-            default="insecure",
             description="API key to use for the OpenAI API. An arbitrary string can be passed if the inference server is not protected by an API key.",
         ),
-    ]
+    ] = "insecure"
 
 
 class SamplingConfig(BaseConfig):
@@ -33,81 +32,72 @@ class SamplingConfig(BaseConfig):
     n: Annotated[
         int,
         Field(
-            default=1,
             ge=1,
             description="Number of output sequences to return for the given prompt.",
         ),
-    ]
+    ] = 1
 
     temperature: Annotated[
         float,
         Field(
-            default=1.0,
             ge=0,
             description="Scales the output probability distribution. Lower values => more deterministic, higher values => more random. If 0, will sample greedily.",
         ),
-    ]
+    ] = 1.0
 
     top_p: Annotated[
         float,
         Field(
-            default=1,
             gt=0,
             le=1,
             description="Cumulative probability of the top tokens to consider. If 1, all tokens are considered.",
         ),
-    ]
+    ] = 1
 
     top_k: Annotated[
         int,
         Field(
-            default=-1,
             ge=-1,
             description="Number of top tokens to consider. If -1, all tokens are considered.",
         ),
-    ]
+    ] = -1
 
     min_p: Annotated[
         float,
         Field(
-            default=0.0,
             ge=0,
             description="Minimum probability for a token to be considered, relative to the probability of the most likely token. If 0, all tokens are considered.",
         ),
-    ]
+    ] = 0.0
 
     max_seq_len: Annotated[
         int | None,
         Field(
-            default=None,
             description="Maximum number of input and output tokens allowed before aborting a generation. If set, it will dynamically override the `max_tokens` sampling arg based on the number of input tokens of the particular request. The argument is comparable to the `max_model_len` server parameter in vLLM, but moved to the client to allow for dynamic model contexts.",
         ),
-    ]
+    ] = None
 
     max_tokens: Annotated[
         int | None,
         Field(
-            default=None,
             description="Maximum number of output tokens to generate per sequence. If None, will generate until maximum context length or EOS token is hit.",
         ),
-    ]
+    ] = None
 
     min_tokens: Annotated[
         int,
         Field(
-            default=0,
             ge=0,
             description="Minimum number of output tokens to generate per sequence.",
         ),
-    ]
+    ] = 0
 
     seed: Annotated[
         int | None,
         Field(
-            default=None,
             description="Random seed to use for sampling. If None, no seeding is used.",
         ),
-    ]
+    ] = None
 
 
 # TODO(Mika): Find an elegant way to enable online/ offline difficulty filtering
@@ -118,12 +108,11 @@ class DataConfig(BaseConfig):
     name: Annotated[
         str,
         Field(
-            default="PrimeIntellect/INTELLECT-2-RL-Dataset",
             description="Name of the HF dataset to use.",
         ),
-    ]
+    ] = "PrimeIntellect/INTELLECT-2-RL-Dataset"
 
-    split: Annotated[str, Field(default="train", description="Split of the dataset to use.")]
+    split: Annotated[str, Field(description="Split of the dataset to use.")] = "train"
 
 
 class PathConfig(BaseConfig):
@@ -134,10 +123,9 @@ class PathConfig(BaseConfig):
     clean: Annotated[
         bool,
         Field(
-            default=False,
             description="Whether to clean the path at the beginning of the run. If True, will delete the entire directory.",
         ),
-    ]
+    ] = False
 
 
 class OnlineEvalConfig(BaseConfig):
@@ -146,27 +134,24 @@ class OnlineEvalConfig(BaseConfig):
     ckpt_path: Annotated[
         Path,
         Field(
-            default=Path("checkpoints"),
             description="Path to read checkpoints from when doing online evaluation. Expects subdirectories named 'step_x' within the directory.",
         ),
-    ]
+    ] = Path("checkpoints")
 
     interval: Annotated[
         int,
         Field(
-            default=100,
             ge=0,
             description="Interval at which to evaluate the model.",
         ),
-    ]
+    ] = 100
 
     max_steps: Annotated[
         int | None,
         Field(
-            default=None,
             description="Maximum number of steps to run online evaluation for. If None, will run indefinitely.",
         ),
-    ]
+    ] = None
 
 
 class EvalConfig(BaseConfig):
@@ -175,99 +160,92 @@ class EvalConfig(BaseConfig):
     benchmarks: Annotated[
         list[Benchmark],
         Field(
-            default=["math500"],
             description="Benchmarks to evaluate on. By default, it will evaluate only on the MATH-500 benchmark.",
         ),
-    ]
+    ] = ["math500"]
 
-    online: Annotated[OnlineEvalConfig | None, Field(default=None)]
+    online: Annotated[OnlineEvalConfig | None, Field(description="Whether to do online evaluation.")] = None
 
 
 class OrchestratorConfig(BaseSettings):
     """Configures the orchestrator for RL training."""
 
     # The OAI client configuration
-    client: Annotated[ClientConfig, Field(default=ClientConfig())]
+    client: ClientConfig = ClientConfig()
 
     # The model configuration
-    model: Annotated[ModelConfig, Field(default=ModelConfig())]
+    model: ModelConfig = ModelConfig()
 
     # The sampling configuration
-    sampling: Annotated[SamplingConfig, Field(default=SamplingConfig())]
+    sampling: SamplingConfig = SamplingConfig()
 
     # The data configuration
-    data: Annotated[DataConfig, Field(default=DataConfig())]
+    data: DataConfig = DataConfig()
 
     # The evaluation configuration
-    eval: Annotated[EvalConfig | None, Field(default=None)]
+    eval: EvalConfig | None = None
 
     # The logging configuration
-    log: Annotated[LogConfig, Field(default=LogConfig(path=Path("logs/orchestrator")))]
+    log: LogConfig = LogConfig(path=Path("logs/orchestrator"))
 
     # The monitor configuration
-    monitor: Annotated[MultiMonitorConfig, Field(default=MultiMonitorConfig(wandb=WandbMonitorConfig(log_samples=SampleLoggingConfig())))]
+    monitor: MultiMonitorConfig = MultiMonitorConfig()
 
-    collate_mode: Annotated[Literal["packing", "padding"], Field(default="padding")]
+    collate_mode: Annotated[Literal["packing", "padding"], Field(description="Collate mode to use.")] = "padding"
 
-    batch_size: Annotated[int, Field(default=128, ge=1, description="Number of samples to train on per step.")]
+    batch_size: Annotated[int, Field(ge=1, description="Number of samples to train on per step.")] = 128
 
     micro_batch_size: Annotated[
         int,
         Field(
-            default=128,
             ge=1,
             description="Number of samples to train on per micro batch. This value should be tuned based on the hardware available. Usually, to the largest value divisble by the training batch size.",
         ),
-    ]
+    ] = 128
 
     seq_len: Annotated[
         int,
         Field(
-            default=1024,
             description="Sequence length to use for training. If a sample is shorter than this, it will be padded. If a sequence is longer than this, it will be truncated.",
         ),
-    ]
+    ] = 1024
 
     # TODO(Mika): This should be automatic from the number of ZMQ connections
     num_train_workers: Annotated[
         int,
         Field(default=1, ge=1, description="Number of training workers to use for training."),
-    ]
+    ] = 1
 
     max_steps: Annotated[
         int | None,
         Field(
-            default=None,
             description="Maximum number of training steps to run. If None, will run indefinitely.",
         ),
-    ]
+    ] = None
 
     async_level: Annotated[
         int,
         Field(
-            default=2,
             ge=0,
             description="Maximum number of async levels to use. If 0, will do synchronous RL. Else, it will allow to go `async_level` steps ahead of training.",
         ),
-    ]
+    ] = 2
 
     rollout: Annotated[
         PathConfig,
         Field(
-            default=PathConfig(path=Path("rollouts"), clean=True),
             description="Path to write inference outputs to. Will be populated by the orchestrator with responses from inference pool.",
         ),
-    ]
+    ] = PathConfig(path=Path("rollouts"), clean=True)
 
     weights: Annotated[
         PathConfig,
         Field(
-            default=PathConfig(path=Path("weights"), clean=True),
             description="Path to read updated model weights from. Will be populated by the trainer.",
         ),
-    ]
+    ] = PathConfig(path=Path("weights"), clean=True)
 
-    seed: Annotated[int | None, Field(default=None, description="Random seed for the orchestrator.")]
+    seed: Annotated[int | None, Field(description="Random seed for the orchestrator.")] = None
 
     @model_validator(mode="after")
     def validate_batch_size(self):

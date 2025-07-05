@@ -9,13 +9,7 @@ from zeroband.utils.pydantic_config import BaseConfig
 class ModelConfig(BaseConfig):
     """Configures the model."""
 
-    name: Annotated[
-        str,
-        Field(
-            default="Qwen/Qwen3-0.6B",
-            description="Name or path of the HF model to use.",
-        ),
-    ]
+    name: Annotated[str, Field(description="Name or path of the HF model to use.")] = "Qwen/Qwen3-0.6B"
 
 
 class LogConfig(BaseConfig):
@@ -29,24 +23,22 @@ class LogConfig(BaseConfig):
     path: Annotated[
         Path | None,
         Field(
-            default=Path("logs"),
-            description="The file path to log to. If None, will only log to stdout. This field is particularly useful to distinguish logs when multi-processing.",
+            description="The file path to log to. If None, will only log to stdout. This field is particularly useful to distinguish logs when multi-processing."
         ),
-    ]
+    ] = Path("logs")
 
     utc: Annotated[
         bool,
         Field(
-            default=False,
-            description="Whether to use UTC time in the logger. If False, it will default to the local time. If the local time is wrong, you can set it by setting the `TZ` environment variable. For example, `TZ=America/Los_Angeles` will set the local time to SF time.",
+            description="Whether to use UTC time in the logger. If False, it will default to the local time. If the local time is wrong, you can set it by setting the `TZ` environment variable. For example, `TZ=America/Los_Angeles` will set the local time to SF time."
         ),
-    ]
+    ] = False
 
 
 class FileMonitorConfig(BaseConfig):
     """Configures logging to a file."""
 
-    path: Annotated[Path | None, Field(default=None, description="The file path to log to")]
+    path: Annotated[Path | None, Field(description="The file path to log to")] = None
 
     @model_validator(mode="after")
     def validate_path(self):
@@ -58,7 +50,7 @@ class FileMonitorConfig(BaseConfig):
 class SocketMonitorConfig(BaseConfig):
     """Configures logging to a Unix socket."""
 
-    path: Annotated[Path | None, Field(default=None, description="The socket path to log to")]
+    path: Annotated[Path | None, Field(description="The socket path to log to")] = None
 
     @model_validator(mode="after")
     def validate_path(self):
@@ -70,9 +62,9 @@ class SocketMonitorConfig(BaseConfig):
 class APIMonitorConfig(BaseConfig):
     """Configures logging to an API via HTTP."""
 
-    url: Annotated[str | None, Field(default=None, description="The API URL to log to")]
+    url: Annotated[str | None, Field(description="The API URL to log to")] = None
 
-    auth_token: Annotated[str | None, Field(default=None, description="The API auth token to use")]
+    auth_token: Annotated[str | None, Field(description="The API auth token to use")] = None
 
     @model_validator(mode="after")
     def validate_url(self):
@@ -93,57 +85,54 @@ class SampleLoggingConfig(BaseConfig):
     interval: Annotated[
         int,
         Field(
-            default=10,
             ge=1,
             description="Step interval at which to log samples to W&B table.",
         ),
-    ]
+    ] = 10
 
     num_samples: Annotated[
         int,
         Field(
-            default=8,
             ge=1,
             description="Number of samples to randomly select and log from each batch.",
         ),
-    ]
+    ] = 8
 
 
 class WandbMonitorConfig(BaseConfig):
     """Configures logging to Weights and Biases."""
 
-    project: Annotated[str, Field(default="prime-rl", description="The W&B project to log to.")]
+    project: Annotated[str, Field(description="The W&B project to log to.")] = "prime-rl"
+
     group: Annotated[
         str | None,
         Field(
-            default=None,
             description="The W&B group to log to. If None, it will not set the group. Use grouping if you want multiple associated runs (e.g. RL training has a training and inference run) log to the same dashboard.",
         ),
-    ]
+    ] = None
+
     name: Annotated[
         str | None,
         Field(
-            default=None,
             description="The W&B name to to use for logging. If group and name are set, they will be automatically combined into a single name.",
         ),
-    ]
+    ] = None
+
     dir: Annotated[
         Path | None,
         Field(
-            default=Path("logs"),
             description="Path to the directory to keep local logs. It will automatically create a `wandb` subdirectory to store run logs.",
         ),
-    ]
+    ] = Path("logs")
 
-    offline: Annotated[bool, Field(default=False, description="Whether to run W&B in offline mode.")]
+    offline: Annotated[bool, Field(description="Whether to run W&B in offline mode.")] = False
 
     log_samples: Annotated[
         SampleLoggingConfig | None,
         Field(
-            default=None,
             description="Configuration for logging prompt/response samples to W&B tables. If None, no samples are logged.",
         ),
-    ]
+    ] = None
 
     @model_validator(mode="after")
     def validate_name(self):
@@ -157,19 +146,18 @@ class MultiMonitorConfig(BaseConfig):
     """Configures the monitoring system."""
 
     # All possible monitors (currently only supports one instance per type)
-    file: Annotated[FileMonitorConfig, Field(default=None)]
-    socket: Annotated[SocketMonitorConfig, Field(default=None)]
-    api: Annotated[APIMonitorConfig, Field(default=None)]
-    wandb: Annotated[WandbMonitorConfig, Field(default=None)]
+    file: FileMonitorConfig | None = None
+    socket: SocketMonitorConfig | None = None
+    api: APIMonitorConfig | None = None
+    wandb: WandbMonitorConfig | None = None
 
     system_log_frequency: Annotated[
         int,
         Field(
-            default=0,
             ge=0,
-            description="Interval in seconds to log system metrics. If 0, no system metrics are logged)",
+            description="Interval in seconds to log system metrics. If 0, no system metrics are logged.",
         ),
-    ]
+    ] = 0
 
     def __str__(self) -> str:
         is_enabled = lambda x: "enabled" if x is not None else "disabled"  # noqa

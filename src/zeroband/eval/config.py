@@ -19,27 +19,26 @@ class EvalConfig(BaseSettings):
     """Configures evaluation."""
 
     # The client configuration
-    client: Annotated[ClientConfig, Field(default=ClientConfig())]
+    client: ClientConfig = ClientConfig()
 
     # The model configuration
-    model: Annotated[ModelConfig, Field(default=ModelConfig())]
+    model: ModelConfig = ModelConfig()
 
     # The sampling configuration
-    sampling: Annotated[SamplingConfig, Field(default=SamplingConfig())]
+    sampling: SamplingConfig = SamplingConfig()
 
     # The evaluation configuration
-    eval: Annotated[OrchestratorEvalConfig, Field(default=OrchestratorEvalConfig())]
+    eval: OrchestratorEvalConfig = OrchestratorEvalConfig()
 
     # The monitor configuration
-    monitor: Annotated[MultiMonitorConfig, Field(default=MultiMonitorConfig())]
+    monitor: MultiMonitorConfig = MultiMonitorConfig()
 
     # The logging configuration
-    log: Annotated[LogConfig, Field(default=LogConfig(path=Path("logs/eval")))]
+    log: LogConfig = LogConfig(path=Path("logs/eval"))
 
     use_tqdm: Annotated[
         bool,
         Field(
-            default=False,
             description="Whether to use tqdm to display progress bars during model generation.",
         ),
-    ]
+    ] = False
