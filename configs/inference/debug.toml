@@ -1,3 +1,2 @@
 [model]
-max_model_len = 16
 enforce_eager = true
