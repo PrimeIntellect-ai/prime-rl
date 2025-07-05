@@ -177,14 +177,23 @@ def train(config: TrainingConfig):
                 del tensor_offloaded_repository[infer_step]
 
             with torch.no_grad():
-                num_micro_batches = len(micro_batches)
-                for micro_step, micro_batch in enumerate(micro_batches, start=1):
-                    input_ids = micro_batch["input_ids"].to("cuda")
-                    position_ids = micro_batch["position_ids"].to("cuda")
-                    temperature = micro_batch["temperature"]
+                # Concatenate on batch dimension and move to GPU
+                packed_input_ids = torch.cat([micro_batch["input_ids"] for micro_batch in micro_batches], dim=0).to(
+                    "cuda"
+                )
+                packed_position_ids = torch.cat(
+                    [micro_batch["position_ids"] for micro_batch in micro_batches], dim=0
+                ).to("cuda")
 
-                    logprobs = compute_logprobs(logprob_model, input_ids, position_ids, temperature)
-                    micro_batch["logprobs"] = logprobs.to("cpu")
+                # Single forward pass for all micro batches
+                packed_logprobs = compute_logprobs(
+                    logprob_model, packed_input_ids, packed_position_ids, micro_batches[0]["temperature"]
+                ).to("cpu")
+
+                # Unpack logprobs back to micro batches
+                batch_sizes = [mb["input_ids"].shape[0] for mb in micro_batches]
+                for micro_batch, logprobs in zip(micro_batches, torch.split(packed_logprobs, batch_sizes)):
+                    micro_batch["logprobs"] = logprobs
 
             # here we sepcifically don't save the tensor offloaded, they are alreay consumed and we will never use it again.
             # this avoid having to make sure we don't keep too much tensor offloaded in cpu memory
