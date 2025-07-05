@@ -1,4 +1,8 @@
-# Configs
+# Contribution
+
+## Setup
+
+## Config System
 
 We use `pydantic-settings` to configure `prime-rl`. To get an overview of the available configurations, run the following command:
 
@@ -10,7 +14,7 @@ uv run python src/zeroband/training/train.py --help
 uv run python src/zeroband/inference/server.py --help
 ```
 
-## Sources
+### Sources
 
 We support the following sources for configuration, in this order of precedence:
 
@@ -43,3 +47,35 @@ PRIME_MODEL__NAME=Qwen/Qwen3-4B uv run src/zeroband/inference/server.py @qwen8b.
 ```
 
 In this example, the CLI argument `--model.name Qwen/Qwen3-32B` will take precendence and the script will use `Qwen/Qwen3-32B` as the model name. If the CLI argument wasn't set, then the second config file would take precedence and the script would use `Qwen/Qwen-14B` as the model name. If the second config file wasn't set, then the first config file would take precedence and the script would use `Qwen/Qwen3-8B` as the model name. Finally, if the first config file wasn't set, then the environment variable would take precedence and the script would use `Qwen/Qwen-4B` as the model name. If the environment variable wasn't set, then the default value would be used and the script would use `Qwen/Qwen3-0.6B` as the model name.
+
+## Tests
+
+Run the full test suite 
+
+```bash
+uv run pytest -v
+```
+
+To run unit tests, run
+
+```bash
+uv run pytest tests/unit -v
+```
+
+To run integration tests, run
+
+```bash
+uv run pytest tests/integration -v
+```
+
+To run CPU-only tests, use the inverse of the `gpu` marker:
+
+```bash
+uv run pytest -v -m "not gpu"
+```
+
+To run fast tests, use the inverse of the `slow` marker:
+
+```bash
+uv run pytest -v -m "not slow"
+```
