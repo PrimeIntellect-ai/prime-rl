@@ -1,4 +1,4 @@
-max_steps = 50
+max_steps = 30
 
 [model]
 name = "willcb/Qwen2.5-0.5B-Reverse-SFT"
@@ -12,7 +12,7 @@ lr = 3e-6
 batch_size = 128
 micro_batch_size = 16
 seq_len = 128
-max_steps = 50
+max_steps = 30
 
 [orchestrator.model]
 name = "willcb/Qwen2.5-0.5B-Reverse-SFT"
