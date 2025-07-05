@@ -15,11 +15,11 @@ CMD = ["uv", "run", "train", "@configs/training/debug.toml"]
 
 def create_sample(seq_len: int) -> Sample:
     return {
-        "input_ids": torch.randint(0, 100, (seq_len,)),
-        "advantages": torch.randn(seq_len),
-        "loss_mask": torch.ones(seq_len, dtype=torch.int32),
-        "position_ids": torch.zeros(seq_len),
-        "logprobs": torch.randn(seq_len - 1),
+        "input_ids": torch.randint(0, 100, (seq_len,)).long(),
+        "position_ids": torch.zeros(seq_len).long(),
+        "advantages": torch.randn(seq_len).float(),
+        "loss_mask": torch.ones(seq_len).long(),
+        "logprobs": torch.randn(seq_len - 1).float(),
         "total_tokens": seq_len,
     }
 
