@@ -2,7 +2,7 @@
 project = "math-debug"
 
 [model]
-name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
 reshard_after_forward = true
 ac = true
 
@@ -14,7 +14,7 @@ lr = 1e-6
 [orchestrator]
 batch_size = 512
 micro_batch_size = 4
-seq_len = 2048
+seq_len = 8192
 
 [orchestrator.data]
 name = "justus27/math-hendrycks-genesys-format"
