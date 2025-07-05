@@ -9,7 +9,6 @@ from pathlib import Path
 import shardcast
 import torch
 import torch.distributed as dist
-from torch import Tensor
 from torch._guards import log as torch_log
 
 from zeroband.training import envs
@@ -192,7 +191,7 @@ def train(config: TrainingConfig):
         if config.profile_path and world.rank == 0:
             torch.cuda.memory._record_memory_history()
 
-        loss_metrics = defaultdict(Tensor)
+        loss_metrics = defaultdict(float)
         num_micro_batches = len(micro_batches)
         for micro_step, micro_batch in enumerate(micro_batches, start=1):
             input_ids = micro_batch["input_ids"].to("cuda")
@@ -240,9 +239,9 @@ def train(config: TrainingConfig):
             logger.debug(f"Backward pass on micro batch {micro_step} / {num_micro_batches}")
             loss.backward()
 
-            loss_metrics["loss/loss"] += loss.detach().clone()
-            loss_metrics["loss/entropy"] += entropy.detach().clone()
-            loss_metrics["loss/clip_ratio"] += clip_ratio.detach().clone()
+            loss_metrics["loss/loss"] += loss.detach().clone().item()
+            loss_metrics["loss/entropy"] += entropy.detach().clone().item()
+            loss_metrics["loss/clip_ratio"] += clip_ratio.detach().clone().item()
 
             del loss, entropy, clip_ratio
 
@@ -252,7 +251,7 @@ def train(config: TrainingConfig):
             loss_metrics[key] = value
         # Optionally, clip the gradients
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.loss.max_norm).full_tensor()
-        loss_metrics["loss/grad_norm"] += grad_norm.detach().clone()
+        loss_metrics["loss/grad_norm"] += grad_norm.detach().clone().item()
 
         # Update the model parameters
         logger.debug("Updating model")
