@@ -245,3 +245,12 @@ class TrainingConfig(BaseSettings):
         if self.max_steps is not None:
             self.orchestrator.max_steps = self.max_steps
         return self
+
+    @model_validator(mode="after")
+    def auto_setup_orchestrator_ckpt(self):
+        # Ensures that trainer and orchestrator checkpoints are synchronized
+        if self.ckpt:
+            self.orchestrator.ckpt = CheckpointConfig()
+            self.orchestrator.ckpt.path = self.ckpt.path
+            self.orchestrator.ckpt.interval = self.ckpt.interval
+        return self

@@ -167,6 +167,21 @@ class EvalConfig(BaseConfig):
     online: Annotated[OnlineEvalConfig | None, Field(description="Whether to do online evaluation.")] = None
 
 
+class CheckpointConfig(BaseConfig):
+    """Configures checkpointing the orchestrator."""
+
+    path: Annotated[Path, Field(description="Directory to write checkpoints to.")] = Path("checkpoints")
+
+    interval: Annotated[int, Field(ge=1, description="Interval at which to save the checkpoint.")] = 50
+
+    resume_path: Annotated[
+        Path | None,
+        Field(
+            description="Checkpoint path to resume orchestrator from. If None, will start from scratch.",
+        ),
+    ] = None
+
+
 class OrchestratorConfig(BaseSettings):
     """Configures the orchestrator for RL training."""
 
@@ -190,6 +205,9 @@ class OrchestratorConfig(BaseSettings):
 
     # The monitor configuration
     monitor: MultiMonitorConfig = MultiMonitorConfig()
+
+    # The checkpoint configuration
+    ckpt: CheckpointConfig = CheckpointConfig()
 
     collate_mode: Annotated[Literal["packing", "padding"], Field(description="Collate mode to use.")] = "padding"
 
