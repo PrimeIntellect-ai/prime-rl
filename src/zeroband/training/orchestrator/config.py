@@ -236,14 +236,14 @@ class OrchestratorConfig(BaseSettings):
         Field(
             description="Path to write inference outputs to. Will be populated by the orchestrator with responses from inference pool.",
         ),
-    ] = PathConfig(path=Path("rollouts"), clean=True)
+    ] = PathConfig(path=Path("rollouts"))
 
     weights: Annotated[
         PathConfig,
         Field(
             description="Path to read updated model weights from. Will be populated by the trainer.",
         ),
-    ] = PathConfig(path=Path("weights"), clean=True)
+    ] = PathConfig(path=Path("weights"))
 
     seed: Annotated[int | None, Field(description="Random seed for the orchestrator.")] = None
 

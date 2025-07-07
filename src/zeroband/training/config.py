@@ -174,7 +174,7 @@ class TrainingConfig(BaseSettings):
     optim: OptimizerConfig = OptimizerConfig()
 
     # The checkpoint configuration
-    ckpt: CheckpointConfig = CheckpointConfig(path=Path("checkpoints"), clean=True)
+    ckpt: CheckpointConfig = CheckpointConfig(path=Path("checkpoints"))
 
     # The weight checkpoint configuration
     weights: WeightCheckpointConfig = WeightCheckpointConfig()
