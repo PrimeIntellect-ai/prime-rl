@@ -195,7 +195,7 @@ class OrchestratorConfig(BaseSettings):
     monitor: MultiMonitorConfig = MultiMonitorConfig()
 
     # The checkpoint configuration
-    ckpt: CheckpointConfig = CheckpointConfig()
+    ckpt: CheckpointConfig | None = None
 
     collate_mode: Annotated[Literal["packing", "padding"], Field(description="Collate mode to use.")] = "padding"
 

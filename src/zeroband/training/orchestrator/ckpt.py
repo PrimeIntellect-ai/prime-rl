@@ -5,6 +5,7 @@ from pathlib import Path
 
 import torch
 
+from zeroband.training.orchestrator.config import CheckpointConfig
 from zeroband.utils.logger import get_logger
 
 
@@ -20,8 +21,8 @@ class Progress:
 class CheckpointManager:
     """Utility class to save and load orchestrator checkpoints to resume orchestrator."""
 
-    def __init__(self, path: Path):
-        self.path = path
+    def __init__(self, config: CheckpointConfig):
+        self.path = config.path
         self._logger = get_logger()
 
     def _get_step_path(self, step: int) -> Path:
@@ -81,6 +82,6 @@ class CheckpointManager:
         self._save_to_path(ckpt_path, progress)
 
 
-def get_ckpt_manager(path: Path) -> CheckpointManager:
+def get_ckpt_manager(config: CheckpointConfig) -> CheckpointManager:
     """Returns a checkpoint manager for a given checkpoint directory."""
-    return CheckpointManager(path)
+    return CheckpointManager(config)

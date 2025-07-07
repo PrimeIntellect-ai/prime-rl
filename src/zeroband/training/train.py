@@ -111,11 +111,12 @@ def train(config: TrainingConfig):
     )
 
     # Get checkpoint manager
-    ckpt_manager = get_ckpt_manager(config.ckpt)
+    if config.ckpt:
+        ckpt_manager = get_ckpt_manager(config.ckpt)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
-    if config.ckpt.resume_step:
+    if config.ckpt and config.ckpt.resume_step:
         logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
         ckpt_manager.load(model, [optimizer], progress, step=config.ckpt.resume_step)
 
@@ -127,7 +128,9 @@ def train(config: TrainingConfig):
         for async_step in range(infer_step, progress.step + 1):
             logger.info(f"Initializing logprob model ({config.model}) for step {async_step}")
             model_name_or_path = (
-                config.model.name if not config.ckpt.resume_step else config.weights.path / f"step_{async_step}"
+                config.model.name
+                if not (config.ckpt and config.ckpt.resume_step)
+                else config.weights.path / f"step_{async_step}"
             )
             model_config = deepcopy(config.model)
             model_config.name = model_name_or_path

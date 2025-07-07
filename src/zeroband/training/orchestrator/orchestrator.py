@@ -56,8 +56,9 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
     # Prepare paths to communicate with the trainer
     if config.clean:
         logger.info("Cleaning checkpoint, logs, checkpoint weights and rollout directories")
-        logger.debug(f"Cleaning checkpoint path ({config.ckpt.path})")
-        shutil.rmtree(config.ckpt.path, ignore_errors=True)
+        if config.ckpt:
+            logger.debug(f"Cleaning checkpoint path ({config.ckpt.path})")
+            shutil.rmtree(config.ckpt.path, ignore_errors=True)
 
         logger.debug(f"Cleaning logs path ({config.log.path})")
         shutil.rmtree(config.log.path, ignore_errors=True)
@@ -87,12 +88,13 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
     logger.success("Inference pool ready")
 
     # Get checkpoint manager
-    ckpt_manager = get_ckpt_manager(config.ckpt.path)
+    if config.ckpt:
+        ckpt_manager = get_ckpt_manager(config.ckpt)
 
     # Reset weights to base model if starting from scratch
     progress = Progress()
     ckpt_step = 0
-    if config.ckpt.resume_step:
+    if config.ckpt and config.ckpt.resume_step:
         logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
         ckpt_manager.load(progress, step=config.ckpt.resume_step)
         ckpt_step = max(progress.step - config.async_level, 0)

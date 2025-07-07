@@ -176,7 +176,7 @@ class TrainingConfig(BaseSettings):
     optim: OptimizerConfig = OptimizerConfig()
 
     # The checkpoint configuration
-    ckpt: CheckpointConfig = CheckpointConfig(path=Path("checkpoints"))
+    ckpt: CheckpointConfig | None = None
 
     # The weight checkpoint configuration
     weights: WeightCheckpointConfig = WeightCheckpointConfig()
@@ -262,7 +262,7 @@ class TrainingConfig(BaseSettings):
 
     @model_validator(mode="after")
     def warn_wandb_resume_id_missing(self):
-        if self.ckpt.resume_step:
+        if self.ckpt and self.ckpt.resume_step:
             if self.monitor.wandb and not self.monitor.wandb.id:
                 warnings.warn(
                     "W&B run ID is not set for trainer even though resuming training. The current run will be created as a new run."
