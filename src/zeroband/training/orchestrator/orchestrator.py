@@ -16,7 +16,7 @@ from datasets import Dataset, load_dataset
 from transformers import AutoTokenizer
 
 from zeroband.eval.utils import run_benchmark
-from zeroband.training.orchestrator.ckpt import get_ckpt_manager, Progress
+from zeroband.training.orchestrator.ckpt import CheckpointManager, Progress
 from zeroband.training.orchestrator.client import (
     check_has_model,
     check_health,
@@ -89,7 +89,7 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
 
     # Get checkpoint manager
     if config.ckpt:
-        ckpt_manager = get_ckpt_manager(config.ckpt)
+        ckpt_manager = CheckpointManager(config.ckpt)
 
     # Reset weights to base model if starting from scratch
     progress = Progress()

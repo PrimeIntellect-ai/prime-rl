@@ -104,8 +104,3 @@ class CheckpointManager:
         else:
             # Run save synchronously
             self._save_to_path(ckpt_path, model, optimizers, progress)
-
-
-def get_ckpt_manager(config: CheckpointConfig) -> CheckpointManager:
-    """Returns a checkpoint manager for a given checkpoint directory."""
-    return CheckpointManager(config)

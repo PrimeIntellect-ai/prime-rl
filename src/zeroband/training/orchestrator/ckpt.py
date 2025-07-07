@@ -80,8 +80,3 @@ class CheckpointManager:
         step_path.mkdir(parents=True, exist_ok=True)
         ckpt_path = self._get_ckpt_path(step)
         self._save_to_path(ckpt_path, progress)
-
-
-def get_ckpt_manager(config: CheckpointConfig) -> CheckpointManager:
-    """Returns a checkpoint manager for a given checkpoint directory."""
-    return CheckpointManager(config)

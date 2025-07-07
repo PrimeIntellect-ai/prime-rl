@@ -16,7 +16,7 @@ import torch
 import torch.distributed as dist
 from torch._guards import log as torch_log
 
-from zeroband.training.ckpt import get_ckpt_manager, Progress
+from zeroband.training.ckpt import CheckpointManager, Progress
 from zeroband.training.weights import save_weight_checkpoint
 from zeroband.training.config import TrainingConfig
 from zeroband.training.data import DataLoader, FakeDataLoader
@@ -112,7 +112,7 @@ def train(config: TrainingConfig):
 
     # Get checkpoint manager
     if config.ckpt:
-        ckpt_manager = get_ckpt_manager(config.ckpt)
+        ckpt_manager = CheckpointManager(config.ckpt)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
