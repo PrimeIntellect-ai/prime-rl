@@ -6,12 +6,15 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
+# Import environment before any other imports
+# ruff: noqa: I001
+from zeroband.training import envs
+
 import shardcast
 import torch
 import torch.distributed as dist
 from torch._guards import log as torch_log
 
-from zeroband.training import envs
 from zeroband.training.ckpt import (
     TrainingProgress,
     load_full_checkpoint,

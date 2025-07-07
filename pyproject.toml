@@ -69,7 +69,8 @@ dev = [
 
 
 [tool.ruff.lint]
-ignore = ["F722", "F821"] # need to ignore this for jaxtyping https://docs.kidger.site/jaxtyping/faq/
+select = ["F", "I"]
+ignore = ["F722", "F821"] # Need to ignore for jaxtyping (https://docs.kidger.site/jaxtyping/faq/)
 
 [tool.ruff]
 line-length = 120

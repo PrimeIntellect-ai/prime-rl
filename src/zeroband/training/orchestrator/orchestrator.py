@@ -5,6 +5,10 @@ import time
 from multiprocessing.queues import Queue
 from pathlib import Path
 
+# Import environment before any other imports
+# ruff: noqa: I001,F401
+from zeroband.training.orchestrator import envs
+
 import lovely_tensors as lt
 import numpy as np
 import torch
