@@ -60,6 +60,7 @@ class CheckpointConfig(BaseConfig):
     resume_step: Annotated[
         int | None,
         Field(
+            ge=1,
             description="Step to resume training from. If None, will start from scratch.",
         ),
     ] = None
@@ -247,6 +248,6 @@ class TrainingConfig(BaseSettings):
             self.orchestrator.ckpt.path = self.ckpt.path
             self.orchestrator.ckpt.interval = self.ckpt.interval
 
-            if self.ckpt.resume_step:
+            if self.ckpt.resume_step and self.orchestrator.ckpt.resume_step is None:
                 self.orchestrator.ckpt.resume_step = self.ckpt.resume_step
         return self

@@ -164,6 +164,7 @@ class CheckpointConfig(BaseConfig):
     resume_step: Annotated[
         int | None,
         Field(
+            ge=1,
             description="Step to resume orchestrator from. If None, will start from scratch.",
         ),
     ] = None
