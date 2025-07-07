@@ -5,6 +5,7 @@ import shutil
 import time
 from collections import defaultdict
 from pathlib import Path
+from copy import deepcopy
 
 # Import environment before any other imports
 # ruff: noqa: I001
@@ -120,17 +121,17 @@ def train(config: TrainingConfig):
 
     # Optionally, initialize a model to compute logprobs
     if config.recompute_logprobs:
-        logger.info(f"Initializing logprob model ({config.model})")
-        infer_step = max(progress.step - config.async_level, 0)
-        model_name_or_path = (
-            config.model.name if not config.ckpt.resume_step else config.weights.path / f"step_{infer_step}"
-        )
-        config.model.name = model_name_or_path
-        logprob_model = setup_model(config.model)
-
         # Offload the logprob model to CPU
         tensor_offloaded_repository: dict[int, OffloadedTensor] = {}
+        infer_step = max(progress.step - config.async_level, 0)
         for async_step in range(infer_step, progress.step):
+            logger.info(f"Initializing logprob model ({config.model}) for step {async_step}")
+            model_name_or_path = (
+                config.model.name if not config.ckpt.resume_step else config.weights.path / f"step_{async_step}"
+            )
+            model_config = deepcopy(config.model)
+            model_config.name = model_name_or_path
+            logprob_model = setup_model(model_config)
             tensor_offloaded_repository[async_step] = offload_model_to_cpu(logprob_model)
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
