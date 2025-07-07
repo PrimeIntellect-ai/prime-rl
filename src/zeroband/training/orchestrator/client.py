@@ -3,7 +3,7 @@ from pathlib import Path
 
 import httpx
 from httpx import Response
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, BaseModel
 from openai.types.chat import ChatCompletion
 from vllm.entrypoints.openai.api_server import TokenizeResponse
 
@@ -76,8 +76,12 @@ async def reset_weights(client: AsyncOpenAI) -> None:
 
 async def tokenize(client: AsyncOpenAI, model_config: ModelConfig, messages: list[dict[str, str]]) -> list[int]:
     url = str(client.base_url)[:-4] + "/tokenize"
+
+    class OAITokenizeResponse(BaseModel, TokenizeResponse):
+        """Make vLLM's TokenizeResponse compatible with OAI client."""
+
     tokenize_response = await client.post(
-        url, cast_to=TokenizeResponse, body={"model": model_config.name, "messages": messages}
+        url, cast_to=OAITokenizeResponse, body={"model": model_config.name, "messages": messages}
     )
     return tokenize_response.tokens
 
