@@ -11,66 +11,72 @@ from zeroband.utils.logger import get_logger
 
 
 @dataclass
-class TrainingProgress:
+class Progress:
     step: int = 0
     total_tokens: int = 0
     total_samples: int = 0
 
 
-def save_full_checkpoint(
-    model: Model,
-    optimizers: list[Optimizer],
-    progress: TrainingProgress,
-    path: Path,
-):
-    # Get logger
-    logger = get_logger()
-    start_time = time.time()
-    logger.debug(f"Writing checkpoint to {path}")
+class CheckpointManager:
+    """Utility class to save and load training checkpoints to resume training."""
 
-    # Create checkpoint state
-    ckpt_state = {
-        "model": model.state_dict(),
-        "optimizers": [optimizer.state_dict() for optimizer in optimizers],
-        "progress": progress,
-    }
+    def __init__(self, path: Path):
+        self.path = path
+        self._logger = get_logger()
+        self._world = get_world()
 
-    # Create checkpoint directory if it doesn't exist
-    path.mkdir(parents=True, exist_ok=True)
-    local_path = path / f"local_rank_{get_world().local_rank}"
-    with open(local_path, "wb") as f:
-        torch.save(ckpt_state, f)
-    logger.debug(f"Checkpoint saved at {path} in {time.time() - start_time:.2f} seconds")
+    def _get_step_path(self, step: int) -> Path:
+        return self.path / f"step_{step}"
+
+    def _get_ckpt_path(self, step: int) -> Path:
+        return self._get_step_path(step) / f"{self._world.local_rank}.pt"
+
+    def _save_to_path(self, ckpt_path: Path, model: Model, optimizers: list[Optimizer], progress: Progress):
+        self._logger.debug(f"Saving checkpoint to {ckpt_path}")
+        start_time = time.time()
+        # Create checkpoint state
+        ckpt_state = {
+            "model": model.state_dict(),
+            "optimizers": [optimizer.state_dict() for optimizer in optimizers],
+            "progress": progress,
+        }
+        # Create checkpoint directory if it doesn't exist
+        ckpt_path.mkdir(parents=True, exist_ok=True)
+        with open(ckpt_path, "wb") as f:
+            torch.save(ckpt_state, f)
+        self._logger.debug(f"Checkpoint saved in {time.time() - start_time:.2f} seconds")
+
+    def load_from_path(self, ckpt_path: Path, model: Model, optimizers: list[Optimizer], progress: Progress):
+        self._logger.debug(f"Loading checkpoint from {ckpt_path}")
+        start_time = time.time()
+        # Load checkpoint state
+        with open(ckpt_path, "rb") as f:
+            state = torch.load(f, weights_only=False)
+
+        # Load checkpoint state in-place
+        model.load_state_dict(state["model"])
+        for optimizer, optimizer_state in zip(optimizers, state["optimizers"]):
+            optimizer.load_state_dict(optimizer_state)
+        progress.total_tokens = state["progress"].total_tokens
+        progress.step = state["progress"].step
+        progress.total_samples = state["progress"].total_samples
+
+        self.logger.debug(f"Checkpoint loaded in {time.time() - start_time:.2f} seconds")
+
+    def save(
+        self,
+        model: Model,
+        optimizers: list[Optimizer],
+        progress: dict,
+        step: int,
+    ):
+        """Saves the full checkpoint state for a specified step."""
+        step_path = self._get_step_path(step)
+        step_path.mkdir(parents=True, exist_ok=True)
+        ckpt_path = self._get_ckpt_path(step)
+        self._save_to_path(ckpt_path, model, optimizers, progress)
 
 
-def load_full_checkpoint(
-    model: Model,
-    optimizers: list[Optimizer],
-    progress: TrainingProgress,
-    path: Path,
-):
-    # Get logger
-    logger = get_logger()
-    start_time = time.time()
-    logger.debug(f"Loading checkpoint from {path}")
-
-    # Check local step path exists
-    local_path = path / f"local_rank_{get_world().local_rank}"
-    if not local_path.exists():
-        raise FileNotFoundError(f"Checkpoint step {progress.step} not found at {local_path}")
-
-    # Load checkpoint state
-    with open(local_path, "rb") as f:
-        state = torch.load(f, weights_only=False)
-
-    # Initialize model and optimizers
-    model.load_state_dict(state["model"])
-    for optimizer, optimizer_state in zip(optimizers, state["optimizers"]):
-        optimizer.load_state_dict(optimizer_state)
-
-    # Update progress
-    progress.total_tokens = state["progress"].total_tokens
-    progress.step = state["progress"].step
-    progress.total_samples = state["progress"].total_samples
-
-    logger.debug(f"Checkpoint loaded in {time.time() - start_time:.2f} seconds")
+def get_ckpt_manager(path: Path) -> CheckpointManager:
+    """Returns a checkpoint manager for a given checkpoint directory."""
+    return CheckpointManager(path)

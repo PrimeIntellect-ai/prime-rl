@@ -15,11 +15,7 @@ import torch
 import torch.distributed as dist
 from torch._guards import log as torch_log
 
-from zeroband.training.ckpt import (
-    TrainingProgress,
-    load_full_checkpoint,
-    save_full_checkpoint,
-)
+from zeroband.training.ckpt import get_ckpt_manager, Progress
 from zeroband.training.weights import save_weight_checkpoint
 from zeroband.training.config import TrainingConfig
 from zeroband.training.data import DataLoader, FakeDataLoader
@@ -127,11 +123,13 @@ def train(config: TrainingConfig):
         betas=(config.optim.betas1, config.optim.betas2),
     )
 
+    ckpt_manager = get_ckpt_manager(config.ckpt.path)
+
     # Optionally, resume training from a checkpoint
-    progress = TrainingProgress()
+    progress = Progress()
     if config.ckpt.resume_path:
-        logger.info(f"Resuming training from checkpoint {config.ckpt.resume_path}")
-        load_full_checkpoint(model, [optimizer], progress, config.ckpt.resume_path)
+        logger.info(f"Resuming training from checkpoint path `{config.ckpt.resume_path.as_posix()}`")
+        ckpt_manager.load_from_path(config.ckpt.resume_path, model, [optimizer], progress)
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
@@ -306,7 +304,7 @@ def train(config: TrainingConfig):
         if config.ckpt and config.ckpt.interval and progress.step % config.ckpt.interval == 0:
             logger.debug(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.time()
-            save_full_checkpoint(model, [optimizer], progress, config.ckpt.path)
+            ckpt_manager.save(model, [optimizer], progress, progress.step)
             save_ckpt_time = time.time() - save_ckpt_start_time
 
         # Update the CPU logprob model to updated model
