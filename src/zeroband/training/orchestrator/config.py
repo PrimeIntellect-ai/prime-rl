@@ -115,19 +115,6 @@ class DataConfig(BaseConfig):
     split: Annotated[str, Field(description="Split of the dataset to use.")] = "train"
 
 
-class PathConfig(BaseConfig):
-    """Configures a path used for input/ output operations"""
-
-    path: Annotated[Path, Field(description="Path to write to.")]
-
-    clean: Annotated[
-        bool,
-        Field(
-            description="Whether to clean the path at the beginning of the run. If True, will delete the entire directory.",
-        ),
-    ] = False
-
-
 class OnlineEvalConfig(BaseConfig):
     """Configures online evaluation."""
 
@@ -174,10 +161,10 @@ class CheckpointConfig(BaseConfig):
 
     interval: Annotated[int, Field(ge=1, description="Interval at which to save the checkpoint.")] = 50
 
-    resume_path: Annotated[
-        Path | None,
+    resume_step: Annotated[
+        int | None,
         Field(
-            description="Checkpoint path to resume orchestrator from. If None, will start from scratch.",
+            description="Step to resume orchestrator from. If None, will start from scratch.",
         ),
     ] = None
 
@@ -249,19 +236,26 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = 2
 
-    rollout: Annotated[
-        PathConfig,
+    rollout_path: Annotated[
+        Path,
         Field(
             description="Path to write inference outputs to. Will be populated by the orchestrator with responses from inference pool.",
         ),
-    ] = PathConfig(path=Path("rollouts"))
+    ] = Path("rollouts")
 
-    weights: Annotated[
-        PathConfig,
+    weights_path: Annotated[
+        Path,
         Field(
             description="Path to read updated model weights from. Will be populated by the trainer.",
         ),
-    ] = PathConfig(path=Path("weights"))
+    ] = Path("weights")
+
+    clean: Annotated[
+        bool,
+        Field(
+            description="Whether to clean the rollouts, checkpoint, checkpoint weights and logs directories at the beginning of the run. If True, will forceably, and irreversibly, delete all directories.",
+        ),
+    ] = False
 
     seed: Annotated[int | None, Field(description="Random seed for the orchestrator.")] = None
 

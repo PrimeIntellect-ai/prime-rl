@@ -55,19 +55,12 @@ class CheckpointConfig(BaseConfig):
 
     path: Annotated[Path, Field(description="Directory to write checkpoints to.")] = Path("checkpoints")
 
-    clean: Annotated[
-        bool,
-        Field(
-            description="Whether to clean the path at the beginning of the run. If True, will delete the entire directory.",
-        ),
-    ] = False
-
     interval: Annotated[int, Field(ge=1, description="Interval at which to save the checkpoint.")] = 50
 
-    resume_path: Annotated[
-        Path | None,
+    resume_step: Annotated[
+        int | None,
         Field(
-            description="Checkpoint path to resume training from. If None, will start from scratch.",
+            description="Step to resume training from. If None, will start from scratch.",
         ),
     ] = None
 
@@ -248,9 +241,12 @@ class TrainingConfig(BaseSettings):
 
     @model_validator(mode="after")
     def auto_setup_orchestrator_ckpt(self):
-        # Ensures that trainer and orchestrator checkpoints are synchronized
         if self.ckpt:
+            # Ensures that trainer and orchestrator checkpoints are synchronized
             self.orchestrator.ckpt = CheckpointConfig()
             self.orchestrator.ckpt.path = self.ckpt.path
             self.orchestrator.ckpt.interval = self.ckpt.interval
+
+            if self.ckpt.resume_step:
+                self.orchestrator.ckpt.resume_step = self.ckpt.resume_step
         return self
