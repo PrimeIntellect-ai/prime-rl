@@ -21,7 +21,7 @@ def save_weight_checkpoint(
 ) -> Path:
     """
     Save a HF-compatible weight-only checkpoint to the specified path. Saves the
-    model weights as `model.pt`, the model config, generation arguments and tokenizer
+    model weights as `pytorch_model.bin`, the model config, generation arguments and tokenizer
     using HF's `save_pretrained` method.
     """
     # Get logger and world info
@@ -52,7 +52,7 @@ def save_weight_checkpoint(
     torch.distributed.barrier()
     logger.debug(f"Gathered sharded weights in {time.time() - start_time:.2f} seconds")
 
-    model_path = path / "model.pt"
+    model_path = path / "pytorch_model.bin"
 
     def _save_weight_checkpoint():
         if is_master:
@@ -60,7 +60,7 @@ def save_weight_checkpoint(
             logger.debug(f"Saving weights to {path}")
 
             # Save model weights to temporary file to avoid race condition
-            tmp_model_path = path / "model.pt.tmp"
+            tmp_model_path = model_path.with_suffix(".tmp")
             torch.save(cpu_state, tmp_model_path)
 
             # Rename temporary file to indicate checkpoint is complete

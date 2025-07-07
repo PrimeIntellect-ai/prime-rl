@@ -48,7 +48,7 @@ def parse_completions(chat_completions: list[ChatCompletion]) -> list[str]:
 
 
 def wait_for_weight_checkpoint(path: Path, step: int, interval: int = 1, log_interval: int = 10) -> None:
-    model_path = Path(path) / f"step_{step}" / "model.pt"
+    model_path = Path(path) / f"step_{step}" / "pytorch_model.bin"
     wait_for_path(model_path, interval, log_interval)
 
 

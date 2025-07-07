@@ -61,7 +61,7 @@ async def reload_weights(client: AsyncOpenAI, path: Path, step: int) -> None:
     """Make a HTTP post request to the vLLM server to reload the weights."""
     logger = get_logger()
     url = str(client.base_url)[:-4] + "/reload_weights"
-    model_path = path / f"step_{step}" / "model.pt"
+    model_path = path / f"step_{step}" / "pytorch_model.bin"
     logger.debug(f"Sending request to {url} to reload weights from {model_path}")
     await client.post(url, cast_to=Response, body={"model_path": model_path.as_posix()})
 
