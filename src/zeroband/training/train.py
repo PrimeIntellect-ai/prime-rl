@@ -299,15 +299,6 @@ def train(config: TrainingConfig):
             torch.cuda.memory._dump_snapshot(profile_path.as_posix())
             torch.cuda.memory._record_memory_history(enabled=False)
 
-        # Optionally, save the full checkpoint
-        save_ckpt_time = 0
-        if config.ckpt and config.ckpt.interval and progress.step > 0 and progress.step % config.ckpt.interval == 0:
-            logger.debug(f"Saving checkpoint at step {progress.step}")
-            save_ckpt_start_time = time.time()
-            # We increment because the model is already updated, but the step doesn't reflect that yet
-            ckpt_manager.save(model, [optimizer], progress, progress.step + 1)
-            save_ckpt_time = time.time() - save_ckpt_start_time
-
         # Update the CPU logprob model to updated model
         if config.recompute_logprobs:
             logger.debug("Offloading updated model to CPU")
@@ -325,6 +316,16 @@ def train(config: TrainingConfig):
         throughput = perf_counter.get_tokens_per_second() or 0
         mfu = perf_counter.get_mfu() or 0
         loss_metrics = {key: value.item() for key, value in loss_metrics.items()}
+
+        # Optionally, save the full checkpoint
+        # We save the checkpoint here, because the total_tokens and total_samples are updated yet
+        # But because the step is only incremented at the end of the step, we need to increment it manually for the checkpoint
+        save_ckpt_time = 0
+        if config.ckpt and config.ckpt.interval and (progress.step + 1) % config.ckpt.interval == 0:
+            logger.debug(f"Saving checkpoint at step {progress.step}")
+            save_ckpt_start_time = time.time()
+            ckpt_manager.save(model, [optimizer], progress, step=progress.step + 1)
+            save_ckpt_time = time.time() - save_ckpt_start_time
 
         # Log step metrics
         step_time = time.time() - step_start_time

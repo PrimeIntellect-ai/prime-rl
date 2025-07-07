@@ -1,4 +1,5 @@
 import time
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,11 +36,16 @@ class CheckpointManager:
     def _save_to_path(self, ckpt_path: Path, model: Model, optimizers: list[Optimizer], progress: Progress):
         self._logger.debug(f"Saving checkpoint to {ckpt_path}")
         start_time = time.time()
+
+        # Increment the
+        progress_copy = deepcopy(progress)
+        progress_copy.step += 1
+
         # Create checkpoint state
         ckpt_state = {
             "model": model.state_dict(),
             "optimizers": [optimizer.state_dict() for optimizer in optimizers],
-            "progress": progress,
+            "progress": progress_copy,
         }
         # Create checkpoint directory if it doesn't exist
         with open(ckpt_path, "wb") as f:
