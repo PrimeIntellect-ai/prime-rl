@@ -1,6 +1,6 @@
 import time
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import torch
@@ -11,6 +11,7 @@ from zeroband.utils.logger import get_logger
 @dataclass
 class Progress:
     step: int = 0
+    epoch: int = 0
     total_tokens: int = 0
     total_samples: int = 0
     total_problems: int = 0
@@ -29,7 +30,7 @@ class CheckpointManager:
     def _get_ckpt_path(self, step: int) -> Path:
         return self._get_step_path(step) / "orchestrator.pt"
 
-    def _save_to_path(self, ckpt_path: Path, weight_ckpt_path: Path, progress: Progress):
+    def _save_to_path(self, ckpt_path: Path, progress: Progress):
         self._logger.debug(f"Saving orchestrator checkpoint to {ckpt_path}")
         start_time = time.time()
 
@@ -38,10 +39,7 @@ class CheckpointManager:
         progress_copy.step += 1
 
         # Create checkpoint state
-        ckpt_state = {
-            "weight_ckpt_path": weight_ckpt_path,
-            "progress": progress,
-        }
+        ckpt_state = {"progress": progress}
 
         # Save checkpoint state
         with open(ckpt_path, "wb") as f:
@@ -49,7 +47,7 @@ class CheckpointManager:
 
         self._logger.debug(f"Orchestrator checkpoint saved in {time.time() - start_time:.2f} seconds")
 
-    def load_from_path(self, ckpt_path: Path, progress: Progress) -> Path:
+    def _load_from_path(self, ckpt_path: Path, progress: Progress) -> None:
         """Loads a checkpoint from a given path in-place."""
         self._logger.debug(f"Loading checkpoint from {ckpt_path}")
         start_time = time.time()
@@ -59,19 +57,20 @@ class CheckpointManager:
             state = torch.load(f, weights_only=False)
 
         # Load checkpoint state in-place
-        progress.step = state["progress"].step
-        progress.total_tokens = state["progress"].total_tokens
-        progress.total_samples = state["progress"].total_samples
-        progress.total_problems = state["progress"].total_problems
+        for key, value in asdict(state["progress"]).items():
+            setattr(progress, key, value)
 
         self._logger.debug(f"Orchestrator checkpoint loaded in {time.time() - start_time:.2f} seconds")
-        self._logger.info(f"Resuming from {progress=}")
 
-        return state["weight_ckpt_path"]
+    def load(self, progress: Progress, step: int) -> Path:
+        """Loads a checkpoint from a given path."""
+        ckpt_path = self._get_ckpt_path(step)
+        if not ckpt_path.exists():
+            raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
+        self._load_from_path(ckpt_path, progress)
 
     def save(
         self,
-        weight_ckpt_path: Path,
         progress: Progress,
         step: int,
     ):
@@ -79,7 +78,7 @@ class CheckpointManager:
         step_path = self._get_step_path(step)
         step_path.mkdir(parents=True, exist_ok=True)
         ckpt_path = self._get_ckpt_path(step)
-        self._save_to_path(ckpt_path, weight_ckpt_path, progress)
+        self._save_to_path(ckpt_path, progress)
 
 
 def get_ckpt_manager(path: Path) -> CheckpointManager:

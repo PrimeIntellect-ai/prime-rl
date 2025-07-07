@@ -1,6 +1,6 @@
 import time
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import torch
@@ -52,7 +52,7 @@ class CheckpointManager:
             torch.save(ckpt_state, f)
         self._logger.debug(f"Training checkpoint saved in {time.time() - start_time:.2f} seconds")
 
-    def load_from_path(self, ckpt_path: Path, model: Model, optimizers: list[Optimizer], progress: Progress):
+    def _load_from_path(self, ckpt_path: Path, model: Model, optimizers: list[Optimizer], progress: Progress):
         """Loads a checkpoint from a given path in-place."""
         self._logger.debug(f"Loading training checkpoint from {ckpt_path}")
         start_time = time.time()
@@ -67,12 +67,17 @@ class CheckpointManager:
             optimizer.load_state_dict(optimizer_state)
 
         # Load progress
-        progress.total_tokens = state["progress"].total_tokens
-        progress.step = state["progress"].step
-        progress.total_samples = state["progress"].total_samples
+        for key, value in asdict(state["progress"]).items():
+            setattr(progress, key, value)
 
         self._logger.debug(f"Training checkpoint loaded in {time.time() - start_time:.2f} seconds")
-        self._logger.info(f"Resuming from {progress=}")
+
+    def load(self, model: Model, optimizers: list[Optimizer], progress: Progress, step: int) -> None:
+        """Loads a checkpoint from a given path in-place."""
+        ckpt_path = self._get_ckpt_path(step)
+        if not ckpt_path.exists():
+            raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
+        self._load_from_path(ckpt_path, model, optimizers, progress)
 
     def save(
         self,
