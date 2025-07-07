@@ -137,7 +137,9 @@ class WandbMonitor(Monitor):
             project=config.project,
             group=config.group,
             name=config.name,
+            id=config.id,
             dir=config.dir,
+            resume="allow",
             config=run_config.model_dump() if run_config else None,
             mode="offline" if config.offline else None,
         )

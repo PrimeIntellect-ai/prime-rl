@@ -94,6 +94,13 @@ class WandbMonitorConfig(BaseConfig):
         ),
     ] = None
 
+    id: Annotated[
+        str | None,
+        Field(
+            description="The W&B run ID to log to. If None, a random ID will be generated. If you want to resume a run, you can set the ID to the run ID you want to resume.",
+        ),
+    ] = None
+
     dir: Annotated[
         Path | None,
         Field(

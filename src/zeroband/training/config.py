@@ -1,3 +1,4 @@
+import warnings
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias, Union
 
@@ -86,9 +87,9 @@ class WeightCheckpointConfig(BaseConfig):
     save_async: Annotated[
         bool,
         Field(
-            description="Whether to save the checkpoint asynchronously.",
+            description="Whether to save the weights asynchronously.",
         ),
-    ] = True
+    ] = False
 
 
 class BaseGRPOVariantConfig(BaseConfig):
@@ -250,4 +251,17 @@ class TrainingConfig(BaseSettings):
 
             if self.ckpt.resume_step and self.orchestrator.ckpt.resume_step is None:
                 self.orchestrator.ckpt.resume_step = self.ckpt.resume_step
+        return self
+
+    @model_validator(mode="after")
+    def warn_wandb_resume_id_missing(self):
+        if self.ckpt.resume_step:
+            if self.monitor.wandb and not self.monitor.wandb.id:
+                warnings.warn(
+                    "W&B run ID is not set for trainer even though resuming training. The current run will be created as a new run."
+                )
+            if self.orchestrator.monitor.wandb and not self.orchestrator.monitor.wandb.id:
+                warnings.warn(
+                    "W&B run ID is not set for orchestrator even though resuming training. The current run will be created as a new run."
+                )
         return self
