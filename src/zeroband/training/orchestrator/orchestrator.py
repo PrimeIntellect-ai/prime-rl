@@ -110,15 +110,18 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
     dataset = dataset.shuffle(seed=config.seed)
 
     # Iterate over dataset in batches
-    max_steps = config.max_steps - progress.step if config.max_steps else int(1e9)
+    max_steps = config.max_steps - progress.step if config.max_steps else None
     steps_per_epoch = len(dataset) // (config.batch_size // config.sampling.n)
-    logger.info(f"Starting training loop (max_steps={max_steps}, steps_per_epoch={steps_per_epoch})")
+    logger.info(f"Starting training loop ({max_steps=}, {steps_per_epoch=})")
     total_tokens, total_samples = 0, 0
     ckpt_step = 0
     last_eval_step = -1
     epoch = -1
 
     while True:
+        if max_steps and progress.step >= max_steps:
+            break
+
         # Check if we need to start a new epoch
         epoch_step = progress.step % steps_per_epoch
         if epoch_step == 0:
@@ -311,9 +314,6 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
 
         # Increment progress
         progress.step += 1
-
-        if config.max_steps and progress.step >= config.max_steps:
-            break
 
     logger.success("Orchestrator finished.")
 
