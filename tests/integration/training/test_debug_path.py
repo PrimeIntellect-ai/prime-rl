@@ -75,7 +75,7 @@ def train_process(
     run_process: Callable[[Command, Environment], ProcessResult],
     fake_rollout_dir: Callable[[list[int], int, int, int], Path],
 ):
-    rollout_path = fake_rollout_dir(list(range(1, 6)), 16, 8, 16)
+    rollout_path = fake_rollout_dir(list(range(5)), 16, 8, 16)
     return run_process(CMD + ["--data.path", rollout_path.as_posix(), "--data.fake", "None"], {})
 
 
