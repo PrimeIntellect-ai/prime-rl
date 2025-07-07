@@ -19,8 +19,8 @@ from zeroband.training.ckpt import (
     TrainingProgress,
     load_full_checkpoint,
     save_full_checkpoint,
-    save_weight_checkpoint,
 )
+from zeroband.training.weights import save_weight_checkpoint
 from zeroband.training.config import TrainingConfig
 from zeroband.training.data import DataLoader, FakeDataLoader
 from zeroband.training.logger import setup_logger
