@@ -171,7 +171,8 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
         # TODO: Integrate with async (multi-turn) rollout function from verifiers
         logger.debug(f"Sending {len(batch_messages)} inference requests for step {step}")
         generate_completions_start_time = time.time()
-        input_tokens = await asyncio.gather(*(tokenize(client, config.model, messages) for messages in batch_messages))
+        # These calls are intentionally non-concurrent because we found that /tokenize is sometimes returning a httpx.ReadError when calling this endpoint concurrently
+        input_tokens = [await tokenize(client, config.model, messages) for messages in batch_messages]
         chat_completions = await asyncio.gather(
             *(
                 generate_completion(client, config.model, config.sampling, messages, len(input_tokens))
