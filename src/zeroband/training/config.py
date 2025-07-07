@@ -239,3 +239,9 @@ class TrainingConfig(BaseSettings):
         if self.orchestrator:
             self.orchestrator.log.level = self.log.level
         return self
+
+    @model_validator(mode="after")
+    def auto_setup_max_step(self):
+        if self.max_steps is not None:
+            self.orchestrator.max_steps = self.max_steps
+        return self
