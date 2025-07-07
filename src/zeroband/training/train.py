@@ -101,6 +101,14 @@ def train(config: TrainingConfig):
     model = setup_model(config.model)
     tokenizer = get_tokenizer(config.model)
 
+    # Set up the optimizer
+    optimizer = torch.optim.AdamW(
+        params=model.parameters(),
+        lr=config.optim.lr,
+        weight_decay=config.optim.weight_decay,
+        betas=(config.optim.betas1, config.optim.betas2),
+    )
+
     # Get checkpoint manager
     ckpt_manager = get_ckpt_manager(config.ckpt.path)
 
@@ -118,14 +126,6 @@ def train(config: TrainingConfig):
         # Offload the logprob model to CPU
         tensor_offloaded_repository: dict[int, OffloadedTensor] = {}
         tensor_offloaded_repository[progress.step] = offload_model_to_cpu(logprob_model)
-
-    # Set up the optimizer
-    optimizer = torch.optim.AdamW(
-        params=model.parameters(),
-        lr=config.optim.lr,
-        weight_decay=config.optim.weight_decay,
-        betas=(config.optim.betas1, config.optim.betas2),
-    )
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
