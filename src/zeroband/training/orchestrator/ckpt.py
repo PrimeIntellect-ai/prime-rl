@@ -39,7 +39,7 @@ class CheckpointManager:
         progress_copy.step += 1
 
         # Create checkpoint state
-        ckpt_state = {"progress": progress}
+        ckpt_state = {"progress": progress_copy}
 
         # Save checkpoint state
         with open(ckpt_path, "wb") as f:
