@@ -1,3 +1,4 @@
+import threading
 import time
 from copy import deepcopy
 from dataclasses import asdict, dataclass
@@ -6,6 +7,7 @@ from pathlib import Path
 import torch
 from torch.optim.optimizer import Optimizer
 
+from zeroband.training.config import CheckpointConfig
 from zeroband.training.model import Model
 from zeroband.training.world import get_world
 from zeroband.utils.logger import get_logger
@@ -21,8 +23,9 @@ class Progress:
 class CheckpointManager:
     """Utility class to save and load training checkpoints to resume training."""
 
-    def __init__(self, path: Path):
-        self.path = path
+    def __init__(self, config: CheckpointConfig):
+        self.path = config.path
+        self.save_async = config.save_async
         self._logger = get_logger()
         self._world = get_world()
 
@@ -48,6 +51,7 @@ class CheckpointManager:
             "progress": progress_copy,
         }
         # Create checkpoint directory if it doesn't exist
+        ckpt_path.parent.mkdir(parents=True, exist_ok=True)
         with open(ckpt_path, "wb") as f:
             torch.save(ckpt_state, f)
         self._logger.debug(f"Training checkpoint saved in {time.time() - start_time:.2f} seconds")
@@ -90,9 +94,18 @@ class CheckpointManager:
         step_path = self._get_step_path(step)
         step_path.mkdir(parents=True, exist_ok=True)
         ckpt_path = self._get_ckpt_path(step)
-        self._save_to_path(ckpt_path, model, optimizers, progress)
+
+        if self.save_async:
+            # Run save in a separate thread
+            thread = threading.Thread(
+                target=self._save_to_path, args=(ckpt_path, model, optimizers, progress), name=f"ckpt-save-{step}"
+            )
+            thread.start()
+        else:
+            # Run save synchronously
+            self._save_to_path(ckpt_path, model, optimizers, progress)
 
 
-def get_ckpt_manager(path: Path) -> CheckpointManager:
+def get_ckpt_manager(config: CheckpointConfig) -> CheckpointManager:
     """Returns a checkpoint manager for a given checkpoint directory."""
-    return CheckpointManager(path)
+    return CheckpointManager(config)

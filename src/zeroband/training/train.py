@@ -111,7 +111,7 @@ def train(config: TrainingConfig):
     )
 
     # Get checkpoint manager
-    ckpt_manager = get_ckpt_manager(config.ckpt.path)
+    ckpt_manager = get_ckpt_manager(config.ckpt)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()

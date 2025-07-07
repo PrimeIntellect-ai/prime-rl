@@ -58,6 +58,13 @@ class CheckpointConfig(BaseConfig):
 
     interval: Annotated[int, Field(ge=1, description="Interval at which to save the checkpoint.")] = 50
 
+    save_async: Annotated[
+        bool,
+        Field(
+            description="Whether to save the checkpoint asynchronously.",
+        ),
+    ] = False
+
     resume_step: Annotated[
         int | None,
         Field(
