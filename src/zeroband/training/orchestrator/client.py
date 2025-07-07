@@ -2,8 +2,10 @@ import asyncio
 from pathlib import Path
 
 import httpx
+from httpx import Response
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion
+from vllm.entrypoints.openai.api_server import TokenizeResponse
 
 from zeroband.training.orchestrator.config import ClientConfig, ModelConfig, SamplingConfig
 from zeroband.utils.logger import get_logger
@@ -33,7 +35,7 @@ async def check_health(client: AsyncOpenAI, interval: int = 1, log_interval: int
     logger.debug(f"Starting pinging {url} to check health")
     while wait_time < timeout:
         try:
-            await client.get(url=url)
+            await client.get(url, cast_to=Response)
             logger.debug(f"Inference pool is ready after {wait_time} seconds")
             return
         except Exception as e:
@@ -61,7 +63,7 @@ async def reload_weights(client: AsyncOpenAI, path: Path, step: int) -> None:
     url = str(client.base_url)[:-4] + "/reload_weights"
     model_path = path / f"step_{step}" / "model.pt"
     logger.debug(f"Sending request to {url} to reload weights from {model_path}")
-    await client.post(url=url, json={"model_path": model_path.as_posix()})
+    await client.post(url, cast_to=Response, body={"model_path": model_path.as_posix()})
 
 
 async def reset_weights(client: AsyncOpenAI) -> None:
@@ -69,13 +71,15 @@ async def reset_weights(client: AsyncOpenAI) -> None:
     logger = get_logger()
     url = str(client.base_url)[:-4] + "/reset_weights"
     logger.debug(f"Sending request to {url} to reset weights to base model")
-    await client.post(url=url, json={})
+    await client.post(url, cast_to=Response, body={})
 
 
 async def tokenize(client: AsyncOpenAI, model_config: ModelConfig, messages: list[dict[str, str]]) -> list[int]:
     url = str(client.base_url)[:-4] + "/tokenize"
-    res = await client.post(url=url, json={"model": model_config.name, "messages": messages})
-    return res.json()["tokens"]
+    tokenize_response = await client.post(
+        url, cast_to=TokenizeResponse, body={"model": model_config.name, "messages": messages}
+    )
+    return tokenize_response.tokens
 
 
 async def generate_completion(
