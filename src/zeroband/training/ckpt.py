@@ -29,7 +29,8 @@ class CheckpointManager:
         return self.path / f"step_{step}"
 
     def _get_ckpt_path(self, step: int) -> Path:
-        return self._get_step_path(step) / f"{self._world.local_rank}.pt"
+        ckpt_name = f"trainer_{self._world.local_rank}.pt" if self._world.world_size > 1 else "trainer.pt"
+        return self._get_step_path(step) / ckpt_name
 
     def _save_to_path(self, ckpt_path: Path, model: Model, optimizers: list[Optimizer], progress: Progress):
         self._logger.debug(f"Saving checkpoint to {ckpt_path}")
