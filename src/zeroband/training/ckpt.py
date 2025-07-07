@@ -41,14 +41,15 @@ class CheckpointManager:
             "progress": progress,
         }
         # Create checkpoint directory if it doesn't exist
-        ckpt_path.mkdir(parents=True, exist_ok=True)
         with open(ckpt_path, "wb") as f:
             torch.save(ckpt_state, f)
         self._logger.debug(f"Checkpoint saved in {time.time() - start_time:.2f} seconds")
 
     def load_from_path(self, ckpt_path: Path, model: Model, optimizers: list[Optimizer], progress: Progress):
+        """Loads a checkpoint from a given path in-place."""
         self._logger.debug(f"Loading checkpoint from {ckpt_path}")
         start_time = time.time()
+
         # Load checkpoint state
         with open(ckpt_path, "rb") as f:
             state = torch.load(f, weights_only=False)
