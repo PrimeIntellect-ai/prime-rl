@@ -122,15 +122,16 @@ def train(config: TrainingConfig):
     if config.recompute_logprobs:
         logger.info(f"Initializing logprob model ({config.model})")
         infer_step = max(progress.step - config.async_level, 0)
-        model_name = (
-            config.model if not config.ckpt.resume_step else config.weights.path / f"step_{infer_step}" / "model.pt"
+        model_name_or_path = (
+            config.model.name if not config.ckpt.resume_step else config.weights.path / f"step_{infer_step}"
         )
-        model.config.name = model_name
-        logprob_model = setup_model(model.config)
+        config.model.name = model_name_or_path
+        logprob_model = setup_model(config.model)
 
         # Offload the logprob model to CPU
         tensor_offloaded_repository: dict[int, OffloadedTensor] = {}
-        tensor_offloaded_repository[infer_step] = offload_model_to_cpu(logprob_model)
+        for async_step in range(infer_step, progress.step):
+            tensor_offloaded_repository[async_step] = offload_model_to_cpu(logprob_model)
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
