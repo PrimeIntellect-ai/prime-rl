@@ -54,13 +54,19 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
     logger.debug(f"EvaluationConfig({config.eval})")
 
     # Prepare paths to communicate with the trainer
-    if config.rollout.clean:
-        logger.debug(f"Cleaning rollout path ({config.rollout.path})")
-        shutil.rmtree(config.rollout.path, ignore_errors=True)
+    if config.clean:
+        logger.info("Cleaning checkpoint, logs, checkpoint weights and rollout directories")
+        logger.debug(f"Cleaning checkpoint path ({config.ckpt.path})")
+        shutil.rmtree(config.ckpt.path, ignore_errors=True)
 
-    if config.weights.clean:
-        logger.debug(f"Cleaning weights path ({config.weights.path})")
-        shutil.rmtree(config.weights.path, ignore_errors=True)
+        logger.debug(f"Cleaning logs path ({config.log.path})")
+        shutil.rmtree(config.log.path, ignore_errors=True)
+
+        logger.debug(f"Cleaning checkpoint weights path ({config.weights_path})")
+        shutil.rmtree(config.weights_path, ignore_errors=True)
+
+        logger.debug(f"Cleaning rollout path ({config.rollout_path})")
+        shutil.rmtree(config.rollout_path, ignore_errors=True)
 
     # Setup client
     logger.info(f"Initializing OpenAI client ({config.client.base_url})")
@@ -85,10 +91,10 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
 
     # Reset weights to base model if starting from scratch
     progress = Progress()
-    if config.ckpt.resume_path:
-        logger.info(f"Resuming training from checkpoint path `{config.ckpt.resume_path}`")
-        weight_ckpt_path = ckpt_manager.load_from_path(config.ckpt.resume_path, progress)
-        await reload_weights(client, weight_ckpt_path, progress.step)
+    if config.ckpt.resume_step:
+        logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
+        ckpt_manager.load(progress, step=config.ckpt.resume_step)
+        await reload_weights(client, config.weights_path, progress.step)
     else:
         logger.info("Training from scratch. Resetting weights to base model")
         await reset_weights(client)
@@ -99,7 +105,7 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
         setup_queue.put("ready")
 
     # Optionally, run evals on base model (only if starting from scratch)
-    if config.eval and not config.ckpt.resume_path:
+    if config.eval and not config.ckpt.resume_step:
         logger.info("Running evals on base model")
         for benchmark in config.eval.benchmarks:
             await run_benchmark(client, benchmark, config.model, config.sampling, step=0, use_tqdm=True)
@@ -113,11 +119,8 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
     max_steps = config.max_steps - progress.step if config.max_steps else None
     steps_per_epoch = len(dataset) // (config.batch_size // config.sampling.n)
     logger.info(f"Starting training loop ({max_steps=}, {steps_per_epoch=})")
-    total_tokens, total_samples = 0, 0
-    ckpt_step = 0
+    ckpt_step = progress.step - config.async_level
     last_eval_step = -1
-    epoch = -1
-
     while True:
         if max_steps and progress.step >= max_steps:
             break
@@ -125,14 +128,12 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
         # Check if we need to start a new epoch
         epoch_step = progress.step % steps_per_epoch
         if epoch_step == 0:
-            epoch += 1
-            logger.info(f"Starting epoch {epoch}")
+            progress.epoch += 1
+            logger.info(f"Starting epoch {progress.epoch}")
             # Reshuffle dataset at the beginning of each epoch
-            dataset = dataset.shuffle(seed=(config.seed or 0) + epoch)
+            dataset = dataset.shuffle(seed=(config.seed or 0) + progress.epoch)
 
-        logger.debug(
-            f"Orchestrator step {progress.step} (epoch: {epoch}, epoch_step: {epoch_step}/{steps_per_epoch}, checkpoint step: {ckpt_step})"
-        )
+        logger.debug(f"Orchestrator step {progress.step} ({ckpt_step=})")
         step_start_time = time.time()
 
         # Get the batch
@@ -154,14 +155,14 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
             ckpt_step = progress.step - config.async_level
             logger.debug(f"Waiting for weight checkpoint for step {ckpt_step}")
             wait_for_weight_ckpt_start_time = time.time()
-            wait_for_weight_checkpoint(config.weights.path, ckpt_step)
+            wait_for_weight_checkpoint(config.weights_path, ckpt_step)
             wait_for_weight_ckpt_time = time.time() - wait_for_weight_ckpt_start_time
             logger.debug(f"Waited {wait_for_weight_ckpt_time:.2f}s for weight checkpoint")
 
             # Reload the weights
             logger.debug(f"Reloading weights for step {ckpt_step}")
             reload_weights_start_time = time.time()
-            await reload_weights(client, config.weights.path, ckpt_step)
+            await reload_weights(client, config.weights_path, ckpt_step)
             reload_weights_time = time.time() - reload_weights_start_time
             logger.debug(f"Reloaded weights in {reload_weights_time:.2f}s")
 
@@ -254,11 +255,11 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
         if config.ckpt and config.ckpt.interval and (progress.step + 1) % config.ckpt.interval == 0:
             logger.debug(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.time()
-            model_path = config.weights.path / f"step_{ckpt_step}" / "model.pt"
+            model_path = config.weights_path / f"step_{ckpt_step}" / "model.pt"
             ckpt_manager.save(model_path, progress, step=progress.step + 1)
             save_ckpt_time = time.time() - save_ckpt_start_time
 
-        step_path = Path(config.rollout.path) / f"step_{progress.step}"
+        step_path = Path(config.rollout_path) / f"step_{progress.step}"
         step_path.mkdir(parents=True, exist_ok=True)
         for i, batches in enumerate(all_data_ranks_batches):
             batch_path = step_path / f"rank_{i}.pt"
@@ -274,10 +275,10 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
 
         # Log progress metrics to monitor
         progress_metrics = {
-            "progress/orchestrator/total_tokens": total_tokens,
-            "progress/orchestrator/total_samples": total_samples,
+            "progress/orchestrator/total_tokens": progress.total_tokens,
+            "progress/orchestrator/total_samples": progress.total_samples,
+            "progress/orchestrator/epoch": progress.epoch,
             "progress/orchestrator/step": ckpt_step,  # Shared W&B axis
-            "progress/orchestrator/epoch": epoch,
             "step": progress.step,
         }
         monitor.log(progress_metrics)
