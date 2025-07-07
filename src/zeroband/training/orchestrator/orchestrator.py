@@ -119,7 +119,7 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
     max_steps = config.max_steps - progress.step if config.max_steps else None
     steps_per_epoch = len(dataset) // (config.batch_size // config.sampling.n)
     logger.info(f"Starting training loop ({max_steps=}, {steps_per_epoch=})")
-    ckpt_step = progress.step - config.async_level
+    ckpt_step = max(progress.step - config.async_level, 0)
     last_eval_step = -1
     while True:
         if max_steps and progress.step >= max_steps:
@@ -255,8 +255,7 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
         if config.ckpt and config.ckpt.interval and (progress.step + 1) % config.ckpt.interval == 0:
             logger.debug(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.time()
-            model_path = config.weights_path / f"step_{ckpt_step}" / "model.pt"
-            ckpt_manager.save(model_path, progress, step=progress.step + 1)
+            ckpt_manager.save(progress, step=progress.step + 1)
             save_ckpt_time = time.time() - save_ckpt_start_time
 
         step_path = Path(config.rollout_path) / f"step_{progress.step}"
