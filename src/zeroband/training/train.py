@@ -301,7 +301,7 @@ def train(config: TrainingConfig):
 
         # Optionally, save the full checkpoint
         save_ckpt_time = 0
-        if config.ckpt and config.ckpt.interval and progress.step % config.ckpt.interval == 0:
+        if config.ckpt and config.ckpt.interval and progress.step > 0 and progress.step % config.ckpt.interval == 0:
             logger.debug(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.time()
             ckpt_manager.save(model, [optimizer], progress, progress.step)
