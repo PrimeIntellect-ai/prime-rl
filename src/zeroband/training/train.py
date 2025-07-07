@@ -78,11 +78,6 @@ def train(config: TrainingConfig):
         else:
             raise RuntimeError(f"Unexpected signal from orchestrator: {signal}")
 
-    # Optionally, clean the checkpoints path
-    if config.ckpt.clean:
-        logger.debug(f"Cleaning checkpoint path {config.ckpt.path}")
-        shutil.rmtree(config.ckpt.path, ignore_errors=True)
-
     # TODO(Mika): Move this to typed env var
     # Allow eager fallback during production so that training runs don't die if compile fails
     if "ZERO_BAND_DEV" not in os.environ:
@@ -106,6 +101,15 @@ def train(config: TrainingConfig):
     model = setup_model(config.model)
     tokenizer = get_tokenizer(config.model)
 
+    # Get checkpoint manager
+    ckpt_manager = get_ckpt_manager(config.ckpt.path)
+
+    # Optionally, resume training from a checkpoint
+    progress = Progress()
+    if config.ckpt.resume_step:
+        logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
+        ckpt_manager.load(model, [optimizer], progress, step=config.ckpt.resume_step)
+
     # Optionally, initialize a model to compute logprobs
     if config.recompute_logprobs:
         logger.info(f"Initializing logprob model ({config.model})")
@@ -113,7 +117,7 @@ def train(config: TrainingConfig):
 
         # Offload the logprob model to CPU
         tensor_offloaded_repository: dict[int, OffloadedTensor] = {}
-        tensor_offloaded_repository[0] = offload_model_to_cpu(logprob_model)
+        tensor_offloaded_repository[progress.step] = offload_model_to_cpu(logprob_model)
 
     # Set up the optimizer
     optimizer = torch.optim.AdamW(
@@ -122,15 +126,6 @@ def train(config: TrainingConfig):
         weight_decay=config.optim.weight_decay,
         betas=(config.optim.betas1, config.optim.betas2),
     )
-
-    # Get checkpoint manager
-    ckpt_manager = get_ckpt_manager(config.ckpt.path)
-
-    # Optionally, resume training from a checkpoint
-    progress = Progress()
-    if config.ckpt.resume_path:
-        logger.info(f"Resuming training from checkpoint path `{config.ckpt.resume_path}`")
-        ckpt_manager.load_from_path(config.ckpt.resume_path, model, [optimizer], progress)
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
