@@ -124,7 +124,7 @@ def train(config: TrainingConfig):
         # Offload the logprob model to CPU
         tensor_offloaded_repository: dict[int, OffloadedTensor] = {}
         infer_step = max(progress.step - config.async_level, 0)
-        for async_step in range(infer_step, progress.step):
+        for async_step in range(infer_step, progress.step + 1):
             logger.info(f"Initializing logprob model ({config.model}) for step {async_step}")
             model_name_or_path = (
                 config.model.name if not config.ckpt.resume_step else config.weights.path / f"step_{async_step}"

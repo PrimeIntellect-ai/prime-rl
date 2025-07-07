@@ -91,10 +91,12 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
 
     # Reset weights to base model if starting from scratch
     progress = Progress()
+    ckpt_step = 0
     if config.ckpt.resume_step:
         logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
         ckpt_manager.load(progress, step=config.ckpt.resume_step)
-        await reload_weights(client, config.weights_path, progress.step)
+        ckpt_step = max(progress.step - config.async_level, 0)
+        await reload_weights(client, config.weights_path, ckpt_step)
     else:
         logger.info("Training from scratch. Resetting weights to base model")
         await reset_weights(client)
@@ -116,13 +118,11 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
     dataset = dataset.shuffle(seed=config.seed)
 
     # Iterate over dataset in batches
-    max_steps = config.max_steps - progress.step if config.max_steps else None
     steps_per_epoch = len(dataset) // (config.batch_size // config.sampling.n)
-    logger.info(f"Starting training loop ({max_steps=}, {steps_per_epoch=})")
-    ckpt_step = max(progress.step - config.async_level, 0)
+    logger.info(f"Starting training loop ({steps_per_epoch=})")
     last_eval_step = -1
     while True:
-        if max_steps and progress.step >= max_steps:
+        if config.max_steps and progress.step >= config.max_steps:
             break
 
         # Check if we need to start a new epoch
