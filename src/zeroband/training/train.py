@@ -123,12 +123,13 @@ def train(config: TrainingConfig):
         betas=(config.optim.betas1, config.optim.betas2),
     )
 
+    # Get checkpoint manager
     ckpt_manager = get_ckpt_manager(config.ckpt.path)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
     if config.ckpt.resume_path:
-        logger.info(f"Resuming training from checkpoint path `{config.ckpt.resume_path.as_posix()}`")
+        logger.info(f"Resuming training from checkpoint path `{config.ckpt.resume_path}`")
         ckpt_manager.load_from_path(config.ckpt.resume_path, model, [optimizer], progress)
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)

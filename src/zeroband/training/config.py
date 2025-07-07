@@ -53,7 +53,7 @@ class OptimizerConfig(BaseConfig):
 class CheckpointConfig(BaseConfig):
     """Configures checkpointing the full model, optimizer and training state for resuming training."""
 
-    path: Annotated[Path, Field(description="Path to write checkpoints to.")] = Path("checkpoints")
+    path: Annotated[Path, Field(description="Directory to write checkpoints to.")] = Path("checkpoints")
 
     clean: Annotated[
         bool,

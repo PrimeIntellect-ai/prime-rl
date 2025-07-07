@@ -34,10 +34,10 @@ class CheckpointManager:
         return self._get_step_path(step) / ckpt_name
 
     def _save_to_path(self, ckpt_path: Path, model: Model, optimizers: list[Optimizer], progress: Progress):
-        self._logger.debug(f"Saving checkpoint to {ckpt_path}")
+        self._logger.debug(f"Saving training checkpoint to {ckpt_path}")
         start_time = time.time()
 
-        # Increment the
+        # Increment the progress step that is going to be saved
         progress_copy = deepcopy(progress)
         progress_copy.step += 1
 
@@ -50,11 +50,11 @@ class CheckpointManager:
         # Create checkpoint directory if it doesn't exist
         with open(ckpt_path, "wb") as f:
             torch.save(ckpt_state, f)
-        self._logger.debug(f"Checkpoint saved in {time.time() - start_time:.2f} seconds")
+        self._logger.debug(f"Training checkpoint saved in {time.time() - start_time:.2f} seconds")
 
     def load_from_path(self, ckpt_path: Path, model: Model, optimizers: list[Optimizer], progress: Progress):
         """Loads a checkpoint from a given path in-place."""
-        self._logger.debug(f"Loading checkpoint from {ckpt_path}")
+        self._logger.debug(f"Loading training checkpoint from {ckpt_path}")
         start_time = time.time()
 
         # Load checkpoint state
@@ -65,11 +65,14 @@ class CheckpointManager:
         model.load_state_dict(state["model"])
         for optimizer, optimizer_state in zip(optimizers, state["optimizers"]):
             optimizer.load_state_dict(optimizer_state)
+
+        # Load progress
         progress.total_tokens = state["progress"].total_tokens
         progress.step = state["progress"].step
         progress.total_samples = state["progress"].total_samples
 
-        self.logger.debug(f"Checkpoint loaded in {time.time() - start_time:.2f} seconds")
+        self._logger.debug(f"Training checkpoint loaded in {time.time() - start_time:.2f} seconds")
+        self._logger.info(f"Resuming from {progress=}")
 
     def save(
         self,
