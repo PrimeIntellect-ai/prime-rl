@@ -1,6 +1,5 @@
 import threading
 import time
-from copy import deepcopy
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -40,15 +39,11 @@ class CheckpointManager:
         self._logger.debug(f"Saving training checkpoint to {ckpt_path}")
         start_time = time.time()
 
-        # Increment the progress step that is going to be saved
-        progress_copy = deepcopy(progress)
-        progress_copy.step += 1
-
         # Create checkpoint state
         ckpt_state = {
             "model": model.state_dict(),
             "optimizers": [optimizer.state_dict() for optimizer in optimizers],
-            "progress": progress_copy,
+            "progress": progress,
         }
         # Create checkpoint directory if it doesn't exist
         ckpt_path.parent.mkdir(parents=True, exist_ok=True)

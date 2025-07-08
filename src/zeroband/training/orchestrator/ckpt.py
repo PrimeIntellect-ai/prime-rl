@@ -1,5 +1,4 @@
 import time
-from copy import deepcopy
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -35,12 +34,8 @@ class CheckpointManager:
         self._logger.debug(f"Saving orchestrator checkpoint to {ckpt_path}")
         start_time = time.time()
 
-        # Increment the progress step that is going to be saved
-        progress_copy = deepcopy(progress)
-        progress_copy.step += 1
-
         # Create checkpoint state
-        ckpt_state = {"progress": progress_copy}
+        ckpt_state = {"progress": progress}
 
         # Save checkpoint state
         with open(ckpt_path, "wb") as f:

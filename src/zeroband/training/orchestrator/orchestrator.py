@@ -136,6 +136,15 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
     logger.info(f"Starting training loop ({steps_per_epoch=})")
     last_eval_step = -1
     while True:
+        # Save checkpoint (if we are not at the first step)
+        save_ckpt_time = 0
+        if config.ckpt and config.ckpt.interval and progress.step > 0 and progress.step % config.ckpt.interval == 0:
+            logger.debug(f"Saving checkpoint at step {progress.step}")
+            save_ckpt_start_time = time.time()
+            ckpt_manager.save(progress, step=progress.step)
+            save_ckpt_time = time.time() - save_ckpt_start_time
+
+        # Break if we have reached the maximum number of steps
         if config.max_steps and progress.step >= config.max_steps:
             break
 
@@ -264,13 +273,6 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
             seq_len=config.seq_len,
             collate_mode=config.collate_mode,
         )
-
-        save_ckpt_time = 0
-        if config.ckpt and config.ckpt.interval and (progress.step + 1) % config.ckpt.interval == 0:
-            logger.debug(f"Saving checkpoint at step {progress.step}")
-            save_ckpt_start_time = time.time()
-            ckpt_manager.save(progress, step=progress.step + 1)
-            save_ckpt_time = time.time() - save_ckpt_start_time
 
         step_path = Path(config.rollout_path) / f"step_{progress.step}"
         step_path.mkdir(parents=True, exist_ok=True)
