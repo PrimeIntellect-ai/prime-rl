@@ -17,7 +17,7 @@ import torch.distributed as dist
 from torch._guards import log as torch_log
 
 from zeroband.training.ckpt import CheckpointManager, Progress
-from zeroband.training.weights import save_weight_checkpoint
+from zeroband.training.weights import WeightCheckpointManager
 from zeroband.training.config import TrainingConfig
 from zeroband.training.data import DataLoader, FakeDataLoader
 from zeroband.training.logger import setup_logger
@@ -110,7 +110,8 @@ def train(config: TrainingConfig):
         betas=(config.optim.betas1, config.optim.betas2),
     )
 
-    # Get checkpoint manager
+    # Get checkpoint managers
+    weight_ckpt_manager = WeightCheckpointManager(config.weights)
     if config.ckpt:
         ckpt_manager = CheckpointManager(config.ckpt)
 
@@ -144,7 +145,6 @@ def train(config: TrainingConfig):
         dataloader = FakeDataLoader(config.data.fake)
 
     logger.info(f"Starting training loop ({config.max_steps=})")
-    active_weight_checkpoint_paths: list[Path] = []
     while True:
         if config.max_steps and progress.step >= config.max_steps:
             break
@@ -274,10 +274,8 @@ def train(config: TrainingConfig):
         optimizer.zero_grad()
 
         # Save the weight checkpoint
-        step_path = Path(config.weights.path) / f"step_{progress.step + 1}"
         save_weights_start_time = time.time()
-        model_path = save_weight_checkpoint(model, tokenizer, step_path, async_save=config.weights.save_async)
-        active_weight_checkpoint_paths.append(step_path)
+        model_path = weight_ckpt_manager.save(model, tokenizer, step=progress.step + 1)
         save_weights_time = time.time() - save_weights_start_time
 
         # Optionally, broadcast the weight checkpoint from master rank
@@ -286,15 +284,23 @@ def train(config: TrainingConfig):
             shardcast.broadcast(model_path.as_posix())  # TODO: Is this blocking?
 
         # Consider cleaning up weight ckpt from async_level+1 steps ago
-        candidate_path_to_delete = Path(config.weights.path) / f"step_{max(progress.step - (config.async_level + 1), 0)}"
+        candidate_path_to_delete = (
+            Path(config.weights.path) / f"step_{max(progress.step - (config.async_level + 1), 0)}"
+        )
         logger.debug(f"Considering to delete weight checkpoint {candidate_path_to_delete}")
         candidate_weight_step_to_delete = int(candidate_path_to_delete.name.split("_")[-1])
         keep_for_eval = config.weights.interval and candidate_weight_step_to_delete % config.weights.interval == 0
         # For checkpointing step x, we need all weight checkpoints in [x-async_level, x] (for logprob model)
         # To get [n-k, n] with interval n and buffer k over all natural numbers x, we use the condition (n - (x % n)) % n <= k
-        keep_for_ckpt = config.ckpt and (config.ckpt.interval - (candidate_weight_step_to_delete % config.ckpt.interval)) % config.ckpt.interval <= config.async_level 
+        keep_for_ckpt = (
+            config.ckpt
+            and (config.ckpt.interval - (candidate_weight_step_to_delete % config.ckpt.interval)) % config.ckpt.interval
+            <= config.async_level
+        )
         if not (keep_for_eval or keep_for_ckpt):
-            logger.debug(f"Removing past weight checkpoint {candidate_path_to_delete} ({keep_for_eval=}, {keep_for_ckpt=})")
+            logger.debug(
+                f"Removing past weight checkpoint {candidate_path_to_delete} ({keep_for_eval=}, {keep_for_ckpt=})"
+            )
             shutil.rmtree(candidate_path_to_delete, ignore_errors=True)
 
         # Optionally, dump memory snapshot
