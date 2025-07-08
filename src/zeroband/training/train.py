@@ -291,11 +291,11 @@ def train(config: TrainingConfig):
         logger.debug(f"Considering to delete weight checkpoint {candidate_path_to_delete}")
         candidate_weight_step_to_delete = int(candidate_path_to_delete.name.split("_")[-1])
         keep_for_eval = config.weights.interval and candidate_weight_step_to_delete % config.weights.interval == 0
-        # For checkpointing step x, we need all checkpoints in [x-async_level, x]
-        # To get [n-k, n] for all n in natural numbers, we do (n - (n % k)) % n
+        # For checkpointing step x, we need all weight checkpoints in [x-async_level, x] (for logprob model)
+        # To get [n-k, n] with interval n and buffer k over all natural numbers x, we use the condition (n - (x % n)) % n <= k
         keep_for_ckpt = config.ckpt and (config.ckpt.interval - (candidate_weight_step_to_delete % config.ckpt.interval)) % config.ckpt.interval <= config.async_level 
         if not (keep_for_eval or keep_for_ckpt):
-            logger.debug(f"Removing past weight checkpoint {candidate_path_to_delete}")
+            logger.debug(f"Removing past weight checkpoint {candidate_path_to_delete} ({keep_for_eval=}, {keep_for_ckpt=})")
             shutil.rmtree(candidate_path_to_delete, ignore_errors=True)
 
         # Optionally, dump memory snapshot
