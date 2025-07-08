@@ -90,6 +90,7 @@ class BaseSettings(PydanticBaseSettings, BaseConfig):
         cli_kebab_case=True,
         cli_implicit_flags=True,
         cli_use_class_docs_for_groups=True,
+        nested_model_default_partial_update=True,  # Allows partial updates to nested model default objects
     )
 
 
