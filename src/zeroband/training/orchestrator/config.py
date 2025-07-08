@@ -214,7 +214,7 @@ class OrchestratorConfig(BaseSettings):
         Field(
             description="Sequence length to use for training. If a sample is shorter than this, it will be padded. If a sequence is longer than this, it will be truncated.",
         ),
-    ] = 1024
+    ] = 2048
 
     # TODO(Mika): This should be automatic from the number of ZMQ connections
     num_train_workers: Annotated[
