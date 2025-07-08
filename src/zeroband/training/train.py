@@ -303,9 +303,8 @@ def train(config: TrainingConfig):
             logger.info(f"Broadcasting weights from {model_path} via shardcast")
             shardcast.broadcast(model_path.as_posix())  # TODO: Is this blocking?
 
-        # Consider cleaning up weight ckpt from async_level+1 steps ago
-        candidate_step = max(progress.step - (config.async_level + 1), 0)
-        weight_ckpt_manager.clean(candidate_step)
+        # Maybe clean up weight checkpoint
+        weight_ckpt_manager.maybe_clean(progress.step)
 
         # Optionally, dump memory snapshot
         if config.profile_path and progress.step == 2 and world.rank == 0:

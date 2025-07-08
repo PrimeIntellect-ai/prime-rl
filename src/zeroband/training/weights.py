@@ -104,8 +104,9 @@ class WeightCheckpointManager:
             self._save(model, tokenizer, dtype, step)
         return self._get_model_path(step)
 
-    def _clean(self, step: int):
+    def _maybe_clean(self, step: int):
         """Synchronous helper of `clean`."""
+        step = max(step - (self.async_level + 1), 0)  # Consider deleting async_level + 1 steps ago
         candidate_path_to_delete = self._get_step_path(step)
         self._logger.debug(f"Considering to delete weight checkpoint {candidate_path_to_delete}")
         keep_for_eval = self.config.interval and step % self.config.interval == 0
@@ -122,18 +123,18 @@ class WeightCheckpointManager:
             )
             shutil.rmtree(candidate_path_to_delete, ignore_errors=True)
 
-    def clean(self, step: int):
+    def maybe_clean(self, step: int):
         """
-        Considers deleting a weight checkpoint for a given step. There are two reasons not to delete a checkpoint:
+        Considers deleting a past weight checkpoint at a given step. There are two reasons not to delete a checkpoint:
         1. The step is an evaluation step (e.g. step % weights.interval == 0)
         2. The step is a checkpoint step or at most async_level steps earlier
         """
         if self.config.save_async:
             thread = threading.Thread(
-                target=self._clean,
+                target=self._maybe_clean,
                 args=(step,),
                 name=f"weight-checkpoint-clean-{step}",
             )
             thread.start()
         else:
-            self._clean(step)
+            self._maybe_clean(step)
