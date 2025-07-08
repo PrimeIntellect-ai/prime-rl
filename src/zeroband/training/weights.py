@@ -87,6 +87,7 @@ class WeightCheckpointManager:
         self._logger.debug(f"Saved weight checkpoint to {step_path} in {time.time() - start_time:.2f} seconds")
 
     def _save(self, model: Model, tokenizer: AutoTokenizer, dtype: torch.dtype, step: int):
+        """Synchronous helper of `save`."""
         cpu_state = self._gather_weights(model, dtype)
         self._save_to_path(cpu_state, model, tokenizer, step)
 
@@ -97,9 +98,9 @@ class WeightCheckpointManager:
         step: int,
         dtype: torch.dtype = torch.bfloat16,
     ):
-        """Save a HF-compatible weight-only checkpoint to the specified path."""
+        """Save a HF-compatible weight-only checkpoint for a given step."""
 
-        if self.config.async_save:
+        if self.config.save_async:
             thread = threading.Thread(
                 target=self._save,
                 args=(model, tokenizer, dtype, step),
@@ -110,7 +111,8 @@ class WeightCheckpointManager:
             self._save(model, tokenizer, dtype, step)
         return self._get_model_path(step)
 
-    def clean(self, step: int):
+    def _clean(self, step: int):
+        """Synchronous helper of `clean`."""
         candidate_path_to_delete = self._get_step_path(step)
         self._logger.debug(f"Considering to delete weight checkpoint {candidate_path_to_delete}")
         keep_for_eval = self.config.interval and step % self.config.interval == 0
@@ -126,3 +128,19 @@ class WeightCheckpointManager:
                 f"Removing past weight checkpoint {candidate_path_to_delete} ({keep_for_eval=}, {keep_for_ckpt=})"
             )
             shutil.rmtree(candidate_path_to_delete, ignore_errors=True)
+
+    def clean(self, step: int):
+        """
+        Considers deleting a weight checkpoint for a given step. There are two reasons not to delete a checkpoint:
+        1. The step is an evaluation step (e.g. step % weights.interval == 0)
+        2. The step is a checkpoint step or at most async_level steps earlier
+        """
+        if self.config.save_async:
+            thread = threading.Thread(
+                target=self._clean,
+                args=(step,),
+                name=f"weight-checkpoint-clean-{step}",
+            )
+            thread.start()
+        else:
+            self._clean(step)
