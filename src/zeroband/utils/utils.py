@@ -128,15 +128,48 @@ def wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None
         wait_time += interval
 
 
-def to_dict(list_of_dicts: list[dict[str, Any]]) -> dict[str, list[Any]]:
-    """Turns a list of dicts to a dict of lists."""
+def to_col_format(list_of_dicts: list[dict[str, Any]]) -> dict[str, list[Any]]:
+    """
+    Turns a list of dicts to a dict of lists.
+
+    Example:
+
+    ```python
+    list_of_dicts = [{"a": 1, "b": 2}, {"a": 3, "b": 4}] # Row format
+    to_col_format(list_of_dicts)
+    ```
+
+    Returns:
+
+    ```python
+    {"a": [1, 3], "b": [2, 4]} # Column format
+    ```
+    """
     dict_of_lists = defaultdict(list)
-    for dict in list_of_dicts:
-        for key, value in dict.items():
-            if key not in dict_of_lists:
-                dict_of_lists[key] = []
+    for row in list_of_dicts:
+        for key, value in row.items():
             dict_of_lists[key].append(value)
-    return dict_of_lists
+    return dict(dict_of_lists)
+
+
+def to_row_format(dict_of_lists: dict[str, list[Any]]) -> list[dict[str, Any]]:
+    """
+    Turns a dict of lists to a list of dicts.
+
+    Example:
+
+    ```python
+    dict_of_lists = {"a": [1, 3], "b": [2, 4]} # Column format
+    to_row_format(dict_of_lists)
+    ```
+
+    Returns:
+
+    ```python
+    [{"a": 1, "b": 2}, {"a": 3, "b": 4}] # Row format
+    ```
+    """
+    return [dict(zip(dict_of_lists.keys(), values)) for values in zip(*dict_of_lists.values())]
 
 
 def format_time(time_in_seconds: float) -> str:
