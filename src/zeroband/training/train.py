@@ -286,15 +286,17 @@ def train(config: TrainingConfig):
             logger.info(f"Broadcasting weights from {model_path} via shardcast")
             shardcast.broadcast(model_path.as_posix())  # TODO: Is this blocking?
 
-        # Optionally, remove old weight checkpoints to save space
-        # +1 to ensure to not delete current checkpoint when async_level=0
-        if len(active_weight_checkpoint_paths) > config.async_level + 1:
-            path_to_delete = active_weight_checkpoint_paths.pop(0)
-            ckpt_step = int(path_to_delete.name.split("_")[-1])
-            should_keep = config.weights.interval and ckpt_step % config.weights.interval == 0
-            if not should_keep:
-                logger.debug(f"Removing past weight checkpoint ({path_to_delete})")
-                shutil.rmtree(path_to_delete, ignore_errors=True)
+        # Consider cleaning up weight ckpt from async_level+1 steps ago
+        candidate_path_to_delete = Path(config.weights.path) / f"step_{max(progress.step - (config.async_level + 1), 0)}"
+        logger.debug(f"Considering to delete weight checkpoint {candidate_path_to_delete}")
+        candidate_weight_step_to_delete = int(candidate_path_to_delete.name.split("_")[-1])
+        keep_for_eval = config.weights.interval and candidate_weight_step_to_delete % config.weights.interval == 0
+        # For checkpointing step x, we need all checkpoints in [x-async_level, x]
+        # To get [n-k, n] for all n in natural numbers, we do (n - (n % k)) % n
+        keep_for_ckpt = config.ckpt and (config.ckpt.interval - (candidate_weight_step_to_delete % config.ckpt.interval)) % config.ckpt.interval <= config.async_level 
+        if not (keep_for_eval or keep_for_ckpt):
+            logger.debug(f"Removing past weight checkpoint {candidate_path_to_delete}")
+            shutil.rmtree(candidate_path_to_delete, ignore_errors=True)
 
         # Optionally, dump memory snapshot
         if config.profile_path and progress.step == 2 and world.rank == 0:
