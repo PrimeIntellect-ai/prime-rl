@@ -209,3 +209,11 @@ def format_num(num: float | int, precision: int = 2) -> str:
         return f"{sign}{num / 1e6:.{precision}f}M"
     else:
         return f"{sign}{num / 1e9:.{precision}f}B"
+
+
+def get_step_path(path: Path, step: int) -> Path:
+    return path / f"step_{step}"
+
+
+def get_weight_ckpt_model_path(weight_dir: Path, step: int) -> Path:
+    return weight_dir / f"step_{step}" / "pytorch_model.bin"

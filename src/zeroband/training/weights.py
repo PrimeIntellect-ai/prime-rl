@@ -13,6 +13,7 @@ from zeroband.training.config import CheckpointConfig, WeightCheckpointConfig
 from zeroband.training.model import Model
 from zeroband.training.world import get_world
 from zeroband.utils.logger import get_logger
+from zeroband.utils.utils import get_step_path, get_weight_ckpt_model_path
 
 
 class WeightCheckpointManager:
@@ -26,19 +27,11 @@ class WeightCheckpointManager:
         self._world = get_world()
         self._is_master = self._world.rank == 0
 
-    @classmethod
-    def get_step_path(cls, weight_dir: Path, step: int) -> Path:
-        return weight_dir / f"step_{step}"
-
-    @classmethod
-    def get_model_path(cls, weight_dir: Path, step: int) -> Path:
-        return cls.get_step_path(weight_dir, step) / "pytorch_model.bin"
-
     def _get_model_path(self, step: int) -> Path:
-        return self.get_model_path(self.config.path, step)
+        return get_weight_ckpt_model_path(self.config.path, step)
 
     def _get_step_path(self, step: int) -> Path:
-        return self.get_step_path(self.config.path, step)
+        return get_step_path(self.config.path, step)
 
     def _gather_weights(self, model: Model, dtype: torch.dtype = torch.bfloat16) -> dict[str, Tensor]:
         """Gather distributed weights for weight checkpoint."""

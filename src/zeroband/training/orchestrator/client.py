@@ -8,8 +8,8 @@ from openai.types.chat import ChatCompletion
 from vllm.entrypoints.openai.api_server import TokenizeResponse
 
 from zeroband.training.orchestrator.config import ClientConfig, ModelConfig, SamplingConfig
-from zeroband.training.weights import WeightCheckpointManager
 from zeroband.utils.logger import get_logger
+from zeroband.utils.utils import get_weight_ckpt_model_path
 
 
 def setup_client(client_config: ClientConfig) -> AsyncOpenAI:
@@ -62,7 +62,7 @@ async def reload_weights(client: AsyncOpenAI, path: Path, step: int) -> None:
     """Make a HTTP post request to the vLLM server to reload the weights."""
     logger = get_logger()
     url = str(client.base_url)[:-4] + "/reload_weights"
-    model_path = WeightCheckpointManager.get_model_path(path, step)
+    model_path = get_weight_ckpt_model_path(path, step)
     logger.debug(f"Sending request to {url} to reload weights from {model_path}")
     await client.post(url, cast_to=Response, body={"model_path": model_path.as_posix()})
 
