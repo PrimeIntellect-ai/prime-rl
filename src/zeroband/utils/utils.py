@@ -1,5 +1,6 @@
 import functools
 import time
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -125,3 +126,53 @@ def wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None
             logger.debug(f"Waiting for path `{path}` for {wait_time} seconds")
         time.sleep(interval)
         wait_time += interval
+
+
+def to_dict(list_of_dicts: list[dict[str, Any]]) -> dict[str, list[Any]]:
+    """Turns a list of dicts to a dict of lists."""
+    dict_of_lists = defaultdict(list)
+    for dict in list_of_dicts:
+        for key, value in dict.items():
+            if key not in dict_of_lists:
+                dict_of_lists[key] = []
+            dict_of_lists[key].append(value)
+    return dict_of_lists
+
+
+def format_time(time_in_seconds: float) -> str:
+    """Format a time in seconds to a human-readable format."""
+    from datetime import timedelta
+
+    td = timedelta(seconds=time_in_seconds)
+    days = td.days
+    hours, remainder = divmod(td.seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+
+    # Format based on magnitude
+    if days > 0:
+        total_hours = days * 24 + hours
+        return f"{total_hours + minutes / 60:.2f}h"
+    elif hours > 0:
+        return f"{hours + minutes / 60:.2f}h"
+    elif minutes > 0:
+        return f"{minutes + seconds / 60:.2f}m"
+    else:
+        # Include microseconds for sub-second precision
+        total_seconds = seconds + td.microseconds / 1_000_000
+        return f"{total_seconds:.2f}s"
+
+
+def format_num(num: float | int, precision: int = 2) -> str:
+    """
+    Format a number in human-readable format with abbreviations.
+    """
+    sign = "-" if num < 0 else ""
+    num = abs(num)
+    if num < 1e3:
+        return f"{sign}{num:.{precision}f}" if isinstance(num, float) else f"{sign}{num}"
+    elif num < 1e6:
+        return f"{sign}{num / 1e3:.{precision}f}K"
+    elif num < 1e9:
+        return f"{sign}{num / 1e6:.{precision}f}M"
+    else:
+        return f"{sign}{num / 1e9:.{precision}f}B"

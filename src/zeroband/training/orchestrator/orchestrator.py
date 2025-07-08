@@ -34,11 +34,12 @@ from zeroband.training.orchestrator.utils import (
     parse_completions,
     parse_logprobs,
     parse_output_tokens,
+    print_benchmark,
     wait_for_weight_checkpoint,
 )
 from zeroband.utils.monitor import setup_monitor
 from zeroband.utils.pydantic_config import parse_argv
-from zeroband.utils.utils import clean_exit
+from zeroband.utils.utils import clean_exit, to_dict
 
 
 @clean_exit
@@ -300,6 +301,10 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
         monitor.log(time_metrics)
 
     logger.success("Orchestrator finished.")
+
+    # Optionally, print benchmark table
+    if config.bench:
+        print_benchmark(to_dict(monitor.history))
 
 
 def run_orchestrator(config: OrchestratorConfig, setup_queue: Queue | None = None):
