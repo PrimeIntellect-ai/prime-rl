@@ -1,10 +1,8 @@
 import logging
 import multiprocessing as mp
 import os
-import shutil
 import time
 from collections import defaultdict
-from pathlib import Path
 from copy import deepcopy
 
 # Import environment before any other imports
@@ -111,7 +109,7 @@ def train(config: TrainingConfig):
     )
 
     # Get checkpoint managers
-    weight_ckpt_manager = WeightCheckpointManager(config.weights)
+    weight_ckpt_manager = WeightCheckpointManager(config.weights, config.ckpt, config.async_level)
     if config.ckpt:
         ckpt_manager = CheckpointManager(config.ckpt)
 
@@ -284,24 +282,8 @@ def train(config: TrainingConfig):
             shardcast.broadcast(model_path.as_posix())  # TODO: Is this blocking?
 
         # Consider cleaning up weight ckpt from async_level+1 steps ago
-        candidate_path_to_delete = (
-            Path(config.weights.path) / f"step_{max(progress.step - (config.async_level + 1), 0)}"
-        )
-        logger.debug(f"Considering to delete weight checkpoint {candidate_path_to_delete}")
-        candidate_weight_step_to_delete = int(candidate_path_to_delete.name.split("_")[-1])
-        keep_for_eval = config.weights.interval and candidate_weight_step_to_delete % config.weights.interval == 0
-        # For checkpointing step x, we need all weight checkpoints in [x-async_level, x] (for logprob model)
-        # To get [n-k, n] with interval n and buffer k over all natural numbers x, we use the condition (n - (x % n)) % n <= k
-        keep_for_ckpt = (
-            config.ckpt
-            and (config.ckpt.interval - (candidate_weight_step_to_delete % config.ckpt.interval)) % config.ckpt.interval
-            <= config.async_level
-        )
-        if not (keep_for_eval or keep_for_ckpt):
-            logger.debug(
-                f"Removing past weight checkpoint {candidate_path_to_delete} ({keep_for_eval=}, {keep_for_ckpt=})"
-            )
-            shutil.rmtree(candidate_path_to_delete, ignore_errors=True)
+        candidate_step = max(progress.step - (config.async_level + 1), 0)
+        weight_ckpt_manager.clean(candidate_step)
 
         # Optionally, dump memory snapshot
         if config.profile_path and progress.step == 2 and world.rank == 0:

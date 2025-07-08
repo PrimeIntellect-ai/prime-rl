@@ -5,6 +5,7 @@ import httpx
 from httpx import Response
 from openai import AsyncOpenAI, BaseModel
 from openai.types.chat import ChatCompletion
+from vllm.entrypoints.openai.api_server import TokenizeResponse
 
 from zeroband.training.orchestrator.config import ClientConfig, ModelConfig, SamplingConfig
 from zeroband.training.weights import WeightCheckpointManager

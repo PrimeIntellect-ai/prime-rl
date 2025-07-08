@@ -1,3 +1,4 @@
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -8,18 +9,19 @@ from torch.distributed.checkpoint.state_dict import _get_fqns as get_fqns
 from torch.distributed.tensor import DTensor
 from transformers import AutoTokenizer
 
-from zeroband.training.config import WeightCheckpointConfig
+from zeroband.training.config import CheckpointConfig, WeightCheckpointConfig
 from zeroband.training.model import Model
 from zeroband.training.world import get_world
 from zeroband.utils.logger import get_logger
 
 
 class WeightCheckpointManager:
-    """Utility class to save and load weight HF-compatible weight checkpoints."""
+    """Utility class to save and cleanup HF-compatible weight checkpoints."""
 
-    def __init__(self, config: WeightCheckpointConfig):
-        self.path = config.path
-        self.async_save = config.save_async
+    def __init__(self, config: WeightCheckpointConfig, ckpt_config: CheckpointConfig, async_level: int):
+        self.config = config
+        self.ckpt_config = ckpt_config
+        self.async_level = async_level
         self._logger = get_logger()
         self._world = get_world()
         self._is_master = self._world.rank == 0
@@ -33,10 +35,10 @@ class WeightCheckpointManager:
         return cls.get_step_path(weight_dir, step) / "pytorch_model.bin"
 
     def _get_model_path(self, step: int) -> Path:
-        return self.get_model_path(self.path, step)
+        return self.get_model_path(self.config.path, step)
 
     def _get_step_path(self, step: int) -> Path:
-        return self.get_step_path(self.path, step)
+        return self.get_step_path(self.config.path, step)
 
     def _gather_weights(self, model: Model, dtype: torch.dtype = torch.bfloat16) -> dict[str, Tensor]:
         """Gather distributed weights for weight checkpoint."""
@@ -97,7 +99,7 @@ class WeightCheckpointManager:
     ):
         """Save a HF-compatible weight-only checkpoint to the specified path."""
 
-        if self.async_save:
+        if self.config.async_save:
             thread = threading.Thread(
                 target=self._save,
                 args=(model, tokenizer, dtype, step),
@@ -107,3 +109,20 @@ class WeightCheckpointManager:
         else:
             self._save(model, tokenizer, dtype, step)
         return self._get_model_path(step)
+
+    def clean(self, step: int):
+        candidate_path_to_delete = self._get_step_path(step)
+        self._logger.debug(f"Considering to delete weight checkpoint {candidate_path_to_delete}")
+        keep_for_eval = self.config.interval and step % self.config.interval == 0
+        # For checkpointing step x, we need all weight checkpoints in [x-async_level, x] (for logprob model)
+        # To get [n-k, n] with interval n and buffer k over all natural numbers x, we use the condition (n - (x % n)) % n <= k
+        keep_for_ckpt = (
+            self.ckpt_config
+            and (self.ckpt_config.interval - (step % self.ckpt_config.interval)) % self.ckpt_config.interval
+            <= self.async_level
+        )
+        if not (keep_for_eval or keep_for_ckpt):
+            self._logger.debug(
+                f"Removing past weight checkpoint {candidate_path_to_delete} ({keep_for_eval=}, {keep_for_ckpt=})"
+            )
+            shutil.rmtree(candidate_path_to_delete, ignore_errors=True)
