@@ -39,6 +39,7 @@ class BaseSettings(PydanticBaseSettings, BaseConfig):
         list[str] | None,
         Field(
             description="List of extra TOML files to load (paths are relative to the TOML file containing this field). If provided, will override all other config files. Note: This field is only read from within configuration files - setting --toml-files from CLI has no effect.",
+            exclude=True,
         ),
     ] = None
 
