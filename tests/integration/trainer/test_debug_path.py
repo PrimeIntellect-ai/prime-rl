@@ -10,6 +10,7 @@ from zeroband.trainer.data import MicroBatch
 
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
 
+ENV = {"CUDA_VISIBLE_DEVICES": "1"}
 CMD = ["uv", "run", "trainer", "@configs/trainer/debug.toml"]
 
 
@@ -76,7 +77,7 @@ def train_process(
     fake_rollout_dir: Callable[[list[int], int, int, int], Path],
 ):
     rollout_path = fake_rollout_dir(list(range(5)), 16, 8, 16)
-    return run_process(CMD + ["--data.path", rollout_path.as_posix(), "--data.fake", "None"], {})
+    return run_process(CMD + ["--data.path", rollout_path.as_posix(), "--data.fake", "None"], ENV)
 
 
 def test_no_error(train_process: ProcessResult):

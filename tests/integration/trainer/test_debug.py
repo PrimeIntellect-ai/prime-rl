@@ -6,12 +6,13 @@ from tests import Command, Environment, ProcessResult
 
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
 
+ENV = {"CUDA_VISIBLE_DEVICES": "1"}
 CMD = ["uv", "run", "trainer", "@configs/trainer/debug.toml"]
 
 
 @pytest.fixture(scope="module")
 def train_process(run_process: Callable[[Command, Environment], ProcessResult]) -> ProcessResult:
-    return run_process(CMD, {})
+    return run_process(CMD, ENV)
 
 
 def test_no_error(train_process: ProcessResult):

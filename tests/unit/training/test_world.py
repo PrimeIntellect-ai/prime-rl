@@ -38,7 +38,7 @@ def test_init_with_valid_env_vars(local_world_size: int, world_size: int):
 
 @pytest.mark.parametrize("local_world_size", [1, 2])
 def test_init_with_torchrun(local_world_size: int):
-    path = "src/zeroband/training/world.py"
+    path = "src/zeroband/trainer/world.py"
     assert os.path.exists(path)
     cmd = ["torchrun", f"--nproc_per_node={local_world_size}", path]
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)

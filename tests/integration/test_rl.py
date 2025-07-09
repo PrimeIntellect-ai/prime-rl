@@ -10,7 +10,7 @@ pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
 
 TIMEOUT = 600  # 10 minutes
-TRAINING_CMD = [
+CMD = [
     "uv",
     "run",
     "rl",
@@ -34,6 +34,7 @@ TRAINING_CMD = [
     "30",
     "--orchestrator.monitor.wandb.log_samples",
 ]
+ENV = {"CUDA_VISIBLE_DEVICES": "1"}
 
 
 @pytest.fixture(scope="module")
@@ -57,8 +58,8 @@ def train_process(vllm_server: str, run_process: Callable[[Command, Environment,
     group_name = f"{branch_name}-{commit_hash}"
 
     return run_process(
-        TRAINING_CMD + ["--trainer.monitor.wandb.project", project, "--trainer.monitor.wandb.group", group_name],
-        {},
+        CMD + ["--trainer.monitor.wandb.project", project, "--trainer.monitor.wandb.group", group_name],
+        ENV,
         TIMEOUT,
     )
 
