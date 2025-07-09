@@ -3,16 +3,24 @@ import subprocess
 import sys
 import warnings
 from itertools import chain
+from pathlib import Path
 from subprocess import Popen
 from typing import Annotated
 
+from loguru import logger as loguru_logger
+from loguru._logger import Logger
 from pydantic import Field, model_validator
+from rich import print as rprint
 
 from zeroband.inference.config import InferenceConfig
 from zeroband.orchestrator.config import OrchestratorConfig
 from zeroband.trainer.config import CheckpointConfig, TrainerConfig
-from zeroband.utils.config import WandbMonitorConfig
+from zeroband.utils.config import LogConfig, WandbMonitorConfig
+from zeroband.utils.logger import format_message, format_time, get_logger, set_logger, setup_handlers
 from zeroband.utils.pydantic_config import BaseSettings, parse_argv
+
+TRAINER_LOGS = Path("logs/trainer.log")
+ORCHESTRATOR_LOGS = Path("logs/orchestrator.log")
 
 
 class RLConfig(BaseSettings):
@@ -92,6 +100,19 @@ class RLConfig(BaseSettings):
         return self
 
 
+def setup_logger() -> Logger:
+    if get_logger():
+        raise RuntimeError("Logger already setup. Call reset_logger first.")
+
+    # Setup the logger handlers
+    log_config = LogConfig(level="info", path=None)
+    format = format_time(log_config) + format_message()
+    logger = setup_handlers(loguru_logger, format, log_config, rank=0)
+    set_logger(logger)
+
+    return logger
+
+
 def cleanup(processes: list[Popen]):
     for process in processes:
         if process.poll() is None:  # Process is still running
@@ -116,14 +137,24 @@ def to_cli(prefix, d):
 
 
 def rl(config: RLConfig):
+    # Setup logger
+    logger = setup_logger()
+    logger.info("Starting RL run")
+
+    # Cleaning up old logs
+    TRAINER_LOGS.unlink(missing_ok=True)
+    ORCHESTRATOR_LOGS.unlink(missing_ok=True)
+
+    # Start processes
     processes: list[Popen] = []
     try:
-        print("Starting processes...")
         # Start inference process
         if config.inference:
+            logger.info("Starting inference process")
             inference_args = list(chain.from_iterable(to_cli("", config.inference.model_dump())))
             inference_cmd = ["uv", "run", "inference", *inference_args]
-            print(f"Starting inference process with command: {' '.join(inference_cmd)}")
+            logger.info("Starting inference process")
+            rprint(f"{' '.join(inference_cmd)}")
             inference_process = subprocess.Popen(
                 inference_cmd,
                 env={**os.environ, "CUDA_VISIBLE_DEVICES": "0"},
@@ -132,23 +163,34 @@ def rl(config: RLConfig):
             )
             processes.append(inference_process)
         else:
-            print("No inference process specified, skipping...")
+            logger.warning(
+                "No inference config specified, skipping starting inference server. Is your inference server running?"
+            )
 
         # Start orchestrator process
         orchestrator_args = list(chain.from_iterable(to_cli("", config.orchestrator.model_dump())))
-        orchestrator_cmd = ["uv", "run", "orchestrator", *orchestrator_args]
-        print(f"Starting orchestrator process with command: {' '.join(orchestrator_cmd)}")
+        orchestrator_cmd = [
+            "uv",
+            "run",
+            "orchestrator",
+            *orchestrator_args,
+            "--log.path",
+            ORCHESTRATOR_LOGS.with_suffix("").as_posix(),
+        ]
+        logger.info("Starting orchestrator process")
         orchestrator_process = subprocess.Popen(
             orchestrator_cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
         processes.append(orchestrator_process)
+        rprint(f"{' '.join(orchestrator_cmd)}")
 
         # Start training process
         train_args = list(chain.from_iterable(to_cli("", config.trainer.model_dump())))
-        training_cmd = ["uv", "run", "trainer", *train_args]
-        print(f"Starting training process with command: {' '.join(training_cmd)}")
+        training_cmd = ["uv", "run", "trainer", *train_args, "--log.path", TRAINER_LOGS.with_suffix("").as_posix()]
+        logger.info("Starting training process")
+        rprint(f"{' '.join(training_cmd)}")
         training_process = subprocess.Popen(
             training_cmd,
             env={**os.environ, "CUDA_VISIBLE_DEVICES": "1"},
@@ -158,18 +200,18 @@ def rl(config: RLConfig):
         processes.append(training_process)
 
         # Wait for all processes to complete
-        print("Waiting for all processes to complete...")
+        logger.info("Waiting for training to complete...")
         orchestrator_process.wait()
         training_process.wait()
-        print("Done!")
+        logger.info("Done!")
         cleanup(processes)
 
     except KeyboardInterrupt:
-        print("\nReceived interrupt signal, terminating all processes...")
+        logger.warning("Received interrupt signal, terminating all processes...")
         cleanup(processes)
         sys.exit(1)
     except Exception as e:
-        print(f"Error occurred: {e}")
+        logger.error(f"Error occurred: {e}")
         cleanup(processes)
         raise
 

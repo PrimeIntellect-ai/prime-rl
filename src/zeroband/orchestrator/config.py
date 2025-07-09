@@ -223,7 +223,7 @@ class OrchestratorConfig(BaseSettings):
     eval: EvalConfig | None = None
 
     # The logging configuration
-    log: LogConfig = LogConfig(path=Path("logs/orchestrator"))
+    log: LogConfig = LogConfig()
 
     # The monitor configuration
     monitor: MultiMonitorConfig = MultiMonitorConfig()

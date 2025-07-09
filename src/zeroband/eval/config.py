@@ -1,4 +1,3 @@
-from pathlib import Path
 from typing import Annotated
 
 from pydantic import Field
@@ -64,7 +63,7 @@ class EvalConfig(BaseSettings):
     monitor: MultiMonitorConfig = MultiMonitorConfig()
 
     # The logging configuration
-    log: LogConfig = LogConfig(path=Path("logs/eval"))
+    log: LogConfig = LogConfig()
 
     use_tqdm: Annotated[
         bool,

@@ -180,7 +180,7 @@ class TrainerConfig(BaseSettings):
     loss: GRPOLossConfig = GRPOLossConfig()
 
     # The logging configuration
-    log: LogConfig = LogConfig(path=Path("logs/trainer"))
+    log: LogConfig = LogConfig()
 
     # The monitor configuration
     monitor: MultiMonitorConfig = MultiMonitorConfig()

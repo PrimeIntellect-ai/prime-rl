@@ -1,14 +1,12 @@
 name: rl
 enable_pane_titles: true
 
-on_project_start: rm logs/trainer.log && rm logs/orchestrator.log
-
 windows:
   - Entrypoint:
       panes:
         - RL: echo "Run your RL entrypoint here"
   - Training:
-      layout: even-horizontal
+      layout: even-vertical
       panes:
         - Orchestrator:
           - |
