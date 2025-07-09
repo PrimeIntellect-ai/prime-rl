@@ -5,8 +5,8 @@ windows:
   - Entrypoint:
       layout: even-vertical
       panes:
-        - Inference: echo "Optionally, run your inference server here"
-        - RL: echo "Run your RL entrypoint here"
+        - Inference:
+        - RL:
   - Training:
       layout: even-vertical
       panes:
