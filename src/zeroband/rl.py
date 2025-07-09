@@ -3,7 +3,9 @@ import subprocess
 import sys
 from itertools import chain
 from subprocess import Popen
-from typing import List
+from typing import Annotated
+
+from pydantic import Field
 
 from zeroband.inference.config import InferenceConfig
 from zeroband.orchestrator.config import OrchestratorConfig
@@ -15,11 +17,16 @@ class RLConfig(BaseSettings):
     """Configures an RL training run."""
 
     trainer: TrainerConfig
-    inference: InferenceConfig
     orchestrator: OrchestratorConfig
+    inference: Annotated[
+        InferenceConfig | None,
+        Field(
+            description="The inference config. If None, will not start an inference process. Only viable, if an inference server was started manually."
+        ),
+    ] = None
 
 
-def cleanup(processes: List[Popen]):
+def cleanup(processes: list[Popen]):
     for process in processes:
         if process.poll() is None:  # Process is still running
             process.terminate()
@@ -43,19 +50,22 @@ def to_cli(prefix, d):
 
 
 def rl(config: RLConfig):
-    processes: List[subprocess.Popen] = []
+    processes: list[Popen] = []
     try:
         print("Starting processes...")
         # Start inference process
-        inference_args = list(chain.from_iterable(to_cli("", config.inference.model_dump())))
-        inference_cmd = ["uv", "run", "inference", *inference_args]
-        inference_process = subprocess.Popen(
-            inference_cmd,
-            env={**os.environ, "CUDA_VISIBLE_DEVICES": "0"},
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        processes.append(inference_process)
+        if config.inference:
+            inference_args = list(chain.from_iterable(to_cli("", config.inference.model_dump())))
+            inference_cmd = ["uv", "run", "inference", *inference_args]
+            inference_process = subprocess.Popen(
+                inference_cmd,
+                env={**os.environ, "CUDA_VISIBLE_DEVICES": "0"},
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            processes.append(inference_process)
+        else:
+            print("No inference process specified, skipping...")
 
         # Start orchestrator process
         orchestrator_args = list(chain.from_iterable(to_cli("", config.orchestrator.model_dump())))
