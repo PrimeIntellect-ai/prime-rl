@@ -44,7 +44,7 @@ from zeroband.utils.utils import clean_exit, to_col_format
 
 
 @clean_exit
-async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = None):
+async def orchestrate(config: OrchestratorConfig):
     # Initialize the logger
     logger = setup_logger(config.log)
     logger.info("Starting orchestrator")
@@ -84,7 +84,7 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
     monitor = setup_monitor(config.monitor, None, tokenizer, config)
 
     # Check health of the client
-    logger.debug("Waiting for inference pool to be ready")
+    logger.info("Waiting for inference pool to be ready")
     await check_health(client)
     await check_has_model(client, config.model.name)
     logger.success("Inference pool ready")
@@ -105,11 +105,6 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
         logger.info("Training from scratch. Resetting weights to base model")
         await reset_weights(client)
 
-    # Signal that setup is complete
-    if setup_queue is not None:
-        logger.info("Signaling trainer that orchestrator setup is complete")
-        setup_queue.put("ready")
-
     # Load dataset
     # TODO: Change to verifiers environment
     dataset: Dataset = load_dataset(config.data.name, split=config.data.split)
@@ -127,7 +122,7 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
 
     # Iterate over dataset in batches
     steps_per_epoch = len(dataset) // (config.batch_size // config.sampling.n)
-    logger.info(f"Starting training loop ({steps_per_epoch=})")
+    logger.info(f"Starting orchestrator loop (max_steps={config.max_steps}, {steps_per_epoch=})")
     last_eval_step = -1
     while True:
         # Save checkpoint (if we are not at the first step)
@@ -146,11 +141,10 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
         epoch_step = progress.step % steps_per_epoch
         if epoch_step == 0:
             progress.epoch += 1
-            logger.info(f"Starting epoch {progress.epoch}")
             # Reshuffle dataset at the beginning of each epoch
             dataset = dataset.shuffle(seed=(config.seed or 0) + progress.epoch)
 
-        logger.debug(f"Orchestrator step {progress.step} ({ckpt_step=})")
+        logger.debug(f"Orchestrator step {progress.step} ({ckpt_step=}, epoch={progress.epoch}, {epoch_step=})")
         step_start_time = time.time()
 
         # Get the batch
@@ -170,14 +164,14 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
 
             # Wait for the checkpoint to be available
             ckpt_step = progress.step - config.async_level
-            logger.debug(f"Waiting for weight checkpoint for step {ckpt_step}")
+            logger.info(f"Waiting for weight checkpoint for step {ckpt_step}")
             wait_for_weight_ckpt_start_time = time.time()
             wait_for_weight_checkpoint(config.weights_path, ckpt_step)
             wait_for_weight_ckpt_time = time.time() - wait_for_weight_ckpt_start_time
             logger.debug(f"Waited {wait_for_weight_ckpt_time:.2f}s for weight checkpoint")
 
             # Reload the weights
-            logger.debug(f"Reloading weights for step {ckpt_step}")
+            logger.info(f"Reloading weights for step {ckpt_step}")
             reload_weights_start_time = time.time()
             await reload_weights(client, config.weights_path, ckpt_step)
             reload_weights_time = time.time() - reload_weights_start_time
@@ -209,7 +203,7 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
 
         # Get the completions for the batch
         # TODO: Integrate with async (multi-turn) rollout function from verifiers
-        logger.debug(f"Sending {len(batch_messages)} inference requests for step {progress.step}")
+        logger.info(f"Sending {len(batch_messages)} inference requests for step {progress.step} ({ckpt_step=})")
         generate_completions_start_time = time.time()
         # These calls are intentionally non-concurrent because we found that /tokenize is sometimes returning a httpx.ReadError when calling this endpoint concurrently
         input_tokens = [await tokenize(client, config.model, messages) for messages in batch_messages]
@@ -220,6 +214,7 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
             )
         )
         generate_completions_time = time.time() - generate_completions_start_time
+        logger.info(f"Received {len(chat_completions)} inference responses in {generate_completions_time:.2f}s")
 
         # Parse chat completions responses
         completions = parse_completions(chat_completions)
@@ -228,12 +223,13 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
 
         # Get the rewards for the completions
         # TODO: Integrate with async scoring function from verifiers
-        logger.debug(f"Computing rewards and advantages for step {progress.step}")
+        logger.info(f"Computing rewards and advantages for step {progress.step}")
         compute_rewards_start_time = time.time()
         task_types = [problem["task_type"] for problem in problems]
         verification_infos = [json.loads(problem["verification_info"]) for problem in problems]
         rewards = compute_rewards(completions, task_types, verification_infos)
         advantages = compute_advantages(rewards, config.sampling.n)
+        logger.debug(f"Computed rewards and advantages in {compute_rewards_time:.2f}s")
         logger.debug(f"Computed rewards: {lt.lovely(torch.tensor(rewards))}")
         logger.debug(f"Computed advantages: {lt.lovely(torch.tensor(advantages))}")
 
@@ -285,7 +281,7 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
 
         # Log step metrics
         step_time = time.time() - step_start_time
-        step_message = f"Orchestrator | step {progress.step} | Time:{step_time:.2f}s | Avg. Reward: {np.mean(rewards):.2f} | Avg. Advantage: {np.mean(advantages):.2f} | Throughput: {throughput:.1f} tokens/s | Avg. Seq. Length: {avg_seq_length:.1f} tokens/sample"
+        step_message = f"Orchestrator | Step {progress.step} | Step Time: {step_time:.2f}s | Reward: {np.mean(rewards):.2f} | Advantage: {np.mean(advantages):.2f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {avg_seq_length:.1f} tokens/sample"
         logger.info(step_message)
 
         # Log progress metrics to monitor
@@ -339,16 +335,9 @@ async def orchestrate(config: OrchestratorConfig, setup_queue: Queue | None = No
         print_benchmark(to_col_format(monitor.history))
 
 
-def run_orchestrator(config: OrchestratorConfig, setup_queue: Queue | None = None):
-    """Utility function to run the orchestrator as a sidecar process in a synchronous context."""
-    import asyncio
-
-    asyncio.run(orchestrate(config, setup_queue))
-
-
 def main():
     """Main entry-point for orchestrator. Run using `uv run orchestrator`"""
-    run_orchestrator(parse_argv(OrchestratorConfig))
+    asyncio.run(orchestrate(parse_argv(OrchestratorConfig)))
 
 
 if __name__ == "__main__":
