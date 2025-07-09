@@ -48,11 +48,6 @@ async def orchestrate(config: OrchestratorConfig):
     # Initialize the logger
     logger = setup_logger(config.log)
     logger.info("Starting orchestrator")
-    logger.debug(f"ClientConfig({config.client})")
-    logger.debug(f"ModelConfig({config.model})")
-    logger.debug(f"DataConfig({config.data})")
-    logger.debug(f"SamplingConfig({config.sampling})")
-    logger.debug(f"EvaluationConfig({config.eval})")
 
     # Setup client
     logger.info(f"Initializing OpenAI client ({config.client.base_url})")
@@ -90,6 +85,7 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Load dataset
     # TODO: Change to verifiers environment
+    logger.info(f"Loading dataset ({config.data})")
     dataset: Dataset = load_dataset(config.data.name, split=config.data.split)
 
     # Optionally, filter dataset for samples within difficulty range
