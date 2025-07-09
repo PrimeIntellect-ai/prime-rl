@@ -34,7 +34,6 @@ CMD = [
     "30",
     "--orchestrator.monitor.wandb.log_samples",
 ]
-ENV = {"CUDA_VISIBLE_DEVICES": "1"}
 
 
 @pytest.fixture(scope="module")
@@ -59,7 +58,7 @@ def train_process(vllm_server: str, run_process: Callable[[Command, Environment,
 
     return run_process(
         CMD + ["--trainer.monitor.wandb.project", project, "--trainer.monitor.wandb.group", group_name],
-        ENV,
+        {},
         TIMEOUT,
     )
 
