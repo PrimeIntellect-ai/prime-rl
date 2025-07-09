@@ -105,7 +105,7 @@ def run_processes() -> Callable[[list[Command], list[Environment], int], list[Pr
     return run_subprocesses_in_parallel
 
 
-VLLM_SERVER_ENV = {"CUDA_VISIBLE_DEVICES": "1"}
+VLLM_SERVER_ENV = {"CUDA_VISIBLE_DEVICES": "0"}
 VLLM_SERVER_CMD = ["uv", "run", "inference", "@configs/inference/reverse_text.toml"]
 
 

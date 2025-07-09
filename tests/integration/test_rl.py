@@ -57,7 +57,7 @@ def train_process(vllm_server: str, run_process: Callable[[Command, Environment,
     group_name = f"{branch_name}-{commit_hash}"
 
     return run_process(
-        TRAINING_CMD + ["--monitor.wandb.project", project, "--monitor.wandb.group", group_name],
+        TRAINING_CMD + ["--trainer.monitor.wandb.project", project, "--trainer.monitor.wandb.group", group_name],
         {},
         TIMEOUT,
     )
