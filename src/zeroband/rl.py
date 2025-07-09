@@ -122,6 +122,12 @@ class RLConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_async_level(self):
+        # Use trainer async level on orchestrator
+        self.orchestrator.async_level = self.trainer.async_level
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_paths(self):
         # Ensure trainer and orchestrator use the same paths for communicating data and weights
         self.orchestrator.rollout_path = self.trainer.data.path
