@@ -274,7 +274,15 @@ def rl(config: RLConfig):
 
         # Start training process
         train_args = list(chain.from_iterable(to_cli("", config.trainer.model_dump())))
-        training_cmd = ["uv", "run", "trainer", *train_args]
+        training_cmd = [
+            "uv",
+            "run",
+            "torchrun",
+            "--nproc-per-node",
+            str(config.train_gpus),
+            "src/zeroband/trainer/train.py",
+            *train_args,
+        ]
         train_gpu_ids = all_gpus[config.inference_gpus :]
         logger.info(f"Starting training process on GPUs {' '.join(map(str, train_gpu_ids))}")
         logger.debug(f"Training start command: {' '.join(training_cmd)}")

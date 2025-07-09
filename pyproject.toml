@@ -32,7 +32,6 @@ dependencies = [
 ]
 
 [project.scripts]
-# TODO: Support torchrun for training
 rl = "zeroband.rl:main"
 trainer = "zeroband.trainer.train:main"
 orchestrator = "zeroband.orchestrator.orchestrator:main"
