@@ -131,7 +131,7 @@ def train(config: TrainerConfig):
         # Save the full checkpoint (if we are at an interval step and not at the first step)
         save_ckpt_time = 0
         if config.ckpt and config.ckpt.interval and progress.step > 0 and progress.step % config.ckpt.interval == 0:
-            logger.debug(f"Saving checkpoint at step {progress.step}")
+            logger.debug(f"Saving checkpoint {progress.step}")
             save_ckpt_start_time = time.time()
             ckpt_manager.save(model, [optimizer], progress, step=progress.step)
             save_ckpt_time = time.time() - save_ckpt_start_time
@@ -157,7 +157,7 @@ def train(config: TrainerConfig):
         logger.debug(f"Waited for batch to arrive for {wait_for_batch_time:.2f} seconds")
 
         # Load the training batch
-        logger.info("Loading batch")
+        logger.debug("Loading batch")
         load_data_start_time = time.time()
         micro_batches = dataloader.get_batch()
         load_data_time = time.time() - load_data_start_time
@@ -169,7 +169,7 @@ def train(config: TrainerConfig):
             compute_logprobs_start_time = time.time()
             og_infer_step = progress.step - config.async_level
             infer_step = max(og_infer_step, 0)
-            logger.info(f"Recomputing logprobs at step {progress.step} with weights from step {infer_step}")
+            logger.info(f"Recomputing logprobs with model weight checkpoint {infer_step}")
 
             # Wake up the logprob model from CPU
             wake_up_model_from_cpu(logprob_model, tensor_offloaded_repository[infer_step])
