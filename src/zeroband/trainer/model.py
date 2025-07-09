@@ -16,7 +16,7 @@ from transformers import (
     Qwen3ForCausalLM,
 )
 
-from zeroband.training.config import ModelConfig
+from zeroband.trainer.config import ModelConfig
 
 Model: TypeAlias = LlamaForCausalLM | Qwen2ForCausalLM | Qwen3ForCausalLM
 

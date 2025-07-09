@@ -6,9 +6,9 @@ from pathlib import Path
 import torch
 from torch.optim.optimizer import Optimizer
 
-from zeroband.training.config import CheckpointConfig
-from zeroband.training.model import Model
-from zeroband.training.world import get_world
+from zeroband.trainer.config import CheckpointConfig
+from zeroband.trainer.model import Model
+from zeroband.trainer.world import get_world
 from zeroband.utils.logger import get_logger
 
 

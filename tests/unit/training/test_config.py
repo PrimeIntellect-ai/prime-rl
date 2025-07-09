@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from zeroband.training.config import TrainingConfig
+from zeroband.trainer.config import TrainingConfig
 from zeroband.utils.pydantic_config import parse_argv
 
 

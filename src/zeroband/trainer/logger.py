@@ -3,8 +3,8 @@ from pathlib import Path
 from loguru import logger as loguru_logger
 from loguru._logger import Logger
 
-from zeroband.training.config import LogConfig
-from zeroband.training.world import World
+from zeroband.trainer.config import LogConfig
+from zeroband.trainer.world import World
 from zeroband.utils.logger import format_debug, format_message, format_time, get_logger, set_logger, setup_handlers
 
 

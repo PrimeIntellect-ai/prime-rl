@@ -5,7 +5,7 @@ import torch
 from jaxtyping import Float, Int
 from transformers import AutoTokenizer
 
-from zeroband.training.data import MicroBatch
+from zeroband.trainer.data import MicroBatch
 
 
 class Sample(TypedDict):

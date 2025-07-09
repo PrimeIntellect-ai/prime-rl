@@ -3,7 +3,7 @@ import subprocess
 
 import pytest
 
-from zeroband.training.world import get_world
+from zeroband.trainer.world import get_world
 
 ENV_VARS = ["RANK", "WORLD_SIZE", "LOCAL_RANK", "LOCAL_WORLD_SIZE"]
 

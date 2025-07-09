@@ -9,9 +9,9 @@ from torch.distributed.checkpoint.state_dict import _get_fqns as get_fqns
 from torch.distributed.tensor import DTensor
 from transformers import AutoTokenizer
 
-from zeroband.training.config import CheckpointConfig, WeightCheckpointConfig
-from zeroband.training.model import Model
-from zeroband.training.world import get_world
+from zeroband.trainer.config import CheckpointConfig, WeightCheckpointConfig
+from zeroband.trainer.model import Model
+from zeroband.trainer.world import get_world
 from zeroband.utils.logger import get_logger
 from zeroband.utils.utils import get_step_path, get_weight_ckpt_model_path
 

@@ -4,8 +4,8 @@ from typing import TypedDict
 import torch
 from jaxtyping import Float, Int
 
-from zeroband.training.config import FakeDataLoaderConfig
-from zeroband.training.world import get_world
+from zeroband.trainer.config import FakeDataLoaderConfig
+from zeroband.trainer.world import get_world
 from zeroband.utils.utils import wait_for_path
 
 

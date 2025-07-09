@@ -1,4 +1,4 @@
-import zeroband.training.envs as envs
+import zeroband.trainer.envs as envs
 
 
 class World:

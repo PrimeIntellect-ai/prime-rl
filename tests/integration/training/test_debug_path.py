@@ -6,7 +6,7 @@ import torch
 
 from tests import Command, Environment, ProcessResult
 from zeroband.orchestrator.data import Sample
-from zeroband.training.data import MicroBatch
+from zeroband.trainer.data import MicroBatch
 
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
 

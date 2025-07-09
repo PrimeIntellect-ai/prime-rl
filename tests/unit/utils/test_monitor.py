@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from zeroband.training.config import OrchestratorConfig
+from zeroband.trainer.config import OrchestratorConfig
 from zeroband.utils.config import APIMonitorConfig, FileMonitorConfig, SocketMonitorConfig
 from zeroband.utils.monitor import (
     APIMonitor,

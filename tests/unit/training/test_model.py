@@ -1,8 +1,8 @@
 import pytest
 import torch
 
-from zeroband.training.config import AttnImplementation, ModelConfig
-from zeroband.training.model import get_model
+from zeroband.trainer.config import AttnImplementation, ModelConfig
+from zeroband.trainer.model import get_model
 
 BS = 1
 SEQ_LEN = 8

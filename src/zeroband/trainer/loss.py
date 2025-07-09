@@ -4,8 +4,8 @@ from beartype import beartype as typechecker
 from jaxtyping import Float, Int, jaxtyped
 from torch import Tensor
 
-from zeroband.training.config import ClippingConfig, GRPOVariantsConfig, RatioConfig
-from zeroband.training.model import Model
+from zeroband.trainer.config import ClippingConfig, GRPOVariantsConfig, RatioConfig
+from zeroband.trainer.model import Model
 
 
 @jaxtyped(typechecker=typechecker)

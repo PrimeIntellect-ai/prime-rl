@@ -7,29 +7,29 @@ from copy import deepcopy
 
 # Import environment before any other imports
 # ruff: noqa: I001
-from zeroband.training import envs
+from zeroband.trainer import envs
 
 import shardcast
 import torch
 import torch.distributed as dist
 from torch._guards import log as torch_log
 
-from zeroband.training.ckpt import CheckpointManager, Progress
-from zeroband.training.weights import WeightCheckpointManager
-from zeroband.training.config import TrainingConfig
-from zeroband.training.data import DataLoader, FakeDataLoader
-from zeroband.training.logger import setup_logger
-from zeroband.training.loss import compute_logprobs, entropy_loss, grpo_loss
-from zeroband.training.model import forward, get_tokenizer, reshard_module, setup_model
+from zeroband.trainer.ckpt import CheckpointManager, Progress
+from zeroband.trainer.weights import WeightCheckpointManager
+from zeroband.trainer.config import TrainingConfig
+from zeroband.trainer.data import DataLoader, FakeDataLoader
+from zeroband.trainer.logger import setup_logger
+from zeroband.trainer.loss import compute_logprobs, entropy_loss, grpo_loss
+from zeroband.trainer.model import forward, get_tokenizer, reshard_module, setup_model
 from zeroband.orchestrator.orchestrator import run_orchestrator
-from zeroband.training.perf import get_perf_counter
-from zeroband.training.utils import (
+from zeroband.trainer.perf import get_perf_counter
+from zeroband.trainer.utils import (
     OffloadedTensor,
     copy_model_to_cpu,
     offload_model_to_cpu,
     wake_up_model_from_cpu,
 )
-from zeroband.training.world import get_world
+from zeroband.trainer.world import get_world
 from zeroband.utils.monitor import setup_monitor
 from zeroband.utils.pydantic_config import parse_argv
 from zeroband.utils.utils import clean_exit

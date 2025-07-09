@@ -33,9 +33,9 @@ dependencies = [
 
 [project.scripts]
 # TODO: Support torchrun for training
-train = "zeroband.training.train:main"
+trainer = "zeroband.trainer.train:main"
 orchestrator = "zeroband.orchestrator.orchestrator:main"
-infer = "zeroband.inference.server:main"
+inference = "zeroband.inference.server:main"
 eval = "zeroband.eval.eval:main"
 
 [build-system]

@@ -66,16 +66,16 @@ uv run python -c "import flash_attn"
 3. Check that you can run training debug mode 
 
 ```bash
-uv run train @ configs/training/debug.toml
+uv run trainer @ configs/trainer/debug.toml
 ```
 
 4. Check that you can run the orchestrator against an inference server
 
 ```bash
-uv run infer @ configs/inference/debug.toml
+uv run inference @ configs/inference/debug.toml
 ```
 ```bash
-uv run orchestrator @ configs/training/orchestrator/debug.toml
+uv run orchestrator @ configs/orchestrator/debug.toml
 ```
 </details>
 
@@ -91,13 +91,13 @@ Train a tiny model (`willcb/Qwen2.5-0.5B-Reverse-SFT`) to learn to reverse a sma
 First, start the inference server
 
 ```bash
-uv run infer @ configs/inference/reverse_text.toml
+uv run inference @ configs/inference/reverse_text.toml
 ```
 
 Then, start the trainer which will spawn the orchestrator as a subprocess
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 uv run train @ configs/training/reverse_text.toml
+CUDA_VISIBLE_DEVICES=1 uv run trainer @ configs/trainer/reverse_text.toml
 ```
 
 **Simple Math**
@@ -107,13 +107,13 @@ Train a small model (`deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B`) on high-school
 First, start the inference server
 
 ```bash
-uv run infer @ configs/inference/simple_math.toml --parallel.dp 1
+uv run inference @ configs/inference/simple_math.toml --parallel.dp 1
 ```
 
 Then, start the trainer which will spawn the orchestrator as a subprocess
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 uv run train @ configs/training/simple_math.toml
+CUDA_VISIBLE_DEVICES=1 uv run trainer @ configs/trainer/simple_math.toml
 ```
 
 *NB: If you have more than 2 GPUs available, the best way to speed up the run is to increase the DP size of the inference worker, i.e. adjusting the `--parallel.dp` argument.*
@@ -147,11 +147,15 @@ uv run pre-commit install
 We use `pydantic-settings` to configure `prime-rl`. To get an overview of the available configurations, run the following command:
 
 ```bash
-uv run python src/zeroband/training/train.py --help
+uv run trainer --help
 ```
 
 ```bash
-uv run python src/zeroband/inference/server.py --help
+uv run orchestrator --help
+```
+
+```bash
+uv run inference --help
 ```
 
 **Sources**
@@ -160,7 +164,7 @@ We support the following sources for configuration, in this order of precedence:
 
 1. **Command-line arguments**: You can pass (nested) arguments as `--key.subkey value` to the script. For example, to set the model name you can run `--model.name`
 
-2. **Config files**: You can pass `.toml` config files (defined in the `configs` directory) using the `@` prefix. For example, to use the `debug.toml` config file, you can run `uv run python src/zeroband/inference/server.py @ configs/inference/debug.toml`. (*If you leave a space between the `@` and the config file, you will get shell path auto-completions.*)
+2. **Config files**: You can pass `.toml` config files (defined in the `configs` directory) using the `@` prefix. For example, to use the `debug.toml` config file, you can run `uv run inference @ configs/inference/debug.toml`. (*If you leave a space between the `@` and the config file, you will get shell path auto-completions.*)
 
 3. **Environment variables**: You can set environment variables to override the config values. All environment variables must be prefixed with `PRIME_` and use the `__` delimiter to nest the keys. For example, to set the model name you can run `export PRIME_MODEL__NAME=Qwen/Qwen3-0.6B`.
 
@@ -183,7 +187,7 @@ name = "Qwen/Qwen-14B"
 ```
 
 ```bash
-PRIME_MODEL__NAME=Qwen/Qwen3-4B uv run src/zeroband/inference/server.py @qwen8b.toml @qwen14b.toml --model.name Qwen/Qwen3-32B
+PRIME_MODEL__NAME=Qwen/Qwen3-4B uv run inference @qwen8b.toml @qwen14b.toml --model.name Qwen/Qwen3-32B
 ```
 
 In this example, the CLI argument `--model.name Qwen/Qwen3-32B` will take precendence and the script will use `Qwen/Qwen3-32B` as the model name. If the CLI argument wasn't set, then the second config file would take precedence and the script would use `Qwen/Qwen-14B` as the model name. If the second config file wasn't set, then the first config file would take precedence and the script would use `Qwen/Qwen3-8B` as the model name. Finally, if the first config file wasn't set, then the environment variable would take precedence and the script would use `Qwen/Qwen-4B` as the model name. If the environment variable wasn't set, then the default value would be used and the script would use `Qwen/Qwen3-0.6B` as the model name.
@@ -192,8 +196,8 @@ In this example, the CLI argument `--model.name Qwen/Qwen3-32B` will take precen
 
 Our codebase supports checkpointing. Because of the trainer/ orchestrator design, as well as the natural asynchrony checkpointing is non-standard.
 
-- Trainer (`src/zeroband/training/ckpt.py`): Checkpoints FSDP model shard, optimizer state and progress (training step, total samples, total tokens)
-- Orchestrator (`src/zeroband/training/ckpt.py`): Checkpoints orchestrator progress
+- Trainer (`src/zeroband/trainer/ckpt.py`): Checkpoints FSDP model shard, optimizer state and progress (training step, total samples, total tokens)
+- Orchestrator (`src/zeroband/trainer/ckpt.py`): Checkpoints orchestrator progress
 
 *NB: Each run with asynchrony level `async_level` and some checkpoint step `x`, requires weight checkpoints in the step range `[x-async_level, x]`. Currently we do not duplicate weight checkpoints into the `checkpoints` directory but simply keep them around in `weights`, by keeping the trainer from cleaning up weight checkpoints that are required for resuming training. This way, the orchestrator only needs to checkpoint its progress (read: step) to load the correct weights into the inference engine upon resuming.*
 
@@ -220,19 +224,19 @@ Checkpointing is configured by the `CheckpointConfig`, with the config key `--ck
 By default, runs do no write checkpoints to save disk space. To checkpoint every 10 steps on our debug RL run, run the following command
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 uv run train @ configs/training/reverse_text.toml --ckpt.interval 10 
+CUDA_VISIBLE_DEVICES=1 uv run trainer @ configs/trainer/reverse_text.toml --ckpt.interval 10 
 ```
 
 To resume a run use the `--ckpt.resume-step` flag. To resume from the checkpoint stpe 10 from the previous command, run the following command
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 uv run train @ configs/training/reverse_text.toml --ckpt.resume_step 10
+CUDA_VISIBLE_DEVICES=1 uv run trainer @ configs/trainer/reverse_text.toml --ckpt.resume_step 10
 ```
 
 Because we save progress information, resuming from a checkpoint is fully W&B compatible. By default, resuming from a checkpoint, will simply create a new run. To resume the same W&B run, you'd have to pass the same W&B run ID for both the trainer and the orchestrator, e.g.
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 uv run train @ configs/training/reverse_text.toml \
+CUDA_VISIBLE_DEVICES=1 uv run trainer @ configs/trainer/reverse_text.toml \
   --monitor.wandb.project <project> \
   --monitor.wandb.group <group> \
   --ckpt.resume-step 10 \
@@ -273,7 +277,8 @@ To run fast tests, use the inverse of the `slow` marker:
 uv run pytest -v -m "not slow"
 ```
 
-### Checkpoint, rollout, step numbering and async level
+### Step Definition
+
 At each step `n`, all artifacts (e.g., checkpoint, rollout, gradient) are tagged with the same step number.
 - Step 0:
   - Uses checkpoint 0 on rollout 0 to compute gradient 0.

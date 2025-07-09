@@ -5,7 +5,7 @@ import torch
 from torch import Tensor
 from torch.distributed.tensor import DTensor
 
-from zeroband.training.model import Model
+from zeroband.trainer.model import Model
 
 
 class FakeTokenizer:

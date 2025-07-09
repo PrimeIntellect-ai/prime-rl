@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from zeroband.training.loss import entropy_loss, grpo_loss_clip, grpo_loss_ratio
+from zeroband.trainer.loss import entropy_loss, grpo_loss_clip, grpo_loss_ratio
 
 pytestmark = [pytest.mark.gpu]
 

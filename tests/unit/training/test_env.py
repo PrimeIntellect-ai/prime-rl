@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from zeroband.training import envs as training_env
+from zeroband.trainer import envs as training_env
 
 
 def test_training_env_defaults():
