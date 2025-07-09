@@ -7,6 +7,7 @@ from pathlib import Path
 from subprocess import Popen
 from typing import Annotated
 
+import torch
 from loguru import logger as loguru_logger
 from loguru._logger import Logger
 from pydantic import Field, model_validator
@@ -34,6 +35,22 @@ class RLConfig(BaseSettings):
             description="The inference config. If None, will not start an inference process. Only viable, if an inference server was started manually."
         ),
     ] = None
+
+    train_gpus: Annotated[int, Field(description="The number of GPUs to use for training.")] = 1
+    inference_gpus: Annotated[int, Field(description="The number of GPUs to use for inference.")] = 1
+
+    @model_validator(mode="after")
+    def validate_device(self):
+        available_gpus = torch.cuda.device_count()
+        if self.train_gpus + self.inference_gpus > available_gpus:
+            raise ValueError(
+                f"Total number of GPUs ({self.train_gpus + self.inference_gpus}) exceeds available GPUs ({available_gpus})"
+            )
+        if self.inference and self.inference_gpus != self.inference.parallel.dp + self.inference.parallel.tp:
+            raise ValueError(
+                f"Total number of inference GPUs ({self.inference_gpus}) does not match the local sharding strategy ({self.inference.parallel.dp} DP + {self.inference.parallel.tp} TP)"
+            )
+        return self
 
     @model_validator(mode="after")
     def auto_setup_wandb(self):
@@ -147,17 +164,19 @@ def rl(config: RLConfig):
 
     # Start processes
     processes: list[Popen] = []
+    all_gpus = list(range(config.train_gpus + config.inference_gpus))
     try:
         # Start inference process
         if config.inference:
             logger.info("Starting inference process")
             inference_args = list(chain.from_iterable(to_cli("", config.inference.model_dump())))
             inference_cmd = ["uv", "run", "inference", *inference_args]
-            logger.info("Starting inference process")
+            inference_gpu_ids = all_gpus[: config.inference_gpus]
+            logger.info(f"Starting inference process on GPUs {' '.join(map(str, inference_gpu_ids))}")
             rprint(f"{' '.join(inference_cmd)}")
             inference_process = subprocess.Popen(
                 inference_cmd,
-                env={**os.environ, "CUDA_VISIBLE_DEVICES": "0"},
+                env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, inference_gpu_ids))},
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -189,11 +208,12 @@ def rl(config: RLConfig):
         # Start training process
         train_args = list(chain.from_iterable(to_cli("", config.trainer.model_dump())))
         training_cmd = ["uv", "run", "trainer", *train_args, "--log.path", TRAINER_LOGS.with_suffix("").as_posix()]
-        logger.info("Starting training process")
+        train_gpu_ids = all_gpus[config.inference_gpus :]
+        logger.info(f"Starting training process on GPUs {' '.join(map(str, train_gpu_ids))}")
         rprint(f"{' '.join(training_cmd)}")
         training_process = subprocess.Popen(
             training_cmd,
-            env={**os.environ, "CUDA_VISIBLE_DEVICES": "1"},
+            env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, train_gpu_ids))},
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
