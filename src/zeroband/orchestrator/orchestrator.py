@@ -144,7 +144,7 @@ async def orchestrate(config: OrchestratorConfig):
             # Reshuffle dataset at the beginning of each epoch
             dataset = dataset.shuffle(seed=(config.seed or 0) + progress.epoch)
 
-        logger.debug(f"Orchestrator step {progress.step} ({ckpt_step=}, epoch={progress.epoch}, {epoch_step=})")
+        logger.info(f"Starting orchestrator step {progress.step} ({ckpt_step=}, epoch={progress.epoch}, {epoch_step=})")
         step_start_time = time.time()
 
         # Get the batch
@@ -280,7 +280,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Log step metrics
         step_time = time.time() - step_start_time
-        step_message = f"Orchestrator | Step {progress.step} | Step Time: {step_time:.2f}s | Reward: {np.mean(rewards):.2f} | Advantage: {np.mean(advantages):.2f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {avg_seq_length:.1f} tokens/sample"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {np.mean(rewards):.2f} | Advantage: {np.mean(advantages):.2f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {avg_seq_length:.1f} tokens/sample"
         logger.success(step_message)
 
         # Log progress metrics to monitor

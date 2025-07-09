@@ -39,12 +39,6 @@ def train(config: TrainerConfig):
     world = get_world()
     logger = setup_logger(config.log, world)
     logger.info(f"Starting trainer in {world}")
-    logger.debug(f"ModelConfig({config.model})")
-    logger.debug(f"DataConfig({config.data})")
-    logger.debug(f"OptimizerConfig({config.optim})")
-    logger.debug(f"CheckpointConfig({config.ckpt})")
-    logger.debug(f"WeightCheckpointConfig({config.weights})")
-    logger.debug(f"GRPOLossConfig({config.loss})")
 
     # Setup the monitor
     logger.info(f"Initializing monitor ({config.monitor})")
@@ -74,6 +68,7 @@ def train(config: TrainerConfig):
     tokenizer = get_tokenizer(config.model)
 
     # Set up the optimizer
+    logger.info(f"Initializing optimizer ({config.optim})")
     optimizer = torch.optim.AdamW(
         params=model.parameters(),
         lr=config.optim.lr,
@@ -82,8 +77,10 @@ def train(config: TrainerConfig):
     )
 
     # Get checkpoint managers
+    logger.info(f"Initializing weight checkpoint manager ({config.weights})")
     weight_ckpt_manager = WeightCheckpointManager(config.weights, config.ckpt, config.async_level)
     if config.ckpt:
+        logger.info(f"Initializing checkpoint manager ({config.ckpt})")  # TODO: Remove this
         ckpt_manager = CheckpointManager(config.ckpt)
 
     # Optionally, resume training from a checkpoint
@@ -91,11 +88,15 @@ def train(config: TrainerConfig):
     if config.ckpt and config.ckpt.resume_step:
         logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
         ckpt_manager.load(model, [optimizer], progress, step=config.ckpt.resume_step)
+    logger.info(
+        f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
+    )
 
     # Optionally, initialize a model to compute logprobs
     if config.recompute_logprobs:
         # Initialize the logprob model
         tensor_offloaded_repository: dict[int, OffloadedTensor] = {}
+        logger.info(f"Initializing logprob model ({config.model})")
         logprob_model = setup_model(config.model)
 
         # Load async models from weights checkpoint if resuming from checkpoint
@@ -139,23 +140,24 @@ def train(config: TrainerConfig):
         if config.max_steps and progress.step >= config.max_steps:
             break
 
-        logger.debug(f"Training step {progress.step}")
+        logger.info(f"Starting training step {progress.step}")
         step_start_time = time.time()
 
         # Offload the current model to CPU for logprob computation
         if config.recompute_logprobs:
-            logger.debug("Offloading updated model to CPU")
+            logger.debug(f"Offloading model for step {progress.step} to CPU for future logprob calculation")
             reshard_module(logprob_model)
             tensor_offloaded_repository[progress.step] = copy_model_to_cpu(model)
 
         # Wait for the batch to be available
+        logger.info("Waiting for training batch to arrive")
         wait_for_batch_start_time = time.time()
         dataloader.wait_for_batch()
         wait_for_batch_time = time.time() - wait_for_batch_start_time
         logger.debug(f"Waited for batch to arrive for {wait_for_batch_time:.2f} seconds")
 
         # Load the training batch
-        logger.debug("Loading training batch")
+        logger.info("Loading batch")
         load_data_start_time = time.time()
         micro_batches = dataloader.get_batch()
         load_data_time = time.time() - load_data_start_time
@@ -164,10 +166,10 @@ def train(config: TrainerConfig):
         # Optionally, compute the logprobs for the training batch
         compute_logprobs_time = 0
         if config.recompute_logprobs:
-            logger.debug("Recomputing logprobs")
             compute_logprobs_start_time = time.time()
             og_infer_step = progress.step - config.async_level
             infer_step = max(og_infer_step, 0)
+            logger.info(f"Recomputing logprobs at step {progress.step} with weights from step {infer_step}")
 
             # Wake up the logprob model from CPU
             wake_up_model_from_cpu(logprob_model, tensor_offloaded_repository[infer_step])
@@ -190,7 +192,7 @@ def train(config: TrainerConfig):
             offload_model_to_cpu(logprob_model)
 
             compute_logprobs_time = time.time() - compute_logprobs_start_time
-            logger.debug(f"Computed logprobs in {compute_logprobs_time:.2f} seconds")
+            logger.debug(f"Recomputed logprobs in {compute_logprobs_time:.2f} seconds")
 
         if config.profile_path and world.rank == 0:
             torch.cuda.memory._record_memory_history()
@@ -198,6 +200,7 @@ def train(config: TrainerConfig):
         forward_backward_start_time = time.time()
         loss_metrics = defaultdict(float)
         num_micro_batches = len(micro_batches)
+        logger.info(f"Starting forward and backward pass ({num_micro_batches=})")
         for micro_step, micro_batch in enumerate(micro_batches, start=1):
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
@@ -247,14 +250,20 @@ def train(config: TrainerConfig):
             loss_metrics["loss/entropy"] += entropy.detach().clone()
             loss_metrics["loss/importance_ratio"] += importance_ratio.detach().clone()
 
+            logger.debug(
+                f"Completed micro batch {micro_step}/{num_micro_batches} (loss={loss.item():.2f}, entropy={entropy.item():.2f}, importance_ratio={importance_ratio.item():.2f})"
+            )
+
             del loss, entropy, importance_ratio
 
         # Synchronize the batch metrics across all ranks
+        logger.debug(f"All-reduce loss metrics keys {list(loss_metrics.keys())}")
         for key, value in loss_metrics.items():
             dist.all_reduce(value.to("cuda"), op=dist.ReduceOp.AVG)
             loss_metrics[key] = value
 
         # Optionally, clip the gradients
+        logger.debug(f"Clipping gradients to {config.loss.max_norm}")
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.loss.max_norm).full_tensor()
         loss_metrics["loss/grad_norm"] += grad_norm.detach().clone()
 
@@ -296,8 +305,7 @@ def train(config: TrainerConfig):
 
         # Log step metrics
         step_time = time.time() - step_start_time
-        step_message = f"Training     | step {progress.step} | Time:{step_time:.2f}s | Loss: {loss_metrics['loss/loss']:.2f} | Entropy: {loss_metrics['loss/entropy']:.2f} | Mean Ratio: {loss_metrics['loss/importance_ratio']:.2f} | {throughput:.0f} tokens/s | MFU: {mfu:.1f}%"
-
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {loss_metrics['loss/loss']:.2f} | Entropy: {loss_metrics['loss/entropy']:.2f} | Importance Ratio: {loss_metrics['loss/importance_ratio']:.2f} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}%"
         logger.success(step_message)
 
         # Log progress metrics
@@ -338,7 +346,7 @@ def train(config: TrainerConfig):
         progress.step += 1
 
     logger.info(f"Peak memory: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB")
-    logger.success("Training finished!")
+    logger.success("Trainer finished!")
 
 
 def main():

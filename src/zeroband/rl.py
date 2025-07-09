@@ -219,7 +219,7 @@ def rl(config: RLConfig):
         logger.info("Waiting for training to complete...")
         orchestrator_process.wait()
         training_process.wait()
-        logger.info("Done!")
+        logger.success("RL training finished!")
         cleanup(processes)
 
     except KeyboardInterrupt:
