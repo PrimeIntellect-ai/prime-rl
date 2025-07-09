@@ -67,7 +67,7 @@ class RLConfig(BaseSettings):
             raise ValueError(
                 f"Total number of GPUs ({self.train_gpus + self.inference_gpus}) exceeds available GPUs ({available_gpus})"
             )
-        if self.inference and self.inference_gpus != self.inference.parallel.dp + self.inference.parallel.tp:
+        if self.inference and self.inference_gpus != self.inference.parallel.dp * self.inference.parallel.tp:
             raise ValueError(
                 f"Total number of inference GPUs ({self.inference_gpus}) does not match the local sharding strategy ({self.inference.parallel.dp} DP + {self.inference.parallel.tp} TP)"
             )
