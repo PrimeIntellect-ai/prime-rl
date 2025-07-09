@@ -16,7 +16,7 @@ from torch._guards import log as torch_log
 
 from zeroband.trainer.ckpt import CheckpointManager, Progress
 from zeroband.trainer.weights import WeightCheckpointManager
-from zeroband.trainer.config import TrainingConfig
+from zeroband.trainer.config import TrainerConfig
 from zeroband.trainer.data import DataLoader, FakeDataLoader
 from zeroband.trainer.logger import setup_logger
 from zeroband.trainer.loss import compute_logprobs, entropy_loss, grpo_loss
@@ -36,7 +36,7 @@ from zeroband.utils.utils import clean_exit
 
 
 @clean_exit
-def train(config: TrainingConfig):
+def train(config: TrainerConfig):
     # Setup world and logger
     world = get_world()
     logger = setup_logger(config.log, world)
@@ -388,7 +388,7 @@ def train(config: TrainingConfig):
 
 
 def main():
-    train(parse_argv(TrainingConfig))
+    train(parse_argv(TrainerConfig))
 
 
 if __name__ == "__main__":

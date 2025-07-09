@@ -160,8 +160,8 @@ class DataLoaderConfig(BaseConfig):
     fake: Annotated[FakeDataLoaderConfig | None, Field(description="Whether to use a fake data loader.")] = None
 
 
-class TrainingConfig(BaseSettings):
-    """Configures training"""
+class TrainerConfig(BaseSettings):
+    """Configures the trainer"""
 
     # The orchestrator configuration
     orchestrator: OrchestratorConfig | None = None

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from zeroband.trainer.config import TrainingConfig
+from zeroband.trainer.config import TrainerConfig
 from zeroband.utils.pydantic_config import parse_argv
 
 
@@ -16,5 +16,5 @@ def get_all_toml_files(directory) -> list[str]:
 @pytest.mark.parametrize("config_file", get_all_toml_files("configs/training"))
 def test_load_train_configs(config_file: str):
     sys.argv = ["train.py", "@" + config_file]
-    config = parse_argv(TrainingConfig)
+    config = parse_argv(TrainerConfig)
     assert config is not None

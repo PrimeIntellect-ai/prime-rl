@@ -6,15 +6,15 @@ from subprocess import Popen
 from typing import List
 
 from zeroband.inference.config import InferenceConfig
-from zeroband.training.config import TrainingConfig
-from zeroband.training.orchestrator.config import OrchestratorConfig
+from zeroband.orchestrator.config import OrchestratorConfig
+from zeroband.trainer.config import TrainerConfig
 from zeroband.utils.pydantic_config import BaseSettings, parse_argv
 
 
 class RLConfig(BaseSettings):
     """Configures an RL training run."""
 
-    training: TrainingConfig
+    trainer: TrainerConfig
     inference: InferenceConfig
     orchestrator: OrchestratorConfig
 
@@ -48,7 +48,7 @@ def rl(config: RLConfig):
         print("Starting processes...")
         # Start inference process
         inference_args = list(chain.from_iterable(to_cli("", config.inference.model_dump())))
-        inference_cmd = ["uv", "run", "infer", *inference_args]
+        inference_cmd = ["uv", "run", "inference", *inference_args]
         inference_process = subprocess.Popen(
             inference_cmd,
             env={**os.environ, "CUDA_VISIBLE_DEVICES": "0"},
@@ -68,8 +68,8 @@ def rl(config: RLConfig):
         processes.append(orchestrator_process)
 
         # Start training process
-        train_args = list(chain.from_iterable(to_cli("", config.training.model_dump())))
-        training_cmd = ["uv", "run", "train", *train_args]
+        train_args = list(chain.from_iterable(to_cli("", config.trainer.model_dump())))
+        training_cmd = ["uv", "run", "trainer", *train_args]
         training_process = subprocess.Popen(
             training_cmd,
             env={**os.environ, "CUDA_VISIBLE_DEVICES": "1"},
