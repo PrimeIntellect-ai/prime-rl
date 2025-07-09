@@ -1,0 +1,14 @@
+batch_size = 128
+micro_batch_size = 16
+seq_len = 128
+max_steps = 30
+
+[model]
+name = "willcb/Qwen2.5-0.5B-Reverse-SFT"
+
+[data]
+name = "mikasenghaas/reverse_text_dataset_debug_50_seq_len"
+
+[sampling]
+n = 16
+max_seq_len = 128

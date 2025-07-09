@@ -97,28 +97,28 @@ We provide a convenience endpoint `rl` for single-node RL experiments. It is res
 tmuxinator
 ```
 
-2. Optionally, start the inference server in the `Inference` pane
+2. Option 1: Start all subprocesses with a single command
+
+```bash
+uv run rl \
+  --trainer @ configs/trainer/reverse_text.toml \
+  --orchestrator @ configs/orchestrator/reverse_text.toml \
+  --inference @ configs/inference/reverse_text.toml
+```
+
+2. Option 2: Start the inference server separately in the `Inference` pane
 
 ```bash
 uv run inference @ configs/inference/reverse_text.toml
 ```
 
-3. Run the main entrypoint in the `RL` pane
+And then start the trainer and orcheestrator in the `RL` pane. This pane allows to keep the inference server alive across multiple experiments, saving on vLLM startup time.
 
 ```bash
 uv run rl \
-  --trainer.model.name willcb/Qwen2.5-0.5B-Reverse-SFT \
-  --trainer.optim.lr 3e-6 \
-  --orchestrator.data.name mikasenghaas/reverse_text_dataset_debug_50_seq_len \
-  --orchestrator.sampling.n 16 \
-  --orchestrator.sampling.max_seq_len 128 \
-  --orchestrator.batch-size 128 \
-  --orchestrator.micro-batch-size 16 \
-  --orchestrator.seq-len 128 \
-  --trainer.max-steps 30
+  --trainer @ configs/trainer/reverse_text.toml \
+  --orchestrator @ configs/orchestrator/reverse_text.toml
 ```
-
-*NB: If you skipped step 2, you need to specify an inference config from the `rl` endpoint.*
 
 
 ### RL

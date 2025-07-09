@@ -270,7 +270,6 @@ def parse_argv(config_cls: Type[T], allow_extras: bool = False) -> T:
         CLI args take precedence over TOML file values.
     """
     toml_paths, cli_args = extract_toml_paths(sys.argv[1:])
-    print(f"toml_paths: {toml_paths}, cli_args: {cli_args}")
     config_cls.set_toml_files(toml_paths)
     if allow_extras:
         cli_args, unknown_args = parse_unknown_args(cli_args, config_cls)

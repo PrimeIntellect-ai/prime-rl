@@ -1,0 +1,22 @@
+batch_size = 2048
+micro_batch_size = 1
+seq_len = 8192
+
+[eval]
+interval = 50
+benchmarks = ["math500"]
+
+[data]
+name = "PrimeIntellect/INTELLECT-2-only-math"
+
+[data.difficulty_filtering]
+solve_rate_field = "solve_rate_qwen_r1_distill_7b"
+min_solve_rate = 0.4
+max_solve_rate = 0.9
+
+[sampling]
+n = 16
+
+[monitor.wandb.log_samples]
+interval = 50
+num_samples = 16

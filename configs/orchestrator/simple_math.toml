@@ -1,0 +1,13 @@
+batch_size = 512
+micro_batch_size = 4
+seq_len = 2048
+
+[data]
+name = "justus27/math-hendrycks-genesys-format"
+
+[sampling]
+n = 16
+
+[monitor.wandb.log_samples]
+interval = 50
+num_samples = 16

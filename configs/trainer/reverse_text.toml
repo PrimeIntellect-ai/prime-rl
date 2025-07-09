@@ -5,21 +5,3 @@ name = "willcb/Qwen2.5-0.5B-Reverse-SFT"
 
 [optim]
 lr = 3e-6
-
-### Orchestrator ###
-
-[orchestrator]
-batch_size = 128
-micro_batch_size = 16
-seq_len = 128
-max_steps = 30
-
-[orchestrator.model]
-name = "willcb/Qwen2.5-0.5B-Reverse-SFT"
-
-[orchestrator.data]
-name = "mikasenghaas/reverse_text_dataset_debug_50_seq_len"
-
-[orchestrator.sampling]
-n = 16
-max_seq_len = 128
