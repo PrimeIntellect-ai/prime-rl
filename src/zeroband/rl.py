@@ -11,7 +11,6 @@ import torch
 from loguru import logger as loguru_logger
 from loguru._logger import Logger
 from pydantic import Field, model_validator
-from rich import print as rprint
 
 from zeroband.inference.config import InferenceConfig
 from zeroband.orchestrator.config import OrchestratorConfig
@@ -173,7 +172,6 @@ def rl(config: RLConfig):
             inference_cmd = ["uv", "run", "inference", *inference_args]
             inference_gpu_ids = all_gpus[: config.inference_gpus]
             logger.info(f"Starting inference process on GPUs {' '.join(map(str, inference_gpu_ids))}")
-            rprint(f"{' '.join(inference_cmd)}")
             inference_process = subprocess.Popen(
                 inference_cmd,
                 env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, inference_gpu_ids))},
@@ -203,14 +201,12 @@ def rl(config: RLConfig):
             stderr=subprocess.DEVNULL,
         )
         processes.append(orchestrator_process)
-        rprint(f"{' '.join(orchestrator_cmd)}")
 
         # Start training process
         train_args = list(chain.from_iterable(to_cli("", config.trainer.model_dump())))
         training_cmd = ["uv", "run", "trainer", *train_args, "--log.path", TRAINER_LOGS.with_suffix("").as_posix()]
         train_gpu_ids = all_gpus[config.inference_gpus :]
         logger.info(f"Starting training process on GPUs {' '.join(map(str, train_gpu_ids))}")
-        rprint(f"{' '.join(training_cmd)}")
         training_process = subprocess.Popen(
             training_cmd,
             env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, train_gpu_ids))},
