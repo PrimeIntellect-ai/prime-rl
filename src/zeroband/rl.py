@@ -2,10 +2,12 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import warnings
 from itertools import chain
 from pathlib import Path
 from subprocess import Popen
+from threading import Event, Thread
 from typing import Annotated
 
 import torch
@@ -175,7 +177,12 @@ def setup_logger(log_config: LogConfig) -> Logger:
     return logger
 
 
-def cleanup(processes: list[Popen]):
+def cleanup_threads(threads: list[Thread]):
+    for thread in threads:
+        thread.join(timeout=5)
+
+
+def cleanup_processes(processes: list[Popen]):
     for process in processes:
         if process.poll() is None:  # Process is still running
             process.terminate()
@@ -183,6 +190,21 @@ def cleanup(processes: list[Popen]):
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 process.kill()
+
+
+def monitor_process(process: Popen, stop_event: Event, error_queue: list, process_name: str):
+    """Monitor a subprocess and signal errors via shared queue"""
+    try:
+        # Wait for process to complete
+        process.wait()
+
+        if process.returncode != 0:
+            error_msg = f"{process_name} process failed with exit code {process.returncode}. Try running the process manually to see the error."
+            error_queue.append(RuntimeError(error_msg))
+        stop_event.set()
+    except Exception as e:
+        error_queue.append(RuntimeError(f"Error monitoring {process_name}: {e}"))
+        stop_event.set()
 
 
 def to_cli(prefix, d):
@@ -233,9 +255,13 @@ def rl(config: RLConfig):
 
     # Start processes
     processes: list[Popen] = []
+    monitor_threads: list[Thread] = []
+    error_queue: list[Exception] = []
+    stop_events: dict[str, Event] = {}
     all_gpus = list(range(config.train_gpus + config.inference_gpus))
+
     try:
-        # Start inference process
+        # Optionally, start inference process
         if config.inference:
             logger.info("Starting inference process")
             inference_args = list(chain.from_iterable(to_cli("", config.inference.model_dump())))
@@ -250,6 +276,17 @@ def rl(config: RLConfig):
                 stderr=subprocess.DEVNULL,
             )
             processes.append(inference_process)
+
+            # Start monitoring thread
+            stop_event = Event()
+            stop_events["inference"] = stop_event
+            monitor_thread = Thread(
+                target=monitor_process,
+                args=(inference_process, stop_event, error_queue, "inference"),
+                daemon=True,
+            )
+            monitor_thread.start()
+            monitor_threads.append(monitor_thread)
         else:
             logger.warning(
                 "No inference config specified, skipping starting inference server. Is your inference server running?"
@@ -271,6 +308,17 @@ def rl(config: RLConfig):
             stderr=subprocess.DEVNULL,
         )
         processes.append(orchestrator_process)
+
+        # Start monitoring thread
+        stop_event = Event()
+        stop_events["orchestrator"] = stop_event
+        monitor_thread = Thread(
+            target=monitor_process,
+            args=(orchestrator_process, stop_event, error_queue, "orchestrator"),
+            daemon=True,
+        )
+        monitor_thread.start()
+        monitor_threads.append(monitor_thread)
 
         # Start training process
         train_args = list(chain.from_iterable(to_cli("", config.trainer.model_dump())))
@@ -294,20 +342,46 @@ def rl(config: RLConfig):
         )
         processes.append(training_process)
 
-        # Wait for all processes to complete
+        # Start monitoring thread
+        stop_event = Event()
+        stop_events["training"] = stop_event
+        monitor_thread = Thread(
+            target=monitor_process, args=(training_process, stop_event, error_queue, "training"), daemon=True
+        )
+        monitor_thread.start()
+        monitor_threads.append(monitor_thread)
+
+        # Monitor all processes for failures
         logger.info("Waiting for training to complete...")
-        orchestrator_process.wait()
-        training_process.wait()
+
+        # Check for errors from monitor threads
+        while not (stop_events["orchestrator"].is_set() and stop_events["training"].is_set()):
+            if error_queue:
+                error = error_queue[0]
+                logger.error(f"Process monitoring error: {error}")
+                logger.error("One or more processes failed, terminating all processes...")
+                cleanup_threads(monitor_threads)
+                cleanup_processes(processes)
+                sys.exit(1)
+
+            # Small delay to avoid busy waiting
+            time.sleep(1)
+
         logger.success("RL training finished!")
-        cleanup(processes)
+
+        # Cleanup threads and processes
+        cleanup_threads(monitor_threads)
+        cleanup_processes(processes)
 
     except KeyboardInterrupt:
         logger.warning("Received interrupt signal, terminating all processes...")
-        cleanup(processes)
+        cleanup_threads(monitor_threads)
+        cleanup_processes(processes)
         sys.exit(1)
     except Exception as e:
         logger.error(f"Error occurred: {e}")
-        cleanup(processes)
+        cleanup_threads(monitor_threads)
+        cleanup_processes(processes)
         raise
 
 
