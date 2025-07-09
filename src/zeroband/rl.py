@@ -200,7 +200,8 @@ def monitor_process(process: Popen, stop_event: Event, error_queue: list, proces
 
         if process.returncode != 0:
             err_msg = f"{process_name} process failed with exit code {process.returncode}"
-            err_msg += f"\nStderr: {process.stderr.read().decode('utf-8')}"
+            if process.stderr:
+                err_msg += f"\nStderr: {process.stderr.read().decode('utf-8')}"
             error_queue.append(RuntimeError(err_msg))
         stop_event.set()
     except Exception as e:
@@ -338,7 +339,7 @@ def rl(config: RLConfig):
         training_process = subprocess.Popen(
             training_cmd,
             env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, train_gpu_ids))},
-            stdout=subprocess.PIPE,
+            stdout=None,  # Show trainer stdout
             stderr=subprocess.PIPE,
         )
         processes.append(training_process)
