@@ -271,12 +271,14 @@ def rl(config: RLConfig):
             inference_gpu_ids = all_gpus[: config.inference_gpus]
             logger.info(f"Starting inference process on GPUs {' '.join(map(str, inference_gpu_ids))}")
             logger.debug(f"Inference start command: {' '.join(inference_cmd)}")
-            inference_process = subprocess.Popen(
-                inference_cmd,
-                env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, inference_gpu_ids))},
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
+            inference_log_path = config.log.path.parent / "inference.log"
+            with open(inference_log_path, "w") as log_file:  # If we don't log stdout, the server hangs
+                inference_process = subprocess.Popen(
+                    inference_cmd,
+                    env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, inference_gpu_ids))},
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                )
             processes.append(inference_process)
 
             # Start monitoring thread
