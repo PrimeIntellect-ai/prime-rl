@@ -214,7 +214,7 @@ async def orchestrate(config: OrchestratorConfig):
             )
         )
         generate_completions_time = time.time() - generate_completions_start_time
-        logger.info(f"Received {len(chat_completions)} inference responses in {generate_completions_time:.2f}s")
+        logger.debug(f"Received {len(chat_completions)} inference responses in {generate_completions_time:.2f}s")
 
         # Parse chat completions responses
         completions = parse_completions(chat_completions)
@@ -229,11 +229,10 @@ async def orchestrate(config: OrchestratorConfig):
         verification_infos = [json.loads(problem["verification_info"]) for problem in problems]
         rewards = compute_rewards(completions, task_types, verification_infos)
         advantages = compute_advantages(rewards, config.sampling.n)
+        compute_rewards_time = time.time() - compute_rewards_start_time
         logger.debug(f"Computed rewards and advantages in {compute_rewards_time:.2f}s")
         logger.debug(f"Computed rewards: {lt.lovely(torch.tensor(rewards))}")
         logger.debug(f"Computed advantages: {lt.lovely(torch.tensor(advantages))}")
-
-        compute_rewards_time = time.time() - compute_rewards_start_time
 
         # Compute batch metrics
         num_input_tokens = sum(completion.usage.prompt_tokens for completion in chat_completions)
@@ -282,7 +281,7 @@ async def orchestrate(config: OrchestratorConfig):
         # Log step metrics
         step_time = time.time() - step_start_time
         step_message = f"Orchestrator | Step {progress.step} | Step Time: {step_time:.2f}s | Reward: {np.mean(rewards):.2f} | Advantage: {np.mean(advantages):.2f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {avg_seq_length:.1f} tokens/sample"
-        logger.info(step_message)
+        logger.success(step_message)
 
         # Log progress metrics to monitor
         progress_metrics = {
@@ -337,6 +336,8 @@ async def orchestrate(config: OrchestratorConfig):
 
 def main():
     """Main entry-point for orchestrator. Run using `uv run orchestrator`"""
+    import asyncio
+
     asyncio.run(orchestrate(parse_argv(OrchestratorConfig)))
 
 
