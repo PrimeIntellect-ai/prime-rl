@@ -1,11 +1,9 @@
-import warnings
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias, Union
 
 from pydantic import Field, model_validator
 
-from zeroband.orchestrator.config import OrchestratorConfig
-from zeroband.utils.config import LogConfig, MultiMonitorConfig, WandbMonitorConfig
+from zeroband.utils.config import LogConfig, MultiMonitorConfig
 from zeroband.utils.pydantic_config import BaseConfig, BaseSettings
 
 AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2"]
@@ -163,9 +161,6 @@ class DataLoaderConfig(BaseConfig):
 class TrainerConfig(BaseSettings):
     """Configures the trainer"""
 
-    # The orchestrator configuration
-    orchestrator: OrchestratorConfig | None = None
-
     # The model configuration
     model: ModelConfig = ModelConfig()
 
@@ -213,62 +208,3 @@ class TrainerConfig(BaseSettings):
             description="Whether to recompute the logprobs. If True, will always recompute logprobs and overwrite those found in the training batch.",
         ),
     ] = True
-
-    @model_validator(mode="after")
-    def auto_setup_orchestrator_wandb(self):
-        # Automatically use same W&B project
-        if self.orchestrator and self.monitor.wandb:
-            if not self.orchestrator.monitor.wandb:
-                self.orchestrator.monitor.wandb = WandbMonitorConfig()
-            self.orchestrator.monitor.wandb.project = self.monitor.wandb.project
-
-            # If group is set, use it and auto-generate run names
-            if self.monitor.wandb.group:
-                self.orchestrator.monitor.wandb.group = self.monitor.wandb.group
-
-                self.monitor.wandb.name = f"{self.monitor.wandb.group}-train"
-                self.orchestrator.monitor.wandb.name = f"{self.monitor.wandb.group}-orchestrator"
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_orchestrator_model(self):
-        if self.orchestrator:
-            self.orchestrator.model.name = self.model.name
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_orchestrator_log_level(self):
-        if self.orchestrator:
-            self.orchestrator.log.level = self.log.level
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_max_step(self):
-        if self.max_steps is not None and self.orchestrator:
-            self.orchestrator.max_steps = self.max_steps
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_orchestrator_ckpt(self):
-        if self.ckpt:
-            # Ensures that trainer and orchestrator checkpoints are synchronized
-            self.orchestrator.ckpt = CheckpointConfig()
-            self.orchestrator.ckpt.path = self.ckpt.path
-            self.orchestrator.ckpt.interval = self.ckpt.interval
-
-            if self.ckpt.resume_step and self.orchestrator.ckpt.resume_step is None:
-                self.orchestrator.ckpt.resume_step = self.ckpt.resume_step
-        return self
-
-    @model_validator(mode="after")
-    def warn_wandb_resume_id_missing(self):
-        if self.ckpt and self.ckpt.resume_step:
-            if self.monitor.wandb and not self.monitor.wandb.id:
-                warnings.warn(
-                    "W&B run ID is not set for trainer even though resuming training. The current run will be created as a new run."
-                )
-            if self.orchestrator.monitor.wandb and not self.orchestrator.monitor.wandb.id:
-                warnings.warn(
-                    "W&B run ID is not set for orchestrator even though resuming training. The current run will be created as a new run."
-                )
-        return self

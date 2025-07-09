@@ -1,5 +1,4 @@
 import logging
-import multiprocessing as mp
 import os
 import time
 from collections import defaultdict
@@ -21,7 +20,6 @@ from zeroband.trainer.data import DataLoader, FakeDataLoader
 from zeroband.trainer.logger import setup_logger
 from zeroband.trainer.loss import compute_logprobs, entropy_loss, grpo_loss
 from zeroband.trainer.model import forward, get_tokenizer, reshard_module, setup_model
-from zeroband.orchestrator.orchestrator import run_orchestrator
 from zeroband.trainer.perf import get_perf_counter
 from zeroband.trainer.utils import (
     OffloadedTensor,
@@ -51,31 +49,6 @@ def train(config: TrainerConfig):
     # Setup the monitor
     logger.info(f"Initializing monitor ({config.monitor})")
     monitor = setup_monitor(config.monitor, run_config=config)
-
-    # Optionally, sidecar the orchestrator
-    orchestrator = None
-    if config.orchestrator and world.rank == 0 and config.data.fake is None:
-        config.orchestrator.num_train_workers = world.world_size
-
-        logger.info("Starting orchestrator in a separate process")
-
-        # Create a queue for orchestrator to signal when setup is complete
-        ctx = mp.get_context("spawn")
-        setup_queue = ctx.Queue()
-        orchestrator = ctx.Process(
-            target=run_orchestrator,
-            args=(config.orchestrator, setup_queue),
-            daemon=True,
-        )
-        orchestrator.start()
-
-        # Wait for orchestrator to signal that setup is complete
-        logger.info("Waiting for orchestrator to complete setup...")
-        signal = setup_queue.get()
-        if signal == "ready":
-            logger.success("Orchestrator setup complete, continuing with training")
-        else:
-            raise RuntimeError(f"Unexpected signal from orchestrator: {signal}")
 
     # TODO(Mika): Move this to typed env var
     # Allow eager fallback during production so that training runs don't die if compile fails
@@ -174,15 +147,6 @@ def train(config: TrainerConfig):
             logger.debug("Offloading updated model to CPU")
             reshard_module(logprob_model)
             tensor_offloaded_repository[progress.step] = copy_model_to_cpu(model)
-
-        # Check if orchestrator is still alive (only on rank 0)
-        if orchestrator and world.rank == 0:
-            if not orchestrator.is_alive():
-                if orchestrator.exitcode == 0:
-                    logger.info("Detected that orchestrator is finished!")
-                else:
-                    logger.error(f"Orchestrator process died with exit code {orchestrator.exitcode}")
-                    raise RuntimeError(f"Orchestrator process died with exit code {orchestrator.exitcode}")
 
         # Wait for the batch to be available
         wait_for_batch_start_time = time.time()
@@ -375,16 +339,6 @@ def train(config: TrainerConfig):
 
     logger.info(f"Peak memory: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB")
     logger.success("Training finished!")
-
-    # Clean up orchestrator process if it was started
-    if orchestrator and orchestrator.is_alive():
-        logger.info("Terminating orchestrator process")
-        orchestrator.terminate()
-        orchestrator.join(timeout=5)
-        if orchestrator.is_alive():
-            logger.warning("Orchestrator process did not terminate gracefully, forcing kill")
-            orchestrator.kill()
-            orchestrator.join()
 
 
 def main():

@@ -5,6 +5,8 @@ on_project_start: rm logs/trainer.log && rm logs/orchestrator.log
 
 windows:
   - Entrypoint:
+      panes:
+        - RL: echo "Run your RL entrypoint here"
   - Training:
       layout: even-horizontal
       panes:
@@ -14,9 +16,7 @@ windows:
               echo "Waiting for orchestrator log file..."
               while [ ! -f logs/orchestrator.log ]; do sleep 1; done
               echo "Following orchestrator.log..."
-              tail -f logs/orchestrator.log
-              echo "Log file disappeared, waiting for new one..."
-              sleep 1
+              tail -F logs/orchestrator.log
             done
         - Trainer:
           - |
@@ -24,8 +24,11 @@ windows:
               echo "Waiting for trainer log file..."
               while [ ! -f logs/trainer.log ]; do sleep 1; done
               echo "Following trainer.log..."
-              tail -f logs/trainer.log
-              echo "Log file disappeared, waiting for new one..."
-              sleep 1
+              tail -F logs/trainer.log
             done
+  - Monitor:
+      layout: even-horizontal
+      panes:
+        - GPU: nvtop
+        - CPU: htop
             
