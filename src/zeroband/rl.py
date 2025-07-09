@@ -199,8 +199,9 @@ def monitor_process(process: Popen, stop_event: Event, error_queue: list, proces
         process.wait()
 
         if process.returncode != 0:
-            error_msg = f"{process_name} process failed with exit code {process.returncode}. Try running the process manually to see the error."
-            error_queue.append(RuntimeError(error_msg))
+            err_msg = f"{process_name} process failed with exit code {process.returncode}"
+            err_msg += f"\nStderr: {process.stderr.read().decode('utf-8')}"
+            error_queue.append(RuntimeError(err_msg))
         stop_event.set()
     except Exception as e:
         error_queue.append(RuntimeError(f"Error monitoring {process_name}: {e}"))
@@ -272,8 +273,8 @@ def rl(config: RLConfig):
             inference_process = subprocess.Popen(
                 inference_cmd,
                 env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, inference_gpu_ids))},
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
             )
             processes.append(inference_process)
 
@@ -304,8 +305,8 @@ def rl(config: RLConfig):
         logger.debug(f"Orchestrator start command: {' '.join(orchestrator_cmd)}")
         orchestrator_process = subprocess.Popen(
             orchestrator_cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
         processes.append(orchestrator_process)
 
@@ -337,8 +338,8 @@ def rl(config: RLConfig):
         training_process = subprocess.Popen(
             training_cmd,
             env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, train_gpu_ids))},
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
         processes.append(training_process)
 
@@ -358,7 +359,7 @@ def rl(config: RLConfig):
         while not (stop_events["orchestrator"].is_set() and stop_events["training"].is_set()):
             if error_queue:
                 error = error_queue[0]
-                logger.error(f"Process monitoring error: {error}")
+                logger.error(f"Error in subprocess: {error}")
                 logger.error("One or more processes failed, terminating all processes...")
                 cleanup_threads(monitor_threads)
                 cleanup_processes(processes)
