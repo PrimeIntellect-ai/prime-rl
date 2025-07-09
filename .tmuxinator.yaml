@@ -3,7 +3,9 @@ enable_pane_titles: true
 
 windows:
   - Entrypoint:
+      layout: even-vertical
       panes:
+        - Inference: echo "Optionally, run your inference server here"
         - RL: echo "Run your RL entrypoint here"
   - Training:
       layout: even-vertical

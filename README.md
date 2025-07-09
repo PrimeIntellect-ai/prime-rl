@@ -77,10 +77,49 @@ uv run inference @ configs/inference/debug.toml
 ```bash
 uv run orchestrator @ configs/orchestrator/debug.toml
 ```
+
+5. Check that you can run the RL entrypoint
+
+```bash
+# TBD
+```
+
 </details>
 
 
 ## Entrypoints
+
+We provide a convenience endpoint `rl` for single-node RL experiments. It is responsible for configuring and starting the trainer and orchestrator and, optionally, an inference server. It enforces correctly setting shared configs (e.g. the model name or async level should be the same across all modules) and dispatches the trainer, inference and orchestrator as subprocesses. To stream the logs from each module, we use file logging. To view them automatically, we provide a skeleton `tmux` layout in the `.tmuxinator.yaml` file. The recommended workflow is therefore:
+
+1. Start a `tmux` session using `tmuxinator`
+
+```bash
+tmuxinator
+```
+
+2. Optionally, start the inference server in the `Inference` pane
+
+```bash
+uv run inference @ configs/inference/reverse_text.toml
+```
+
+3. Run the main entrypoint in the `RL` pane
+
+```bash
+uv run rl \
+  --trainer.model.name willcb/Qwen2.5-0.5B-Reverse-SFT \
+  --trainer.optim.lr 3e-6 \
+  --orchestrator.data.name mikasenghaas/reverse_text_dataset_debug_50_seq_len \
+  --orchestrator.sampling.n 16 \
+  --orchestrator.sampling.max_seq_len 128 \
+  --orchestrator.batch-size 128 \
+  --orchestrator.micro-batch-size 16 \
+  --orchestrator.seq-len 128 \
+  --trainer.max-steps 30
+```
+
+*NB: If you skipped step 2, you need to specify an inference config from the `rl` endpoint.*
+
 
 ### RL
 
@@ -97,7 +136,7 @@ uv run inference @ configs/inference/reverse_text.toml
 Then, start the trainer which will spawn the orchestrator as a subprocess
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 uv run trainer @ configs/trainer/reverse_text.toml
+# TBD
 ```
 
 **Simple Math**
@@ -113,7 +152,7 @@ uv run inference @ configs/inference/simple_math.toml --parallel.dp 1
 Then, start the trainer which will spawn the orchestrator as a subprocess
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 uv run trainer @ configs/trainer/simple_math.toml
+# TBD
 ```
 
 *NB: If you have more than 2 GPUs available, the best way to speed up the run is to increase the DP size of the inference worker, i.e. adjusting the `--parallel.dp` argument.*
