@@ -10,7 +10,7 @@ from zeroband.trainer.data import MicroBatch
 
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
 
-CMD = ["uv", "run", "train", "@configs/training/debug.toml"]
+CMD = ["uv", "run", "trainer", "@configs/trainer/debug.toml"]
 
 
 def create_sample(seq_len: int) -> Sample:

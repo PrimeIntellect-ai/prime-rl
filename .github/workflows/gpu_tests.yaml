@@ -51,23 +51,10 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
       - name: Run integration tests
-        run: uv run pytest tests/integration -m gpu
-
-  e2e-tests:
-    name: E2E tests
-    runs-on: self-hosted
-    timeout-minutes: 15
-    needs: setup
-    if: github.event_name == 'push' || github.event.pull_request.draft == false
-    steps:
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-      - name: Run E2E tests
         env:
           USERNAME_CI: CI_RUNNER
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
           GITHUB_HEAD_REF: ${{ github.head_ref }}
-        run: uv run pytest tests/e2e -m gpu
-
+        run: uv run pytest tests/integration -m gpu

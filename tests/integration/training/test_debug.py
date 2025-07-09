@@ -6,7 +6,7 @@ from tests import Command, Environment, ProcessResult
 
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
 
-CMD = ["uv", "run", "train", "@configs/training/debug.toml"]
+CMD = ["uv", "run", "trainer", "@configs/trainer/debug.toml"]
 
 
 @pytest.fixture(scope="module")
