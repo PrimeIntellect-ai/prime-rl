@@ -162,9 +162,8 @@ def setup_logger(log_config: LogConfig) -> Logger:
 
     # Setup the logger handlers
     format = format_time(log_config) + format_message()
-    log_config_copy = log_config.model_copy()
-    log_config_copy.path = log_config_copy.path / "rl.log"
-    logger = setup_handlers(loguru_logger, format, log_config_copy, rank=0)
+    log_config.path = log_config.path / "rl.log"
+    logger = setup_handlers(loguru_logger, format, log_config, rank=0)
     set_logger(logger)
 
     return logger
@@ -201,9 +200,16 @@ def rl(config: RLConfig):
     # Prepare paths to communicate with the trainer
     if config.clean:
         logger.info("Cleaning checkpoint, logs, checkpoint weights and rollout directories")
-        logger.info(f"Cleaning logs ({config.log.path})")
-        shutil.rmtree(config.log.path, ignore_errors=True)
 
+        # Cleaning logs
+        logger.info(f"Cleaning RL logs ({config.log.path})")
+        shutil.rmtree(config.log.path, ignore_errors=True)
+        logger.info(f"Cleaning trainer logs ({config.trainer.log.path})")
+        shutil.rmtree(config.trainer.log.path, ignore_errors=True)
+        logger.info(f"Cleaning orchestrator logs ({config.orchestrator.log.path})")
+        shutil.rmtree(config.orchestrator.log.path, ignore_errors=True)
+
+        # Cleaning checkpoints
         if config.trainer.ckpt and not config.trainer.ckpt.resume_step:  # Only clean if we don't resume
             logger.info(f"Cleaning trainer checkpoint path ({config.trainer.ckpt.path})")
             shutil.rmtree(config.trainer.ckpt.path, ignore_errors=True)
