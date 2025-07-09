@@ -29,6 +29,7 @@ dependencies = [
     "reasoning_gym",
     "lovely-tensors>=0.1.18",
     "rich>=14.0.0",
+    "tomli-w",
 ]
 
 [project.scripts]
