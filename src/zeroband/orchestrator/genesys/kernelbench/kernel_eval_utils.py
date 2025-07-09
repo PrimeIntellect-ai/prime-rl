@@ -298,7 +298,9 @@ def time_execution_with_cuda_event(
         kernel_fn(*args)
         torch.cuda.synchronize(device=device)
 
-    print(f"[Profiling] Using device: {device} {torch.cuda.get_device_name(device)}, warm up {num_warmup}, trials {num_trials}")
+    print(
+        f"[Profiling] Using device: {device} {torch.cuda.get_device_name(device)}, warm up {num_warmup}, trials {num_trials}"
+    )
     elapsed_times = []
 
     # Actual trials
@@ -376,7 +378,9 @@ def run_and_check_correctness(
                         metadata,
                     )
                     if verbose:
-                        print(f"[FAIL] trial {trial}: Output shape mismatch: Expected {output.shape}, got {output_new.shape}")
+                        print(
+                            f"[FAIL] trial {trial}: Output shape mismatch: Expected {output.shape}, got {output_new.shape}"
+                        )
                     return KernelExecResult(compiled=True, correctness=False, metadata=metadata)
 
                 # check output value difference

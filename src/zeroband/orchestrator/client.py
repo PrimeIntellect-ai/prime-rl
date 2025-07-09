@@ -7,7 +7,7 @@ from openai import AsyncOpenAI, BaseModel
 from openai.types.chat import ChatCompletion
 from vllm.entrypoints.openai.api_server import TokenizeResponse
 
-from zeroband.training.orchestrator.config import ClientConfig, ModelConfig, SamplingConfig
+from zeroband.orchestrator.config import ClientConfig, ModelConfig, SamplingConfig
 from zeroband.utils.logger import get_logger
 from zeroband.utils.utils import get_weight_ckpt_model_path
 

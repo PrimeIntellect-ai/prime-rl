@@ -4,7 +4,7 @@ from pathlib import Path
 
 import torch
 
-from zeroband.training.orchestrator.config import CheckpointConfig
+from zeroband.orchestrator.config import CheckpointConfig
 from zeroband.utils.logger import get_logger
 
 

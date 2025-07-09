@@ -3,7 +3,7 @@ from pathlib import Path
 from loguru import logger as loguru_logger
 from loguru._logger import Logger
 
-from zeroband.training.orchestrator.config import LogConfig
+from zeroband.orchestrator.config import LogConfig
 from zeroband.utils.logger import format_debug, format_message, format_time, get_logger, set_logger, setup_handlers
 
 

@@ -10,9 +10,7 @@ def compute_reward(completion: str, verification_info: Dict):
     # Extract student answer
     if "<unscrambled_text>" not in completion:
         return 0
-    answer_text = re.search(
-        r"<unscrambled_text>(.*?)</unscrambled_text>", completion, re.DOTALL
-    )
+    answer_text = re.search(r"<unscrambled_text>(.*?)</unscrambled_text>", completion, re.DOTALL)
     if not answer_text:
         return 0
 
@@ -52,8 +50,7 @@ def compute_reward(completion: str, verification_info: Dict):
             while (
                 i + consecutive < len(answer_sentences)
                 and j + consecutive < len(truth_sentences)
-                and answer_sentences[i + consecutive]
-                == truth_sentences[j + consecutive]
+                and answer_sentences[i + consecutive] == truth_sentences[j + consecutive]
             ):
                 consecutive += 1
 

@@ -1,4 +1,4 @@
-from zeroband.training.orchestrator.genesys.format_utils import extract_last_json
+from zeroband.orchestrator.genesys.format_utils import extract_last_json
 
 
 def verify_complex_json_formatting(completion: str, verification_info: dict):

@@ -2,7 +2,14 @@ import re
 from functools import lru_cache
 
 GPU = "L40S"
-GPU_ARCH_MAPPING = {"L40S": ["Ada"], "H100": ["Hopper"], "A100": ["Ampere"], "L4": ["Ada"], "T4": ["Turing"], "A10G": ["Ampere"]}
+GPU_ARCH_MAPPING = {
+    "L40S": ["Ada"],
+    "H100": ["Hopper"],
+    "A100": ["Ampere"],
+    "L4": ["Ada"],
+    "T4": ["Turing"],
+    "A10G": ["Ampere"],
+}
 
 
 @lru_cache(maxsize=1)
@@ -54,7 +61,12 @@ def get_app():
 
             set_gpu_arch(gpu_arch)
             return eval_kernel_against_ref(
-                ref_arch_src, custom_cuda, verbose=verbose, measure_performance=True, num_correct_trials=5, num_perf_trials=100
+                ref_arch_src,
+                custom_cuda,
+                verbose=verbose,
+                measure_performance=True,
+                num_correct_trials=5,
+                num_perf_trials=100,
             )
 
     return app, EvalFunc

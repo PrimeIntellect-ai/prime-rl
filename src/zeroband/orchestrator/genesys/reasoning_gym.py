@@ -1,6 +1,6 @@
 from reasoning_gym.factory import get_score_answer_fn
 
-from zeroband.training.orchestrator.genesys.format_utils import extract_last_json
+from zeroband.orchestrator.genesys.format_utils import extract_last_json
 
 
 def _extract_post_string(completion: str) -> str | None:
@@ -27,20 +27,14 @@ def _extract_json_field(completion: str, field: str) -> str | None:
 
 def extract_answer_arc_agi(completion: str, verification_info: dict):
     verification_info["reasoning_gym_entry"]["metadata"]["output"] = tuple(
-        [
-            tuple(b)
-            for b in verification_info["reasoning_gym_entry"]["metadata"]["output"]
-        ]
+        [tuple(b) for b in verification_info["reasoning_gym_entry"]["metadata"]["output"]]
     )
     return _extract_post_string(completion), verification_info
 
 
 def extract_answer_rearc(completion: str, verification_info: dict):
     verification_info["reasoning_gym_entry"]["metadata"]["output"] = tuple(
-        [
-            tuple(b)
-            for b in verification_info["reasoning_gym_entry"]["metadata"]["output"]
-        ]
+        [tuple(b) for b in verification_info["reasoning_gym_entry"]["metadata"]["output"]]
     )
     return _extract_post_string(completion), verification_info
 
@@ -94,8 +88,6 @@ def verify_reasoning_gym(completion: str, verification_info: dict) -> float:
     if answer is None:
         return 0.0
 
-    score = score_answer_fn(
-        answer=answer, entry=verification_info["reasoning_gym_entry"]
-    )
+    score = score_answer_fn(answer=answer, entry=verification_info["reasoning_gym_entry"])
 
     return 1.0 if score == 1 else 0.0

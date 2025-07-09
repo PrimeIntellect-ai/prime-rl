@@ -2,13 +2,13 @@ import asyncio
 
 from zeroband.eval.config import EvalConfig
 from zeroband.eval.utils import run_benchmark
-from zeroband.training.orchestrator.client import (
+from zeroband.orchestrator.client import (
     check_has_model,
     check_health,
     reset_weights,
     setup_client,
 )
-from zeroband.training.orchestrator.logger import setup_logger
+from zeroband.orchestrator.logger import setup_logger
 from zeroband.utils.monitor import setup_monitor
 from zeroband.utils.pydantic_config import parse_argv
 from zeroband.utils.utils import clean_exit

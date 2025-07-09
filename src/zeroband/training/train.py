@@ -21,7 +21,7 @@ from zeroband.training.data import DataLoader, FakeDataLoader
 from zeroband.training.logger import setup_logger
 from zeroband.training.loss import compute_logprobs, entropy_loss, grpo_loss
 from zeroband.training.model import forward, get_tokenizer, reshard_module, setup_model
-from zeroband.training.orchestrator.orchestrator import run_orchestrator
+from zeroband.orchestrator.orchestrator import run_orchestrator
 from zeroband.training.perf import get_perf_counter
 from zeroband.training.utils import (
     OffloadedTensor,

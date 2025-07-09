@@ -1,30 +1,30 @@
 from typing import Callable, Literal
 
-from zeroband.training.orchestrator.genesys.ascii_tree_formatting import (
+from zeroband.orchestrator.genesys.ascii_tree_formatting import (
     compute_reward as compute_ascii_tree_reward,
 )
-from zeroband.training.orchestrator.genesys.code import evaluate_code
-from zeroband.training.orchestrator.genesys.code_output_prediction import (
+from zeroband.orchestrator.genesys.code import evaluate_code
+from zeroband.orchestrator.genesys.code_output_prediction import (
     verify_code_output_prediction,
 )
-from zeroband.training.orchestrator.genesys.complex_json_output import (
+from zeroband.orchestrator.genesys.complex_json_output import (
     verify_complex_json_formatting,
 )
-from zeroband.training.orchestrator.genesys.formatask import (
+from zeroband.orchestrator.genesys.formatask import (
     compute_reward as compute_formatask_reward,
 )
-from zeroband.training.orchestrator.genesys.git_diff import compute_git_diff_reward
-from zeroband.training.orchestrator.genesys.ifeval import verify_ifeval
-from zeroband.training.orchestrator.genesys.kernelbench.verify_kernel import (
+from zeroband.orchestrator.genesys.git_diff import compute_git_diff_reward
+from zeroband.orchestrator.genesys.ifeval import verify_ifeval
+from zeroband.orchestrator.genesys.kernelbench.verify_kernel import (
     assign_kernel_reward,
 )
-from zeroband.training.orchestrator.genesys.math import compute_math_reward
-from zeroband.training.orchestrator.genesys.pydantic_json_adherance import (
+from zeroband.orchestrator.genesys.math import compute_math_reward
+from zeroband.orchestrator.genesys.pydantic_json_adherance import (
     validate_pydantic_json,
 )
-from zeroband.training.orchestrator.genesys.reasoning_gym import verify_reasoning_gym
-from zeroband.training.orchestrator.genesys.reverse_text import reverse_text
-from zeroband.training.orchestrator.genesys.unscramble_sentence import (
+from zeroband.orchestrator.genesys.reasoning_gym import verify_reasoning_gym
+from zeroband.orchestrator.genesys.reverse_text import reverse_text
+from zeroband.orchestrator.genesys.unscramble_sentence import (
     compute_reward as compute_unscramble_reward,
 )
 

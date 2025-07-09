@@ -1,6 +1,6 @@
 from typing import Dict
 
-from zeroband.training.orchestrator.genesys.math_utils import (
+from zeroband.orchestrator.genesys.math_utils import (
     extract_answer,
     grade_answer_mathd,
     grade_answer_sympy,
@@ -44,9 +44,7 @@ def compute_math_reward(completion: str, verification_info: Dict):
 
     # Check against all possible correct answers
     for ground_truth in processed_ground_truths:
-        is_correct = grade_answer_mathd(
-            model_answer, ground_truth
-        ) or grade_answer_sympy(model_answer, ground_truth)
+        is_correct = grade_answer_mathd(model_answer, ground_truth) or grade_answer_sympy(model_answer, ground_truth)
         if is_correct:
             return 1
 

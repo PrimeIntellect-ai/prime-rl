@@ -4,7 +4,7 @@ from typing import Annotated
 from pydantic import Field
 
 from zeroband.eval.registry import Benchmark
-from zeroband.training.orchestrator.config import (
+from zeroband.orchestrator.config import (
     ClientConfig,
     LogConfig,
     SamplingConfig,

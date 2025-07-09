@@ -2,7 +2,7 @@ from types import ModuleType
 
 from pydantic import BaseModel
 
-from zeroband.training.orchestrator.genesys.format_utils import extract_last_json
+from zeroband.orchestrator.genesys.format_utils import extract_last_json
 
 
 def _load_model_from_code(code_str: str, model_name: str) -> type[BaseModel]:
@@ -27,9 +27,7 @@ def _load_model_from_code(code_str: str, model_name: str) -> type[BaseModel]:
     return cls
 
 
-def validate_pydantic_json(
-    completion: str, verification_info: dict
-) -> tuple[bool, str]:
+def validate_pydantic_json(completion: str, verification_info: dict) -> tuple[bool, str]:
     payload = extract_last_json(completion)
     if payload is None:
         return 0

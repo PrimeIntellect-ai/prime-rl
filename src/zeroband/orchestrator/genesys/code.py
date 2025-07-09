@@ -3,7 +3,7 @@ import re
 import traceback
 from typing import Dict
 
-from zeroband.training.orchestrator.genesys.code_utils import check_correctness
+from zeroband.orchestrator.genesys.code_utils import check_correctness
 
 
 def evaluate_code(completion: str, verification_info: Dict):
@@ -23,9 +23,7 @@ def evaluate_code(completion: str, verification_info: Dict):
 
     try:
         try:
-            res, _ = check_correctness(
-                in_outs=test_cases, generation=solution, timeout=5, debug=False
-            )
+            res, _ = check_correctness(in_outs=test_cases, generation=solution, timeout=5, debug=False)
             success = all(map(lambda x: x is True, res))
             if success:
                 return 1
@@ -44,9 +42,7 @@ def evaluate_code(completion: str, verification_info: Dict):
         metadata_list = []
         res_list = []
         for test_case_id, test_case in enumerate(test_cases_list):
-            res, metadata = check_correctness(
-                in_outs=test_case, generation=solution, timeout=5, debug=False
-            )
+            res, metadata = check_correctness(in_outs=test_case, generation=solution, timeout=5, debug=False)
             try:
                 metadata = dict(enumerate(metadata))[0]
             except Exception:

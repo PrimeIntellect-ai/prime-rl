@@ -4,7 +4,7 @@ from typing import Annotated, Literal, TypeAlias, Union
 
 from pydantic import Field, model_validator
 
-from zeroband.training.orchestrator.config import OrchestratorConfig
+from zeroband.orchestrator.config import OrchestratorConfig
 from zeroband.utils.config import LogConfig, MultiMonitorConfig, WandbMonitorConfig
 from zeroband.utils.pydantic_config import BaseConfig, BaseSettings
 

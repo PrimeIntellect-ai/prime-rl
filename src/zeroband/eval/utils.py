@@ -11,9 +11,9 @@ from zeroband.eval.registry import (
     get_benchmark_dataset,
     get_benchmark_display_name,
 )
-from zeroband.training.orchestrator.client import generate_completion, tokenize
-from zeroband.training.orchestrator.config import ModelConfig, SamplingConfig
-from zeroband.training.orchestrator.utils import compute_rewards, parse_completions
+from zeroband.orchestrator.client import generate_completion, tokenize
+from zeroband.orchestrator.config import ModelConfig, SamplingConfig
+from zeroband.orchestrator.utils import compute_rewards, parse_completions
 from zeroband.utils.logger import get_logger
 from zeroband.utils.monitor import MultiMonitor
 from zeroband.utils.utils import capitalize

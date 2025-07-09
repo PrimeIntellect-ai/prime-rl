@@ -7,7 +7,7 @@ from openai.types.chat import ChatCompletion
 from rich.console import Console
 from rich.table import Table
 
-from zeroband.training.orchestrator.genesys import TaskType, get_reward_function
+from zeroband.orchestrator.genesys import TaskType, get_reward_function
 from zeroband.utils.utils import format_num, format_time, get_weight_ckpt_model_path, wait_for_path
 
 

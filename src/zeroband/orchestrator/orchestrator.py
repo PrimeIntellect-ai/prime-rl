@@ -7,7 +7,7 @@ from pathlib import Path
 
 # Import environment before any other imports
 # ruff: noqa: I001,F401
-from zeroband.training.orchestrator import envs
+from zeroband.orchestrator import envs
 
 import lovely_tensors as lt
 import numpy as np
@@ -16,8 +16,8 @@ from datasets import Dataset, load_dataset
 from transformers import AutoTokenizer
 
 from zeroband.eval.utils import run_benchmark
-from zeroband.training.orchestrator.ckpt import CheckpointManager, Progress
-from zeroband.training.orchestrator.client import (
+from zeroband.orchestrator.ckpt import CheckpointManager, Progress
+from zeroband.orchestrator.client import (
     check_has_model,
     check_health,
     generate_completion,
@@ -26,10 +26,10 @@ from zeroband.training.orchestrator.client import (
     setup_client,
     tokenize,
 )
-from zeroband.training.orchestrator.config import OrchestratorConfig
-from zeroband.training.orchestrator.data import prepare_batch
-from zeroband.training.orchestrator.logger import setup_logger
-from zeroband.training.orchestrator.utils import (
+from zeroband.orchestrator.config import OrchestratorConfig
+from zeroband.orchestrator.data import prepare_batch
+from zeroband.orchestrator.logger import setup_logger
+from zeroband.orchestrator.utils import (
     compute_advantages,
     compute_rewards,
     parse_completions,
