@@ -63,13 +63,13 @@ uv run python -V
 uv run python -c "import flash_attn"
 ```
 
-3. Check that you can run training debug mode 
+3. Check that you can run training debug mode (*this requires 1 GPU*)
 
 ```bash
 uv run trainer @ configs/trainer/debug.toml
 ```
 
-4. Check that you can run the orchestrator against an inference server
+4. Check that you can run the orchestrator against an inference server (*this requires 1 GPU*)
 
 ```bash
 uv run inference @ configs/inference/debug.toml
@@ -78,26 +78,7 @@ uv run inference @ configs/inference/debug.toml
 uv run orchestrator @ configs/orchestrator/debug.toml
 ```
 
-5. Check that you can run the RL entrypoint
-
-```bash
-# TBD
-```
-
-</details>
-
-
-## Entrypoints
-
-We provide a convenience endpoint `rl` for single-node RL experiments. It is responsible for configuring and starting the trainer and orchestrator and, optionally, an inference server. It enforces correctly setting shared configs (e.g. the model name or async level should be the same across all modules) and dispatches the trainer, inference and orchestrator as subprocesses. To stream the logs from each module, we use file logging. To view them automatically, we provide a skeleton `tmux` layout in the `.tmuxinator.yaml` file. The recommended workflow is therefore:
-
-1. Start a `tmux` session using `tmuxinator`
-
-```bash
-tmuxinator
-```
-
-2. Option 1: Start all subprocesses with a single command
+5. Check that you can run a toy RL run (*this requires 2 GPUs and lasts 5min, see more below*)
 
 ```bash
 uv run rl \
@@ -106,13 +87,26 @@ uv run rl \
   --inference @ configs/inference/reverse_text.toml
 ```
 
-2. Option 2: Start the inference server separately in the `Inference` pane
+</details>
+
+
+## Entrypoints
+
+We provide a convenience endpoint `rl` for single-node RL experiments. It configures and startsthe trainer, orchestrator and, optionally, an inference server. It enforces correctly setting shared configs (e.g. the model name or async level should be the same across all modules) and dispatches and monitors subprocesses. To stream the logs from each module, we use file logging which can be automatically viewed from a `tmux` layout defined in `.tmuxinator.yaml`. The recommended workflow is:
+
+1. Start a pre-layouted `tmux` session using `tmuxinator`
+
+```bash
+tmuxinator
+```
+
+2. Start the inference server separately in the `Inference` pane (to keep it alive across experiments with the same model)
 
 ```bash
 uv run inference @ configs/inference/reverse_text.toml
 ```
 
-And then start the trainer and orcheestrator in the `RL` pane. This pane allows to keep the inference server alive across multiple experiments, saving on vLLM startup time.
+3. Start the trainer and orcheestrator in the `RL` pane.
 
 ```bash
 uv run rl \
@@ -125,37 +119,32 @@ uv run rl \
 
 **Reverse Text**
 
-Train a tiny model (`willcb/Qwen2.5-0.5B-Reverse-SFT`) to learn to reverse a small chunk of text. Training is extremely quick because we allow a maximum context of 128 tokens. With two small GPUs (e.g. RTX 3090/ 4090), this experiment should finish in less than 5 minutes.
-
-First, start the inference server
+Train a tiny model (`willcb/Qwen2.5-0.5B-Reverse-SFT`) to learn to reverse a small chunk of text. Training is extremely quick because we allow a maximum context of 128 tokens. 
 
 ```bash
-uv run inference @ configs/inference/reverse_text.toml
+uv run rl \
+  --trainer @ configs/trainer/reverse_text.toml \
+  --orchestrator @ configs/orchestrator/reverse_text.toml \
+  --inference @ configs/inference/reverse_text.toml
 ```
 
-Then, start the trainer which will spawn the orchestrator as a subprocess
-
-```bash
-# TBD
-```
+*With two small GPUs (e.g. RTX 3090/ 4090), this experiment should finish in less than 5 minutes.*
 
 **Simple Math**
 
 Train a small model (`deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B`) on high-school level math questions. It is recommended to have at least 2xA100-80GB GPUs or more for this experiment.
 
-First, start the inference server
+On two GPUs, run the following command to run the experiment.
 
 ```bash
-uv run inference @ configs/inference/simple_math.toml --parallel.dp 1
+uv run rl \
+  --trainer @ configs/trainer/simple_math.toml \
+  --orchestrator @ configs/orchestrator/simple_math.toml \
+  --inference @ configs/inference/simple_math.toml \
+  --inference.parallel.dp 1
 ```
 
-Then, start the trainer which will spawn the orchestrator as a subprocess
-
-```bash
-# TBD
-```
-
-*NB: If you have more than 2 GPUs available, the best way to speed up the run is to increase the DP size of the inference worker, i.e. adjusting the `--parallel.dp` argument.*
+*NB: If you have more GPUs available, the best way to speed up the run is to increase the DP size of the inference worker, i.e. adjusting the `--parallel.dp` argument. The default config is designed for a 8 GPU setup*
 
 ### Evals
 
