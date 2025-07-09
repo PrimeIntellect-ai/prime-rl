@@ -16,7 +16,7 @@ PRIME-RL: Decentralized RL Training at Scale
 **Quick Installation (Recommended)**
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/PrimeIntellect-ai/prime-rl/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/PrimeIntellect-ai/prime-rl/main/scripts/install.sh | bash
 ```
 
 <details>
