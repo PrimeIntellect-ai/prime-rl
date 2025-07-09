@@ -1,17 +1,31 @@
-name: debug
+name: rl
 enable_pane_titles: true
 
-on_project_start: rm logs/train.log && rm logs/orchestrator.log
+on_project_start: rm logs/trainer.log && rm logs/orchestrator.log
 
 windows:
   - Entrypoint:
+  - Training:
       layout: even-horizontal
       panes:
-          - echo "Start your RL run, e.g. `uv run src/zeroband/rl.py --inference.model.name willcb/Qwen2.5-0.5B-Reverse-SFT --orchestrator.model.name willcb/Qwen2.5-0.5B-Reverse-SFT --orchestrator.data.name mikasenghaas/reverse_text_dataset_debug_50_seq_len --orchestrator.sampling.n 16 --orchestrator.sampling.max_seq_len 128 --orchestrator.batch-size 128 --orchestrator.micro-batch-size 16 --orchestrator.seq-len 128 --orchestrator.max-steps 30 --training.max-steps 30 --training.model.name willcb/Qwen2.5-0.5B-Reverse-SFT --training.optim.lr 3e-6`"
-  - Trainer+Orchestrator:
-      layout: even-vertical
-      panes:
         - Orchestrator:
-          - echo "Waiting for orchestrator log file..." && while [ ! -f logs/orchestrator.log ]; do sleep 1; done && less -R +F logs/orchestrator.log
-        - Training:
-          - echo "Waiting for training log file..." && while [ ! -f logs/train.log ]; do sleep 1; done && less -R +F logs/train.log
+          - |
+            while true; do
+              echo "Waiting for orchestrator log file..."
+              while [ ! -f logs/orchestrator.log ]; do sleep 1; done
+              echo "Following orchestrator.log..."
+              tail -f logs/orchestrator.log
+              echo "Log file disappeared, waiting for new one..."
+              sleep 1
+            done
+        - Trainer:
+          - |
+            while true; do
+              echo "Waiting for trainer log file..."
+              while [ ! -f logs/trainer.log ]; do sleep 1; done
+              echo "Following trainer.log..."
+              tail -f logs/trainer.log
+              echo "Log file disappeared, waiting for new one..."
+              sleep 1
+            done
+            
