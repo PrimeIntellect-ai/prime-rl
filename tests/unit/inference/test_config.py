@@ -14,6 +14,6 @@ def get_all_toml_files(directory) -> list[str]:
 
 @pytest.mark.parametrize("config_file", get_all_toml_files("configs/inference"))
 def test_load_inference_configs(config_file: str):
-    sys.argv = ["infer.py", "@" + config_file]
+    sys.argv = ["infer.py", "@", config_file]
     config = parse_argv(InferenceConfig)
     assert config is not None

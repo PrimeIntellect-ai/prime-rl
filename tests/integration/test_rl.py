@@ -15,9 +15,11 @@ CMD = [
     "run",
     "rl",
     "--trainer",
-    "@configs/trainer/reverse_text.toml",
+    "@",
+    "configs/trainer/reverse_text.toml",
     "--orchestrator",
-    "@configs/orchestrator/reverse_text.toml",
+    "@",
+    "configs/orchestrator/reverse_text.toml",
     "--orchestrator.monitor.wandb.log_samples",
 ]
 

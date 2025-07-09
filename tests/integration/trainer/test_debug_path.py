@@ -11,7 +11,7 @@ from zeroband.trainer.data import MicroBatch
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
 
 ENV = {"CUDA_VISIBLE_DEVICES": "1"}
-CMD = ["uv", "run", "trainer", "@configs/trainer/debug.toml"]
+CMD = ["uv", "run", "trainer", "@", "configs/trainer/debug.toml"]
 
 
 def create_sample(seq_len: int) -> Sample:
