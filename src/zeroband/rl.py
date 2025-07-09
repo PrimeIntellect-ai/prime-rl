@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import sys
 import warnings
@@ -15,12 +16,24 @@ from pydantic import Field, model_validator
 from zeroband.inference.config import InferenceConfig
 from zeroband.orchestrator.config import OrchestratorConfig
 from zeroband.trainer.config import CheckpointConfig, TrainerConfig
-from zeroband.utils.config import LogConfig, WandbMonitorConfig
+from zeroband.utils.config import WandbMonitorConfig
 from zeroband.utils.logger import format_message, format_time, get_logger, set_logger, setup_handlers
 from zeroband.utils.pydantic_config import BaseSettings, parse_argv
 
-TRAINER_LOGS = Path("logs/trainer.log")
-ORCHESTRATOR_LOGS = Path("logs/orchestrator.log")
+
+class LogConfig(BaseSettings):
+    """Configures the logging for the RL run."""
+
+    path: Annotated[Path, Field(description="The path to the logs directory.")] = Path("logs")
+
+    level: Annotated[str, Field(description="The log level to use.")] = "info"
+
+    utc: Annotated[
+        bool,
+        Field(
+            description="Whether to use UTC time in the logger. If False, it will default to the local time. If the local time is wrong, you can set it by setting the `TZ` environment variable. For example, `TZ=America/Los_Angeles` will set the local time to SF time."
+        ),
+    ] = False
 
 
 class RLConfig(BaseSettings):
@@ -35,8 +48,17 @@ class RLConfig(BaseSettings):
         ),
     ] = None
 
+    log: LogConfig = LogConfig()
+
     train_gpus: Annotated[int, Field(description="The number of GPUs to use for training.")] = 1
     inference_gpus: Annotated[int, Field(description="The number of GPUs to use for inference.")] = 1
+
+    clean: Annotated[
+        bool,
+        Field(
+            description="Whether to clean the rollouts, checkpoint, checkpoint weights and logs directories at the beginning of the run. If True, will forceably, and irreversibly, delete all directories.",
+        ),
+    ] = True
 
     @model_validator(mode="after")
     def validate_device(self):
@@ -49,6 +71,17 @@ class RLConfig(BaseSettings):
             raise ValueError(
                 f"Total number of inference GPUs ({self.inference_gpus}) does not match the local sharding strategy ({self.inference.parallel.dp} DP + {self.inference.parallel.tp} TP)"
             )
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_logs(self):
+        # Copy log level
+        self.trainer.log.level = self.log.level
+        self.orchestrator.log.level = self.log.level
+
+        # Copy log path
+        self.trainer.log.path = self.log.path / "trainer"
+        self.orchestrator.log.path = self.log.path / "orchestrator"
         return self
 
     @model_validator(mode="after")
@@ -89,6 +122,13 @@ class RLConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_paths(self):
+        # Ensure trainer and orchestrator use the same paths for communicating data and weights
+        self.orchestrator.rollout_path = self.trainer.data.path
+        self.orchestrator.weights_path = self.trainer.weights.path
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_ckpt(self):
         # Ensures that trainer and orchestrator checkpoints are synchronized
         if self.trainer.ckpt:
@@ -116,14 +156,15 @@ class RLConfig(BaseSettings):
         return self
 
 
-def setup_logger() -> Logger:
+def setup_logger(log_config: LogConfig) -> Logger:
     if get_logger():
         raise RuntimeError("Logger already setup. Call reset_logger first.")
 
     # Setup the logger handlers
-    log_config = LogConfig(level="info", path=None)
     format = format_time(log_config) + format_message()
-    logger = setup_handlers(loguru_logger, format, log_config, rank=0)
+    log_config_copy = log_config.model_copy()
+    log_config_copy.path = log_config_copy.path / "rl.log"
+    logger = setup_handlers(loguru_logger, format, log_config_copy, rank=0)
     set_logger(logger)
 
     return logger
@@ -154,12 +195,29 @@ def to_cli(prefix, d):
 
 def rl(config: RLConfig):
     # Setup logger
-    logger = setup_logger()
+    logger = setup_logger(config.log)
     logger.info("Starting RL run")
 
-    # Cleaning up old logs
-    TRAINER_LOGS.unlink(missing_ok=True)
-    ORCHESTRATOR_LOGS.unlink(missing_ok=True)
+    # Prepare paths to communicate with the trainer
+    if config.clean:
+        logger.info("Cleaning checkpoint, logs, checkpoint weights and rollout directories")
+        logger.info(f"Cleaning logs ({config.log.path})")
+        shutil.rmtree(config.log.path, ignore_errors=True)
+
+        if config.trainer.ckpt and not config.trainer.ckpt.resume_step:  # Only clean if we don't resume
+            logger.info(f"Cleaning trainer checkpoint path ({config.trainer.ckpt.path})")
+            shutil.rmtree(config.trainer.ckpt.path, ignore_errors=True)
+
+        if config.orchestrator.ckpt and not config.orchestrator.ckpt.resume_step:  # Only clean if we don't resume
+            logger.info(f"Cleaning orchestrator checkpoint path ({config.orchestrator.ckpt.path})")
+            shutil.rmtree(config.orchestrator.ckpt.path, ignore_errors=True)
+
+        if not (config.orchestrator.ckpt and config.orchestrator.ckpt.resume_step):  # Only clean if we don't resume
+            logger.info(f"Cleaning checkpoint weights path ({config.orchestrator.weights_path})")
+            shutil.rmtree(config.orchestrator.weights_path, ignore_errors=True)
+
+        logger.info(f"Cleaning rollout path ({config.trainer.data.path})")
+        shutil.rmtree(config.trainer.data.path, ignore_errors=True)
 
     # Start processes
     processes: list[Popen] = []
@@ -172,6 +230,7 @@ def rl(config: RLConfig):
             inference_cmd = ["uv", "run", "inference", *inference_args]
             inference_gpu_ids = all_gpus[: config.inference_gpus]
             logger.info(f"Starting inference process on GPUs {' '.join(map(str, inference_gpu_ids))}")
+            logger.debug(f"Inference start command: {' '.join(inference_cmd)}")
             inference_process = subprocess.Popen(
                 inference_cmd,
                 env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, inference_gpu_ids))},
@@ -191,10 +250,9 @@ def rl(config: RLConfig):
             "run",
             "orchestrator",
             *orchestrator_args,
-            "--log.path",
-            ORCHESTRATOR_LOGS.with_suffix("").as_posix(),
         ]
         logger.info("Starting orchestrator process")
+        logger.debug(f"Orchestrator start command: {' '.join(orchestrator_cmd)}")
         orchestrator_process = subprocess.Popen(
             orchestrator_cmd,
             stdout=subprocess.DEVNULL,
@@ -204,9 +262,10 @@ def rl(config: RLConfig):
 
         # Start training process
         train_args = list(chain.from_iterable(to_cli("", config.trainer.model_dump())))
-        training_cmd = ["uv", "run", "trainer", *train_args, "--log.path", TRAINER_LOGS.with_suffix("").as_posix()]
+        training_cmd = ["uv", "run", "trainer", *train_args]
         train_gpu_ids = all_gpus[config.inference_gpus :]
         logger.info(f"Starting training process on GPUs {' '.join(map(str, train_gpu_ids))}")
+        logger.debug(f"Training start command: {' '.join(training_cmd)}")
         training_process = subprocess.Popen(
             training_cmd,
             env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, train_gpu_ids))},

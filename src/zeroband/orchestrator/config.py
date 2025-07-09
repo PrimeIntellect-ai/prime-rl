@@ -285,13 +285,6 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = Path("weights")
 
-    clean: Annotated[
-        bool,
-        Field(
-            description="Whether to clean the rollouts, checkpoint, checkpoint weights and logs directories at the beginning of the run. If True, will forceably, and irreversibly, delete all directories.",
-        ),
-    ] = True
-
     bench: Annotated[
         bool,
         Field(

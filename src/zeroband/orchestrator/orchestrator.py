@@ -54,23 +54,6 @@ async def orchestrate(config: OrchestratorConfig):
     logger.debug(f"SamplingConfig({config.sampling})")
     logger.debug(f"EvaluationConfig({config.eval})")
 
-    # Prepare paths to communicate with the trainer
-    if config.clean:
-        logger.info("Cleaning checkpoint, logs, checkpoint weights and rollout directories")
-        if config.ckpt and not config.ckpt.resume_step:  # Only clean if we don't resume
-            logger.debug(f"Cleaning checkpoint path ({config.ckpt.path})")
-            shutil.rmtree(config.ckpt.path, ignore_errors=True)
-
-        logger.debug(f"Cleaning logs path ({config.log.path})")
-        shutil.rmtree(config.log.path, ignore_errors=True)
-
-        if not (config.ckpt and config.ckpt.resume_step):  # Only clean if we don't resume
-            logger.debug(f"Cleaning checkpoint weights path ({config.weights_path})")
-            shutil.rmtree(config.weights_path, ignore_errors=True)
-
-        logger.debug(f"Cleaning rollout path ({config.rollout_path})")
-        shutil.rmtree(config.rollout_path, ignore_errors=True)
-
     # Setup client
     logger.info(f"Initializing OpenAI client ({config.client.base_url})")
     client = setup_client(config.client)
@@ -164,14 +147,14 @@ async def orchestrate(config: OrchestratorConfig):
 
             # Wait for the checkpoint to be available
             ckpt_step = progress.step - config.async_level
-            logger.info(f"Waiting for weight checkpoint for step {ckpt_step}")
+            logger.info(f"Waiting for weight checkpoint {ckpt_step}")
             wait_for_weight_ckpt_start_time = time.time()
             wait_for_weight_checkpoint(config.weights_path, ckpt_step)
             wait_for_weight_ckpt_time = time.time() - wait_for_weight_ckpt_start_time
             logger.debug(f"Waited {wait_for_weight_ckpt_time:.2f}s for weight checkpoint")
 
             # Reload the weights
-            logger.info(f"Reloading weights for step {ckpt_step}")
+            logger.info(f"Reloading weight checkpoint {ckpt_step}")
             reload_weights_start_time = time.time()
             await reload_weights(client, config.weights_path, ckpt_step)
             reload_weights_time = time.time() - reload_weights_start_time
@@ -203,7 +186,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Get the completions for the batch
         # TODO: Integrate with async (multi-turn) rollout function from verifiers
-        logger.info(f"Sending {len(batch_messages)} inference requests for step {progress.step} ({ckpt_step=})")
+        logger.info(f"Sending {len(batch_messages)} inference requests")
         generate_completions_start_time = time.time()
         # These calls are intentionally non-concurrent because we found that /tokenize is sometimes returning a httpx.ReadError when calling this endpoint concurrently
         input_tokens = [await tokenize(client, config.model, messages) for messages in batch_messages]
@@ -223,7 +206,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Get the rewards for the completions
         # TODO: Integrate with async scoring function from verifiers
-        logger.info(f"Computing rewards and advantages for step {progress.step}")
+        logger.info("Computing rewards and advantages")
         compute_rewards_start_time = time.time()
         task_types = [problem["task_type"] for problem in problems]
         verification_infos = [json.loads(problem["verification_info"]) for problem in problems]
