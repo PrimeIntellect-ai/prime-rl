@@ -15,6 +15,7 @@ TRAINING_CMD = [
     "run",
     "train",
     "@configs/training/reverse_text.toml",
+    "--orchestrator.monitor.wandb.log_samples",
 ]
 
 
