@@ -271,13 +271,16 @@ def rl(config: RLConfig):
             inference_gpu_ids = all_gpus[: config.inference_gpus]
             logger.info(f"Starting inference process on GPUs {' '.join(map(str, inference_gpu_ids))}")
             logger.debug(f"Inference start command: {' '.join(inference_cmd)}")
-            inference_log_path = config.log.path.parent / "inference.log"
-            with open(inference_log_path, "w") as log_file:  # If we don't log stdout, the server hangs
-                inference_process = subprocess.Popen(
+            # If we don't log stdout, the server hangs
+            with (
+                open(config.log.path.parent / "inference.stdout", "w") as stdout_file,
+                open(config.log.path.parent / "inference.stderr", "w") as stderr_file,
+            ):
+                inference_process = Popen(
                     inference_cmd,
                     env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, inference_gpu_ids))},
-                    stdout=log_file,
-                    stderr=subprocess.STDOUT,
+                    stdout=stdout_file,
+                    stderr=stderr_file,
                 )
             processes.append(inference_process)
 
@@ -306,11 +309,15 @@ def rl(config: RLConfig):
         ]
         logger.info("Starting orchestrator process")
         logger.debug(f"Orchestrator start command: {' '.join(orchestrator_cmd)}")
-        orchestrator_process = subprocess.Popen(
-            orchestrator_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+        with (
+            open(config.log.path.parent / "orchestrator.stdout", "w") as stdout_file,
+            open(config.log.path.parent / "orchestrator.stderr", "w") as stderr_file,
+        ):
+            orchestrator_process = Popen(
+                orchestrator_cmd,
+                stdout=stdout_file,
+                stderr=stderr_file,
+            )
         processes.append(orchestrator_process)
 
         # Start monitoring thread
@@ -338,12 +345,15 @@ def rl(config: RLConfig):
         train_gpu_ids = all_gpus[config.inference_gpus :]
         logger.info(f"Starting training process on GPUs {' '.join(map(str, train_gpu_ids))}")
         logger.debug(f"Training start command: {' '.join(training_cmd)}")
-        training_process = subprocess.Popen(
-            training_cmd,
-            env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, train_gpu_ids))},
-            stdout=None,  # Show trainer stdout
-            stderr=subprocess.PIPE,
-        )
+        with (
+            open(config.log.path.parent / "training.stderr", "w") as stderr_file,
+        ):
+            training_process = Popen(
+                training_cmd,
+                env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, train_gpu_ids))},
+                stdout=None,  # Stream trainer logs to RL
+                stderr=stderr_file,
+            )
         processes.append(training_process)
 
         # Start monitoring thread
