@@ -16,6 +16,7 @@ from zeroband.eval.utils import run_benchmark
 from zeroband.orchestrator.ckpt import CheckpointManager, Progress
 from zeroband.environments.registry import get_environment
 from zeroband.orchestrator.client import (
+    tokenize,
     check_has_model,
     check_health,
     reload_weights,
@@ -26,6 +27,8 @@ from zeroband.orchestrator.config import OrchestratorConfig
 from zeroband.orchestrator.data import prepare_batch
 from zeroband.orchestrator.logger import setup_logger
 from zeroband.orchestrator.utils import (
+    parse_completion_tokens,
+    parse_completion_logprobs,
     compute_advantages,
     wait_for_weight_checkpoint,
     print_benchmark,
@@ -179,7 +182,7 @@ async def orchestrate(config: OrchestratorConfig):
         sampling_args["logprobs"] = True
 
         # sanitize for vLLM OpenAI client
-        sampling_args["extra_body"] = {}
+        sampling_args["extra_body"] = {"return_tokens_as_token_ids": True}
         if "top_k" in sampling_args:
             sampling_args["extra_body"]["top_k"] = sampling_args.pop("top_k")
         if "min_p" in sampling_args:
@@ -201,20 +204,40 @@ async def orchestrate(config: OrchestratorConfig):
             mask_truncated_completions=config.mask_truncated_completions,
             mask_env_responses=config.mask_env_responses,
         )
-        # TODO: use tokens/logprobs from vLLM request responses?
-        # states = outputs["state"]
-        # responses = [s["responses"][-1] for s in states] #s["responses"] is list of model turns
-        # completion_logprobs = [parse_logprobs(r) for r in responses]
-
         generate_completions_time = time.time() - generate_completions_start_time
 
-        prompt_tokens = results["prompt_ids"]
-        prompt_mask = results["prompt_mask"]
-        completion_tokens = results["completion_ids"]
-        completion_mask = results["completion_mask"]
+        # This parsing only works for single-turn vLLM responses for now
+        # TODO: Generically, parse vLLM output tokens if possible, else fall-back to regular tokenization
+        assert all(len(s["responses"]) == 1 for s in outputs["state"])  # Single-turn responses
+        chat_completions = [s["responses"][0] for s in outputs["state"]]
+        prompt_tokens = [await tokenize(client, config.model, prompt) for prompt in inputs["prompt"]]
+        completion_tokens = parse_completion_tokens(chat_completions)
+        completion_logprobs = parse_completion_logprobs(chat_completions)
+        prompt_mask = [[0] * len(prompt_tokens[i]) for i in range(len(prompt_tokens))]
+        completion_mask = [[1] * len(completion_tokens[i]) for i in range(len(completion_tokens))]
 
-        completion_logprobs = [[0.0] * len(completion_tokens[i]) for i in range(len(completion_tokens))]
+        # Truncate
+        for i in range(len(prompt_tokens)):
+            if len(prompt_tokens[i]) + len(completion_tokens[i]) > config.seq_len:
+                truncate_at = config.seq_len - len(prompt_tokens[i])
+                completion_tokens[i] = completion_tokens[i][:truncate_at]
+                completion_mask[i] = completion_mask[i][:truncate_at]
+                completion_logprobs[i] = completion_logprobs[i][:truncate_at]
+            if len(prompt_tokens[i]) != len(results["prompt_ids"][i]):
+                logger.warning(
+                    f"Mismatch in prompt tokens for problem {i}. {len(prompt_tokens[i])} (vLLM) != {len(results['prompt_ids'][i])} (verifiers)"
+                )
+            if len(completion_tokens[i]) != len(results["completion_ids"][i]):
+                logger.warning(
+                    f"Mismatch in completion tokens for problem {i}. {len(completion_tokens[i])} (vLLM) != {len(results['completion_ids'][i])} (verifiers)"
+                )
+
+        # prompt_tokens = results["prompt_ids"]
+        # prompt_mask = results["prompt_mask"]
+        # completion_tokens = results["completion_ids"]
+        # completion_mask = results["completion_mask"]
         rewards = results["rewards"]
+
         # TODO: parse individiual reward functions for logging
         advantages = compute_advantages(rewards, config.rollouts_per_prompt)
         logger.debug(f"Computed rewards: {lt.lovely(torch.tensor(rewards))}")

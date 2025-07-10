@@ -11,7 +11,7 @@ from zeroband.orchestrator.genesys import TaskType, get_reward_function
 from zeroband.utils.utils import format_num, format_time, get_weight_ckpt_model_path, wait_for_path
 
 
-def parse_logprobs(chat_completions: list[ChatCompletion]) -> list[list[float]]:
+def parse_completion_logprobs(chat_completions: list[ChatCompletion]) -> list[list[float]]:
     """Parses the logprobs from a list of chat completions returned by vLLM OAI server."""
     logprobs = []
     for chat_completion in chat_completions:
@@ -26,7 +26,7 @@ def parse_logprobs(chat_completions: list[ChatCompletion]) -> list[list[float]]:
     return logprobs
 
 
-def parse_output_tokens(chat_completions: list[ChatCompletion]) -> list[list[int]]:
+def parse_completion_tokens(chat_completions: list[ChatCompletion]) -> list[list[int]]:
     """Parses the output token ids from a list of chat completions returned by vLLM OAI server."""
     tokens = []
     for chat_completion in chat_completions:
