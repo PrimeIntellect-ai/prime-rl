@@ -18,9 +18,9 @@ windows:
           - |
             while true; do
               echo "Waiting for trainer log file..."
-              while [ ! -f logs/inference.stdout ]; do sleep 1; done
-              echo "Following inference.stdout..."
-              tail -F logs/inference.stdout
+              while [ ! -f logs/inference.log ]; do sleep 1; done
+              echo "Following inference.log..."
+              tail -F logs/inference.log
             done
   - Monitor:
       layout: even-horizontal

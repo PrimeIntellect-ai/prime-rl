@@ -227,7 +227,7 @@ def rl(config: RLConfig):
 
         # Cleaning logs
         logger.info(f"Cleaning logs ({config.log.path})")
-        for log_file in config.log.path.glob("*.log|*.stdout"):
+        for log_file in config.log.path.glob("*.log|*.log"):
             log_file.unlink(missing_ok=True)
 
         # Cleaning checkpoints
