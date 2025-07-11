@@ -11,11 +11,6 @@ class CheckpointWorker:
     recent policy model from a checkpoint directory.
     """
 
-    def test_rpc(self):
-        """A simple method to test if the RPC call is working."""
-        print("RPC call test successful")
-        return True
-
     def reload_weights(self, model_path: Path) -> None:
         """Reload the weights from a specified path."""
         state_dict = torch.load(model_path, map_location="cpu")
