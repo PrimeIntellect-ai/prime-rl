@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from zeroband.trainer import envs
+from prime_rl.trainer import envs
 
 
 def test_training_env_defaults():

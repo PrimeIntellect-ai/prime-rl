@@ -1,0 +1,77 @@
+from typing import Callable, Literal
+
+from prime_rl.orchestrator.genesys.ascii_tree_formatting import (
+    compute_reward as compute_ascii_tree_reward,
+)
+from prime_rl.orchestrator.genesys.code import evaluate_code
+from prime_rl.orchestrator.genesys.code_output_prediction import (
+    verify_code_output_prediction,
+)
+from prime_rl.orchestrator.genesys.complex_json_output import (
+    verify_complex_json_formatting,
+)
+from prime_rl.orchestrator.genesys.formatask import (
+    compute_reward as compute_formatask_reward,
+)
+from prime_rl.orchestrator.genesys.git_diff import compute_git_diff_reward
+from prime_rl.orchestrator.genesys.ifeval import verify_ifeval
+from prime_rl.orchestrator.genesys.kernelbench.verify_kernel import (
+    assign_kernel_reward,
+)
+from prime_rl.orchestrator.genesys.math import compute_math_reward
+from prime_rl.orchestrator.genesys.pydantic_json_adherance import (
+    validate_pydantic_json,
+)
+from prime_rl.orchestrator.genesys.reasoning_gym import verify_reasoning_gym
+from prime_rl.orchestrator.genesys.reverse_text import reverse_text
+from prime_rl.orchestrator.genesys.unscramble_sentence import (
+    compute_reward as compute_unscramble_reward,
+)
+
+
+def null_reward(*args, **kwargs):
+    return 0.0
+
+
+TaskType = Literal[
+    "verifiable_math",
+    "prime_rl_code",
+    "reasoning_gym",
+    "code_output_prediction",
+    "reverse_text",
+    "unscramble_sentence",
+    "ascii_tree_formatting",
+    "pydantic_adherance",
+    "ifeval",
+    "complex_json_output",
+    "git_diff",
+    "formatask",
+    "kernelbench",
+    "null_reward",
+    "deepcoder",
+]
+
+
+def get_reward_function(task_type: TaskType) -> Callable[[str, dict], float]:
+    try:
+        return _REWARD_FUNCTIONS[task_type]
+    except KeyError:
+        raise ValueError(f"Invalid task type: {task_type}")
+
+
+_REWARD_FUNCTIONS: dict[TaskType, Callable] = {
+    "verifiable_math": compute_math_reward,
+    "prime_rl_code": evaluate_code,
+    "reasoning_gym": verify_reasoning_gym,
+    "code_output_prediction": verify_code_output_prediction,
+    "reverse_text": reverse_text,
+    "unscramble_sentence": compute_unscramble_reward,
+    "ascii_tree_formatting": compute_ascii_tree_reward,
+    "pydantic_adherance": validate_pydantic_json,
+    "ifeval": verify_ifeval,
+    "complex_json_output": verify_complex_json_formatting,
+    "git_diff": compute_git_diff_reward,
+    "formatask": compute_formatask_reward,
+    "kernelbench": assign_kernel_reward,
+    "null_reward": null_reward,
+}

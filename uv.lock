@@ -2041,6 +2041,94 @@ wheels = [
 ]
 
 [[package]]
+name = "prime-rl"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "beartype" },
+    { name = "cydifflib" },
+    { name = "datasets" },
+    { name = "google-cloud-storage" },
+    { name = "jaxtyping" },
+    { name = "liger-kernel" },
+    { name = "loguru" },
+    { name = "lovely-tensors" },
+    { name = "numpy" },
+    { name = "openai" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "pyext" },
+    { name = "pylatexenc" },
+    { name = "pynvml" },
+    { name = "reasoning-gym" },
+    { name = "rich" },
+    { name = "shardcast" },
+    { name = "tomli" },
+    { name = "tomli-w" },
+    { name = "torch" },
+    { name = "transformers" },
+    { name = "uvloop" },
+    { name = "verifiers" },
+    { name = "vllm" },
+    { name = "wandb" },
+]
+
+[package.optional-dependencies]
+fa = [
+    { name = "flash-attn" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "ipykernel" },
+    { name = "ipywidgets" },
+    { name = "pre-commit" },
+    { name = "pytest" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "beartype", specifier = ">=0.21.0" },
+    { name = "cydifflib", specifier = ">=1.2.0" },
+    { name = "datasets", specifier = ">=3.6.0" },
+    { name = "flash-attn", marker = "extra == 'fa'", specifier = ">=2.8.0" },
+    { name = "google-cloud-storage", specifier = ">=3.1.1" },
+    { name = "jaxtyping", specifier = ">=0.3.2" },
+    { name = "liger-kernel", specifier = ">=0.5.10" },
+    { name = "loguru", specifier = ">=0.7.3" },
+    { name = "lovely-tensors", specifier = ">=0.1.18" },
+    { name = "numpy", specifier = ">=2.2.6" },
+    { name = "openai", specifier = ">=1.93.0" },
+    { name = "pydantic", specifier = ">=1.10.13" },
+    { name = "pydantic-settings", specifier = ">=2.10.1" },
+    { name = "pyext", git = "https://github.com/justusmattern27/PyExt.git" },
+    { name = "pylatexenc", specifier = ">=2.10" },
+    { name = "pynvml", specifier = ">=12.0.0" },
+    { name = "reasoning-gym", git = "https://github.com/open-thought/reasoning-gym.git" },
+    { name = "rich", specifier = ">=14.0.0" },
+    { name = "shardcast", specifier = ">=0.3.2" },
+    { name = "tomli", specifier = ">=2.2.1" },
+    { name = "tomli-w" },
+    { name = "torch", specifier = ">=2.7.0", index = "https://download.pytorch.org/whl/cu128" },
+    { name = "transformers", specifier = ">=4.53.0" },
+    { name = "uvloop", specifier = ">=0.21.0" },
+    { name = "verifiers", git = "https://github.com/willccbb/verifiers?rev=8363357" },
+    { name = "vllm", specifier = ">=0.9.1" },
+    { name = "wandb", specifier = ">=0.20.1" },
+]
+provides-extras = ["fa"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "ipykernel", specifier = ">=6.29.5" },
+    { name = "ipywidgets", specifier = ">=8.1.7" },
+    { name = "pre-commit", specifier = ">=4.2.0" },
+    { name = "pytest", specifier = ">=8.4.1" },
+    { name = "ruff", specifier = ">=0.12.1" },
+]
+
+[[package]]
 name = "prometheus-client"
 version = "0.22.1"
 source = { registry = "https://pypi.org/simple" }
@@ -3417,94 +3505,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/35/99/9918c8739ba271dcd935400cff8b32e3cd319eaf02fcd023d5dcd487a7c8/yarl-1.20.1-cp312-cp312-win32.whl", hash = "sha256:daea0d313868da1cf2fac6b2d3a25c6e3a9e879483244be38c8e6a41f1d876a5", size = 81249, upload-time = "2025-06-10T00:44:14.731Z" },
     { url = "https://files.pythonhosted.org/packages/eb/83/5d9092950565481b413b31a23e75dd3418ff0a277d6e0abf3729d4d1ce25/yarl-1.20.1-cp312-cp312-win_amd64.whl", hash = "sha256:48ea7d7f9be0487339828a4de0360d7ce0efc06524a48e1810f945c45b813698", size = 86710, upload-time = "2025-06-10T00:44:16.716Z" },
     { url = "https://files.pythonhosted.org/packages/b4/2d/2345fce04cfd4bee161bf1e7d9cdc702e3e16109021035dbb24db654a622/yarl-1.20.1-py3-none-any.whl", hash = "sha256:83b8eb083fe4683c6115795d9fc1cfaf2cbbefb19b3a1cb68f6527460f483a77", size = 46542, upload-time = "2025-06-10T00:46:07.521Z" },
-]
-
-[[package]]
-name = "zeroband"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "beartype" },
-    { name = "cydifflib" },
-    { name = "datasets" },
-    { name = "google-cloud-storage" },
-    { name = "jaxtyping" },
-    { name = "liger-kernel" },
-    { name = "loguru" },
-    { name = "lovely-tensors" },
-    { name = "numpy" },
-    { name = "openai" },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
-    { name = "pyext" },
-    { name = "pylatexenc" },
-    { name = "pynvml" },
-    { name = "reasoning-gym" },
-    { name = "rich" },
-    { name = "shardcast" },
-    { name = "tomli" },
-    { name = "tomli-w" },
-    { name = "torch" },
-    { name = "transformers" },
-    { name = "uvloop" },
-    { name = "verifiers" },
-    { name = "vllm" },
-    { name = "wandb" },
-]
-
-[package.optional-dependencies]
-fa = [
-    { name = "flash-attn" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "ipykernel" },
-    { name = "ipywidgets" },
-    { name = "pre-commit" },
-    { name = "pytest" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "beartype", specifier = ">=0.21.0" },
-    { name = "cydifflib", specifier = ">=1.2.0" },
-    { name = "datasets", specifier = ">=3.6.0" },
-    { name = "flash-attn", marker = "extra == 'fa'", specifier = ">=2.8.0" },
-    { name = "google-cloud-storage", specifier = ">=3.1.1" },
-    { name = "jaxtyping", specifier = ">=0.3.2" },
-    { name = "liger-kernel", specifier = ">=0.5.10" },
-    { name = "loguru", specifier = ">=0.7.3" },
-    { name = "lovely-tensors", specifier = ">=0.1.18" },
-    { name = "numpy", specifier = ">=2.2.6" },
-    { name = "openai", specifier = ">=1.93.0" },
-    { name = "pydantic", specifier = ">=1.10.13" },
-    { name = "pydantic-settings", specifier = ">=2.10.1" },
-    { name = "pyext", git = "https://github.com/justusmattern27/PyExt.git" },
-    { name = "pylatexenc", specifier = ">=2.10" },
-    { name = "pynvml", specifier = ">=12.0.0" },
-    { name = "reasoning-gym", git = "https://github.com/open-thought/reasoning-gym.git" },
-    { name = "rich", specifier = ">=14.0.0" },
-    { name = "shardcast", specifier = ">=0.3.2" },
-    { name = "tomli", specifier = ">=2.2.1" },
-    { name = "tomli-w" },
-    { name = "torch", specifier = ">=2.7.0", index = "https://download.pytorch.org/whl/cu128" },
-    { name = "transformers", specifier = ">=4.53.0" },
-    { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/willccbb/verifiers?rev=8363357" },
-    { name = "vllm", specifier = ">=0.9.1" },
-    { name = "wandb", specifier = ">=0.20.1" },
-]
-provides-extras = ["fa"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "ipykernel", specifier = ">=6.29.5" },
-    { name = "ipywidgets", specifier = ">=8.1.7" },
-    { name = "pre-commit", specifier = ">=4.2.0" },
-    { name = "pytest", specifier = ">=8.4.1" },
-    { name = "ruff", specifier = ">=0.12.1" },
 ]
 
 [[package]]

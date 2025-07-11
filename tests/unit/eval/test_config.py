@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from zeroband.eval.config import EvalConfig
-from zeroband.utils.pydantic_config import parse_argv
+from prime_rl.eval.config import EvalConfig
+from prime_rl.utils.pydantic_config import parse_argv
 
 
 def get_all_toml_files(directory) -> list[str]:

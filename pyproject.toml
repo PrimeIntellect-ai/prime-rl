@@ -1,5 +1,5 @@
 [project]
-name = "zeroband"
+name = "prime-rl"
 version = "0.1.0"
 description = ""
 readme = "README.md"
@@ -34,11 +34,11 @@ dependencies = [
 ]
 
 [project.scripts]
-rl = "zeroband.rl:main"
-trainer = "zeroband.trainer.train:main"
-orchestrator = "zeroband.orchestrator.orchestrator:main"
-inference = "zeroband.inference.server:main"
-eval = "zeroband.eval.eval:main"
+rl = "prime_rl.rl:main"
+trainer = "prime_rl.trainer.train:main"
+orchestrator = "prime_rl.orchestrator.orchestrator:main"
+inference = "prime_rl.inference.server:main"
+eval = "prime_rl.eval.eval:main"
 
 [build-system]
 requires = ["hatchling"]

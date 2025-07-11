@@ -4,9 +4,9 @@ from typing import Callable
 import pytest
 import torch
 
+from prime_rl.orchestrator.data import Sample
+from prime_rl.trainer.data import MicroBatch
 from tests import Command, Environment, ProcessResult
-from zeroband.orchestrator.data import Sample
-from zeroband.trainer.data import MicroBatch
 
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
 

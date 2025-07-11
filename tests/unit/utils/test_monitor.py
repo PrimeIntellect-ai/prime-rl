@@ -4,9 +4,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from zeroband.orchestrator.config import OrchestratorConfig
-from zeroband.utils.config import APIMonitorConfig, FileMonitorConfig, SocketMonitorConfig
-from zeroband.utils.monitor import (
+from prime_rl.orchestrator.config import OrchestratorConfig
+from prime_rl.utils.config import APIMonitorConfig, FileMonitorConfig, SocketMonitorConfig
+from prime_rl.utils.monitor import (
     APIMonitor,
     FileMonitor,
     SocketMonitor,

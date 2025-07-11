@@ -7,8 +7,8 @@ import pytest
 from huggingface_hub import HfApi
 from loguru import logger
 
-from zeroband.trainer.world import reset_world
-from zeroband.utils.logger import reset_logger, set_logger
+from prime_rl.trainer.world import reset_world
+from prime_rl.utils.logger import reset_logger, set_logger
 
 TIMEOUT = 120
 

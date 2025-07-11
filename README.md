@@ -244,8 +244,8 @@ In this example, the CLI argument `--model.name Qwen/Qwen3-32B` will take precen
 
 Our codebase supports checkpointing. Because of the trainer/ orchestrator design, as well as the natural asynchrony checkpointing is non-standard.
 
-- Trainer (`src/zeroband/trainer/ckpt.py`): Checkpoints FSDP model shard, optimizer state and progress (training step, total samples, total tokens)
-- Orchestrator (`src/zeroband/trainer/ckpt.py`): Checkpoints orchestrator progress
+- Trainer (`src/prime_rl/trainer/ckpt.py`): Checkpoints FSDP model shard, optimizer state and progress (training step, total samples, total tokens)
+- Orchestrator (`src/prime_rl/trainer/ckpt.py`): Checkpoints orchestrator progress
 
 *NB: Each run with asynchrony level `async_level` and some checkpoint step `x`, requires weight checkpoints in the step range `[x-async_level, x]`. Currently we do not duplicate weight checkpoints into the `checkpoints` directory but simply keep them around in `weights`, by keeping the trainer from cleaning up weight checkpoints that are required for resuming training. This way, the orchestrator only needs to checkpoint its progress (read: step) to load the correct weights into the inference engine upon resuming.*
 
