@@ -163,6 +163,12 @@ class RLConfig(BaseSettings):
                 )
         return self
 
+    @model_validator(mode="after")
+    def auto_setup_num_train_workers(self):
+        if self.trainer_gpus > 1:
+            self.orchestrator.num_train_workers = self.trainer_gpus
+        return self
+
 
 def setup_logger(log_config: LogConfig) -> Logger:
     if get_logger():
