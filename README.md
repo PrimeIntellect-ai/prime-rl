@@ -43,6 +43,7 @@ source $HOME/.local/bin/env
 ```bash
 uv sync && uv sync --extra fa
 ```
+
 </details>
 
 
@@ -93,7 +94,31 @@ uv run rl \
 
 ## Entrypoints
 
-We provide a convenience endpoint `rl` for single-node RL experiments. It configures and starts the trainer, orchestrator and, optionally, an inference server. It enforces correctly setting shared configs (e.g. the model name or async level should be the same across all modules) and dispatches and monitors subprocesses. To stream the logs from each module, we use file logging which can be automatically viewed from a `tmux` layout defined in `.tmuxinator.yaml`. The recommended workflow is:
+### Setup
+
+1. If you want to log your runs to W&B (`wandb`), log in
+
+```bash
+uv run wandb login
+# Or set `export WANDB_API_KEY=...`
+```
+
+2. If you require gated/ private models or datasets from HuggingFace, log in
+
+```bash
+uv run huggingface-cli login
+# Or set `export HF_TOKEN=...`
+```
+
+3. You may want to increase the number of open files to prevent errors like `Too many open files`.
+
+```bash
+ulimit -n 32000
+```
+
+### RL
+
+We provide a convenience endpoint `rl` for single-node RL experiments. It configures and startsthe trainer, orchestrator and, optionally, an inference server. It enforces correctly setting shared configs (e.g. the model name or async level should be the same across all modules) and dispatches and monitors subprocesses. To stream the logs from each module, we use file logging which can be automatically viewed from a `tmux` layout defined in `.tmuxinator.yaml`. The recommended workflow is:
 
 1. Start a pre-layouted `tmux` session using `tmuxinator`
 
@@ -115,8 +140,6 @@ uv run rl \
   --orchestrator @ configs/orchestrator/reverse_text.toml
 ```
 
-
-### RL
 
 **Reverse Text**
 
@@ -159,12 +182,6 @@ uv run rl \
 
 *NB: This setup requires 8 GPUs - 2 are used for the FSDP trainer, 6 are used for inference with TP=2 and DP=3.*
 
-
-Note: you may need to increase the number of open files limit to 32000 if you encounter errors like `Too many open files`.
-
-```bash
-ulimit -n 32000
-```
 
 ### Evals
 
