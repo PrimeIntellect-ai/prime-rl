@@ -183,7 +183,7 @@ uv run rl \
 ```
 
 #### Standalone Inference Server
-You can optionally start the inference server individually to avoid the long vllm warmup at each run restart. Usefull for development.
+You can optionally start the inference server individually to avoid the long vllm warmup at each run restart. Useful for development.
 
 1. Start the pre-layouted `tmux` session using `tmuxinator`
 
