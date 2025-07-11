@@ -118,28 +118,7 @@ ulimit -n 32000
 
 ### RL
 
-We provide a convenience endpoint `rl` for single-node RL experiments. It configures and startsthe trainer, orchestrator and, optionally, an inference server. It enforces correctly setting shared configs (e.g. the model name or async level should be the same across all modules) and dispatches and monitors subprocesses. To stream the logs from each module, we use file logging which can be automatically viewed from a `tmux` layout defined in `.tmuxinator.yaml`. The recommended workflow is:
-
-1. Start a pre-layouted `tmux` session using `tmuxinator`
-
-```bash
-tmuxinator
-```
-
-2. Start the inference server separately in the `Inference` pane (to keep it alive across experiments with the same model)
-
-```bash
-uv run inference @ configs/inference/reverse_text.toml
-```
-
-3. Start the trainer and orchestrator in the `Trainer` pane.
-
-```bash
-uv run rl \
-  --trainer @ configs/trainer/reverse_text.toml \
-  --orchestrator @ configs/orchestrator/reverse_text.toml
-```
-
+We provide a convenience endpoint `rl` for single-node RL experiments. It configures and startsthe trainer, orchestrator and, optionally, an inference server. It enforces correctly setting shared configs (e.g. the model name or async level should be the same across all modules) and dispatches and monitors subprocesses. To stream the logs from each module, we use file logging, by default only the trainer logs will be displayed on the main process.  
 
 **Reverse Text**
 
@@ -181,6 +160,50 @@ uv run rl \
 ```
 
 *NB: This setup requires 8 GPUs - 2 are used for the FSDP trainer, 6 are used for inference with TP=2 and DP=3.*
+
+
+### Tmuxinator
+
+
+ We also provide a convenient tmuxinator layout to start a run and view all the logs at the same time. The recommended workflow is:
+
+1. Start a pre-layouted `tmux` session using `tmuxinator`
+
+```bash
+tmuxinator
+```
+
+2. Start the trainer and orchestrator in the `Trainer` pane.
+
+```bash
+uv run rl \
+  --trainer @ configs/trainer/reverse_text.toml \
+  --orchestrator @ configs/orchestrator/reverse_text.toml \
+  --inference @ configs/inference/reverse_text.toml
+```
+
+#### Standalone Inference Server
+You can optionally start the inference server individually to avoid the long vllm warmup at each run restart. Usefull for development.
+
+1. start the pre-layouted `tmux` session using `tmuxinator`
+
+```bash
+tmuxinator
+```
+
+2. Start the inference server in the `Inference` pane.
+
+```bash
+uv run inference @ configs/inference/reverse_text.toml
+```
+
+3. You can now start the trainer and orchestrator in the `Trainer` pane.
+
+```bash
+uv run rl \
+  --trainer @ configs/trainer/reverse_text.toml \
+  --orchestrator @ configs/orchestrator/reverse_text.toml \
+```
 
 
 ### Evals
