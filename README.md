@@ -132,7 +132,7 @@ tmuxinator
 uv run inference @ configs/inference/reverse_text.toml
 ```
 
-3. Start the trainer and orchestrator in the `RL` pane.
+3. Start the trainer and orchestrator in the `Trainer` pane.
 
 ```bash
 uv run rl \
