@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field
 
 from prime_rl.utils.pydantic_config import BaseConfig
 
@@ -116,13 +116,6 @@ class WandbMonitorConfig(BaseConfig):
             description="Configuration for logging prompt/response samples to W&B tables. If None, no samples are logged.",
         ),
     ] = None
-
-    @model_validator(mode="after")
-    def validate_name(self):
-        # If group and name are set, the run name will be prefixed with the group
-        if self.group and self.name:
-            self.name = f"{self.group}-{self.name}"
-        return self
 
 
 class MultiMonitorConfig(BaseConfig):
