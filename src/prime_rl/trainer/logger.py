@@ -21,7 +21,7 @@ def setup_logger(log_config: LogConfig, world: World) -> Logger:
     if log_config.path:
         if world.world_size > 1 and world.local_rank > 0:
             log_config.path = Path(log_config.path.as_posix() + str(world.local_rank))
-        log_config.path = Path(log_config.path.as_posix() + ".log")
+        log_config.path = Path(log_config.path.as_posix() + ".loguru")
     logger = setup_handlers(loguru_logger, format, log_config, rank=world.rank)
     set_logger(logger)
 

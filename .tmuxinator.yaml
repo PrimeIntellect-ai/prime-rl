@@ -12,7 +12,7 @@ windows:
               echo "Waiting for orchestrator log file..."
               while [ ! -f logs/orchestrator.log ]; do sleep 1; done
               echo "Following orchestrator.log..."
-              tail -F logs/orchestrator.log
+              tail -F logs/orchestrator.loguru
             done
         - Inference:
           - |

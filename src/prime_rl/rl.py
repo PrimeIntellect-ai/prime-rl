@@ -176,7 +176,7 @@ def setup_logger(log_config: LogConfig) -> Logger:
 
     # Setup the logger handlers
     format = format_time(log_config) + format_message()
-    log_config.path = log_config.path / "rl.log"
+    log_config.path = log_config.path / "rl.loguru"
     logger = setup_handlers(loguru_logger, format, log_config, rank=0)
     set_logger(logger)
 
@@ -359,7 +359,7 @@ def rl(config: RLConfig):
 
         # Monitor all processes for failures
         logger.success("Startup complete. Showing trainer logs...")
-        Popen(["tail", "-F", "logs/trainer.log"])
+        Popen(["tail", "-F", "logs/trainer.loguru"])
 
         # Check for errors from monitor threads
         while not (stop_events["orchestrator"].is_set() and stop_events["trainer"].is_set()):
