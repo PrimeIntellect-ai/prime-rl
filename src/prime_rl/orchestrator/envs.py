@@ -10,9 +10,13 @@ if TYPE_CHECKING:
     # vLLM
     VLLM_CONFIGURE_LOGGING: int
 
+    # tqdm
+    TQDM_DISABLE: int
+
 
 _ORCHESTRATOR_ENV_PARSERS = {
     "VLLM_CONFIGURE_LOGGING": int,
+    "TQDM_DISABLE": int,
     **_BASE_ENV_PARSERS,
 }
 
