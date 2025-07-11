@@ -31,7 +31,12 @@ def chat_function(message, history, endpoint, model_name, key, temperature, top_
 
     try:
         stream = client.chat.completions.create(
-            model=model_name, messages=messages, stream=True, temperature=temperature, top_p=top_p, max_tokens=int(max_tokens)
+            model=model_name,
+            messages=messages,
+            stream=True,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=int(max_tokens),
         )
 
         # Initialize buffers
@@ -127,13 +132,19 @@ def chat_function(message, history, endpoint, model_name, key, temperature, top_
                 # Add completed thinking blocks
                 for i, think_block in enumerate(thinking_blocks):
                     result.append(
-                        gr.ChatMessage(role="assistant", content=think_block, metadata={"title": "💭 Thinking", "status": "done"})
+                        gr.ChatMessage(
+                            role="assistant", content=think_block, metadata={"title": "💭 Thinking", "status": "done"}
+                        )
                     )
 
                 # Add current thinking if in progress
                 if in_thinking and thinking_content:
                     result.append(
-                        gr.ChatMessage(role="assistant", content=thinking_content, metadata={"title": "💭 Thinking", "status": "pending"})
+                        gr.ChatMessage(
+                            role="assistant",
+                            content=thinking_content,
+                            metadata={"title": "💭 Thinking", "status": "pending"},
+                        )
                     )
 
                 # Only add main response if we have non-whitespace content
@@ -148,7 +159,11 @@ def chat_function(message, history, endpoint, model_name, key, temperature, top_
                     yield result
 
     except Exception as e:
-        yield [gr.ChatMessage(role="assistant", content=f"Error: {str(e)}\n\nPlease check your endpoint and model configuration.")]
+        yield [
+            gr.ChatMessage(
+                role="assistant", content=f"Error: {str(e)}\n\nPlease check your endpoint and model configuration."
+            )
+        ]
 
 
 def create_demo():
@@ -167,10 +182,16 @@ def create_demo():
                     info="URL or address of the OpenAI-compatible API",
                 )
                 model_input = gr.Textbox(
-                    label="Model Name", value="Qwen/Qwen3-8B", placeholder="Enter model name", info="Name of the model to use"
+                    label="Model Name",
+                    value="Qwen/Qwen3-8B",
+                    placeholder="Enter model name",
+                    info="Name of the model to use",
                 )
                 key_input = gr.Textbox(
-                    label="API Key", value="EMPTY", placeholder="Enter API key", info="API key for the OpenAI-compatible API"
+                    label="API Key",
+                    value="EMPTY",
+                    placeholder="Enter API key",
+                    info="API key for the OpenAI-compatible API",
                 )
 
                 gr.Markdown("### Generation Parameters")
@@ -183,7 +204,14 @@ def create_demo():
                 chat_interface = gr.ChatInterface(  # noqa: F841
                     fn=chat_function,
                     type="messages",
-                    additional_inputs=[endpoint_input, model_input, key_input, temp_slider, top_p_slider, max_tokens_slider],
+                    additional_inputs=[
+                        endpoint_input,
+                        model_input,
+                        key_input,
+                        temp_slider,
+                        top_p_slider,
+                        max_tokens_slider,
+                    ],
                     chatbot=gr.Chatbot(
                         height=500,
                         show_copy_button=True,
@@ -201,7 +229,9 @@ def main():
     """Main function to launch the Gradio app."""
     parser = argparse.ArgumentParser(description="LLM Chat UI with OpenAI-compatible endpoint")
     parser.add_argument("--port", type=int, default=7860, help="Port to run the server on")
-    parser.add_argument("--no-share", action="store_true", help="Disable public shareable link (share is enabled by default)")
+    parser.add_argument(
+        "--no-share", action="store_true", help="Disable public shareable link (share is enabled by default)"
+    )
     args = parser.parse_args()
 
     # Create the demo
