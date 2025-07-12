@@ -26,11 +26,12 @@ from prime_rl.trainer.utils import (
     copy_model_to_cpu,
     offload_model_to_cpu,
     wake_up_model_from_cpu,
+    print_benchmark,
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
-from prime_rl.utils.utils import clean_exit
+from prime_rl.utils.utils import clean_exit, to_col_format
 
 
 @clean_exit
@@ -40,6 +41,10 @@ def train(config: TrainerConfig):
     world = get_world()
     logger = setup_logger(config.log, world)
     logger.info(f"Starting trainer in {world}")
+
+    # Print warning if running in benchmark mode
+    if config.bench:
+        logger.warning(f"Running in benchmark mode (max_steps={config.max_steps}, {config.data.fake=})")
 
     # Setup the monitor
     logger.info(f"Initializing monitor ({config.monitor})")
@@ -349,6 +354,10 @@ def train(config: TrainerConfig):
 
     logger.info(f"Peak memory: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB")
     logger.success("Trainer finished!")
+
+    # Optionally, print benchmark table
+    if config.bench:
+        print_benchmark(to_col_format(monitor.history))
 
 
 def main():
