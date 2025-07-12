@@ -17,7 +17,7 @@ from pydantic import Field, model_validator
 
 from prime_rl.inference.config import InferenceConfig
 from prime_rl.orchestrator.config import OrchestratorConfig
-from prime_rl.trainer.config import CheckpointConfig, TrainerConfig
+from prime_rl.trainer.config import CheckpointConfig, FakeDataLoaderConfig, TrainerConfig
 from prime_rl.utils.config import WandbMonitorConfig
 from prime_rl.utils.logger import format_message, format_time, get_logger, set_logger, setup_handlers
 from prime_rl.utils.pydantic_config import BaseSettings, get_temp_toml_file, parse_argv
@@ -55,6 +55,13 @@ class RLConfig(BaseSettings):
     trainer_gpus: Annotated[int, Field(description="The number of GPUs to use for trainer.")] = 1
     inference_gpus: Annotated[int, Field(description="The number of GPUs to use for inference.")] = 1
 
+    bench: Annotated[
+        bool,
+        Field(
+            description="Whether to run in benchmark mode. It will automatically set the trainer and orchestrator to benchmark mode and, if present, configure the W&B project to `<project>-bench`",
+        ),
+    ] = False
+
     clean: Annotated[
         bool,
         Field(
@@ -73,6 +80,26 @@ class RLConfig(BaseSettings):
             raise ValueError(
                 f"Total number of inference GPUs ({self.inference_gpus}) does not match the local sharding strategy ({self.inference.parallel.dp} DP + {self.inference.parallel.tp} TP)"
             )
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_bench(self):
+        if self.bench:
+            # Set trainer and orchestrator to benchmark mode
+            self.trainer.bench = True
+            self.orchestrator.bench = True
+
+            # Configure the trainer fake data to match the orchestrator config
+            self.trainer.data.fake = FakeDataLoaderConfig(
+                micro_batch_size=self.orchestrator.micro_batch_size,
+                batch_size=self.orchestrator.batch_size,
+                seq_len=self.orchestrator.seq_len,
+            )
+
+            # Suffix the W&B project with "-bench"
+            if self.trainer.monitor.wandb:
+                self.trainer.monitor.wandb.project = f"{self.trainer.monitor.wandb.project}-bench"
+
         return self
 
     @model_validator(mode="after")

@@ -270,7 +270,7 @@ class OrchestratorConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def validate_bench(self):
+    def auto_setup_bench(self):
         if self.bench:
             self.max_steps = 6  # Run for 1 warmup step + 5 evaluation steps
             self.async_level = 1e9  # Never wait for RL weight checkpoints

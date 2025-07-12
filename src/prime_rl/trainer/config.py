@@ -217,7 +217,7 @@ class TrainerConfig(BaseSettings):
     ] = False
 
     @model_validator(mode="after")
-    def validate_bench(self):
+    def auto_setup_bench(self):
         if self.bench:
             self.max_steps = 6  # 1 Warmup + 5 Benchmark
             self.data.fake = FakeDataLoaderConfig()
