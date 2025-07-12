@@ -253,7 +253,6 @@ class MultiMonitor:
     def log(
         self,
         metrics: dict[str, Any],
-        wandb_prefix: str | None = None,
         exclude: list[MonitorType] = [],
     ) -> None:
         """Logs metrics to all outputs."""
@@ -263,12 +262,6 @@ class MultiMonitor:
         self.logger.debug(f"Logging metrics: {metrics}")
         for output_type, output in self.outputs.items():
             if output_type not in exclude:
-                if output_type == "wandb" and wandb_prefix is not None:
-                    step = metrics.pop("step", None)
-                    metrics = {
-                        **{f"{wandb_prefix}/{k}": v for k, v in metrics.items()},
-                        "step": step,
-                    }
                 output.log(metrics)
 
     def _set_has_gpu(self) -> bool:
