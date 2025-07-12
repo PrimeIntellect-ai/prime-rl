@@ -50,7 +50,7 @@ def load_intellect_math_environment(env_args: dict = {}) -> Environment:
         lambda x: {"question": x["prompt"], "info": json.loads(x["verification_info"]), "task": "simple-math"}
     )
     solve_rate_field = env_args.get("solve_rate_field", None)
-    if solve_rate_field:
+    if solve_rate_field is not None:
         min_solve_rate = env_args.get("min_solve_rate", None)
         max_solve_rate = env_args.get("max_solve_rate", None)
         if min_solve_rate is not None:
