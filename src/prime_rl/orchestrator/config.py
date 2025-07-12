@@ -128,7 +128,7 @@ class EvalConfig(BaseConfig):
         Field(
             description="Whether to evaluate the base model we are training on.",
         ),
-    ] = False
+    ] = True
 
 
 class CheckpointConfig(BaseConfig):
