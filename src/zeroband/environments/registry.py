@@ -44,8 +44,6 @@ Provide the final numerical answer inside \\boxed{{...}}."""
 def load_intellect_math_environment(env_args: dict = {}) -> Environment:
     import json
 
-    from verifiers.utils.data_utils import extract_boxed_answer
-
     from zeroband.orchestrator.genesys.math import compute_math_reward
 
     train_dataset = load_dataset("PrimeIntellect/INTELLECT-2-only-math", split="train").map(
@@ -60,8 +58,6 @@ def load_intellect_math_environment(env_args: dict = {}) -> Environment:
         )
     train_dataset = train_dataset.remove_columns(["prompt", "verification_info"])
 
-    parser = vf.ThinkParser(extract_fn=extract_boxed_answer)
-
     def correct_answer_reward_func(completion, info, **kwargs) -> float:
         completion_text = completion[-1]["content"]
         return compute_math_reward(completion_text, info)
@@ -73,7 +69,7 @@ def load_intellect_math_environment(env_args: dict = {}) -> Environment:
         weights=[1.0],
     )
 
-    vf_env = vf.SingleTurnEnv(dataset=train_dataset, parser=parser, rubric=rubric)
+    vf_env = vf.SingleTurnEnv(dataset=train_dataset, rubric=rubric)
     return vf_env
 
 
