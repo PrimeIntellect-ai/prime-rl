@@ -99,7 +99,6 @@ class RLConfig(BaseSettings):
             # Suffix the W&B project with "-bench"
             if self.trainer.monitor.wandb:
                 self.trainer.monitor.wandb.project = f"{self.trainer.monitor.wandb.project}-bench"
-                self.trainer.monitor.wandb.group = f"{torch.cuda.get_device_name(0)}"
 
             # Disable evaluation
             self.orchestrator.eval = None
