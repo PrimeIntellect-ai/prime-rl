@@ -49,7 +49,7 @@ async def eval(config: EvalConfig):
             benchmark,
             config.model,
             config.sampling,
-            step=0,
+            ckpt_step=0,
             monitor=monitor,
         )
 

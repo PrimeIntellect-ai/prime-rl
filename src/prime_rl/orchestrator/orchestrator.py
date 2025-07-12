@@ -156,8 +156,9 @@ async def orchestrate(config: OrchestratorConfig):
                     benchmark,
                     config.model,
                     config.sampling,
-                    ckpt_step,
+                    ckpt_step=ckpt_step,
                     monitor=monitor,
+                    step=progress.step,
                 )
             time_eval = time.time() - time_before_evals
             logger.info(f"Evaluated in {time_eval:.2f}s")
@@ -267,7 +268,7 @@ async def orchestrate(config: OrchestratorConfig):
             "progress/orchestrator/total_tokens": progress.total_tokens,
             "progress/orchestrator/total_samples": progress.total_samples,
             "progress/orchestrator/epoch": progress.epoch,
-            "progress/orchestrator/step": ckpt_step,  # Shared W&B axis
+            "progress/ckpt_step": ckpt_step,  # Shared W&B axis
             "step": progress.step,
         }
         monitor.log(progress_metrics)
