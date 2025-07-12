@@ -44,9 +44,9 @@ if [ -n "$TMUX" ]; then
         # Pane 2: Orchestrator
         tmux send-keys -t "$SESSION_NAME:RL.1" 'while true; do
   echo "Waiting for orchestrator log file..."
-  while [ ! -f logs/orchestrator.loguru ]; do sleep 1; done
-  echo "Following orchestrator.loguru..."
-  tail -F logs/orchestrator.loguru
+  while [ ! -f logs/orchestrator.log ]; do sleep 1; done
+  echo "Following orchestrator.log..."
+  tail -F logs/orchestrator.log
 done' C-m
         
         # Pane 3: Inference
@@ -113,9 +113,9 @@ else
         # Pane 2: Orchestrator
         tmux send-keys -t "$SESSION_NAME:RL.1" 'while true; do
   echo "Waiting for orchestrator log file..."
-  while [ ! -f logs/orchestrator.loguru ]; do sleep 1; done
-  echo "Following orchestrator.loguru..."
-  tail -F logs/orchestrator.loguru
+  while [ ! -f logs/orchestrator.log ]; do sleep 1; done
+  echo "Following orchestrator.log..."
+  tail -F logs/orchestrator.log
 done' C-m
         
         # Pane 3: Inference

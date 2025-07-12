@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from loguru import logger as loguru_logger
 from loguru._logger import Logger
 
@@ -17,8 +15,6 @@ def setup_logger(log_config: LogConfig) -> Logger:
     format = time + message + debug
 
     # Setup the logger handlers
-    if log_config.path:
-        log_config.path = Path(log_config.path.as_posix() + ".loguru")
     logger = setup_handlers(loguru_logger, format, log_config, rank=0)
     set_logger(logger)
 

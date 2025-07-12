@@ -20,13 +20,6 @@ class LogConfig(BaseConfig):
         Field(description="Logging level for the process. Will determine the logging verbosity and format."),
     ] = "info"
 
-    path: Annotated[
-        Path | None,
-        Field(
-            description="The file path to log to. If None, will only log to stdout. This field is particularly useful to distinguish logs when multi-processing."
-        ),
-    ] = Path("logs")
-
     utc: Annotated[
         bool,
         Field(
