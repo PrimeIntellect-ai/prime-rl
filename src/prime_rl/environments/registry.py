@@ -52,7 +52,7 @@ def load_intellect_math_environment(env_args: dict = {}) -> Environment:
         lambda x: {"question": x["prompt"], "info": json.loads(x["verification_info"]), "task": "simple-math"}
     )
     solve_rate_field = env_args.get("solve_rate_field", None)
-    if solve_rate_field is not None:
+    if not solve_rate_field:
         min_solve_rate = env_args["min_solve_rate"]
         max_solve_rate = env_args["max_solve_rate"]
         train_dataset = train_dataset.filter(
@@ -60,10 +60,10 @@ def load_intellect_math_environment(env_args: dict = {}) -> Environment:
         )
     train_dataset = train_dataset.remove_columns(["prompt", "verification_info"])
 
-    parser = vf.ThinkParser(extract_fn=extract_boxed_answer)
+    parser = vf.ThinkParser()
 
     def correct_answer_reward_func(completion, info, **kwargs) -> float:
-        completion_text = completion[-1]["content"]
+        completion_text = parser.parse_answer(completion) or ""
         return compute_math_reward(completion_text, info)
 
     rubric = vf.Rubric(
