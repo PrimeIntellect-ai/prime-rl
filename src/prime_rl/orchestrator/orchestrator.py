@@ -1,7 +1,6 @@
-import json
+import asyncio
 import time
 from loguru import logger
-from multiprocessing.queues import Queue
 from pathlib import Path
 
 # Import environment before any other imports
@@ -150,16 +149,20 @@ async def orchestrate(config: OrchestratorConfig):
             last_eval_step = ckpt_step
             logger.info(f"Running evals for checkpoint step {ckpt_step}")
             time_before_evals = time.time()
-            for benchmark in config.eval.benchmarks:
-                await run_benchmark(
-                    client,
-                    benchmark,
-                    config.model,
-                    config.sampling,
-                    ckpt_step=ckpt_step,
-                    monitor=monitor,
-                    step=progress.step,
-                )
+            await asyncio.gather(
+                *[
+                    run_benchmark(
+                        client,
+                        benchmark,
+                        config.model,
+                        config.sampling,
+                        ckpt_step=ckpt_step,
+                        monitor=monitor,
+                        step=progress.step,
+                    )
+                    for benchmark in config.eval.benchmarks
+                ]
+            )
             time_eval = time.time() - time_before_evals
             logger.info(f"Evaluated in {time_eval:.2f}s")
 
