@@ -201,7 +201,7 @@ uv run inference @ configs/inference/reverse_text.toml
 ```bash
 uv run rl \
   --trainer @ configs/trainer/reverse_text.toml \
-  --orchestrator @ configs/orchestrator/reverse_text.toml \
+  --orchestrator @ configs/orchestrator/reverse_text.toml
 ```
 
 To kill the tmux session when you're done:
