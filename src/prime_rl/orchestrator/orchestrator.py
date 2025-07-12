@@ -16,7 +16,6 @@ from prime_rl.eval.utils import run_benchmark
 from prime_rl.orchestrator.ckpt import CheckpointManager, Progress
 from prime_rl.environments.registry import get_environment
 from prime_rl.orchestrator.client import (
-    tokenize,
     check_has_model,
     check_health,
     reload_weights,
@@ -47,7 +46,7 @@ async def orchestrate(config: OrchestratorConfig):
     # Print warning if running in benchmark mode
     if config.bench:
         logger.warning(
-            f"Running in benchmark model (max_steps={config.max_steps}, async_level={format_num(config.async_level, precision=0)})"
+            f"Running in benchmark mode (max_steps={config.max_steps}, async_level={format_num(config.async_level, precision=0)})"
         )
 
     # Setup client
