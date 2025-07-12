@@ -20,6 +20,6 @@ num_samples = 16
 
 [eval]
 interval = 50
-benchmarks = ["math500"]
+benchmarks = ["math500", "aime24", "aime25"]
 
 [ckpt]
