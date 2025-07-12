@@ -132,7 +132,7 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
     df = pd.DataFrame(dict(history.items()))
     columns = {
         "perf/infer/throughput": "Throughput",
-        "time/infer": "Step Time",
+        "time/orchestrator": "Step Time",
     }
     df = df[columns.keys()].rename(columns=columns)
     df = df.iloc[1:]  # Exclude first row
