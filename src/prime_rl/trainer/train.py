@@ -247,9 +247,10 @@ def train(config: TrainerConfig):
             # Backward pass (ensures loss reduction across FSDP ranks)
             loss.backward()
 
-            loss_metrics["loss/loss"] += loss.detach().clone().item()
-            loss_metrics["loss/entropy"] += entropy.detach().clone().item()
-            loss_metrics["loss/importance_ratio"] += importance_ratio.detach().clone().item()
+            # cast to fp32 to avoid acc issue
+            loss_metrics["loss/loss"] += loss.detach().clone().float()
+            loss_metrics["loss/entropy"] += entropy.detach().clone().float()
+            loss_metrics["loss/importance_ratio"] += importance_ratio.detach().clone().float()
 
             logger.debug(
                 f"Completed micro batch {micro_step}/{num_micro_batches} (loss={loss.item() * num_micro_batches:.2f}, entropy={entropy.item() * num_micro_batches:.2f}, importance_ratio={importance_ratio.item() * num_micro_batches:.2f})"
