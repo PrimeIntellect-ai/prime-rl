@@ -58,7 +58,7 @@ class RLConfig(BaseSettings):
     bench: Annotated[
         bool,
         Field(
-            description="Whether to run in benchmark mode. It will automatically set the trainer and orchestrator to benchmark mode and, if present, configure the W&B project to `<project>-bench`",
+            description="Whether to run in benchmark mode. It will automatically set the trainer and orchestrator to benchmark mode and, if present, configure the W&B project by suffixing the project with `-bench`.",
         ),
     ] = False
 
@@ -99,6 +99,11 @@ class RLConfig(BaseSettings):
             # Suffix the W&B project with "-bench"
             if self.trainer.monitor.wandb:
                 self.trainer.monitor.wandb.project = f"{self.trainer.monitor.wandb.project}-bench"
+                self.trainer.monitor.wandb.group = f"{torch.cuda.get_device_name(0)}"
+
+            # Disable evaluation
+            self.orchestrator.eval = None
+            self.orchestrator.monitor.wandb.log_samples = None
 
         return self
 

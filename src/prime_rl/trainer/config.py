@@ -220,5 +220,6 @@ class TrainerConfig(BaseSettings):
     def auto_setup_bench(self):
         if self.bench:
             self.max_steps = 6  # 1 Warmup + 5 Benchmark
-            self.data.fake = FakeDataLoaderConfig()
+            if not self.data.fake:
+                self.data.fake = FakeDataLoaderConfig()
         return self
