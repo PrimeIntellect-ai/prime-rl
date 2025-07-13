@@ -419,6 +419,10 @@ In general, the model used for generating rollouts at step `n` is from `ckpt[n -
 - When async_level = 0, the rollout and gradient are based on the same model version.
   This is equivalent to synchronous on-policy training.
 
+## License
+
+This project is licensed under the Apache 2.0 license, as found in the [License](LICENSE) file.
+
 ## Citation
 
 If you find our work useful, feel free to cite it using
