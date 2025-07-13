@@ -1,5 +1,4 @@
 [monitor.wandb]
-project = "hendrycks-math"
 
 [model]
 name = "willcb/DeepSeek-R1-Distill-Qwen-7B"
