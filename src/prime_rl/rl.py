@@ -96,10 +96,6 @@ class RLConfig(BaseSettings):
                 seq_len=self.orchestrator.seq_len,
             )
 
-            # Suffix the W&B project with "-bench"
-            if self.trainer.monitor.wandb:
-                self.trainer.monitor.wandb.project = f"{self.trainer.monitor.wandb.project}-bench"
-
             # Disable evaluation
             self.orchestrator.eval = None
             self.orchestrator.monitor.wandb.log_samples = None

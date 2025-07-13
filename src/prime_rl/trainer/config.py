@@ -222,4 +222,7 @@ class TrainerConfig(BaseSettings):
             self.max_steps = 6  # 1 Warmup + 5 Benchmark
             if not self.data.fake:
                 self.data.fake = FakeDataLoaderConfig()
+
+            if self.monitor.wandb:
+                self.monitor.wandb.project = f"{self.monitor.wandb.project}-bench"
         return self
