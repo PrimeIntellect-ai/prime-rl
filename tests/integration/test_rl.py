@@ -42,10 +42,10 @@ def train_process(vllm_server: str, run_process: Callable[[Command, Environment,
     project = "ci-reverse-text"
     if username != "CI_RUNNER":
         project += "-local"
-    group_name = f"{branch_name}-{commit_hash}"
+    run_name = f"{branch_name}-{commit_hash}"
 
     return run_process(
-        CMD + ["--trainer.monitor.wandb.project", project, "--trainer.monitor.wandb.group", group_name],
+        CMD + ["--trainer.monitor.wandb.project", project, "--trainer.monitor.wandb.name", run_name],
         {},
         TIMEOUT,
     )

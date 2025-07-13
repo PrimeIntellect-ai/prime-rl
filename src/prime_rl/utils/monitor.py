@@ -135,7 +135,6 @@ class WandbMonitor(Monitor):
             return
         self.wandb = wandb.init(
             project=config.project,
-            group=config.group,
             name=config.name,
             id=config.id,
             dir=config.dir,

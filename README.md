@@ -322,7 +322,6 @@ Because we save progress information, resuming from a checkpoint is fully W&B co
 ```bash
 CUDA_VISIBLE_DEVICES=1 uv run trainer @ configs/trainer/reverse_text.toml \
   --monitor.wandb.project <project> \
-  --monitor.wandb.group <group> \
   --ckpt.resume-step 10 \
   --monitor.wandb.id <trainer-run-id> \
   --orchestrator.monitor.wandb.id <orchestrator-run-id>

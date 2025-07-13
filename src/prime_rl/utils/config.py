@@ -73,17 +73,10 @@ class WandbMonitorConfig(BaseConfig):
 
     project: Annotated[str, Field(description="The W&B project to log to.")] = "prime-rl"
 
-    group: Annotated[
-        str | None,
-        Field(
-            description="The W&B group to log to. If None, it will not set the group. Use grouping if you want multiple associated runs (e.g. RL training has a training and inference run) log to the same dashboard.",
-        ),
-    ] = None
-
     name: Annotated[
         str | None,
         Field(
-            description="The W&B name to to use for logging. If group and name are set, they will be automatically combined into a single name.",
+            description="The W&B name to to use for logging.",
         ),
     ] = None
 
