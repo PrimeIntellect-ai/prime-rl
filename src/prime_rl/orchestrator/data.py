@@ -3,19 +3,18 @@ from typing import Literal, TypedDict
 
 import torch
 from jaxtyping import Float, Int
+from torch import Tensor
 from transformers import AutoTokenizer
 
 from prime_rl.trainer.data import MicroBatch
 
 
 class Sample(TypedDict):
-    input_ids: Int[torch.Tensor, "seq"]
-    position_ids: Int[torch.Tensor, "seq"]
-    loss_mask: Int[torch.Tensor, "seq"]
-    advantages: Float[torch.Tensor, "seq"]
-    logprobs: Float[torch.Tensor, "seq_minus_1"]
-
-    total_tokens: int
+    input_ids: Int[Tensor, "seq"]
+    position_ids: Int[Tensor, "seq"]
+    loss_mask: Int[Tensor, "seq"]
+    advantages: Float[Tensor, "seq"]
+    logprobs: Float[Tensor, "seq_minus_1"]
 
 
 def prepare_sample(
@@ -34,28 +33,31 @@ def prepare_sample(
     Tokenize and
     """
 
+    # Prepare prompt tokens
     prompt_token_ids = torch.tensor(prompt_tokens).long()
     prompt_token_mask = torch.tensor(prompt_mask).long()
+
+    # Prepare completion tokens
     completion_token_ids = torch.tensor(completion_tokens).long()
     completion_token_mask = torch.tensor(completion_mask).long()
+
+    # Prepare input_ids, loss_mask, position_ids, logprobs, and advantages
     input_ids = torch.cat([prompt_token_ids, completion_token_ids]).long()
-
     loss_mask = torch.cat([prompt_token_mask, completion_token_mask]).long()
-    total_tokens = input_ids.shape[0]
     logprobs = torch.cat([torch.zeros(len(prompt_token_ids) - 1), torch.tensor(completion_logprobs)]).float()
-    position_ids = torch.arange(total_tokens).long()
-    advantages = torch.tensor(advantage).repeat(total_tokens).float()
+    position_ids = torch.arange(len(input_ids)).long()
+    advantages = torch.tensor(advantage).repeat(len(input_ids)).float()
 
-    if total_tokens > seq_len:
+    if len(input_ids) > seq_len:
         # We should never truncate as it would create a really bad learning signal. Instead, always set the maximum sequence length
         # on the inference worker accordingly, e.g. by setting the `max_tokens` parameter.
         raise ValueError(
-            f"Number of tokens {total_tokens} is greater than sequence length {seq_len}. This should not happen."
+            f"Number of tokens {len(input_ids)} is greater than sequence length {seq_len}. This should not happen."
         )
 
     # Pad the sequence to the sequence length
     if pad:
-        num_padding_tokens = seq_len - total_tokens
+        num_padding_tokens = seq_len - len(input_ids)
         input_ids = torch.cat([input_ids, torch.full((num_padding_tokens,), tokenizer.pad_token_id)])
         loss_mask = torch.cat([loss_mask, torch.zeros(num_padding_tokens)]).long()
         position_ids = torch.cat([position_ids, torch.zeros(num_padding_tokens)]).long()
@@ -71,7 +73,6 @@ def prepare_sample(
         "loss_mask": loss_mask,
         "position_ids": position_ids,
         "logprobs": logprobs,
-        "total_tokens": total_tokens,
     }
 
 
@@ -82,7 +83,6 @@ def prepare_micro_batch(samples: list[MicroBatch], temperature: float):
         micro_batch[key] = torch.stack([sample[key] for sample in samples], dim=0)
 
     micro_batch["temperature"] = temperature
-    micro_batch["total_tokens"] = sum([sample["total_tokens"] for sample in samples])
 
     return micro_batch
 
@@ -157,7 +157,7 @@ def packed_samples_into_micro_bs(samples: list[Sample], max_seq_len: int) -> lis
     Pack samples into micro_batch efficiently.
     We follow the First Fit Decreasing algorithm to pack the samples into bins and minimize potential padding while never truncating.
     """
-    sorted_samples = sorted(samples, key=lambda x: x["total_tokens"], reverse=True)
+    sorted_samples = sorted(samples, key=lambda x: len(x["input_ids"]), reverse=True)
 
     ## we create bins
     micro_batches = []
@@ -167,9 +167,9 @@ def packed_samples_into_micro_bs(samples: list[Sample], max_seq_len: int) -> lis
         bin_found = False
         for bin_idx, bin_content in enumerate(micro_batches):
             # Calculate current bin length
-            bin_len = sum(s["total_tokens"] for s in bin_content)
+            bin_len = sum(len(s["input_ids"]) for s in bin_content)
             # Check if sequence fits in this bin
-            if bin_len + sample["total_tokens"] <= max_seq_len:
+            if bin_len + len(sample["input_ids"]) <= max_seq_len:
                 micro_batches[bin_idx].append(sample)
                 bin_found = True
                 break
@@ -187,7 +187,7 @@ def prepare_micro_batch_packing(samples: list[Sample], max_seq_len: int, tempera
     Would additionally pad the batch to the max sequence length.
     """
     micro_batch = {}
-    assert sum([sample["total_tokens"] for sample in samples]) <= max_seq_len, (
+    assert sum([len(sample["input_ids"]) for sample in samples]) <= max_seq_len, (
         "Total tokens of samples is greater than max sequence length"
     )
 
@@ -195,7 +195,6 @@ def prepare_micro_batch_packing(samples: list[Sample], max_seq_len: int, tempera
         micro_batch[key] = torch.cat([sample[key] for sample in samples], dim=0).unsqueeze(0)
 
     micro_batch["temperature"] = temperature
-    micro_batch["total_tokens"] = sum([sample["total_tokens"] for sample in samples])
 
     return micro_batch
 

@@ -42,7 +42,6 @@ class FakeDataLoader:
             "advantages": torch.randn(self.micro_batch_size, self.seq_len),
             "logprobs": torch.randn(self.micro_batch_size, self.seq_len - 1),
             "temperature": 1.0,
-            "total_tokens": self.micro_batch_size * self.seq_len,
             "loss_mask": torch.ones(self.micro_batch_size, self.seq_len, dtype=torch.int32),
         }
 
