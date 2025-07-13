@@ -278,4 +278,8 @@ class OrchestratorConfig(BaseSettings):
             if self.monitor.wandb:
                 self.monitor.wandb.project = f"{self.monitor.wandb.project}-bench"
 
+            # Disable evaluation
+            self.eval = None
+            self.monitor.wandb.log_samples = None
+
         return self

@@ -96,10 +96,6 @@ class RLConfig(BaseSettings):
                 seq_len=self.orchestrator.seq_len,
             )
 
-            # Disable evaluation
-            self.orchestrator.eval = None
-            self.orchestrator.monitor.wandb.log_samples = None
-
         return self
 
     @model_validator(mode="after")
