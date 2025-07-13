@@ -337,6 +337,43 @@ CUDA_VISIBLE_DEVICES=1 uv run trainer @ configs/trainer/reverse_text.toml \
   --orchestrator.monitor.wandb.id <orchestrator-run-id>
 ```
 
+### Benchmarking
+
+We provide a convenient way to benchmark the performance of the inference engine and trainer using the `--bench` flag. It will run each module in isolation for a few steps and log performance statistics to the console and, optionally, W&B.
+
+**Inference**
+
+To benchmark inference, first spin up the inference server with an experiment configuration
+
+```bash
+uv run inference @ configs/inference/reverse_text.toml
+```
+
+Then, start the orchestrator with the matching configuration file in benchmark mode
+
+```bash
+uv run orchestrator @ configs/orchestrator/reverse_text.toml --bench
+```
+
+**Trainer**
+
+To benchmark the trainer, simply run the trainer against a fake data loader matching the way the orchestrator would write the training batch.
+
+```bash
+uv run trainer @ configs/trainer/reverse_text.toml --bench --data.fake "{'micro_batch_size': 8, 'batch_size': 128, 'seq_len': 128}"
+```
+
+**RL**
+
+Often it will be most convenient to benchmark the full RL run. This will automatically set the training batch configuration to match the way the orchestrator would have written it. Also, if W&B is configured for this project, it will synchronize the benchmark results to the project name, but suffixed with `-bench`.
+
+```bash
+uv run rl   \
+  --trainer @ configs/trainer/reverse_text.toml  \
+  --orchestrator @ configs/orchestrator/reverse_text.toml \
+  --inference @ configs/inference/reverse_text.toml \
+  --bench
+```
 
 ### Tests
 
