@@ -8,7 +8,6 @@ from rich.console import Console
 from rich.table import Table
 
 from prime_rl.orchestrator.client import tokenize
-from prime_rl.orchestrator.genesys import TaskType, get_reward_function
 from prime_rl.utils.utils import format_num, format_time, get_weight_ckpt_model_path, wait_for_path
 
 
@@ -94,19 +93,6 @@ def parse_completions(chat_completions: list[ChatCompletion]) -> list[str]:
 def wait_for_weight_checkpoint(path: Path, step: int, interval: int = 1, log_interval: int = 10) -> None:
     model_path = get_weight_ckpt_model_path(path, step)
     wait_for_path(model_path, interval, log_interval)
-
-
-def compute_rewards(
-    completions: list[str],
-    task_types: list[TaskType],
-    verification_infos: list[dict[str, Any]],
-) -> list[float]:
-    rewards = []
-    for completion, task_type, verification_info in zip(completions, task_types, verification_infos):
-        compute_reward = get_reward_function(task_type)
-        reward = compute_reward(completion, verification_info)
-        rewards.append(reward)
-    return rewards
 
 
 def compute_advantages(rewards: list[float], samples_per_problem: int) -> list[float]:
