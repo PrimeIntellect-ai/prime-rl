@@ -1,0 +1,12 @@
+# This CITATION.cff file was generated with cffinit. (https://bit.ly/cffinit)
+cff-version: 1.2.0
+title: PRIME-RL
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - name: Prime Intellect
+repository-code: 'https://github.com/PrimeIntellect-ai/prime-rl'
+license: Apache-2.0
+date-released: '2025-07-13'

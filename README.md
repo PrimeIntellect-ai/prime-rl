@@ -421,4 +421,13 @@ In general, the model used for generating rollouts at step `n` is from `ckpt[n -
 
 ## Citation
 
-*TBD*
+If you find our work useful, feel free to cite it using
+
+```tex
+@misc{primeintellect2025prime-rl,
+  author = {Prime Intellect},
+  title = {PRIME-RL},
+  url = {https://github.com/PrimeIntellect-ai/prime-rl},
+  year = {2025}
+}
+```
