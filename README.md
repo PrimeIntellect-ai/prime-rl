@@ -118,7 +118,9 @@ ulimit -n 32000
 
 ### RL
 
-We provide a convenience endpoint `rl` for single-node RL experiments. It configures and startsthe trainer, orchestrator and, optionally, an inference server. It enforces correctly setting shared configs (e.g. the model name or async level should be the same across all modules) and dispatches and monitors subprocesses. To stream the logs from each module, we use file logging, by default only the trainer logs will be displayed on the main process.  
+We provide a convenience endpoint `rl` for single-node RL experiments. It configures and starts the trainer, orchestrator and, optionally, an inference server. It enforces correctly setting shared configs (e.g. the model name or async level should be the same across all modules) and dispatches and monitors subprocesses. To stream the logs from each module, we use file logging, by default only the trainer logs will be displayed on the main process. 
+
+To check all available configuration options, run `uv run rl --help`.
 
 **Reverse Text**
 
@@ -213,15 +215,18 @@ To kill the tmux session when you're done:
 
 ### Evals
 
-*TBD*
+We provide a convenience endpoint for running a full evaluation suite of common benchmarks such as AIME, MATH-500 or LiveCodeBench against your model using the `eval` entrypoint.
 
-### Synthetic Data
+```bash
+uv run inference --model.name Qwen/Qwen3-0.6B --max-model-len 2048
+```
 
-*TBD*
+```bash
+uv run eval --model.name Qwen/Qwen3-0.6B --benchmarks math500,aime24,aime25
+```
 
-### Benchmark
+To check all available configuration options, run `uv run eval --help`.
 
-*TBD*
 
 ## Developer
 
@@ -229,27 +234,13 @@ To kill the tmux session when you're done:
 
 ### Setup
 
-1. Optionally, install [pre-commit](https://pre-commit.com) hooks
+1. Install [pre-commit](https://pre-commit.com) hooks
 
 ```bash
 uv run pre-commit install
 ```
 
 ### Configs
-
-We use `pydantic-settings` to configure `prime-rl`. To get an overview of the available configurations, run the following command:
-
-```bash
-uv run trainer --help
-```
-
-```bash
-uv run orchestrator --help
-```
-
-```bash
-uv run inference --help
-```
 
 **Sources**
 
