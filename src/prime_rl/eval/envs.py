@@ -17,16 +17,22 @@ if TYPE_CHECKING:
     HF_HUB_DISABLE_PROGRESS_BARS: str
     HF_HUB_ETAG_TIMEOUT: int
 
+    # vLLM
+    VLLM_CONFIGURE_LOGGING: int
+
+
 _EVAL_ENV_PARSERS = {
     "HF_HUB_CACHE": str,
     "HF_HUB_DISABLE_PROGRESS_BARS": str,
     "HF_HUB_ETAG_TIMEOUT": int,
+    "VLLM_CONFIGURE_LOGGING": int,
     **_BASE_ENV_PARSERS,
 }
 
 _EVAL_ENV_DEFAULTS = {
     "HF_HUB_DISABLE_PROGRESS_BARS": "1",  # Disable HF progress bars
     "HF_HUB_ETAG_TIMEOUT": "500",  # Set request timeout to 500s to avoid model download issues
+    "VLLM_CONFIGURE_LOGGING": "0",  # Disable vLLM logging
 }
 
 set_defaults(_EVAL_ENV_DEFAULTS)
