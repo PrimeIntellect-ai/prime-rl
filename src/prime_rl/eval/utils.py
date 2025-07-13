@@ -43,7 +43,9 @@ async def run_benchmark(
     benchmark_start_time = time.time()
 
     benchmark_name = get_benchmark_display_name(benchmark)
-    logger.info(f"Evaluating {model_config.name} on {benchmark_name} at step {step}")
+    logger.info(
+        f"Evaluating {model_config.name} on {benchmark_name} {f'for checkpoint {ckpt_step}' if ckpt_step > 0 else ''}"
+    )
 
     # Initializing the benchmark dataset
     logger.debug(f"Loading benchmark dataset ({benchmark})")
