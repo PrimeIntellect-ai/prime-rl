@@ -31,7 +31,7 @@ from prime_rl.trainer.utils import (
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
-from prime_rl.utils.utils import clean_exit, to_col_format
+from prime_rl.utils.utils import clean_exit, format_num, to_col_format
 
 
 @clean_exit
@@ -206,7 +206,15 @@ def train(config: TrainerConfig):
         forward_backward_start_time = time.time()
         loss_metrics = defaultdict(float)
         num_micro_batches = len(micro_batches)
-        logger.info(f"Starting forward and backward pass ({num_micro_batches=})")
+        micro_batch_size, seq_len = micro_batches[0]["input_ids"].shape
+        batch_size = micro_batch_size * num_micro_batches
+        total_tokens = sum(micro_batch["total_tokens"] for micro_batch in micro_batches)
+        if not config.loss.normalize_to_token_count:
+            total_tokens = batch_size * seq_len
+
+        logger.info(
+            f"Starting forward and backward pass ({num_micro_batches=}, total_tokens={format_num(total_tokens, precision=1)})"
+        )
         for micro_step, micro_batch in enumerate(micro_batches, start=1):
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
@@ -214,13 +222,7 @@ def train(config: TrainerConfig):
             loss_mask = micro_batch["loss_mask"].to("cuda")
             logprobs = micro_batch["logprobs"].to("cuda")
             temperature = micro_batch["temperature"]
-            total_tokens = micro_batch["total_tokens"]
             micro_batch_size, seq_len = input_ids.shape
-
-            # Optionally, normalize the loss to the token count
-            max_tokens = micro_batch_size * seq_len
-            if config.loss.normalize_to_token_count:
-                max_tokens = int(total_tokens)
 
             # Forward pass
             logits = forward(model, input_ids, position_ids).contiguous()
@@ -233,13 +235,13 @@ def train(config: TrainerConfig):
                 logprobs,
                 loss_mask,
                 temperature,
-                max_tokens,
+                total_tokens,
                 config.loss.variant,
             )
 
             # Compute the entropy
             with torch.no_grad():
-                entropy = entropy_loss(logits, loss_mask, temperature, max_tokens)
+                entropy = entropy_loss(logits, loss_mask, temperature, total_tokens)
 
             # Now we can delete the micro batch CUDA tensors
             del micro_batch, logits, input_ids, position_ids, advantages, loss_mask, logprobs

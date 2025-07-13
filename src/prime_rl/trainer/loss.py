@@ -16,7 +16,7 @@ def grpo_loss(
     original_logprobs: Float[Tensor, "batch seq_minus_1"],
     loss_mask: Int[Tensor, "batch seq"],
     temperature: float,
-    max_tokens: int,
+    total_tokens: int,
     grpo_loss_config: GRPOVariantsConfig,
 ) -> tuple[Tensor, Tensor]:
     if isinstance(grpo_loss_config, ClippingConfig):
@@ -30,7 +30,7 @@ def grpo_loss(
             grpo_loss_config.epsilon_low,
             grpo_loss_config.epsilon_high,
             grpo_loss_config.clip_ratio,
-            max_tokens,
+            total_tokens,
             grpo_loss_config.highest_entropy_ratio_loss,
         )
     elif isinstance(grpo_loss_config, RatioConfig):
@@ -41,7 +41,7 @@ def grpo_loss(
             original_logprobs,
             loss_mask,
             temperature,
-            max_tokens,
+            total_tokens,
             grpo_loss_config.clip_ratio,
             grpo_loss_config.highest_entropy_ratio_loss,
         )
@@ -60,7 +60,7 @@ def grpo_loss_clip(
     epsilon_low: float,
     epsilon_high: float,
     clip_ratio: float,
-    max_tokens: int,
+    total_tokens: int,
     highest_entropy_percentage: float,
 ) -> tuple[Tensor, Tensor]:
     """
@@ -95,12 +95,12 @@ def grpo_loss_clip(
     per_token_loss = torch.max(per_token_loss1, per_token_loss2)
 
     is_clipped = (per_token_loss1 < per_token_loss2).float()
-    clip_ratio_tensor = _apply_mask(is_clipped, loss_mask, max_tokens)
+    clip_ratio_tensor = _apply_mask(is_clipped, loss_mask, total_tokens)
 
     if highest_entropy_percentage < 1.0:
         loss_mask = highest_entropy_mask(logits, loss_mask, highest_entropy_percentage)
 
-    loss = _apply_mask(per_token_loss, loss_mask, max_tokens)
+    loss = _apply_mask(per_token_loss, loss_mask, total_tokens)
 
     return loss, clip_ratio_tensor
 
@@ -114,7 +114,7 @@ def grpo_loss_ratio(
     original_logprobs: Float[Tensor, "batch seq_minus_1"],
     loss_mask: Int[Tensor, "batch seq"],
     temperature: float,
-    max_tokens: int,
+    total_tokens: int,
     clip_ratio: float,
     highest_entropy_percentage: float,
 ) -> tuple[Tensor, Tensor]:
@@ -138,7 +138,7 @@ def grpo_loss_ratio(
     if highest_entropy_percentage < 1.0:
         loss_mask = highest_entropy_mask(logits, loss_mask, highest_entropy_percentage)
 
-    loss = _apply_mask(per_token_loss, loss_mask, max_tokens)
+    loss = _apply_mask(per_token_loss, loss_mask, total_tokens)
 
     ratio_avg = (loss_mask * ratio.detach()).sum() / loss_mask.sum()
 
@@ -204,7 +204,7 @@ def entropy_loss(
     logits: Float[Tensor, "batch seq vocab"],
     loss_mask: Int[Tensor, "batch seq"],
     temperature: float,
-    max_tokens: int,
+    total_tokens: int,
 ) -> Tensor:
     logits = logits[:, :-1, :]
     logits = logits / temperature
@@ -213,11 +213,11 @@ def entropy_loss(
     pd = torch.nn.functional.softmax(logits, dim=-1)
     entropy = torch.logsumexp(logits, dim=-1) - torch.sum(pd * logits, dim=-1)
 
-    return _apply_mask(entropy, loss_mask, max_tokens)
+    return _apply_mask(entropy, loss_mask, total_tokens)
 
 
-def _apply_mask(tensor: Tensor, mask: Tensor, max_tokens: int) -> Tensor:
-    return (tensor * mask).sum() / max_tokens
+def _apply_mask(tensor: Tensor, mask: Tensor, total_tokens: int) -> Tensor:
+    return (tensor * mask).sum() / total_tokens
 
 
 @jaxtyped(typechecker=typechecker)
