@@ -4,6 +4,7 @@ import subprocess
 import sys
 import time
 import warnings
+from copy import deepcopy
 from pathlib import Path
 from subprocess import Popen
 from threading import Event, Thread
@@ -116,8 +117,9 @@ class RLConfig(BaseSettings):
 
             # If name is set on trainer, copy it and add suffixes
             if self.trainer.monitor.wandb.name:
-                self.trainer.monitor.wandb.name = f"{self.trainer.monitor.wandb.name}-trainer"
-                self.orchestrator.monitor.wandb.name = f"{self.trainer.monitor.wandb.name}-orchestrator"
+                run_name = deepcopy(self.trainer.monitor.wandb.name)
+                self.trainer.monitor.wandb.name = f"{run_name}-trainer"
+                self.orchestrator.monitor.wandb.name = f"{run_name}-orchestrator"
         return self
 
     @model_validator(mode="after")
