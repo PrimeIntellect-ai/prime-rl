@@ -129,10 +129,6 @@ class GRPOLossConfig(BaseConfig):
 
     max_norm: Annotated[float, Field(ge=0, description="Maximum gradient norm to clip.")] = 1.0
 
-    normalize_to_token_count: Annotated[bool, Field(description="Whether to normalize the batch to token count.")] = (
-        True
-    )
-
 
 class FakeDataLoaderConfig(BaseConfig):
     """Configures a fake data loader sampling random micro batches for debugging."""

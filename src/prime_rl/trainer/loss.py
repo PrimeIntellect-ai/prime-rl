@@ -16,34 +16,31 @@ def grpo_loss(
     original_logprobs: Float[Tensor, "batch seq_minus_1"],
     loss_mask: Int[Tensor, "batch seq"],
     temperature: float,
-    total_tokens: int,
     grpo_loss_config: GRPOVariantsConfig,
 ) -> tuple[Tensor, Tensor]:
     if isinstance(grpo_loss_config, ClippingConfig):
         return grpo_loss_clip(
-            logits,
-            input_ids,
-            advantages,
-            original_logprobs,
-            loss_mask,
-            temperature,
-            grpo_loss_config.epsilon_low,
-            grpo_loss_config.epsilon_high,
-            grpo_loss_config.clip_ratio,
-            total_tokens,
-            grpo_loss_config.highest_entropy_ratio_loss,
+            logits=logits,
+            input_ids=input_ids,
+            advantages=advantages,
+            original_logprobs=original_logprobs,
+            loss_mask=loss_mask,
+            temperature=temperature,
+            epsilon_low=grpo_loss_config.epsilon_low,
+            epsilon_high=grpo_loss_config.epsilon_high,
+            clip_ratio=grpo_loss_config.clip_ratio,
+            highest_entropy_percentage=grpo_loss_config.highest_entropy_ratio_loss,
         )
     elif isinstance(grpo_loss_config, RatioConfig):
         return grpo_loss_ratio(
-            logits,
-            input_ids,
-            advantages,
-            original_logprobs,
-            loss_mask,
-            temperature,
-            total_tokens,
-            grpo_loss_config.clip_ratio,
-            grpo_loss_config.highest_entropy_ratio_loss,
+            logits=logits,
+            input_ids=input_ids,
+            advantages=advantages,
+            original_logprobs=original_logprobs,
+            loss_mask=loss_mask,
+            temperature=temperature,
+            clip_ratio=grpo_loss_config.clip_ratio,
+            highest_entropy_percentage=grpo_loss_config.highest_entropy_ratio_loss,
         )
     else:
         raise ValueError(f"Invalid grpo_loss_type: {grpo_loss_config.type}")
@@ -60,7 +57,6 @@ def grpo_loss_clip(
     epsilon_low: float,
     epsilon_high: float,
     clip_ratio: float,
-    total_tokens: int,
     highest_entropy_percentage: float,
 ) -> tuple[Tensor, Tensor]:
     """
@@ -95,17 +91,16 @@ def grpo_loss_clip(
     per_token_loss = torch.max(per_token_loss1, per_token_loss2)
 
     is_clipped = (per_token_loss1 < per_token_loss2).float()
-    clip_ratio_tensor = _apply_mask(is_clipped, loss_mask, total_tokens)
+    clip_ratio_tensor = _masked_sum(is_clipped, loss_mask)
 
     if highest_entropy_percentage < 1.0:
         loss_mask = highest_entropy_mask(logits, loss_mask, highest_entropy_percentage)
 
-    loss = _apply_mask(per_token_loss, loss_mask, total_tokens)
+    loss = _masked_sum(per_token_loss, loss_mask)
 
     return loss, clip_ratio_tensor
 
 
-# beartype here just make sure we have the correct shape
 @jaxtyped(typechecker=typechecker)
 def grpo_loss_ratio(
     logits: Float[Tensor, "batch seq vocab"],
@@ -114,7 +109,6 @@ def grpo_loss_ratio(
     original_logprobs: Float[Tensor, "batch seq_minus_1"],
     loss_mask: Int[Tensor, "batch seq"],
     temperature: float,
-    total_tokens: int,
     clip_ratio: float,
     highest_entropy_percentage: float,
 ) -> tuple[Tensor, Tensor]:
@@ -133,16 +127,15 @@ def grpo_loss_ratio(
 
     ratio = torch.clamp(torch.exp(per_token_logps - original_logprobs), 0, clip_ratio)
 
-    per_token_loss = -ratio * advantages
+    loss = -ratio * advantages
 
     if highest_entropy_percentage < 1.0:
         loss_mask = highest_entropy_mask(logits, loss_mask, highest_entropy_percentage)
 
-    loss = _apply_mask(per_token_loss, loss_mask, total_tokens)
+    loss = _masked_sum(loss, loss_mask)
+    ratio = _masked_sum(ratio, loss_mask)
 
-    ratio_avg = (loss_mask * ratio.detach()).sum() / loss_mask.sum()
-
-    return loss, ratio_avg
+    return loss, ratio
 
 
 def selective_log_softmax(logits, index):
@@ -204,7 +197,6 @@ def entropy_loss(
     logits: Float[Tensor, "batch seq vocab"],
     loss_mask: Int[Tensor, "batch seq"],
     temperature: float,
-    total_tokens: int,
 ) -> Tensor:
     logits = logits[:, :-1, :]
     logits = logits / temperature
@@ -213,11 +205,12 @@ def entropy_loss(
     pd = torch.nn.functional.softmax(logits, dim=-1)
     entropy = torch.logsumexp(logits, dim=-1) - torch.sum(pd * logits, dim=-1)
 
-    return _apply_mask(entropy, loss_mask, total_tokens)
+    return _masked_sum(entropy, loss_mask)
 
 
-def _apply_mask(tensor: Tensor, mask: Tensor, total_tokens: int) -> Tensor:
-    return (tensor * mask).sum() / total_tokens
+def _masked_sum(tensor: Tensor, mask: Tensor) -> Tensor:
+    """Sums over the unmasked tensor values"""
+    return (tensor * mask).sum()
 
 
 @jaxtyped(typechecker=typechecker)

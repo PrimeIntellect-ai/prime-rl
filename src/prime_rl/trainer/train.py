@@ -31,7 +31,7 @@ from prime_rl.trainer.utils import (
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
-from prime_rl.utils.utils import clean_exit, format_num, to_col_format
+from prime_rl.utils.utils import clean_exit, to_col_format
 
 
 @clean_exit
@@ -208,13 +208,11 @@ def train(config: TrainerConfig):
         num_micro_batches = len(micro_batches)
         micro_batch_size, seq_len = micro_batches[0]["input_ids"].shape
         batch_size = micro_batch_size * num_micro_batches
-        total_tokens = sum(micro_batch["total_tokens"] for micro_batch in micro_batches)
-        if not config.loss.normalize_to_token_count:
-            total_tokens = batch_size * seq_len
 
-        logger.info(
-            f"Starting forward and backward pass ({num_micro_batches=}, total_tokens={format_num(total_tokens, precision=1)})"
-        )
+        # Normalize by the number of unmasked tokens in the batch (per-batch length normalization)
+        loss_scale = sum(micro_batch["loss_mask"].sum() for micro_batch in micro_batches)
+
+        logger.info(f"Starting forward and backward pass ({num_micro_batches=}, {loss_scale=})")
         for micro_step, micro_batch in enumerate(micro_batches, start=1):
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
@@ -229,41 +227,45 @@ def train(config: TrainerConfig):
 
             # Compute loss
             loss, importance_ratio = grpo_loss(
-                logits,
-                input_ids,
-                advantages,
-                logprobs,
-                loss_mask,
-                temperature,
-                total_tokens,
-                config.loss.variant,
+                logits=logits,
+                input_ids=input_ids,
+                advantages=advantages,
+                original_logprobs=logprobs,
+                loss_mask=loss_mask,
+                temperature=temperature,
+                grpo_loss_config=config.loss.variant,
             )
 
-            # Compute the entropy
+            # Compute entropy
             with torch.no_grad():
-                entropy = entropy_loss(logits, loss_mask, temperature, total_tokens)
+                entropy = entropy_loss(
+                    logits=logits,
+                    loss_mask=loss_mask,
+                    temperature=temperature,
+                )
 
-            # Now we can delete the micro batch CUDA tensors
-            del micro_batch, logits, input_ids, position_ids, advantages, loss_mask, logprobs
-
-            # Scale loss, entropy, and clip ratio by the number of micro batches (=gradient accumulation steps)
-            loss = loss / num_micro_batches
-            entropy = entropy / num_micro_batches
-            importance_ratio = importance_ratio / num_micro_batches
-
-            # Backward pass (ensures loss reduction across FSDP ranks)
-            loss.backward()
-
-            # cast to fp32 to avoid acc issue
+            # Accumulate unnormalized local metrics
             loss_metrics["loss/loss"] += loss.detach().clone().float()
             loss_metrics["loss/entropy"] += entropy.detach().clone().float()
             loss_metrics["loss/importance_ratio"] += importance_ratio.detach().clone().float()
 
+            # Scale loss by scale factor before backward pass
+            loss = loss / loss_scale
+
+            # Backward pass (ensures loss reduction across FSDP ranks)
+            loss.backward()
+
+            # We report per-micro batch length normalized metrics here
             logger.debug(
-                f"Completed micro batch {micro_step}/{num_micro_batches} (loss={loss.item() * num_micro_batches:.2f}, entropy={entropy.item() * num_micro_batches:.2f}, importance_ratio={importance_ratio.item() * num_micro_batches:.2f})"
+                f"Completed micro batch {micro_step}/{num_micro_batches} (loss={(loss.item() / loss_mask.sum()):.2f}, entropy={(entropy.item() / loss_mask.sum()):.2f}, importance_ratio={(importance_ratio.item() / loss_mask.sum()):.2f})"
             )
 
+            del micro_batch, logits, input_ids, position_ids, advantages, logprobs, loss_mask
             del loss, entropy, importance_ratio
+
+        # Normalize all loss metrics globally before reporting
+        for key, value in loss_metrics.items():
+            loss_metrics[key] = value / loss_scale
 
         # Synchronize the batch metrics across all ranks
         logger.debug(f"All-reduce loss metrics keys {list(loss_metrics.keys())}")
