@@ -26,7 +26,7 @@ class FakeDataLoader:
     def __init__(self, config: FakeDataLoaderConfig):
         self.batch_size = config.batch_size
         self.micro_batch_size = config.micro_batch_size
-        self.num_micro_batches = self.batch_size // self.micro_batch_size
+        self.num_micro_batches = self.batch_size // self.micro_batch_size // get_world().world_size
         self.seq_len = config.seq_len
 
     def wait_for_batch(self) -> None:
