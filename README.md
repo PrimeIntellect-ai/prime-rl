@@ -119,7 +119,7 @@ ulimit -n 32000
 4.  We provide a convenient tmux layout script to start a run and view logs. To start the session simply run
 
 ```bash
-./tmux.sh
+bash scripts/tmux.sh
 ```
 
 Then, paste the experiment entrypoints detailed below in the `Trainer` pane to start your run!
@@ -186,7 +186,7 @@ For small models/ quick ablations, it can be more efficient to parallelize exper
 Start the first experiment as normal, but specify a unique experiment identifier (*will use the first 2 GPUs*)
 
 ```bash
-./tmux.sh exp-1
+bash scripts/tmux.sh exp-1
 ```
 
 ```bash
@@ -201,7 +201,7 @@ uv run rl \
 For the second experiment, configure a new server port for the inference engine and orchestrator and choose a new experiment identifier (*will use the first 2 GPUs*)
 
 ```bash
-./tmux.sh exp-2
+bash scripts/tmux.sh exp-2
 ```
 
 ```bash
@@ -305,7 +305,7 @@ uv run rl \
 To kill the tmux session when you're done:
 
 ```bash
-./tmux.sh kill
+bash scripts/tmux.sh kill
 ```
 
 ### Checkpointing
