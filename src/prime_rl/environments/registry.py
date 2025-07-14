@@ -74,31 +74,46 @@ def load_intellect_math_environment(env_args: dict = {}) -> Environment:
 
 
 def load_hendrycks_math_environment(env_args: dict = {}) -> Environment:
-    import json
-
+    import pandas as pd
+    from datasets import Dataset, load_dataset
     from verifiers.utils.data_utils import extract_boxed_answer
 
-    from prime_rl.orchestrator.genesys.math import compute_math_reward
+    # Use all subsets of the train split for training
+    subsets = ["algebra", "counting_and_probability", "geometry", "number_theory", "prealgebra", "precalculus"]
+    dfs = [load_dataset("EleutherAI/hendrycks_math", subset, split="train").to_pandas() for subset in subsets]
+    dataset = Dataset.from_pandas(pd.concat(dfs))
 
-    train_dataset = load_dataset("justus27/math-hendrycks-genesys-format", split="train").map(
-        lambda x: {"question": x["prompt"], "info": json.loads(x["verification_info"]), "task": "simple-math"}
+    dataset = dataset.map(
+        lambda x: {
+            "question": x["problem"],
+            "answer": extract_boxed_answer(x["solution"]),
+            "info": {"subset": x["type"].lower(), "level": x["level"].split()[-1]},
+            "task": "hendrycks_math",
+        },
+        remove_columns=dataset.column_names,
     )
-    train_dataset = train_dataset.remove_columns(["prompt", "verification_info"])
 
     parser = vf.ThinkParser(extract_fn=extract_boxed_answer)
 
-    def correct_answer_reward_func(completion, info, **kwargs) -> float:
-        completion_text = completion[-1]["content"]
-        return compute_math_reward(completion_text, info)
+    def correct_answer_reward_func(completion, answer, **kwargs) -> float:
+        response = parser.parse_answer(completion) or ""
+        return 1.0 if response == str(answer) else 0.0
 
     rubric = vf.Rubric(
         funcs=[
             correct_answer_reward_func,
+            parser.get_format_reward_func(),
         ],
-        weights=[1.0],
+        weights=[1.0, 0.2],
     )
 
-    vf_env = vf.SingleTurnEnv(dataset=train_dataset, parser=parser, rubric=rubric)
+    system_prompt = """\
+Think step by step inside <think>...</think> tags.
+
+Provide the final numerical answer inside \\boxed{{...}}."""
+
+    vf_env = vf.SingleTurnEnv(dataset=dataset, system_prompt=system_prompt, parser=parser, rubric=rubric)
+
     return vf_env
 
 
