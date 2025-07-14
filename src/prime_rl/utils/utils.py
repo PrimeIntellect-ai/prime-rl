@@ -1,11 +1,11 @@
-import os
-import torch
 import functools
+import os
 import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+import torch
 import torch.distributed as dist
 import wandb
 

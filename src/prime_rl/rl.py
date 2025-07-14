@@ -3,7 +3,6 @@ import shutil
 import subprocess
 import sys
 import time
-import uuid
 import warnings
 from copy import deepcopy
 from pathlib import Path
@@ -23,7 +22,7 @@ from prime_rl.trainer.config import CheckpointConfig, FakeDataLoaderConfig, Trai
 from prime_rl.utils.config import WandbMonitorConfig
 from prime_rl.utils.logger import format_message, format_time, get_logger, set_logger, setup_handlers
 from prime_rl.utils.pydantic_config import BaseSettings, get_temp_toml_file, parse_argv
-from prime_rl.utils.utils import get_free_port, get_cuda_visible_devices
+from prime_rl.utils.utils import get_cuda_visible_devices, get_free_port
 
 
 class LogConfig(BaseSettings):
