@@ -275,9 +275,6 @@ class OrchestratorConfig(BaseSettings):
             self.max_steps = 4  # Run for 1 warmup step + 3 evaluation steps
             self.async_level = 1e9  # Never wait for RL weight checkpoints
 
-            if self.monitor.wandb:
-                self.monitor.wandb.project = f"{self.monitor.wandb.project}-bench"
-
             # Disable evaluation
             self.eval = None
             self.monitor.wandb.log_samples = None
