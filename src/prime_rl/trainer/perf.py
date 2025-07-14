@@ -4,6 +4,7 @@ import torch
 
 from prime_rl.trainer.model import Model
 from prime_rl.trainer.world import get_world
+from prime_rl.utils.logger import get_logger
 
 
 class PerfCounter:
@@ -25,6 +26,7 @@ class PerfCounter:
         self.num_flop_per_token = self._get_num_flop_per_token(self.num_params, model.config, seq_len=seq_len)
 
         self._world = get_world()
+        self._logger = get_logger()
 
     def count_tokens(self, tokens: int):
         self.tokens.append(tokens)
@@ -46,9 +48,9 @@ class PerfCounter:
 
     def _get_peak_flops(self, device_name: str) -> float:
         """
-        Peak BF16 MatMul FLOPs
+        Peak BF16 FLOPs (without sparsity)
 
-        stolen from https://github.com/pytorch/torchtitan/blob/05e47c38d99fdb1dd39aeba76f080e529a425c5c/torchtitan/tools/utils.py#L69
+        From: https://github.com/pytorch/torchtitan/blob/05e47c38d99fdb1dd39aeba76f080e529a425c5c/torchtitan/tools/utils.py#L69
         """
         if "A100" in device_name:
             # https://www.nvidia.com/en-us/data-center/a100/
@@ -63,10 +65,10 @@ class PerfCounter:
             else:  # For H100 SXM and other variants
                 return 989e12
         if "B200" in device_name:
-            # data from https://nvdam.widen.net/s/wwnsxrhm2w/blackwell-datasheet-3384703
-            return 2.25e15
-        # Default to A100
+            # https://nvdam.widen.net/s/wwnsxrhm2w/blackwell-datasheet-3384703
+            return 2.25e15  # This is half of the FLOPS reported in torchtitan
         else:
+            self._logger.warning(f"Peak FLOPS undefined for `{device_name}`. Falling back to A100 (312 TFLOPS)")
             return 312e12
 
     # TODO: Add config type
