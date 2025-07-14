@@ -92,9 +92,7 @@ uv run rl \
 </details>
 
 
-## Entrypoints
-
-### Setup
+## Additional Setup
 
 1. If you want to log your runs to W&B (`wandb`), log in
 
@@ -116,9 +114,19 @@ uv run huggingface-cli login
 ulimit -n 32000
 ```
 
-### RL
+4.  We provide a convenient tmux layout script to start a run and view logs. To start the session simply run
 
-We provide a convenience endpoint `rl` for single-node RL experiments. It configures and starts the trainer, orchestrator and, optionally, an inference server. It enforces correctly setting shared configs (e.g. the model name or async level should be the same across all modules) and dispatches and monitors subprocesses. To stream the logs from each module, we use file logging, by default only the trainer logs will be displayed on the main process. 
+```bash
+./tmux.sh
+```
+
+Then, paste the experiment entrypoints detailed below in the `Trainer` pane to start your run!
+
+## RL
+
+### Single Node Training
+
+We provide a convenience endpoint `rl` for single-node RL experiments. It configures and starts the trainer, orchestrator and, optionally, an inference server. It enforces correctly setting shared configs (e.g. the model name or async level should be the same across all modules) and dispatches and monitors subprocesses. To stream the logs from each module we use file logging. By default, only the trainer logs will be displayed on the main process (*use the tmux layout script to conveniently view all logs*).
 
 To check all available configuration options, run `uv run rl --help`.
 
@@ -146,8 +154,10 @@ uv run rl \
   --trainer @ configs/trainer/hendrycks_math/1b.toml \
   --orchestrator @ configs/orchestrator/hendrycks_math/1b.toml \
   --inference @ configs/inference/hendrycks_math/1b.toml \
-  --inference.parallel.dp 1
+  --trainer-gpus 2 --inference-gpus 6
 ```
+
+*NB: This setup requires 8 GPUs - 2 are used for the FSDP trainer, 6 are used for inference.*
 
 **INTELLECT-2 Math**
 
@@ -161,57 +171,11 @@ uv run rl \
   --trainer-gpus 2 --inference-gpus 6
 ```
 
-*NB: This setup requires 8 GPUs - 2 are used for the FSDP trainer, 6 are used for inference with TP=2 and DP=3.*
+*NB: This setup requires 8 GPUs - 2 are used for the FSDP trainer, 6 are used for inference.*
 
+### Multi-Node Training
 
-### Tmux Layout
-
-We provide a convenient tmux layout script to start a run and view all the logs at the same time. The recommended workflow is:
-
-1. Start a pre-layouted tmux session using the tmux script
-
-```bash
-./tmux.sh
-```
-
-2. Start the trainer and orchestrator in the `Trainer` pane.
-
-```bash
-uv run rl \
-  --trainer @ configs/trainer/reverse_text.toml \
-  --orchestrator @ configs/orchestrator/reverse_text.toml \
-  --inference @ configs/inference/reverse_text.toml
-```
-
-#### Standalone Inference Server
-You can optionally start the inference server individually to avoid the long vllm warmup at each run restart. Useful for development.
-
-1. Start the pre-layouted tmux session using the tmux script
-
-```bash
-./tmux.sh
-```
-
-2. Start the inference server in the `Inference` pane.
-
-```bash
-uv run inference @ configs/inference/reverse_text.toml
-```
-
-3. You can now start the trainer and orchestrator in the `Trainer` pane.
-
-```bash
-uv run rl \
-  --trainer @ configs/trainer/reverse_text.toml \
-  --orchestrator @ configs/orchestrator/reverse_text.toml
-```
-
-To kill the tmux session when you're done:
-
-```bash
-./tmux.sh kill
-```
-
+*TBD*
 
 ### Evals
 
@@ -275,6 +239,36 @@ PRIME_MODEL__NAME=Qwen/Qwen3-4B uv run inference @qwen8b.toml @qwen14b.toml --mo
 ```
 
 In this example, the CLI argument `--model.name Qwen/Qwen3-32B` will take precendence and the script will use `Qwen/Qwen3-32B` as the model name. If the CLI argument wasn't set, then the second config file would take precedence and the script would use `Qwen/Qwen-14B` as the model name. If the second config file wasn't set, then the first config file would take precedence and the script would use `Qwen/Qwen3-8B` as the model name. Finally, if the first config file wasn't set, then the environment variable would take precedence and the script would use `Qwen/Qwen-4B` as the model name. If the environment variable wasn't set, then the default value would be used and the script would use `Qwen/Qwen3-0.6B` as the model name.
+
+### Persistent Inference Server
+
+For development purposes it is useful start the inference server once and keep it alive across experiments to avoid suffering the vLLM startup time repeatedly. The recommended workflow is as follows:
+
+1. Start the pre-layouted tmux session using the tmux script
+
+```bash
+./tmux.sh
+```
+
+2. Start the inference server in the `Inference` pane.
+
+```bash
+uv run inference @ configs/inference/reverse_text.toml
+```
+
+3. Start the trainer and orchestrator in the `Trainer` pane.
+
+```bash
+uv run rl \
+  --trainer @ configs/trainer/reverse_text.toml \
+  --orchestrator @ configs/orchestrator/reverse_text.toml
+```
+
+To kill the tmux session when you're done:
+
+```bash
+./tmux.sh kill
+```
 
 ### Checkpointing
 
