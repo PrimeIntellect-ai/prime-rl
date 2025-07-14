@@ -177,6 +177,42 @@ uv run rl \
 
 *TBD*
 
+### Multiple Experiments per Node
+
+For small models/ quick ablations, it can be more efficient to parallelize experiments within a node (e.g. split your GPUs to run two experiments in parallel). Because the trainer communicates with the orchestrator via a shared file system, and the orchestrator communicates with the inference engine via an OAI-compatible API, the connection points have to be uniquely set. For example, if you have access to 4 GPUs you can run two 2 GPU training runs in parallel as follows:
+
+Start the first experiment as normal (*will use the first 2 GPUs*)
+
+```bash
+./tmux.sh exp-1
+```
+
+```bash
+# Start the first experiment
+uv run rl \
+  --trainer @ configs/trainer/reverse_text.toml \
+  --orchestrator @ configs/orchestrator/reverse_text.toml \
+  --inference @ configs/inference/reverse_text.toml \
+  --exp-id exp-1
+```
+
+For the second experiment, configure the server port (orchestrator and inference) and file system (orchestrator and trainer), as well as the torchrun
+
+```bash
+./tmux.sh exp-2
+```
+
+```bash
+# Start the second experiment
+CUDA_VISIBLE_DEVICES=3,4 uv run rl \
+  --trainer @ configs/trainer/reverse_text.toml \
+  --orchestrator @ configs/orchestrator/reverse_text.toml \
+  --inference @ configs/inference/reverse_text.toml \
+  --inference.server.port 8001 \
+  --orchestrator.client.port 8001 \
+  --exp-id exp-2
+```
+
 ### Evals
 
 We provide a convenience endpoint for running a full evaluation suite of common benchmarks such as AIME, MATH-500 or LiveCodeBench against your model using the `eval` entrypoint.
@@ -355,8 +391,7 @@ Often it will be most convenient to benchmark the full RL run. This will automat
 uv run rl   \
   --trainer @ configs/trainer/reverse_text.toml  \
   --orchestrator @ configs/orchestrator/reverse_text.toml \
-  --inference @ configs/inference/reverse_text.toml \
-  --bench
+  --inference @ configs/inference/reverse_text.toml
 ```
 
 ### Tests

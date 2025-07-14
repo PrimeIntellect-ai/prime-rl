@@ -1,3 +1,5 @@
+import os
+import torch
 import functools
 import time
 from collections import defaultdict
@@ -217,3 +219,21 @@ def get_step_path(path: Path, step: int) -> Path:
 
 def get_weight_ckpt_model_path(weight_dir: Path, step: int) -> Path:
     return weight_dir / f"step_{step}" / "pytorch_model.bin"
+
+def get_free_port() -> int:
+    """Find and return a free port"""
+    import socket
+    
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('', 0))  # Bind to any available port
+        s.listen(1)
+        port = s.getsockname()[1]
+    return port
+
+def get_cuda_visible_devices() -> list[int]:
+    """Returns the list of availble CUDA devices, taking into account the CUDA_VISIBLE_DEVICES environment variable."""
+    cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if cuda_visible is None:
+        # Default to all devices if the environment variable is not set
+        return list(range(torch.cuda.device_count()))
+    return list(sorted([int(device) for device in cuda_visible.split(",")]))

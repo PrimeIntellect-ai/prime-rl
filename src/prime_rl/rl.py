@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 import warnings
 from copy import deepcopy
 from pathlib import Path
@@ -22,6 +23,7 @@ from prime_rl.trainer.config import CheckpointConfig, FakeDataLoaderConfig, Trai
 from prime_rl.utils.config import WandbMonitorConfig
 from prime_rl.utils.logger import format_message, format_time, get_logger, set_logger, setup_handlers
 from prime_rl.utils.pydantic_config import BaseSettings, get_temp_toml_file, parse_argv
+from prime_rl.utils.utils import get_free_port, get_cuda_visible_devices
 
 
 class LogConfig(BaseSettings):
@@ -53,7 +55,10 @@ class RLConfig(BaseSettings):
 
     log: LogConfig = LogConfig()
 
+    exp_id: Annotated[str | None, Field(description="The experiment ID. If set, will be used to identify shared resources, like log files, weight and rollout directories, etc.")] = None
+
     trainer_gpus: Annotated[int, Field(description="The number of GPUs to use for trainer.")] = 1
+
     inference_gpus: Annotated[int, Field(description="The number of GPUs to use for inference.")] = 1
 
     bench: Annotated[
@@ -147,6 +152,15 @@ class RLConfig(BaseSettings):
     def auto_setup_async_level(self):
         # Use trainer async level on orchestrator
         self.orchestrator.async_level = self.trainer.async_level
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_exp(self):
+        if self.exp_id:
+            self.log.path = self.log.path / self.exp_id
+            self.trainer.data.path = self.trainer.data.path / self.exp_id
+            self.trainer.weights.path = self.trainer.weights.path / self.exp_id
+            # Note: Will be shared to orchestrator via `auto_setup_paths`
         return self
 
     @model_validator(mode="after")
@@ -269,7 +283,9 @@ def rl(config: RLConfig):
     monitor_threads: list[Thread] = []
     error_queue: list[Exception] = []
     stop_events: dict[str, Event] = {}
-    all_gpus = list(range(config.trainer_gpus + config.inference_gpus))
+    all_devices = get_cuda_visible_devices()
+    devices = all_devices[: config.trainer_gpus + config.inference_gpus]
+    logger.info(f"Available GPUs: {', '.join(map(str, all_devices))} (using: {', '.join(map(str, devices))})")
 
     try:
         # Optionally, start inference process
@@ -279,8 +295,8 @@ def rl(config: RLConfig):
                 tomli_w.dump(config.inference.model_dump(exclude_none=True, mode="json"), f)
 
             inference_cmd = ["uv", "run", "inference", "@", inference_file.as_posix()]
-            inference_gpu_ids = all_gpus[: config.inference_gpus]
-            logger.info(f"Starting inference process on GPUs {' '.join(map(str, inference_gpu_ids))}")
+            inference_gpu_ids = devices[: config.inference_gpus]
+            logger.info(f"Starting inference process on GPU(s) {' '.join(map(str, inference_gpu_ids))}")
             logger.debug(f"Inference start command: {' '.join(inference_cmd)}")
             # If we don't log stdout, the server hangs
             with open(config.log.path / "inference.log", "w") as log_file:
@@ -353,14 +369,16 @@ def rl(config: RLConfig):
             "uv",
             "run",
             "torchrun",
+            f"--rdzv-endpoint=localhost:{get_free_port()}",
+            f"--rdzv-id={config.exp_id}",
             "--nproc-per-node",
             str(config.trainer_gpus),
             "src/prime_rl/trainer/train.py",
             "@",
             trainer_file.as_posix(),
         ]
-        train_gpu_ids = all_gpus[config.inference_gpus :]
-        logger.info(f"Starting trainer process on GPUs {' '.join(map(str, train_gpu_ids))}")
+        train_gpu_ids = devices[config.inference_gpus :]
+        logger.info(f"Starting trainer process on GPU(s) {' '.join(map(str, train_gpu_ids))}")
         logger.debug(f"Training start command: {' '.join(trainer_cmd)}")
         with open(config.log.path / "trainer.log", "w") as log_file:
             trainer_process = Popen(
