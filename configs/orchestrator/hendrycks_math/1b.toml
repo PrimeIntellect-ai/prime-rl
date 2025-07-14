@@ -6,7 +6,7 @@ seq_len = 2048
 mask_truncated_completions = false
 
 [model]
-name = "willcb/DeepSeek-R1-Distill-Qwen-1.5B"
+name = "PrimeIntellect/DeepSeek-R1-Distill-Qwen-1.5B"
 
 [monitor.wandb]
 
