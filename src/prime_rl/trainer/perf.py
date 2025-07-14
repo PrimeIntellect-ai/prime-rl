@@ -45,7 +45,11 @@ class PerfCounter:
         return 100 * self.num_flop_per_token * tokens_per_second / self.gpu_peak_flops / self._world.world_size
 
     def _get_peak_flops(self, device_name: str) -> float:
-        """Peak BF16 MatMul FLOPs"""
+        """
+        Peak BF16 MatMul FLOPs
+
+        stolen from https://github.com/pytorch/torchtitan/blob/05e47c38d99fdb1dd39aeba76f080e529a425c5c/torchtitan/tools/utils.py#L69
+        """
         if "A100" in device_name:
             # https://www.nvidia.com/en-us/data-center/a100/
             return 312e12
@@ -58,6 +62,9 @@ class PerfCounter:
                 return 756e12
             else:  # For H100 SXM and other variants
                 return 989e12
+        if "B200" in device_name:
+            # data from https://nvdam.widen.net/s/wwnsxrhm2w/blackwell-datasheet-3384703
+            return 2.25e15
         # Default to A100
         else:
             return 312e12
