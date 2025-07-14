@@ -13,6 +13,8 @@ PRIME-RL: Decentralized RL Training at Scale
 
 ## Installation
 
+> *`prime-rl` is developed and tested on NVIDIA A100, H100, H200, and B200; likely compatible with other Ampere, Hopper and Blackwell-class GPUs. AMD only available via pre-built Docker image. If your installation fails, please create an [issue](https://github.com/PrimeIntellect-ai/prime-rl/issues).*
+
 **Quick Installation (Recommended)**
 
 ```bash
