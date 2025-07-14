@@ -28,7 +28,7 @@ async def eval(config: EvalConfig):
     monitor = setup_monitor(config.monitor, None, run_config=config)
 
     # Setup client
-    logger.info(f"Initializing OpenAI client ({config.client.base_url})")
+    logger.info(f"Initializing OpenAI client ({config.client.host}:{config.client.port})")
     client = setup_client(config.client)
 
     # Check health of the client
