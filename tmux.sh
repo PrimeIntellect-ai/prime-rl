@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # Default session name
-DEFAULT_EXPERIMENT_NAME="rl"
+DEFAULT_EXPERIMENT_ID="rl"
 
 # Parse arguments
-EXPERIMENT_NAME="$DEFAULT_EXPERIMENT_NAME"
+EXPERIMENT_NAME="$DEFAULT_EXPERIMENT_ID"
 KILL_SESSION=false
 
 # Parse command line arguments

@@ -55,7 +55,7 @@ class RLConfig(BaseSettings):
 
     log: LogConfig = LogConfig()
 
-    exp_id: Annotated[str | None, Field(description="The experiment ID. If set, will be used to identify shared resources, like log files, weight and rollout directories, etc.")] = None
+    exp_id: Annotated[str | None, Field(description="The experiment ID. If set, will be used to identify shared resources, like log files, weight and rollout directories, etc.")] = "rl" # This value has to match the `DEFAULT_EXPERIMENT_ID` in `tmux.sh`
 
     trainer_gpus: Annotated[int, Field(description="The number of GPUs to use for trainer.")] = 1
 
