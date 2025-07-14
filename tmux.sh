@@ -1,10 +1,29 @@
 #!/bin/bash
 
-# Session name
-SESSION_NAME="rl"
+# Default session name
+DEFAULT_SESSION_NAME="rl"
 
-# Check for kill argument
-if [ "$1" = "kill" ]; then
+# Parse arguments
+SESSION_NAME="$DEFAULT_SESSION_NAME"
+KILL_SESSION=false
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        kill)
+            KILL_SESSION=true
+            shift
+            ;;
+        *)
+            # If it's not 'kill', treat it as session name
+            SESSION_NAME="$1"
+            shift
+            ;;
+    esac
+done
+
+# Handle kill command
+if [ "$KILL_SESSION" = true ]; then
     if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
         echo "Killing tmux session: $SESSION_NAME"
         tmux kill-session -t "$SESSION_NAME"
