@@ -21,12 +21,12 @@ class PerfCounter:
         self.times = []
         self.model = model
 
+        self._world = get_world()
+        self._logger = get_logger()
+
         self.gpu_peak_flops = self._get_peak_flops(torch.cuda.get_device_name(torch.device("cuda")))
         self.num_params = self._get_num_params(model, exclude_embedding=True)
         self.num_flop_per_token = self._get_num_flop_per_token(self.num_params, model.config, seq_len=seq_len)
-
-        self._world = get_world()
-        self._logger = get_logger()
 
     def count_tokens(self, tokens: int):
         self.tokens.append(tokens)
