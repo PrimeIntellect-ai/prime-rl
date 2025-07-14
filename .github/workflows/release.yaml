@@ -59,7 +59,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
 
       - name: Test import
-        run: docker run --entrypoint python primeintellect/prime-rl:main -c "import prime_rl.inference"
+        run: docker run --entrypoint python primeintellect/prime-rl:main -c "import prime_rl"
 
       - name: Image digest
         run: echo ${{ steps.docker_build.outputs.digest }}
@@ -116,7 +116,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
 
       - name: Test import
-        run: docker run --entrypoint python primeintellect/prime-rl-rocm:latest -c "import prime_rl.inference"
+        run: docker run --entrypoint python primeintellect/prime-rl-rocm:main -c "import prime_rl"
 
       - name: Image digest
         run: echo ${{ steps.docker_build.outputs.digest }}
