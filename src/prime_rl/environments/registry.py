@@ -118,17 +118,16 @@ Provide the final numerical answer inside \\boxed{{...}}."""
 
 
 def load_reverse_environment(env_args: dict = {}) -> Environment:
-    import json
-
-    train_dataset = load_dataset("mikasenghaas/reverse_text_dataset_debug_50_seq_len", split="train").map(
+    dataset = load_dataset("PrimeIntellect/reverse_text", split="train")
+    dataset = dataset.map(
         lambda x: {
-            "question": x["prompt"],
-            "answer": json.loads(x["verification_info"])["ground_truth"],
+            "question": x["text"],
+            "answer": x["reversed_text"],
             "info": {},
-            "task": x["task_type"],
-        }
+            "task": "reverse_text",
+        },
+        remove_columns=dataset.column_names,
     )
-    train_dataset = train_dataset.remove_columns(["prompt", "verification_info", "task_type"])
 
     parser = vf.XMLParser(["answer"], answer_field="answer")
 
@@ -155,8 +154,14 @@ def load_reverse_environment(env_args: dict = {}) -> Environment:
         weights=[1.0],
     )
 
+    system_prompt = """\
+Reverse the text below character-by-character
+
+Provide the final reversed text inside <answer>...</answer> tags."""
+
     vf_env = vf.SingleTurnEnv(
-        dataset=train_dataset,
+        dataset=dataset,
+        system_prompt=system_prompt,
         parser=parser,
         rubric=rubric,
     )
