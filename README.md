@@ -285,7 +285,7 @@ For development purposes it is useful start the inference server once and keep i
 1. Start the pre-layouted tmux session using the tmux script
 
 ```bash
-./tmux.sh
+bash scripts/tmux.sh
 ```
 
 2. Start the inference server in the `Inference` pane.
