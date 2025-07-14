@@ -24,7 +24,6 @@ def test_grpo_loss(dtype):
         epsilon_low=0.2,
         epsilon_high=0.2,
         clip_ratio=10.0,
-        max_tokens=100,
         highest_entropy_percentage=1.0,
     )
     assert loss.shape == ()
@@ -48,7 +47,6 @@ def test_grpo_loss_ratio(dtype):
         original_logprobs,
         loss_mask,
         temperature=0.6,
-        max_tokens=100,
         clip_ratio=10.0,
         highest_entropy_percentage=1.0,
     )
@@ -58,7 +56,7 @@ def test_grpo_loss_ratio(dtype):
 def test_entropy_loss(dtype):
     logits = torch.randn(10, 10, 10, dtype=dtype).cuda()
     loss_mask = torch.ones(10, 10).int().cuda()
-    entropy = entropy_loss(logits, loss_mask, temperature=0.6, max_tokens=100)
+    entropy = entropy_loss(logits, loss_mask, temperature=0.6)
     assert entropy.shape == ()
     assert entropy.item() is not None
 
@@ -99,7 +97,6 @@ def test_grpo_loss_padding(dtype):
             epsilon_low=0.2,
             epsilon_high=0.2,
             clip_ratio=10.0,
-            max_tokens=100,
             highest_entropy_percentage=1.0,
         )
         loss_list.append(loss)
