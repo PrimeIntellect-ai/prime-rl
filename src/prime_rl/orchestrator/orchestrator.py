@@ -50,7 +50,7 @@ async def orchestrate(config: OrchestratorConfig):
         )
 
     # Setup client
-    logger.info(f"Initializing OpenAI client ({config.client.base_url})")
+    logger.info(f"Initializing OpenAI client ({config.client.host}:{config.client.port})")
     client = setup_client(config.client)
 
     # Load tokenizer

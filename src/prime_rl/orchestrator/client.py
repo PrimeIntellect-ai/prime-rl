@@ -21,8 +21,9 @@ def setup_client(client_config: ClientConfig) -> AsyncOpenAI:
         max_keepalive_connections=28000,  # OAI default: 100
     )
     http_client = httpx.AsyncClient(limits=limits, timeout=timeout)
+    base_url = f"http://{client_config.host}:{client_config.port}/v1"
     return AsyncOpenAI(
-        base_url=client_config.base_url,
+        base_url=base_url,
         api_key=client_config.api_key,
         max_retries=10,  # OAI default: 2 (does exponential backoff and reasonable timeout in between retries)
         http_client=http_client,

@@ -11,12 +11,19 @@ from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 class ClientConfig(BaseConfig):
     """Configures the client to be used for inference."""
 
-    base_url: Annotated[
+    host: Annotated[
         str,
         Field(
-            description="Base URL of the OpenAI API. By default, it is set to a local inference server.",
+            description="Host to use for the OpenAI API. By default, it is set to a local inference server.",
         ),
-    ] = "http://localhost:8000/v1"
+    ] = "localhost"
+
+    port: Annotated[
+        int,
+        Field(
+            description="Port to use for the OpenAI API. By default, it is set to a local inference server.",
+        ),
+    ] = 8000
 
     api_key: Annotated[
         str,
