@@ -129,10 +129,9 @@ class GRPOLossConfig(BaseConfig):
 
     max_norm: Annotated[float, Field(ge=0, description="Maximum gradient norm to clip.")] = 1.0
 
-    scale_factor: Annotated[
-        Literal["token_count", "fixed"],
-        Field(description="Whether to normalize the loss by the batch size or the micro batch size."),
-    ] = "token_count"
+    scale_factor: Annotated[Literal["token_count", "fixed"], Field(description="How to normalize the loss.")] = (
+        "token_count"
+    )
 
 
 class FakeDataLoaderConfig(BaseConfig):
