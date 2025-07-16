@@ -87,6 +87,7 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info(f"Loading environment {config.environment.id} with args {config.environment.args}")
     vf_env = load_environment(config.environment.id, config.environment.args)
     dataset = vf_env.get_dataset(seed=config.seed)
+    reward_func_names = [func.__name__ for func in vf_env.rubric.get_reward_funcs()]
 
     # Load tokenizer -- placeholder until reworking verifiers to use vLLM tokenizer
     tokenizer = AutoTokenizer.from_pretrained(config.model.name)
@@ -296,6 +297,7 @@ async def orchestrate(config: OrchestratorConfig):
             "reward/advantage": np.mean(advantages),
             "reward/advantage_std": np.std(advantages),
             "reward/advantage_zero_ratio": np.mean(np.array(advantages) == 0.0),
+            **{f"reward/{func}": np.mean(outputs[func]) for func in reward_func_names},
             "step": progress.step,
         }
         monitor.log(reward_metrics)

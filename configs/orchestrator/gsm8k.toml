@@ -1,0 +1,24 @@
+max_steps = 500
+batch_size = 512
+micro_batch_size = 4
+rollouts_per_prompt = 16
+seq_len = 2048
+mask_truncated_completions = false
+
+[model]
+name = "Qwen/Qwen3-0.6B"
+
+[monitor.wandb]
+
+[environment]
+id = "gsm8k"
+
+[monitor.wandb.log_samples]
+interval = 50
+num_samples = 16
+
+[eval]
+interval = 50
+benchmarks = ["math500", "aime24", "aime25"]
+
+[ckpt]

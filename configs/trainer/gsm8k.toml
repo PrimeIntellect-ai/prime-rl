@@ -1,0 +1,11 @@
+max_steps = 500
+
+[monitor.wandb]
+
+[model]
+name = "Qwen/Qwen3-0.6B"
+
+[optim]
+lr = 1e-6
+
+[ckpt]

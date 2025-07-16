@@ -1,0 +1,3 @@
+[model]
+name = "Qwen/Qwen3-0.6B"
+max_model_len = 2048 

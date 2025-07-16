@@ -19,14 +19,16 @@ def load_gsm8k_environment(env_args: dict = {}) -> Environment:
 
     parser = vf.ThinkParser(extract_fn=extract_boxed_answer)  # uses \boxed{...} to parse the answer by default
 
-    def correct_answer_reward_func(completion, answer, **kwargs) -> float:
+    def math_reward(completion, answer, **kwargs) -> float:
         response = parser.parse_answer(completion) or ""
         return 1.0 if response == str(answer) else 0.0
 
+    format_reward = parser.get_format_reward_func()
+
     rubric = vf.Rubric(
         funcs=[
-            correct_answer_reward_func,
-            parser.get_format_reward_func(),
+            math_reward,
+            format_reward,
         ],
         weights=[1.0, 0.2],
     )
