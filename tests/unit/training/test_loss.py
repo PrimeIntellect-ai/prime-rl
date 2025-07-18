@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from prime_rl.trainer.loss import entropy_loss, grpo_loss_clip, grpo_loss_ratio
+from prime_rl.trainer.loss import compute_entropy, grpo_loss_clip, grpo_loss_ratio
 
 pytestmark = [pytest.mark.gpu]
 
@@ -58,7 +58,7 @@ def test_grpo_loss_ratio(dtype):
 def test_entropy_loss(dtype):
     logits = torch.randn(10, 10, 10, dtype=dtype).cuda()
     loss_mask = torch.ones(10, 10).int().cuda()
-    entropy = entropy_loss(logits, loss_mask, temperature=0.6)
+    entropy = compute_entropy(logits, loss_mask, temperature=0.6)
     assert entropy.shape == ()
     assert entropy.item() is not None
 
