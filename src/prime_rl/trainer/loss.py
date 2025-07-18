@@ -5,7 +5,7 @@ from jaxtyping import Float, Int, jaxtyped
 from torch import Tensor
 
 from prime_rl.trainer.config import ClippingConfig, GRPOVariantsConfig, RatioConfig
-from prime_rl.trainer.model import Model
+from prime_rl.trainer.model import Model, forward
 
 
 @jaxtyped(typechecker=typechecker)
@@ -13,7 +13,7 @@ def grpo_loss(
     logits: Float[Tensor, "batch seq vocab"],
     input_ids: Int[Tensor, "batch seq"],
     advantages: Float[Tensor, "batch seq"],
-    original_logprobs: Float[Tensor, "batch seq_minus_1"],
+    original_logprobs: Float[Tensor, "batch seq"],
     loss_mask: Int[Tensor, "batch seq"],
     temperature: float,
     grpo_loss_config: GRPOVariantsConfig,
@@ -51,7 +51,7 @@ def grpo_loss_clip(
     logits: Float[Tensor, "batch seq vocab"],
     input_ids: Int[Tensor, "batch seq"],
     advantages: Float[Tensor, "batch seq"],
-    original_logprobs: Float[Tensor, "batch seq_minus_1"],
+    original_logprobs: Float[Tensor, "batch seq"],
     loss_mask: Int[Tensor, "batch seq"],
     temperature: float,
     epsilon_low: float,
@@ -70,14 +70,6 @@ def grpo_loss_clip(
         epsilon: Clipping parameter for PPO
         ignore_index: Specifies a target value that is ignored and does not contribute to the loss
     """
-    # we start by dropping the bos token because it does not have a corresponding logit
-    input_ids = input_ids[:, 1:]
-    advantages = advantages[:, 1:]
-    loss_mask = loss_mask[:, 1:]
-
-    # from the logits we drop the last logits because it corresponds to the next token that will be sample but is not here yet
-    logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token prediction
-
     # Divide logits by sampling temperature.
     # See https://huggingface.co/blog/the_n_implementation_details_of_rlhf_with_ppo#policy-training-implementation-details
     logits = logits / temperature
@@ -106,20 +98,12 @@ def grpo_loss_ratio(
     logits: Float[Tensor, "batch seq vocab"],
     input_ids: Int[Tensor, "batch seq"],
     advantages: Float[Tensor, "batch seq"],
-    original_logprobs: Float[Tensor, "batch seq_minus_1"],
+    original_logprobs: Float[Tensor, "batch seq"],
     loss_mask: Int[Tensor, "batch seq"],
     temperature: float,
     clip_ratio: float,
     highest_entropy_percentage: float,
 ) -> tuple[Tensor, Tensor, Tensor]:
-    # we start by dropping the bos token because it does not have a corresponding logit
-    input_ids = input_ids[:, 1:]
-    advantages = advantages[:, 1:]
-    loss_mask = loss_mask[:, 1:]
-
-    # from the logits we drop the last logits because it corresponds to the next token that will be sample but is not here yet
-    logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token prediction
-
     # Divide logits by sampling temperature.
     # See https://huggingface.co/blog/the_n_implementation_details_of_rlhf_with_ppo#policy-training-implementation-details
     logits = logits / temperature
@@ -179,20 +163,27 @@ def selective_log_softmax(logits, index):
     return per_token_logps
 
 
+@jaxtyped(typechecker=typechecker)
+def shift_logits(logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq vocab"]:
+    """Removes final token logits and adds a zero logit for the first token."""
+    # We drop the last logit because it corresponds to the next token that will be sampled but is not here yet
+    logits = logits[:, :-1, :]  # (B, L-1, V)
+    # We add a zero logit for the first token, indicating that no probability is assigned to it
+    logits = torch.cat([torch.zeros(logits.shape[0], 1, logits.shape[2]).to(logits.device), logits], dim=1)  # (B, L, V)
+    return logits
+
+
 def compute_logprobs(
     model: Model,
-    input_ids: torch.Tensor,
-    position_ids: torch.Tensor,
+    input_ids: Int[Tensor, "batch seq"],
+    position_ids: Int[Tensor, "batch seq"],
     temperature: float,
-) -> torch.Tensor:
-    logits: Float[torch.Tensor, "batch seq vocab"] = model(
-        input_ids=input_ids, position_ids=position_ids
-    ).logits.contiguous()
-
-    input_ids_shifted = input_ids[:, 1:]
-    logits_shifted = logits[:, :-1, :] / temperature
-    logprobs = selective_log_softmax(logits_shifted, input_ids_shifted)
-    del logits, logits_shifted
+) -> Float[Tensor, "batch seq"]:
+    logits = forward(model, input_ids, position_ids).contiguous()
+    shifted_logits = shift_logits(logits)
+    shifted_logits = shifted_logits / temperature
+    logprobs = selective_log_softmax(shifted_logits, input_ids)
+    del shifted_logits
     return logprobs
 
 
@@ -202,10 +193,7 @@ def entropy_loss(
     loss_mask: Int[Tensor, "batch seq"],
     temperature: float,
 ) -> Tensor:
-    logits = logits[:, :-1, :]
     logits = logits / temperature
-
-    loss_mask = loss_mask[:, 1:]
     pd = torch.nn.functional.softmax(logits, dim=-1)
     entropy = torch.logsumexp(logits, dim=-1) - torch.sum(pd * logits, dim=-1)
 

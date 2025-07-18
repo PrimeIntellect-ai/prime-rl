@@ -18,7 +18,7 @@ from prime_rl.trainer.weights import WeightCheckpointManager
 from prime_rl.trainer.config import TrainerConfig
 from prime_rl.trainer.data import DataLoader, FakeDataLoader
 from prime_rl.trainer.logger import setup_logger
-from prime_rl.trainer.loss import compute_logprobs, entropy_loss, grpo_loss
+from prime_rl.trainer.loss import compute_logprobs, entropy_loss, grpo_loss, shift_logits
 from prime_rl.trainer.model import forward, get_tokenizer, reshard_module, setup_model
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
@@ -194,7 +194,9 @@ def train(config: TrainerConfig):
 
                     diff_mask = micro_batch["loss_mask"][:, 1:].to(recomputed_logprobs.device)
 
-                    recomputed_logprob_error = ((torch.exp(recomputed_logprobs - original_logprobs).abs()) * diff_mask).sum()
+                    recomputed_logprob_error = (
+                        (torch.exp(recomputed_logprobs - original_logprobs).abs()) * diff_mask
+                    ).sum()
 
                     micro_batch["recomputed_logprob_error"] = recomputed_logprob_error.to("cpu")
                     micro_batch["logprobs"] = recomputed_logprobs.to("cpu")
@@ -231,10 +233,11 @@ def train(config: TrainerConfig):
 
             # Forward pass
             logits = forward(model, input_ids, position_ids).contiguous()
+            shifted_logits = shift_logits(logits)
 
             # Compute loss
             loss, importance_ratio, clipped_token_count = grpo_loss(
-                logits=logits,
+                logits=shifted_logits,
                 input_ids=input_ids,
                 advantages=advantages,
                 original_logprobs=logprobs,
@@ -246,7 +249,7 @@ def train(config: TrainerConfig):
             # Compute entropy
             with torch.no_grad():
                 entropy = entropy_loss(
-                    logits=logits,
+                    logits=shifted_logits,
                     loss_mask=loss_mask,
                     temperature=temperature,
                 )
