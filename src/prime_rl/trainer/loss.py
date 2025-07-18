@@ -9,7 +9,7 @@ from prime_rl.trainer.model import selective_log_softmax
 
 @jaxtyped(typechecker=typechecker)
 def grpo_loss(
-    logits: Float[Tensor, "batch seq vocab"],
+    shifted_logits: Float[Tensor, "batch seq vocab"],
     input_ids: Int[Tensor, "batch seq"],
     advantages: Float[Tensor, "batch seq"],
     original_logprobs: Float[Tensor, "batch seq"],
@@ -19,7 +19,7 @@ def grpo_loss(
 ) -> tuple[Tensor, Tensor, Tensor]:
     if isinstance(grpo_loss_config, ClippingConfig):
         return grpo_loss_clip(
-            logits=logits,
+            shifted_logits=shifted_logits,
             input_ids=input_ids,
             advantages=advantages,
             original_logprobs=original_logprobs,
@@ -32,7 +32,7 @@ def grpo_loss(
         )
     elif isinstance(grpo_loss_config, RatioConfig):
         return grpo_loss_ratio(
-            logits=logits,
+            shifted_logits=shifted_logits,
             input_ids=input_ids,
             advantages=advantages,
             original_logprobs=original_logprobs,
@@ -47,7 +47,7 @@ def grpo_loss(
 
 @jaxtyped(typechecker=typechecker)
 def grpo_loss_clip(
-    logits: Float[Tensor, "batch seq vocab"],
+    shifted_logits: Float[Tensor, "batch seq vocab"],
     input_ids: Int[Tensor, "batch seq"],
     advantages: Float[Tensor, "batch seq"],
     original_logprobs: Float[Tensor, "batch seq"],
@@ -71,8 +71,8 @@ def grpo_loss_clip(
     """
     # Divide logits by sampling temperature.
     # See https://huggingface.co/blog/the_n_implementation_details_of_rlhf_with_ppo#policy-training-implementation-details
-    logits = logits / temperature
-    per_token_logps = selective_log_softmax(logits, input_ids)
+    shifted_logits = shifted_logits / temperature
+    per_token_logps = selective_log_softmax(shifted_logits, input_ids)
 
     coef_1 = torch.clamp(torch.exp(per_token_logps - original_logprobs), 0, clip_ratio)
 
@@ -85,7 +85,7 @@ def grpo_loss_clip(
     clipped_token_count = _masked_sum(is_clipped, loss_mask)
 
     if highest_entropy_percentage < 1.0:
-        loss_mask = highest_entropy_mask(logits, loss_mask, highest_entropy_percentage)
+        loss_mask = highest_entropy_mask(shifted_logits, loss_mask, highest_entropy_percentage)
 
     loss = _masked_sum(per_token_loss, loss_mask)
     ratio = _masked_sum(coef_2, loss_mask)
@@ -94,7 +94,7 @@ def grpo_loss_clip(
 
 @jaxtyped(typechecker=typechecker)
 def grpo_loss_ratio(
-    logits: Float[Tensor, "batch seq vocab"],
+    shifted_logits: Float[Tensor, "batch seq vocab"],
     input_ids: Int[Tensor, "batch seq"],
     advantages: Float[Tensor, "batch seq"],
     original_logprobs: Float[Tensor, "batch seq"],
@@ -105,8 +105,8 @@ def grpo_loss_ratio(
 ) -> tuple[Tensor, Tensor, Tensor]:
     # Divide logits by sampling temperature.
     # See https://huggingface.co/blog/the_n_implementation_details_of_rlhf_with_ppo#policy-training-implementation-details
-    logits = logits / temperature
-    per_token_logps = selective_log_softmax(logits, input_ids)
+    shifted_logits = shifted_logits / temperature
+    per_token_logps = selective_log_softmax(shifted_logits, input_ids)
 
     raw_ratio = torch.exp(per_token_logps - original_logprobs)
 
@@ -117,7 +117,7 @@ def grpo_loss_ratio(
     loss = -ratio * advantages
 
     if highest_entropy_percentage < 1.0:
-        loss_mask = highest_entropy_mask(logits, loss_mask, highest_entropy_percentage)
+        loss_mask = highest_entropy_mask(shifted_logits, loss_mask, highest_entropy_percentage)
 
     loss = _masked_sum(loss, loss_mask)
     ratio = _masked_sum(ratio, loss_mask)
@@ -132,13 +132,13 @@ def _masked_sum(tensor: Tensor, mask: Tensor) -> Tensor:
 
 @jaxtyped(typechecker=typechecker)
 def compute_entropy(
-    logits: Float[Tensor, "batch seq vocab"],
+    shifted_logits: Float[Tensor, "batch seq vocab"],
     loss_mask: Int[Tensor, "batch seq"],
     temperature: float,
 ) -> Tensor:
-    logits = logits / temperature
-    pd = torch.nn.functional.softmax(logits, dim=-1)
-    entropy = torch.logsumexp(logits, dim=-1) - torch.sum(pd * logits, dim=-1)
+    shifted_logits = shifted_logits / temperature
+    pd = torch.nn.functional.softmax(shifted_logits, dim=-1)
+    entropy = torch.logsumexp(shifted_logits, dim=-1) - torch.sum(pd * shifted_logits, dim=-1)
 
     return _masked_sum(entropy, loss_mask)
 

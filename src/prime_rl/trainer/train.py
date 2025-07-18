@@ -244,7 +244,7 @@ def train(config: TrainerConfig):
 
             # Compute loss
             loss, importance_ratio, clipped_token_count = grpo_loss(
-                logits=shifted_logits,
+                shifted_logits=shifted_logits,
                 input_ids=input_ids,
                 advantages=advantages,
                 original_logprobs=logprobs,
@@ -256,7 +256,7 @@ def train(config: TrainerConfig):
             # Compute entropy
             with torch.no_grad():
                 entropy = compute_entropy(
-                    logits=shifted_logits,
+                    shifted_logits=shifted_logits,
                     loss_mask=loss_mask,
                     temperature=temperature,
                 )

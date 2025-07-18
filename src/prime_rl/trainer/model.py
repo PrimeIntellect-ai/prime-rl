@@ -137,7 +137,7 @@ def compute_logprobs(
     input_ids: Int[Tensor, "batch seq"],
     position_ids: Int[Tensor, "batch seq"],
     temperature: float,
-) -> Float[Tensor, "batch seq vocab"]:
+) -> Float[Tensor, "batch seq"]:
     logits = forward(model, input_ids, position_ids).contiguous()
     shifted_logits = shift_logits(logits)
     shifted_logits = shifted_logits / temperature
