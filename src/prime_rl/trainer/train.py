@@ -18,8 +18,15 @@ from prime_rl.trainer.weights import WeightCheckpointManager
 from prime_rl.trainer.config import TrainerConfig
 from prime_rl.trainer.data import DataLoader, FakeDataLoader
 from prime_rl.trainer.logger import setup_logger
-from prime_rl.trainer.loss import compute_logprobs, entropy_loss, grpo_loss, shift_logits
-from prime_rl.trainer.model import forward, get_tokenizer, reshard_module, setup_model
+from prime_rl.trainer.loss import grpo_loss, compute_entropy
+from prime_rl.trainer.model import (
+    forward,
+    get_tokenizer,
+    reshard_module,
+    setup_model,
+    shift_logits,
+    compute_logprobs,
+)
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     OffloadedTensor,
@@ -248,7 +255,7 @@ def train(config: TrainerConfig):
 
             # Compute entropy
             with torch.no_grad():
-                entropy = entropy_loss(
+                entropy = compute_entropy(
                     logits=shifted_logits,
                     loss_mask=loss_mask,
                     temperature=temperature,

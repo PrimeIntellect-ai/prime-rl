@@ -1,11 +1,10 @@
 import torch
-import torch.nn.functional as F
 from beartype import beartype as typechecker
 from jaxtyping import Float, Int, jaxtyped
 from torch import Tensor
 
 from prime_rl.trainer.config import ClippingConfig, GRPOVariantsConfig, RatioConfig
-from prime_rl.trainer.model import Model, forward
+from prime_rl.trainer.model import selective_log_softmax
 
 
 @jaxtyped(typechecker=typechecker)
@@ -126,69 +125,13 @@ def grpo_loss_ratio(
     return loss, ratio, clipped_token_count
 
 
-def selective_log_softmax(logits, index):
-    """
-    credits to https://github.com/huggingface/trl/blob/07cfe1677e552b7d5c92b7740e5b2f0b057661d8/trl/trainer/utils.py#L1659
-
-    A memory-efficient implementation of the common `log_softmax -> gather` operation.
-
-    This function is equivalent to the following naive implementation:
-    ```python
-    logps = torch.gather(logits.log_softmax(-1), dim=-1, index=index.unsqueeze(-1)).squeeze(-1)
-    ```
-
-    Args:
-        logits (`torch.Tensor`):
-            Logits tensor of shape `(..., num_classes)`.
-        index (`torch.Tensor`):
-            Index tensor of shape `(...)`, specifying the positions to gather from the log-softmax output.
-
-    Returns:
-        `torch.Tensor`:
-            Gathered log probabilities with the same shape as `index`.
-    """
-    if logits.dtype in [torch.float32, torch.float64]:
-        selected_logits = torch.gather(logits, dim=-1, index=index.unsqueeze(-1)).squeeze(-1)
-        # loop to reduce peak mem consumption
-        logsumexp_values = torch.stack([torch.logsumexp(lg, dim=-1) for lg in logits])
-        per_token_logps = selected_logits - logsumexp_values  # log_softmax(x_i) = x_i - logsumexp(x)
-    else:
-        # logsumexp approach is unstable with bfloat16, fall back to slightly less efficient approach
-        per_token_logps = []
-        for row_logits, row_labels in zip(logits, index):  # loop to reduce peak mem consumption
-            row_logps = F.log_softmax(row_logits, dim=-1)
-            row_per_token_logps = row_logps.gather(dim=-1, index=row_labels.unsqueeze(-1)).squeeze(-1)
-            per_token_logps.append(row_per_token_logps)
-        per_token_logps = torch.stack(per_token_logps)
-    return per_token_logps
+def _masked_sum(tensor: Tensor, mask: Tensor) -> Tensor:
+    """Sums over the unmasked tensor values"""
+    return (tensor * mask).sum()
 
 
 @jaxtyped(typechecker=typechecker)
-def shift_logits(logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq vocab"]:
-    """Removes final token logits and adds a zero logit for the first token."""
-    # We drop the last logit because it corresponds to the next token that will be sampled but is not here yet
-    logits = logits[:, :-1, :]  # (B, L-1, V)
-    # We add a zero logit for the first token, indicating that no probability is assigned to it
-    logits = torch.cat([torch.zeros(logits.shape[0], 1, logits.shape[2]).to(logits.device), logits], dim=1)  # (B, L, V)
-    return logits
-
-
-def compute_logprobs(
-    model: Model,
-    input_ids: Int[Tensor, "batch seq"],
-    position_ids: Int[Tensor, "batch seq"],
-    temperature: float,
-) -> Float[Tensor, "batch seq"]:
-    logits = forward(model, input_ids, position_ids).contiguous()
-    shifted_logits = shift_logits(logits)
-    shifted_logits = shifted_logits / temperature
-    logprobs = selective_log_softmax(shifted_logits, input_ids)
-    del shifted_logits
-    return logprobs
-
-
-@jaxtyped(typechecker=typechecker)
-def entropy_loss(
+def compute_entropy(
     logits: Float[Tensor, "batch seq vocab"],
     loss_mask: Int[Tensor, "batch seq"],
     temperature: float,
@@ -198,11 +141,6 @@ def entropy_loss(
     entropy = torch.logsumexp(logits, dim=-1) - torch.sum(pd * logits, dim=-1)
 
     return _masked_sum(entropy, loss_mask)
-
-
-def _masked_sum(tensor: Tensor, mask: Tensor) -> Tensor:
-    """Sums over the unmasked tensor values"""
-    return (tensor * mask).sum()
 
 
 @jaxtyped(typechecker=typechecker)
