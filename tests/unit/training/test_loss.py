@@ -9,7 +9,7 @@ pytestmark = [pytest.mark.gpu]
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 def test_grpo_loss(dtype):
     logits = torch.randn(10, 10, 10, dtype=dtype).cuda()
-    original_logprobs = torch.randn(10, 9, dtype=dtype).cuda()
+    original_logprobs = torch.randn(10, 10, dtype=dtype).cuda()
     advantages = torch.randn(10, 10).cuda()
     loss_mask = torch.ones(10, 10).int().cuda()
     input_ids = torch.randint(0, 10, (10, 10)).cuda()
@@ -37,7 +37,7 @@ def test_grpo_loss(dtype):
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 def test_grpo_loss_ratio(dtype):
     logits = torch.randn(10, 10, 10, dtype=dtype).cuda()
-    original_logprobs = torch.randn(10, 9, dtype=dtype).cuda()
+    original_logprobs = torch.randn(10, 10, dtype=dtype).cuda()
     advantages = torch.randn(10, 10).cuda()
     loss_mask = torch.ones(10, 10).int().cuda()
     input_ids = torch.randint(0, 10, (10, 10)).cuda()
@@ -66,7 +66,7 @@ def test_entropy_loss(dtype):
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 def test_grpo_loss_padding(dtype):
     logits = torch.randn(10, 10, 10, dtype=dtype).cuda()
-    original_logprobs = torch.randn(10, 9, dtype=dtype).cuda()
+    original_logprobs = torch.randn(10, 10, dtype=dtype).cuda()
     advantages = torch.randn(10, 10).cuda()
     loss_mask = torch.ones(10, 10).int().cuda()
     input_ids = torch.randint(0, 10, (10, 10)).cuda()

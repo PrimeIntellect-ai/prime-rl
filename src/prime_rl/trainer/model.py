@@ -2,6 +2,7 @@ from typing import TypeAlias
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from beartype import beartype as typechecker
 from jaxtyping import Float, Int, jaxtyped
 from torch import Tensor
