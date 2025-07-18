@@ -170,6 +170,7 @@ def packed_samples_into_micro_bs(samples: list[Sample], max_seq_len: int) -> lis
             bin_len = sum(len(s["input_ids"]) for s in bin_content)
             # Check if sequence fits in this bin
             if bin_len + len(sample["input_ids"]) <= max_seq_len:
+                sample["logprobs"] = torch.cat([torch.tensor([0.0]), sample["logprobs"]])
                 micro_batches[bin_idx].append(sample)
                 bin_found = True
                 break
