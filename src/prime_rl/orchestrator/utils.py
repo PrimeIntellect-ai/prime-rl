@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List
 
 import numpy as np
 import pandas as pd
@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.table import Table
 
 from prime_rl.orchestrator.client import tokenize
+from prime_rl.orchestrator.data import GeneratedSample
 from prime_rl.orchestrator.genesys import TaskType, get_reward_function
 from prime_rl.utils.utils import format_num, format_time, get_weight_ckpt_model_path, wait_for_path
 
@@ -109,8 +110,7 @@ def compute_rewards(
     return rewards
 
 
-def compute_advantages(rewards: list[float], samples_per_problem: int) -> list[float]:
-    per_problem_rewards = [rewards[i : i + samples_per_problem] for i in range(0, len(rewards), samples_per_problem)]
+def compute_advantages(per_problem_rewards: list[list[float]]) -> list[float]:
     advantages = []
     for problem_rewards in per_problem_rewards:
         reward_array = np.array(problem_rewards)
@@ -168,3 +168,46 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
 
     # Display table
     console.print(table)
+
+
+def flatten_keep(lst: list, keep_indices: list[int], group_size: int):
+    return [item for i in keep_indices for item in lst[i * group_size : (i + 1) * group_size]]
+
+
+def create_generated_samples(
+    prompt_tokens: List[List[int]],
+    completion_tokens: List[List[int]],
+    completion_logprobs: List[List[float]],
+    prompt_masks: List[List[int]],
+    completion_masks: List[List[int]],
+    rewards: List[float],
+    advantages: List[float],
+) -> List[GeneratedSample]:
+    return [
+        GeneratedSample(
+            prompt_tokens=pt,
+            completion_tokens=ct,
+            completion_logprobs=cl,
+            prompt_masks=pm,
+            completion_masks=cm,
+            reward=r,
+            advantages=a,
+        )
+        for (pt, ct, cl, pm, cm, r, a) in zip(
+            prompt_tokens, completion_tokens, completion_logprobs, prompt_masks, completion_masks, rewards, advantages
+        )
+    ]
+
+
+def unpack_generated_samples(
+    generated_samples: List[GeneratedSample],
+) -> Dict[str, List[Any]]:
+    return {
+        "prompt_tokens": [gs.prompt_tokens for gs in generated_samples],
+        "completion_tokens": [gs.completion_tokens for gs in generated_samples],
+        "completion_logprobs": [gs.completion_logprobs for gs in generated_samples],
+        "prompt_masks": [gs.prompt_masks for gs in generated_samples],
+        "completion_masks": [gs.completion_masks for gs in generated_samples],
+        "reward": [gs.reward for gs in generated_samples],
+        "advantages": [gs.advantages for gs in generated_samples],
+    }

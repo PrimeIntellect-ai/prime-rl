@@ -23,13 +23,16 @@ from prime_rl.orchestrator.client import (
     setup_client,
 )
 from prime_rl.orchestrator.config import OrchestratorConfig
-from prime_rl.orchestrator.data import prepare_batch
+from prime_rl.orchestrator.data import DataPool, prepare_batch, GeneratedSample
 from prime_rl.orchestrator.logger import setup_logger
 from prime_rl.orchestrator.utils import (
     process_env_results,
     compute_advantages,
     wait_for_weight_checkpoint,
     print_benchmark,
+    flatten_keep,
+    create_generated_samples,
+    unpack_generated_samples
 )
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
@@ -53,7 +56,6 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info(f"Initializing OpenAI client ({config.client.host}:{config.client.port})")
     client = setup_client(config.client)
 
-    # Load tokenizer
     logger.info(f"Initializing tokenizer for {config.model.name}")
     tokenizer = AutoTokenizer.from_pretrained(config.model.name)
 
@@ -87,14 +89,14 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info(f"Loading environment {config.environment.id} with args {config.environment.args}")
     vf_env = load_environment(config.environment.id, config.environment.args)
     dataset = vf_env.get_dataset(seed=config.seed)
-
+    datapool = DataPool(dataset, config.data_loading)
+    
     # Load tokenizer -- placeholder until reworking verifiers to use vLLM tokenizer
     tokenizer = AutoTokenizer.from_pretrained(config.model.name)
 
     # Iterate over dataset in batches
     max_steps = config.max_steps or int(1e9)
-    steps_per_epoch = len(dataset) // (config.batch_size // config.rollouts_per_prompt)
-    logger.info(f"Starting orchestrator loop ({max_steps=}, {steps_per_epoch=})")
+    logger.info(f"Starting orchestrator loop ({max_steps=})")
     ckpt_step = 0
     last_eval_step = -1
     while True:
@@ -110,14 +112,7 @@ async def orchestrate(config: OrchestratorConfig):
         if config.max_steps and progress.step >= config.max_steps:
             break
 
-        # Check if we need to start a new epoch
-        epoch_step = progress.step % steps_per_epoch
-        if epoch_step == 0:
-            progress.epoch += 1
-            # Reshuffle dataset at the beginning of each epoch
-            dataset = dataset.shuffle(seed=(config.seed or 0) + progress.epoch)
-
-        logger.info(f"Starting orchestrator step {progress.step} ({ckpt_step=}, epoch={progress.epoch}, {epoch_step=})")
+        logger.info(f"Starting orchestrator step {progress.step} ({ckpt_step=})")
         step_start_time = time.time()
 
         # Optionally, wait for the next checkpoint to be available
@@ -126,6 +121,7 @@ async def orchestrate(config: OrchestratorConfig):
             logger.debug(
                 f"Hit async barrier because step {progress.step} is {progress.step - ckpt_step} (>{config.async_level}) steps ahead of checkpoint step {ckpt_step}."
             )
+            datapool.empty_buffer()
 
             # Wait for the checkpoint to be available
             ckpt_step = progress.step - config.async_level
@@ -173,49 +169,119 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Get the batch
         problems_per_batch = config.batch_size // config.rollouts_per_prompt
-        start_idx = epoch_step * problems_per_batch
-        indices = range(start_idx, start_idx + problems_per_batch)
-        problems = [problem for problem in dataset.select(indices).to_list() for _ in range(config.rollouts_per_prompt)]
 
-        # prepare inputs for verifiers generation
-        inputs = {
-            "prompt": [problem["prompt"] for problem in problems],
-            "info": [problem.get("info", {}) for problem in problems],
-            "task": [problem["task"] for problem in problems],
-            "answer": [problem.get("answer", "") for problem in problems],
-        }
-
-        # generate completions + rewards with verifiers
-        logger.info(f"Sending {len(problems)} requests to environments")
         generate_completions_start_time = time.time()
-        sampling_args = dict(config.sampling)
-        sampling_args["logprobs"] = True
+        
+        all_generated_samples = datapool.get_buffered_samples()
+        
+        if len(all_generated_samples) >= config.batch_size:
+            all_generated_samples, samples_to_buffer = all_generated_samples[:config.batch_size], all_generated_samples[config.batch_size:]
+            datapool.add_to_buffer(samples_to_buffer)
+        
+        else:
+            for sampling_iteration in range(config.data_loading.online_difficulty_filtering_strategy.max_sample_tries):
+                
+                if config.data_loading.online_difficulty_filtering_strategy.enabled:
+                    num_problems_to_sample = int(problems_per_batch*config.data_loading.online_difficulty_filtering_strategy.oversampling_factor)
+                else:
+                    num_problems_to_sample = problems_per_batch
+                    
+                problems = [
+                    problem for problem in datapool.sample_batch(num_problems_to_sample).to_list()
+                    for _ in range(config.rollouts_per_prompt)
+                ]
+                
+                # prepare inputs for verifiers generation
+                inputs = {
+                    "prompt": [problem["prompt"] for problem in problems],
+                    "info": [problem.get("info", {}) for problem in problems],
+                    "task": [problem["task"] for problem in problems],
+                    "answer": [problem.get("answer", "") for problem in problems],
+                }
 
-        # sanitize for vLLM OpenAI client
-        sampling_args["extra_body"] = {"return_tokens_as_token_ids": True}
-        if "top_k" in sampling_args:
-            sampling_args["extra_body"]["top_k"] = sampling_args.pop("top_k")
-        if "min_p" in sampling_args:
-            sampling_args["extra_body"]["min_p"] = sampling_args.pop("min_p")
-        if "min_tokens" in sampling_args:
-            sampling_args["extra_body"]["min_tokens"] = sampling_args.pop("min_tokens")
+                # generate completions + rewards with verifiers
+                logger.info(f"Sending {len(problems)} requests to environments")
+                sampling_args = dict(config.sampling)
+                sampling_args["logprobs"] = True
 
-        outputs = await vf_env.a_generate(
-            inputs=inputs, client=client, model=config.model.name, sampling_args=sampling_args
-        )
+                # sanitize for vLLM OpenAI client
+                sampling_args["extra_body"] = {"return_tokens_as_token_ids": True}
+                if "top_k" in sampling_args:
+                    sampling_args["extra_body"]["top_k"] = sampling_args.pop("top_k")
+                if "min_p" in sampling_args:
+                    sampling_args["extra_body"]["min_p"] = sampling_args.pop("min_p")
+                if "min_tokens" in sampling_args:
+                    sampling_args["extra_body"]["min_tokens"] = sampling_args.pop("min_tokens")
+
+
+                outputs = await vf_env.a_generate(
+                    inputs=inputs, client=client, model=config.model.name, sampling_args=sampling_args
+                )
+
+                
+                # TODO: Switch parsing prompt+completion tokens/ masks to vf_env.process_env_results once it supports parsing directly from vLLM. For now, this only works for single-turn output results
+                results = await process_env_results(outputs, client=client, config=config)
+                prompt_tokens = results["prompt_tokens"]
+                completion_tokens = results["completion_tokens"]
+                completion_logprobs = results["completion_logprobs"]
+                prompt_masks = results["prompt_masks"]
+                completion_masks = results["completion_masks"]
+                rewards = outputs["reward"]  # TODO: Align naming between prime-rl <> verifiers
+
+                # Compute advantages
+                per_problem_rewards = [rewards[i : i + config.rollouts_per_prompt] for i in range(0, len(rewards), config.rollouts_per_prompt)]
+                advantages = compute_advantages(per_problem_rewards)
+                per_problem_advantages = [advantages[i : i + config.rollouts_per_prompt] for i in range(0, len(advantages), config.rollouts_per_prompt)]
+                
+                # Remove samples that have been solved (all rollouts got reward 1)
+                all_uids = [problem["prime_rl_data_uid"] for problem in problems]
+                per_problem_uids = [all_uids[i] for i in range(0, len(all_uids), config.rollouts_per_prompt)]  # Take first UID from each group
+                
+                # postprocessing (difficulty re-prioritization etc.)
+                datapool.maybe_postprocess(per_problem_uids, per_problem_rewards, per_problem_advantages)
+                
+                generated_samples = create_generated_samples(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    completion_logprobs=completion_logprobs,
+                    prompt_masks=prompt_masks,
+                    completion_masks=completion_masks,
+                    rewards=rewards,
+                    advantages=advantages
+                )
+                                    
+                if not config.data_loading.online_difficulty_filtering_strategy.enabled:
+                    all_generated_samples.extend(generated_samples)
+                    break
+                
+                if sampling_iteration == config.data_loading.online_difficulty_filtering_strategy.max_sample_tries - 1:
+                    all_generated_samples.extend(generated_samples)
+                    all_generated_samples, remaining_generated_samples = all_generated_samples[:config.batch_size], all_generated_samples[config.batch_size:]
+                    break
+                
+                keep_indices = [i for i, rewards_ in enumerate(per_problem_rewards) if config.data_loading.online_difficulty_filtering_strategy.min_avg_reward < np.mean(rewards_) < config.data_loading.online_difficulty_filtering_strategy.max_avg_reward]
+                group_size = config.rollouts_per_prompt
+                generated_samples = flatten_keep(generated_samples, keep_indices, group_size)
+
+                if len(all_generated_samples) + len(keep_indices) >= problems_per_batch:
+                    generated_samples, remaining_generated_samples = generated_samples[:config.batch_size], generated_samples[config.batch_size:]
+                    all_generated_samples.extend(generated_samples)
+                    datapool.add_to_buffer(remaining_generated_samples)  # TODO: Implement buffer functionality in DataPool
+                    
+                else:
+                    all_generated_samples.extend(generated_samples)
+                    
+        unpacked_generated_samples = unpack_generated_samples(all_generated_samples)
+        prompt_tokens = unpacked_generated_samples["prompt_tokens"]
+        completion_tokens = unpacked_generated_samples["completion_tokens"]
+        completion_logprobs = unpacked_generated_samples["completion_logprobs"]
+        prompt_masks = unpacked_generated_samples["prompt_masks"]
+        completion_masks = unpacked_generated_samples["completion_masks"]
+        rewards = unpacked_generated_samples["reward"]
+        advantages = unpacked_generated_samples["advantages"]
+
         generate_completions_time = time.time() - generate_completions_start_time
 
-        # TODO: Switch parsing prompt+completion tokens/ masks to vf_env.process_env_results once it supports parsing directly from vLLM. For now, this only works for single-turn output results
-        results = await process_env_results(outputs, client=client, config=config)
-        prompt_tokens = results["prompt_tokens"]
-        completion_tokens = results["completion_tokens"]
-        completion_logprobs = results["completion_logprobs"]
-        prompt_masks = results["prompt_masks"]
-        completion_masks = results["completion_masks"]
-        rewards = outputs["reward"]  # TODO: Align naming between prime-rl <> verifiers
-
-        # Compute advantages
-        advantages = compute_advantages(rewards, config.rollouts_per_prompt)
         logger.debug(f"Computed rewards: {lt.lovely(torch.tensor(rewards))}")
         logger.debug(f"Computed advantages: {lt.lovely(torch.tensor(advantages))}")
 
@@ -275,7 +341,7 @@ async def orchestrate(config: OrchestratorConfig):
         progress_metrics = {
             "progress/orchestrator/total_tokens": progress.total_tokens,
             "progress/orchestrator/total_samples": progress.total_samples,
-            "progress/orchestrator/epoch": progress.epoch,
+            "progress/orchestrator/step": ckpt_step,  # Shared W&B axis
             "progress/ckpt_step": ckpt_step,  # Shared W&B axis
             "step": progress.step,
         }

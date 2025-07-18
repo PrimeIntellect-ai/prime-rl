@@ -1,0 +1,26 @@
+batch_size = 512
+micro_batch_size = 4
+rollouts_per_prompt = 16
+seq_len = 2048
+mask_truncated_completions = false
+
+[model]
+name = "willcb/DeepSeek-R1-Distill-Qwen-1.5B"
+
+[monitor.wandb]
+project = "hendrycks-math"
+
+[environment]
+id = "hendrycks-math"
+
+[monitor.wandb.log_samples]
+interval = 10
+num_samples = 16
+
+[eval]
+interval = 10
+benchmarks = ["math500"]
+
+[data_loading.online_difficulty_filtering_strategy]
+enabled = true
+oversampling_factor = 1.8

@@ -102,6 +102,71 @@ def load_hendrycks_math_environment(env_args: dict = {}) -> Environment:
     return vf_env
 
 
+def load_hendrycks_math_environment_with_additional_difficult_questions(env_args: dict = {}) -> Environment:
+    import json
+
+    from verifiers.utils.data_utils import extract_boxed_answer
+
+    from prime_rl.orchestrator.genesys.math import compute_math_reward
+
+    train_dataset = load_dataset("justus27/math-hendrycks-genesys-format", split="train").map(
+        lambda x: {
+            "question": x["prompt"],
+            "info": json.loads(x["verification_info"]),
+            "task": "simple-math",
+            "priority": "high",
+        }
+    )
+
+    # Load and process difficult dataset
+    from datasets import Dataset, concatenate_datasets
+
+    difficult = load_dataset("PrimeIntellect/INTELLECT-2-RL-Dataset", split="train")
+    if isinstance(difficult, dict):
+        difficult = difficult["train"]
+    assert isinstance(difficult, Dataset), "Expected Dataset type"
+
+    # Filter and map the difficult dataset
+    difficult = difficult.filter(
+        lambda x: x["task_type"] == "verifiable_math" and x["solve_rate_qwen_r1_distill_7b"] < 0.3
+    ).map(
+        lambda x: {
+            "question": x["prompt"],
+            "info": json.loads(x["verification_info"]),
+            "task": "simple-math",
+            "priority": "low",
+        }
+    )
+
+    # Take first n samples where n is the size of train_dataset
+    assert isinstance(train_dataset, Dataset), "Expected Dataset type"
+    n_samples = len(train_dataset) * 2
+    difficult = difficult.select(range(n_samples))
+
+    # Combine datasets
+    train_dataset = concatenate_datasets([train_dataset, difficult])
+    train_dataset = train_dataset.remove_columns(["prompt", "verification_info"])
+
+    # get 10% of dataset
+    train_dataset = train_dataset.train_test_split(test_size=0.1, seed=42)["test"]
+
+    parser = vf.ThinkParser(extract_fn=extract_boxed_answer)
+
+    def correct_answer_reward_func(completion, info, **kwargs) -> float:
+        completion_text = completion[-1]["content"]
+        return compute_math_reward(completion_text, info)
+
+    rubric = vf.Rubric(
+        funcs=[
+            correct_answer_reward_func,
+        ],
+        weights=[1.0],
+    )
+
+    vf_env = vf.SingleTurnEnv(dataset=train_dataset, parser=parser, rubric=rubric)
+    return vf_env
+
+
 def load_reverse_environment(env_args: dict = {}) -> Environment:
     import json
 
@@ -470,6 +535,7 @@ REGISTRY = {
     "reverse-text": load_reverse_environment,
     "hendrycks-math": load_hendrycks_math_environment,
     "intellect-math": load_intellect_math_environment,
+    "hendrycks-math-plus-two-thirds-difficult": load_hendrycks_math_environment_with_additional_difficult_questions,
     "unscramble": load_unscramble_environment,
     "ascii-tree": load_ascii_tree_environment,
     "pydantic-adherence": load_pydantic_adherence_environment,
