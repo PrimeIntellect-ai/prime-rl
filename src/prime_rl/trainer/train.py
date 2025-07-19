@@ -194,16 +194,12 @@ def train(config: TrainerConfig):
                 for micro_step, micro_batch in enumerate(micro_batches, start=1):
                     input_ids = micro_batch["input_ids"].to("cuda")
                     position_ids = micro_batch["position_ids"].to("cuda")
+                    loss_mask = micro_batch["loss_mask"].to("cuda")
+                    logprobs = micro_batch["logprobs"].to("cuda")
                     temperature = micro_batch["temperature"]
 
                     recomputed_logprobs = compute_logprobs(logprob_model, input_ids, position_ids, temperature)
-                    original_logprobs = micro_batch["logprobs"].to(recomputed_logprobs.device)
-
-                    diff_mask = micro_batch["loss_mask"][:, 1:].to(recomputed_logprobs.device)
-
-                    recomputed_logprob_error = (
-                        (torch.exp(recomputed_logprobs - original_logprobs).abs()) * diff_mask
-                    ).sum()
+                    recomputed_logprob_error = ((torch.exp(recomputed_logprobs - logprobs).abs()) * loss_mask).sum()
 
                     micro_batch["recomputed_logprob_error"] = recomputed_logprob_error.to("cpu")
                     micro_batch["logprobs"] = recomputed_logprobs.to("cpu")

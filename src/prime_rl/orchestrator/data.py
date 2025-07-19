@@ -14,7 +14,7 @@ class Sample(TypedDict):
     position_ids: Int[Tensor, "seq"]
     loss_mask: Int[Tensor, "seq"]
     advantages: Float[Tensor, "seq"]
-    logprobs: Float[Tensor, "seq_minus_1"]
+    logprobs: Float[Tensor, "seq"]
 
 
 def prepare_sample(
