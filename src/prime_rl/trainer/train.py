@@ -238,6 +238,7 @@ def train(config: TrainerConfig):
             # Forward pass
             logits = forward(model, input_ids, position_ids).contiguous()
             shifted_logits = shift_logits(logits)
+            del logits
 
             # Compute loss
             loss, importance_ratio, clipped_token_count = grpo_loss(
