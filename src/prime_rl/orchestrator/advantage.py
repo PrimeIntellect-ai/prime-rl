@@ -33,7 +33,7 @@ def compute_advantage_drgrpo_negclipped(rewards: Float[Tensor, "group"]) -> Floa
 AdvantageType = Literal["drgrpo", "drgrpo-negclipped"]
 
 # Map of advantage types to their corresponding functions
-_ADVANTAGE_REGISTRY: dict[AdvantageType, Callable[[Float[Tensor, "group"]], Float[Tensor, "group"]]] = {
+REGISTRY: dict[AdvantageType, Callable[[Float[Tensor, "group"]], Float[Tensor, "group"]]] = {
     "drgrpo": compute_advantage_drgrpo,
     "drgrpo-negclipped": compute_advantage_drgrpo_negclipped,
 }
@@ -57,7 +57,7 @@ def compute_advantages(
     solve_none, solve_all = 0, 0
     assert len(rewards) % samples_per_problem == 0
     problem_rewards = [rewards[i : i + samples_per_problem] for i in range(0, len(rewards), samples_per_problem)]
-    compute_advantage = _ADVANTAGE_REGISTRY[advantage_type]
+    compute_advantage = REGISTRY[advantage_type]
     for rewards in problem_rewards:
         rewards_tensor = torch.tensor(rewards)
         advantages_tensor = compute_advantage(rewards_tensor)
