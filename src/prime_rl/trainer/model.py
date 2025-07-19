@@ -86,9 +86,10 @@ def forward(
 def shift_logits(logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq vocab"]:
     """Removes final token logits and adds a zero logit for the first token."""
     # We drop the last logit because it corresponds to the next token that will be sampled but is not here yet
+    B, _, V = logits.shape
     logits = logits[:, :-1, :]  # (B, L-1, V)
-    # We add a zero logit for the first token, indicating that no probability is assigned to it
-    logits = torch.cat([torch.zeros(logits.shape[0], 1, logits.shape[2]).to(logits.device), logits], dim=1)  # (B, L, V)
+    zeros = torch.zeros(B, 1, V, device=logits.device, dtype=logits.dtype)  # (B, 1, V)
+    logits = torch.cat([zeros, logits], dim=1)  # (B, L, V)
     return logits
 
 
