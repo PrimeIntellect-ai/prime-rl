@@ -277,9 +277,6 @@ def train(config: TrainerConfig):
                 f"Completed micro batch {micro_step}/{num_micro_batches} (loss={(loss.item() / loss_mask.sum()):.2f}, entropy={(entropy.item() / loss_mask.sum()):.2f}, importance_ratio={(importance_ratio.item() / loss_mask.sum()):.2f})"
             )
 
-            del micro_batch, logits, input_ids, position_ids, advantages, logprobs, loss_mask
-            del loss, entropy, importance_ratio, clipped_token_count
-
         # Normalize all loss metrics globally before reporting
         for key, value in loss_metrics.items():
             loss_metrics[key] = value / loss_scale
