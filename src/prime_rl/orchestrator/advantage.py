@@ -56,17 +56,17 @@ def compute_advantages(
     advantages = []
     solve_none, solve_all = 0, 0
     assert len(rewards) % samples_per_problem == 0
-    problem_rewards = [rewards[i : i + samples_per_problem] for i in range(0, len(rewards), samples_per_problem)]
+    all_group_rewards = [rewards[i : i + samples_per_problem] for i in range(0, len(rewards), samples_per_problem)]
     compute_advantage = REGISTRY[advantage_type]
-    for rewards in problem_rewards:
-        rewards_tensor = torch.tensor(rewards)
-        advantages_tensor = compute_advantage(rewards_tensor)
-        assert len(advantages_tensor) == len(rewards_tensor)
-        advantages.extend(advantages_tensor.tolist())
-        if torch.all(rewards_tensor == 0):
-            solve_none += 1 / len(problem_rewards)
-        if torch.all(rewards_tensor == 1):
-            solve_all += 1 / len(problem_rewards)
+    for group_rewards in all_group_rewards:
+        group_rewards_tensor = torch.tensor(group_rewards)
+        group_advantages_tensor = compute_advantage(group_rewards_tensor)
+        assert len(group_advantages_tensor) == len(group_rewards_tensor)
+        advantages.extend(group_advantages_tensor.tolist())
+        if torch.all(group_rewards_tensor == 0):
+            solve_none += 1 / len(all_group_rewards)
+        if torch.all(group_rewards_tensor == 1):
+            solve_all += 1 / len(all_group_rewards)
     assert len(rewards) == len(advantages)
     effective_batch_size = 1 - solve_none - solve_all
     advantage_stats = {"solve_none": solve_none, "solve_all": solve_all, "effective_batch_size": effective_batch_size}
