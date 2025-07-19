@@ -9,7 +9,7 @@ from torch import Tensor
 @jaxtyped(typechecker=typechecker)
 def compute_advantage_drgrpo(rewards: Float[Tensor, "group"]) -> Float[Tensor, "group"]:
     """
-    Compute DR.GRPO advantages for a single group.
+    Computes DR.GRPO advantages for a single group.
     For example:
     - `[0.0, 0.0, 1.0, 1.0]` -> `[-0.5, -0.5, 0.5, 0.5]`
     - `[0.0, 0.0, 0.0, 0.0]` -> `[0.0, 0.0, 0.0, 0.0]`
@@ -21,7 +21,7 @@ def compute_advantage_drgrpo(rewards: Float[Tensor, "group"]) -> Float[Tensor, "
 @jaxtyped(typechecker=typechecker)
 def compute_advantage_drgrpo_negclipped(rewards: Float[Tensor, "group"]) -> Float[Tensor, "group"]:
     """
-    Compute DR.GRPO advantages for a single group, but clips all negative advantages to zero.
+    Computes DR.GRPO advantages for a single group, but clips all negative advantages to zero.
     For example:
     - `[0.0, 0.0, 1.0, 1.0]` -> `[0.0, 0.0, 0.5, 0.5]`
     - `[0.0, 0.0, 0.0, 0.0]` -> `[0.0, 0.0, 0.0, 0.0]`
@@ -43,7 +43,7 @@ def compute_advantages(
     rewards: list[float], samples_per_problem: int, advantage_type: AdvantageType
 ) -> tuple[list[float], dict[str, float]]:
     """
-    Computes advantages and various statistics for logging from a flattened list of rewards for a given advantage computation type.
+    Computes advantages and statistics for logging from a flattened list of rewards for a given advantage type.
 
     Args:
         rewards: Flattened list of rewards where first `samples_per_problem` rewards are for the first problem
@@ -55,6 +55,7 @@ def compute_advantages(
     """
     advantages = []
     solve_none, solve_all = 0, 0
+    assert len(rewards) % samples_per_problem == 0
     problem_rewards = [rewards[i : i + samples_per_problem] for i in range(0, len(rewards), samples_per_problem)]
     compute_advantage = _ADVANTAGE_REGISTRY[advantage_type]
     for rewards in problem_rewards:
@@ -66,10 +67,7 @@ def compute_advantages(
             solve_none += 1 / len(problem_rewards)
         if torch.all(rewards_tensor == 1):
             solve_all += 1 / len(problem_rewards)
+    assert len(rewards) == len(advantages)
     effective_batch_size = 1 - solve_none - solve_all
-    advantage_stats = {
-        "solve_none": solve_none,
-        "solve_all": solve_all,
-        "effective_batch_size": effective_batch_size,
-    }
+    advantage_stats = {"solve_none": solve_none, "solve_all": solve_all, "effective_batch_size": effective_batch_size}
     return advantages, advantage_stats
