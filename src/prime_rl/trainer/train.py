@@ -10,6 +10,7 @@ from prime_rl.trainer import envs
 
 import shardcast
 import torch
+from torch import Tensor
 import torch.distributed as dist
 from torch._guards import log as torch_log
 from loguru import logger
@@ -258,13 +259,13 @@ def train(config: TrainerConfig):
                 )
 
             # Accumulate unnormalized local metrics
-            loss_metrics["loss/loss"] += loss.detach().clone().float()
-            loss_metrics["loss/entropy"] += entropy.detach().clone().float()
-            loss_metrics["loss/importance_ratio"] += importance_ratio.detach().clone().float()
-            loss_metrics["loss/clipped_ratio"] += clipped_token_count.detach().clone().float()
+            loss_metrics["loss/loss"] += loss.detach().float()
+            loss_metrics["loss/entropy"] += entropy.detach().float()
+            loss_metrics["loss/importance_ratio"] += importance_ratio.detach().float()
+            loss_metrics["loss/clipped_ratio"] += clipped_token_count.detach().float()
 
-            recomputed_logprob_error = micro_batch.get("recomputed_logprob_error", torch.tensor(0.0))
-            loss_metrics["loss/recomputed_logprob_error"] += recomputed_logprob_error.clone().float()
+            recomputed_logprob_error: Tensor = micro_batch.get("recomputed_logprob_error", torch.tensor(0.0))
+            loss_metrics["loss/recomputed_logprob_error"] += recomputed_logprob_error.detach().float()
 
             # Scale loss by scale factor before backward pass
             loss = loss / loss_scale
