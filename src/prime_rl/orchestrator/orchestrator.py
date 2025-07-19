@@ -214,7 +214,7 @@ async def orchestrate(config: OrchestratorConfig):
         completion_masks = results["completion_masks"]
         rewards = outputs["reward"]  # TODO: Align naming between prime-rl <> verifiers
 
-        advantages, solve_none_ratio, solve_all_ratio, effective_batch_size_ratio = compute_advantages(
+        advantages, advantage_stats = compute_advantages(
             rewards=rewards, samples_per_problem=config.rollouts_per_prompt, advantage_type=config.advantage_type
         )
 
@@ -300,9 +300,9 @@ async def orchestrate(config: OrchestratorConfig):
         # Log rewards metrics to monitor
         reward_metrics = {
             "reward/reward": np.mean(rewards),
-            "reward/solve_none": solve_none_ratio,
-            "reward/solve_all": solve_all_ratio,
-            "reward/effective_batch_size": effective_batch_size_ratio,
+            "reward/solve_none": advantage_stats["solve_none"],
+            "reward/solve_all": advantage_stats["solve_all"],
+            "reward/effective_batch_size": advantage_stats["effective_batch_size"],
             "step": progress.step,
         }
         monitor.log(reward_metrics)
