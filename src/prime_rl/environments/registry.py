@@ -46,7 +46,12 @@ def load_intellect_math_environment(env_args: dict = {}) -> Environment:
     from prime_rl.orchestrator.genesys.math import compute_math_reward
 
     train_dataset = load_dataset("PrimeIntellect/INTELLECT-2-only-math", split="train").map(
-        lambda x: {"question": x["prompt"], "info": json.loads(x["verification_info"]), "task": "simple-math"}
+        lambda x: {
+            "question": x["prompt"],
+            "answer": json.loads(x["verification_info"])["ground_truth"],
+            "info": {},
+            "task": "intellect-math",
+        }
     )
     solve_rate_field = env_args.get("solve_rate_field", None)
     if solve_rate_field is not None:
@@ -58,9 +63,9 @@ def load_intellect_math_environment(env_args: dict = {}) -> Environment:
             train_dataset = train_dataset.filter(lambda x: x[solve_rate_field] <= max_solve_rate)
     train_dataset = train_dataset.remove_columns(["prompt", "verification_info"])
 
-    def correct_answer_reward_func(completion, info, **kwargs) -> float:
+    def correct_answer_reward_func(completion, answer, **kwargs) -> float:
         completion_text = completion[-1]["content"]
-        return compute_math_reward(completion_text, info)
+        return compute_math_reward(completion_text, {"ground_truth": answer})
 
     rubric = vf.Rubric(
         funcs=[
@@ -77,6 +82,8 @@ def load_hendrycks_math_environment(env_args: dict = {}) -> Environment:
     import pandas as pd
     from datasets import Dataset, load_dataset
     from verifiers.utils.data_utils import extract_boxed_answer
+
+    from prime_rl.orchestrator.genesys.math import compute_math_reward
 
     # Use all subsets of the train split for training
     subsets = ["algebra", "counting_and_probability", "geometry", "number_theory", "prealgebra", "precalculus"]
@@ -96,15 +103,14 @@ def load_hendrycks_math_environment(env_args: dict = {}) -> Environment:
     parser = vf.ThinkParser(extract_fn=extract_boxed_answer)
 
     def correct_answer_reward_func(completion, answer, **kwargs) -> float:
-        response = parser.parse_answer(completion) or ""
-        return 1.0 if response == str(answer) else 0.0
+        completion_text = completion[-1]["content"]
+        return compute_math_reward(completion_text, {"ground_truth": answer})
 
     rubric = vf.Rubric(
         funcs=[
             correct_answer_reward_func,
-            parser.get_format_reward_func(),
         ],
-        weights=[1.0, 0.2],
+        weights=[1.0],
     )
 
     system_prompt = """\
