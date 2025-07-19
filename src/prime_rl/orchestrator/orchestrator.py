@@ -67,6 +67,11 @@ async def orchestrate(config: OrchestratorConfig):
     await check_has_model(client, config.model.name)
     logger.success("Inference pool ready")
 
+    # Load environment and extract dataset
+    logger.info(f"Loading environment {config.environment.id} with args {config.environment.args}")
+    vf_env = load_environment(config.environment.id, config.environment.args)
+    dataset = vf_env.get_dataset(seed=config.seed)
+
     # Get checkpoint manager
     if config.ckpt:
         ckpt_manager = CheckpointManager(config.ckpt)
@@ -75,18 +80,22 @@ async def orchestrate(config: OrchestratorConfig):
     progress = Progress()
     ckpt_step = 0
     if config.ckpt and config.ckpt.resume_step:
+        # Load checkpoint
         logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
         ckpt_manager.load(progress, step=config.ckpt.resume_step)
+        
+        # Reload weights to match checkpoint
         ckpt_step = max(progress.step - config.async_level, 0)
         await reload_weights(client, config.weights_path, ckpt_step)
+
+        # Shuffle dataset to match epoch
+        seed = (config.seed or 0) + progress.epoch
+        logger.info(f"Shuffling dataset at the beginning of epoch {progress.epoch} with {seed=}")
+        shuffed_dataset = dataset.shuffle(seed=seed)
     else:
         logger.info("Training from scratch. Resetting weights to base model")
         await reset_weights(client)
 
-    # Load environment and extract dataset
-    logger.info(f"Loading environment {config.environment.id} with args {config.environment.args}")
-    vf_env = load_environment(config.environment.id, config.environment.args)
-    dataset = vf_env.get_dataset(seed=config.seed)
 
     # Load tokenizer -- placeholder until reworking verifiers to use vLLM tokenizer
     tokenizer = AutoTokenizer.from_pretrained(config.model.name)
@@ -113,9 +122,11 @@ async def orchestrate(config: OrchestratorConfig):
         # Check if we need to start a new epoch
         epoch_step = progress.step % steps_per_epoch
         if epoch_step == 0:
+            # Reshuffle dataset at the beginning of each epoch (for now, we don't shuffle to make checkpoint resuming easier)
             progress.epoch += 1
-            # Reshuffle dataset at the beginning of each epoch
-            dataset = dataset.shuffle(seed=(config.seed or 0) + progress.epoch)
+            seed = (config.seed or 0) + progress.epoch
+            logger.info(f"Shuffling dataset at the beginning of epoch {progress.epoch} with {seed=}")
+            shuffed_dataset = dataset.shuffle(seed=seed)
 
         logger.info(f"Starting orchestrator step {progress.step} ({ckpt_step=}, epoch={progress.epoch}, {epoch_step=})")
         step_start_time = time.time()
@@ -175,7 +186,8 @@ async def orchestrate(config: OrchestratorConfig):
         problems_per_batch = config.batch_size // config.rollouts_per_prompt
         start_idx = epoch_step * problems_per_batch
         indices = range(start_idx, start_idx + problems_per_batch)
-        problems = [problem for problem in dataset.select(indices).to_list() for _ in range(config.rollouts_per_prompt)]
+        logger.debug(f"Sampling {indices=}")
+        problems = [problem for problem in shuffed_dataset.select(indices).to_list() for _ in range(config.rollouts_per_prompt)]
 
         # prepare inputs for verifiers generation
         inputs = {
