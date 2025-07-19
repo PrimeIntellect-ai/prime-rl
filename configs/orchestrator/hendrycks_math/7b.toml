@@ -21,3 +21,4 @@ interval = 50
 benchmarks = ["math500", "aime24", "aime25"]
 
 [ckpt]
+interval = 200 
