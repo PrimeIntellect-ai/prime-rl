@@ -8,13 +8,25 @@ from torch import Tensor
 
 @jaxtyped(typechecker=typechecker)
 def compute_advantage_drgrpo(rewards: Float[Tensor, "group"]) -> Float[Tensor, "group"]:
-    """Compute DR.GRPO advantages for a single group."""
+    """
+    Compute DR.GRPO advantages for a single group.
+    For example:
+    - `[0.0, 0.0, 1.0, 1.0]` -> `[-0.5, -0.5, 0.5, 0.5]`
+    - `[0.0, 0.0, 0.0, 0.0]` -> `[0.0, 0.0, 0.0, 0.0]`
+    - `[1.0, 1.0, 1.0, 1.0]` -> `[0.0, 0.0, 0.0, 0.0]`
+    """
     return rewards - rewards.mean()
 
 
 @jaxtyped(typechecker=typechecker)
 def compute_advantage_drgrpo_negclipped(rewards: Float[Tensor, "group"]) -> Float[Tensor, "group"]:
-    """Compute DR.GRPO advantages but clips all negative advantages to zero for a single group."""
+    """
+    Compute DR.GRPO advantages for a single group, but clips all negative advantages to zero.
+    For example:
+    - `[0.0, 0.0, 1.0, 1.0]` -> `[0.0, 0.0, 0.5, 0.5]`
+    - `[0.0, 0.0, 0.0, 0.0]` -> `[0.0, 0.0, 0.0, 0.0]`
+    - `[1.0, 1.0, 1.0, 1.0]` -> `[0.0, 0.0, 0.0, 0.0]`
+    """
     return torch.maximum(rewards - rewards.mean(), torch.zeros_like(rewards))
 
 
