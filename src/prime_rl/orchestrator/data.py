@@ -14,7 +14,7 @@ class Sample(TypedDict):
     position_ids: Int[Tensor, "seq"]
     loss_mask: Int[Tensor, "seq"]
     advantages: Float[Tensor, "seq"]
-    logprobs: Float[Tensor, "seq_minus_1"]
+    logprobs: Float[Tensor, "seq"]
 
 
 def prepare_sample(
@@ -44,7 +44,7 @@ def prepare_sample(
     # Prepare input_ids, loss_mask, position_ids, logprobs, and advantages
     input_ids = torch.cat([prompt_token_ids, completion_token_ids]).long()
     loss_mask = torch.cat([prompt_token_mask, completion_token_mask]).long()
-    logprobs = torch.cat([torch.zeros(len(prompt_token_ids) - 1), torch.tensor(completion_logprobs)]).float()
+    logprobs = torch.cat([torch.zeros(len(prompt_token_ids)), torch.tensor(completion_logprobs)]).float()
     position_ids = torch.arange(len(input_ids)).long()
     advantages = torch.tensor(advantage).repeat(len(input_ids)).float()
 
@@ -64,7 +64,7 @@ def prepare_sample(
         logprobs = torch.cat([logprobs, torch.zeros(num_padding_tokens)]).float()
         advantages = torch.cat([advantages, torch.zeros(num_padding_tokens)]).float()
 
-    assert len(input_ids) == len(advantages) == len(loss_mask) == len(position_ids) == len(logprobs) + 1, (
+    assert len(input_ids) == len(advantages) == len(loss_mask) == len(position_ids) == len(logprobs), (
         f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, logprobs: {len(logprobs)}"
     )
     return {
@@ -170,7 +170,6 @@ def packed_samples_into_micro_bs(samples: list[Sample], max_seq_len: int) -> lis
             bin_len = sum(len(s["input_ids"]) for s in bin_content)
             # Check if sequence fits in this bin
             if bin_len + len(sample["input_ids"]) <= max_seq_len:
-                sample["logprobs"] = torch.cat([torch.tensor([0.0]), sample["logprobs"]])
                 micro_batches[bin_idx].append(sample)
                 bin_found = True
                 break
