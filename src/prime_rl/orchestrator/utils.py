@@ -123,7 +123,42 @@ def compute_advantages(rewards: list[float], samples_per_problem: int) -> list[f
         if np.all(problem_rewards == 1):
             solve_all += 1
     solve_none_ratio = solve_none / len(per_problem_rewards)
-    solve_all_ratio = solve_all / len(per_problem_rewards)   
+    solve_all_ratio = solve_all / len(per_problem_rewards)
+    effective_batch_size_ratio = 1 - solve_none_ratio - solve_all_ratio
+    return advantages, solve_none_ratio, solve_all_ratio, effective_batch_size_ratio
+
+
+def compute_negclipped_advantages(
+    rewards: list[float], samples_per_problem: int
+) -> tuple[list[float], float, float, float]:
+    """
+    Compute advantages where negative values are clipped to zero.
+
+    This clips all negative advantages to 0, which can help reduce the impact
+    of overly penalizing below-average samples in policy gradient methods.
+
+    Args:
+        rewards: List of reward values
+        samples_per_problem: Number of samples/rollouts per problem
+
+    Returns:
+        Tuple of (advantages, solve_none_ratio, solve_all_ratio, effective_batch_size_ratio)
+    """
+    per_problem_rewards = [rewards[i : i + samples_per_problem] for i in range(0, len(rewards), samples_per_problem)]
+    advantages = []
+    solve_none = 0
+    solve_all = 0
+    for problem_rewards in per_problem_rewards:
+        reward_array = np.array(problem_rewards)
+        problem_advantages = reward_array - reward_array.mean()
+        clipped_advantages = np.maximum(problem_advantages, 0.0)
+        advantages.extend(clipped_advantages.tolist())
+        if np.all(problem_rewards == 0):
+            solve_none += 1
+        if np.all(problem_rewards == 1):
+            solve_all += 1
+    solve_none_ratio = solve_none / len(per_problem_rewards)
+    solve_all_ratio = solve_all / len(per_problem_rewards)
     effective_batch_size_ratio = 1 - solve_none_ratio - solve_all_ratio
     return advantages, solve_none_ratio, solve_all_ratio, effective_batch_size_ratio
 

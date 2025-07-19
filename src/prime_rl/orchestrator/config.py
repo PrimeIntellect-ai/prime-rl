@@ -201,6 +201,13 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = 1
 
+    advantage_style: Annotated[
+        Literal["drgrpo", "drgrpo-negclipped"],
+        Field(
+            description="Style of advantage computation to use. 'drgrpo' uses standard mean-centered advantages, 'drgrpo-negclipped' clips negative advantages to zero."
+        ),
+    ] = "drgrpo"
+
     seq_len: Annotated[
         int,
         Field(
