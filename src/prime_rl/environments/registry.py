@@ -46,7 +46,12 @@ def load_intellect_math_environment(env_args: dict = {}) -> Environment:
     from prime_rl.orchestrator.genesys.math import compute_math_reward
 
     train_dataset = load_dataset("PrimeIntellect/INTELLECT-2-only-math", split="train").map(
-        lambda x: {"question": x["prompt"], "info": json.loads(x["verification_info"]), "task": "simple-math"}
+        lambda x: {
+            "question": x["prompt"],
+            "answer": json.loads(x["verification_info"])["ground_truth"],
+            "info": {},
+            "task": "intellect-math",
+        }
     )
     solve_rate_field = env_args.get("solve_rate_field", None)
     if solve_rate_field is not None:
@@ -58,9 +63,9 @@ def load_intellect_math_environment(env_args: dict = {}) -> Environment:
             train_dataset = train_dataset.filter(lambda x: x[solve_rate_field] <= max_solve_rate)
     train_dataset = train_dataset.remove_columns(["prompt", "verification_info"])
 
-    def correct_answer_reward_func(completion, info, **kwargs) -> float:
+    def correct_answer_reward_func(completion, answer, **kwargs) -> float:
         completion_text = completion[-1]["content"]
-        return compute_math_reward(completion_text, info)
+        return compute_math_reward(completion_text, {"ground_truth": answer})
 
     rubric = vf.Rubric(
         funcs=[
@@ -74,22 +79,32 @@ def load_intellect_math_environment(env_args: dict = {}) -> Environment:
 
 
 def load_hendrycks_math_environment(env_args: dict = {}) -> Environment:
-    import json
-
+    import pandas as pd
+    from datasets import Dataset, load_dataset
     from verifiers.utils.data_utils import extract_boxed_answer
 
     from prime_rl.orchestrator.genesys.math import compute_math_reward
 
-    train_dataset = load_dataset("justus27/math-hendrycks-genesys-format", split="train").map(
-        lambda x: {"question": x["prompt"], "info": json.loads(x["verification_info"]), "task": "simple-math"}
+    # Use all subsets of the train split for training
+    subsets = ["algebra", "counting_and_probability", "geometry", "number_theory", "prealgebra", "precalculus"]
+    dfs = [load_dataset("EleutherAI/hendrycks_math", subset, split="train").to_pandas() for subset in subsets]
+    dataset = Dataset.from_pandas(pd.concat(dfs))
+
+    dataset = dataset.map(
+        lambda x: {
+            "question": x["problem"],
+            "answer": extract_boxed_answer(x["solution"]),
+            "info": {"subset": x["type"].lower(), "level": x["level"].split()[-1]},
+            "task": "hendrycks_math",
+        },
+        remove_columns=dataset.column_names,
     )
-    train_dataset = train_dataset.remove_columns(["prompt", "verification_info"])
 
     parser = vf.ThinkParser(extract_fn=extract_boxed_answer)
 
-    def correct_answer_reward_func(completion, info, **kwargs) -> float:
+    def correct_answer_reward_func(completion, answer, **kwargs) -> float:
         completion_text = completion[-1]["content"]
-        return compute_math_reward(completion_text, info)
+        return compute_math_reward(completion_text, {"ground_truth": answer})
 
     rubric = vf.Rubric(
         funcs=[
@@ -98,22 +113,27 @@ def load_hendrycks_math_environment(env_args: dict = {}) -> Environment:
         weights=[1.0],
     )
 
-    vf_env = vf.SingleTurnEnv(dataset=train_dataset, parser=parser, rubric=rubric)
+    system_prompt = """\
+Think step by step inside <think>...</think> tags.
+
+Provide the final numerical answer inside \\boxed{{...}}."""
+
+    vf_env = vf.SingleTurnEnv(dataset=dataset, system_prompt=system_prompt, parser=parser, rubric=rubric)
+
     return vf_env
 
 
 def load_reverse_environment(env_args: dict = {}) -> Environment:
-    import json
-
-    train_dataset = load_dataset("mikasenghaas/reverse_text_dataset_debug_50_seq_len", split="train").map(
+    dataset = load_dataset("PrimeIntellect/reverse_text", split="train")
+    dataset = dataset.map(
         lambda x: {
-            "question": x["prompt"],
-            "answer": json.loads(x["verification_info"])["ground_truth"],
+            "question": x["text"],
+            "answer": x["reversed_text"],
             "info": {},
-            "task": x["task_type"],
-        }
+            "task": "reverse_text",
+        },
+        remove_columns=dataset.column_names,
     )
-    train_dataset = train_dataset.remove_columns(["prompt", "verification_info", "task_type"])
 
     parser = vf.XMLParser(["answer"], answer_field="answer")
 
@@ -140,8 +160,14 @@ def load_reverse_environment(env_args: dict = {}) -> Environment:
         weights=[1.0],
     )
 
+    system_prompt = """\
+Reverse the text below character-by-character
+
+Provide the final reversed text inside <answer>...</answer> tags."""
+
     vf_env = vf.SingleTurnEnv(
-        dataset=train_dataset,
+        dataset=dataset,
+        system_prompt=system_prompt,
         parser=parser,
         rubric=rubric,
     )

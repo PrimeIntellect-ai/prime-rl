@@ -6,7 +6,7 @@ max_steps = 30
 mask_truncated_completions = false
 
 [model]
-name = "willcb/Qwen2.5-0.5B-Reverse-SFT"
+name = "PrimeIntellect/Qwen2.5-0.5B-Reverse-Text-SFT"
 
 [environment]
 id = "reverse-text"

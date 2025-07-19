@@ -3,7 +3,7 @@ max_steps = 500
 [monitor.wandb]
 
 [model]
-name = "willcb/DeepSeek-R1-Distill-Qwen-1.5B"
+name = "PrimeIntellect/DeepSeek-R1-Distill-Qwen-1.5B"
 
 [optim]
 lr = 1e-6
