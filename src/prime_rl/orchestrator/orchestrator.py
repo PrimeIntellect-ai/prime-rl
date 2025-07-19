@@ -25,10 +25,9 @@ from prime_rl.orchestrator.client import (
 from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.orchestrator.data import prepare_batch
 from prime_rl.orchestrator.logger import setup_logger
+from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.utils import (
     process_env_results,
-    compute_advantages,
-    compute_negclipped_advantages,
     wait_for_weight_checkpoint,
     print_benchmark,
 )
@@ -215,24 +214,12 @@ async def orchestrate(config: OrchestratorConfig):
         completion_masks = results["completion_masks"]
         rewards = outputs["reward"]  # TODO: Align naming between prime-rl <> verifiers
 
-        # Compute advantages based on the configured style
-        advantage_functions = {
-            "drgrpo": compute_advantages,
-            "drgrpo-negclipped": compute_negclipped_advantages,
-        }
-
-        advantage_fn = advantage_functions.get(config.advantage_style)
-        if advantage_fn is None:
-            raise ValueError(
-                f"Unknown advantage style: {config.advantage_style}. Available options: {list(advantage_functions.keys())}"
-            )
-
-        advantages, solve_none_ratio, solve_all_ratio, effective_batch_size_ratio = advantage_fn(
-            rewards, config.rollouts_per_prompt
+        advantages, solve_none_ratio, solve_all_ratio, effective_batch_size_ratio = compute_advantages(
+            rewards=rewards, samples_per_problem=config.rollouts_per_prompt, advantage_type=config.advantage_type
         )
 
         logger.debug(f"Computed rewards: {lt.lovely(torch.tensor(rewards))}")
-        logger.debug(f"Computed advantages ({config.advantage_style}): {lt.lovely(torch.tensor(advantages))}")
+        logger.debug(f"Computed advantages ({config.advantage_type}): {lt.lovely(torch.tensor(advantages))}")
 
         # compute batch metrics
         num_prompt_tokens = sum(len(prompt_tokens[i]) for i in range(len(prompt_tokens)))

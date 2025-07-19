@@ -4,6 +4,7 @@ from typing import Annotated, Literal
 from pydantic import Field, model_validator
 
 from prime_rl.eval.registry import Benchmark
+from prime_rl.orchestrator.advantage import AdvantageType
 from prime_rl.utils.config import LogConfig, ModelConfig, MultiMonitorConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
@@ -201,10 +202,10 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = 1
 
-    advantage_style: Annotated[
-        Literal["drgrpo", "drgrpo-negclipped"],
+    advantage_type: Annotated[
+        AdvantageType,
         Field(
-            description="Style of advantage computation to use. 'drgrpo' uses standard mean-centered advantages, 'drgrpo-negclipped' clips negative advantages to zero."
+            description="Type of advantage computation to use. For details on the variants please refer directly to their docstrings."
         ),
     ] = "drgrpo"
 
