@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -155,8 +155,8 @@ class CheckpointConfig(BaseConfig):
     ] = None
 
 
-class DefaultPoolConfig(BaseModel):
-    strategy: Literal["default"] = "default"
+class SimplePoolConfig(BaseModel):
+    strategy: Literal["simple"] = "simple"
 
 
 class PriorityPoolConfig(BaseModel):
@@ -209,7 +209,7 @@ class OnlineDifficultyPoolConfig(BaseModel):
     ] = 1.0
 
 
-DataPoolConfig: TypeAlias = DefaultPoolConfig | PriorityPoolConfig | OnlineDifficultyPoolConfig
+DataPoolConfig: TypeAlias = SimplePoolConfig | PriorityPoolConfig | OnlineDifficultyPoolConfig
 
 
 class OrchestratorConfig(BaseSettings):
@@ -231,7 +231,7 @@ class OrchestratorConfig(BaseSettings):
     eval: EvalConfig | None = None
 
     # Data Pool
-    pool: DataPoolConfig = Field(discriminator="strategy", default=DefaultPoolConfig())
+    pool: DataPoolConfig = Field(discriminator="strategy", default=SimplePoolConfig())
 
     # The logging configuration
     log: LogConfig = LogConfig()

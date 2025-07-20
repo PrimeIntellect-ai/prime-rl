@@ -8,9 +8,9 @@ from datasets import Dataset
 
 from prime_rl.orchestrator.config import (
     DataPoolConfig,
-    DefaultPoolConfig,
     OnlineDifficultyPoolConfig,
     PriorityPoolConfig,
+    SimplePoolConfig,
 )
 from prime_rl.utils.logger import get_logger
 
@@ -137,13 +137,13 @@ class Pool(ABC):
         pass
 
 
-class DefaultPool(Pool):
+class SimplePool(Pool):
     """
     Simple pool that samples problems in a round-robin fashion and
     immediately returns all rollouts to the trainer.
     """
 
-    def __init__(self, dataset: Dataset, pool_config: DefaultPoolConfig):
+    def __init__(self, dataset: Dataset, pool_config: SimplePoolConfig):
         super().__init__(dataset, pool_config)
 
         # Initialize metadata to include epoch information
@@ -393,8 +393,8 @@ class OnlineDifficultyPool(Pool):
 
 
 def setup_pool(dataset: Dataset, pool_config: DataPoolConfig) -> Pool:
-    if pool_config.strategy == "default":
-        return DefaultPool(dataset, pool_config)
+    if pool_config.strategy == "simple":
+        return SimplePool(dataset, pool_config)
     elif pool_config.strategy == "priority":
         return PriorityPool(dataset, pool_config)
     elif pool_config.strategy == "online_difficulty":
