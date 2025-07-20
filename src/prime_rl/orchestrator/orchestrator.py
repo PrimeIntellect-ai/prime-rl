@@ -23,7 +23,7 @@ from prime_rl.orchestrator.client import (
     setup_client,
 )
 from prime_rl.orchestrator.config import OrchestratorConfig
-from prime_rl.orchestrator.data import prepare_batch
+from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.orchestrator.logger import setup_logger
 from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.utils import (

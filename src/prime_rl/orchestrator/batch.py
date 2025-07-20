@@ -9,7 +9,7 @@ from transformers import AutoTokenizer
 from prime_rl.trainer.data import MicroBatch
 
 
-class Sample(TypedDict):
+class BatchSample(TypedDict):
     input_ids: Int[Tensor, "seq"]
     position_ids: Int[Tensor, "seq"]
     loss_mask: Int[Tensor, "seq"]
@@ -27,7 +27,7 @@ def prepare_sample(
     seq_len: int,
     tokenizer: AutoTokenizer,
     pad: bool,
-) -> Sample:
+) -> BatchSample:
     """
     Prepare a problem and pad it for training.
     Tokenize and
@@ -152,7 +152,7 @@ def prepare_batch_padding(
     return batches_per_gpu
 
 
-def packed_samples_into_micro_bs(samples: list[Sample], max_seq_len: int) -> list[list[Sample]]:
+def packed_samples_into_micro_bs(samples: list[BatchSample], max_seq_len: int) -> list[list[BatchSample]]:
     """
     Pack samples into micro_batch efficiently.
     We follow the First Fit Decreasing algorithm to pack the samples into bins and minimize potential padding while never truncating.
@@ -181,7 +181,7 @@ def packed_samples_into_micro_bs(samples: list[Sample], max_seq_len: int) -> lis
     return micro_batches
 
 
-def prepare_micro_batch_packing(samples: list[Sample], max_seq_len: int, temperature: float) -> MicroBatch:
+def prepare_micro_batch_packing(samples: list[BatchSample], max_seq_len: int, temperature: float) -> MicroBatch:
     """
     Prepare a micro batch for packing mode. take multi sample and return a batch of shape [1, micro_bs * max_seq_len].
     Would additionally pad the batch to the max sequence length.
