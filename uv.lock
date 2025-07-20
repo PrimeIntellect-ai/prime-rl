@@ -2072,8 +2072,10 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-fa = [
+flash-attn = [
     { name = "flash-attn" },
+]
+flash-infer = [
     { name = "flashinfer-python" },
 ]
 
@@ -2091,8 +2093,8 @@ requires-dist = [
     { name = "beartype", specifier = ">=0.21.0" },
     { name = "cydifflib", specifier = ">=1.2.0" },
     { name = "datasets", specifier = ">=3.6.0" },
-    { name = "flash-attn", marker = "extra == 'fa'", specifier = ">=2.8.0" },
-    { name = "flashinfer-python", marker = "extra == 'fa'", specifier = ">=0.2.8rc1" },
+    { name = "flash-attn", marker = "extra == 'flash-attn'", specifier = ">=2.8.0" },
+    { name = "flashinfer-python", marker = "extra == 'flash-infer'", specifier = ">=0.2.8rc1" },
     { name = "google-cloud-storage", specifier = ">=3.1.1" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "liger-kernel", specifier = ">=0.5.10" },
@@ -2115,7 +2117,7 @@ requires-dist = [
     { name = "vllm", specifier = ">=0.9.1" },
     { name = "wandb", specifier = ">=0.20.1" },
 ]
-provides-extras = ["fa"]
+provides-extras = ["flash-attn", "flash-infer"]
 
 [package.metadata.requires-dev]
 dev = [

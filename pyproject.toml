@@ -43,7 +43,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project.optional-dependencies]
-fa = ["flash-attn>=2.8.0", "flashinfer-python>=0.2.8rc1"]
+flash-attn = ["flash-attn>=2.8.0"]
+flash-infer = ["flashinfer-python>=0.2.8rc1"]
 
 [tool.uv]
 no-build-isolation-package = ["flash-attn"]

@@ -43,7 +43,7 @@ source $HOME/.local/bin/env
 3. Synchronize the environment
 
 ```bash
-uv sync && uv sync --extra fa
+uv sync && uv sync --all-extras
 ```
 
 </details>
