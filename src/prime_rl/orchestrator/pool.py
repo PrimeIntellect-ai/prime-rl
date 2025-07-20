@@ -1,3 +1,4 @@
+import random
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass
@@ -159,9 +160,11 @@ class DefaultPool(Pool):
 
         # Sample problems
         sampled_problems = [self.problem_buffer[problem_id] for problem_id in sampled_problem_ids]
+        assert all(self.metadata[problem_id]["epoch"] == self.epoch for problem_id in sampled_problem_ids)
 
         # Update metadata
-        self.metadata.update({problem_id: {"epoch": self.epoch + 1} for problem_id in sampled_problem_ids})
+        for problem_id in sampled_problem_ids:
+            self.metadata[problem_id].update({"epoch": self.epoch + 1})
         self.epoch_step += 1
 
         # If all prompts have been sampled, increment epoch and reset step
@@ -202,7 +205,113 @@ class DefaultPool(Pool):
 
 class PriorityPool(Pool):
     def __init__(self, dataset: Dataset, pool_config: PriorityPoolConfig):
-        pass
+        super().__init__(dataset, pool_config)
+
+        # Initialize metadata to include epoch information
+        self.epoch = 1
+        for problem_id in self.problem_ids:
+            self.metadata[problem_id].update({"epoch": 1})
+
+        # Add priority information to metadata
+        if self.config.priority_field is not None:
+            assert self.config.priority_field in self.dataset.column
+            priorities = self.dataset[self.config.priority_field]
+        else:
+            priorities = ["high"] * len(self.problem_ids)
+
+        assert len(priorities) == len(self.problem_ids)
+        assert all(priority in ["low", "high", "discarded"] for priority in priorities)
+        for problem_id, priority in zip(self.problem_ids, priorities):
+            self.metadata[problem_id].update({"priority": priority})
+
+    def sample_problems(self, n: int) -> tuple[list[int], list[dict]]:
+        # Compute number of low and high priority problems to sample
+        n_low = int(n * self.config.low_priority_fraction)
+        n_high = n - n_low
+
+        # Get low and high priority problem
+        available_problem_ids = {
+            problem_id: metadata for problem_id, metadata in self.metadata.items() if metadata["epoch"] == self.epoch
+        }
+        low_priority_problem_ids = [
+            problem_id for problem_id, metadata in available_problem_ids.items() if metadata["priority"] == "low"
+        ]
+        high_priority_problem_ids = [
+            problem_id for problem_id, metadata in available_problem_ids.items() if metadata["priority"] == "high"
+        ]
+
+        # Sample low priority problems at random
+        if len(low_priority_problem_ids) < n_low:
+            sampled_low_priority_problem_ids = low_priority_problem_ids
+            n_high = n - len(sampled_low_priority_problem_ids)
+        else:
+            sampled_low_priority_problem_ids = random.sample(low_priority_problem_ids, n_low)
+
+        # Sample the rest from the high priority samples
+        if len(high_priority_problem_ids) < n_high:
+            sampled_high_priority_problem_ids = high_priority_problem_ids
+        else:
+            sampled_high_priority_problem_ids = random.sample(high_priority_problem_ids, n_high)
+
+        sampled_problem_ids = sampled_low_priority_problem_ids + sampled_high_priority_problem_ids
+        assert len(sampled_problem_ids) == n
+        self.logger.debug(
+            f"Sampling {n} problems (low_priority={len(sampled_low_priority_problem_ids)}, high_priority={len(sampled_high_priority_problem_ids)})"
+        )
+
+        # Sample problems
+        sampled_problems = [self.problem_buffer[problem_id] for problem_id in sampled_problem_ids]
+        assert all(self.metadata[problem_id]["epoch"] == self.epoch for problem_id in sampled_problem_ids)
+
+        # Update metadata
+        for problem_id in sampled_problem_ids:
+            self.metadata[problem_id].update({"epoch": self.epoch + 1})
+
+        # If all prompts have been sampled, increment epoch and reset step
+        if all(self.metadata[problem_id]["epoch"] == self.epoch + 1 for problem_id in self.problem_ids):
+            self.logger.info(f"Epoch {self.epoch} complete. Starting epoch {self.epoch + 1} and resetting epoch step.")
+            self.epoch += 1
+
+        return sampled_problem_ids, sampled_problems
+
+    def update(self, rollouts: list[Rollout]):
+        # Group rollouts by problem_id
+        rollouts_by_problem_id = defaultdict(list)
+        for rollout in rollouts:
+            rollouts_by_problem_id[rollout.problem_id].append(rollout)
+
+        # Update metadata with priority information
+        for problem_id, rollouts in rollouts_by_problem_id.items():
+            rewards = [rollout.reward for rollout in rollouts]
+            advantages = [rollout.advantage for rollout in rollouts]
+            if all(abs(a) < 1e-6 for a in advantages) and all(r > 0.5 for r in rewards):
+                priority = "discarded"
+            elif all(abs(a) < 1e-6 for a in advantages) and all(r < 0.5 for r in rewards):
+                priority = "low"
+            else:
+                priority = "high"
+            self.metadata[problem_id].update({"priority": priority})
+
+        # Add grouped rollouts to the buffer
+        self.rollout_buffer.update(rollouts_by_problem_id)
+
+    def sample_rollouts(self, n: int) -> list[Rollout]:
+        # Take the first n rollouts from the rollout buffer
+        available_problem_ids = list(self.rollout_buffer.keys())
+        assert len(available_problem_ids) == n, (
+            "The number of available problems should always be equal to the requested number of problems"
+        )
+        sampled_problem_ids = available_problem_ids[:n]
+
+        if len(sampled_problem_ids) < n:
+            self.logger.warning(f"Only {len(sampled_problem_ids)} (<{n}) problems with rollouts available.")
+
+        sampled_rollouts: list[Rollout] = []
+        for problem_id in sampled_problem_ids:
+            sampled_rollout = self.rollout_buffer.pop(problem_id)
+            sampled_rollouts.extend(sampled_rollout)
+
+        return sampled_rollouts
 
 
 class OnlineDifficultyPool(Pool):
@@ -228,7 +337,8 @@ class OnlineDifficultyPool(Pool):
         sampled_problems = [self.problem_buffer[problem_id] for problem_id in sampled_problem_ids]
 
         # Update metadata
-        self.metadata.update({problem_id: {"epoch": self.epoch + 1} for problem_id in sampled_problem_ids})
+        for problem_id in sampled_problem_ids:
+            self.metadata[problem_id].update({"epoch": self.epoch + 1})
         self.epoch_step += 1
 
         # If all prompts have been sampled, increment epoch and reset step
