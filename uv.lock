@@ -2048,7 +2048,6 @@ dependencies = [
     { name = "beartype" },
     { name = "cydifflib" },
     { name = "datasets" },
-    { name = "flashinfer-python" },
     { name = "google-cloud-storage" },
     { name = "jaxtyping" },
     { name = "liger-kernel" },
@@ -2075,6 +2074,7 @@ dependencies = [
 [package.optional-dependencies]
 fa = [
     { name = "flash-attn" },
+    { name = "flashinfer-python" },
 ]
 
 [package.dev-dependencies]
@@ -2092,7 +2092,7 @@ requires-dist = [
     { name = "cydifflib", specifier = ">=1.2.0" },
     { name = "datasets", specifier = ">=3.6.0" },
     { name = "flash-attn", marker = "extra == 'fa'", specifier = ">=2.8.0" },
-    { name = "flashinfer-python", specifier = ">=0.2.8rc1" },
+    { name = "flashinfer-python", marker = "extra == 'fa'", specifier = ">=0.2.8rc1" },
     { name = "google-cloud-storage", specifier = ">=3.1.1" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "liger-kernel", specifier = ">=0.5.10" },
