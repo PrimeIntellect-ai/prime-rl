@@ -183,7 +183,7 @@ class OnlineDifficultyPoolConfig(BaseConfig):
     strategy: Literal["online_difficulty"] = "online_difficulty"
 
     min_reward: Annotated[
-        float,
+        float | None,
         Field(
             ge=0,
             le=1,
@@ -192,7 +192,7 @@ class OnlineDifficultyPoolConfig(BaseConfig):
     ] = 0.01
 
     max_reward: Annotated[
-        float,
+        float | None,
         Field(
             ge=0,
             le=1,
@@ -206,7 +206,7 @@ class OnlineDifficultyPoolConfig(BaseConfig):
             gt=0,
             description="Factor by which to oversample during filtering to ensure sufficient samples.",
         ),
-    ] = 1.5
+    ] = 1.0
 
 
 DataPoolConfig = DefaultPoolConfig | PriorityPoolConfig | OnlineDifficultyPoolConfig

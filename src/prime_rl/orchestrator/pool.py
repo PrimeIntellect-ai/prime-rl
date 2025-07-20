@@ -207,7 +207,79 @@ class PriorityPool(Pool):
 
 class OnlineDifficultyPool(Pool):
     def __init__(self, dataset: Dataset, pool_config: OnlineDifficultyPoolConfig):
-        pass
+        super().__init__(dataset, pool_config)
+
+        # Initialize metadata to include epoch information
+        self.epoch = 1
+        self.epoch_step = 0
+        for problem_id in self.problem_ids:
+            self.metadata[problem_id].update({"epoch": 1})
+
+    def sample_problems(self, n: int) -> tuple[list[int], list[dict]]:
+        # Multiply by oversampling factor
+        n = int(self.config.oversampling_factor * n)
+
+        # Get indices to sample
+        start_idx = self.epoch_step * n
+        sampled_problem_ids = range(start_idx, start_idx + n)
+        self.logger.debug(f"Sampling {n} problems ({sampled_problem_ids=})")
+
+        # Sample problems
+        sampled_problems = [self.problem_buffer[problem_id] for problem_id in sampled_problem_ids]
+
+        # Update metadata
+        self.metadata.update({problem_id: {"epoch": self.epoch + 1} for problem_id in sampled_problem_ids})
+        self.epoch_step += 1
+
+        # If all prompts have been sampled, increment epoch and reset step
+        if all(self.metadata[problem_id]["epoch"] == self.epoch + 1 for problem_id in self.problem_ids):
+            self.logger.info(f"Epoch {self.epoch} complete. Starting epoch {self.epoch + 1} and resetting epoch step.")
+            self.epoch += 1
+            self.epoch_step = 0
+
+        return sampled_problem_ids, sampled_problems
+
+    def update(self, rollouts: list[Rollout]):
+        # Group rollouts by problem_id
+        rollouts_by_problem_id = defaultdict(list)
+        for rollout in rollouts:
+            rollouts_by_problem_id[rollout.problem_id].append(rollout)
+
+        # Update metadata with difficulty information
+        for problem_id, rollouts in rollouts_by_problem_id.items():
+            reward = sum(rollout.reward for rollout in rollouts) / len(rollouts)
+            self.metadata[problem_id].update({"reward": reward})
+
+        # Do not keep rollouts from older weight checkpoints
+        # TODO: Can we lift this constraint?
+        self.rollout_buffer.clear()
+
+        # Add grouped rollouts to the buffer
+        self.rollout_buffer.update(rollouts_by_problem_id)
+
+    def sample_rollouts(self, n: int) -> list[Rollout]:
+        available_problem_ids = list(self.rollout_buffer.keys())
+        sampled_problem_ids, sampled_rollouts = [], []
+        num_too_easy, num_too_hard = 0, 0
+        # Take the first n rollouts within the difficulty range
+        for problem_id in available_problem_ids:
+            reward = self.metadata[problem_id]["reward"]
+            if self.config.min_reward is not None and reward < self.config.min_reward:
+                num_too_hard += 1
+                continue
+            if self.config.max_reward is not None and reward > self.config.max_reward:
+                num_too_easy += 1
+                continue
+            rollouts = self.rollout_buffer.pop(problem_id)
+            sampled_problem_ids.append(problem_id)
+            sampled_rollouts.extend(rollouts)
+
+        if len(sampled_problem_ids) < n:
+            self.logger.warning(
+                f"Only {len(sampled_problem_ids)} (<{n}) problems with rollouts available ({num_too_easy=}, {num_too_hard=})"
+            )
+
+        return sampled_rollouts
 
 
 def setup_pool(dataset: Dataset, pool_config: DataPoolConfig) -> Pool:
