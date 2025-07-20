@@ -4,7 +4,7 @@ from typing import Callable
 import pytest
 import torch
 
-from prime_rl.orchestrator.data import Sample
+from prime_rl.orchestrator.batch import BatchSample
 from prime_rl.trainer.data import MicroBatch
 from tests import Command, Environment, ProcessResult
 
@@ -14,7 +14,7 @@ ENV = {"CUDA_VISIBLE_DEVICES": "1"}
 CMD = ["uv", "run", "trainer", "@", "configs/trainer/debug.toml"]
 
 
-def create_sample(seq_len: int) -> Sample:
+def create_sample(seq_len: int) -> BatchSample:
     return {
         "input_ids": torch.randint(0, 100, (seq_len,)).long(),
         "position_ids": torch.zeros(seq_len).long(),

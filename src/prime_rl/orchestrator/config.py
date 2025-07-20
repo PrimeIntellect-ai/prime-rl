@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from prime_rl.eval.registry import Benchmark
 from prime_rl.orchestrator.advantage import AdvantageType
@@ -155,11 +155,11 @@ class CheckpointConfig(BaseConfig):
     ] = None
 
 
-class DefaultPoolConfig(BaseConfig):
+class DefaultPoolConfig(BaseModel):
     strategy: Literal["default"] = "default"
 
 
-class PriorityPoolConfig(BaseConfig):
+class PriorityPoolConfig(BaseModel):
     strategy: Literal["priority"] = "priority"
 
     priority_field: Annotated[
@@ -179,7 +179,7 @@ class PriorityPoolConfig(BaseConfig):
     ] = 0.1
 
 
-class OnlineDifficultyPoolConfig(BaseConfig):
+class OnlineDifficultyPoolConfig(BaseModel):
     strategy: Literal["online_difficulty"] = "online_difficulty"
 
     min_reward: Annotated[
