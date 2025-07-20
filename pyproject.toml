@@ -30,6 +30,7 @@ dependencies = [
     "tomli-w",
     "verifiers",
     "swebench>=4.0.4",
+    "unidiff>=0.7.5",
 ]
 
 [project.scripts]
