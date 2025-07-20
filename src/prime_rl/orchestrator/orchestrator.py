@@ -24,6 +24,7 @@ from prime_rl.orchestrator.client import (
 )
 from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.orchestrator.batch import prepare_batch
+from prime_rl.orchestrator.pool import setup_pool
 from prime_rl.orchestrator.logger import setup_logger
 from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.utils import (
@@ -87,6 +88,10 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info(f"Loading environment {config.environment.id} with args {config.environment.args}")
     vf_env = load_environment(config.environment.id, config.environment.args)
     dataset = vf_env.get_dataset(seed=config.seed)
+
+    # Setup pool
+    logger.info(f"Setting up pool ({config.pool})")
+    datapool = setup_pool(dataset, config.pool)
 
     # Load tokenizer -- placeholder until reworking verifiers to use vLLM tokenizer
     tokenizer = AutoTokenizer.from_pretrained(config.model.name)

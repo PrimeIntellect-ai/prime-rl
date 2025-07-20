@@ -155,6 +155,63 @@ class CheckpointConfig(BaseConfig):
     ] = None
 
 
+class DefaultPoolConfig(BaseConfig):
+    type = Literal["default"]
+
+
+class PriorityPoolConfig(BaseConfig):
+    type = Literal["online_difficulty"]
+
+    priority_field: Annotated[
+        str | None,
+        Field(
+            description="Field name in the dataset that contains priority information. If None, all samples are treated as high priority by default.",
+        ),
+    ] = None
+
+    low_priority_fraction: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            description="Fraction of the batch that should consist of low priority samples.",
+        ),
+    ] = 0.1
+
+
+class OnlineDifficultyPoolConfig(BaseConfig):
+    type = Literal["online_difficulty"]
+
+    min_reward: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            description="Minimum reward to include the sample in a batch.",
+        ),
+    ] = 0.01
+
+    max_reward: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            description="Maximum reward to include the sample in a batch.",
+        ),
+    ] = 0.99
+
+    oversampling_factor: Annotated[
+        float,
+        Field(
+            gt=0,
+            description="Factor by which to oversample during filtering to ensure sufficient samples.",
+        ),
+    ] = 1.5
+
+
+DataPoolConfig = DefaultPoolConfig | PriorityPoolConfig | OnlineDifficultyPoolConfig
+
+
 class OrchestratorConfig(BaseSettings):
     """Configures the orchestrator for RL training."""
 
@@ -172,6 +229,9 @@ class OrchestratorConfig(BaseSettings):
 
     # The evaluation configuration
     eval: EvalConfig | None = None
+
+    # Data Pool
+    pool: DataPoolConfig = Field(discriminator="type", default=DefaultPoolConfig())
 
     # The logging configuration
     log: LogConfig = LogConfig()
