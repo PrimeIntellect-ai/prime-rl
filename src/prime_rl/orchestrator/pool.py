@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import List
 
@@ -10,10 +11,12 @@ from prime_rl.orchestrator.config import (
     OnlineDifficultyPoolConfig,
     PriorityPoolConfig,
 )
+from prime_rl.utils.logger import get_logger
 
 
 @dataclass
 class Rollout:
+    problem_id: int
     prompt_tokens: List[int]
     prompt_mask: List[int]
     completion_tokens: List[int]
@@ -23,13 +26,68 @@ class Rollout:
     advantage: float
 
 
-class PoolBase(ABC):
-    @abstractmethod
-    def sample_prompts(self, n: int) -> list[str]:
-        pass
+def make_rollouts(
+    problem_ids: list[int],
+    prompt_tokens: list[list[int]],
+    prompt_masks: list[list[int]],
+    completion_tokens: list[list[int]],
+    completion_masks: list[list[int]],
+    completion_logprobs: list[list[float]],
+    rewards: list[list[float]],
+    advantages: list[list[float]],
+) -> list[Rollout]:
+    assert (
+        len(problem_ids)
+        == len(prompt_tokens)
+        == len(prompt_masks)
+        == len(completion_tokens)
+        == len(completion_masks)
+        == len(completion_logprobs)
+        == len(rewards)
+        == len(advantages)
+    ), (
+        f"The number of problem_ids, prompt_tokens, prompt_masks, completion_tokens, completion_masks, completion_logprobs, rewards, and advantages must be equal, but got ({len(problem_ids)=}, {len(prompt_tokens)=}, {len(prompt_masks)=}, {len(completion_tokens)=}, {len(completion_masks)=}, {len(completion_logprobs)=}, {len(rewards)=}, {len(advantages)=})"
+    )
+    return [
+        Rollout(
+            problem_id=problem_id,
+            prompt_tokens=prompt_tokens,
+            prompt_mask=prompt_mask,
+            completion_tokens=completion_tokens,
+            completion_mask=completion_mask,
+            completion_logprobs=completion_logprobs,
+            reward=reward,
+            advantage=advantage,
+        )
+        for problem_id, prompt_tokens, prompt_mask, completion_tokens, completion_mask, completion_logprobs, reward, advantage in zip(
+            problem_ids,
+            prompt_tokens,
+            prompt_masks,
+            completion_tokens,
+            completion_masks,
+            completion_logprobs,
+            rewards,
+            advantages,
+        )
+    ]
+
+
+class Pool(ABC):
+    def __init__(self, dataset: Dataset, pool_config: DataPoolConfig):
+        self.dataset = dataset
+        self.config = pool_config
+        self.logger = get_logger()
+
+        # Initialize prompt and rollout buffers
+        self.problem_ids = list(range(len(dataset)))
+        self.problem_buffer: dict[int, dict] = {
+            problem_id: problem for problem_id, problem in zip(self.problem_ids, dataset)
+        }
+        self.rollout_buffer: dict[int, list[Rollout]] = {}
+        self.metadata: dict[int, dict] = {problem_id: {} for problem_id in self.problem_ids}
 
     @abstractmethod
-    def sample_batch(self, n: int) -> list[Rollout]:
+    def sample_problems(self, n: int) -> tuple[list[int], list[dict]]:
         pass
 
     @abstractmethod
@@ -37,33 +95,86 @@ class PoolBase(ABC):
         pass
 
     @abstractmethod
-    def reset_epoch(self):
+    def sample_rollouts(self, n: int) -> list[Rollout]:
         pass
 
 
-class DefaultPool(PoolBase):
+class DefaultPool(Pool):
     def __init__(self, dataset: Dataset, pool_config: DefaultPoolConfig):
-        pass
+        super().__init__(dataset, pool_config)
+
+        # Initialize metadata to include epoch information
+        self.epoch = 1
+        self.epoch_step = 0
+        for problem_id in self.problem_ids:
+            self.metadata[problem_id].update({"epoch": 1})
+
+    def sample_problems(self, n: int) -> tuple[list[int], list[dict]]:
+        # Get indices to sample
+        start_idx = self.epoch_step * n
+        sampled_problem_ids = range(start_idx, start_idx + n)
+        self.logger.debug(f"Sampling {n} problems ({sampled_problem_ids=})")
+
+        # Sample problems
+        sampled_problems = [self.problem_buffer[problem_id] for problem_id in sampled_problem_ids]
+
+        # Update metadata
+        self.metadata.update({problem_id: {"epoch": self.epoch + 1} for problem_id in sampled_problem_ids})
+        self.epoch_step += 1
+
+        # If all prompts have been sampled, increment epoch and reset step
+        if all(self.metadata[problem_id]["epoch"] == self.epoch + 1 for problem_id in self.problem_ids):
+            self.logger.info(f"Epoch {self.epoch} complete. Starting epoch {self.epoch + 1} and resetting epoch step.")
+            self.epoch += 1
+            self.epoch_step = 0
+
+        return sampled_problem_ids, sampled_problems
+
+    def update(self, rollouts: list[Rollout]):
+        # Group rollouts by problem_id
+        rollouts_by_problem_id = defaultdict(list)
+        for rollout in rollouts:
+            rollouts_by_problem_id[rollout.problem_id].append(rollout)
+
+        # Add grouped rollouts to the buffer
+        self.rollout_buffer.update(rollouts_by_problem_id)
+
+    def sample_rollouts(self, n: int) -> list[Rollout]:
+        # Take the first n rollouts from the rollout buffer
+        available_problem_ids = list(self.rollout_buffer.keys())
+        assert len(available_problem_ids) == n, (
+            "The number of available problems should always be equal to the requested number of problems"
+        )
+        sampled_problem_ids = available_problem_ids[:n]
+
+        if len(sampled_problem_ids) < n:
+            self.logger.warning(f"Only {len(sampled_problem_ids)} (<{n}) problems with rollouts available.")
+
+        sampled_rollouts: list[Rollout] = []
+        for problem_id in sampled_problem_ids:
+            sampled_rollout = self.rollout_buffer.pop(problem_id)
+            sampled_rollouts.extend(sampled_rollout)
+
+        return sampled_rollouts
 
 
-class PriorityPool(PoolBase):
+class PriorityPool(Pool):
     def __init__(self, dataset: Dataset, pool_config: PriorityPoolConfig):
         pass
 
 
-class OnlineDifficultyPool(PoolBase):
+class OnlineDifficultyPool(Pool):
     def __init__(self, dataset: Dataset, pool_config: OnlineDifficultyPoolConfig):
         pass
 
 
-def setup_pool(dataset: Dataset, pool_config: DataPoolConfig):
-    if pool_config.type == "default":
+def setup_pool(dataset: Dataset, pool_config: DataPoolConfig) -> Pool:
+    if pool_config.strategy == "default":
         return DefaultPool(dataset, pool_config)
-    elif pool_config.type == "priority":
+    elif pool_config.strategy == "priority":
         return PriorityPool(dataset, pool_config)
-    elif pool_config.type == "online_difficulty":
+    elif pool_config.strategy == "online_difficulty":
         return OnlineDifficultyPool(dataset, pool_config)
-    raise ValueError(f"Invalid pool type: {pool_config.type}")
 
 
 # class DataPool:

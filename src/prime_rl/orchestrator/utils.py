@@ -8,7 +8,6 @@ from rich.table import Table
 
 from prime_rl.orchestrator.client import tokenize
 from prime_rl.orchestrator.genesys import TaskType, get_reward_function
-from prime_rl.orchestrator.pool import GeneratedSample
 from prime_rl.utils.utils import format_num, format_time, get_weight_ckpt_model_path, wait_for_path
 
 

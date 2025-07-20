@@ -23,6 +23,7 @@ from prime_rl.orchestrator.client import (
     setup_client,
 )
 from prime_rl.orchestrator.config import OrchestratorConfig
+from prime_rl.orchestrator.pool import setup_pool, make_rollouts
 from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.orchestrator.logger import setup_logger
 from prime_rl.orchestrator.advantage import compute_advantages
@@ -87,6 +88,10 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info(f"Loading environment {config.environment.id} with args {config.environment.args}")
     vf_env = load_environment(config.environment.id, config.environment.args)
     dataset = vf_env.get_dataset(seed=config.seed)
+
+    # Setup pool
+    logger.info(f"Setting up pool ({config.pool})")
+    datapool = setup_pool(dataset, config.pool)
 
     # Load tokenizer -- placeholder until reworking verifiers to use vLLM tokenizer
     tokenizer = AutoTokenizer.from_pretrained(config.model.name)
@@ -173,11 +178,14 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Get the batch
         problems_per_batch = config.batch_size // config.rollouts_per_prompt
-        start_idx = epoch_step * problems_per_batch
-        indices = range(start_idx, start_idx + problems_per_batch)
-        problems = [problem for problem in dataset.select(indices).to_list() for _ in range(config.rollouts_per_prompt)]
+        problem_ids, problems = datapool.sample_problems(problems_per_batch)
 
-        # prepare inputs for verifiers generation
+        # Duplicate problems `rollouts_per_prompt` times
+        problem_ids = [problem_id for problem_id in problem_ids for _ in range(config.rollouts_per_prompt)]
+        problems = [problem for problem in problems for _ in range(config.rollouts_per_prompt)]
+
+        # Prepare inputs for verifiers generation
+        # TODO: Can we use `prime_rl.utils.utils.to_col_format` here?
         inputs = {
             "prompt": [problem["prompt"] for problem in problems],
             "info": [problem.get("info", {}) for problem in problems],
@@ -185,14 +193,14 @@ async def orchestrate(config: OrchestratorConfig):
             "answer": [problem.get("answer", "") for problem in problems],
         }
 
-        # generate completions + rewards with verifiers
+        # Generate completions + rewards with verifiers
         logger.info(f"Sending {len(problems)} requests to environments")
         generate_completions_start_time = time.time()
         sampling_args = dict(config.sampling)
 
         sampling_args["logprobs"] = True
 
-        # sanitize for vLLM OpenAI client
+        # Sanitize for vLLM OpenAI client
         sampling_args["extra_body"] = {"return_tokens_as_token_ids": True}
         if "top_k" in sampling_args:
             sampling_args["extra_body"]["top_k"] = sampling_args.pop("top_k")
@@ -255,14 +263,23 @@ async def orchestrate(config: OrchestratorConfig):
                 step=progress.step,
             )
 
-        # Write serialized batch to disk for trainer workers to consume
-        all_data_ranks_batches = prepare_batch(
+        # Update pool
+        rollouts = make_rollouts(
+            problem_ids,
             prompt_tokens,
             prompt_masks,
             completion_tokens,
             completion_masks,
             completion_logprobs,
+            rewards,
             advantages,
+        )
+        datapool.update(rollouts)
+        rollouts = datapool.sample_rollouts(problems_per_batch)
+
+        # Write serialized batch to disk for trainer workers to consume
+        all_data_ranks_batches = prepare_batch(
+            rollouts=rollouts,
             temperature=config.sampling.temperature,
             tokenizer=tokenizer,
             batch_size=config.batch_size,

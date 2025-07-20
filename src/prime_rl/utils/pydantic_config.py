@@ -18,7 +18,7 @@ from pydantic_settings import (
 class BaseConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    @field_validator("*", mode="before")
+    @field_validator("*", mode="after")
     @classmethod
     def empty_str_to_none(cls, v):
         """
