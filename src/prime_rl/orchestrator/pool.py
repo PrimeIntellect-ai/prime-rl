@@ -73,6 +73,12 @@ def make_rollouts(
 
 
 class Pool(ABC):
+    """
+    Abstract base class for data pools. This abstraction is used to sample
+    problems from a dataset, store rollouts, and release rollouts for the
+    trainer according to different sampling strategies.
+    """
+
     def __init__(self, dataset: Dataset, pool_config: DataPoolConfig):
         self.dataset = dataset
         self.config = pool_config
@@ -88,18 +94,54 @@ class Pool(ABC):
 
     @abstractmethod
     def sample_problems(self, n: int) -> tuple[list[int], list[dict]]:
+        """
+        Samples `n` problems from the dataset. Returns a list of problem IDs
+        and a list of dictionaries representing the problem. The dictionary keys
+        correspond to the fields of the dataset used for initializing the pool.
+
+        Args:
+            n: The number of problems to sample.
+
+        Returns:
+            A tuple of two lists. The first list contains the problem IDs of the
+            sampled problems. The second list contains the problems themselves.
+        """
         pass
 
     @abstractmethod
     def update(self, rollouts: list[Rollout]):
+        """
+        Updates the pool state with the completed rollouts. Should store
+        rollouts in the rollout buffer and update metadata about problems
+        relevant for sampling.
+
+        Args:
+            rollouts: A list of rollouts to update the pool with.
+        """
         pass
 
     @abstractmethod
     def sample_rollouts(self, n: int) -> list[Rollout]:
+        """
+        Samples rollouts for `n` problems from the rollout buffer. Thus, the
+        length of the list returned is equal to `n` * `rollouts_per_prompt`. Logs a warning
+        if there are less than `n` samples available.
+
+        Args:
+            n: The number of problems to return rollouts for.
+
+        Returns:
+            A list of rollouts that are ready to be used by the trainer.
+        """
         pass
 
 
 class DefaultPool(Pool):
+    """
+    Simple pool that samples problems in a round-robin fashion and
+    immediately returns all rollouts to the trainer.
+    """
+
     def __init__(self, dataset: Dataset, pool_config: DefaultPoolConfig):
         super().__init__(dataset, pool_config)
 
