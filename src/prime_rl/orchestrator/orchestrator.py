@@ -23,7 +23,7 @@ from prime_rl.orchestrator.client import (
     setup_client,
 )
 from prime_rl.orchestrator.config import OrchestratorConfig
-from prime_rl.orchestrator.pool import setup_pool, make_rollouts
+from prime_rl.orchestrator.pool import setup_pool, make_rollouts, Rollout
 from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.orchestrator.logger import setup_logger
 from prime_rl.orchestrator.advantage import compute_advantages
@@ -176,65 +176,87 @@ async def orchestrate(config: OrchestratorConfig):
             time_eval = time.time() - time_before_evals
             logger.info(f"Evaluated in {time_eval:.2f}s")
 
-        # Get the batch
-        problems_per_batch = config.batch_size // config.rollouts_per_prompt
-        problem_ids, problems = datapool.sample_problems(problems_per_batch)
+        accepted_rollouts: list[Rollout] = []
+        while True:
+            # Get the batch
+            problems_per_batch = config.batch_size // config.rollouts_per_prompt
+            problem_ids, problems = datapool.sample_problems(problems_per_batch)
 
-        # Duplicate problems `rollouts_per_prompt` times
-        problem_ids = [problem_id for problem_id in problem_ids for _ in range(config.rollouts_per_prompt)]
-        problems = [problem for problem in problems for _ in range(config.rollouts_per_prompt)]
+            # Duplicate problems `rollouts_per_prompt` times
+            problem_ids = [problem_id for problem_id in problem_ids for _ in range(config.rollouts_per_prompt)]
+            problems = [problem for problem in problems for _ in range(config.rollouts_per_prompt)]
 
-        # Prepare inputs for verifiers generation
-        # TODO: Can we use `prime_rl.utils.utils.to_col_format` here?
-        inputs = {
-            "prompt": [problem["prompt"] for problem in problems],
-            "info": [problem.get("info", {}) for problem in problems],
-            "task": [problem["task"] for problem in problems],
-            "answer": [problem.get("answer", "") for problem in problems],
-        }
+            # Prepare inputs for verifiers generation
+            # TODO: Can we use `prime_rl.utils.utils.to_col_format` here?
+            inputs = {
+                "prompt": [problem["prompt"] for problem in problems],
+                "info": [problem.get("info", {}) for problem in problems],
+                "task": [problem["task"] for problem in problems],
+                "answer": [problem.get("answer", "") for problem in problems],
+            }
 
-        # Generate completions + rewards with verifiers
-        logger.info(f"Sending {len(problems)} requests to environments")
-        generate_completions_start_time = time.time()
-        sampling_args = dict(config.sampling)
+            # Generate completions + rewards with verifiers
+            logger.info(f"Sending {len(problems)} requests to environments")
+            generate_completions_start_time = time.time()
+            sampling_args = dict(config.sampling)
+            sampling_args["logprobs"] = True
 
-        sampling_args["logprobs"] = True
+            # Sanitize for vLLM OpenAI client
+            sampling_args["extra_body"] = {"return_tokens_as_token_ids": True}
+            if "top_k" in sampling_args:
+                sampling_args["extra_body"]["top_k"] = sampling_args.pop("top_k")
+            if "min_p" in sampling_args:
+                sampling_args["extra_body"]["min_p"] = sampling_args.pop("min_p")
+            if "min_tokens" in sampling_args:
+                sampling_args["extra_body"]["min_tokens"] = sampling_args.pop("min_tokens")
 
-        # Sanitize for vLLM OpenAI client
-        sampling_args["extra_body"] = {"return_tokens_as_token_ids": True}
-        if "top_k" in sampling_args:
-            sampling_args["extra_body"]["top_k"] = sampling_args.pop("top_k")
-        if "min_p" in sampling_args:
-            sampling_args["extra_body"]["min_p"] = sampling_args.pop("min_p")
-        if "min_tokens" in sampling_args:
-            sampling_args["extra_body"]["min_tokens"] = sampling_args.pop("min_tokens")
+            outputs = await vf_env.a_generate(
+                inputs=inputs, client=client, model=config.model.name, sampling_args=sampling_args
+            )
+            generate_completions_time = time.time() - generate_completions_start_time
 
-        outputs = await vf_env.a_generate(
-            inputs=inputs, client=client, model=config.model.name, sampling_args=sampling_args
-        )
-        generate_completions_time = time.time() - generate_completions_start_time
+            results = vf_env.process_env_results_vllm(
+                prompts=outputs["prompt"],
+                completions=outputs["completion"],
+                states=outputs["state"],
+                rewards=outputs["reward"],
+                processing_class=tokenizer,
+                max_seq_len=config.seq_len,
+                mask_env_responses=config.mask_env_responses,
+                zero_truncated_completions=config.zero_truncated_completions,
+                mask_truncated_completions=config.mask_truncated_completions,
+            )
 
-        results = vf_env.process_env_results_vllm(
-            prompts=outputs["prompt"],
-            completions=outputs["completion"],
-            states=outputs["state"],
-            rewards=outputs["reward"],
-            processing_class=tokenizer,
-            max_seq_len=config.seq_len,
-            mask_env_responses=config.mask_env_responses,
-            zero_truncated_completions=config.zero_truncated_completions,
-            mask_truncated_completions=config.mask_truncated_completions,
-        )
-        prompt_tokens = results["prompt_ids"]
-        completion_tokens = results["completion_ids"]
-        completion_logprobs = results["completion_logprobs"]
-        prompt_masks = results["prompt_mask"]
-        completion_masks = results["completion_mask"]
-        rewards = outputs["reward"]
+            advantages, advantage_stats = compute_advantages(
+                rewards=outputs["reward"],
+                samples_per_problem=config.rollouts_per_prompt,
+                advantage_type=config.advantage_type,
+            )
 
-        advantages, advantage_stats = compute_advantages(
-            rewards=rewards, samples_per_problem=config.rollouts_per_prompt, advantage_type=config.advantage_type
-        )
+            # Update pool
+            rollouts = make_rollouts(
+                problem_ids=problem_ids,
+                prompt_tokens=results["prompt_tokens"],
+                prompt_masks=results["prompt_masks"],
+                completion_tokens=results["completion_tokens"],
+                completion_masks=results["completion_masks"],
+                completion_logprobs=results["completion_logprobs"],
+                rewards=outputs["reward"],
+                advantages=advantages,
+            )
+            datapool.update(rollouts)
+            accepted_rollouts.extend(datapool.sample_rollouts(problems_per_batch))
+
+            if len(accepted_rollouts) >= config.batch_size:
+                accepted_rollouts = accepted_rollouts[: config.batch_size]
+                break
+
+        # Unpack accepted rollouts
+        rewards = [rollout.reward for rollout in accepted_rollouts]
+        advantages = [rollout.advantage for rollout in accepted_rollouts]
+        problem_ids = [rollout.problem_id for rollout in accepted_rollouts]
+        prompt_tokens = [rollout.prompt_tokens for rollout in accepted_rollouts]
+        completion_tokens = [rollout.completion_tokens for rollout in accepted_rollouts]
 
         logger.debug(f"Computed rewards: {lt.lovely(torch.tensor(rewards))}")
         logger.debug(f"Computed advantages ({config.advantage_type}): {lt.lovely(torch.tensor(advantages))}")
@@ -262,20 +284,6 @@ async def orchestrate(config: OrchestratorConfig):
                 rollouts_per_problem=config.rollouts_per_prompt,
                 step=progress.step,
             )
-
-        # Update pool
-        rollouts = make_rollouts(
-            problem_ids,
-            prompt_tokens,
-            prompt_masks,
-            completion_tokens,
-            completion_masks,
-            completion_logprobs,
-            rewards,
-            advantages,
-        )
-        datapool.update(rollouts)
-        rollouts = datapool.sample_rollouts(problems_per_batch)
 
         # Write serialized batch to disk for trainer workers to consume
         all_data_ranks_batches = prepare_batch(
