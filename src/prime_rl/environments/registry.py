@@ -465,6 +465,249 @@ def load_pydantic_adherence_environment(env_args: dict = {}) -> Environment:
     return vf_env
 
 
+def load_swe_rl_environment(env_args: dict = {}) -> Environment:
+    """
+    Adapted from https://github.com/facebookresearch/swe-rl
+    Compatible with datasets in R2E-Gym format like DeepSWE used.
+
+    @article{wei2025swerl,
+        title={SWE-RL: Advancing LLM Reasoning via Reinforcement Learning on Open Software Evolution},
+        author={Yuxiang Wei and Olivier Duchenne and Jade Copet and Quentin Carbonneaux and Lingming Zhang and Daniel Fried and Gabriel Synnaeve and Rishabh Singh and Sida I. Wang},
+        year={2025},
+        journal={arXiv preprint arXiv:2502.18449}
+    }
+    @article{jain2025r2e,
+        title={R2e-gym: Procedural environments and hybrid verifiers for scaling open-weights swe agents},
+        author={Jain, Naman and Singh, Jaskirat and Shetty, Manish and Zheng, Liang and Sen, Koushik and Stoica, Ion},
+        journal={arXiv preprint arXiv:2504.07164},
+        year={2025}
+    }
+    """
+    import json
+    import re
+    from collections import defaultdict
+    from typing import Callable, Dict, List, Tuple
+
+    import cydifflib
+    from swebench.harness.utils import (
+        PATCH_FILE_PATTERN,
+        PATCH_HUNK_PATTERN,
+        PATCH_PATTERN,
+        get_hunk_stats,
+        strip_content,
+    )
+    from unidiff import PatchSet, UnidiffParseError
+
+    EDITS_PATTERN = re.compile(
+        r"```.*?\n"
+        r"### (.*)\n"
+        r"<<<<<<< SEARCH\n"
+        r"([\s\S]*?)\n"
+        r"=======\n"
+        r"([\s\S]*?)\n"
+        r">>>>>>> REPLACE\n"
+        r"```"
+    )
+    COMMENT_LINE_PATTERN = re.compile(r"^[+-][ \t]*#.*$")
+
+    def parse_edits(input_text: str) -> Dict[str, List[Tuple[str, str]]]:
+        """Parse SEARCH/REPLACE edits from input text."""
+        edits = defaultdict(list)
+        matches = EDITS_PATTERN.finditer(input_text)
+        for match in matches:
+            file_path = match.group(1)
+            search_content = match.group(2)
+            replace_content = match.group(3)
+            edits[file_path].append((search_content, replace_content))
+        return edits
+
+    class SweRLParser(vf.ThinkParser):
+        def __init__(self, extract_fn: Callable[[str], Dict[str, List[Tuple[str, str]]]] = parse_edits, **kwargs):
+            super().__init__(**kwargs)
+            self.extract_fn = extract_fn
+
+        def parse(self, text: str) -> dict[str, List[Tuple[str, str]]]:
+            return super().parse(text)
+
+        def get_format_reward_func(self) -> Callable:
+            def format_reward_func(completion, **kwargs) -> float:
+                parsed = self.parse_answer(completion)
+                if parsed is None:
+                    return -1.0
+                return 0.0
+
+            return format_reward_func
+
+    dataset = load_dataset("rasdani/R2E-Gym-Subset-Oracle", split="train")
+    dataset = dataset.map(
+        lambda x: {
+            "question": x["prompt"],
+            "answer": x["patch"],
+            "info": {"parsed_commit_content": x["parsed_commit_content"]},
+            "task": "swe-rl",
+        }
+    )
+
+    parser = SweRLParser(extract_fn=parse_edits)
+
+    format_reward_func = parser.get_format_reward_func()
+
+    def swe_rl_reward_func(completion, answer, info, **kwargs) -> float:
+        """Compute reward for SWE-RL by comparing generated edits to expected patch."""
+        parsed_commit_content = (
+            json.loads(info["parsed_commit_content"])
+            if isinstance(info["parsed_commit_content"], str)
+            else info["parsed_commit_content"]
+        )
+        file_diffs = parsed_commit_content.get("file_diffs")
+        file_context = {file_diff["header"]["file"]["path"]: file_diff["old_file_content"] for file_diff in file_diffs}
+
+        parsed_edits = parser.parse_answer(completion)
+        if parsed_edits is None:
+            return 0.0  # format reward already returned -1.0 in this case
+
+        def apply_edits(file_context: Dict[str, str], edits: Dict[str, List[Tuple[str, str]]]) -> Dict[str, str] | None:
+            """Apply search/replace edits to file context."""
+            edited_file_context = {}
+            for file_path, file_edits in edits.items():
+                edited_file_content = f"\n{file_context.get(file_path, '')}"
+                for search_str, replace_str in file_edits:
+                    if search_str not in edited_file_content:
+                        return None
+                    edited_file_content = edited_file_content.replace(f"\n{search_str}", f"\n{replace_str}")
+                edited_file_context[file_path] = edited_file_content.lstrip("\n")
+            return edited_file_context
+
+        def generate_file_diff(old_file_content: str, new_file_content: str, path: str) -> str:
+            """Generate hunks from old and new file content."""
+            if old_file_content is None:
+                old_file_content = ""
+            if new_file_content is None:
+                new_file_content = ""
+
+            # If both are empty, no diff needed
+            if not old_file_content and not new_file_content:
+                return ""
+
+            old_lines = old_file_content.splitlines()
+            new_lines = new_file_content.splitlines()
+
+            diff = list(
+                cydifflib.unified_diff(
+                    old_lines,
+                    new_lines,
+                    fromfile=f"a/{path}",
+                    tofile=f"b/{path}",
+                    n=3,  # context lines
+                    lineterm="",  # Prevent extra newlines
+                )
+            )
+            return "\n".join(diff)
+
+        def create_patched_file_context(
+            file_context: Dict[str, str],
+            edited_file_context: Dict[str, str],
+        ) -> Dict[str, str]:
+            """Create patched file context from before and after file context."""
+            patched_file_context = {}
+            for file_path, edited_file_content in edited_file_context.items():
+                file_content = file_context.get(file_path, "")
+                file_diff = generate_file_diff(file_content, edited_file_content, file_path)
+                if file_diff.strip():
+                    patched_file_context[file_path] = file_diff
+                else:
+                    patched_file_context[file_path] = ""
+            return patched_file_context
+
+        def get_unidiff_from_patched_file_context(patched_file_context: Dict[str, str]) -> str:
+            """Convert patched file context to unified diff format."""
+            try:
+                patches = list(patched_file_context.values())
+                if not patches:
+                    return ""
+                first_patch = patches.pop(0)
+                patch_set = PatchSet(first_patch)
+                for patch in patches:
+                    patch_set.extend(PatchSet(patch))
+                return str(patch_set)
+            except UnidiffParseError:
+                return ""
+
+        def strip_comment_lines(patch: str) -> str:
+            lines = patch.splitlines(keepends=True)
+            filtered = [ln for ln in lines if not COMMENT_LINE_PATTERN.match(ln)]
+            return "".join(filtered)
+
+        # adapted from https://github.com/SWE-bench/SWE-bench/blob/main/swebench/harness/utils.py#L230
+        def extract_minimal_patch(model_patch):
+            """
+            Wrapper function that takes hunk and
+            * Removes trailing non +/- lines and trailing whitespace per line per hunk
+            * Recalculates hunk start/end position and diff delta
+            * Returns new patch
+            """
+            model_patch = model_patch.lstrip("\n")
+            new_patch = ""
+            for patch in PATCH_PATTERN.findall(model_patch):
+                total_delta = 0
+                patch_header = PATCH_FILE_PATTERN.findall(patch)[0]
+                if patch_header:
+                    new_patch += patch_header + "\n"
+                for hunk in PATCH_HUNK_PATTERN.findall(patch):
+                    pre_start, pre_len, post_start, post_len, content = hunk
+                    pre_start, pre_len, post_start, post_len, content = list(
+                        map(lambda x: int(x) if x.isnumeric() else x, hunk)
+                    )
+                    content = strip_comment_lines(content)
+                    content, adjust_pre_start = strip_content(content)
+                    pre_start += adjust_pre_start
+                    pre_start, pre_len, post_start, post_len, total_delta = get_hunk_stats(
+                        pre_start, pre_len, post_start, post_len, content, total_delta
+                    )
+                    new_patch += f"@@ -{pre_start},{pre_len} +{post_start},{post_len} @@{content}"
+            return new_patch
+
+        def score_patch(pred_patch: str, oracle_patch: str) -> float:
+            """Score predicted patch against oracle patch using LCS ratio."""
+            if not pred_patch.strip():
+                return -1.0
+            try:
+                score = cydifflib.SequenceMatcher(
+                    None,
+                    a=pred_patch,
+                    b=oracle_patch,
+                    autojunk=False,
+                ).ratio()
+                return score
+            except Exception:
+                return -1.0
+
+        try:
+            edited_file_context = apply_edits(file_context, parsed_edits)
+            if edited_file_context is None:
+                return -1.0
+            patched_file_context = create_patched_file_context(file_context, edited_file_context)
+            pred_patch = get_unidiff_from_patched_file_context(patched_file_context)
+            min_pred_patch = extract_minimal_patch(pred_patch)
+            min_oracle_patch = extract_minimal_patch(answer)
+            return score_patch(min_pred_patch, min_oracle_patch)
+
+        except Exception as e:
+            print(f"Error in swe_rl_reward_func: {repr(e)}")
+            return 0.0
+
+    rubric = vf.Rubric(
+        funcs=[
+            swe_rl_reward_func,
+            format_reward_func,
+        ],
+        weights=[1.0, 1.0],
+    )
+
+    vf_env = vf.SingleTurnEnv(dataset=dataset, parser=parser, rubric=rubric)
+    return vf_env
+
+
 REGISTRY = {
     "gsm8k": load_gsm8k_environment,
     "reverse-text": load_reverse_environment,
@@ -473,6 +716,7 @@ REGISTRY = {
     "unscramble": load_unscramble_environment,
     "ascii-tree": load_ascii_tree_environment,
     "pydantic-adherence": load_pydantic_adherence_environment,
+    "swe-rl": load_swe_rl_environment,
 }
 
 
