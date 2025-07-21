@@ -74,9 +74,9 @@ def make_rollouts(
 
 class Buffer(ABC):
     """
-    Abstract base class for data pools. This abstraction is used to sample
-    problems from a dataset, store rollouts, and release rollouts for the
-    trainer according to different sampling strategies.
+    Abstract base class for buffers. A buffer is a stateful class storing raw
+    dataset samples and completed rollouts. Crucially, any instance of this
+    class defines a strategy for sampling from the dataset and the rollouts.
     """
 
     def __init__(self, dataset: Dataset, buffer_config: DataBufferConfig):
@@ -96,7 +96,7 @@ class Buffer(ABC):
     def sample_problems(self, n: int) -> tuple[list[int], list[dict]]:
         """
         Samples `n` problems from the dataset. Returns a list of problem IDs
-        and a list of dictionaries representing the problem. The dictionary keys
+        and a list of dictionaries representing the problems. The dictionary keys
         correspond to the fields of the dataset used for initializing the pool.
 
         Args:
@@ -111,7 +111,7 @@ class Buffer(ABC):
     @abstractmethod
     def update(self, rollouts: list[Rollout]):
         """
-        Updates the pool state with the completed rollouts. Should store
+        Updates the buffer state with the completed rollouts. Should store
         rollouts in the rollout buffer and update metadata about problems
         relevant for sampling.
 
@@ -123,9 +123,10 @@ class Buffer(ABC):
     @abstractmethod
     def sample_rollouts(self, n: int) -> list[Rollout]:
         """
-        Samples rollouts for `n` problems from the rollout buffer. Thus, the
-        length of the list returned is equal to `n` * `rollouts_per_prompt`. Logs a warning
-        if there are less than `n` samples available.
+        Samples rollouts for `n` problems from the rollout buffer which are
+        ready for training. Thus, the length of the list returned is equal to
+        `n` * `rollouts_per_prompt`.  Logs a warning if there are less than `n`
+        samples available.
 
         Args:
             n: The number of problems to return rollouts for.
@@ -138,9 +139,8 @@ class Buffer(ABC):
 
 class SimpleBuffer(Buffer):
     """
-    Simple pool that samples problems from the dataset in order within an epoch.
-    Resets and starts a new epoch after all problems have been sampled. Returns
-    all generated rollouts to the trainer.
+    Simple buffer that samples problems from the dataset in chronological order
+    and immediately returns all generated rollouts to the trainer.
     """
 
     def __init__(self, dataset: Dataset, buffer_config: SimpleBufferConfig):
@@ -207,6 +207,13 @@ class SimpleBuffer(Buffer):
 
 
 class PriorityPoolBuffer(Buffer):
+    """
+    The priority pool buffer ensures that a specified fraction of problems are
+    sampled from a "low" and "high" priority pool. Updates priority information
+    based on the rollout rewards and advantages. Releases all rollouts to the
+    trainer.
+    """
+
     def __init__(self, dataset: Dataset, buffer_config: PriorityPoolBufferConfig):
         super().__init__(dataset, buffer_config)
 
@@ -318,6 +325,14 @@ class PriorityPoolBuffer(Buffer):
 
 
 class OnlineDifficultyBuffer(Buffer):
+    """
+    The online difficulty buffer ensures that any sampled rollouts are within
+    some configurable difficulty range. This means it may not return the
+    specified number of rollouts. It is the orchestrator's task to sample more.
+    An oversampling factor can be specified to increase the chance that at least
+    n problems are within the difficulty range.
+    """
+
     def __init__(self, dataset: Dataset, buffer_config: OnlineDifficultyBufferConfig):
         super().__init__(dataset, buffer_config)
 
