@@ -241,6 +241,7 @@ async def orchestrate(config: OrchestratorConfig):
                 output_tokens=completion_tokens,
                 rewards=rewards,
                 advantages=advantages,
+                rollouts_per_problem=config.rollouts_per_prompt,
                 step=progress.step,
             )
 

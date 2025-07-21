@@ -59,14 +59,6 @@ class SampleLoggingConfig(BaseConfig):
         ),
     ] = 10
 
-    num_samples: Annotated[
-        int,
-        Field(
-            ge=1,
-            description="Number of samples to randomly select and log from each batch.",
-        ),
-    ] = 8
-
 
 class WandbMonitorConfig(BaseConfig):
     """Configures logging to Weights and Biases."""

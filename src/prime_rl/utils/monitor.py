@@ -6,6 +6,7 @@ import socket
 import threading
 import time
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from typing import Any, Literal
 
 import aiohttp
@@ -161,6 +162,7 @@ class WandbMonitor(Monitor):
         output_tokens: list[list[int]],
         rewards: list[float],
         advantages: list[float],
+        rollouts_per_problem: int,
         step: int,
     ) -> None:
         """Log prompt/response samples to W&B table.
@@ -178,34 +180,56 @@ class WandbMonitor(Monitor):
         assert self.tokenizer is not None, "Tokenizer is required for sample logging"
         assert self.last_log_step < step, "Step must be greater than last logged step"
 
-        self.logger.debug(f"Logging {self.config.log_samples.num_samples} samples to W&B table at step {step}")
+        self.logger.debug(f"Logging samples to W&B table at step {step}")
         start_time = time.time()
         batch_size = len(input_tokens)
-        num_samples = min(self.config.log_samples.num_samples, batch_size)
+        num_problems = batch_size // rollouts_per_problem
+
+        # Compute per-problem statistics
+        per_problem_tokens = defaultdict(list)
+        tokens = [input_tokens[i] + output_tokens[i] for i in range(batch_size)]
+        for i, t in enumerate(tokens):
+            problem_id = i // rollouts_per_problem
+            per_problem_tokens[problem_id].append(t)
+        assert len(per_problem_tokens) == num_problems
+        assert list(per_problem_tokens.keys()) == list(range(num_problems))
+
+        per_problem_seq_len = {
+            problem_id: sum(len(t) for t in tokens) / len(tokens) for problem_id, tokens in per_problem_tokens.items()
+        }
+        self.logger.debug(f"Per-problem seq len: {per_problem_seq_len}")
+        min_len_problem_id = min(per_problem_seq_len, key=per_problem_seq_len.get)
+        max_len_problem_id = max(per_problem_seq_len, key=per_problem_seq_len.get)
+        random_problem_id = random.choice(list(range(num_problems)))
+        problem_ids = {"min_len": min_len_problem_id, "max_len": max_len_problem_id, "random": random_problem_id}
+        self.logger.debug(f"Logging samples for problems: {problem_ids}")
 
         # Randomly select and log samples
-        indices = random.sample(range(batch_size), num_samples)
-        for idx in indices:
-            sample = {
-                "step": step,
-                "sample_idx": idx,
-                "num_input_tokens": len(input_tokens[idx]),
-                "num_output_tokens": len(output_tokens[idx]),
-                "input_tokens": input_tokens[idx],
-                "output_tokens": output_tokens[idx],
-                "prompt": self.tokenizer.decode(input_tokens[idx]),
-                "completion": self.tokenizer.decode(output_tokens[idx]),
-                "reward": float(rewards[idx]),
-                "advantage": float(advantages[idx]),
-            }
-            self.samples.append(sample)
+        for tag, problem_id in problem_ids.items():
+            start_idx = problem_id * rollouts_per_problem
+            for sample_id in range(start_idx, start_idx + rollouts_per_problem):
+                sample = {
+                    "step": step,
+                    "tag": tag,
+                    "problem_id": problem_id,
+                    "sample_id": sample_id,
+                    "num_input_tokens": len(input_tokens[sample_id]),
+                    "num_output_tokens": len(output_tokens[sample_id]),
+                    "input_tokens": str(input_tokens[sample_id]),
+                    "output_tokens": str(output_tokens[sample_id]),
+                    "prompt": self.tokenizer.decode(input_tokens[sample_id]),
+                    "completion": self.tokenizer.decode(output_tokens[sample_id]),
+                    "reward": float(rewards[sample_id]),
+                    "advantage": float(advantages[sample_id]),
+                }
+                self.samples.append(sample)
 
         # Log to W&B table at configured intervals
         df = pd.DataFrame(self.samples)
         table = wandb.Table(dataframe=df)
         wandb.log({"completions": table}, step=step)
         self.last_log_step = step
-        self.logger.debug(f"Logged {len(indices)} samples to W&B table in {time.time() - start_time:.2f}s")
+        self.logger.debug(f"Logged {len(self.samples)} samples to W&B table in {time.time() - start_time:.2f}s")
 
 
 MonitorType = Literal["file", "socket", "api", "wandb"]
