@@ -209,7 +209,7 @@ class OnlineDifficultyPoolConfig(BaseModel):
     ] = 1.0
 
 
-DataPoolConfig = DefaultPoolConfig | PriorityPoolConfig | OnlineDifficultyPoolConfig
+DataPoolConfig: TypeAlias = DefaultPoolConfig | PriorityPoolConfig | OnlineDifficultyPoolConfig
 
 
 class OrchestratorConfig(BaseSettings):
