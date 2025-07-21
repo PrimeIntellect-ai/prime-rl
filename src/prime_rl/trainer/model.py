@@ -2,7 +2,6 @@ from typing import TypeAlias
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from beartype import beartype as typechecker
 from jaxtyping import Float, Int, jaxtyped
 from torch import Tensor
@@ -80,69 +79,3 @@ def forward(
     model: Model, input_ids: Int[Tensor, "batch seq"], position_ids: Int[Tensor, "batch seq"]
 ) -> Float[Tensor, "batch seq vocab"]:
     return model(input_ids=input_ids, position_ids=position_ids).logits
-
-
-@jaxtyped(typechecker=typechecker)
-def shift_logits(logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq vocab"]:
-    """Removes final token logits and adds a zero logit for the first token."""
-    # We drop the last logit because it corresponds to the next token that will be sampled but is not here yet
-    B, _, V = logits.shape
-    logits = logits[:, :-1, :]  # (B, L-1, V)
-    zeros = torch.zeros(B, 1, V, device=logits.device, dtype=logits.dtype)  # (B, 1, V)
-    logits = torch.cat([zeros, logits], dim=1)  # (B, L, V)
-    return logits
-
-
-@jaxtyped(typechecker=typechecker)
-def selective_log_softmax(
-    logits: Float[Tensor, "batch seq vocab"], index: Int[Tensor, "batch seq"]
-) -> Float[Tensor, "batch seq"]:
-    """
-    credits to https://github.com/huggingface/trl/blob/07cfe1677e552b7d5c92b7740e5b2f0b057661d8/trl/trainer/utils.py#L1659
-
-    A memory-efficient implementation of the common `log_softmax -> gather` operation.
-
-    This function is equivalent to the following naive implementation:
-    ```python
-    logps = torch.gather(logits.log_softmax(-1), dim=-1, index=index.unsqueeze(-1)).squeeze(-1)
-    ```
-
-    Args:
-        logits (`torch.Tensor`):
-            Logits tensor of shape `(..., num_classes)`.
-        index (`torch.Tensor`):
-            Index tensor of shape `(...)`, specifying the positions to gather from the log-softmax output.
-
-    Returns:
-        `torch.Tensor`:
-            Gathered log probabilities with the same shape as `index`.
-    """
-    if logits.dtype in [torch.float32, torch.float64]:
-        selected_logits = torch.gather(logits, dim=-1, index=index.unsqueeze(-1)).squeeze(-1)
-        # loop to reduce peak mem consumption
-        logsumexp_values = torch.stack([torch.logsumexp(lg, dim=-1) for lg in logits])
-        per_token_logps = selected_logits - logsumexp_values  # log_softmax(x_i) = x_i - logsumexp(x)
-    else:
-        # logsumexp approach is unstable with bfloat16, fall back to slightly less efficient approach
-        per_token_logps = []
-        for row_logits, row_labels in zip(logits, index):  # loop to reduce peak mem consumption
-            row_logps = F.log_softmax(row_logits, dim=-1)
-            row_per_token_logps = row_logps.gather(dim=-1, index=row_labels.unsqueeze(-1)).squeeze(-1)
-            per_token_logps.append(row_per_token_logps)
-        per_token_logps = torch.stack(per_token_logps)
-    return per_token_logps
-
-
-@jaxtyped(typechecker=typechecker)
-def compute_logprobs(
-    model: Model,
-    input_ids: Int[Tensor, "batch seq"],
-    position_ids: Int[Tensor, "batch seq"],
-    temperature: float,
-) -> Float[Tensor, "batch seq"]:
-    logits = forward(model, input_ids, position_ids).contiguous()
-    shifted_logits = shift_logits(logits)
-    shifted_logits = shifted_logits / temperature
-    logprobs = selective_log_softmax(shifted_logits, input_ids)
-    del logits, shifted_logits
-    return logprobs

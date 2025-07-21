@@ -19,14 +19,12 @@ from prime_rl.trainer.weights import WeightCheckpointManager
 from prime_rl.trainer.config import TrainerConfig
 from prime_rl.trainer.data import DataLoader, FakeDataLoader
 from prime_rl.trainer.logger import setup_logger
-from prime_rl.trainer.loss import grpo_loss, compute_entropy
+from prime_rl.trainer.loss import grpo_loss, compute_entropy, shift_logits, compute_logprobs
 from prime_rl.trainer.model import (
     forward,
     get_tokenizer,
     reshard_module,
     setup_model,
-    shift_logits,
-    compute_logprobs,
 )
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
