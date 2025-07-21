@@ -167,7 +167,7 @@ class SimpleBuffer(Buffer):
         for problem_id in sampled_problem_ids:
             self.metadata[problem_id].update({"epoch": self.epoch + 1})
 
-        # If all problems within an epoch have been sampled, increment epoch and reset step
+        # If not enough problems are in the epoch for next step, increment epoch
         problems_left = len(
             [problem_id for problem_id, metadata in self.metadata.items() if metadata["epoch"] == self.epoch]
         )
@@ -346,7 +346,6 @@ class OnlineDifficultyBuffer(Buffer):
 
         # Initialize metadata to include epoch information
         self.epoch = 1
-        self.epoch_step = 0
         for problem_id in self.problem_ids:
             self.metadata[problem_id].update({"epoch": 1})
 
@@ -355,8 +354,10 @@ class OnlineDifficultyBuffer(Buffer):
         n = int(self.config.oversampling_factor * n)
 
         # Get indices to sample
-        start_idx = self.epoch_step * n
-        sampled_problem_ids = range(start_idx, start_idx + n)
+        available_problem_ids = [
+            problem_id for problem_id, metadata in self.metadata.items() if metadata["epoch"] == self.epoch
+        ]
+        sampled_problem_ids = available_problem_ids[:n]
         self.logger.debug(f"Sampling {n} problems ({sampled_problem_ids=})")
 
         # Sample problems
@@ -365,13 +366,14 @@ class OnlineDifficultyBuffer(Buffer):
         # Update metadata
         for problem_id in sampled_problem_ids:
             self.metadata[problem_id].update({"epoch": self.epoch + 1})
-        self.epoch_step += 1
 
-        # If all prompts have been sampled, increment epoch and reset step
-        if all(self.metadata[problem_id]["epoch"] == self.epoch + 1 for problem_id in self.problem_ids):
-            self.logger.info(f"Epoch {self.epoch} complete. Starting epoch {self.epoch + 1} and resetting epoch step.")
+        # If not enough problems are in the epoch for next step, increment epoch
+        problems_left = len(
+            [problem_id for problem_id, metadata in self.metadata.items() if metadata["epoch"] == self.epoch]
+        )
+        if problems_left < n:
+            self.logger.info(f"Epoch {self.epoch} complete because {problems_left} < {n} problems are left.")
             self.epoch += 1
-            self.epoch_step = 0
 
         return sampled_problem_ids, sampled_problems
 
