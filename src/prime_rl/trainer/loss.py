@@ -126,68 +126,6 @@ def grpo_loss_ratio(
     return loss, ratio, clipped_token_count
 
 
-def _masked_sum(tensor: Tensor, mask: Tensor) -> Tensor:
-    """Sums over the unmasked tensor values"""
-    return (tensor * mask).sum()
-
-
-@jaxtyped(typechecker=typechecker)
-def compute_entropy(
-    shifted_logits: Float[Tensor, "batch seq vocab"],
-    loss_mask: Int[Tensor, "batch seq"],
-    temperature: float,
-) -> Tensor:
-    shifted_logits = shifted_logits / temperature
-    pd = torch.nn.functional.softmax(shifted_logits, dim=-1)
-    entropy = torch.logsumexp(shifted_logits, dim=-1) - torch.sum(pd * shifted_logits, dim=-1)
-
-    return _masked_sum(entropy, loss_mask)
-
-
-@jaxtyped(typechecker=typechecker)
-def highest_entropy_mask(
-    logits: Float[Tensor, "batch seq vocab"],
-    loss_mask: Int[Tensor, "batch seq"],
-    percent: float,
-) -> Tensor:
-    """
-    Returns a mask (batch, seq) where the top `percent` of masked tokens (loss_mask==1)
-    with the highest entropy are 1, others 0.
-    Args:
-        logits: Tensor of shape (batch, seq, vocab)
-        loss_mask: Tensor of shape (batch, seq), 1 for valid tokens, 0 for padding
-        percent: float in (0, 1), e.g., 0.2 for top 20%
-        temperature: float, temperature for softmax (default 1.0)
-    Returns:
-        mask: Tensor of shape (batch, seq), dtype=torch.bool
-    """
-    pd = torch.nn.functional.softmax(logits, dim=-1)
-    entropy = torch.logsumexp(logits, dim=-1) - torch.sum(pd * logits, dim=-1)  # (batch, seq)
-
-    valid_entropy = entropy[loss_mask.bool()]
-    k = int(percent * valid_entropy.numel())
-    if k < 1:
-        k = 1
-    if k == valid_entropy.numel():
-        threshold = valid_entropy.min() - 1  # all True
-    else:
-        threshold = torch.kthvalue(valid_entropy, valid_entropy.numel() - k + 1).values
-
-    mask = (entropy >= threshold) & (loss_mask.bool())
-    return mask
-
-
-@jaxtyped(typechecker=typechecker)
-def shift_logits(logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq vocab"]:
-    """Removes final token logits and adds a zero logit for the first token."""
-    # We drop the last logit because it corresponds to the next token that will be sampled but is not here yet
-    B, _, V = logits.shape
-    logits = logits[:, :-1, :]  # (B, L-1, V)
-    zeros = torch.zeros(B, 1, V, device=logits.device, dtype=logits.dtype)  # (B, 1, V)
-    logits = torch.cat([zeros, logits], dim=1)  # (B, L, V)
-    return logits
-
-
 @jaxtyped(typechecker=typechecker)
 def selective_log_softmax(
     logits: Float[Tensor, "batch seq vocab"], index: Int[Tensor, "batch seq"]
@@ -241,3 +179,65 @@ def compute_logprobs(
     logprobs = selective_log_softmax(shifted_logits, input_ids)
     del logits, shifted_logits
     return logprobs
+
+
+@jaxtyped(typechecker=typechecker)
+def compute_entropy(
+    shifted_logits: Float[Tensor, "batch seq vocab"],
+    loss_mask: Int[Tensor, "batch seq"],
+    temperature: float,
+) -> Tensor:
+    shifted_logits = shifted_logits / temperature
+    pd = torch.nn.functional.softmax(shifted_logits, dim=-1)
+    entropy = torch.logsumexp(shifted_logits, dim=-1) - torch.sum(pd * shifted_logits, dim=-1)
+
+    return _masked_sum(entropy, loss_mask)
+
+
+def _masked_sum(tensor: Tensor, mask: Tensor) -> Tensor:
+    """Sums over the unmasked tensor values"""
+    return (tensor * mask).sum()
+
+
+@jaxtyped(typechecker=typechecker)
+def highest_entropy_mask(
+    logits: Float[Tensor, "batch seq vocab"],
+    loss_mask: Int[Tensor, "batch seq"],
+    percent: float,
+) -> Tensor:
+    """
+    Returns a mask (batch, seq) where the top `percent` of masked tokens (loss_mask==1)
+    with the highest entropy are 1, others 0.
+    Args:
+        logits: Tensor of shape (batch, seq, vocab)
+        loss_mask: Tensor of shape (batch, seq), 1 for valid tokens, 0 for padding
+        percent: float in (0, 1), e.g., 0.2 for top 20%
+        temperature: float, temperature for softmax (default 1.0)
+    Returns:
+        mask: Tensor of shape (batch, seq), dtype=torch.bool
+    """
+    pd = torch.nn.functional.softmax(logits, dim=-1)
+    entropy = torch.logsumexp(logits, dim=-1) - torch.sum(pd * logits, dim=-1)  # (batch, seq)
+
+    valid_entropy = entropy[loss_mask.bool()]
+    k = int(percent * valid_entropy.numel())
+    if k < 1:
+        k = 1
+    if k == valid_entropy.numel():
+        threshold = valid_entropy.min() - 1  # all True
+    else:
+        threshold = torch.kthvalue(valid_entropy, valid_entropy.numel() - k + 1).values
+
+    mask = (entropy >= threshold) & (loss_mask.bool())
+    return mask
+
+
+@jaxtyped(typechecker=typechecker)
+def shift_logits(logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq vocab"]:
+    """Removes final token logits and adds a zero logit for the first token."""
+    # We drop the last logit because it corresponds to the next token that will be sampled but is not here yet
+    B, _, V = logits.shape
+    logits = logits[:, :-1, :]  # (B, L-1, V)
+    zeros = torch.zeros(B, 1, V, device=logits.device, dtype=logits.dtype)  # (B, 1, V)
+    logits = torch.cat([zeros, logits], dim=1)  # (B, L, V)
+    return logits
