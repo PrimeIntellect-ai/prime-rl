@@ -18,6 +18,8 @@ def load_gsm8k_environment(**kwargs) -> Environment:
         },
         remove_columns=dataset.column_names,  # type: ignore
     )  # type: ignore
+    dataset = dataset.shuffle(seed=42)
+
     eval_dataset = load_dataset("openai/gsm8k", "main", split="test")
     eval_dataset = eval_dataset.map(
         lambda x: {
@@ -81,6 +83,7 @@ def load_intellect_math_environment(
         if max_solve_rate is not None:
             train_dataset = train_dataset.filter(lambda x: x[solve_rate_field] <= max_solve_rate)
     train_dataset = train_dataset.remove_columns(["prompt", "verification_info"])
+    train_dataset = train_dataset.shuffle(seed=42)
 
     def correct_answer_reward_func(completion, info, **kwargs) -> float:
         completion_text = completion[-1]["content"]
@@ -165,6 +168,7 @@ def load_hendrycks_math_environment() -> Environment:
         }
     )
     train_dataset = train_dataset.remove_columns(["prompt", "verification_info"])
+    train_dataset = train_dataset.shuffle(seed=42)
 
     parser = vf.ThinkParser(extract_fn=extract_boxed_answer)
 
@@ -195,6 +199,7 @@ def load_reverse_environment() -> Environment:
         }
     )
     train_dataset = train_dataset.remove_columns(["prompt", "verification_info", "task_type"])
+    train_dataset = train_dataset.shuffle(seed=42)
 
     parser = vf.XMLParser(["answer"], answer_field="answer")
 
@@ -244,6 +249,7 @@ def load_unscramble_environment() -> Environment:
         return example
 
     dataset = dataset.map(process_dataset)
+    dataset = dataset.shuffle(seed=42)
 
     parser = vf.XMLParser(["think", "unscrambled_text"], answer_field="unscrambled_text")
 
@@ -326,6 +332,7 @@ def load_ascii_tree_environment() -> Environment:
         return example
 
     dataset = dataset.map(process_dataset)
+    dataset = dataset.shuffle(seed=42)
 
     parser = vf.XMLParser(["think", "ascii_formatted"], answer_field="ascii_formatted")
 
@@ -530,6 +537,7 @@ def load_pydantic_adherence_environment() -> Environment:
     )
 
     dataset = dataset.remove_columns(["prompt", "verification_info"])
+    dataset = dataset.shuffle(seed=42)
 
     parser = PydanticParser(extract_fn=extract_last_json)
 
