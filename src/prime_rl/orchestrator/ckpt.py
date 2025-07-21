@@ -11,7 +11,6 @@ from prime_rl.utils.logger import get_logger
 @dataclass
 class Progress:
     step: int = 0
-    epoch: int = 0
     total_tokens: int = 0
     total_samples: int = 0
     total_problems: int = 0

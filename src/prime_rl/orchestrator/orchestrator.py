@@ -98,8 +98,7 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Iterate over dataset in batches
     max_steps = config.max_steps or int(1e9)
-    steps_per_epoch = len(dataset) // (config.batch_size // config.rollouts_per_prompt)
-    logger.info(f"Starting orchestrator loop ({max_steps=}, {steps_per_epoch=})")
+    logger.info(f"Starting orchestrator loop ({max_steps=}")
     ckpt_step = 0
     last_eval_step = -1
     while True:
@@ -115,14 +114,7 @@ async def orchestrate(config: OrchestratorConfig):
         if config.max_steps and progress.step >= config.max_steps:
             break
 
-        # Check if we need to start a new epoch
-        epoch_step = progress.step % steps_per_epoch
-        if epoch_step == 0:
-            progress.epoch += 1
-            # Reshuffle dataset at the beginning of each epoch
-            dataset = dataset.shuffle(seed=(config.seed or 0) + progress.epoch)
-
-        logger.info(f"Starting orchestrator step {progress.step} ({ckpt_step=}, epoch={progress.epoch}, {epoch_step=})")
+        logger.info(f"Starting orchestrator step {progress.step} ({ckpt_step=})")
         step_start_time = time.time()
 
         # Optionally, wait for the next checkpoint to be available
@@ -316,7 +308,6 @@ async def orchestrate(config: OrchestratorConfig):
             "progress/total_tokens": progress.total_tokens,
             "progress/total_samples": progress.total_samples,
             "progress/total_problems": progress.total_problems,
-            "progress/epoch": progress.epoch,
             "progress/ckpt_step": ckpt_step,  # Shared W&B axis
             "step": progress.step,
         }
