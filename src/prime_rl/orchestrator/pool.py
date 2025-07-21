@@ -2,7 +2,6 @@ import random
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import List
 
 from datasets import Dataset
 
@@ -18,11 +17,11 @@ from prime_rl.utils.logger import get_logger
 @dataclass
 class Rollout:
     problem_id: int
-    prompt_tokens: List[int]
-    prompt_mask: List[int]
-    completion_tokens: List[int]
-    completion_mask: List[int]
-    completion_logprobs: List[float]
+    prompt_tokens: list[int]
+    prompt_mask: list[int]
+    completion_tokens: list[int]
+    completion_mask: list[int]
+    completion_logprobs: list[float]
     reward: float
     advantage: float
 
