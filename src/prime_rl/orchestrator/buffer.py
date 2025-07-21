@@ -154,7 +154,7 @@ class SimpleBuffer(Buffer):
     def sample_problems(self, n: int) -> tuple[list[int], list[dict]]:
         # Get indices to sample
         start_idx = self.epoch_step * n
-        sampled_problem_ids = range(start_idx, start_idx + n)
+        sampled_problem_ids = list(range(start_idx, start_idx + n))
         assert len(sampled_problem_ids) == n
         self.logger.debug(f"Sampling {n} problems ({sampled_problem_ids=})")
 
