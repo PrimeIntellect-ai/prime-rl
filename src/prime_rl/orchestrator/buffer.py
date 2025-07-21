@@ -6,10 +6,10 @@ from dataclasses import dataclass
 from datasets import Dataset
 
 from prime_rl.orchestrator.config import (
-    DataPoolConfig,
-    OnlineDifficultyPoolConfig,
-    PriorityPoolConfig,
-    SimplePoolConfig,
+    DataBufferConfig,
+    OnlineDifficultyBufferConfig,
+    PriorityPoolBufferConfig,
+    SimpleBufferConfig,
 )
 from prime_rl.utils.logger import get_logger
 
@@ -72,16 +72,16 @@ def make_rollouts(
     ]
 
 
-class Pool(ABC):
+class Buffer(ABC):
     """
     Abstract base class for data pools. This abstraction is used to sample
     problems from a dataset, store rollouts, and release rollouts for the
     trainer according to different sampling strategies.
     """
 
-    def __init__(self, dataset: Dataset, pool_config: DataPoolConfig):
+    def __init__(self, dataset: Dataset, buffer_config: DataBufferConfig):
         self.dataset = dataset
-        self.config = pool_config
+        self.config = buffer_config
         self.logger = get_logger()
 
         # Initialize prompt and rollout buffers
@@ -136,28 +136,29 @@ class Pool(ABC):
         pass
 
 
-class SimplePool(Pool):
+class SimpleBuffer(Buffer):
     """
-    Simple pool that samples problems in a round-robin fashion and
-    immediately returns all rollouts to the trainer.
+    Simple pool that samples problems from the dataset in order within an epoch.
+    Resets and starts a new epoch after all problems have been sampled. Returns
+    all generated rollouts to the trainer.
     """
 
-    def __init__(self, dataset: Dataset, pool_config: SimplePoolConfig):
-        super().__init__(dataset, pool_config)
+    def __init__(self, dataset: Dataset, buffer_config: SimpleBufferConfig):
+        super().__init__(dataset, buffer_config)
 
-        # Initialize metadata to include epoch information
-        self.epoch = 1
-        self.epoch_step = 0
+        # Initialize epoch metadata
+        self.epoch, self.epoch_step = 1, 0
         for problem_id in self.problem_ids:
-            self.metadata[problem_id].update({"epoch": 1})
+            self.metadata[problem_id].update({"epoch": self.epoch})
 
     def sample_problems(self, n: int) -> tuple[list[int], list[dict]]:
         # Get indices to sample
         start_idx = self.epoch_step * n
         sampled_problem_ids = range(start_idx, start_idx + n)
+        assert len(sampled_problem_ids) == n
         self.logger.debug(f"Sampling {n} problems ({sampled_problem_ids=})")
 
-        # Sample problems
+        # Get problems from indices
         sampled_problems = [self.problem_buffer[problem_id] for problem_id in sampled_problem_ids]
         assert all(self.metadata[problem_id]["epoch"] == self.epoch for problem_id in sampled_problem_ids)
 
@@ -166,8 +167,11 @@ class SimplePool(Pool):
             self.metadata[problem_id].update({"epoch": self.epoch + 1})
         self.epoch_step += 1
 
-        # If all prompts have been sampled, increment epoch and reset step
-        if all(self.metadata[problem_id]["epoch"] == self.epoch + 1 for problem_id in self.problem_ids):
+        # If all problems within an epoch have been sampled, increment epoch and reset step
+        num_epoch_problems = sum(
+            1 for problem_id in self.problem_ids if self.metadata[problem_id]["epoch"] == self.epoch + 1
+        )
+        if num_epoch_problems >= len(self.problem_ids) // n * n:  # Truncate to the nearest multiple of n
             self.logger.info(f"Epoch {self.epoch} complete. Starting epoch {self.epoch + 1} and resetting epoch step.")
             self.epoch += 1
             self.epoch_step = 0
@@ -202,9 +206,9 @@ class SimplePool(Pool):
         return sampled_rollouts
 
 
-class PriorityPool(Pool):
-    def __init__(self, dataset: Dataset, pool_config: PriorityPoolConfig):
-        super().__init__(dataset, pool_config)
+class PriorityPoolBuffer(Buffer):
+    def __init__(self, dataset: Dataset, buffer_config: PriorityPoolBufferConfig):
+        super().__init__(dataset, buffer_config)
 
         # Initialize metadata to include epoch information
         self.epoch = 1
@@ -313,9 +317,9 @@ class PriorityPool(Pool):
         return sampled_rollouts
 
 
-class OnlineDifficultyPool(Pool):
-    def __init__(self, dataset: Dataset, pool_config: OnlineDifficultyPoolConfig):
-        super().__init__(dataset, pool_config)
+class OnlineDifficultyBuffer(Buffer):
+    def __init__(self, dataset: Dataset, buffer_config: OnlineDifficultyBufferConfig):
+        super().__init__(dataset, buffer_config)
 
         # Initialize metadata to include epoch information
         self.epoch = 1
@@ -391,10 +395,10 @@ class OnlineDifficultyPool(Pool):
         return sampled_rollouts
 
 
-def setup_pool(dataset: Dataset, pool_config: DataPoolConfig) -> Pool:
-    if pool_config.strategy == "simple":
-        return SimplePool(dataset, pool_config)
-    elif pool_config.strategy == "priority":
-        return PriorityPool(dataset, pool_config)
-    elif pool_config.strategy == "online_difficulty":
-        return OnlineDifficultyPool(dataset, pool_config)
+def setup_buffer(dataset: Dataset, buffer_config: DataBufferConfig) -> Buffer:
+    if buffer_config.type == "simple":
+        return SimpleBuffer(dataset, buffer_config)
+    elif buffer_config.type == "priority_pool":
+        return PriorityPoolBuffer(dataset, buffer_config)
+    elif buffer_config.type == "online_difficulty":
+        return OnlineDifficultyBuffer(dataset, buffer_config)

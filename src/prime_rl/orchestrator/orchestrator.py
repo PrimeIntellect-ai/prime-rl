@@ -23,7 +23,7 @@ from prime_rl.orchestrator.client import (
     setup_client,
 )
 from prime_rl.orchestrator.config import OrchestratorConfig
-from prime_rl.orchestrator.pool import setup_pool, make_rollouts, Rollout
+from prime_rl.orchestrator.buffer import setup_buffer, make_rollouts, Rollout
 from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.orchestrator.logger import setup_logger
 from prime_rl.orchestrator.advantage import compute_advantages
@@ -89,9 +89,9 @@ async def orchestrate(config: OrchestratorConfig):
     vf_env = load_environment(config.environment.id, config.environment.args)
     dataset = vf_env.get_dataset(seed=config.seed)
 
-    # Setup pool
-    logger.info(f"Setting up pool ({config.pool})")
-    datapool = setup_pool(dataset, config.pool)
+    # Setup buffer
+    logger.info(f"Setting up buffer ({config.buffer})")
+    buffer = setup_buffer(dataset, config.buffer)
 
     # Load tokenizer -- placeholder until reworking verifiers to use vLLM tokenizer
     tokenizer = AutoTokenizer.from_pretrained(config.model.name)
@@ -180,7 +180,7 @@ async def orchestrate(config: OrchestratorConfig):
         while True:
             # Get the batch
             problems_per_batch = config.batch_size // config.rollouts_per_prompt
-            problem_ids, problems = datapool.sample_problems(problems_per_batch)
+            problem_ids, problems = buffer.sample_problems(problems_per_batch)
 
             # Duplicate problems `rollouts_per_prompt` times
             problem_ids = [problem_id for problem_id in problem_ids for _ in range(config.rollouts_per_prompt)]
@@ -244,8 +244,8 @@ async def orchestrate(config: OrchestratorConfig):
                 rewards=outputs["reward"],
                 advantages=advantages,
             )
-            datapool.update(rollouts)
-            accepted_rollouts.extend(datapool.sample_rollouts(problems_per_batch))
+            buffer.update(rollouts)
+            accepted_rollouts.extend(buffer.sample_rollouts(problems_per_batch))
 
             if len(accepted_rollouts) >= config.batch_size:
                 accepted_rollouts = accepted_rollouts[: config.batch_size]

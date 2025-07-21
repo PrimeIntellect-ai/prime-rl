@@ -6,7 +6,7 @@ from jaxtyping import Float, Int
 from torch import Tensor
 from transformers import AutoTokenizer
 
-from prime_rl.orchestrator.pool import Rollout
+from prime_rl.orchestrator.buffer import Rollout
 from prime_rl.trainer.data import MicroBatch
 
 

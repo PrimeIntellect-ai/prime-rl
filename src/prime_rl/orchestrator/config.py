@@ -155,12 +155,12 @@ class CheckpointConfig(BaseConfig):
     ] = None
 
 
-class SimplePoolConfig(BaseModel):
-    strategy: Literal["simple"] = "simple"
+class SimpleBufferConfig(BaseModel):
+    type: Literal["simple"] = "simple"
 
 
-class PriorityPoolConfig(BaseModel):
-    strategy: Literal["priority"] = "priority"
+class PriorityPoolBufferConfig(BaseModel):
+    type: Literal["priority_pool"] = "priority_pool"
 
     priority_field: Annotated[
         str | None,
@@ -179,8 +179,8 @@ class PriorityPoolConfig(BaseModel):
     ] = 0.1
 
 
-class OnlineDifficultyPoolConfig(BaseModel):
-    strategy: Literal["online_difficulty"] = "online_difficulty"
+class OnlineDifficultyBufferConfig(BaseModel):
+    type: Literal["online_difficulty"] = "online_difficulty"
 
     min_reward: Annotated[
         float | None,
@@ -209,7 +209,7 @@ class OnlineDifficultyPoolConfig(BaseModel):
     ] = 1.0
 
 
-DataPoolConfig: TypeAlias = SimplePoolConfig | PriorityPoolConfig | OnlineDifficultyPoolConfig
+DataBufferConfig: TypeAlias = SimpleBufferConfig | PriorityPoolBufferConfig | OnlineDifficultyBufferConfig
 
 
 class OrchestratorConfig(BaseSettings):
@@ -230,8 +230,8 @@ class OrchestratorConfig(BaseSettings):
     # The evaluation configuration
     eval: EvalConfig | None = None
 
-    # Data Pool
-    pool: DataPoolConfig = Field(discriminator="strategy", default=SimplePoolConfig())
+    # Data buffer configuration
+    buffer: DataBufferConfig = Field(discriminator="type", default=SimpleBufferConfig())
 
     # The logging configuration
     log: LogConfig = LogConfig()
