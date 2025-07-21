@@ -1,4 +1,3 @@
-import random
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass
@@ -147,14 +146,16 @@ class SimpleBuffer(Buffer):
         super().__init__(dataset, buffer_config)
 
         # Initialize epoch metadata
-        self.epoch, self.epoch_step = 1, 0
+        self.epoch = 1
         for problem_id in self.problem_ids:
             self.metadata[problem_id].update({"epoch": self.epoch})
 
     def sample_problems(self, n: int) -> tuple[list[int], list[dict]]:
         # Get indices to sample
-        start_idx = self.epoch_step * n
-        sampled_problem_ids = list(range(start_idx, start_idx + n))
+        available_problem_ids = [
+            problem_id for problem_id, metadata in self.metadata.items() if metadata["epoch"] == self.epoch
+        ]
+        sampled_problem_ids = available_problem_ids[:n]
         assert len(sampled_problem_ids) == n
         self.logger.debug(f"Sampling {n} problems ({sampled_problem_ids=})")
 
@@ -165,16 +166,14 @@ class SimpleBuffer(Buffer):
         # Update metadata
         for problem_id in sampled_problem_ids:
             self.metadata[problem_id].update({"epoch": self.epoch + 1})
-        self.epoch_step += 1
 
         # If all problems within an epoch have been sampled, increment epoch and reset step
-        num_epoch_problems = sum(
-            1 for problem_id in self.problem_ids if self.metadata[problem_id]["epoch"] == self.epoch + 1
+        problems_left = len(
+            [problem_id for problem_id, metadata in self.metadata.items() if metadata["epoch"] == self.epoch]
         )
-        if num_epoch_problems >= len(self.problem_ids) // n * n:  # Truncate to the nearest multiple of n
-            self.logger.info(f"Epoch {self.epoch} complete. Starting epoch {self.epoch + 1} and resetting epoch step.")
+        if problems_left < n:
+            self.logger.info(f"Epoch {self.epoch} complete because {problems_left} < {n} problems are left.")
             self.epoch += 1
-            self.epoch_step = 0
 
         return sampled_problem_ids, sampled_problems
 
@@ -224,7 +223,7 @@ class PriorityPoolBuffer(Buffer):
 
         # Add priority information to metadata
         if self.config.priority_field is not None:
-            assert self.config.priority_field in self.dataset.column
+            assert self.config.priority_field in self.dataset.column_names
             priorities = self.dataset[self.config.priority_field]
         else:
             priorities = ["high"] * len(self.problem_ids)
@@ -238,6 +237,7 @@ class PriorityPoolBuffer(Buffer):
         # Compute number of low and high priority problems to sample
         n_low = int(n * self.config.low_priority_fraction)
         n_high = n - n_low
+        self.logger.debug(f"{n_low=}, {n_high=}")
 
         # Get low and high priority problem
         available_problem_ids = {
@@ -249,19 +249,18 @@ class PriorityPoolBuffer(Buffer):
         high_priority_problem_ids = [
             problem_id for problem_id, metadata in available_problem_ids.items() if metadata["priority"] == "high"
         ]
+        self.logger.debug(
+            f"Found {len(available_problem_ids)} problems in epoch {self.epoch} ({len(low_priority_problem_ids)} low priority, {len(high_priority_problem_ids)} high priority)"
+        )
 
-        # Sample low priority problems at random
-        if len(low_priority_problem_ids) < n_low:
-            sampled_low_priority_problem_ids = low_priority_problem_ids
+        # Sample low priority in chronological order
+        sampled_low_priority_problem_ids = low_priority_problem_ids[:n_low]
+        if len(sampled_low_priority_problem_ids) < n_low:
             n_high = n - len(sampled_low_priority_problem_ids)
-        else:
-            sampled_low_priority_problem_ids = random.sample(low_priority_problem_ids, n_low)
 
         # Sample the rest from the high priority samples
-        if len(high_priority_problem_ids) < n_high:
-            sampled_high_priority_problem_ids = high_priority_problem_ids
-        else:
-            sampled_high_priority_problem_ids = random.sample(high_priority_problem_ids, n_high)
+        assert len(high_priority_problem_ids) >= n_high
+        sampled_high_priority_problem_ids = high_priority_problem_ids[:n_high]
 
         sampled_problem_ids = sampled_low_priority_problem_ids + sampled_high_priority_problem_ids
         assert len(sampled_problem_ids) == n
@@ -277,9 +276,18 @@ class PriorityPoolBuffer(Buffer):
         for problem_id in sampled_problem_ids:
             self.metadata[problem_id].update({"epoch": self.epoch + 1})
 
-        # If all prompts have been sampled, increment epoch and reset step
-        if all(self.metadata[problem_id]["epoch"] == self.epoch + 1 for problem_id in self.problem_ids):
-            self.logger.info(f"Epoch {self.epoch} complete. Starting epoch {self.epoch + 1} and resetting epoch step.")
+        # If not enough problems are in the high priority pool, increment epoch and reset step
+        high_priority_problems_left = len(
+            [
+                problem_id
+                for problem_id, metadata in available_problem_ids.items()
+                if metadata["priority"] == "high" and metadata["epoch"] == self.epoch
+            ]
+        )
+        if high_priority_problems_left < n:
+            self.logger.info(
+                f"Epoch {self.epoch} complete because {high_priority_problems_left} < {n} high priority problems are left."
+            )
             self.epoch += 1
 
         return sampled_problem_ids, sampled_problems
