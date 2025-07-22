@@ -2147,7 +2147,7 @@ requires-dist = [
     { name = "torch", specifier = ">=2.7.0", index = "https://download.pytorch.org/whl/test/cu128" },
     { name = "transformers", specifier = ">=4.53.0" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/willccbb/verifiers?rev=39ffc65" },
+    { name = "verifiers", git = "https://github.com/willccbb/verifiers?rev=c889190" },
     { name = "vllm", specifier = ">=0.9.1" },
     { name = "wandb", specifier = ">=0.20.1" },
 ]
@@ -3227,7 +3227,7 @@ wheels = [
 [[package]]
 name = "verifiers"
 version = "0.1.1"
-source = { git = "https://github.com/willccbb/verifiers?rev=39ffc65#39ffc65e5fa8b5b2a11e639223758da4c8dd9a18" }
+source = { git = "https://github.com/willccbb/verifiers?rev=c889190#c8891902297ea4fd1767843183a6bf4952e8612c" }
 dependencies = [
     { name = "datasets" },
     { name = "openai" },
