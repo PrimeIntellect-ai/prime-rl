@@ -39,9 +39,7 @@ REGISTRY: dict[AdvantageType, Callable[[Float[Tensor, "group"]], Float[Tensor, "
 }
 
 
-def compute_advantages(
-    rewards: list[float], samples_per_problem: int, advantage_type: AdvantageType
-) -> tuple[list[float], dict[str, float]]:
+def compute_advantages(rewards: list[float], samples_per_problem: int, advantage_type: AdvantageType) -> list[float]:
     """
     Computes advantages and statistics for logging from a flattened list of rewards for a given advantage type.
 
@@ -54,7 +52,6 @@ def compute_advantages(
         Tuple of (advantages, advantage_stats)
     """
     advantages = []
-    solve_none, solve_all = 0, 0
     assert len(rewards) % samples_per_problem == 0
     all_group_rewards = [rewards[i : i + samples_per_problem] for i in range(0, len(rewards), samples_per_problem)]
     compute_advantage = REGISTRY[advantage_type]
@@ -63,11 +60,5 @@ def compute_advantages(
         group_advantages_tensor = compute_advantage(group_rewards_tensor)
         assert len(group_advantages_tensor) == len(group_rewards_tensor)
         advantages.extend(group_advantages_tensor.tolist())
-        if torch.all(group_rewards_tensor == 0):
-            solve_none += 1 / len(all_group_rewards)
-        if torch.all(group_rewards_tensor == 1):
-            solve_all += 1 / len(all_group_rewards)
     assert len(rewards) == len(advantages)
-    effective_batch_size = 1 - solve_none - solve_all
-    advantage_stats = {"solve_none": solve_none, "solve_all": solve_all, "effective_batch_size": effective_batch_size}
-    return advantages, advantage_stats
+    return advantages

@@ -219,7 +219,7 @@ async def orchestrate(config: OrchestratorConfig):
                 mask_truncated_completions=config.mask_truncated_completions,
             )
 
-            advantages, advantage_stats = compute_advantages(
+            advantages = compute_advantages(
                 rewards=outputs["reward"],
                 samples_per_problem=config.rollouts_per_prompt,
                 advantage_type=config.advantage_type,
@@ -265,6 +265,15 @@ async def orchestrate(config: OrchestratorConfig):
 
         seq_lengths = np.array([len(p) + len(c) for p, c in zip(prompt_tokens, completion_tokens)])
         problem_avg_seqlens = seq_lengths.reshape(-1, config.rollouts_per_prompt).mean(axis=-1)
+
+        # Compute solve all/ none and critical batch size
+        grouped_rewards = [
+            rewards[i : i + config.rollouts_per_prompt] for i in range(0, len(rewards), config.rollouts_per_prompt)
+        ]
+        assert len(grouped_rewards) == problems_per_batch
+        solve_all = sum(1 for group in grouped_rewards if all(reward == 1 for reward in group)) / problems_per_batch
+        solve_none = sum(1 for group in grouped_rewards if all(reward == 0 for reward in group)) / problems_per_batch
+        effective_batch_size = config.batch_size - solve_all - solve_none
 
         # Log samples to W&B table if enabled
         if monitor.wandb:
@@ -327,9 +336,9 @@ async def orchestrate(config: OrchestratorConfig):
         # Log rewards metrics to monitor
         reward_metrics = {
             "reward/reward": np.mean(rewards),
-            "reward/solve_none": advantage_stats["solve_none"],
-            "reward/solve_all": advantage_stats["solve_all"],
-            "reward/effective_batch_size": advantage_stats["effective_batch_size"],
+            "reward/solve_none": solve_none,
+            "reward/solve_all": solve_all,
+            "reward/effective_batch_size": effective_batch_size,
             "step": progress.step,
         }
         monitor.log(reward_metrics)
