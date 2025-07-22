@@ -1,5 +1,6 @@
+import random
 from abc import ABC, abstractmethod
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 
 from datasets import Dataset
@@ -145,35 +146,17 @@ class SimpleBuffer(Buffer):
     def __init__(self, dataset: Dataset, buffer_config: SimpleBufferConfig):
         super().__init__(dataset, buffer_config)
 
-        # Initialize epoch metadata
-        self.epoch = 1
-        for problem_id in self.problem_ids:
-            self.metadata[problem_id].update({"epoch": self.epoch})
-
     def sample_problems(self, n: int) -> tuple[list[int], list[dict]]:
         # Get indices to sample
-        available_problem_ids = [
-            problem_id for problem_id, metadata in self.metadata.items() if metadata["epoch"] == self.epoch
-        ]
-        sampled_problem_ids = available_problem_ids[:n]
+        assert len(self.problem_ids) >= n, (
+            f"There should be at least {n} problems in the buffer, but found only {len(self.problem_ids)}"
+        )
+        sampled_problem_ids = random.sample(self.problem_ids, n)
         assert len(sampled_problem_ids) == n
-        self.logger.debug(f"Sampling {n} problems ({sampled_problem_ids=})")
+        self.logger.debug(f"Sampled {n} problems ({sampled_problem_ids=})")
 
         # Get problems from indices
         sampled_problems = [self.problem_buffer[problem_id] for problem_id in sampled_problem_ids]
-        assert all(self.metadata[problem_id]["epoch"] == self.epoch for problem_id in sampled_problem_ids)
-
-        # Update metadata
-        for problem_id in sampled_problem_ids:
-            self.metadata[problem_id].update({"epoch": self.epoch + 1})
-
-        # If not enough problems are in the epoch for next step, increment epoch
-        problems_left = len(
-            [problem_id for problem_id, metadata in self.metadata.items() if metadata["epoch"] == self.epoch]
-        )
-        if problems_left < n:
-            self.logger.info(f"Epoch {self.epoch} complete because {problems_left} < {n} problems are left.")
-            self.epoch += 1
 
         return sampled_problem_ids, sampled_problems
 
@@ -187,16 +170,17 @@ class SimpleBuffer(Buffer):
         self.rollout_buffer.update(rollouts_by_problem_id)
 
     def sample_rollouts(self, n: int) -> list[Rollout]:
-        # Take the first n rollouts from the rollout buffer
+        # Take the first n problems from the rollout buffer
         available_problem_ids = list(self.rollout_buffer.keys())
         assert len(available_problem_ids) == n, (
             "The number of available problems should always be equal to the requested number of problems"
         )
         sampled_problem_ids = available_problem_ids[:n]
+        assert len(sampled_problem_ids) == n, (
+            "The number of sampled problems should always be equal to the requested number of problems"
+        )
 
-        if len(sampled_problem_ids) < n:
-            self.logger.warning(f"Only {len(sampled_problem_ids)} (<{n}) problems with rollouts available.")
-
+        # Build (flattened) list of rollouts
         sampled_rollouts: list[Rollout] = []
         for problem_id in sampled_problem_ids:
             sampled_rollout = self.rollout_buffer.pop(problem_id)
@@ -216,16 +200,13 @@ class PriorityPoolBuffer(Buffer):
     def __init__(self, dataset: Dataset, buffer_config: PriorityPoolBufferConfig):
         super().__init__(dataset, buffer_config)
 
-        # Initialize metadata to include epoch information
-        self.epoch = 1
-        for problem_id in self.problem_ids:
-            self.metadata[problem_id].update({"epoch": 1})
-
         # Add priority information to metadata
         if self.config.priority_field is not None:
             assert self.config.priority_field in self.dataset.column_names
             priorities = self.dataset[self.config.priority_field]
+            self.logger.info(f"Found priority field {self.config.priority_field} in dataset")
         else:
+            self.logger.info("No priority field specified, initalizing all problems as `high` priority")
             priorities = ["high"] * len(self.problem_ids)
 
         assert len(priorities) == len(self.problem_ids)
@@ -240,55 +221,37 @@ class PriorityPoolBuffer(Buffer):
         self.logger.debug(f"{n_low=}, {n_high=}")
 
         # Get low and high priority problem
-        available_problem_ids = {
-            problem_id: metadata for problem_id, metadata in self.metadata.items() if metadata["epoch"] == self.epoch
-        }
         low_priority_problem_ids = [
-            problem_id for problem_id, metadata in available_problem_ids.items() if metadata["priority"] == "low"
+            problem_id for problem_id, metadata in self.metadata.items() if metadata["priority"] == "low"
         ]
         high_priority_problem_ids = [
-            problem_id for problem_id, metadata in available_problem_ids.items() if metadata["priority"] == "high"
+            problem_id for problem_id, metadata in self.metadata.items() if metadata["priority"] == "high"
         ]
         self.logger.debug(
-            f"Found {len(available_problem_ids)} problems in epoch {self.epoch} ({len(low_priority_problem_ids)} low priority, {len(high_priority_problem_ids)} high priority)"
+            f"Found {len(low_priority_problem_ids)} low priority and {len(high_priority_problem_ids)} high priority samples"
         )
 
-        # Sample low priority in chronological order
-        sampled_low_priority_problem_ids = low_priority_problem_ids[:n_low]
-        if len(sampled_low_priority_problem_ids) < n_low:
-            n_high = n - len(sampled_low_priority_problem_ids)
+        # Sample low priority problems
+        # Cannot sample more than the number of low priority problems available
+        n_low_sampled = min(n_low, len(low_priority_problem_ids))
+        sampled_low_priority_problem_ids = random.sample(low_priority_problem_ids, n_low_sampled)
+        assert len(sampled_low_priority_problem_ids) == n_low_sampled
+        if n_low_sampled < n_low:
+            n_high = n - n_low
 
         # Sample the rest from the high priority samples
         assert len(high_priority_problem_ids) >= n_high
-        sampled_high_priority_problem_ids = high_priority_problem_ids[:n_high]
+        sampled_high_priority_problem_ids = random.sample(high_priority_problem_ids, n_high)
+        assert len(sampled_high_priority_problem_ids) == n_high
 
         sampled_problem_ids = sampled_low_priority_problem_ids + sampled_high_priority_problem_ids
         assert len(sampled_problem_ids) == n
         self.logger.debug(
-            f"Sampling {n} problems (low_priority={len(sampled_low_priority_problem_ids)}, high_priority={len(sampled_high_priority_problem_ids)})"
+            f"Sampled {n} problems (low_priority={len(sampled_low_priority_problem_ids)}, high_priority={len(sampled_high_priority_problem_ids)}, {sampled_problem_ids=})"
         )
 
         # Sample problems
         sampled_problems = [self.problem_buffer[problem_id] for problem_id in sampled_problem_ids]
-        assert all(self.metadata[problem_id]["epoch"] == self.epoch for problem_id in sampled_problem_ids)
-
-        # Update metadata
-        for problem_id in sampled_problem_ids:
-            self.metadata[problem_id].update({"epoch": self.epoch + 1})
-
-        # If not enough problems are in the high priority pool, increment epoch and reset step
-        high_priority_problems_left = len(
-            [
-                problem_id
-                for problem_id, metadata in available_problem_ids.items()
-                if metadata["priority"] == "high" and metadata["epoch"] == self.epoch
-            ]
-        )
-        if high_priority_problems_left < n:
-            self.logger.info(
-                f"Epoch {self.epoch} complete because {high_priority_problems_left} < {n} high priority problems are left."
-            )
-            self.epoch += 1
 
         return sampled_problem_ids, sampled_problems
 
@@ -298,7 +261,11 @@ class PriorityPoolBuffer(Buffer):
         for rollout in rollouts:
             rollouts_by_problem_id[rollout.problem_id].append(rollout)
 
+        # Add grouped rollouts to the buffer
+        self.rollout_buffer.update(rollouts_by_problem_id)
+
         # Update metadata with priority information
+        stats = Counter()
         for problem_id, rollouts in rollouts_by_problem_id.items():
             rewards = [rollout.reward for rollout in rollouts]
             advantages = [rollout.advantage for rollout in rollouts]
@@ -308,10 +275,9 @@ class PriorityPoolBuffer(Buffer):
                 priority = "low"
             else:
                 priority = "high"
+            stats[priority] += 1
             self.metadata[problem_id].update({"priority": priority})
-
-        # Add grouped rollouts to the buffer
-        self.rollout_buffer.update(rollouts_by_problem_id)
+        self.logger.info(f"Updated priority information: {stats=}")
 
     def sample_rollouts(self, n: int) -> list[Rollout]:
         # Take the first n rollouts from the rollout buffer
@@ -320,10 +286,11 @@ class PriorityPoolBuffer(Buffer):
             "The number of available problems should always be equal to the requested number of problems"
         )
         sampled_problem_ids = available_problem_ids[:n]
+        assert len(sampled_problem_ids) == n, (
+            "The number of sampled problems should always be equal to the requested number of problems"
+        )
 
-        if len(sampled_problem_ids) < n:
-            self.logger.warning(f"Only {len(sampled_problem_ids)} (<{n}) problems with rollouts available.")
-
+        # Build (flattened) list of rollouts
         sampled_rollouts: list[Rollout] = []
         for problem_id in sampled_problem_ids:
             sampled_rollout = self.rollout_buffer.pop(problem_id)
@@ -344,36 +311,19 @@ class OnlineDifficultyBuffer(Buffer):
     def __init__(self, dataset: Dataset, buffer_config: OnlineDifficultyBufferConfig):
         super().__init__(dataset, buffer_config)
 
-        # Initialize metadata to include epoch information
-        self.epoch = 1
-        for problem_id in self.problem_ids:
-            self.metadata[problem_id].update({"epoch": 1})
-
     def sample_problems(self, n: int) -> tuple[list[int], list[dict]]:
         # Multiply by oversampling factor
         n = int(self.config.oversampling_factor * n)
 
         # Get indices to sample
-        available_problem_ids = [
-            problem_id for problem_id, metadata in self.metadata.items() if metadata["epoch"] == self.epoch
-        ]
-        sampled_problem_ids = available_problem_ids[:n]
-        self.logger.debug(f"Sampling {n} problems ({sampled_problem_ids=})")
+        assert len(self.problem_ids) >= n, (
+            f"There should be at least {n} problems in the buffer, but found only {len(self.problem_ids)}"
+        )
+        sampled_problem_ids = random.sample(self.problem_ids, n)
+        self.logger.debug(f"Sampled {n} problems ({sampled_problem_ids=})")
 
         # Sample problems
         sampled_problems = [self.problem_buffer[problem_id] for problem_id in sampled_problem_ids]
-
-        # Update metadata
-        for problem_id in sampled_problem_ids:
-            self.metadata[problem_id].update({"epoch": self.epoch + 1})
-
-        # If not enough problems are in the epoch for next step, increment epoch
-        problems_left = len(
-            [problem_id for problem_id, metadata in self.metadata.items() if metadata["epoch"] == self.epoch]
-        )
-        if problems_left < n:
-            self.logger.info(f"Epoch {self.epoch} complete because {problems_left} < {n} problems are left.")
-            self.epoch += 1
 
         return sampled_problem_ids, sampled_problems
 
@@ -383,17 +333,19 @@ class OnlineDifficultyBuffer(Buffer):
         for rollout in rollouts:
             rollouts_by_problem_id[rollout.problem_id].append(rollout)
 
-        # Update metadata with difficulty information
-        for problem_id, rollouts in rollouts_by_problem_id.items():
-            reward = sum(rollout.reward for rollout in rollouts) / len(rollouts)
-            self.metadata[problem_id].update({"reward": reward})
-
         # Do not keep rollouts from older weight checkpoints
-        # TODO: Can we lift this constraint?
+        # TODO: Can we lift this constraint? Maybe, instead of clearing we mark
+        # the out of range samples as discarded and remove them from the list of
+        # problem IDs that can be sampled
         self.rollout_buffer.clear()
 
         # Add grouped rollouts to the buffer
         self.rollout_buffer.update(rollouts_by_problem_id)
+
+        # Update metadata with difficulty information
+        for problem_id, rollouts in rollouts_by_problem_id.items():
+            reward = sum(rollout.reward for rollout in rollouts) / len(rollouts)
+            self.metadata[problem_id].update({"reward": reward})
 
     def sample_rollouts(self, n: int) -> list[Rollout]:
         available_problem_ids = list(self.rollout_buffer.keys())
@@ -408,9 +360,19 @@ class OnlineDifficultyBuffer(Buffer):
             if self.config.max_reward is not None and reward > self.config.max_reward:
                 num_too_easy += 1
                 continue
-            rollouts = self.rollout_buffer.pop(problem_id)
+            sampled_rollout = self.rollout_buffer.pop(problem_id)
+            sampled_rollouts.extend(sampled_rollout)
             sampled_problem_ids.append(problem_id)
-            sampled_rollouts.extend(rollouts)
+
+        assert all(
+            [
+                self.config.min_reward or -1e9 <= self.metadata[problem_id]["reward"] <= self.config.max_reward or 1e9
+                for problem_id in sampled_problem_ids
+            ]
+        )
+        self.logger.info(
+            f"Sampled {len(sampled_problem_ids)} problems ({sampled_problem_ids=}) within difficulty range [{self.config.min_reward=}, {self.config.max_reward=}]"
+        )
 
         if len(sampled_problem_ids) < n:
             self.logger.warning(
