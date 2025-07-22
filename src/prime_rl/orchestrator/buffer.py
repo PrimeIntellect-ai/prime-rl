@@ -393,7 +393,7 @@ class OnlineDifficultyBuffer(Buffer):
             ]
         )
         self.logger.debug(
-            f"Sampled {len(sampled_problem_ids)} problems ({sampled_problem_ids=}) within difficulty range [{self.config.min_reward=}, {self.config.max_reward=}]"
+            f"Sampled {len(sampled_problem_ids)} rollouts ({sampled_problem_ids=}) within difficulty range [{self.config.min_reward=}, {self.config.max_reward=}]"
         )
 
         if len(sampled_problem_ids) < n:
