@@ -289,9 +289,9 @@ class DifficultyPoolBuffer(Buffer):
             reward = sum([rollout.reward for rollout in rollouts]) / len(rollouts)
             # TODO(Justus): Should we also have rules based on advantages here?
             # TODO(Justus): Should we move samples between pools based on average reward or all(r > threshold for r in rewards)?
-            if reward > 0.8:
+            if reward > self.config.easy_border:
                 new_difficulty = "easy"
-            elif reward < 0.2:
+            elif reward < self.config.hard_border:
                 new_difficulty = "hard"
             else:
                 new_difficulty = "normal"

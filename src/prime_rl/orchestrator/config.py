@@ -165,10 +165,29 @@ class DifficultyPoolBufferConfig(BaseModel):
     difficulty_field: Annotated[
         str | None,
         Field(
-            description="Field name in the dataset that contains difficulty information. Should only contain `easy`, `normal` and `hard`. If None, all samples are treated as `normal` by default.",
+            description="Field name in the dataset that contains difficulty information. Should only contain `easy`, `normal` and `hard`. If None, all samples are treated as `normal` initially.",
         ),
     ] = None
 
+    easy_border: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            description="If a problem has more than `easy_border` average reward across rollouts, it will be moved to the easy pool.",
+        ),
+    ] = 0.8
+
+    hard_border: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            description="If a problem has less than `hard_border` average reward across rollouts, it will be moved to the hard pool.",
+        ),
+    ] = 0.2
+
+    # TODO: Maybe make this float | int to allow for specific numbers of easy/hard samples?
     easy_fraction: Annotated[
         float,
         Field(
