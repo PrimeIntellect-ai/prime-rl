@@ -7,8 +7,8 @@ from datasets import Dataset
 
 from prime_rl.orchestrator.config import (
     DataBufferConfig,
+    DifficultyPoolBufferConfig,
     OnlineDifficultyBufferConfig,
-    PriorityPoolBufferConfig,
     SimpleBufferConfig,
 )
 from prime_rl.utils.logger import get_logger
@@ -189,65 +189,84 @@ class SimpleBuffer(Buffer):
         return sampled_rollouts
 
 
-class PriorityPoolBuffer(Buffer):
+class DifficultyPoolBuffer(Buffer):
     """
-    The priority pool buffer ensures that a specified fraction of problems are
-    sampled from a "low" and "high" priority pool. Updates priority information
-    based on the rollout rewards and advantages. Releases all rollouts to the
-    trainer.
+    The difficulty pool buffer ensures that a specified fraction of problems are
+    sampled from an "easy", "normal" and "hard" difficulty pool. Updates
+    difficulty information based on the rollout rewards and advantages. Releases
+    all rollouts to the trainer.
     """
 
-    def __init__(self, dataset: Dataset, buffer_config: PriorityPoolBufferConfig):
+    def __init__(self, dataset: Dataset, buffer_config: DifficultyPoolBufferConfig):
         super().__init__(dataset, buffer_config)
 
-        # Add priority information to metadata
-        if self.config.priority_field is not None:
-            assert self.config.priority_field in self.dataset.column_names
-            priorities = self.dataset[self.config.priority_field]
-            self.logger.info(f"Found priority field {self.config.priority_field} in dataset")
+        # Add difficulty information to metadata
+        if self.config.difficulty_field is not None:
+            assert self.config.difficulty_field in self.dataset.column_names
+            difficulties = self.dataset[self.config.difficulty_field]
+            self.logger.info(f"Found difficulty field {self.config.difficulty_field} in dataset")
         else:
-            self.logger.info("No priority field specified, initalizing all problems as `high` priority")
-            priorities = ["high"] * len(self.problem_ids)
+            self.logger.info("No difficulty field specified, initalizing all problems as `normal` difficulty")
+            difficulties = ["normal"] * len(self.problem_ids)
 
-        assert len(priorities) == len(self.problem_ids)
-        assert all(priority in ["low", "high", "discarded"] for priority in priorities)
-        for problem_id, priority in zip(self.problem_ids, priorities):
-            self.metadata[problem_id].update({"priority": priority})
+        assert len(difficulties) == len(self.problem_ids)
+        assert all(difficulty in ["easy", "normal", "hard"] for difficulty in difficulties)
+        for problem_id, difficulty in zip(self.problem_ids, difficulties):
+            self.metadata[problem_id].update({"difficulty": difficulty})
 
     def sample_problems(self, n: int) -> tuple[list[int], list[dict]]:
-        # Compute number of low and high priority problems to sample
-        n_low = int(n * self.config.low_priority_fraction)
-        n_high = n - n_low
-        self.logger.debug(f"{n_low=}, {n_high=}")
+        # Compute number of easy, normal and hard problems to sample
+        n_easy = int(n * self.config.easy_fraction)
+        n_hard = int(n * self.config.hard_fraction)
+        n_normal = n - n_easy - n_hard
+        self.logger.debug(f"Sampling {n_easy=}, {n_normal=}, {n_hard=}")
 
         # Get low and high priority problem
-        low_priority_problem_ids = [
-            problem_id for problem_id, metadata in self.metadata.items() if metadata["priority"] == "low"
+        easy_problem_ids = [
+            problem_id for problem_id, metadata in self.metadata.items() if metadata["difficulty"] == "easy"
         ]
-        high_priority_problem_ids = [
-            problem_id for problem_id, metadata in self.metadata.items() if metadata["priority"] == "high"
+        normal_problem_ids = [
+            problem_id for problem_id, metadata in self.metadata.items() if metadata["difficulty"] == "normal"
+        ]
+        hard_problem_ids = [
+            problem_id for problem_id, metadata in self.metadata.items() if metadata["difficulty"] == "hard"
         ]
         self.logger.debug(
-            f"Found {len(low_priority_problem_ids)} low priority and {len(high_priority_problem_ids)} high priority samples"
+            f"Found {len(easy_problem_ids)} easy, {len(normal_problem_ids)} normal and {len(hard_problem_ids)} hard problems"
         )
 
-        # Sample low priority problems
+        # Sample easy problems
         # Cannot sample more than the number of low priority problems available
-        n_low_sampled = min(n_low, len(low_priority_problem_ids))
-        sampled_low_priority_problem_ids = random.sample(low_priority_problem_ids, n_low_sampled)
-        assert len(sampled_low_priority_problem_ids) == n_low_sampled
-        if n_low_sampled < n_low:
-            n_high = n - n_low
+        n_easy_sampled = min(n_easy, len(easy_problem_ids))
+        sampled_easy_problem_ids = random.sample(easy_problem_ids, n_easy_sampled)
+        assert len(sampled_easy_problem_ids) == n_easy_sampled
+        if n_easy_sampled < n_easy:
+            self.logger.warning(
+                f"Only {n_easy_sampled} easy problems available, sampling {n_easy - n_easy_sampled} normal problems more"
+            )
+            n_normal += n_easy - n_easy_sampled
 
-        # Sample the rest from the high priority samples
-        assert len(high_priority_problem_ids) >= n_high
-        sampled_high_priority_problem_ids = random.sample(high_priority_problem_ids, n_high)
-        assert len(sampled_high_priority_problem_ids) == n_high
+        # Sample hard problems
+        n_hard_sampled = min(n_hard, len(hard_problem_ids))
+        sampled_hard_problem_ids = random.sample(hard_problem_ids, n_hard_sampled)
+        assert len(sampled_hard_problem_ids) == n_hard_sampled
+        if n_hard_sampled < n_hard:
+            self.logger.warning(
+                f"Only {n_hard_sampled} hard problems available, sampling {n_hard - n_hard_sampled} normal problems more"
+            )
+            n_normal += n_hard - n_hard_sampled
 
-        sampled_problem_ids = sampled_low_priority_problem_ids + sampled_high_priority_problem_ids
+        # Sample normal problems
+        # TODO: This is not entirely safe - runs may crash once all samples become easy and not enough samples are in normal pool
+        assert len(normal_problem_ids) >= n_normal
+        n_normal_sampled = min(n_normal, len(normal_problem_ids))
+        sampled_normal_problem_ids = random.sample(normal_problem_ids, n_normal_sampled)
+        assert len(sampled_normal_problem_ids) == n_normal_sampled
+
+        sampled_problem_ids = sampled_easy_problem_ids + sampled_normal_problem_ids + sampled_hard_problem_ids
         assert len(sampled_problem_ids) == n
         self.logger.debug(
-            f"Sampled {n} problems (low_priority={len(sampled_low_priority_problem_ids)}, high_priority={len(sampled_high_priority_problem_ids)}, {sampled_problem_ids=})"
+            f"Sampled {n} problems (easy={len(sampled_easy_problem_ids)}, normal={len(sampled_normal_problem_ids)}, hard={len(sampled_hard_problem_ids)}, {sampled_problem_ids=})"
         )
 
         # Sample problems
@@ -267,17 +286,20 @@ class PriorityPoolBuffer(Buffer):
         # Update metadata with priority information
         stats = Counter()
         for problem_id, rollouts in rollouts_by_problem_id.items():
-            rewards = [rollout.reward for rollout in rollouts]
-            advantages = [rollout.advantage for rollout in rollouts]
-            if all(abs(a) < 1e-6 for a in advantages) and all(r > 0.5 for r in rewards):
-                priority = "discarded"
-            elif all(abs(a) < 1e-6 for a in advantages) and all(r < 0.5 for r in rewards):
-                priority = "low"
+            reward = sum([rollout.reward for rollout in rollouts]) / len(rollouts)
+            # TODO(Justus): Should we also have rules based on advantages here?
+            # TODO(Justus): Should we move samples between pools based on average reward or all(r > threshold for r in rewards)?
+            if reward > 0.8:
+                new_difficulty = "easy"
+            elif reward < 0.2:
+                new_difficulty = "hard"
             else:
-                priority = "high"
-            stats[priority] += 1
-            self.metadata[problem_id].update({"priority": priority})
-        self.logger.info(f"Updated priority information: {stats=}")
+                new_difficulty = "normal"
+            old_difficulty = self.metadata[problem_id]["difficulty"]
+            stats[(old_difficulty, new_difficulty)] += 1
+            self.metadata[problem_id].update({"difficulty": new_difficulty})
+        stats_str = ", ".join([f"{v} problems moved from `{k[0]}` to `{k[1]}`" for k, v in stats.items()])
+        self.logger.debug(f"Updated difficulty information ({stats_str})")
 
     def sample_rollouts(self, n: int) -> list[Rollout]:
         # Take the first n rollouts from the rollout buffer
@@ -370,7 +392,7 @@ class OnlineDifficultyBuffer(Buffer):
                 for problem_id in sampled_problem_ids
             ]
         )
-        self.logger.info(
+        self.logger.debug(
             f"Sampled {len(sampled_problem_ids)} problems ({sampled_problem_ids=}) within difficulty range [{self.config.min_reward=}, {self.config.max_reward=}]"
         )
 
@@ -385,7 +407,7 @@ class OnlineDifficultyBuffer(Buffer):
 def setup_buffer(dataset: Dataset, buffer_config: DataBufferConfig) -> Buffer:
     if buffer_config.type == "simple":
         return SimpleBuffer(dataset, buffer_config)
-    elif buffer_config.type == "priority_pool":
-        return PriorityPoolBuffer(dataset, buffer_config)
-    elif buffer_config.type == "online_difficulty":
+    elif buffer_config.type == "difficulty-pool":
+        return DifficultyPoolBuffer(dataset, buffer_config)
+    elif buffer_config.type == "online-difficulty":
         return OnlineDifficultyBuffer(dataset, buffer_config)

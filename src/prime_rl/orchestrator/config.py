@@ -159,28 +159,37 @@ class SimpleBufferConfig(BaseModel):
     type: Literal["simple"] = "simple"
 
 
-class PriorityPoolBufferConfig(BaseModel):
-    type: Literal["priority_pool"] = "priority_pool"
+class DifficultyPoolBufferConfig(BaseModel):
+    type: Literal["difficulty-pool"] = "difficulty-pool"
 
-    priority_field: Annotated[
+    difficulty_field: Annotated[
         str | None,
         Field(
-            description="Field name in the dataset that contains priority information. If None, all samples are treated as high priority by default.",
+            description="Field name in the dataset that contains difficulty information. Should only contain `easy`, `normal` and `hard`. If None, all samples are treated as `normal` by default.",
         ),
     ] = None
 
-    low_priority_fraction: Annotated[
+    easy_fraction: Annotated[
         float,
         Field(
             ge=0,
             le=1,
-            description="Fraction of the batch that should consist of low priority samples.",
+            description="Fraction of the batch that should consist of easy samples.",
+        ),
+    ] = 0.1
+
+    hard_fraction: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            description="Fraction of the batch that should consist of hard samples.",
         ),
     ] = 0.1
 
 
 class OnlineDifficultyBufferConfig(BaseModel):
-    type: Literal["online_difficulty"] = "online_difficulty"
+    type: Literal["online-difficulty"] = "online-difficulty"
 
     min_reward: Annotated[
         float | None,
@@ -209,7 +218,7 @@ class OnlineDifficultyBufferConfig(BaseModel):
     ] = 1.0
 
 
-DataBufferConfig: TypeAlias = SimpleBufferConfig | PriorityPoolBufferConfig | OnlineDifficultyBufferConfig
+DataBufferConfig: TypeAlias = SimpleBufferConfig | DifficultyPoolBufferConfig | OnlineDifficultyBufferConfig
 
 
 class OrchestratorConfig(BaseSettings):
