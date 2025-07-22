@@ -273,7 +273,7 @@ async def orchestrate(config: OrchestratorConfig):
         assert len(grouped_rewards) == problems_per_batch
         solve_all = sum(1 for group in grouped_rewards if all(reward == 1 for reward in group)) / problems_per_batch
         solve_none = sum(1 for group in grouped_rewards if all(reward == 0 for reward in group)) / problems_per_batch
-        effective_batch_size = config.batch_size - solve_all - solve_none
+        effective_batch_size = 1 - solve_all - solve_none
 
         # Log samples to W&B table if enabled
         if monitor.wandb:
