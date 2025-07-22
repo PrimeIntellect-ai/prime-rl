@@ -220,7 +220,7 @@ async def orchestrate(config: OrchestratorConfig):
             )
 
             advantages = compute_advantages(
-                rewards=results["rewards"],
+                rewards=outputs["reward"],
                 samples_per_problem=config.rollouts_per_prompt,
                 advantage_type=config.advantage_type,
             )
