@@ -323,7 +323,7 @@ class OrchestratorConfig(BaseSettings):
         Field(
             description="Whether to override reward scores with 0 for truncated completions.",
         ),
-    ] = True
+    ] = False
 
     # TODO(Mika): This should be automatic from the number of ZMQ connections
     num_train_workers: Annotated[
