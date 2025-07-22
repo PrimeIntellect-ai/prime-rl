@@ -233,7 +233,7 @@ async def orchestrate(config: OrchestratorConfig):
                 completion_tokens=results["completion_ids"],
                 completion_masks=results["completion_mask"],
                 completion_logprobs=results["completion_logprobs"],
-                rewards=results["rewards"],
+                rewards=outputs["reward"],
                 advantages=advantages,
             )
             buffer.update(rollouts)
