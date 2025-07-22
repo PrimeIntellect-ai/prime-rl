@@ -228,12 +228,12 @@ async def orchestrate(config: OrchestratorConfig):
             # Update pool
             rollouts = make_rollouts(
                 problem_ids=problem_ids,
-                prompt_tokens=results["prompt_tokens"],
-                prompt_masks=results["prompt_masks"],
-                completion_tokens=results["completion_tokens"],
-                completion_masks=results["completion_masks"],
+                prompt_tokens=results["prompt_ids"],
+                prompt_masks=results["prompt_mask"],
+                completion_tokens=results["completion_ids"],
+                completion_masks=results["completion_mask"],
                 completion_logprobs=results["completion_logprobs"],
-                rewards=outputs["reward"],
+                rewards=results["rewards"],
                 advantages=advantages,
             )
             buffer.update(rollouts)
