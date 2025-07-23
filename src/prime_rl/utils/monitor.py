@@ -240,7 +240,9 @@ class WandbMonitor(Monitor):
         self.last_log_samples_step = step
         self.logger.debug(f"Logged {len(self.samples)} samples to W&B table in {time.time() - start_time:.2f}s")
 
-    def log_distributions(self, rewards: list[float], advantages: list[float], step: int) -> None:
+    def log_distributions(
+        self, rewards: list[float], advantages: list[float], rollouts_per_problem: int, step: int
+    ) -> None:
         if (
             not self.config.log_extras
             or not self.config.log_extras.distributions
@@ -250,9 +252,27 @@ class WandbMonitor(Monitor):
         assert self.last_log_distributions_step <= step, "Step must be greater than last logged step"
         self.logger.debug(f"Logging distributions to W&B table at step {step}")
 
+        # Group by problem
+        problem_rewards = defaultdict(list)
+        problem_advantages = defaultdict(list)
+        for i, (reward, advantage) in enumerate(zip(rewards, advantages)):
+            problem_id = i // rollouts_per_problem
+            problem_rewards[problem_id].append(reward)
+            problem_advantages[problem_id].append(advantage)
+
+        # Compute mean per-problem
+        problem_mean_rewards = [sum(rewards) / len(rewards) for rewards in problem_rewards.values()]
+        problem_mean_advantages = [sum(advantages) / len(advantages) for advantages in problem_advantages.values()]
+
         # Append to distributions
         start_time = time.time()
-        distributions = {"step": step, "rewards": rewards, "advantages": advantages}
+        distributions = {
+            "step": step,
+            "rewards": rewards,
+            "advantages": advantages,
+            "problem_rewards": problem_mean_rewards,
+            "problem_advantages": problem_mean_advantages,
+        }
         self.distributions.append(distributions)
 
         # Log to W&B table at configured intervals
