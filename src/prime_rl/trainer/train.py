@@ -198,7 +198,7 @@ def train(config: TrainerConfig):
                     temperature = micro_batch["temperature"]
 
                     recomputed_logprobs = compute_logprobs(logprob_model, input_ids, position_ids, temperature)
-                    recomputed_logprob_error = ((torch.exp(recomputed_logprobs - logprobs).abs()) * loss_mask).sum()
+                    recomputed_logprob_error = (torch.exp(recomputed_logprobs - logprobs) * loss_mask).sum()
 
                     micro_batch["recomputed_logprob_error"] = recomputed_logprob_error.to("cpu")
                     micro_batch["logprobs"] = recomputed_logprobs.to("cpu")
