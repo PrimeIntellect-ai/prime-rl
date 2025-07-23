@@ -546,10 +546,10 @@ def load_swe_rl_environment(env_args: dict = {}) -> Environment:
 
             return format_reward_func
 
-    dataset = load_dataset("rasdani/R2E-Gym-Subset-Oracle", split="train")
+    dataset = load_dataset("rasdani/SkyRL-v0-293-data-oracle-4k-context-100-epochs", split="train")
     dataset = dataset.map(
         lambda x: {
-            "question": x["prompt"],
+            "prompt": x["messages"],
             "answer": x["patch"],
             "info": {"parsed_commit_content": x["parsed_commit_content"]},
             "task": "swe-rl",
@@ -614,7 +614,7 @@ def load_swe_rl_environment(env_args: dict = {}) -> Environment:
                     fromfile=f"a/{path}",
                     tofile=f"b/{path}",
                     n=3,  # context lines
-                    lineterm="",  # Prevent extra newlines
+                    lineterm="",  # prevent extra newlines
                 )
             )
             return "\n".join(diff)
