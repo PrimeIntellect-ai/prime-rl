@@ -1,0 +1,24 @@
+batch_size = 32
+micro_batch_size = 8
+rollouts_per_prompt = 8
+seq_len = 8192
+mask_truncated_completions = true
+
+[model]
+name = "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
+
+[environment]
+id = "swe-rl"
+
+[environment.args]
+recompute_gt_patch = true
+
+[sampling]
+max_tokens = 4096
+temperature = 0.6
+
+[monitor.wandb]
+
+[monitor.wandb.log_samples]
+interval = 5
+num_samples = 2

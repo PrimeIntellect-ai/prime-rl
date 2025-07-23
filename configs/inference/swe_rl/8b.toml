@@ -1,0 +1,6 @@
+[model]
+name = "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
+max_model_len = 8192
+
+[parallel]
+dp = 4
