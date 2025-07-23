@@ -13,9 +13,9 @@ import aiohttp
 import pandas as pd
 import psutil
 import pynvml
-import wandb
 from transformers.tokenization_utils import PreTrainedTokenizer
 
+import wandb
 from prime_rl.utils.config import (
     APIMonitorConfig,
     BaseConfig,
@@ -145,7 +145,7 @@ class WandbMonitor(Monitor):
         )
 
         # Optionally, initialize sample logging attributes
-        if config.log_samples:
+        if config.log_extras:
             assert tokenizer is not None, "Tokenizer is required for sample logging"
             self.tokenizer = tokenizer
             self.last_log_step = -1
@@ -174,7 +174,11 @@ class WandbMonitor(Monitor):
             task_rewards: Optional list of task-specific rewards
             step: Current training step
         """
-        if not self.config.log_samples or step % self.config.log_samples.interval != 0:
+        if (
+            not self.config.log_extras
+            or not self.config.log_extras.samples
+            or step % self.config.log_extras.interval != 0
+        ):
             # Do not log samples if not enabled or not log interval step
             return
         assert self.tokenizer is not None, "Tokenizer is required for sample logging"
