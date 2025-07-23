@@ -231,7 +231,7 @@ class WandbMonitor(Monitor):
         # Log to W&B table at configured intervals
         df = pd.DataFrame(self.samples)
         table = wandb.Table(dataframe=df)
-        wandb.log({"completions": table}, step=step)
+        wandb.log({"samples": table}, step=step)
         self.last_log_step = step
         self.logger.debug(f"Logged {len(self.samples)} samples to W&B table in {time.time() - start_time:.2f}s")
 
