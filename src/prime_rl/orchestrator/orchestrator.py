@@ -254,6 +254,7 @@ async def orchestrate(config: OrchestratorConfig):
                 rollouts_per_problem=config.rollouts_per_prompt,
                 step=progress.step,
             )
+            monitor.wandb.log_distributions(rewards, advantages, step=progress.step)
 
         # Write serialized batch to disk for trainer workers to consume
         all_data_ranks_batches = prepare_batch(

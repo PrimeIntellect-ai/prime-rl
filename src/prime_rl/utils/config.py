@@ -58,6 +58,13 @@ class LogExtrasConfig(BaseConfig):
         ),
     ] = True
 
+    distributions: Annotated[
+        bool,
+        Field(
+            description="Whether to log distributions, like rewards, advantages, etc. to W&B tables.",
+        ),
+    ] = True
+
     interval: Annotated[
         int,
         Field(
