@@ -29,6 +29,8 @@ dependencies = [
     "rich>=14.0.0",
     "tomli-w",
     "verifiers",
+    "swebench>=4.0.4",
+    "unidiff>=0.7.5",
 ]
 
 [project.scripts]

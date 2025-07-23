@@ -1,0 +1,11 @@
+[model]
+name = "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
+ac = true
+
+[optim]
+lr = 1e-6
+
+[ckpt]
+interval = 100
+
+[monitor.wandb]
