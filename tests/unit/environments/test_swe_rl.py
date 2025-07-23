@@ -111,7 +111,7 @@ from torch.nn.modules.loss import _Loss
         negatives_mask = ~torch.eye(self.batch_size * 2, self.batch_size * 2, dtype=torch.bool)
         negatives_mask = torch.clone(negatives_mask.type(torch.float)).to(input.device)
 =======
-        negatives_mask = ~torch.eye(input.shape[0] * 2, input.shape[0] * 2, dtype=torch.bool)
+        negatives_mask = ~torch.eye(batch_size * 2, batch_size * 2, dtype=torch.bool)
         negatives_mask = torch.clone(negatives_mask.type(torch.float)).to(input.device)
 >>>>>>> REPLACE
 ```
@@ -144,9 +144,9 @@ from torch.nn.modules.loss import _Loss
         sim_ij = torch.diag(sim_matrix, self.batch_size)
         sim_ji = torch.diag(sim_matrix, -self.batch_size)
 =======
-        sim_ij = torch.diag(sim_matrix, input.shape[0])
+        sim_ij = torch.diag(sim_matrix, batch_size)
         # comment out the line below
-        sim_ji = torch.diag(sim_matrix, -input.shape[0])
+        sim_ji = torch.diag(sim_matrix, -batch_size)
 >>>>>>> REPLACE
 ```
 """,
@@ -169,7 +169,7 @@ from torch.nn.modules.loss import _Loss
 
 def test_swe_rl_environment_reward_computation():
     """Test reward computation for SWE-RL environment"""
-    swe_env = load_environment("swe-rl", {})
+    swe_env = load_environment("swe-rl", {"recompute_gt_patch": True})
     dataset = load_dataset("rasdani/SkyRL-v0-293-data-oracle-8k-context", split="train")
     dataset = dataset.map(
         lambda x: {
@@ -208,7 +208,6 @@ def test_swe_rl_environment_reward_computation():
             reward = func(**inputs)
             weighted_reward = reward * weight
             total_reward += weighted_reward
-            print(total_reward)
         total_rewards.append(total_reward)
 
         # Reward should be computed without errors
@@ -219,4 +218,4 @@ def test_swe_rl_environment_reward_computation():
     assert all(total_rewards[i] < total_rewards[i + 1] for i in range(6)), (
         "Reward should increase with more correct edits"
     )
-    assert total_rewards[6] > 0.9, "Reward should be close to 1.0 for the full solution"
+    assert total_rewards[6] == 1.0, "Reward should be 1.0 for perfect solution"

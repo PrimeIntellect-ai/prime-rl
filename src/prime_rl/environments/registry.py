@@ -482,6 +482,14 @@ def load_swe_rl_environment(env_args: dict = {}) -> Environment:
         journal={arXiv preprint arXiv:2504.07164},
         year={2025}
     }
+
+    Environment Args:
+        recompute_gt_patch: Whether to recompute the ground truth patch from the file context. This assures the same format for predicted and ground truth patches.
+            If True, the ground truth patch is recomputed from the file context.
+            If False, the ground truth patch is the one provided in the dataset.
+            Default: False
+        strip_comment_lines: Whether to strip comment lines from predicted and ground truth patches. Setting this to False recovers the original SWE-bench `extract_minimal_patch` behavior.
+            Default: True
     """
     import json
     import re
@@ -552,6 +560,9 @@ def load_swe_rl_environment(env_args: dict = {}) -> Environment:
 
     format_reward_func = parser.get_format_reward_func()
 
+    recompute_gt_patch = env_args.get("recompute_gt_patch", False)
+    strip_comment_lines = env_args.get("strip_comment_lines", True)
+
     def swe_rl_reward_func(completion, answer, info, **kwargs) -> float:
         """Compute reward for SWE-RL by comparing generated edits to expected patch."""
         parsed_commit_content = (
@@ -561,6 +572,10 @@ def load_swe_rl_environment(env_args: dict = {}) -> Environment:
         )
         file_diffs = parsed_commit_content.get("file_diffs")
         file_context = {file_diff["header"]["file"]["path"]: file_diff["old_file_content"] for file_diff in file_diffs}
+        if recompute_gt_patch:
+            gt_file_context = {
+                file_diff["header"]["file"]["path"]: file_diff["new_file_content"] for file_diff in file_diffs
+            }
 
         parsed_edits = parser.parse_answer(completion)
         if parsed_edits is None:
@@ -633,7 +648,7 @@ def load_swe_rl_environment(env_args: dict = {}) -> Environment:
             except UnidiffParseError:
                 return ""
 
-        def strip_comment_lines(patch: str) -> str:
+        def strip_comment_lines_from_patch(patch: str) -> str:
             lines = patch.splitlines(keepends=True)
             filtered = [ln for ln in lines if not COMMENT_LINE_PATTERN.match(ln)]
             return "".join(filtered)
@@ -658,7 +673,7 @@ def load_swe_rl_environment(env_args: dict = {}) -> Environment:
                     pre_start, pre_len, post_start, post_len, content = list(
                         map(lambda x: int(x) if x.isnumeric() else x, hunk)
                     )
-                    content = strip_comment_lines(content)
+                    content = strip_comment_lines_from_patch(content) if strip_comment_lines else content
                     content, adjust_pre_start = strip_content(content)
                     pre_start += adjust_pre_start
                     pre_start, pre_len, post_start, post_len, total_delta = get_hunk_stats(
@@ -667,15 +682,15 @@ def load_swe_rl_environment(env_args: dict = {}) -> Environment:
                     new_patch += f"@@ -{pre_start},{pre_len} +{post_start},{post_len} @@{content}"
             return new_patch
 
-        def score_patch(pred_patch: str, oracle_patch: str) -> float:
-            """Score predicted patch against oracle patch using LCS ratio."""
+        def score_patch(pred_patch: str, gt_patch: str) -> float:
+            """Score predicted patch against ground truth patch using LCS ratio."""
             if not pred_patch.strip():
                 return -1.0
             try:
                 score = cydifflib.SequenceMatcher(
                     None,
                     a=pred_patch,
-                    b=oracle_patch,
+                    b=gt_patch,
                     autojunk=False,
                 ).ratio()
                 return score
@@ -686,11 +701,18 @@ def load_swe_rl_environment(env_args: dict = {}) -> Environment:
             edited_file_context = apply_edits(file_context, parsed_edits)
             if edited_file_context is None:
                 return -1.0
+
             patched_file_context = create_patched_file_context(file_context, edited_file_context)
             pred_patch = get_unidiff_from_patched_file_context(patched_file_context)
             min_pred_patch = extract_minimal_patch(pred_patch)
-            min_oracle_patch = extract_minimal_patch(answer)
-            return score_patch(min_pred_patch, min_oracle_patch)
+
+            if recompute_gt_patch:
+                gt_patched_file_context = create_patched_file_context(file_context, gt_file_context)
+                gt_patch = get_unidiff_from_patched_file_context(gt_patched_file_context)
+                min_gt_patch = extract_minimal_patch(gt_patch)
+            else:
+                min_gt_patch = extract_minimal_patch(answer)
+            return score_patch(min_pred_patch, min_gt_patch)
 
         except Exception as e:
             print(f"Error in swe_rl_reward_func: {repr(e)}")
