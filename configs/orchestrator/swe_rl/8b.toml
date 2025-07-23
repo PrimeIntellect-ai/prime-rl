@@ -18,7 +18,3 @@ max_tokens = 4096
 temperature = 0.6
 
 [monitor.wandb]
-
-[monitor.wandb.log_samples]
-interval = 5
-num_samples = 2
