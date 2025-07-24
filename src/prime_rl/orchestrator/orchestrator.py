@@ -203,7 +203,6 @@ async def orchestrate(config: OrchestratorConfig):
                 sampling_args["extra_body"]["min_p"] = sampling_args.pop("min_p")
             if "min_tokens" in sampling_args:
                 sampling_args["extra_body"]["min_tokens"] = sampling_args.pop("min_tokens")
-            assert sampling_args.get("n", 1) == 1
 
             outputs = await vf_env.a_generate(
                 inputs=inputs, client=client, model=config.model.name, sampling_args=sampling_args
