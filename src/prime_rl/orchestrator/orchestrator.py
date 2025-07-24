@@ -339,6 +339,11 @@ async def orchestrate(config: OrchestratorConfig):
         # Increment progress
         progress.step += 1
 
+    # Log final (immutable) samples and distributions to W&B table
+    if monitor.wandb:
+        monitor.wandb.log_final_samples()
+        monitor.wandb.log_final_distributions()
+
     logger.success("Orchestrator finished.")
 
     # Optionally, print benchmark table
