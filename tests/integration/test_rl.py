@@ -20,7 +20,7 @@ CMD = [
     "--orchestrator",
     "@",
     "configs/orchestrator/reverse_text.toml",
-    "--orchestrator.monitor.wandb.log_samples",
+    "--orchestrator.monitor.wandb.log-extras",
 ]
 
 
