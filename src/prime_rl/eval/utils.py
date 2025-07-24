@@ -95,7 +95,7 @@ async def run_benchmark(
         rows.append(row)
 
     # Compute scores
-    k = sampling_config.n
+    k = rollouts_per_prompt
     sample_stats = pd.DataFrame(rows)
     unique_rewards = sample_stats.reward.unique()
     could_be_binary = set(unique_rewards).issubset({0.0, 1.0})
