@@ -1,5 +1,6 @@
 import functools
 import os
+import sys
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -239,3 +240,11 @@ def get_cuda_visible_devices() -> list[int]:
         # Default to all devices if the environment variable is not set
         return list(range(torch.cuda.device_count()))
     return list(sorted([int(device) for device in cuda_visible.split(",")]))
+
+
+def maybe_overwrite_start_command() -> None:
+    """Overwrites sys.argv with the start command if it is set in the environment variables."""
+    start_command = os.environ.get("START_COMMAND", None)
+    if start_command:
+        get_logger().info(f"Found start command in environment variables, overwriting sys.argv to `{start_command}`")
+        sys.argv = start_command.split()

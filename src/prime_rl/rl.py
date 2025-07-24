@@ -255,7 +255,9 @@ def monitor_process(process: Popen, stop_event: Event, error_queue: list, proces
 def rl(config: RLConfig):
     # Setup logger
     logger = setup_logger(config.log)
+    start_command = sys.argv
     logger.info("Starting RL run")
+    logger.debug(f"RL start command: {' '.join(start_command)}")
 
     # Prepare paths to communicate with the trainer
     if config.clean:
@@ -349,6 +351,7 @@ def rl(config: RLConfig):
                 env={
                     **os.environ,
                     "LOGURU_FORCE_COLORS": "1",
+                    "START_COMMAND": " ".join(start_command),
                 },
             )
         processes.append(orchestrator_process)
@@ -391,6 +394,7 @@ def rl(config: RLConfig):
                     **os.environ,
                     "CUDA_VISIBLE_DEVICES": ",".join(map(str, train_gpu_ids)),
                     "LOGURU_FORCE_COLORS": "1",
+                    "START_COMMAND": " ".join(start_command),
                 },
                 stdout=log_file,
                 stderr=log_file,
