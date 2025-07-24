@@ -58,6 +58,13 @@ class EvalConfig(BaseSettings):
         ),
     ] = ["math500"]
 
+    rollouts_per_prompt: Annotated[
+        list[int],
+        Field(
+            description="Number of samples to generate for each benchmark.",
+        ),
+    ] = [1]
+
     online: Annotated[OnlineEvalConfig | None, Field(description="Whether to do online evaluation.")] = None
 
     # The monitor configuration

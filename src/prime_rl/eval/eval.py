@@ -50,10 +50,11 @@ async def eval(config: EvalConfig):
                 benchmark,
                 config.model,
                 config.sampling,
+                rollouts_per_prompt=rollouts_per_prompt,
                 ckpt_step=0,
                 monitor=monitor,
             )
-            for benchmark in config.benchmarks
+            for benchmark, rollouts_per_prompt in zip(config.benchmarks, config.rollouts_per_prompt)
         ]
     )
 
