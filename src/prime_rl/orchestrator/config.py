@@ -92,14 +92,6 @@ class SamplingConfig(BaseConfig):
         ),
     ] = None
 
-    n: Annotated[
-        int,
-        Field(
-            ge=1,
-            description="Number of samples to generate for each problem.",
-        ),
-    ] = 1
-
 
 class EnvironmentConfig(BaseConfig):
     """Configures the environment to be used for inference."""
