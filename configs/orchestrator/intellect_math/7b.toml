@@ -24,5 +24,6 @@ interval = 50
 [eval]
 interval = 50
 benchmarks = ["math500", "aime24", "aime25"]
+rollouts_per_prompt = [1, 16, 16]
 
 [ckpt]
