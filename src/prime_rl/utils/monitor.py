@@ -313,6 +313,8 @@ class WandbMonitor(Monitor):
 
     def log_final_samples(self) -> None:
         """Log final samples to W&B table."""
+        if not self.config.log_extras or not self.config.log_extras.samples:
+            return
         self.logger.debug("Logging final samples to W&B table")
         df = pd.DataFrame(self.samples)
         table = wandb.Table(dataframe=df)
@@ -320,6 +322,8 @@ class WandbMonitor(Monitor):
 
     def log_final_distributions(self) -> None:
         """Log final distributions to W&B table."""
+        if not self.config.log_extras or not self.config.log_extras.distributions:
+            return
         self.logger.debug("Logging final distributions to W&B table")
         df = pd.DataFrame(self.distributions)
         table = wandb.Table(dataframe=df)
