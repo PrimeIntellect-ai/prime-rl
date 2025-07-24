@@ -132,6 +132,7 @@ def train(config: TrainerConfig):
         dataloader = FakeDataLoader(config.data.fake)
 
     logger.info(f"Starting training loop ({config.max_steps=})")
+    is_first_step = True
     while True:
         # Save the weight checkpoint (if we are not at the first step, because no updates to the model have been made yet)
         save_weights_time = 0
@@ -142,7 +143,7 @@ def train(config: TrainerConfig):
 
         # Save the full checkpoint (if we are at an interval step and not at the first step)
         save_ckpt_time = 0
-        if config.ckpt and config.ckpt.interval and progress.step > 0 and progress.step % config.ckpt.interval == 0:
+        if config.ckpt and config.ckpt.interval and not is_first_step and progress.step % config.ckpt.interval == 0:
             logger.debug(f"Saving checkpoint {progress.step}")
             save_ckpt_start_time = time.time()
             ckpt_manager.save(model, [optimizer], progress, step=progress.step)
@@ -360,6 +361,7 @@ def train(config: TrainerConfig):
         monitor.log(time_metrics)
 
         progress.step += 1
+        is_first_step = False
 
     logger.info(f"Peak memory: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB")
     logger.success("Trainer finished!")

@@ -101,10 +101,11 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info(f"Starting orchestrator loop ({max_steps=}")
     ckpt_step = 0
     last_eval_step = -1
+    is_first_step = True
     while True:
         # Save checkpoint (if we are not at the first step)
         save_ckpt_time = 0
-        if config.ckpt and config.ckpt.interval and progress.step > 0 and progress.step % config.ckpt.interval == 0:
+        if config.ckpt and config.ckpt.interval and not is_first_step and progress.step % config.ckpt.interval == 0:
             logger.debug(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.time()
             ckpt_manager.save(progress, step=progress.step)
