@@ -18,7 +18,7 @@ id = "wordle"
 [sampling]
 max_tokens = 1024
 
-[monitor.wandb.log_samples]
+[monitor.wandb.log_extras]
 interval = 10
 
 [ckpt]
