@@ -34,6 +34,7 @@ async def run_benchmark(
     benchmark: Benchmark,
     model_config: ModelConfig,
     sampling_config: SamplingConfig,
+    rollouts_per_prompt: int,
     ckpt_step: int,
     monitor: MultiMonitor,
     step: int | None = None,
@@ -60,14 +61,18 @@ async def run_benchmark(
         )
 
     # Format prompts
-    prompts = [item["prompt"] for item in dataset]  # TODO: Multiply by samples_per_prompt
-    problem_ids = list(range(len(dataset)))  # TODO: Multiply by samples_per_prompt
+    prompts = [item["prompt"] for item in dataset]
+    problem_ids = list(range(len(dataset)))
+    prompts = [prompt for prompt in prompts for _ in range(rollouts_per_prompt)]
+    problem_ids = [problem_id for problem_id in problem_ids for _ in range(rollouts_per_prompt)]
     batch_messages = [[{"role": "user", "content": prompt}] for prompt in prompts]
     load_data_time = time.time() - load_data_start_time
     logger.debug(f"Loaded dataset in {load_data_time:.2f}s")
 
     # Generate completions
-    logger.debug(f"Generating completions for {len(dataset)} problems")
+    logger.debug(
+        f"Generating {rollouts_per_prompt} rollouts per prompt for {len(dataset)} problems ({len(prompts)} total requests)"
+    )
     generate_completions_start_time = time.time()
     chat_completions = await asyncio.gather(
         *(generate_completion(client, model_config, sampling_config, messages) for messages in batch_messages)
@@ -90,6 +95,7 @@ async def run_benchmark(
         rows.append(row)
 
     # Compute scores
+    k = sampling_config.n
     sample_stats = pd.DataFrame(rows)
     unique_rewards = sample_stats.reward.unique()
     could_be_binary = set(unique_rewards).issubset({0.0, 1.0})
@@ -106,14 +112,14 @@ async def run_benchmark(
 
     # Log statistics
     benchmark_time = time.time() - benchmark_start_time
-    message = f"Evaluated {benchmark_name} in {benchmark_time:.2f}s (Score={sample_stats.reward.mean():.2f}"
+    message = f"Evaluated {benchmark_name} in {benchmark_time:.2f}s (Avg@{k}={sample_stats.reward.mean():.2f}"
     if could_be_binary:
         for pass_rate, pass_rate_score in pass_rates.mean().items():
             message += f", {capitalize(pass_rate)}: {pass_rate_score:.2f}"
     logger.success(message + ")")
 
     # Log statistics to monitor
-    eval_metrics = {"score": sample_stats.reward.mean()}
+    eval_metrics = {f"avg@{k}": float(sample_stats.reward.mean())}
     if could_be_binary:
         eval_metrics.update(pass_rates.mean().to_dict())
     eval_metrics = {**{f"eval/{benchmark}/{k}": v for k, v in eval_metrics.items()}}

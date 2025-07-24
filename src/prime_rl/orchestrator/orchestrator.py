@@ -141,7 +141,7 @@ async def orchestrate(config: OrchestratorConfig):
             logger.debug(f"Reloaded weights in {reload_weights_time:.2f}s")
 
         # Optionally, run online evals at the specified interval
-        time_eval = 0
+        eval_time = 0
         if (
             config.eval
             and config.eval.interval
@@ -151,25 +151,24 @@ async def orchestrate(config: OrchestratorConfig):
         ):
             last_eval_step = ckpt_step
             logger.info(f"Running evals for checkpoint step {ckpt_step}")
-            time_before_evals = time.time()
-            benchmark_tasks = []
-            for benchmark, rollouts_per_prompt in zip(config.eval.benchmarks, config.eval.rollouts_per_prompt):
-                sampling_config = deepcopy(config.sampling)
-                sampling_config.n = rollouts_per_prompt
-                benchmark_tasks.append(
+            eval_start_time = time.time()
+            await asyncio.gather(
+                *[
                     run_benchmark(
                         client,
                         benchmark,
                         config.model,
-                        sampling_config,
+                        config.sampling,
+                        rollouts_per_prompt=rollouts_per_prompt,
                         ckpt_step=ckpt_step,
                         monitor=monitor,
                         step=progress.step,
                     )
-                )
-            await asyncio.gather(*benchmark_tasks)
-            time_eval = time.time() - time_before_evals
-            logger.info(f"Evaluated in {time_eval:.2f}s")
+                    for benchmark, rollouts_per_prompt in zip(config.eval.benchmarks, config.eval.rollouts_per_prompt)
+                ]
+            )
+            eval_time = time.time() - eval_start_time
+            logger.info(f"Evaluated in {eval_time:.2f}s")
 
         accepted_rollouts: list[Rollout] = []
         while True:
@@ -360,7 +359,7 @@ async def orchestrate(config: OrchestratorConfig):
             "time/orchestrator/generate_completions": generate_completions_time,
             "time/orchestrator/reload_weights": reload_weights_time,
             "time/orchestrator/save_ckpt": save_ckpt_time,
-            "time/orchestrator/eval": time_eval,
+            "time/orchestrator/eval": eval_time,
             "step": progress.step,
         }
         monitor.log(time_metrics)
