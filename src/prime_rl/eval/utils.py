@@ -20,8 +20,7 @@ from prime_rl.utils.utils import capitalize
 
 
 def compute_pass_rates(rewards: list[int]):
-    pass_rates = [k for k in range(1, len(rewards) + 1) if (k & (k - 1)) == 0]
-    return {f"pass@{k}": compute_pass_at_k(rewards, k) for k in pass_rates}
+    return {f"pass@{k}": compute_pass_at_k(rewards, k) for k in [len(rewards)]}
 
 
 def compute_pass_at_k(rewards: list[int], k: int):
