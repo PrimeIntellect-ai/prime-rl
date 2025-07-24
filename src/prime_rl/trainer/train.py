@@ -92,7 +92,7 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing weight checkpoint manager ({config.weights})")
     weight_ckpt_manager = WeightCheckpointManager(config.weights, config.ckpt, config.async_level)
     if config.ckpt:
-        logger.info(f"Initializing checkpoint manager ({config.ckpt})")  # TODO: Remove this
+        logger.info(f"Initializing checkpoint manager ({config.ckpt})")
         ckpt_manager = CheckpointManager(config.ckpt)
 
     # Optionally, resume training from a checkpoint
@@ -144,7 +144,7 @@ def train(config: TrainerConfig):
         # Save the full checkpoint (if we are at an interval step and not at the first step)
         save_ckpt_time = 0
         if config.ckpt and config.ckpt.interval and not is_first_step and progress.step % config.ckpt.interval == 0:
-            logger.debug(f"Saving checkpoint {progress.step}")
+            logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.time()
             ckpt_manager.save(model, [optimizer], progress, step=progress.step)
             save_ckpt_time = time.time() - save_ckpt_start_time
@@ -362,6 +362,11 @@ def train(config: TrainerConfig):
 
         progress.step += 1
         is_first_step = False
+
+    # Write final checkpoint
+    if config.ckpt:
+        logger.info("Writing final checkpoint")
+        ckpt_manager.save(model, [optimizer], progress, step=progress.step)
 
     logger.info(f"Peak memory: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB")
     logger.success("Trainer finished!")

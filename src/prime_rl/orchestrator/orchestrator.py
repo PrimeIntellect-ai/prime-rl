@@ -70,6 +70,7 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Get checkpoint manager
     if config.ckpt:
+        logger.info(f"Initializing checkpoint manager ({config.ckpt})")
         ckpt_manager = CheckpointManager(config.ckpt)
 
     # Reset weights to base model if starting from scratch
@@ -106,7 +107,7 @@ async def orchestrate(config: OrchestratorConfig):
         # Save checkpoint (if we are not at the first step)
         save_ckpt_time = 0
         if config.ckpt and config.ckpt.interval and not is_first_step and progress.step % config.ckpt.interval == 0:
-            logger.debug(f"Saving checkpoint at step {progress.step}")
+            logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.time()
             ckpt_manager.save(progress, step=progress.step)
             save_ckpt_time = time.time() - save_ckpt_start_time
@@ -367,8 +368,14 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Log final (immutable) samples and distributions to W&B table
     if monitor.wandb:
+        logger.info("Logging final samples and distributions as W&B table")
         monitor.wandb.log_final_samples()
         monitor.wandb.log_final_distributions()
+
+    # Write final checkpoint
+    if config.ckpt:
+        logger.info("Writing final checkpoint")
+        ckpt_manager.save(progress, step=progress.step)
 
     logger.success("Orchestrator finished.")
 
