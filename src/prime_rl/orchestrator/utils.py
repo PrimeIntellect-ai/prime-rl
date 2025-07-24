@@ -90,6 +90,15 @@ def parse_completions(chat_completions: list[ChatCompletion]) -> list[str]:
     return completions
 
 
+def parse_finish_reason(states: list[dict[str, Any]]) -> list[str]:
+    """Parses the finish reasons from a list of vLLM chat completions returned by vLLM OAI server."""
+    finish_reasons = []
+    for state in states:
+        assert len(chat_completion.choices) == 1, "Response should always have one choice"
+        finish_reasons.append(chat_completion.choices[0].finish_reason == "length")
+    return finish_reasons
+
+
 def wait_for_weight_checkpoint(path: Path, step: int, interval: int = 1, log_interval: int = 10) -> None:
     model_path = get_weight_ckpt_model_path(path, step)
     wait_for_path(model_path, interval, log_interval)

@@ -1,4 +1,3 @@
-from copy import deepcopy
 import asyncio
 import time
 from loguru import logger
@@ -29,7 +28,7 @@ from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.orchestrator.logger import setup_logger
 from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.utils import (
-    process_env_results,
+    parse_finish_reason,
     wait_for_weight_checkpoint,
     print_benchmark,
 )
@@ -267,8 +266,8 @@ async def orchestrate(config: OrchestratorConfig):
         progress.total_problems += config.batch_size // config.rollouts_per_prompt
         throughput = num_tokens / (generate_completions_time)
 
-        seq_lengths = np.array([len(p) + len(c) for p, c in zip(prompt_tokens, completion_tokens)])
-        problem_avg_seqlens = seq_lengths.reshape(-1, config.rollouts_per_prompt).mean(axis=-1)
+        seq_lens = np.array([len(p) + len(c) for p, c in zip(prompt_tokens, completion_tokens)])
+        problem_seqlens = seq_lens.reshape(-1, config.rollouts_per_prompt).mean(axis=-1)
 
         # Compute solve all/ none and critical batch size
         grouped_rewards = [
@@ -319,7 +318,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Log step metrics
         step_time = time.time() - step_start_time
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {np.mean(rewards):.2f} | Advantage: {np.mean(advantages):.2f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {float(problem_avg_seqlens.mean()):.1f} tokens/sample"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {np.mean(rewards):.2f} | Advantage: {np.mean(advantages):.2f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {float(problem_seqlens.mean()):.1f} tokens/sample"
         logger.success(step_message)
 
         # Log progress metrics to monitor
@@ -334,10 +333,10 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Log sequence length metrics to monitor
         seq_metrics = {
-            "seq/len": float(problem_avg_seqlens.mean()),
-            "seq/max_len": float(problem_avg_seqlens.max()),
-            "seq/min_len": float(problem_avg_seqlens.min()),
-            "seq/std_len": float(problem_avg_seqlens.std()),
+            "seq/len": float(problem_seqlens.mean()),
+            "seq/len/max": float(problem_seqlens.max()),
+            "seq/len/min": float(problem_seqlens.min()),
+            "seq/len/std": float(problem_seqlens.std()),
             "step": progress.step,
         }
         monitor.log(seq_metrics)
