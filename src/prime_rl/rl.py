@@ -162,9 +162,11 @@ class RLConfig(BaseSettings):
     def auto_setup_exp(self):
         if self.exp_id:
             self.log.path = self.log.path / self.exp_id
+            # Will be shared to orchestrator via `auto_setup_ckpt`
+            self.trainer.ckpt.path = self.trainer.ckpt.path / self.exp_id
+            # Will be shared to orchestrator via `auto_setup_paths`
             self.trainer.data.path = self.trainer.data.path / self.exp_id
             self.trainer.weights.path = self.trainer.weights.path / self.exp_id
-            # Note: Will be shared to orchestrator via `auto_setup_paths`
         return self
 
     @model_validator(mode="after")
