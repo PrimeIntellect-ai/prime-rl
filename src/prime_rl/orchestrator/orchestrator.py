@@ -1,3 +1,4 @@
+from copy import deepcopy
 import asyncio
 import time
 from loguru import logger
@@ -151,20 +152,22 @@ async def orchestrate(config: OrchestratorConfig):
             last_eval_step = ckpt_step
             logger.info(f"Running evals for checkpoint step {ckpt_step}")
             time_before_evals = time.time()
-            await asyncio.gather(
-                *[
+            benchmark_tasks = []
+            for benchmark, rollouts_per_prompt in zip(config.eval.benchmarks, config.eval.rollouts_per_prompt):
+                sampling_config = deepcopy(config.sampling)
+                sampling_config.n = rollouts_per_prompt
+                benchmark_tasks.append(
                     run_benchmark(
                         client,
                         benchmark,
                         config.model,
-                        config.sampling,
+                        sampling_config,
                         ckpt_step=ckpt_step,
                         monitor=monitor,
                         step=progress.step,
                     )
-                    for benchmark in config.eval.benchmarks
-                ]
-            )
+                )
+            await asyncio.gather(*benchmark_tasks)
             time_eval = time.time() - time_before_evals
             logger.info(f"Evaluated in {time_eval:.2f}s")
 
@@ -201,6 +204,7 @@ async def orchestrate(config: OrchestratorConfig):
                 sampling_args["extra_body"]["min_p"] = sampling_args.pop("min_p")
             if "min_tokens" in sampling_args:
                 sampling_args["extra_body"]["min_tokens"] = sampling_args.pop("min_tokens")
+            assert sampling_args.get("n", 1) == 1
 
             outputs = await vf_env.a_generate(
                 inputs=inputs, client=client, model=config.model.name, sampling_args=sampling_args

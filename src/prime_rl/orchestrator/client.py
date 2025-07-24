@@ -101,6 +101,7 @@ async def generate_completion(
         top_p=sampling_config.top_p,
         max_tokens=sampling_config.max_tokens,
         seed=sampling_config.seed,
+        n=sampling_config.n,
         logprobs=True,
         extra_body={
             "top_k": sampling_config.top_k,
@@ -109,5 +110,4 @@ async def generate_completion(
             "return_tokens_as_token_ids": True,
         },
     )
-    assert len(response.choices) == 1, "Response should always have one choice"
     return response
