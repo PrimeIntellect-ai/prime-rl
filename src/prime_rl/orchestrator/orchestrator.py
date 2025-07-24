@@ -332,13 +332,19 @@ async def orchestrate(config: OrchestratorConfig):
         }
         monitor.log(progress_metrics)
 
-        # Log perfrmance metrics to monitor
+        # Log sequence length metrics to monitor
+        seq_metrics = {
+            "seq/len": float(problem_avg_seqlens.mean()),
+            "seq/max_len": float(problem_avg_seqlens.max()),
+            "seq/min_len": float(problem_avg_seqlens.min()),
+            "seq/std_len": float(problem_avg_seqlens.std()),
+            "step": progress.step,
+        }
+        monitor.log(seq_metrics)
+
+        # Log performance metrics to monitor
         perf_metrics = {
             "perf/infer/throughput": throughput,
-            "perf/infer/seq_len": float(problem_avg_seqlens.mean()),
-            "perf/infer/max_seq_len": float(problem_avg_seqlens.max()),
-            "perf/infer/min_seq_len": float(problem_avg_seqlens.min()),
-            "perf/infer/std_seq_len": float(problem_avg_seqlens.std()),
             "step": progress.step,
         }
         monitor.log(perf_metrics)
