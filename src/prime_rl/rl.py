@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import subprocess
@@ -351,7 +352,8 @@ def rl(config: RLConfig):
                 env={
                     **os.environ,
                     "LOGURU_FORCE_COLORS": "1",
-                    "START_COMMAND": " ".join(start_command),
+                    "WANDB_PROGRAM": "uv run rl",
+                    "WANDB_ARGS": json.dumps(start_command),
                 },
             )
         processes.append(orchestrator_process)
@@ -394,7 +396,8 @@ def rl(config: RLConfig):
                     **os.environ,
                     "CUDA_VISIBLE_DEVICES": ",".join(map(str, train_gpu_ids)),
                     "LOGURU_FORCE_COLORS": "1",
-                    "START_COMMAND": " ".join(start_command),
+                    "WANDB_PROGRAM": "uv run rl",
+                    "WANDB_ARGS": json.dumps(start_command),
                 },
                 stdout=log_file,
                 stderr=log_file,

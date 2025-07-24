@@ -1,4 +1,5 @@
 import functools
+import json
 import os
 import sys
 import time
@@ -242,9 +243,12 @@ def get_cuda_visible_devices() -> list[int]:
     return list(sorted([int(device) for device in cuda_visible.split(",")]))
 
 
-def maybe_overwrite_start_command() -> None:
+def maybe_overwrite_wandb_command(wandb_program: str | None = None) -> None:
     """Overwrites sys.argv with the start command if it is set in the environment variables."""
-    start_command = os.environ.get("START_COMMAND", None)
-    if start_command:
-        get_logger().info(f"Found start command in environment variables, overwriting sys.argv to `{start_command}`")
-        sys.argv = start_command.split()
+    wandb_args = os.environ.get("WANDB_ARGS", None)
+    if wandb_args:
+        get_logger().debug(f"Found WANDB_ARGS in environment variables {wandb_args}")
+        sys.argv = json.loads(wandb_args)
+    if wandb_program and not os.environ.get("WANDB_PROGRAM"):
+        get_logger().debug(f"Setting WANDB_PROGRAM to {wandb_program}")
+        os.environ["WANDB_PROGRAM"] = wandb_program
