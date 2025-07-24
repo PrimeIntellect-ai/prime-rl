@@ -13,9 +13,9 @@ import aiohttp
 import pandas as pd
 import psutil
 import pynvml
+import wandb
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-import wandb
 from prime_rl.utils.config import (
     APIMonitorConfig,
     BaseConfig,
