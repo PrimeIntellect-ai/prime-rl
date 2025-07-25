@@ -171,6 +171,7 @@ async def orchestrate(config: OrchestratorConfig):
             logger.info(f"Evaluated in {eval_time:.2f}s")
 
         accepted_rollouts: list[Rollout] = []
+        problem_requests, completion_requests, calls_to_generate = 0, 0, 0
         problems_per_batch = config.batch_size // config.rollouts_per_prompt
         problems_to_sample = problems_per_batch
         while True:
@@ -209,6 +210,9 @@ async def orchestrate(config: OrchestratorConfig):
                 inputs=inputs, client=client, model=config.model.name, sampling_args=sampling_args
             )
             generate_completions_time = time.time() - generate_completions_start_time
+            problem_requests += problems_to_sample
+            completion_requests += problems_to_sample * config.rollouts_per_prompt
+            calls_to_generate += 1
 
             results = vf_env.process_env_results_vllm(
                 prompts=outputs["prompt"],
@@ -349,6 +353,9 @@ async def orchestrate(config: OrchestratorConfig):
         # Log performance metrics to monitor
         perf_metrics = {
             "perf/infer/throughput": throughput,
+            "perf/problem_requests": problem_requests,
+            "perf/completion_requests": completion_requests,
+            "perf/calls_to_generate": calls_to_generate,
             "step": progress.step,
         }
         monitor.log(perf_metrics)
