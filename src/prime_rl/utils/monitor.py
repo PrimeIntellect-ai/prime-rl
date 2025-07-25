@@ -3,6 +3,7 @@ import json
 import os
 import random
 import socket
+import sys
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -134,6 +135,7 @@ class WandbMonitor(Monitor):
         if not self.is_master:
             self.logger.warning(f"Skipping WandbMonitor initialization from non-master rank ({rank})")
             return
+        self._maybe_overwrite_wandb_command()
         self.wandb = wandb.init(
             project=config.project,
             name=config.name,
@@ -184,6 +186,13 @@ class WandbMonitor(Monitor):
                     log_mode="INCREMENTAL",
                 )
                 self.distributions = []
+
+    def _maybe_overwrite_wandb_command(self) -> None:
+        """Overwrites sys.argv with the start command if it is set in the environment variables."""
+        wandb_args = os.environ.get("WANDB_ARGS", None)
+        if wandb_args:
+            self.logger.debug(f"Found WANDB_ARGS in environment variables {wandb_args}")
+            sys.argv = json.loads(wandb_args)
 
     def log(self, metrics: dict[str, Any]) -> None:
         if not self.is_master:

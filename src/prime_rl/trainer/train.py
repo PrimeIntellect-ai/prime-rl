@@ -37,7 +37,7 @@ from prime_rl.trainer.utils import (
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
-from prime_rl.utils.utils import clean_exit, to_col_format, maybe_overwrite_wandb_command
+from prime_rl.utils.utils import clean_exit, to_col_format
 
 
 @clean_exit
@@ -47,9 +47,6 @@ def train(config: TrainerConfig):
     world = get_world()
     logger = setup_logger(config.log, world)
     logger.info(f"Starting trainer in {world}")
-
-    # If started from RL entrypoint, overwrite start command to log the correct command to W&B
-    maybe_overwrite_wandb_command("uv run trainer")
 
     # Print warning if running in benchmark mode
     if config.bench:
