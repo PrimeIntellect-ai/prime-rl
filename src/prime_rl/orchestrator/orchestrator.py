@@ -28,7 +28,6 @@ from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.orchestrator.logger import setup_logger
 from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.utils import (
-    parse_finish_reason,
     wait_for_weight_checkpoint,
     print_benchmark,
 )
