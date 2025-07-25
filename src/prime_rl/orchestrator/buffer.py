@@ -206,7 +206,7 @@ class DifficultyPoolBuffer(Buffer):
             difficulties = self.dataset[self.config.difficulty_field]
             self.logger.info(f"Found difficulty field {self.config.difficulty_field} in dataset")
         else:
-            self.logger.info("No difficulty field specified, initalizing all problems as `normal` difficulty")
+            self.logger.warning("No difficulty field specified, initalizing all problems as `normal` difficulty")
             difficulties = ["normal"] * len(self.problem_ids)
 
         assert len(difficulties) == len(self.problem_ids)
