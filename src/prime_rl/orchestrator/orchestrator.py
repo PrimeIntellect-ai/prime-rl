@@ -171,10 +171,11 @@ async def orchestrate(config: OrchestratorConfig):
             logger.info(f"Evaluated in {eval_time:.2f}s")
 
         accepted_rollouts: list[Rollout] = []
+        problems_per_batch = config.batch_size // config.rollouts_per_prompt
+        problems_to_sample = problems_per_batch
         while True:
             # Get the batch
-            problems_per_batch = config.batch_size // config.rollouts_per_prompt
-            problem_ids, problems = buffer.sample_problems(problems_per_batch)
+            problem_ids, problems = buffer.sample_problems(problems_to_sample)
 
             # Duplicate problems `rollouts_per_prompt` times
             problem_ids = [problem_id for problem_id in problem_ids for _ in range(config.rollouts_per_prompt)]
@@ -239,11 +240,16 @@ async def orchestrate(config: OrchestratorConfig):
                 advantages=advantages,
             )
             buffer.update(rollouts)
-            accepted_rollouts.extend(buffer.sample_rollouts(problems_per_batch))
+            accepted_rollouts.extend(buffer.sample_rollouts(problems_to_sample))
 
+            # Break if we have enough rollouts to fill the batch
             if len(accepted_rollouts) >= config.batch_size:
                 accepted_rollouts = accepted_rollouts[: config.batch_size]
                 break
+
+            # On next iteration, sample the remaining problems to fill the batch
+            problems_sampled = len(accepted_rollouts) // config.rollouts_per_prompt
+            problems_to_sample = problems_per_batch - problems_sampled
 
         # Unpack accepted rollouts
         rewards = [rollout.reward for rollout in accepted_rollouts]

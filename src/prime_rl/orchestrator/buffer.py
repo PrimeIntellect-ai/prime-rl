@@ -398,7 +398,7 @@ class OnlineDifficultyBuffer(Buffer):
 
         if len(sampled_problem_ids) < n:
             self.logger.warning(
-                f"Only {len(sampled_problem_ids)} (<{n}) problems with rollouts available ({num_too_easy=}, {num_too_hard=})"
+                f"Only {len(sampled_problem_ids)} (<{n}) valid problems with rollouts available ({num_too_easy=}, {num_too_hard=})"
             )
 
         return sampled_rollouts
