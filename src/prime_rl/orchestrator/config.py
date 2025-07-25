@@ -247,7 +247,7 @@ class OnlineDifficultyBufferConfig(BaseModel):
             gt=0,
             description="Factor by which to oversample during filtering to ensure sufficient samples.",
         ),
-    ] = 1.5
+    ] = 1.0
 
 
 DataBufferConfig: TypeAlias = SimpleBufferConfig | DifficultyPoolBufferConfig | OnlineDifficultyBufferConfig
