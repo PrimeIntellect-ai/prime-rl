@@ -24,7 +24,6 @@ def test_grpo_loss(dtype):
         epsilon_low=0.2,
         epsilon_high=0.2,
         clip_ratio=10.0,
-        highest_entropy_percentage=1.0,
     )
     assert loss.shape == ()
     assert loss.item() is not None
@@ -50,7 +49,6 @@ def test_grpo_loss_ratio(dtype):
         loss_mask,
         temperature=0.6,
         clip_ratio=10.0,
-        highest_entropy_percentage=1.0,
     )
 
 
@@ -99,7 +97,6 @@ def test_grpo_loss_padding(dtype):
             epsilon_low=0.2,
             epsilon_high=0.2,
             clip_ratio=10.0,
-            highest_entropy_percentage=1.0,
         )
         loss_list.append(loss)
 
