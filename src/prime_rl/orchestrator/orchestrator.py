@@ -229,10 +229,12 @@ async def orchestrate(config: OrchestratorConfig):
                 mask_truncated_completions=config.mask_truncated_completions,
             )
 
+            completion_lengths = [len(tokens) for tokens in results["completion_ids"]]
             advantages = compute_advantages(
                 rewards=outputs.reward,
                 samples_per_problem=config.rollouts_per_prompt,
                 advantage_type=config.advantage_type,
+                response_lengths=completion_lengths,
             )
 
             # Update pool
