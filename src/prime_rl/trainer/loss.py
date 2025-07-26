@@ -4,7 +4,7 @@ from jaxtyping import Float, Int, jaxtyped
 from torch import Tensor
 from torch.nn import functional as F
 
-from prime_rl.trainer.config import ClippingConfig, GRPOVariantsConfig, RatioConfig
+from prime_rl.trainer.config import ClippingConfig, GRPOVariantsConfig, GSPOConfig, RatioConfig
 from prime_rl.trainer.model import Model, forward
 
 
@@ -41,6 +41,16 @@ def grpo_loss(
             temperature=temperature,
             clip_ratio=grpo_loss_config.clip_ratio,
             highest_entropy_percentage=grpo_loss_config.highest_entropy_ratio_loss,
+        )
+    elif isinstance(grpo_loss_config, GSPOConfig):
+        return gspo_loss(
+            shifted_logits=shifted_logits,
+            input_ids=input_ids,
+            advantages=advantages,
+            original_logprobs=original_logprobs,
+            loss_mask=loss_mask,
+            temperature=temperature,
+            epsilon=grpo_loss_config.epsilon,
         )
     else:
         raise ValueError(f"Invalid grpo_loss_type: {grpo_loss_config.type}")
@@ -122,6 +132,41 @@ def grpo_loss_ratio(
 
     loss = _masked_sum(loss, loss_mask)
     ratio = _masked_sum(ratio, loss_mask)
+
+    return loss, ratio, clipped_token_count
+
+
+@jaxtyped(typechecker=typechecker)
+def gspo_loss(
+    shifted_logits: Float[Tensor, "batch seq vocab"],
+    input_ids: Int[Tensor, "batch seq"],
+    advantages: Float[Tensor, "batch seq"],
+    original_logprobs: Float[Tensor, "batch seq"],
+    loss_mask: Int[Tensor, "batch seq"],
+    temperature: float,
+    epsilon: float,
+) -> tuple[Tensor, Tensor, Tensor]:
+    # Divide logits by sampling temperature.
+    # See https://huggingface.co/blog/the_n_implementation_details_of_rlhf_with_ppo#policy-training-implementation-details
+    shifted_logits = shifted_logits / temperature
+    per_token_logps = selective_log_softmax(shifted_logits, input_ids)
+
+    sequence_level_log_likelihood = (per_token_logps * loss_mask).sum(-1)
+    original_sequence_level_log_likelihood = (original_logprobs * loss_mask).sum(-1)
+    seq_len = loss_mask.sum(-1).clamp(min=1)
+
+    sequence_level_importance_ratio = torch.exp(
+        (sequence_level_log_likelihood - original_sequence_level_log_likelihood) / seq_len
+    )
+    sequence_level_importance_ratio_clipped = torch.clamp(sequence_level_importance_ratio, 1 - epsilon, 1 + epsilon)
+
+    is_clipped = (sequence_level_importance_ratio > sequence_level_importance_ratio_clipped).float()
+    clipped_token_count = _masked_sum(is_clipped, loss_mask)
+
+    loss = -sequence_level_importance_ratio_clipped * advantages
+
+    loss = _masked_sum(loss, loss_mask)
+    ratio = _masked_sum(sequence_level_importance_ratio_clipped, loss_mask)
 
     return loss, ratio, clipped_token_count
 

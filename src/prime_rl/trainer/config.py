@@ -119,7 +119,13 @@ class RatioConfig(BaseGRPOVariantConfig):
     clip_ratio: Annotated[float, Field(ge=0)] = 8.0
 
 
-GRPOVariantsConfig: TypeAlias = Union[ClippingConfig, RatioConfig]
+class GSPOConfig(BaseGRPOVariantConfig):
+    type: Literal["gspo"] = "gspo"
+    epsilon: float = 3e-4
+    clip_ratio: Annotated[float, Field(ge=0)] = 8.0  # TODO delete but fur some reason does not pass
+
+
+GRPOVariantsConfig: TypeAlias = Union[ClippingConfig, RatioConfig, GSPOConfig]
 
 
 class GRPOLossConfig(BaseConfig):
