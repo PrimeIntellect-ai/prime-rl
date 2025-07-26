@@ -2,12 +2,12 @@ from typing import Callable, Literal
 
 import torch
 from beartype import beartype as typechecker
-from jaxtyping import Float, jaxtyped
+from jaxtyping import Float, Int, jaxtyped
 from torch import Tensor
 
 
 @jaxtyped(typechecker=typechecker)
-def compute_advantage_drgrpo(rewards: Float[Tensor, "group"], _: Float[Tensor, "group"]) -> Float[Tensor, "group"]:
+def compute_advantage_drgrpo(rewards: Float[Tensor, "group"], _: Int[Tensor, "group"]) -> Float[Tensor, "group"]:
     """
     Computes DR.GRPO advantages for a single group.
     For example:
@@ -19,7 +19,7 @@ def compute_advantage_drgrpo(rewards: Float[Tensor, "group"], _: Float[Tensor, "
 
 
 @jaxtyped(typechecker=typechecker)
-def compute_advantage_drgrpo_negclipped(rewards: Float[Tensor, "group"], _: Float[Tensor, "group"]) -> Float[Tensor, "group"]:
+def compute_advantage_drgrpo_negclipped(rewards: Float[Tensor, "group"], _: Int[Tensor, "group"]) -> Float[Tensor, "group"]:
     """
     Computes DR.GRPO advantages for a single group, but clips all negative advantages to zero.
     For example:
@@ -31,7 +31,7 @@ def compute_advantage_drgrpo_negclipped(rewards: Float[Tensor, "group"], _: Floa
 
 
 @jaxtyped(typechecker=typechecker)
-def compute_advantage_rloo(rewards: Float[Tensor, "group"], _: Float[Tensor, "group"]) -> Float[Tensor, "group"]:
+def compute_advantage_rloo(rewards: Float[Tensor, "group"], _: Int[Tensor, "group"]) -> Float[Tensor, "group"]:
     """
     Computes RLOO (rescaled leave-one-out) advantages for a single group by
     scaling the standard DR.GRPO advantage by the factor G / (G - 1).
@@ -42,7 +42,7 @@ def compute_advantage_rloo(rewards: Float[Tensor, "group"], _: Float[Tensor, "gr
 
 
 @jaxtyped(typechecker=typechecker)
-def compute_advantage_opo(rewards: Float[Tensor, "group"], response_lengths: Float[Tensor, "group"]) -> Float[Tensor, "group"]:
+def compute_advantage_opo(rewards: Float[Tensor, "group"], response_lengths: Int[Tensor, "group"]) -> Float[Tensor, "group"]:
     """
     Computes OPO advantages for a single group.
     The baseline is the *weighted* mean of rewards where each reward is
@@ -55,7 +55,7 @@ def compute_advantage_opo(rewards: Float[Tensor, "group"], response_lengths: Flo
 AdvantageType = Literal["drgrpo", "drgrpo-negclipped", "rloo", "opo"]
 
 # Map of advantage types to their corresponding functions
-REGISTRY: dict[AdvantageType, Callable[[Float[Tensor, "group"], Float[Tensor, "group"]], Float[Tensor, "group"]]] = {
+REGISTRY: dict[AdvantageType, Callable[[Float[Tensor, "group"], Int[Tensor, "group"]], Float[Tensor, "group"]]] = {
     "drgrpo": compute_advantage_drgrpo,
     "drgrpo-negclipped": compute_advantage_drgrpo_negclipped,
     "rloo": compute_advantage_rloo,
