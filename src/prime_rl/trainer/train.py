@@ -217,14 +217,23 @@ def train(config: TrainerConfig):
 
         forward_backward_start_time = time.time()
         loss_metrics = defaultdict(float)
+        mean_importance_ratio = 0.0
+        mean_clipped_ratio = 0.0
         num_micro_batches = len(micro_batches)
         micro_batch_size, seq_len = micro_batches[0]["input_ids"].shape
         batch_size = micro_batch_size * num_micro_batches
 
         # Normalize by the number of unmasked tokens in the batch (per-batch length normalization)
-        loss_scale = sum(micro_batch["loss_mask"].sum() for micro_batch in micro_batches)
+        total_generated_tokens = sum(micro_batch["loss_mask"].sum() for micro_batch in micro_batches)
+        total_tokens_in_batch = micro_batch_size * seq_len * num_micro_batches
 
-        logger.info(f"Starting forward and backward pass ({num_micro_batches=}, {loss_scale=})")
+        if config.loss.scale_factor == "token_count":
+            loss_scale = total_generated_tokens
+        elif config.loss.scale_factor == "fixed":
+            loss_scale = total_tokens_in_batch
+        else:
+            raise ValueError(f"Invalid scale factor: {config.loss.scale_factor}")
+
         for micro_step, micro_batch in enumerate(micro_batches, start=1):
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
@@ -261,11 +270,13 @@ def train(config: TrainerConfig):
             # Accumulate unnormalized local metrics
             loss_metrics["loss/loss"] += loss.detach().float()
             loss_metrics["loss/entropy"] += entropy.detach().float()
-            loss_metrics["loss/importance_ratio"] += importance_ratio.detach().float()
-            loss_metrics["loss/clipped_ratio"] += clipped_token_count.detach().float()
-
+ 
             recomputed_logprob_error: Tensor = micro_batch.get("recomputed_logprob_error", torch.tensor(0.0))
             loss_metrics["loss/recomputed_logprob_error"] += recomputed_logprob_error.detach().float()
+
+            mean_importance_ratio += importance_ratio.detach().clone().float()
+            mean_clipped_ratio += clipped_token_count.detach().clone().float()
+            
 
             # Scale loss by scale factor before backward pass
             loss = loss / loss_scale
@@ -281,6 +292,11 @@ def train(config: TrainerConfig):
         # Normalize all loss metrics globally before reporting
         for key, value in loss_metrics.items():
             loss_metrics[key] = value / loss_scale
+
+        mean_importance_ratio /= total_generated_tokens
+        mean_clipped_ratio /= total_generated_tokens
+        loss_metrics["loss/importance_ratio"] = mean_importance_ratio
+        loss_metrics["loss/clipped_ratio"] = mean_clipped_ratio
 
         # Synchronize the batch metrics across all ranks
         logger.debug(f"All-reduce loss metrics keys {list(loss_metrics.keys())}")
