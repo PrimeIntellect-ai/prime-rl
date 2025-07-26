@@ -30,12 +30,39 @@ def compute_advantage_drgrpo_negclipped(rewards: Float[Tensor, "group"]) -> Floa
     return torch.maximum(rewards - rewards.mean(), torch.zeros_like(rewards))
 
 
-AdvantageType = Literal["drgrpo", "drgrpo-negclipped"]
+@jaxtyped(typechecker=typechecker)
+def compute_advantage_drgrpo_onepos_negclipped(rewards: Float[Tensor, "group"]) -> Float[Tensor, "group"]:
+    """
+    Computes DR.GRPO advantages for a single group and **selectively** clips negative
+    advantages **only** when the group contains exactly one correct rollout.
+
+    This is useful when, for prompts where only a single sample is correct, we want
+    to exclude all other (incorrect) samples from the loss while still keeping the
+    correct sample's positive advantage. In all other cases the behaviour is
+    identical to the standard DR.GRPO computation (i.e. the mean-centered rewards).
+
+    Examples (assuming rollouts_per_prompt = 4):
+        - `[1.0, 0.0, 0.0, 0.0]` -> `[0.75, 0.0, 0.0, 0.0]` (only one correct)
+        - `[1.0, 1.0, 0.0, 0.0]` -> `[0.5, 0.5, -0.5, -0.5]` (two correct → no clipping)
+        - `[0.0, 0.0, 0.0, 0.0]` -> `[0.0, 0.0, 0.0, 0.0]`
+    """
+    # Standard DR.GRPO advantage (reward minus group mean)
+    advantages = compute_advantage_drgrpo(rewards)
+
+    # If exactly one rollout is correct, zero-out all negative advantages
+    if torch.isclose(rewards.sum(), torch.tensor(1.0)):
+        advantages = torch.where(rewards > 0, advantages, torch.zeros_like(advantages))
+
+    return advantages
+
+
+AdvantageType = Literal["drgrpo", "drgrpo-negclipped", "drgrpo-onepos-negclipped"]
 
 # Map of advantage types to their corresponding functions
 REGISTRY: dict[AdvantageType, Callable[[Float[Tensor, "group"]], Float[Tensor, "group"]]] = {
     "drgrpo": compute_advantage_drgrpo,
     "drgrpo-negclipped": compute_advantage_drgrpo_negclipped,
+    "drgrpo-onepos-negclipped": compute_advantage_drgrpo_onepos_negclipped,
 }
 
 
