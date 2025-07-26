@@ -152,6 +152,44 @@ def load_intellect_math_vf_environment(
     )
     return vf_env
 
+def load_skywork_math_environment(
+    solve_rate_field: str | None = None,
+    min_solve_rate: float | None = None,
+    max_solve_rate: float | None = None,
+    **kwargs,
+) -> Environment:
+    import json
+
+    from prime_rl.orchestrator.genesys.math import compute_math_reward
+
+    train_dataset = load_dataset("PrimeIntellect/Skywork-OR1-RL-Data-v1-math-prime-rl-format", split="train").map(
+        lambda x: {
+            "question": x["prompt"],
+            "info": json.loads(x["verification_info"]),
+            "task": "simple-math",
+        }
+    )
+    if solve_rate_field is not None:
+        if min_solve_rate is not None:
+            train_dataset = train_dataset.filter(lambda x: x[solve_rate_field] >= min_solve_rate)
+        if max_solve_rate is not None:
+            train_dataset = train_dataset.filter(lambda x: x[solve_rate_field] <= max_solve_rate)
+    train_dataset = train_dataset.remove_columns(["prompt", "verification_info"])
+    train_dataset = train_dataset.shuffle(seed=42)
+
+    def correct_answer_reward_func(completion, info, **kwargs) -> float:
+        completion_text = completion[-1]["content"]
+        return compute_math_reward(completion_text, info)
+
+    rubric = vf.Rubric(
+        funcs=[
+            correct_answer_reward_func,
+        ],
+        weights=[1.0],
+    )
+
+    vf_env = vf.SingleTurnEnv(dataset=train_dataset, rubric=rubric)
+    return vf_env
 
 def load_hendrycks_math_environment() -> Environment:
     import json
@@ -916,6 +954,11 @@ REGISTRY = {
     },
     "intellect-math-vf": {
         "load_fn": load_intellect_math_vf_environment,
+        "type": "train",
+        "tags": ["math"],
+    },
+    "skywork-math": {
+        "load_fn": load_skywork_math_environment,
         "type": "train",
         "tags": ["math"],
     },

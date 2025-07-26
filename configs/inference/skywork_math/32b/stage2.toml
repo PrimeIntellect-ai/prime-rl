@@ -1,0 +1,6 @@
+[model]
+name = "willcb/DeepSeek-R1-Distill-Qwen-32B"
+max_model_len = 32768
+
+[parallel]
+dp = 6
