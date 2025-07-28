@@ -62,16 +62,16 @@ async def custom_run_server_worker(listen_address, sock, args, client_config=Non
         app = build_app(args)
 
         ### CUSTOM ENDPOINTS ###
-        @app.post("/reload_weights")
-        async def _reload_weights(request: Request):
+        @app.post("/update_weights")
+        async def _update_weights(request: Request):
             data = await request.json()
             model_path = data.get("model_path")
-            await engine_client.collective_rpc("custom_reload_weights", args=(model_path,))
+            await engine_client.collective_rpc("update_weights", args=(model_path,))
             return {"status": "ok"}
 
-        @app.post("/reset_weights")
-        async def _reset_weights(request: Request):
-            await engine_client.collective_rpc("custom_reset_weights")
+        @app.post("/reload_weights")
+        async def _reload_weights(request: Request):
+            await engine_client.collective_rpc("reload_weights")
             return {"status": "ok"}
 
         vllm_config = await engine_client.get_vllm_config()
