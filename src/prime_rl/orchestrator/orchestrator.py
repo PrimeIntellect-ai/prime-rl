@@ -82,7 +82,7 @@ async def orchestrate(config: OrchestratorConfig):
         await reload_weights(client, config.weights_path, ckpt_step)
     else:
         logger.info("Training from scratch. Resetting weights to base model")
-        await reset_weights(client)
+        # await reset_weights(client)
 
     # Load environment and extract dataset
     logger.info(f"Loading environment {config.environment.id} with args {config.environment.args}")

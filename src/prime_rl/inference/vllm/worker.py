@@ -11,7 +11,7 @@ class CheckpointWorker:
     recent policy model from a checkpoint directory.
     """
 
-    def reload_weights(self, model_path: Path) -> None:
+    def custom_reload_weights(self, model_path: Path) -> None:
         """Reload the weights from a specified path."""
         state_dict = torch.load(model_path, map_location="cpu")
 
@@ -29,5 +29,5 @@ class CheckpointWorker:
         device = next(self.model_runner.model.parameters()).device
         process_weights_after_loading(self.model_runner.model, self.model_runner.model_config, device)
 
-    def reset_weights(self) -> None:
+    def custom_reset_weights(self) -> None:
         self.load_model()
