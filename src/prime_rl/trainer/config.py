@@ -1,7 +1,7 @@
 from pathlib import Path
-from typing import Annotated, Literal, TypeAlias, Union
+from typing import Annotated, Literal, TypeAlias
 
-from pydantic import Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from prime_rl.utils.config import LogConfig, MultiMonitorConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
@@ -97,7 +97,13 @@ class WeightCheckpointConfig(BaseConfig):
     ] = True
 
 
-class ClippingConfig(BaseConfig):
+class BaseLossConfig(BaseModel):
+    """Base config for loss."""
+
+    max_norm: Annotated[float, Field(ge=0, description="Maximum gradient norm to clip.")] = 1.0
+
+
+class ClippingLossConfig(BaseLossConfig):
     """Configures the clipping loss."""
 
     type: Literal["clip"] = "clip"
@@ -106,22 +112,14 @@ class ClippingConfig(BaseConfig):
     clip_ratio: Annotated[float, Field(ge=0)] = 4.0
 
 
-class RatioConfig(BaseConfig):
+class RatioLossConfig(BaseLossConfig):
     """Configures the ratio loss."""
 
     type: Literal["ratio"] = "ratio"
     clip_ratio: Annotated[float, Field(ge=0)] = 8.0
 
 
-GRPOVariantsConfig: TypeAlias = Union[ClippingConfig, RatioConfig]
-
-
-class GRPOLossConfig(BaseConfig):
-    """Configures the GRPO loss."""
-
-    variant: GRPOVariantsConfig = RatioConfig()
-
-    max_norm: Annotated[float, Field(ge=0, description="Maximum gradient norm to clip.")] = 1.0
+LossConfig: TypeAlias = ClippingLossConfig | RatioLossConfig
 
 
 class FakeDataLoaderConfig(BaseConfig):
@@ -167,7 +165,7 @@ class TrainerConfig(BaseSettings):
     weights: WeightCheckpointConfig = WeightCheckpointConfig()
 
     # The loss configuration
-    loss: GRPOLossConfig = GRPOLossConfig()
+    loss: LossConfig = Field(discriminator="type", default=RatioLossConfig())
 
     # The logging configuration
     log: LogConfig = LogConfig()

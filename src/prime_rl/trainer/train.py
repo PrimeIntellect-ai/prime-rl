@@ -81,6 +81,7 @@ def train(config: TrainerConfig):
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
+    logger.info(f"Using `{config.loss.type}` loss ({config.loss})")
     optimizer = torch.optim.AdamW(
         params=model.parameters(),
         lr=config.optim.lr,
@@ -247,7 +248,7 @@ def train(config: TrainerConfig):
                 original_logprobs=logprobs,
                 loss_mask=loss_mask,
                 temperature=temperature,
-                grpo_loss_config=config.loss.variant,
+                loss_config=config.loss,
             )
 
             # Compute entropy

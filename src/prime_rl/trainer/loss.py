@@ -4,7 +4,7 @@ from jaxtyping import Float, Int, jaxtyped
 from torch import Tensor
 from torch.nn import functional as F
 
-from prime_rl.trainer.config import ClippingConfig, GRPOVariantsConfig, RatioConfig
+from prime_rl.trainer.config import LossConfig
 from prime_rl.trainer.model import Model, forward
 
 
@@ -16,9 +16,9 @@ def grpo_loss(
     original_logprobs: Float[Tensor, "batch seq"],
     loss_mask: Int[Tensor, "batch seq"],
     temperature: float,
-    grpo_loss_config: GRPOVariantsConfig,
+    loss_config: LossConfig,
 ) -> tuple[Tensor, Tensor, Tensor]:
-    if isinstance(grpo_loss_config, ClippingConfig):
+    if loss_config.type == "clip":
         return grpo_loss_clip(
             shifted_logits=shifted_logits,
             input_ids=input_ids,
@@ -26,11 +26,11 @@ def grpo_loss(
             original_logprobs=original_logprobs,
             loss_mask=loss_mask,
             temperature=temperature,
-            epsilon_low=grpo_loss_config.epsilon_low,
-            epsilon_high=grpo_loss_config.epsilon_high,
-            clip_ratio=grpo_loss_config.clip_ratio,
+            epsilon_low=loss_config.epsilon_low,
+            epsilon_high=loss_config.epsilon_high,
+            clip_ratio=loss_config.clip_ratio,
         )
-    elif isinstance(grpo_loss_config, RatioConfig):
+    elif loss_config.type == "ratio":
         return grpo_loss_ratio(
             shifted_logits=shifted_logits,
             input_ids=input_ids,
@@ -38,11 +38,8 @@ def grpo_loss(
             original_logprobs=original_logprobs,
             loss_mask=loss_mask,
             temperature=temperature,
-            clip_ratio=grpo_loss_config.clip_ratio,
+            clip_ratio=loss_config.clip_ratio,
         )
-    else:
-        raise ValueError(f"Invalid grpo_loss_type: {grpo_loss_config.type}")
-
 
 @jaxtyped(typechecker=typechecker)
 def grpo_loss_clip(
