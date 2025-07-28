@@ -5,11 +5,13 @@ import uvloop
 from fastapi import Request
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.async_llm_engine import AsyncLLMEngine
+from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server
 from vllm.entrypoints.launcher import serve_http
 from vllm.entrypoints.openai.api_server import (
     build_app,
     create_server_socket,
     init_app_state,
+    run_server,
 )
 from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
 from vllm.usage.usage_lib import UsageContext
@@ -18,7 +20,7 @@ from vllm.utils import FlexibleArgumentParser, set_ulimit
 from prime_rl.inference.config import InferenceConfig
 
 
-async def run_server(args: Namespace) -> None:
+async def custom_run_server(args: Namespace) -> None:
     sock_addr = (args.host or "", args.port)
     sock = create_server_socket(sock_addr)
 
@@ -80,4 +82,13 @@ def server(config: InferenceConfig, vllm_args: list[str]):
     parser = make_arg_parser(parser)
     args = parser.parse_args(args=vllm_args, namespace=config.to_vllm())
     validate_parsed_serve_args(args)
-    uvloop.run(run_server(args))
+
+    # From vllm/entrypoints/cli/serve.py
+    if args.headless or args.api_server_count < 1:
+        run_headless(args)
+    else:
+        if args.api_server_count > 1:
+            run_multi_api_server(args)
+        else:
+            # Single API server (this process).
+            uvloop.run(run_server(args))
