@@ -177,7 +177,60 @@ uv run rl \
 
 ### Multi-Node Training
 
+The trainer and inference can be decoupled naively as they communicate via HTTP. Simply spin up your (multi-GPU) inference server on one node, and your (multi-GPU) trainer on another node. Make sure that the orchestrator (colocated with the trainer) points to the public IP address of the node hosting the inference server. 
+
+If you want to go even bigger, you can run the trainer and/ or inference in a multi-node setting.
+
+**Multi-Node Trainer**
+
 *TBD*
+
+**Multi-Node Inference**
+
+We rely on vLLM's internal load balancing for data parallel deployment (https://docs.vllm.ai/en/v0.10.0/serving/data_parallel_deployment.html).
+
+> ⚠️ Because we require VPN setup, multi-node inference cannot run in containerized environments.
+
+First, ensure that your nodes are in the same private network and can reach each other. If not, a simple solution is to set up a VPN using [Tailscale](https://tailscale.com). Follow their documentation to setup a VPN on each node. Then, configure GLOO and NCCL to use the `tailscale0` network interface
+
+```bash
+export GLOO_SOCKET_IFNAME=tailscale0
+export NCCL_SOCKET_IFNAME=tailscale0
+```
+
+Choose one of your nodes to be the head node and find out its reachable IP address with
+
+```bash
+ip a
+```
+
+Assuming the reachable IP address is `<reachable-ip>`, run DP=4 with DP ranks 0 and 1 on the head node and ranks 2 and 3 on the second node
+
+```bash
+# Node 0  (With IP <reachable-ip>)
+uv run inference \
+	--data-parallel-size 4 \
+	--data-parallel-size-local 2 \
+	--data-parallel-address <reachable-ip> \
+	--data-parallel-rpc-port 13345
+```
+
+```bash
+# Node 1
+uv run inference \
+	--data-parallel-size 4 \
+	--data-parallel-size-local 2 \
+	--data-parallel-address <reachable-ip> \
+	--data-parallel-rpc-port 13345 \
+	--data-parallel-start-rank 2 \
+	--headless
+```
+
+Check that you can reach the multi-node inference server using
+
+```bash
+curl -i -X GET http://<reachable-ip>:8000/health
+```
 
 ### Multiple Experiments per Node
 
