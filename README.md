@@ -189,7 +189,7 @@ If you want to go even bigger, you can run the trainer and/ or inference in a mu
 
 We rely on vLLM's internal load balancing for data parallel deployment (https://docs.vllm.ai/en/v0.10.0/serving/data_parallel_deployment.html).
 
-> ⚠️ Because we require VPN setup, multi-node inference cannot run in containerized environments.
+> Because we require VPN setup, multi-node inference cannot run in containerized environments.
 
 First, ensure that your nodes are in the same private network and can reach each other. If not, a simple solution is to set up a VPN using [Tailscale](https://tailscale.com). Follow their documentation to setup a VPN on each node. Then, configure GLOO and NCCL to use the `tailscale0` network interface
 
