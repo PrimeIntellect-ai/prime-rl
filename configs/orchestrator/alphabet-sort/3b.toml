@@ -9,12 +9,16 @@ mask_truncated_completions = false
 name = "Qwen/Qwen2.5-3B-Instruct"
 
 [monitor.wandb.log_extras]
-interval = 1
+samples = true
+distributions = true
+interval = 2
 
 [environment]
 id = "alphabet-sort"
 
 [environment.args]
+min_turns = 2
+max_turns = 2
 
 [sampling]
 max_tokens = 512
