@@ -31,6 +31,7 @@ dependencies = [
     "verifiers",
     "textarena>=0.6.16",
     "nltk>=3.9.1",
+    "math_verify",
 ]
 
 [project.scripts]
