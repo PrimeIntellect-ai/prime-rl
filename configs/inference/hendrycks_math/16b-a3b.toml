@@ -1,0 +1,7 @@
+[model]
+name = "moonshotai/Moonlight-16B-A3B"
+max_model_len = 2048
+
+[parallel]
+dp = 4
+tp = 1 

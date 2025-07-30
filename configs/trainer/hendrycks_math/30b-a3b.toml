@@ -1,0 +1,8 @@
+[monitor.wandb]
+
+[model]
+name = "Qwen/Qwen3-30B-A3B"
+ac = true
+
+[optim]
+lr = 1e-6
