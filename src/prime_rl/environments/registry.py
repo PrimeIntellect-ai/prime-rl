@@ -160,7 +160,7 @@ def load_skywork_math_environment(
 ) -> Environment:
     import json
 
-    from prime_rl.orchestrator.genesys.math import compute_math_reward
+    from prime_rl.orchestrator.genesys.math import math_verify_reward_function
 
     train_dataset = load_dataset("PrimeIntellect/Skywork-OR1-RL-Data-v1-math-prime-rl-format", split="train").map(
         lambda x: {
@@ -179,7 +179,7 @@ def load_skywork_math_environment(
 
     def correct_answer_reward_func(completion, info, **kwargs) -> float:
         completion_text = completion[-1]["content"]
-        return compute_math_reward(completion_text, info)
+        return math_verify_reward_function(completion_text, info)
 
     rubric = vf.Rubric(
         funcs=[
