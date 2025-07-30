@@ -2,6 +2,7 @@ import logging
 import os
 import time
 from collections import defaultdict
+
 from copy import deepcopy
 
 # Import environment before any other imports
@@ -27,6 +28,7 @@ from prime_rl.trainer.model import (
     setup_model,
 )
 from prime_rl.trainer.perf import get_perf_counter
+import lovely_tensors as lt
 from prime_rl.trainer.utils import (
     OffloadedTensor,
     copy_model_to_cpu,
@@ -200,7 +202,10 @@ def train(config: TrainerConfig):
                     temperature = micro_batch["temperature"]
 
                     recomputed_logprobs = compute_logprobs(logprob_model, input_ids, position_ids, temperature)
-                    recomputed_logprob_error = (torch.exp(recomputed_logprobs - logprobs) * loss_mask).sum()
+                    recomputed_logprobs *= loss_mask
+                    recomputed_logprob_error = torch.exp(recomputed_logprobs - logprobs)
+                    logger.debug(f"Recomputed logprob error: {lt.lovely(recomputed_logprob_error)}")
+                    recomputed_logprob_error = (recomputed_logprob_error * loss_mask).sum()
 
                     micro_batch["recomputed_logprob_error"] = recomputed_logprob_error.to("cpu")
                     micro_batch["logprobs"] = recomputed_logprobs.to("cpu")
@@ -276,7 +281,7 @@ def train(config: TrainerConfig):
 
             # We report per-micro batch length normalized metrics here
             logger.debug(
-                f"Completed micro batch {micro_step}/{num_micro_batches} (loss={(loss.item() / loss_mask.sum()):.2f}, entropy={(entropy.item() / loss_mask.sum()):.2f}, importance_ratio={(importance_ratio.item() / loss_mask.sum()):.2f})"
+                f"Completed micro batch {micro_step}/{num_micro_batches} (loss={(loss.item() / loss_mask.sum()):.4f}, entropy={(entropy.item() / loss_mask.sum()):.4f}, importance_ratio={(importance_ratio.item() / loss_mask.sum()):.4f})"
             )
 
         # Normalize all loss metrics globally before reporting
@@ -332,7 +337,7 @@ def train(config: TrainerConfig):
 
         # Log step metrics
         step_time = time.time() - step_start_time
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {loss_metrics['loss/loss']:.2f} | Entropy: {loss_metrics['loss/entropy']:.2f} | Importance Ratio: {loss_metrics['loss/importance_ratio']:.2f} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}%"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {loss_metrics['loss/loss']:.4f} | Entropy: {loss_metrics['loss/entropy']:.4f} | Importance Ratio: {loss_metrics['loss/importance_ratio']:.4f} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}%"
         logger.success(step_message)
 
         # Log performance metrics
