@@ -3,6 +3,7 @@
 [model]
 name = "moonshotai/Moonlight-16B-A3B"
 ac = true
+trust_remote_code = true
 
 [optim]
 lr = 1e-6 

@@ -39,6 +39,13 @@ class ModelConfig(BaseConfig):
         bool, Field(description="Whether to reshard the model after each forward pass.")
     ] = True
 
+    trust_remote_code: Annotated[
+        bool,
+        Field(
+            description="Whether to trust remote code for model and tokenizer initialization.",
+        ),
+    ] = False
+
 
 class OptimizerConfig(BaseConfig):
     """Configures the Adam optimizer."""

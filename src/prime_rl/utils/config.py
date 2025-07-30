@@ -11,6 +11,13 @@ class ModelConfig(BaseConfig):
 
     name: Annotated[str, Field(description="Name or path of the HF model to use.")] = "Qwen/Qwen3-0.6B"
 
+    trust_remote_code: Annotated[
+        bool,
+        Field(
+            description="Whether to trust remote code for tokenizer initialization.",
+        ),
+    ] = False
+
 
 class LogConfig(BaseConfig):
     """Configures the logger."""
