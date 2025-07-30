@@ -5,7 +5,7 @@ from prime_rl.orchestrator.genesys.math_utils import (
     grade_answer_mathd,
     grade_answer_sympy,
 )
-from math_verify import parse, verify
+from math_verify import verify, parse
 
 
 def compute_math_reward(completion: str, verification_info: Dict):
