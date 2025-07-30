@@ -9,7 +9,6 @@ from prime_rl.orchestrator.genesys.math_utils import (
 )
 
 
-
 def compute_math_reward(completion: str, verification_info: Dict):
     model_response = completion
     ground_truths = verification_info["ground_truth"]
