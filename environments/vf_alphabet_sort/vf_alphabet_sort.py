@@ -5,7 +5,7 @@ from typing import List, Tuple
 
 import verifiers as vf
 from datasets import Dataset, load_dataset
-from verifiers.types import Message, Messages, State
+from verifiers.types import Messages, State
 
 
 def load_environment(
@@ -148,11 +148,13 @@ These are in addition to the prior list. Mark any NEW names (that weren't in the
             super().__init__(*args, **kwargs)
 
         def is_completed(self, messages: Messages, state: State, **kwargs) -> bool:
+            assert isinstance(messages, list)
             assistant_count = len([m for m in messages if m["role"] == "assistant"])
             num_turns = state["info"]["num_turns"]
             return assistant_count >= num_turns
 
-        def env_response(self, messages: Messages, state: State, **kwargs) -> Tuple[Message, State]:
+        def env_response(self, messages: Messages, state: State, **kwargs) -> Tuple[Messages, State]:
+            assert isinstance(messages, list)
             assistant_count = len([m for m in messages if m["role"] == "assistant"])
             num_turns = state["info"]["num_turns"]
 
@@ -161,9 +163,9 @@ These are in addition to the prior list. Mark any NEW names (that weren't in the
                 follow_up_idx = assistant_count - 1
 
                 if follow_up_idx < len(follow_ups):
-                    return {"role": "user", "content": follow_ups[follow_up_idx]}, state
+                    return [{"role": "user", "content": follow_ups[follow_up_idx]}], state
 
-            return {"role": "user", "content": "Continue"}, state
+            return [{"role": "user", "content": "Continue"}], state
 
     def score_response(predicted: List[str], expected: List[str]) -> float:
         if not predicted or not expected:
