@@ -1,6 +1,10 @@
 version = 1
 revision = 2
+<<<<<<< HEAD
 requires-python = ">=3.12.0, <3.13"
+=======
+requires-python = "==3.12.*"
+>>>>>>> 1692bb21 (Update lock file)
 resolution-markers = [
     "sys_platform == 'linux'",
     "sys_platform != 'linux'",
@@ -12,8 +16,12 @@ prerelease-mode = "allow"
 [manifest]
 members = [
     "prime-rl",
+<<<<<<< HEAD
     "vf-ascii-tree",
     "vf-hendrycks-math",
+=======
+    "vf-alphabet-sort",
+>>>>>>> 1692bb21 (Update lock file)
     "vf-intellect-math",
     "vf-pydantic-adherence",
     "vf-reverse-text",
@@ -2146,6 +2154,13 @@ dependencies = [
     { name = "transformers" },
     { name = "uvloop" },
     { name = "verifiers" },
+<<<<<<< HEAD
+=======
+    { name = "vf-alphabet-sort" },
+    { name = "vf-intellect-math" },
+    { name = "vf-reverse-text" },
+    { name = "vf-wordle" },
+>>>>>>> 1692bb21 (Update lock file)
     { name = "vllm" },
     { name = "wandb" },
 ]
@@ -2205,6 +2220,7 @@ requires-dist = [
     { name = "transformers", specifier = ">=4.53.0" },
     { name = "uvloop", specifier = ">=0.21.0" },
     { name = "verifiers", git = "https://github.com/willccbb/verifiers?rev=74c604f" },
+<<<<<<< HEAD
     { name = "vf-ascii-tree", marker = "extra == 'vf'", editable = "environments/vf_ascii_tree" },
     { name = "vf-hendrycks-math", marker = "extra == 'vf'", editable = "environments/vf_hendrycks_math" },
     { name = "vf-intellect-math", marker = "extra == 'vf'", editable = "environments/vf_intellect_math" },
@@ -2212,6 +2228,12 @@ requires-dist = [
     { name = "vf-reverse-text", marker = "extra == 'vf'", editable = "environments/vf_reverse_text" },
     { name = "vf-skywork-math", marker = "extra == 'vf'", editable = "environments/vf_skywork_math" },
     { name = "vf-unscramble", marker = "extra == 'vf'", editable = "environments/vf_unscramble" },
+=======
+    { name = "vf-alphabet-sort", editable = "environments/vf_alphabet_sort" },
+    { name = "vf-intellect-math", editable = "environments/vf_intellect_math" },
+    { name = "vf-reverse-text", editable = "environments/vf_reverse_text" },
+    { name = "vf-wordle", git = "https://github.com/willccbb/verifiers.git?subdirectory=environments%2Fvf_wordle&rev=main" },
+>>>>>>> 1692bb21 (Update lock file)
     { name = "vllm", specifier = ">=0.9.1" },
     { name = "wandb", specifier = ">=0.20.1" },
 ]
@@ -3299,9 +3321,15 @@ dependencies = [
 ]
 
 [[package]]
+<<<<<<< HEAD
 name = "vf-ascii-tree"
 version = "0.1.0"
 source = { editable = "environments/vf_ascii_tree" }
+=======
+name = "vf-alphabet-sort"
+version = "0.1.0"
+source = { editable = "environments/vf_alphabet_sort" }
+>>>>>>> 1692bb21 (Update lock file)
 dependencies = [
     { name = "verifiers" },
 ]
@@ -3310,6 +3338,7 @@ dependencies = [
 requires-dist = [{ name = "verifiers", git = "https://github.com/willccbb/verifiers?rev=74c604f" }]
 
 [[package]]
+<<<<<<< HEAD
 name = "vf-hendrycks-math"
 version = "0.1.0"
 source = { editable = "environments/vf_hendrycks_math" }
@@ -3325,6 +3354,8 @@ requires-dist = [
 ]
 
 [[package]]
+=======
+>>>>>>> 1692bb21 (Update lock file)
 name = "vf-intellect-math"
 version = "0.1.0"
 source = { editable = "environments/vf_intellect_math" }
