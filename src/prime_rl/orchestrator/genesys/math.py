@@ -72,10 +72,6 @@ def math_verify_reward_function(completion: str, verification_info: Dict):
     if len(math_verify_parsed) < 2:
         return 0.0
     
-    # We perform a quick string match first
-    if math_verify_parsed[1] in ground_truth:
-        return 1.0
-    
     # We now fallback to semantic verification
     for gt in ground_truth:
         try:
