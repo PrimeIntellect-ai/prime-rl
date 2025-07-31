@@ -18,18 +18,24 @@ from transformers import (
 
 from prime_rl.trainer.config import ModelConfig
 
-Model: TypeAlias = LlamaForCausalLM | Qwen2ForCausalLM | Qwen3ForCausalLM
+Model: TypeAlias = LlamaForCausalLM | Qwen2ForCausalLM | Qwen3ForCausalLM | nn.Module
 
 
 def get_model(config: ModelConfig) -> Model:
-    config_model = AutoConfig.from_pretrained(config.name, attn_implementation=config.attn)
+    config_model = AutoConfig.from_pretrained(
+        config.name, attn_implementation=config.attn, trust_remote_code=config.trust_remote_code
+    )
     config_model.use_cache = False
-    model = AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=config.name, config=config_model)
+    model = AutoModelForCausalLM.from_pretrained(
+        pretrained_model_name_or_path=config.name,
+        config=config_model,
+        trust_remote_code=config.trust_remote_code,
+    )
     return model
 
 
 def get_tokenizer(config: ModelConfig) -> AutoTokenizer:
-    tokenizer = AutoTokenizer.from_pretrained(config.name)
+    tokenizer = AutoTokenizer.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
     tokenizer.pad_token_id = tokenizer.eos_token_id
     return tokenizer
 
