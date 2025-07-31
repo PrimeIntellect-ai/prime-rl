@@ -1,6 +1,6 @@
 from typing import Callable, Literal
 
-from prime_rl.orchestrator.genesys.math import compute_math_reward
+from prime_rl.orchestrator.genesys.math import math_verify_reward_function
 
 
 def null_reward(*args, **kwargs):
@@ -21,6 +21,6 @@ def get_reward_function(task_type: TaskType) -> Callable[[str, dict], float]:
 
 
 _REWARD_FUNCTIONS: dict[TaskType, Callable] = {
-    "verifiable_math": compute_math_reward,
+    "verifiable_math": math_verify_reward_function,
     "null_reward": null_reward,
 }
