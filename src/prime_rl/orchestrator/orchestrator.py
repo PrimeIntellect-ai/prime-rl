@@ -294,10 +294,6 @@ async def orchestrate(config: OrchestratorConfig):
         solve_none = sum(1 for group in grouped_rewards if all(reward == 0 for reward in group)) / problems_per_batch
         effective_batch_size = 1 - solve_all - solve_none
 
-        # Calculate effective batch size in tokens
-        avg_tokens_per_sample = num_tokens / config.batch_size
-        effective_batch_size_tokens = config.batch_size * avg_tokens_per_sample
-
         # Log samples to W&B table if enabled
         if monitor.wandb:
             monitor.wandb.log_samples(
@@ -338,7 +334,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Log step metrics
         step_time = time.time() - step_start_time
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {np.mean(rewards):.2f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {float(problem_seqlens.mean()):.1f} tokens/sample | Effective Batch Size: {effective_batch_size_tokens:.0f} tokens"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {np.mean(rewards):.2f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {float(problem_seqlens.mean()):.1f} tokens/sample"
         logger.success(step_message)
 
         # Log progress metrics to monitor
@@ -367,7 +363,6 @@ async def orchestrate(config: OrchestratorConfig):
             "perf/problem_requests": problem_requests,
             "perf/completion_requests": completion_requests,
             "perf/calls_to_generate": calls_to_generate,
-            "perf/effective_batch_size_tokens": effective_batch_size_tokens,
             "step": progress.step,
         }
         monitor.log(perf_metrics)
