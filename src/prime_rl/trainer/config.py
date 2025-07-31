@@ -103,23 +103,37 @@ class BaseLossConfig(BaseModel):
     max_norm: Annotated[float, Field(ge=0, description="Maximum gradient norm to clip.")] = 1.0
 
 
-class ClippingLossConfig(BaseLossConfig):
+class GRPOClipLossConfig(BaseLossConfig):
     """Configures the clipping loss."""
 
-    type: Literal["clip"] = "clip"
+    type: Literal["clip-grpo"] = "clip-grpo"
     epsilon_low: Annotated[float, Field(ge=0)] = 0.2
     epsilon_high: Annotated[float, Field(ge=0)] = 0.2
     clip_ratio: Annotated[float, Field(ge=0)] = 4.0
 
 
-class RatioLossConfig(BaseLossConfig):
+class GRPORatioLossConfig(BaseLossConfig):
     """Configures the ratio loss."""
 
-    type: Literal["ratio"] = "ratio"
+    type: Literal["ratio-grpo"] = "ratio-grpo"
     clip_ratio: Annotated[float, Field(ge=0)] = 8.0
 
 
-LossConfig: TypeAlias = ClippingLossConfig | RatioLossConfig
+class GSPOClipLossConfig(BaseLossConfig):
+    """Configures the GSPO clip loss."""
+
+    type: Literal["clip-gspo"] = "clip-gspo"
+    epsilon_low: Annotated[float, Field(ge=0)] = 3e-4
+    epsilon_high: Annotated[float, Field(ge=0)] = 4e-4
+    clip_ratio: Annotated[float, Field(ge=0)] = 1.1
+
+class GSPORatioLossConfig(BaseLossConfig):
+    """Configures the GSPO ratio loss."""
+
+    type: Literal["ratio-gspo"] = "ratio-gspo"
+    clip_ratio: Annotated[float, Field(ge=0)] = 1.1
+
+LossConfig: TypeAlias = GRPOClipLossConfig | GRPORatioLossConfig | GSPORatioLossConfig | GSPOClipLossConfig
 
 
 class FakeDataLoaderConfig(BaseConfig):
@@ -165,7 +179,7 @@ class TrainerConfig(BaseSettings):
     weights: WeightCheckpointConfig = WeightCheckpointConfig()
 
     # The loss configuration
-    loss: LossConfig = Field(discriminator="type", default=RatioLossConfig())
+    loss: LossConfig = Field(discriminator="type", default=GRPORatioLossConfig())
 
     # The logging configuration
     log: LogConfig = LogConfig()

@@ -200,7 +200,7 @@ def train(config: TrainerConfig):
                     temperature = micro_batch["temperature"]
 
                     recomputed_logprobs = compute_logprobs(logprob_model, input_ids, position_ids, temperature)
-                    recomputed_logprob_error = (torch.exp((recomputed_logprobs - logprobs).abs()) * loss_mask).sum()
+                    recomputed_logprob_error = ((recomputed_logprobs - logprobs).abs().exp() * loss_mask).sum() / loss_mask.sum()
 
                     micro_batch["recomputed_logprob_error"] = recomputed_logprob_error.to("cpu")
                     micro_batch["logprobs"] = recomputed_logprobs.to("cpu")
@@ -223,9 +223,10 @@ def train(config: TrainerConfig):
         batch_size = micro_batch_size * num_micro_batches
 
         # Normalize by the number of unmasked tokens in the batch (per-batch length normalization)
-        loss_scale = sum(micro_batch["loss_mask"].sum() for micro_batch in micro_batches)
+        total_tokens = sum(micro_batch["loss_mask"].sum() for micro_batch in micro_batches)
+        loss_scale = batch_size if (config.loss.type == "clip-gspo" or config.loss.type == "ratio-gspo") else total_tokens
 
-        logger.info(f"Starting forward and backward pass ({num_micro_batches=}, {loss_scale=})")
+        logger.info(f"Starting forward and backward pass ({num_micro_batches=})")
         for micro_step, micro_batch in enumerate(micro_batches, start=1):
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
@@ -241,7 +242,7 @@ def train(config: TrainerConfig):
             del logits
 
             # Compute loss
-            loss, importance_ratio, clipped_token_count = grpo_loss(
+            loss, importance_ratio, clipped_count = grpo_loss(
                 shifted_logits=shifted_logits,
                 input_ids=input_ids,
                 advantages=advantages,
@@ -260,10 +261,10 @@ def train(config: TrainerConfig):
                 )
 
             # Accumulate unnormalized local metrics
-            loss_metrics["loss/loss"] += loss.detach().float()
-            loss_metrics["loss/entropy"] += entropy.detach().float()
-            loss_metrics["loss/importance_ratio"] += importance_ratio.detach().float()
-            loss_metrics["loss/clipped_ratio"] += clipped_token_count.detach().float()
+            loss_metrics["loss/loss"] += loss.detach().float() / loss_scale
+            loss_metrics["loss/entropy"] += entropy.detach().float() / total_tokens
+            loss_metrics["loss/importance_ratio"] += importance_ratio.detach().float() / total_tokens
+            loss_metrics["loss/clipped_count"] += clipped_count.detach().float() / total_tokens
 
             recomputed_logprob_error: Tensor = micro_batch.get("recomputed_logprob_error", torch.tensor(0.0))
             loss_metrics["loss/recomputed_logprob_error"] += recomputed_logprob_error.detach().float()
@@ -278,10 +279,6 @@ def train(config: TrainerConfig):
             logger.debug(
                 f"Completed micro batch {micro_step}/{num_micro_batches} (loss={(loss.item() / loss_mask.sum()):.2f}, entropy={(entropy.item() / loss_mask.sum()):.2f}, importance_ratio={(importance_ratio.item() / loss_mask.sum()):.2f})"
             )
-
-        # Normalize all loss metrics globally before reporting
-        for key, value in loss_metrics.items():
-            loss_metrics[key] = value / loss_scale
 
         # Synchronize the batch metrics across all ranks
         logger.debug(f"All-reduce loss metrics keys {list(loss_metrics.keys())}")
