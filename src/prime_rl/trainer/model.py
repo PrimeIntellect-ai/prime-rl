@@ -1,6 +1,7 @@
 from typing import TypeAlias
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 from beartype import beartype as typechecker
 from jaxtyping import Float, Int, jaxtyped
@@ -17,7 +18,9 @@ from transformers import (
 )
 
 from prime_rl.trainer.config import ModelConfig
+from prime_rl.trainer.world import get_world
 
+# TODO: Change all to nn.Module
 Model: TypeAlias = LlamaForCausalLM | Qwen2ForCausalLM | Qwen3ForCausalLM | nn.Module
 
 
@@ -25,6 +28,11 @@ def get_model(config: ModelConfig) -> Model:
     config_model = AutoConfig.from_pretrained(
         config.name, attn_implementation=config.attn, trust_remote_code=config.trust_remote_code
     )
+
+    if hasattr(config_model, "ep_size"):
+        # TODO: Allow configuring to local world size instead?
+        config_model.ep_size = get_world().world_size
+
     config_model.use_cache = False
     model = AutoModelForCausalLM.from_pretrained(
         pretrained_model_name_or_path=config.name,
@@ -71,6 +79,7 @@ def setup_ac(model: Model, config: ModelConfig) -> None:
 
 
 def setup_model(config: ModelConfig) -> Model:
+    dist.init_process_group()
     model = get_model(config)
     setup_fsdp(model, config)
     setup_ac(model, config)
