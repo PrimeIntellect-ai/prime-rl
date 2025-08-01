@@ -28,7 +28,6 @@ def load_environment(
         return num_turns, names_per_turn
 
     def build_dataset() -> Dataset:
-        # Set seed for reproducible dataset creation
         random.seed(seed)
 
         data = []
