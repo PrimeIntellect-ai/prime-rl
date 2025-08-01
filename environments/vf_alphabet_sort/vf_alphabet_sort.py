@@ -11,34 +11,26 @@ from verifiers.types import Messages, State
 def load_environment(
     max_turns: int = 3,
     min_turns: int = 1,
-    single_turn_min_names: int = 2,
-    single_turn_max_names: int = 5,
-    first_turn_min_names: int = 2,
-    first_turn_max_names: int = 3,
-    subsequent_turn_min_names: int = 1,
-    subsequent_turn_max_names: int = 3,
+    min_names_per_turn: int = 1,
+    max_names_per_turn: int = 5,
     similarity_power: int = 4,
     hf_dataset_path: str = "kalomaze/alphabetic-arxiv-authors-it1",
+    seed: int = 1337420,
     **env_args,
 ) -> vf.Environment:
     def get_random_turn_config():
         num_turns = random.randint(min_turns, max_turns)
+        names_per_turn = []
 
-        if num_turns == 1:
-            first_turn_count = random.randint(single_turn_min_names, single_turn_max_names)
-            return num_turns, first_turn_count, []
-        elif num_turns == 2:
-            first_turn_count = random.randint(first_turn_min_names, first_turn_max_names)
-            second_turn_count = random.randint(subsequent_turn_min_names, subsequent_turn_max_names)
-            return num_turns, first_turn_count, [second_turn_count]
-        else:
-            first_turn_count = random.randint(first_turn_min_names, first_turn_max_names)
-            subsequent_counts = []
-            for _ in range(num_turns - 1):
-                subsequent_counts.append(random.randint(subsequent_turn_min_names, subsequent_turn_max_names))
-            return num_turns, first_turn_count, subsequent_counts
+        for _ in range(num_turns):
+            names_per_turn.append(random.randint(min_names_per_turn, max_names_per_turn))
+
+        return num_turns, names_per_turn
 
     def build_dataset() -> Dataset:
+        # Set seed for reproducible dataset creation
+        random.seed(seed)
+
         data = []
         hf_dataset = load_dataset(hf_dataset_path, split="train")
 
@@ -54,8 +46,8 @@ def load_environment(
                         seen.add(combined)
                         combined_names.append(combined)
 
-                num_turns, first_turn_count, subsequent_counts = get_random_turn_config()
-                names_needed = first_turn_count + sum(subsequent_counts)
+                num_turns, names_per_turn = get_random_turn_config()
+                names_needed = sum(names_per_turn)
 
                 if len(combined_names) < names_needed:
                     continue
@@ -65,10 +57,7 @@ def load_environment(
                 turn_names = []
                 idx = 0
 
-                turn_names.append(selected_names[idx : idx + first_turn_count])
-                idx += first_turn_count
-
-                for count in subsequent_counts:
+                for count in names_per_turn:
                     turn_names.append(selected_names[idx : idx + count])
                     idx += count
 
@@ -98,7 +87,7 @@ def load_environment(
 
 Use exactly this format:
 <alphabetical_sorted>
-{chr(10).join([f"Name{i}" for i in range(1, first_turn_count + 1)])}
+{chr(10).join([f"Name{i}" for i in range(1, len(turn_names[0]) + 1)])}
 </alphabetical_sorted>"""
 
                 follow_ups = []
@@ -106,15 +95,17 @@ Use exactly this format:
                     shuffled_turn = turn_names[turn_idx][:]
                     random.shuffle(shuffled_turn)
 
+                    cumulative_count = sum(len(turn_names[i]) for i in range(turn_idx + 1))
+                    previous_count = sum(len(turn_names[i]) for i in range(turn_idx))
+
                     if turn_idx == 1:
-                        names_so_far = first_turn_count + len(turn_names[turn_idx])
                         follow_up = f"""Now sort ALL of these names alphabetically by FIRST name: {", ".join(shuffled_turn)}
 
 These are in addition to the prior list. Mark any NEW names (that weren't in the prior list) with `// new name!` at the end.
 
 Use exactly this format:
 <combined_alphabetical_sorted>
-{chr(10).join([f"Name{i}" + (" // new name!" if i > first_turn_count else "") for i in range(1, names_so_far + 1)])}
+{chr(10).join([f"Name{i}" + (" // new name!" if i > previous_count else "") for i in range(1, cumulative_count + 1)])}
 </combined_alphabetical_sorted>"""
                     else:
                         follow_up = f"""Now sort ALL of these names alphabetically by FIRST name: {", ".join(shuffled_turn)}
@@ -140,7 +131,9 @@ These are in addition to the prior list. Mark any NEW names (that weren't in the
             except Exception as e:
                 print(f"Error line {line_num}: {e}")
 
-        print(f"Dataset: {len(data)} examples with variable turns ({min_turns}-{max_turns})")
+        print(
+            f"Dataset: {len(data)} examples with {min_turns}-{max_turns} turns, {min_names_per_turn}-{max_names_per_turn} names per turn"
+        )
         return Dataset.from_list(data)
 
     class SortingEnv(vf.MultiTurnEnv):
