@@ -77,6 +77,9 @@ def train(config: TrainerConfig):
     # Initialize the model and tokenizer
     logger.info(f"Initializing model and tokenizer ({config.model})")
     model = setup_model(config.model)
+    if world.rank == 0:
+        print(model)
+        print(model.config)
     tokenizer = get_tokenizer(config.model)
 
     # Set up the optimizer

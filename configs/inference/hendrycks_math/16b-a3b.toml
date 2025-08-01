@@ -4,5 +4,5 @@ max_model_len = 2048
 trust_remote_code = true
 
 [parallel]
-dp = 4
+dp = 6
 tp = 1 
