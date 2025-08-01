@@ -18,6 +18,14 @@ def load_environment(
     seed: int = 1337420,
     **env_args,
 ) -> vf.Environment:
+    # Basic arg validation
+    assert min_turns >= 1, "min_turns must be at least 1"
+    assert min_turns <= max_turns, "min_turns must be less than or equal to max_turns"
+    assert min_names_per_turn >= 1, "min_names_per_turn must be at least 1"
+    assert min_names_per_turn <= max_names_per_turn, (
+        "min_names_per_turn must be less than or equal to max_names_per_turn"
+    )
+
     def get_random_turn_config():
         num_turns = random.randint(min_turns, max_turns)
         names_per_turn = []
