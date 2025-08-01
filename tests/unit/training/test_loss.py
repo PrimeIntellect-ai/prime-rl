@@ -6,8 +6,8 @@ from prime_rl.trainer.loss import compute_entropy, grpo_loss_clip, grpo_loss_rat
 pytestmark = [pytest.mark.gpu]
 
 
-@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-def test_grpo_loss(dtype):
+def test_grpo_loss():
+    dtype = torch.float32
     logprobs = torch.randn(10, 10, dtype=dtype).cuda()
     original_logprobs = torch.randn(10, 10, dtype=dtype).cuda()
     advantages = torch.randn(10, 10).cuda()
@@ -26,8 +26,8 @@ def test_grpo_loss(dtype):
     assert loss.item() is not None
 
 
-@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-def test_grpo_loss_ratio(dtype):
+def test_grpo_loss_ratio():
+    dtype = torch.float32
     logprobs = torch.randn(10, 10, dtype=dtype).cuda()
     original_logprobs = torch.randn(10, 10, dtype=dtype).cuda()
     advantages = torch.randn(10, 10).cuda()
@@ -42,8 +42,8 @@ def test_grpo_loss_ratio(dtype):
     )
 
 
-@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-def test_entropy_loss(dtype):
+def test_entropy_loss():
+    dtype = torch.float32
     logits = torch.randn(10, 10, 10, dtype=dtype).cuda()
     loss_mask = torch.ones(10, 10).int().cuda()
     entropy = compute_entropy(logits, loss_mask, temperature=0.6)
@@ -51,8 +51,8 @@ def test_entropy_loss(dtype):
     assert entropy.item() is not None
 
 
-@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-def test_grpo_loss_padding(dtype):
+def test_grpo_loss_padding():
+    dtype = torch.float32
     logprobs = torch.randn(10, 10, dtype=dtype).cuda()
     original_logprobs = torch.randn(10, 10, dtype=dtype).cuda()
     advantages = torch.randn(10, 10).cuda()

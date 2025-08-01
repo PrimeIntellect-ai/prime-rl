@@ -78,4 +78,4 @@ def setup_model(config: ModelConfig) -> Model:
 def forward(
     model: Model, input_ids: Int[Tensor, "batch seq"], position_ids: Int[Tensor, "batch seq"]
 ) -> Float[Tensor, "batch seq vocab"]:
-    return model(input_ids=input_ids, position_ids=position_ids).logits
+    return model(input_ids=input_ids, position_ids=position_ids).logits.float()
