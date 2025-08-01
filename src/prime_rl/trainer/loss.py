@@ -95,6 +95,8 @@ def grpo_loss_ratio(
     loss_mask: Int[Tensor, "batch seq"],
     clip_ratio: float,
 ) -> tuple[Tensor, RatioInfo]:
+    assert logprobs.dtype == torch.float32, "logprobs must be float32"
+
     raw_ratio = torch.exp(logprobs - original_logprobs)
 
     is_clipped = (raw_ratio > clip_ratio).float()
@@ -164,6 +166,7 @@ def compute_logprobs(
     input_ids: Int[Tensor, "batch seq"],
     temperature: float,
 ) -> tuple[Float[Tensor, "batch seq"], Float[Tensor, "batch seq vocab"]]:
+    assert logits.dtype == torch.float32, "logprobs must be float32"
     shifted_logits = shift_logits(logits)
     shifted_logits = shifted_logits / temperature
     logprobs = selective_log_softmax(shifted_logits, input_ids)
