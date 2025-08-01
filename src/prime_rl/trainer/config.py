@@ -46,6 +46,13 @@ class ModelConfig(BaseConfig):
         ),
     ] = False
 
+    ep_mode: Annotated[
+        Literal["world", "local"] | int,
+        Field(
+            description="The expert parallelism to use if the model has MoE layers. If 'world', will use the world size. If 'local', will use the local world size. If an integer, will use that EP size.",
+        ),
+    ] = "world"
+
 
 class OptimizerConfig(BaseConfig):
     """Configures the Adam optimizer."""
