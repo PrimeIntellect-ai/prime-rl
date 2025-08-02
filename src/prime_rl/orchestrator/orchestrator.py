@@ -92,10 +92,18 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
-    buffer = setup_buffer(dataset, config.buffer)
 
     # Load tokenizer -- placeholder until reworking verifiers to use vLLM tokenizer
     tokenizer = AutoTokenizer.from_pretrained(config.model.name)
+
+    dataset = [
+        item
+        for item in dataset
+        if isinstance(item.get("prompt"), str) and len(tokenizer.encode(item["prompt"])) <= config.seq_len
+    ]
+    logger.info(f"Filtered dataset to {len(dataset)} items (removed prompts exceeding {config.seq_len} tokens)")
+
+    buffer = setup_buffer(dataset, config.buffer)
 
     # Iterate over dataset in batches
     max_steps = config.max_steps or int(1e9)
