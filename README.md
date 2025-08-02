@@ -69,26 +69,26 @@ uv run python -c "import flash_attn"
 3. Check that you can run training debug mode (*this requires 1 GPU*)
 
 ```bash
-uv run trainer @ configs/trainer/debug.toml
+uv run trainer @ configs/main/debug/train.toml
 ```
 
 4. Check that you can run the orchestrator against an inference server (*this requires 1 GPU*)
 
 ```bash
-uv run inference @ configs/inference/debug.toml
+uv run inference @ configs/main/debug/infer.toml
 ```
 
 ```bash
-uv run orchestrator @ configs/orchestrator/debug.toml
+uv run orchestrator @ configs/main/debug/orch.toml
 ```
 
 5. Check that you can run a toy RL run (*this requires 2 GPUs and lasts 5min, see more below*)
 
 ```bash
 uv run rl \
-  --trainer @ configs/trainer/reverse_text.toml \
-  --orchestrator @ configs/orchestrator/reverse_text.toml \
-  --inference @ configs/inference/reverse_text.toml
+  --trainer @ configs/main/reverse_text/train.toml \
+  --orchestrator @ configs/main/reverse_text/orch.toml \
+  --inference @ configs/main/reverse_text/infer.toml
 ```
 
 </details>
@@ -138,9 +138,9 @@ Train a tiny model (`willcb/Qwen2.5-0.5B-Reverse-SFT`) to learn to reverse a sma
 
 ```bash
 uv run rl \
-  --trainer @ configs/trainer/reverse_text.toml \
-  --orchestrator @ configs/orchestrator/reverse_text.toml \
-  --inference @ configs/inference/reverse_text.toml
+  --trainer @ configs/main/reverse_text/train.toml \
+  --orchestrator @ configs/main/reverse_text/orch.toml \
+  --inference @ configs/main/reverse_text/infer.toml
 ```
 
 *With two small GPUs (e.g. RTX 3090/ 4090), this experiment should finish in less than 5 minutes.*
@@ -153,9 +153,9 @@ On eight GPUs, run the following command to run the experiment.
 
 ```bash
 uv run rl \
-  --trainer @ configs/trainer/hendrycks_math/1b.toml \
-  --orchestrator @ configs/orchestrator/hendrycks_math/1b.toml \
-  --inference @ configs/inference/hendrycks_math/1b.toml \
+  --trainer @ configs/hendrycks_math_1b/train.toml \
+  --orchestrator @ configs/hendrycks_math_1b/orch.toml \
+  --inference @ configs/hendrycks_math_1b/infer.toml \
   --trainer-gpus 2 --inference-gpus 6
 ```
 
@@ -167,9 +167,9 @@ Train a small model (`willcb/DeepSeek-R1-Distill-Qwen-1.5B`) on complex math que
 
 ```bash
 uv run rl \
-  --trainer @ configs/trainer/intellect_math/1b.toml \
-  --orchestrator @ configs/orchestrator/intellect_math/1b.toml \
-  --inference @ configs/inference/intellect_math/1b.toml \
+  --trainer @ configs/intellect_math_1b/train.toml \
+  --orchestrator @ configs/intellect_math_1b/orch.toml \
+  --inference @ configs/intellect_math_1b/infer.toml \
   --trainer-gpus 2 --inference-gpus 6
 ```
 
@@ -192,9 +192,9 @@ bash scripts/tmux.sh exp-1
 ```bash
 # Start the first experiment
 uv run rl \
-  --trainer @ configs/trainer/reverse_text.toml \
-  --orchestrator @ configs/orchestrator/reverse_text.toml \
-  --inference @ configs/inference/reverse_text.toml \
+  --trainer @ configs/main/reverse_text/train.toml \
+  --orchestrator @ configs/main/reverse_text/orch.toml \
+  --inference @ configs/main/reverse_text/infer.toml \
   --exp-id exp-1
 ```
 
@@ -207,9 +207,9 @@ bash scripts/tmux.sh exp-2
 ```bash
 # Start the second experiment
 CUDA_VISIBLE_DEVICES=3,4 uv run rl \
-  --trainer @ configs/trainer/reverse_text.toml \
-  --orchestrator @ configs/orchestrator/reverse_text.toml \
-  --inference @ configs/inference/reverse_text.toml \
+  --trainer @ configs/main/reverse_text/train.toml \
+  --orchestrator @ configs/main/reverse_text/orch.toml \
+  --inference @ configs/main/reverse_text/infer.toml \
   --inference.server.port 8001 \
   --orchestrator.client.port 8001 \
   --exp-id exp-2
@@ -250,7 +250,7 @@ We support the following sources for configuration, in this order of precedence:
 
 1. **Command-line arguments**: You can pass (nested) arguments as `--key.subkey value` to the script. For example, to set the model name you can run `--model.name`
 
-2. **Config files**: You can pass `.toml` config files (defined in the `configs` directory) using the `@` prefix. For example, to use the `debug.toml` config file, you can run `uv run inference @ configs/inference/debug.toml`. (*If you leave a space between the `@` and the config file, you will get shell path auto-completions.*)
+2. **Config files**: You can pass `.toml` config files (defined in the `configs` directory) using the `@` prefix. For example, to use the `debug.toml` config file, you can run `uv run inference @ configs/main/debug/infer.toml`. (*If you leave a space between the `@` and the config file, you will get shell path auto-completions.*)
 
 3. **Environment variables**: You can set environment variables to override the config values. All environment variables must be prefixed with `PRIME_` and use the `__` delimiter to nest the keys. For example, to set the model name you can run `export PRIME_MODEL__NAME=Qwen/Qwen3-0.6B`.
 
@@ -291,15 +291,15 @@ bash scripts/tmux.sh
 2. Start the inference server in the `Inference` pane.
 
 ```bash
-uv run inference @ configs/inference/reverse_text.toml
+uv run inference @ configs/main/reverse_text/infer.toml
 ```
 
 3. Start the trainer and orchestrator in the `Trainer` pane.
 
 ```bash
 uv run rl \
-  --trainer @ configs/trainer/reverse_text.toml \
-  --orchestrator @ configs/orchestrator/reverse_text.toml
+  --trainer @ configs/main/reverse_text/train.toml \
+  --orchestrator @ configs/main/reverse_text/orch.toml
 ```
 
 To kill the tmux session when you're done:
@@ -367,19 +367,19 @@ Checkpointing is configured by the `CheckpointConfig`, with the config key `--ck
 By default, runs do no write checkpoints to save disk space. To checkpoint every 10 steps on our debug RL run, run the following command
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 uv run trainer @ configs/trainer/reverse_text.toml --ckpt.interval 10 
+CUDA_VISIBLE_DEVICES=1 uv run trainer @ configs/main/reverse_text/train.toml --ckpt.interval 10 
 ```
 
 To resume a run use the `--ckpt.resume-step` flag. To resume from the checkpoint step 10 from the previous command, run the following command
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 uv run trainer @ configs/trainer/reverse_text.toml --ckpt.resume_step 10
+CUDA_VISIBLE_DEVICES=1 uv run trainer @ configs/main/reverse_text/train.toml --ckpt.resume_step 10
 ```
 
 Because we save progress information, resuming from a checkpoint is fully W&B compatible. By default, resuming from a checkpoint, will simply create a new run. To resume the same W&B run, you'd have to pass the same W&B run ID for both the trainer and the orchestrator, e.g.
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 uv run trainer @ configs/trainer/reverse_text.toml \
+CUDA_VISIBLE_DEVICES=1 uv run trainer @ configs/main/reverse_text/train.toml \
   --monitor.wandb.project <project> \
   --ckpt.resume-step 10 \
   --monitor.wandb.id <trainer-run-id> \
@@ -388,7 +388,7 @@ CUDA_VISIBLE_DEVICES=1 uv run trainer @ configs/trainer/reverse_text.toml \
 You also need to restart the orchestrator from a checkpoint, the api is the same as the trainer, e.g.
 
 ```bash
-uv run orchestrator @ configs/orchestrator/reverse_text.toml \
+uv run orchestrator @ configs/main/reverse_text/orch.toml \
   --monitor.wandb.project <project> \
   --ckpt.resume-step 10 \
   --monitor.wandb.id <orchestrator-run-id>
@@ -398,10 +398,10 @@ If you started your run using the rl.py script, you can resume the same run by p
 
 ```bash
 uv run rl \
-  --trainer @ configs/trainer/reverse_text.toml \
+  --trainer @ configs/main/reverse_text/train.toml \
   --trainer.monitor.wandb.id <trainer-run-id> \
   --trainer.ckpt.resume-step 10 \
-  --orchestrator @ configs/orchestrator/reverse_text.toml \
+  --orchestrator @ configs/main/reverse_text/orch.toml \
   --orchestrator.ckpt.resume-step 10 \
   --orchestrator.monitor.wandb.id <orchestrator-run-id> 
 ```
@@ -417,13 +417,13 @@ We provide a convenient way to benchmark the performance of the inference engine
 To benchmark inference, first spin up the inference server with an experiment configuration
 
 ```bash
-uv run inference @ configs/inference/reverse_text.toml
+uv run inference @ configs/main/reverse_text/infer.toml
 ```
 
 Then, start the orchestrator with the matching configuration file in benchmark mode
 
 ```bash
-uv run orchestrator @ configs/orchestrator/reverse_text.toml --bench
+uv run orchestrator @ configs/main/reverse_text/orch.toml --bench
 ```
 
 **Trainer**
@@ -431,7 +431,7 @@ uv run orchestrator @ configs/orchestrator/reverse_text.toml --bench
 To benchmark the trainer, simply run the trainer against a fake data loader matching the way the orchestrator would write the training batch.
 
 ```bash
-uv run trainer @ configs/trainer/reverse_text.toml --bench --data.fake.micro_batch_size 8 --data.fake.batch_size 128 --data.fake.seq_len 128
+uv run trainer @ configs/main/reverse_text/train.toml --bench --data.fake.micro_batch_size 8 --data.fake.batch_size 128 --data.fake.seq_len 128
 ```
 
 **RL**
@@ -440,9 +440,9 @@ Often it will be most convenient to benchmark the full RL run. This will automat
 
 ```bash
 uv run rl   \
-  --trainer @ configs/trainer/reverse_text.toml  \
-  --orchestrator @ configs/orchestrator/reverse_text.toml \
-  --inference @ configs/inference/reverse_text.toml
+  --trainer @ configs/main/reverse_text/train.toml  \
+  --orchestrator @ configs/main/reverse_text/orch.toml \
+  --inference @ configs/main/reverse_text/infer.toml
 ```
 
 ### Tests
