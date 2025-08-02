@@ -64,12 +64,6 @@ class LinearSchedulerConfig(BaseSchedulerConfig):
         ),
     ] = None
 
-    @model_validator(mode="after")
-    def validate_decay_steps(self):
-        if self.type == "linear" and self.decay_steps is not None and self.decay_steps <= 0:
-            raise ValueError(f"decay_steps must be positive for linear scheduler, got {self.decay_steps}")
-        return self
-
 
 class CosineSchedulerConfig(BaseSchedulerConfig):
     """Configuration for cosine learning rate scheduler."""
@@ -82,12 +76,6 @@ class CosineSchedulerConfig(BaseSchedulerConfig):
             description="Number of steps to decay the learning rate during the final portion of training. If None, will use remaining steps after warmup.",
         ),
     ] = None
-
-    @model_validator(mode="after")
-    def validate_decay_steps(self):
-        if self.type == "cosine" and self.decay_steps is not None and self.decay_steps <= 0:
-            raise ValueError(f"decay_steps must be positive for cosine scheduler, got {self.decay_steps}")
-        return self
 
 
 SchedulerConfig: TypeAlias = ConstantSchedulerConfig | LinearSchedulerConfig | CosineSchedulerConfig
