@@ -15,7 +15,7 @@ class ConstantLRScheduler(LRScheduler):
         return [group["lr"] for group in self.optimizer.param_groups]
 
 
-def validate_scheduler_config(config: SchedulerConfig, max_steps: int) -> None:
+def validate_scheduler_config(config: SchedulerConfig, max_steps: int | None) -> None:
     """Validate scheduler configuration against max_steps."""
     if max_steps is None:
         raise ValueError("Must specify max_steps when using a scheduler")
@@ -37,7 +37,7 @@ def validate_scheduler_config(config: SchedulerConfig, max_steps: int) -> None:
         raise ValueError(f"Warmup steps ({warmup_steps}) + decay steps ({decay_steps}) exceeds max_steps ({max_steps})")
 
 
-def create_lr_scheduler(optimizer: Optimizer, config: SchedulerConfig, max_steps: int) -> LRScheduler:
+def create_lr_scheduler(optimizer: Optimizer, config: SchedulerConfig, max_steps: int | None) -> LRScheduler:
     """Create learning rate scheduler based on config."""
     # Validate configuration
     validate_scheduler_config(config, max_steps)
