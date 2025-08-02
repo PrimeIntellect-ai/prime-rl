@@ -153,9 +153,9 @@ On eight GPUs, run the following command to run the experiment.
 
 ```bash
 uv run rl \
-  --trainer @ configs/hendrycks_math_1b/train.toml \
-  --orchestrator @ configs/hendrycks_math_1b/orch.toml \
-  --inference @ configs/hendrycks_math_1b/infer.toml \
+  --trainer @ configs/hendrycks_math/1b/train.toml \
+  --orchestrator @ configs/hendrycks_math/1b/orch.toml \
+  --inference @ configs/hendrycks_math/1b/infer.toml \
   --trainer-gpus 2 --inference-gpus 6
 ```
 
@@ -167,9 +167,9 @@ Train a small model (`willcb/DeepSeek-R1-Distill-Qwen-1.5B`) on complex math que
 
 ```bash
 uv run rl \
-  --trainer @ configs/intellect_math_1b/train.toml \
-  --orchestrator @ configs/intellect_math_1b/orch.toml \
-  --inference @ configs/intellect_math_1b/infer.toml \
+  --trainer @ configs/intellect_math/1b/train.toml \
+  --orchestrator @ configs/intellect_math/1b/orch.toml \
+  --inference @ configs/intellect_math/1b/infer.toml \
   --trainer-gpus 2 --inference-gpus 6
 ```
 
