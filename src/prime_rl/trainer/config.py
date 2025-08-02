@@ -40,22 +40,19 @@ class ModelConfig(BaseConfig):
     ] = True
 
 
-class BaseSchedulerConfig(BaseModel):
-    """Base configuration for learning rate schedulers."""
-
-    warmup_steps: Annotated[int, Field(ge=0, description="Number of warmup steps for the learning rate scheduler.")] = 0
-
-
-class ConstantSchedulerConfig(BaseSchedulerConfig):
+class ConstantSchedulerConfig(BaseModel):
     """Configuration for constant learning rate scheduler."""
 
     type: Literal["constant"] = "constant"
 
 
-class LinearSchedulerConfig(BaseSchedulerConfig):
+class LinearSchedulerConfig(BaseModel):
     """Configuration for linear learning rate scheduler."""
 
     type: Literal["linear"] = "linear"
+
+    warmup_steps: Annotated[int, Field(ge=0, description="Number of warmup steps for the learning rate scheduler.")] = 0
+
     decay_steps: Annotated[
         int | None,
         Field(
@@ -65,10 +62,13 @@ class LinearSchedulerConfig(BaseSchedulerConfig):
     ] = None
 
 
-class CosineSchedulerConfig(BaseSchedulerConfig):
+class CosineSchedulerConfig(BaseModel):
     """Configuration for cosine learning rate scheduler."""
 
     type: Literal["cosine"] = "cosine"
+
+    warmup_steps: Annotated[int, Field(ge=0, description="Number of warmup steps for the learning rate scheduler.")] = 0
+
     decay_steps: Annotated[
         int | None,
         Field(
