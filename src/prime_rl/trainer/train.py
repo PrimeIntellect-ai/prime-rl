@@ -19,7 +19,7 @@ from prime_rl.trainer.weights import WeightCheckpointManager
 from prime_rl.trainer.config import TrainerConfig
 from prime_rl.trainer.data import DataLoader, FakeDataLoader
 from prime_rl.trainer.logger import setup_logger
-from prime_rl.trainer.loss import grpo_loss, compute_entropy, shift_logits, compute_logprobs, ImportanceRatioMetrics
+from prime_rl.trainer.loss import grpo_loss, compute_entropy, compute_logprobs, ImportanceRatioMetrics
 from prime_rl.trainer.model import (
     forward,
     get_tokenizer,
@@ -199,7 +199,8 @@ def train(config: TrainerConfig):
                     logprobs = micro_batch["logprobs"].to("cuda")
                     temperature = micro_batch["temperature"]
 
-                    recomputed_logprobs = compute_logprobs(logprob_model, input_ids, position_ids, temperature)
+                    logits = forward(logprob_model, input_ids, position_ids).contiguous()
+                    recomputed_logprobs, _ = compute_logprobs(logits, input_ids, temperature)
                     recomputed_logprob_error = (torch.exp((recomputed_logprobs - logprobs).abs()) * loss_mask).sum()
 
                     micro_batch["recomputed_logprob_error"] = recomputed_logprob_error.to("cpu")
@@ -233,23 +234,20 @@ def train(config: TrainerConfig):
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
-            logprobs = micro_batch["logprobs"].to("cuda")
+            og_logprobs = micro_batch["logprobs"].to("cuda")
             temperature = micro_batch["temperature"]
             micro_batch_size, seq_len = input_ids.shape
 
             # Forward pass
             logits = forward(model, input_ids, position_ids).contiguous()
-            shifted_logits = shift_logits(logits)
-            del logits
+            logprobs, shifted_logits = compute_logprobs(logits, input_ids, temperature)
 
             # Compute loss
             loss, ratio_info = grpo_loss(
-                shifted_logits=shifted_logits,
-                input_ids=input_ids,
+                logprobs=logprobs,
                 advantages=advantages,
-                original_logprobs=logprobs,
+                original_logprobs=og_logprobs,
                 loss_mask=loss_mask,
-                temperature=temperature,
                 loss_config=config.loss,
             )
 
