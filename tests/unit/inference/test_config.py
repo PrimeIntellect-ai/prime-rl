@@ -8,11 +8,11 @@ from prime_rl.utils.pydantic_config import parse_argv
 
 
 def get_all_toml_files(directory) -> list[str]:
-    config_files = list(Path(directory).glob("**/*.toml"))
+    config_files = list(Path(directory).glob("**/infer.toml"))
     return [file.as_posix() for file in config_files]
 
 
-@pytest.mark.parametrize("config_file", get_all_toml_files("configs/inference"))
+@pytest.mark.parametrize("config_file", get_all_toml_files("configs/"))
 def test_load_inference_configs(config_file: str):
     sys.argv = ["infer.py", "@", config_file]
     config = parse_argv(InferenceConfig)
