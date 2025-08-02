@@ -11,7 +11,7 @@ CMD = [
     "run",
     "orchestrator",
     "@",
-    "configs/orchestrator/debug.toml",
+    "configs/debug/orch.toml",
     "--model.name",
     "willcb/Qwen2.5-0.5B-Reverse-SFT",
 ]
