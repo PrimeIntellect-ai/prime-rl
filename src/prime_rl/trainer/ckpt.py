@@ -37,7 +37,7 @@ class CheckpointManager:
         return self._get_step_path(step) / ckpt_name
 
     def _save_to_path(
-        self, ckpt_path: Path, model: Model, optimizers: list[Optimizer], progress: Progress, scheduler: LRScheduler
+        self, ckpt_path: Path, model: Model, optimizers: list[Optimizer], scheduler: LRScheduler, progress: Progress
     ):
         self._logger.debug(f"Saving training checkpoint to {ckpt_path}")
         start_time = time.time()
@@ -56,7 +56,7 @@ class CheckpointManager:
         self._logger.debug(f"Training checkpoint saved in {time.time() - start_time:.2f} seconds")
 
     def _load_from_path(
-        self, ckpt_path: Path, model: Model, optimizers: list[Optimizer], progress: Progress, scheduler: LRScheduler
+        self, ckpt_path: Path, model: Model, optimizers: list[Optimizer], scheduler: LRScheduler, progress: Progress
     ):
         """Loads a checkpoint from a given path in-place."""
         self._logger.debug(f"Loading training checkpoint from {ckpt_path}")
@@ -79,21 +79,21 @@ class CheckpointManager:
         self._logger.debug(f"Training checkpoint loaded in {time.time() - start_time:.2f} seconds")
 
     def load(
-        self, model: Model, optimizers: list[Optimizer], progress: Progress, step: int, scheduler: LRScheduler
+        self, model: Model, optimizers: list[Optimizer], scheduler: LRScheduler, progress: Progress, step: int
     ) -> None:
         """Loads a checkpoint from a given path in-place."""
         ckpt_path = self._get_ckpt_path(step)
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
-        self._load_from_path(ckpt_path, model, optimizers, progress, scheduler)
+        self._load_from_path(ckpt_path, model, optimizers, scheduler, progress)
 
     def save(
         self,
         model: Model,
         optimizers: list[Optimizer],
+        scheduler: LRScheduler,
         progress: Progress,
         step: int,
-        scheduler: LRScheduler,
     ):
         """Saves the full checkpoint state for a specified step."""
         step_path = self._get_step_path(step)
@@ -104,10 +104,10 @@ class CheckpointManager:
             # Run save in a separate thread
             thread = threading.Thread(
                 target=self._save_to_path,
-                args=(ckpt_path, model, optimizers, progress, scheduler),
+                args=(ckpt_path, model, optimizers, scheduler, progress),
                 name=f"ckpt-save-{step}",
             )
             thread.start()
         else:
             # Run save synchronously
-            self._save_to_path(ckpt_path, model, optimizers, progress, scheduler)
+            self._save_to_path(ckpt_path, model, optimizers, scheduler, progress)
