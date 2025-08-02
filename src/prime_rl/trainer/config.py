@@ -90,7 +90,7 @@ class OptimizerConfig(BaseConfig):
     betas2: Annotated[float, Field(ge=0)] = 0.99
 
     # LR Scheduler configuration
-    scheduler_config: SchedulerConfig = Field(discriminator="type", default=ConstantSchedulerConfig())
+    scheduler: SchedulerConfig = Field(discriminator="type", default=ConstantSchedulerConfig())
 
 
 class CheckpointConfig(BaseConfig):
