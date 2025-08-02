@@ -93,7 +93,7 @@ def train(config: TrainerConfig):
     # Set up the learning rate scheduler
     scheduler = create_lr_scheduler(optimizer, config.optim.scheduler_config, config.max_steps)
     logger.info(
-        f"Using `{config.optim.scheduler_config.scheduler}` scheduler (warmup_steps={config.optim.scheduler_config.warmup_steps}, decay_steps={getattr(config.optim.scheduler_config, 'decay_steps', None)})"
+        f"Using `{config.optim.scheduler_config.type}` scheduler (warmup_steps={config.optim.scheduler_config.warmup_steps}, decay_steps={getattr(config.optim.scheduler_config, 'decay_steps', None)})"
     )
 
     # Get checkpoint managers

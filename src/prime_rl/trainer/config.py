@@ -42,20 +42,20 @@ class ModelConfig(BaseConfig):
 
 class BaseSchedulerConfig(BaseModel):
     """Base configuration for learning rate schedulers."""
-    
+
     warmup_steps: Annotated[int, Field(ge=0, description="Number of warmup steps for the learning rate scheduler.")] = 0
 
 
 class ConstantSchedulerConfig(BaseSchedulerConfig):
     """Configuration for constant learning rate scheduler."""
-    
-    scheduler: Literal["constant"] = "constant"
+
+    type: Literal["constant"] = "constant"
 
 
 class LinearSchedulerConfig(BaseSchedulerConfig):
     """Configuration for linear learning rate scheduler."""
-    
-    scheduler: Literal["linear"] = "linear"
+
+    type: Literal["linear"] = "linear"
     decay_steps: Annotated[
         int | None,
         Field(
@@ -63,18 +63,18 @@ class LinearSchedulerConfig(BaseSchedulerConfig):
             description="Number of steps to decay the learning rate during the final portion of training. If None, will use remaining steps after warmup.",
         ),
     ] = None
-    
+
     @model_validator(mode="after")
     def validate_decay_steps(self):
-        if self.scheduler == "linear" and self.decay_steps is not None and self.decay_steps <= 0:
+        if self.type == "linear" and self.decay_steps is not None and self.decay_steps <= 0:
             raise ValueError(f"decay_steps must be positive for linear scheduler, got {self.decay_steps}")
         return self
 
 
 class CosineSchedulerConfig(BaseSchedulerConfig):
     """Configuration for cosine learning rate scheduler."""
-    
-    scheduler: Literal["cosine"] = "cosine"
+
+    type: Literal["cosine"] = "cosine"
     decay_steps: Annotated[
         int | None,
         Field(
@@ -82,10 +82,10 @@ class CosineSchedulerConfig(BaseSchedulerConfig):
             description="Number of steps to decay the learning rate during the final portion of training. If None, will use remaining steps after warmup.",
         ),
     ] = None
-    
+
     @model_validator(mode="after")
     def validate_decay_steps(self):
-        if self.scheduler == "cosine" and self.decay_steps is not None and self.decay_steps <= 0:
+        if self.type == "cosine" and self.decay_steps is not None and self.decay_steps <= 0:
             raise ValueError(f"decay_steps must be positive for cosine scheduler, got {self.decay_steps}")
         return self
 
@@ -102,7 +102,7 @@ class OptimizerConfig(BaseConfig):
     betas2: Annotated[float, Field(ge=0)] = 0.99
 
     # LR Scheduler configuration
-    scheduler_config: SchedulerConfig = Field(discriminator="scheduler", default=ConstantSchedulerConfig())
+    scheduler_config: SchedulerConfig = Field(discriminator="type", default=ConstantSchedulerConfig())
 
 
 class CheckpointConfig(BaseConfig):
