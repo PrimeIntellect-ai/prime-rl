@@ -19,7 +19,7 @@ class MicroBatch(TypedDict):
 
     # Batch level
     temperature: float
-    total_tokens: int
+    completion_tokens_count: int
 
 
 class FakeDataLoader:
@@ -43,6 +43,7 @@ class FakeDataLoader:
             "logprobs": torch.randn(self.micro_batch_size, self.seq_len),
             "temperature": 1.0,
             "loss_mask": torch.ones(self.micro_batch_size, self.seq_len, dtype=torch.int32),
+            "completion_tokens_count": self.micro_batch_size * self.micro_batch_size,
         }
 
 

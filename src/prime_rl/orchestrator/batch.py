@@ -16,6 +16,7 @@ class BatchSample(TypedDict):
     loss_mask: Int[Tensor, "seq"]
     advantages: Float[Tensor, "seq"]
     logprobs: Float[Tensor, "seq"]
+    completion_tokens_count: int
 
 
 def prepare_sample(
@@ -32,6 +33,7 @@ def prepare_sample(
     # Prepare prompt tokens
     prompt_token_ids = torch.tensor(rollout.prompt_tokens).long()
     prompt_token_mask = torch.tensor(rollout.prompt_mask).long()
+    completion_tokens_count = len(rollout.completion_tokens)
 
     # Prepare completion tokens
     completion_token_ids = torch.tensor(rollout.completion_tokens).long()
@@ -69,14 +71,17 @@ def prepare_sample(
         "loss_mask": loss_mask,
         "position_ids": position_ids,
         "logprobs": logprobs,
+        "completion_tokens_count": completion_tokens_count,
     }
 
 
-def prepare_micro_batch(samples: list[MicroBatch], temperature: float):
+def prepare_micro_batch(samples: list[BatchSample], temperature: float) -> MicroBatch:
     micro_batch = {}
 
     for key in ["input_ids", "advantages", "loss_mask", "logprobs", "position_ids"]:
         micro_batch[key] = torch.stack([sample[key] for sample in samples], dim=0)
+
+    micro_batch["completion_tokens_count"] = sum([sample["completion_tokens_count"] for sample in samples])
 
     micro_batch["temperature"] = temperature
 
@@ -165,6 +170,7 @@ def prepare_micro_batch_packing(samples: list[BatchSample], max_seq_len: int, te
         micro_batch[key] = torch.cat([sample[key] for sample in samples], dim=0).unsqueeze(0)
 
     micro_batch["temperature"] = temperature
+    micro_batch["completion_tokens_count"] = sum([sample["completion_tokens_count"] for sample in samples])
 
     return micro_batch
 
