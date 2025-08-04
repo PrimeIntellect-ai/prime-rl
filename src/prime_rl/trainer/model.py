@@ -20,6 +20,8 @@ from transformers import (
 from prime_rl.trainer.config import ModelConfig
 from prime_rl.trainer.world import get_world
 
+# from torchtitan.models.deepseek_v3.model.moe import MoE
+
 # TODO: Change all to nn.Module
 Model: TypeAlias = LlamaForCausalLM | Qwen2ForCausalLM | Qwen3ForCausalLM | nn.Module
 
@@ -29,9 +31,16 @@ def get_model(config: ModelConfig) -> Model:
         config.name, attn_implementation=config.attn, trust_remote_code=config.trust_remote_code
     )
 
+    # Support expert parallelism in MoE models
     if hasattr(config_model, "ep_size"):
-        # TODO: Allow configuring to local world size instead?
-        config_model.ep_size = get_world().world_size
+        if config.ep_mode == "world":
+            config_model.ep_size = get_world().world_size
+        elif config.ep_mode == "local":
+            config_model.ep_size = get_world().local_world_size
+        elif isinstance(config.ep_mode, int):
+            config_model.ep_size = config.ep_mode
+        else:
+            raise ValueError(f"Invalid EP mode: {config.ep_mode} ({type(config.ep_mode)})")
 
     config_model.use_cache = False
     model = AutoModelForCausalLM.from_pretrained(
