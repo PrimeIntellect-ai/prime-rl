@@ -252,6 +252,8 @@ class OnlineDifficultyBufferConfig(BaseModel):
 
 DataBufferConfig: TypeAlias = SimpleBufferConfig | DifficultyPoolBufferConfig | OnlineDifficultyBufferConfig
 
+CollateMode: TypeAlias = Literal["padding", "packing"]
+
 
 class OrchestratorConfig(BaseSettings):
     """Configures the orchestrator for RL training."""
@@ -283,7 +285,7 @@ class OrchestratorConfig(BaseSettings):
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
 
-    collate_mode: Annotated[Literal["packing", "padding"], Field(description="Collate mode to use.")] = "packing"
+    collate_mode: Annotated[CollateMode, Field(description="Collate mode to use.")] = "packing"
 
     batch_size: Annotated[int, Field(ge=1, description="Number of samples to train on per step.")] = 128
 
@@ -336,7 +338,7 @@ class OrchestratorConfig(BaseSettings):
         Field(
             description="Whether to override reward scores with 0 for truncated completions.",
         ),
-    ] = True
+    ] = False
 
     # TODO(Mika): This should be automatic from the number of ZMQ connections
     num_train_workers: Annotated[

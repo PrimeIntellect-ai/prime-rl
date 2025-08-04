@@ -23,13 +23,14 @@ from prime_rl.orchestrator.client import (
     setup_client,
 )
 from prime_rl.orchestrator.config import OrchestratorConfig
-from prime_rl.orchestrator.buffer import setup_buffer, make_rollouts, Rollout
-from prime_rl.orchestrator.batch import prepare_batch
+from prime_rl.orchestrator.buffer import setup_buffer, Rollout
+from prime_rl.orchestrator.batch import setup_collate_batch
 from prime_rl.orchestrator.logger import setup_logger
 from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.utils import (
     wait_for_weight_checkpoint,
     print_benchmark,
+    make_rollouts,
 )
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
@@ -93,6 +94,17 @@ async def orchestrate(config: OrchestratorConfig):
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
     buffer = setup_buffer(dataset, config.buffer)
+
+    # Setup collate batch
+    logger.info(f"Setting up collate batch ({config.collate_mode})")
+    collate_batch = setup_collate_batch(
+        config.collate_mode,
+        config.sampling.temperature,
+        tokenizer,
+        config.micro_batch_size,
+        config.seq_len,
+        config.num_train_workers,
+    )
 
     # Load tokenizer -- placeholder until reworking verifiers to use vLLM tokenizer
     tokenizer = AutoTokenizer.from_pretrained(config.model.name)
@@ -213,7 +225,7 @@ async def orchestrate(config: OrchestratorConfig):
             if "min_tokens" in sampling_args:
                 sampling_args["extra_body"]["min_tokens"] = sampling_args.pop("min_tokens")
 
-            outputs = await vf_env.a_generate(
+            generate_outputs = await vf_env.a_generate(
                 inputs=inputs, client=client, model=config.model.name, sampling_args=sampling_args
             )
             generate_completions_time = time.time() - generate_completions_start_time
@@ -221,20 +233,23 @@ async def orchestrate(config: OrchestratorConfig):
             completion_requests += problems_to_sample * config.rollouts_per_prompt
             calls_to_generate += 1
 
-            results = vf_env.process_env_results_vllm(
-                prompts=outputs.prompt,
-                completions=outputs.completion,
-                states=outputs.state,
-                rewards=outputs.reward,
+            processed_outputs = vf_env.process_env_results_vllm(
+                prompts=generate_outputs.prompt,
+                completions=generate_outputs.completion,
+                states=generate_outputs.state,
+                rewards=generate_outputs.reward,
                 processing_class=tokenizer,
                 max_seq_len=config.seq_len,
                 mask_env_responses=config.mask_env_responses,
                 zero_truncated_completions=config.zero_truncated_completions,
                 mask_truncated_completions=config.mask_truncated_completions,
             )
+            assert generate_outputs.reward == processed_outputs.rewards, (
+                f"Rewards should not change after processing, but got {generate_outputs.reward} != {processed_outputs.rewards}"
+            )
 
             advantages = compute_advantages(
-                rewards=outputs.reward,
+                rewards=processed_outputs.rewards,
                 samples_per_problem=config.rollouts_per_prompt,
                 advantage_type=config.advantage_type,
             )
@@ -242,12 +257,7 @@ async def orchestrate(config: OrchestratorConfig):
             # Update pool
             rollouts = make_rollouts(
                 problem_ids=problem_ids,
-                prompt_tokens=results.prompt_ids,
-                prompt_masks=results.prompt_mask,
-                completion_tokens=results.completion_ids,
-                completion_masks=results.completion_mask,
-                completion_logprobs=results.completion_logprobs,
-                rewards=outputs.reward,
+                outputs=processed_outputs,
                 advantages=advantages,
             )
             buffer.update(rollouts)
@@ -263,11 +273,12 @@ async def orchestrate(config: OrchestratorConfig):
             problems_to_sample = problems_per_batch - problems_sampled
 
         # Unpack accepted rollouts
-        rewards = [rollout.reward for rollout in accepted_rollouts]
-        advantages = [rollout.advantage for rollout in accepted_rollouts]
-        problem_ids = [rollout.problem_id for rollout in accepted_rollouts]
-        prompt_tokens = [rollout.prompt_tokens for rollout in accepted_rollouts]
-        completion_tokens = [rollout.completion_tokens for rollout in accepted_rollouts]
+        rollouts = accepted_rollouts
+        rewards = [rollout.reward for rollout in rollouts]
+        advantages = [rollout.advantage for rollout in rollouts]
+        problem_ids = [rollout.problem_id for rollout in rollouts]
+        prompt_tokens = [rollout.prompt_tokens for rollout in rollouts]
+        completion_tokens = [rollout.completion_tokens for rollout in rollouts]
 
         logger.debug(f"Computed rewards: {lt.lovely(torch.tensor(rewards))}")
         logger.debug(f"Computed advantages ({config.advantage_type}): {lt.lovely(torch.tensor(advantages))}")
@@ -312,23 +323,14 @@ async def orchestrate(config: OrchestratorConfig):
             )
 
         # Write serialized batch to disk for trainer workers to consume
-        all_data_ranks_batches = prepare_batch(
-            rollouts=rollouts,
-            temperature=config.sampling.temperature,
-            tokenizer=tokenizer,
-            micro_batch_size=config.micro_batch_size,
-            num_train_workers=config.num_train_workers,
-            seq_len=config.seq_len,
-            collate_mode=config.collate_mode,
-        )
-
+        micro_batches_per_gpu = collate_batch.collate(rollouts)
         step_path = Path(config.rollout_path) / f"step_{progress.step}"
         step_path.mkdir(parents=True, exist_ok=True)
-        for i, batches in enumerate(all_data_ranks_batches):
+        for i, micro_batches in enumerate(micro_batches_per_gpu):
             batch_path = step_path / f"rank_{i}.pt"
             tmp_path = batch_path.with_suffix(".tmp")
             logger.debug(f"Saving rollouts for step {progress.step} for rank {i} to {batch_path}")
-            torch.save(batches, tmp_path)
+            torch.save(micro_batches, tmp_path)
             tmp_path.rename(batch_path)
 
         # Log step metrics

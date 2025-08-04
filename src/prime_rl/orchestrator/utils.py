@@ -5,9 +5,11 @@ import pandas as pd
 from openai.types.chat import ChatCompletion
 from rich.console import Console
 from rich.table import Table
+from verifiers.types import ProcessedOutputs
 
 from prime_rl.orchestrator.client import tokenize
 from prime_rl.orchestrator.genesys import TaskType, get_reward_function
+from prime_rl.orchestrator.types import Rollout
 from prime_rl.utils.utils import format_num, format_time, get_weight_ckpt_model_path, wait_for_path
 
 
@@ -106,6 +108,43 @@ def compute_rewards(
         reward = compute_reward(completion, verification_info)
         rewards.append(reward)
     return rewards
+
+
+def make_rollouts(problem_ids: list[int], outputs: ProcessedOutputs, advantages: list[float]) -> list[Rollout]:
+    assert (
+        len(problem_ids)
+        == len(outputs.prompt_ids)
+        == len(outputs.prompt_mask)
+        == len(outputs.completion_ids)
+        == len(outputs.completion_mask)
+        == len(outputs.completion_logprobs)
+        == len(outputs.rewards)
+        == len(advantages)
+    ), (
+        f"The number of problem_ids, prompt_tokens, prompt_masks, completion_tokens, completion_masks, completion_logprobs, rewards, and advantages must be equal, but got ({len(problem_ids)=}, {len(outputs.prompt_ids)=}, {len(outputs.prompt_mask)=}, {len(outputs.completion_ids)=}, {len(outputs.completion_mask)=}, {len(outputs.completion_logprobs)=}, {len(outputs.rewards)=}, {len(advantages)=})"
+    )
+    return [
+        Rollout(
+            problem_id=problem_id,
+            prompt_tokens=prompt_tokens,
+            prompt_mask=prompt_mask,
+            completion_tokens=completion_tokens,
+            completion_mask=completion_mask,
+            completion_logprobs=completion_logprobs,
+            reward=reward,
+            advantage=advantage,
+        )
+        for problem_id, prompt_tokens, prompt_mask, completion_tokens, completion_mask, completion_logprobs, reward, advantage in zip(
+            problem_ids,
+            outputs.prompt_ids,
+            outputs.prompt_mask,
+            outputs.completion_ids,
+            outputs.completion_mask,
+            outputs.completion_logprobs,
+            outputs.rewards,
+            advantages,
+        )
+    ]
 
 
 def print_benchmark(history: dict[str, list[Any]]) -> None:

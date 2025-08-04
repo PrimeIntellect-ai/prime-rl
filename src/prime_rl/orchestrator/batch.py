@@ -1,21 +1,55 @@
 import copy
-from typing import Literal, TypedDict
+from abc import ABC, abstractmethod
+from typing import Literal
 
 import torch
-from jaxtyping import Float, Int
-from torch import Tensor
 from transformers import AutoTokenizer
 
-from prime_rl.orchestrator.buffer import Rollout
-from prime_rl.trainer.data import MicroBatch
+from prime_rl.orchestrator.config import CollateMode
+from prime_rl.orchestrator.types import Batch, Rollout
 
 
-class BatchSample(TypedDict):
-    input_ids: Int[Tensor, "seq"]
-    position_ids: Int[Tensor, "seq"]
-    loss_mask: Int[Tensor, "seq"]
-    advantages: Float[Tensor, "seq"]
-    logprobs: Float[Tensor, "seq"]
+class CollateBatch(ABC):
+    def __init__(
+        self, temperature: float, tokenizer: AutoTokenizer, micro_batch_size: int, seq_len: int, num_train_workers: int
+    ):
+        self.temperature = temperature
+        self.tokenizer = tokenizer
+        self.micro_batch_size = micro_batch_size
+        self.seq_len = seq_len
+        self.num_train_workers = num_train_workers
+
+    @abstractmethod
+    def collate(self, rollouts: list[Rollout]) -> list[list[Batch]]:
+        pass
+
+
+class PaddingCollateBatch(CollateBatch):
+    def collate(self, rollouts: list[Rollout]) -> list[list[Batch]]:
+        return prepare_batch_padding(
+            rollouts, self.temperature, self.tokenizer, self.micro_batch_size, self.seq_len, self.num_train_workers
+        )
+
+
+class PackingCollateBatch(CollateBatch):
+    def collate(self, rollouts: list[Rollout]) -> list[list[Batch]]:
+        return prepare_batch_packing(
+            rollouts, self.temperature, self.tokenizer, self.micro_batch_size, self.seq_len, self.num_train_workers
+        )
+
+
+def setup_collate_batch(
+    collate_mode: CollateMode,
+    temperature: float,
+    tokenizer: AutoTokenizer,
+    micro_batch_size: int,
+    seq_len: int,
+    num_train_workers: int,
+) -> CollateBatch:
+    if collate_mode == "padding":
+        return PaddingCollateBatch(temperature, tokenizer, micro_batch_size, seq_len, num_train_workers)
+    elif collate_mode == "packing":
+        return PackingCollateBatch(temperature, tokenizer, micro_batch_size, seq_len, num_train_workers)
 
 
 def prepare_sample(
@@ -23,7 +57,7 @@ def prepare_sample(
     seq_len: int,
     tokenizer: AutoTokenizer,
     pad: bool,
-) -> BatchSample:
+):
     """
     Prepare a problem and pad it for training.
     Tokenize and
@@ -78,7 +112,7 @@ def prepare_sample(
     }
 
 
-def prepare_micro_batch(samples: list[MicroBatch], temperature: float):
+def prepare_micro_batch(samples: list[Batch], temperature: float):
     micro_batch = {}
 
     for key in ["input_ids", "advantages", "loss_mask", "logprobs", "position_ids"]:
@@ -96,7 +130,7 @@ def prepare_batch_padding(
     micro_batch_size: int,
     seq_len: int,
     num_train_workers: int,
-) -> list[list[MicroBatch]]:
+) -> list[list[Batch]]:
     """
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
     Each micro batch is shape [micro_bs, max_seq_len] and contains micro_bs samples that are padded to the max lenght
@@ -127,7 +161,7 @@ def prepare_batch_padding(
     return batches_per_gpu
 
 
-def packed_samples_into_micro_bs(samples: list[BatchSample], max_seq_len: int) -> list[list[BatchSample]]:
+def packed_samples_into_micro_bs(samples, max_seq_len: int):
     """
     Pack samples into micro_batch efficiently.
     We follow the First Fit Decreasing algorithm to pack the samples into bins and minimize potential padding while never truncating.
@@ -156,7 +190,7 @@ def packed_samples_into_micro_bs(samples: list[BatchSample], max_seq_len: int) -
     return micro_batches
 
 
-def prepare_micro_batch_packing(samples: list[BatchSample], max_seq_len: int, temperature: float) -> MicroBatch:
+def prepare_micro_batch_packing(samples, max_seq_len: int, temperature: float):
     """
     Prepare a micro batch for packing mode. take multi sample and return a batch of shape [1, micro_bs * max_seq_len].
     Would additionally pad the batch to the max sequence length.
@@ -181,7 +215,7 @@ def prepare_batch_packing(
     micro_batch_size: int,
     seq_len: int,
     num_train_workers: int,
-) -> list[list[MicroBatch]]:
+) -> list[list[Batch]]:
     """
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
     Each micro batch is shape [1, micro_bs * max_seq_len], the namber of sample is not fixed per micro batch.
@@ -236,7 +270,7 @@ def prepare_batch(
     seq_len: int,
     num_train_workers: int,
     collate_mode: Literal["packing", "padding"],
-) -> list[list[MicroBatch]]:
+) -> list[list[Batch]]:
     """
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
     """

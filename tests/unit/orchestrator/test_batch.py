@@ -2,7 +2,10 @@ import pytest
 import torch
 from transformers import AutoTokenizer
 
-from prime_rl.orchestrator.batch import prepare_batch_packing, prepare_batch_padding, prepare_sample
+from prime_rl.orchestrator.batch import (
+    prepare_sample,
+    setup_collate_batch,
+)
 from prime_rl.orchestrator.buffer import Rollout
 
 
@@ -71,14 +74,15 @@ def test_prepare_sample_no_pad(rollout: Rollout, tokenizer: AutoTokenizer):
 
 
 def test_prepare_batch_padding(rollouts: list[Rollout], tokenizer: AutoTokenizer):
-    micro_batches_per_gpu = prepare_batch_padding(
-        rollouts=rollouts,
+    collate_batch = setup_collate_batch(
+        collate_mode="padding",
         temperature=1.0,
         tokenizer=tokenizer,
         micro_batch_size=2,
         seq_len=10,
         num_train_workers=1,
     )
+    micro_batches_per_gpu = collate_batch.collate(rollouts=rollouts)
     assert len(micro_batches_per_gpu) == 1
     micro_batches = micro_batches_per_gpu[0]
     assert len(micro_batches) == 1
@@ -111,14 +115,15 @@ def test_prepare_batch_padding(rollouts: list[Rollout], tokenizer: AutoTokenizer
 
 
 def test_prepare_batch_padding_micro_batches(rollouts: list[Rollout], tokenizer: AutoTokenizer):
-    micro_batches_per_gpu = prepare_batch_padding(
-        rollouts=rollouts,
+    collate_batch = setup_collate_batch(
+        collate_mode="padding",
         temperature=1.0,
         tokenizer=tokenizer,
         micro_batch_size=1,
         seq_len=10,
         num_train_workers=1,
     )
+    micro_batches_per_gpu = collate_batch.collate(rollouts=rollouts)
     assert len(micro_batches_per_gpu) == 1
     micro_batches = micro_batches_per_gpu[0]
     assert len(micro_batches) == 2
@@ -157,14 +162,15 @@ def test_prepare_batch_padding_micro_batches(rollouts: list[Rollout], tokenizer:
 
 
 def test_prepare_batch_padding_train_workers(rollouts: list[Rollout], tokenizer: AutoTokenizer):
-    micro_batches_per_gpu = prepare_batch_padding(
-        rollouts=rollouts,
+    collate_batch = setup_collate_batch(
+        collate_mode="padding",
         temperature=1.0,
         tokenizer=tokenizer,
         micro_batch_size=1,
         seq_len=10,
         num_train_workers=2,
     )
+    micro_batches_per_gpu = collate_batch.collate(rollouts=rollouts)
     assert len(micro_batches_per_gpu) == 2
     assert all(len(micro_batches_per_gpu[i]) == 1 for i in range(2))
 
@@ -208,14 +214,15 @@ def test_prepare_batch_padding_train_workers(rollouts: list[Rollout], tokenizer:
 
 
 def test_prepare_batch_packing(rollouts: list[Rollout], tokenizer: AutoTokenizer):
-    micro_batches_per_gpu = prepare_batch_packing(
-        rollouts=rollouts,
+    collate_batch = setup_collate_batch(
+        collate_mode="packing",
         temperature=1.0,
         tokenizer=tokenizer,
         micro_batch_size=2,
         seq_len=10,
         num_train_workers=1,
     )
+    micro_batches_per_gpu = collate_batch.collate(rollouts=rollouts)
     assert len(micro_batches_per_gpu) == 1
     micro_batches = micro_batches_per_gpu[0]
     assert len(micro_batches) == 1
@@ -244,14 +251,15 @@ def test_prepare_batch_packing(rollouts: list[Rollout], tokenizer: AutoTokenizer
 
 
 def test_prepare_batch_packing_train_workers(rollouts: list[Rollout], tokenizer: AutoTokenizer):
-    micro_batches_per_gpu = prepare_batch_packing(
-        rollouts=rollouts,
+    collate_batch = setup_collate_batch(
+        collate_mode="packing",
         temperature=1.0,
         tokenizer=tokenizer,
         micro_batch_size=2,
         seq_len=10,
         num_train_workers=2,
     )
+    micro_batches_per_gpu = collate_batch.collate(rollouts=rollouts)
     assert len(micro_batches_per_gpu) == 2
     assert all(len(micro_batches_per_gpu[i]) == 1 for i in range(2))
 

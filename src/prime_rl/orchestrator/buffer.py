@@ -1,7 +1,6 @@
 import random
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
-from dataclasses import dataclass
 
 from datasets import Dataset
 
@@ -11,65 +10,8 @@ from prime_rl.orchestrator.config import (
     OnlineDifficultyBufferConfig,
     SimpleBufferConfig,
 )
+from prime_rl.orchestrator.types import Rollout
 from prime_rl.utils.logger import get_logger
-
-
-@dataclass
-class Rollout:
-    problem_id: int
-    prompt_tokens: list[int]
-    prompt_mask: list[int]
-    completion_tokens: list[int]
-    completion_mask: list[int]
-    completion_logprobs: list[float]
-    reward: float
-    advantage: float
-
-
-def make_rollouts(
-    problem_ids: list[int],
-    prompt_tokens: list[list[int]],
-    prompt_masks: list[list[int]],
-    completion_tokens: list[list[int]],
-    completion_masks: list[list[int]],
-    completion_logprobs: list[list[float]],
-    rewards: list[float],
-    advantages: list[float],
-) -> list[Rollout]:
-    assert (
-        len(problem_ids)
-        == len(prompt_tokens)
-        == len(prompt_masks)
-        == len(completion_tokens)
-        == len(completion_masks)
-        == len(completion_logprobs)
-        == len(rewards)
-        == len(advantages)
-    ), (
-        f"The number of problem_ids, prompt_tokens, prompt_masks, completion_tokens, completion_masks, completion_logprobs, rewards, and advantages must be equal, but got ({len(problem_ids)=}, {len(prompt_tokens)=}, {len(prompt_masks)=}, {len(completion_tokens)=}, {len(completion_masks)=}, {len(completion_logprobs)=}, {len(rewards)=}, {len(advantages)=})"
-    )
-    return [
-        Rollout(
-            problem_id=problem_id,
-            prompt_tokens=prompt_tokens,
-            prompt_mask=prompt_mask,
-            completion_tokens=completion_tokens,
-            completion_mask=completion_mask,
-            completion_logprobs=completion_logprobs,
-            reward=reward,
-            advantage=advantage,
-        )
-        for problem_id, prompt_tokens, prompt_mask, completion_tokens, completion_mask, completion_logprobs, reward, advantage in zip(
-            problem_ids,
-            prompt_tokens,
-            prompt_masks,
-            completion_tokens,
-            completion_masks,
-            completion_logprobs,
-            rewards,
-            advantages,
-        )
-    ]
 
 
 class Buffer(ABC):
