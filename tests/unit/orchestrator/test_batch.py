@@ -2,7 +2,7 @@ import pytest
 import torch
 from transformers import AutoTokenizer
 
-from prime_rl.orchestrator.batch import prepare_batch_padding, prepare_sample
+from prime_rl.orchestrator.batch import prepare_batch_packing, prepare_batch_padding, prepare_sample
 from prime_rl.orchestrator.buffer import Rollout
 
 
@@ -201,4 +201,41 @@ def test_prepare_batch_padding_train_workers(rollouts: list[Rollout], tokenizer:
     assert torch.allclose(
         micro_batches_per_gpu[1][0]["logprobs"],
         torch.tensor([[0.0, 0.0, 0.0, 0.4, 0.5, 0.6, 0.0, 0.0, 0.0, 0.0]]),
+    )
+
+
+def test_prepare_batch_packing(rollouts: list[Rollout], tokenizer: AutoTokenizer):
+    micro_batches_per_gpu = prepare_batch_packing(
+        rollouts=rollouts,
+        temperature=1.0,
+        tokenizer=tokenizer,
+        batch_size=2,
+        micro_batch_size=2,
+        seq_len=10,
+        num_train_workers=1,
+    )
+    assert len(micro_batches_per_gpu) == 1
+    micro_batches = micro_batches_per_gpu[0]
+    assert len(micro_batches) == 1
+    micro_batch = micro_batches[0]
+
+    # Check types
+    assert micro_batch["input_ids"].dtype == torch.long
+    assert micro_batch["position_ids"].dtype == torch.long
+    assert micro_batch["loss_mask"].dtype == torch.long
+    assert micro_batch["advantages"].dtype == torch.float
+    assert micro_batch["logprobs"].dtype == torch.float
+
+    # Check values
+    assert micro_batch["input_ids"].tolist() == [
+        [0, 1, 2, 3, 4, 5, 0, 1, 2, 6, 7, 8],
+    ]
+    assert micro_batch["position_ids"].tolist() == [[0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5]]
+    assert micro_batch["loss_mask"].tolist() == [[0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 1]]
+    assert micro_batch["advantages"].tolist() == [
+        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    ]
+    assert torch.allclose(
+        micro_batch["logprobs"],
+        torch.tensor([[0.0, 0.0, 0.0, 0.1, 0.2, 0.3, 0.0, 0.0, 0.0, 0.4, 0.5, 0.6]]),
     )
