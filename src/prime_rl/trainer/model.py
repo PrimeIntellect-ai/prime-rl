@@ -40,7 +40,7 @@ def convert_tt_moe(model: nn.Module) -> None:
         model_args.moe_inter_dim = hf_config.moe_intermediate_size
         model_args.n_activated_experts = transformer_block.mlp.gate.top_k
         model_args.route_scale = transformer_block.mlp.gate.routed_scaling_factor
-        model_args.use_grouped_mm = True
+        model_args.use_grouped_mm = False
         model_args.score_func = transformer_block.mlp.gate.scoring_func
         model_args.n_shared_experts = hf_config.n_shared_experts
         model_args.load_balance_coeff = None
