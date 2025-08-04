@@ -218,11 +218,11 @@ class TrainerConfig(BaseSettings):
     monitor: MultiMonitorConfig = MultiMonitorConfig()
 
     max_steps: Annotated[
-        int,
+        int | None,
         Field(
-            description="Maximum number of steps to run training for.",
+            description="Maximum number of steps to run training for. If None, will run indefinitely.",
         ),
-    ] = 100000000000000
+    ] = None
 
     async_level: Annotated[
         int,

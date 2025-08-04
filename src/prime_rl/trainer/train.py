@@ -156,7 +156,7 @@ def train(config: TrainerConfig):
             save_ckpt_time = time.time() - save_ckpt_start_time
 
         # Break if we have reached the maximum number of steps
-        if progress.step >= config.max_steps:
+        if config.max_steps is not None and progress.step >= config.max_steps:
             break
 
         logger.info(f"Starting training step {progress.step}")
