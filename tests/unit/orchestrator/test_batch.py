@@ -93,7 +93,6 @@ def test_prepare_batch_padding(rollouts: list[Rollout], tokenizer: AutoTokenizer
     assert micro_batch["logprobs"].dtype == torch.float
 
     # Check values
-    print(micro_batch["input_ids"].tolist())
     assert micro_batch["input_ids"].tolist() == [
         [0, 1, 2, 3, 4, 5, 151643, 151643, 151643, 151643],
         [0, 1, 2, 6, 7, 8, 151643, 151643, 151643, 151643],
@@ -109,4 +108,97 @@ def test_prepare_batch_padding(rollouts: list[Rollout], tokenizer: AutoTokenizer
         torch.tensor(
             [[0.0, 0.0, 0.0, 0.1, 0.2, 0.3, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.4, 0.5, 0.6, 0.0, 0.0, 0.0, 0.0]]
         ),
+    )
+
+
+def test_prepare_batch_padding_micro_batches(rollouts: list[Rollout], tokenizer: AutoTokenizer):
+    micro_batches_per_gpu = prepare_batch_padding(
+        rollouts=rollouts,
+        temperature=1.0,
+        tokenizer=tokenizer,
+        batch_size=2,
+        micro_batch_size=1,
+        seq_len=10,
+        num_train_workers=1,
+    )
+    assert len(micro_batches_per_gpu) == 1
+    micro_batches = micro_batches_per_gpu[0]
+    assert len(micro_batches) == 2
+
+    # Check types
+    assert micro_batches[0]["input_ids"].dtype == torch.long
+    assert micro_batches[0]["position_ids"].dtype == torch.long
+    assert micro_batches[0]["loss_mask"].dtype == torch.long
+    assert micro_batches[0]["advantages"].dtype == torch.float
+    assert micro_batches[0]["logprobs"].dtype == torch.float
+
+    # Check values
+    assert micro_batches[0]["input_ids"].tolist() == [[0, 1, 2, 3, 4, 5, 151643, 151643, 151643, 151643]]
+    assert micro_batches[0]["position_ids"].tolist() == [[0, 1, 2, 3, 4, 5, 0, 0, 0, 0]]
+    assert micro_batches[0]["loss_mask"].tolist() == [[0, 0, 0, 1, 1, 1, 0, 0, 0, 0]]
+    assert micro_batches[0]["advantages"].tolist() == [
+        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+    ]
+    assert torch.allclose(
+        micro_batches[0]["logprobs"],
+        torch.tensor([[0.0, 0.0, 0.0, 0.1, 0.2, 0.3, 0.0, 0.0, 0.0, 0.0]]),
+    )
+
+    assert micro_batches[1]["input_ids"].tolist() == [
+        [0, 1, 2, 6, 7, 8, 151643, 151643, 151643, 151643],
+    ]
+    assert micro_batches[1]["position_ids"].tolist() == [[0, 1, 2, 3, 4, 5, 0, 0, 0, 0]]
+    assert micro_batches[1]["loss_mask"].tolist() == [[0, 0, 0, 1, 1, 1, 0, 0, 0, 0]]
+    assert micro_batches[1]["advantages"].tolist() == [
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    ]
+    assert torch.allclose(
+        micro_batches[1]["logprobs"],
+        torch.tensor([[0.0, 0.0, 0.0, 0.4, 0.5, 0.6, 0.0, 0.0, 0.0, 0.0]]),
+    )
+
+
+def test_prepare_batch_padding_train_workers(rollouts: list[Rollout], tokenizer: AutoTokenizer):
+    micro_batches_per_gpu = prepare_batch_padding(
+        rollouts=rollouts,
+        temperature=1.0,
+        tokenizer=tokenizer,
+        batch_size=2,
+        micro_batch_size=1,
+        seq_len=10,
+        num_train_workers=2,
+    )
+    assert len(micro_batches_per_gpu) == 2
+    assert all(len(micro_batches_per_gpu[i]) == 1 for i in range(2))
+
+    # Check types
+    assert micro_batches_per_gpu[0][0]["input_ids"].dtype == torch.long
+    assert micro_batches_per_gpu[0][0]["position_ids"].dtype == torch.long
+    assert micro_batches_per_gpu[0][0]["loss_mask"].dtype == torch.long
+    assert micro_batches_per_gpu[0][0]["advantages"].dtype == torch.float
+    assert micro_batches_per_gpu[0][0]["logprobs"].dtype == torch.float
+
+    # Check values
+    assert micro_batches_per_gpu[0][0]["input_ids"].tolist() == [[0, 1, 2, 3, 4, 5, 151643, 151643, 151643, 151643]]
+    assert micro_batches_per_gpu[0][0]["position_ids"].tolist() == [[0, 1, 2, 3, 4, 5, 0, 0, 0, 0]]
+    assert micro_batches_per_gpu[0][0]["loss_mask"].tolist() == [[0, 0, 0, 1, 1, 1, 0, 0, 0, 0]]
+    assert micro_batches_per_gpu[0][0]["advantages"].tolist() == [
+        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+    ]
+    assert torch.allclose(
+        micro_batches_per_gpu[0][0]["logprobs"],
+        torch.tensor([[0.0, 0.0, 0.0, 0.1, 0.2, 0.3, 0.0, 0.0, 0.0, 0.0]]),
+    )
+
+    assert micro_batches_per_gpu[1][0]["input_ids"].tolist() == [
+        [0, 1, 2, 6, 7, 8, 151643, 151643, 151643, 151643],
+    ]
+    assert micro_batches_per_gpu[1][0]["position_ids"].tolist() == [[0, 1, 2, 3, 4, 5, 0, 0, 0, 0]]
+    assert micro_batches_per_gpu[1][0]["loss_mask"].tolist() == [[0, 0, 0, 1, 1, 1, 0, 0, 0, 0]]
+    assert micro_batches_per_gpu[1][0]["advantages"].tolist() == [
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    ]
+    assert torch.allclose(
+        micro_batches_per_gpu[1][0]["logprobs"],
+        torch.tensor([[0.0, 0.0, 0.0, 0.4, 0.5, 0.6, 0.0, 0.0, 0.0, 0.0]]),
     )
