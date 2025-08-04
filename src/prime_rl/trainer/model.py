@@ -8,6 +8,7 @@ from jaxtyping import Float, Int, jaxtyped
 from torch import Tensor
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, fully_shard
+from torchtitan.models.deepseek_v3.model.moe import DeepSeekV3ModelArgs, MoE
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
@@ -20,10 +21,43 @@ from transformers import (
 from prime_rl.trainer.config import ModelConfig
 from prime_rl.trainer.world import get_world
 
-# from torchtitan.models.deepseek_v3.model.moe import MoE
-
 # TODO: Change all to nn.Module
 Model: TypeAlias = LlamaForCausalLM | Qwen2ForCausalLM | Qwen3ForCausalLM | nn.Module
+
+
+def convert_tt_moe(model: nn.Module) -> None:
+    for layer_id, transformer_block in model.model.layers.named_children():
+        # Skip non MoE layers
+        if not hasattr(transformer_block.mlp, "gate"):
+            print(f"Skipping non MoE layer: {layer_id}")
+            continue
+
+        # Map HF MoE args to TT MoE args
+        model_args = DeepSeekV3ModelArgs()
+        hf_config = transformer_block.mlp.config
+        model_args.n_routed_experts = transformer_block.mlp.gate.n_routed_experts
+        model_args.dim = hf_config.hidden_size
+        model_args.moe_inter_dim = hf_config.moe_intermediate_size
+        model_args.n_activated_experts = transformer_block.mlp.gate.top_k
+        model_args.route_scale = transformer_block.mlp.gate.routed_scaling_factor
+        model_args.use_grouped_mm = True
+        model_args.score_func = transformer_block.mlp.gate.scoring_func
+        model_args.n_shared_experts = hf_config.n_shared_experts
+        model_args.load_balance_coeff = None
+
+        new_mlp = MoE(model_args)
+        # Router
+        new_mlp.router.gate.weight.data.copy_(transformer_block.mlp.gate.weight.data)
+        # Shared experts
+        new_mlp.shared_expert.w1.data[0].copy_(transformer_block.mlp.shared_experts.gate_proj.weight.data)
+        new_mlp.shared_expert.w2.data[0].copy_(transformer_block.mlp.shared_experts.down_proj.weight.data)
+        new_mlp.shared_expert.w3.data[0].copy_(transformer_block.mlp.shared_experts.up_proj.weight.data)
+        # Routed experts
+        for i in range(model_args.n_routed_experts):
+            new_mlp.experts.w1.data[i].copy_(transformer_block.mlp.experts[i].gate_proj.weight.data)
+            new_mlp.experts.w2.data[i].copy_(transformer_block.mlp.experts[i].down_proj.weight.data)
+            new_mlp.experts.w3.data[i].copy_(transformer_block.mlp.experts[i].up_proj.weight.data)
+        transformer_block.mlp = new_mlp
 
 
 def get_model(config: ModelConfig) -> Model:
@@ -48,6 +82,8 @@ def get_model(config: ModelConfig) -> Model:
         config=config_model,
         trust_remote_code=config.trust_remote_code,
     )
+
+    convert_tt_moe(model)
     return model
 
 
