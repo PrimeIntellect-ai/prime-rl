@@ -255,3 +255,30 @@ class TrainerConfig(BaseSettings):
             if not self.data.fake:
                 self.data.fake = FakeDataLoaderConfig()
         return self
+
+    @model_validator(mode="after")
+    def validate_scheduler(self):
+        # Constant scheduler does not require any validation/ setup
+        if self.optim.scheduler.type == "constant":
+            return self
+
+        # Must specify max_steps when using a scheduler other than `constant`
+        if self.max_steps is None:
+            raise ValueError("Must specify max_steps when using a scheduler other than `constant`")
+
+        # If decay_steps is not specified, use remaining steps after warmup
+        if self.optim.scheduler.decay_steps is None:
+            if not (self.optim.scheduler.warmup_steps <= self.max_steps):
+                raise ValueError("config.optim.scheduler.warmup_steps must be less than or equal to config.max_steps")
+
+            self.optim.scheduler.decay_steps = self.max_steps - self.optim.scheduler.warmup_steps
+            assert self.optim.scheduler.decay_steps >= 0, "config.optim.scheduler.decay_steps must be positive"
+
+        # If decay_steps is specified, validate it
+        else:
+            if not (self.optim.scheduler.warmup_steps + self.optim.scheduler.decay_steps <= self.max_steps):
+                raise ValueError(
+                    "config.optim.scheduler.warmup_steps + config.optim.scheduler.decay_steps must be less than or equal to config.max_steps"
+                )
+
+        return self
