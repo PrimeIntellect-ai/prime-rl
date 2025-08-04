@@ -21,7 +21,7 @@ def create_sample(seq_len: int) -> BatchSample:
         "advantages": torch.randn(seq_len).float(),
         "loss_mask": torch.ones(seq_len).long(),
         "logprobs": torch.randn(seq_len).float(),
-        "total_tokens": seq_len,
+        "completion_tokens_count": seq_len,
     }
 
 
@@ -30,8 +30,8 @@ def create_dummy_batch(batch_size: int, seq_len: int) -> MicroBatch:
     samples = [create_sample(seq_len) for _ in range(batch_size)]
     for key in ["input_ids", "advantages", "loss_mask", "logprobs", "position_ids"]:
         micro_batch[key] = torch.stack([sample[key] for sample in samples], dim=0)
+    micro_batch["completion_tokens_count"] = sum([sample["completion_tokens_count"] for sample in samples])
     micro_batch["temperature"] = 1.0
-    micro_batch["total_tokens"] = batch_size * seq_len
     return micro_batch
 
 
