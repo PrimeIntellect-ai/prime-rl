@@ -106,7 +106,7 @@ def run_processes() -> Callable[[list[Command], list[Environment], int], list[Pr
 
 
 VLLM_SERVER_ENV = {"CUDA_VISIBLE_DEVICES": "0"}
-VLLM_SERVER_CMD = ["uv", "run", "inference", "@", "configs/inference/reverse_text.toml"]
+VLLM_SERVER_CMD = ["uv", "run", "inference", "@", "configs/reverse_text/infer.toml"]
 
 
 @pytest.fixture(scope="session")
