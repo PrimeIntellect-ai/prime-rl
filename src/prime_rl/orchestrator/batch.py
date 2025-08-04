@@ -115,7 +115,7 @@ def prepare_batch_padding(
             micro_batches = []
             for _ in range(micro_batch_size):
                 sample = prepare_sample(
-                    rollouts.pop(),
+                    rollouts.pop(0),
                     seq_len,
                     tokenizer,
                     pad=True,
