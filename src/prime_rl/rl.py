@@ -217,12 +217,6 @@ class RLConfig(BaseSettings):
             self.inference.model.max_model_len = self.orchestrator.seq_len
         return self
 
-    @model_validator(mode="after")
-    def auto_setup_max_steps(self):
-        if self.orchestrator.max_steps is not None:
-            self.trainer.max_steps = self.orchestrator.max_steps
-        return self
-
 
 def setup_logger(log_config: LogConfig) -> Logger:
     if get_logger():
