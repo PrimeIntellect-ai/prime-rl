@@ -49,14 +49,14 @@ def convert_tt_moe(model: nn.Module) -> None:
         # Router
         new_mlp.router.gate.weight.data.copy_(transformer_block.mlp.gate.weight.data)
         # Shared experts
-        new_mlp.shared_expert.w1.data[0].copy_(transformer_block.mlp.shared_experts.gate_proj.weight.data)
-        new_mlp.shared_expert.w2.data[0].copy_(transformer_block.mlp.shared_experts.down_proj.weight.data)
-        new_mlp.shared_expert.w3.data[0].copy_(transformer_block.mlp.shared_experts.up_proj.weight.data)
+        new_mlp.shared_expert.w1.data[0].copy_(transformer_block.mlp.shared_experts.gate_proj.weight.data.T)
+        new_mlp.shared_expert.w2.data[0].copy_(transformer_block.mlp.shared_experts.down_proj.weight.data.T)
+        new_mlp.shared_expert.w3.data[0].copy_(transformer_block.mlp.shared_experts.up_proj.weight.data.T)
         # Routed experts
         for i in range(model_args.n_routed_experts):
-            new_mlp.experts.w1.data[i].copy_(transformer_block.mlp.experts[i].gate_proj.weight.data)
-            new_mlp.experts.w2.data[i].copy_(transformer_block.mlp.experts[i].down_proj.weight.data)
-            new_mlp.experts.w3.data[i].copy_(transformer_block.mlp.experts[i].up_proj.weight.data)
+            new_mlp.experts.w1.data[i].copy_(transformer_block.mlp.experts[i].gate_proj.weight.data.T)
+            new_mlp.experts.w2.data[i].copy_(transformer_block.mlp.experts[i].down_proj.weight.data.T)
+            new_mlp.experts.w3.data[i].copy_(transformer_block.mlp.experts[i].up_proj.weight.data.T)
         transformer_block.mlp = new_mlp
 
 
