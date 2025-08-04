@@ -36,12 +36,16 @@ def prepare_sample(
     # Prepare completion tokens
     completion_token_ids = torch.tensor(rollout.completion_tokens).long()
     completion_token_mask = torch.tensor(rollout.completion_mask).long()
+    completion_logprobs = torch.tensor(rollout.completion_logprobs).float()
 
     # Prepare input_ids, loss_mask, position_ids, logprobs, and advantages
-    input_ids = torch.cat([prompt_token_ids, completion_token_ids]).long()
-    loss_mask = torch.cat([prompt_token_mask, completion_token_mask]).long()
-    logprobs = torch.cat([torch.zeros(len(prompt_token_ids)), torch.tensor(rollout.completion_logprobs)]).float()
+    input_ids = torch.cat([prompt_token_ids, completion_token_ids])
+    assert input_ids.dtype == prompt_token_ids.dtype == completion_token_ids.dtype
     position_ids = torch.arange(len(input_ids)).long()
+    loss_mask = torch.cat([prompt_token_mask, completion_token_mask]).long()
+    assert loss_mask.dtype == prompt_token_mask.dtype == completion_token_mask.dtype
+    logprobs = torch.cat([torch.zeros(len(prompt_token_ids), dtype=completion_logprobs.dtype), completion_logprobs])
+    assert logprobs.dtype == completion_logprobs.dtype
     advantages = torch.tensor(rollout.advantage).repeat(len(input_ids)).float()
 
     if len(input_ids) > seq_len:
@@ -54,11 +58,13 @@ def prepare_sample(
     # Pad the sequence to the sequence length
     if pad:
         num_padding_tokens = seq_len - len(input_ids)
-        input_ids = torch.cat([input_ids, torch.full((num_padding_tokens,), tokenizer.pad_token_id)])
-        loss_mask = torch.cat([loss_mask, torch.zeros(num_padding_tokens)]).long()
-        position_ids = torch.cat([position_ids, torch.zeros(num_padding_tokens)]).long()
-        logprobs = torch.cat([logprobs, torch.zeros(num_padding_tokens)]).float()
-        advantages = torch.cat([advantages, torch.zeros(num_padding_tokens)]).float()
+        input_ids = torch.cat(
+            [input_ids, torch.full((num_padding_tokens,), tokenizer.pad_token_id, dtype=input_ids.dtype)]
+        )
+        loss_mask = torch.cat([loss_mask, torch.zeros(num_padding_tokens, dtype=loss_mask.dtype)])
+        position_ids = torch.cat([position_ids, torch.zeros(num_padding_tokens, dtype=position_ids.dtype)])
+        logprobs = torch.cat([logprobs, torch.zeros(num_padding_tokens, dtype=logprobs.dtype)])
+        advantages = torch.cat([advantages, torch.zeros(num_padding_tokens, dtype=advantages.dtype)])
 
     assert len(input_ids) == len(advantages) == len(loss_mask) == len(position_ids) == len(logprobs), (
         f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, logprobs: {len(logprobs)}"
