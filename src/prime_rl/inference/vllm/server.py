@@ -1,6 +1,8 @@
 import signal
+import traceback
 from argparse import Namespace
 
+import torch
 import uvloop
 from fastapi import Request
 from vllm.engine.arg_utils import AsyncEngineArgs
@@ -31,7 +33,7 @@ async def run_server(args: Namespace) -> None:
     signal.signal(signal.SIGTERM, signal_handler)
 
     engine_args = AsyncEngineArgs.from_cli_args(args)
-    engine_args.worker_extension_cls = "prime_rl.inference.vllm.worker.CheckpointWorker"
+    # engine_args.worker_extension_cls = "prime_rl.inference.vllm.worker.CheckpointWorker"
     engine = AsyncLLMEngine.from_engine_args(
         engine_args=engine_args,
         usage_context=UsageContext.OPENAI_API_SERVER,
@@ -44,15 +46,31 @@ async def run_server(args: Namespace) -> None:
     # Inject custom endpoint
     @app.post("/reload_weights")
     async def _reload_weights(request: Request):
-        data = await request.json()
-        model_path = data.get("model_path")
-        await engine.collective_rpc("reload_weights", args=(model_path,))
-        return {"status": "ok"}
+        try:
+            data = await request.json()
+            model_path = data.get("model_path")
+            state_dict = torch.load(model_path, map_location="cpu", mmap=True)
 
-    @app.post("/reset_weights")
-    async def _reset_weights(request: Request):
-        await engine.collective_rpc("reset_weights")
-        return {"status": "ok"}
+            def weights_iterator():
+                for key, value in state_dict.items():
+                    if not key:
+                        continue
+                    yield key, value
+
+            model = engine.engine.model_executor.driver_worker.model_runner.model
+            model.load_weights(weights_iterator())
+
+            # Process weights after loading (important for some models)
+            from vllm.model_executor.model_loader.utils import process_weights_after_loading
+
+            model_config = engine.engine.model_config
+            device = next(model.parameters()).device
+            process_weights_after_loading(model, model_config, device)
+            return {"status": "ok"}
+        except Exception as e:
+            print(f"Error reloading weights: {e}")
+            print(f"Error reloading weights: {traceback.format_exc()}")
+            raise e
 
     vllm_config = await engine.get_vllm_config()
     await init_app_state(engine, vllm_config, app.state, args)
