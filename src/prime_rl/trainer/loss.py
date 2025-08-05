@@ -1,7 +1,4 @@
-from dataclasses import dataclass
-
 import torch
-import torch.distributed as dist
 from beartype import beartype as typechecker
 from jaxtyping import Float, Int, jaxtyped
 from torch import Tensor
@@ -11,25 +8,13 @@ from prime_rl.trainer.config import LossConfig
 from prime_rl.trainer.model import Model, forward
 
 
-@dataclass
-class RatioInfo:
-    ratio_sum: Float[Tensor, "1"]
-    clipped_token_count: Float[Tensor, "1"]
-
-    raw_ratio_sum: Float[Tensor, "1"]
-    raw_ratio_max: Float[Tensor, "1"]
-    raw_ratio_min: Float[Tensor, "1"]
-
-    raw_ratio_abs_sum: Float[Tensor, "1"]
-
-
 @jaxtyped(typechecker=typechecker)
 def grpo_loss(
-    shifted_logits: Float[Tensor, "batch seq vocab"],
-    input_ids: Int[Tensor, "batch seq"],
-    original_logprobs: Float[Tensor, "batch seq"],
-    advantages: Float[Tensor, "batch seq"],
-    loss_mask: Int[Tensor, "batch seq"],
+    shifted_logits: Float[Tensor, "B L V"],
+    input_ids: Int[Tensor, "B L"],
+    original_logprobs: Float[Tensor, "B L"],
+    advantages: Float[Tensor, "B L"],
+    loss_mask: Int[Tensor, "B L"],
     loss_config: LossConfig,
 ) -> tuple[Tensor, dict[str, Tensor]]:
     if loss_config.type == "clip":
@@ -56,11 +41,11 @@ def grpo_loss(
 
 @jaxtyped(typechecker=typechecker)
 def grpo_loss_clip(
-    shifted_logits: Float[Tensor, "batch seq vocab"],
-    input_ids: Int[Tensor, "batch seq"],
-    original_logprobs: Float[Tensor, "batch seq"],
-    advantages: Float[Tensor, "batch seq"],
-    loss_mask: Int[Tensor, "batch seq"],
+    shifted_logits: Float[Tensor, "B L V"],
+    input_ids: Int[Tensor, "B L"],
+    original_logprobs: Float[Tensor, "B L"],
+    advantages: Float[Tensor, "B L"],
+    loss_mask: Int[Tensor, "B L"],
     epsilon_low: float,
     epsilon_high: float,
     clip_ratio: float,
@@ -83,9 +68,9 @@ def grpo_loss_clip(
         entropy = compute_entropy(shifted_logits, loss_mask)
 
     # Sum-reduce the loss for all unmasked tokens
-    loss = _masked_sum(loss, loss_mask)
+    summed_loss = (loss * loss_mask).sum()
 
-    return loss, {
+    return summed_loss, {
         "loss": loss.detach().cpu(),
         "logprob_ratio": logprob_ratio.detach().cpu(),
         "coef_1": coef_1.detach().cpu(),
@@ -118,9 +103,9 @@ def grpo_loss_ratio(
         entropy = compute_entropy(shifted_logits, loss_mask)
 
     # Sum-reduce the loss for all unmasked tokens
-    reduced_loss = _masked_sum(loss, loss_mask)
+    summed_loss = (loss * loss_mask).sum()
 
-    return reduced_loss, {
+    return summed_loss, {
         "loss": loss.detach().cpu(),
         "logprob_ratio": logprob_ratio.detach().cpu(),
         "clipped_logprob_ratio": clipped_logprob_ratio.detach().cpu(),
@@ -131,8 +116,8 @@ def grpo_loss_ratio(
 
 @jaxtyped(typechecker=typechecker)
 def selective_log_softmax(
-    logits: Float[Tensor, "batch seq vocab"], index: Int[Tensor, "batch seq"]
-) -> Float[Tensor, "batch seq"]:
+    logits: Float[Tensor, "B L V"], index: Int[Tensor, "B L"]
+) -> Float[Tensor, "B L"]:
     """
     credits to https://github.com/huggingface/trl/blob/07cfe1677e552b7d5c92b7740e5b2f0b057661d8/trl/trainer/utils.py#L1659
 
@@ -172,10 +157,10 @@ def selective_log_softmax(
 @jaxtyped(typechecker=typechecker)
 def compute_logprobs(
     model: Model,
-    input_ids: Int[Tensor, "batch seq"],
-    position_ids: Int[Tensor, "batch seq"],
+    input_ids: Int[Tensor, "B L"],
+    position_ids: Int[Tensor, "B L"],
     temperature: float,
-) -> Float[Tensor, "batch seq"]:
+) -> Float[Tensor, "B L"]:
     logits = forward(model, input_ids, position_ids).contiguous()
     shifted_logits = shift_logits(logits)
     shifted_logits = shifted_logits / temperature
@@ -186,22 +171,18 @@ def compute_logprobs(
 
 @jaxtyped(typechecker=typechecker)
 def compute_entropy(
-    shifted_logits: Float[Tensor, "batch seq vocab"],
-    loss_mask: Int[Tensor, "batch seq"],
-) -> Tensor:
+    shifted_logits: Float[Tensor, "B L V"],
+    loss_mask: Int[Tensor, "B L"],
+) -> Float[Tensor, "B L"]:
     pd = torch.nn.functional.softmax(shifted_logits, dim=-1)
     entropy = torch.logsumexp(shifted_logits, dim=-1) - torch.sum(pd * shifted_logits, dim=-1)
+    entropy *= loss_mask
 
-    return _masked_sum(entropy, loss_mask)
-
-
-def _masked_sum(tensor: Tensor, mask: Tensor) -> Tensor:
-    """Sums over the unmasked tensor values"""
-    return (tensor * mask).sum()
+    return entropy
 
 
 @jaxtyped(typechecker=typechecker)
-def shift_logits(logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq vocab"]:
+def shift_logits(logits: Float[Tensor, "B L V"]) -> Float[Tensor, "B L V"]:
     """Removes final token logits and adds a zero logit for the first token."""
     # We drop the last logit because it corresponds to the next token that will be sampled but is not here yet
     B, _, V = logits.shape
