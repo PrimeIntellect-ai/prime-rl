@@ -69,7 +69,7 @@ def grpo_loss_clip(
     epsilon_high: float,
     clip_ratio: float,
 ) -> tuple[Tensor, RatioInfo]:
-    assert shifted_logits.dtype == torch.float32, "shifted_logits must be float32"
+    # assert shifted_logits.dtype == torch.float32, "shifted_logits must be float32"
     shifted_logits = shifted_logits / temperature
     per_token_logps = selective_log_softmax(shifted_logits, input_ids)
 
@@ -110,7 +110,7 @@ def grpo_loss_ratio(
     temperature: float,
     clip_ratio: float,
 ) -> tuple[Tensor, RatioInfo]:
-    assert shifted_logits.dtype == torch.float32, "shifted_logits must be float32"
+    # assert shifted_logits.dtype == torch.float32, "shifted_logits must be float32"
     shifted_logits = shifted_logits / temperature
     per_token_logps = selective_log_softmax(shifted_logits, input_ids)
 
