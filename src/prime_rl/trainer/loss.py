@@ -70,6 +70,7 @@ def grpo_loss_clip(
     clip_ratio: float,
 ) -> tuple[Tensor, RatioInfo]:
     assert shifted_logits.dtype == torch.float32, "shifted_logits must be float32"
+    shifted_logits = shifted_logits / temperature
     per_token_logps = selective_log_softmax(shifted_logits, input_ids)
 
     raw_ratio = torch.exp(per_token_logps - original_logprobs)
@@ -110,6 +111,7 @@ def grpo_loss_ratio(
     clip_ratio: float,
 ) -> tuple[Tensor, RatioInfo]:
     assert shifted_logits.dtype == torch.float32, "shifted_logits must be float32"
+    shifted_logits = shifted_logits / temperature
     per_token_logps = selective_log_softmax(shifted_logits, input_ids)
 
     raw_ratio = torch.exp(per_token_logps - original_logprobs)
@@ -184,6 +186,7 @@ def compute_logprobs(
 ) -> Float[Tensor, "batch seq"]:
     logits = forward(model, input_ids, position_ids).contiguous()
     shifted_logits = shift_logits(logits)
+    shifted_logits = shifted_logits / temperature
     logprobs = selective_log_softmax(shifted_logits, input_ids)
     del logits, shifted_logits
     return logprobs
@@ -195,8 +198,7 @@ def compute_entropy(
     loss_mask: Int[Tensor, "batch seq"],
     temperature: float,
 ) -> Tensor:
-    if temperature != 1.0:
-        shifted_logits = shifted_logits / temperature
+    shifted_logits = shifted_logits / temperature
     pd = torch.nn.functional.softmax(shifted_logits, dim=-1)
     entropy = torch.logsumexp(shifted_logits, dim=-1) - torch.sum(pd * shifted_logits, dim=-1)
 
