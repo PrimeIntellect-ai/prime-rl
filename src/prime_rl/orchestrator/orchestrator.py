@@ -249,6 +249,7 @@ async def orchestrate(config: OrchestratorConfig):
                 completion_logprobs=results.completion_logprobs,
                 rewards=outputs.reward,
                 advantages=advantages,
+                temperature=config.sampling.temperature,
             )
             buffer.update(rollouts)
             accepted_rollouts.extend(buffer.sample_rollouts(problems_to_sample))
@@ -310,10 +311,6 @@ async def orchestrate(config: OrchestratorConfig):
                 rollouts_per_problem=config.rollouts_per_prompt,
                 step=progress.step,
             )
-
-        # Divide logprobs by temperature because vllm v1 does not do it
-        for rollout in rollouts:
-            rollout.completion_logprobs = rollout.completion_logprobs / config.sampling.temperature
 
         # Write serialized batch to disk for trainer workers to consume
         all_data_ranks_batches = prepare_batch(
