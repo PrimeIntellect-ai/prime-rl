@@ -376,14 +376,13 @@ def train(config: TrainerConfig):
 
         # Log time metrics
         time_metrics = {
-            "time/train": step_time,
-            "time/train/wait_for_batch": wait_for_batch_time,
-            "time/train/load_data": load_data_time,
-            "time/train/save_weights": save_weights_time,
-            "time/train/compute/logprobs": compute_logprobs_time,
-            "time/train/save_ckpt": save_ckpt_time,
-            "time/train/compute/forward_backward": forward_backward_time,
-            "time/train/compute": forward_backward_time + compute_logprobs_time,
+            "time/step": step_time,
+            "time/wait_for_batch": wait_for_batch_time,
+            "time/load_data": load_data_time,
+            "time/save_weights": save_weights_time,
+            "time/save_ckpt": save_ckpt_time,
+            "time/compute_logprobs": compute_logprobs_time,
+            "time/forward_backward": forward_backward_time,
             "step": progress.step,
         }
         monitor.log(time_metrics)

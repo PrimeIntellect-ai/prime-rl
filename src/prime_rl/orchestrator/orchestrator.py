@@ -412,12 +412,12 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Log time metrics to monitor
         time_metrics = {
-            "time/orchestrator": step_time,
-            "time/orchestrator/wait_for_weight_ckpt": wait_for_weight_ckpt_time,
-            "time/orchestrator/generate_completions": generate_completions_time,
-            "time/orchestrator/reload_weights": reload_weights_time,
-            "time/orchestrator/save_ckpt": save_ckpt_time,
-            "time/orchestrator/eval": eval_time,
+            "time/step": step_time,
+            "time/wait_for_weight_ckpt": wait_for_weight_ckpt_time,
+            "time/generate_completions": generate_completions_time,
+            "time/reload_weights": reload_weights_time,
+            "time/save_ckpt": save_ckpt_time,
+            "time/eval": eval_time,
             "step": progress.step,
         }
         monitor.log(time_metrics)
