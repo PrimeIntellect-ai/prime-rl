@@ -286,6 +286,8 @@ def train(config: TrainerConfig):
             for k, v in loss_tensors.items():
                 micro_loss_metrics[f"micro_{k}"] = v.sum().item() / micro_numel if micro_numel > 0 else 0.0
 
+            # Sum-reduce local losses
+            dist.all_reduce(loss, op=dist.ReduceOp.SUM)
 
             # Scale loss by scale factor before backward pass
             loss = loss / loss_scale
@@ -294,7 +296,7 @@ def train(config: TrainerConfig):
             loss.backward()
 
             # We report per-micro batch length normalized metrics here
-            logger.debug(f"Completed micro batch {micro_step + 1}/{num_micro_batches} ({', '.join(f'{k}={v:.4f}' for k, v in micro_loss_metrics.items())})")
+            logger.debug(f"Completed micro batch {micro_step + 1}/{num_micro_batches} (loss={loss.item():.4f}, {', '.join(f'{k}={v:.4f}' for k, v in micro_loss_metrics.items())})")
 
         # Synchronize the batch metrics across all ranks
         logger.debug(f"All-reduce tensor metrics with keys {list(tensor_metrics.keys())}")
@@ -321,7 +323,7 @@ def train(config: TrainerConfig):
 
         # Optionally, clip the gradients
         logger.debug(f"Clipping gradients to {config.loss.max_norm}")
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.loss.max_norm)
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.loss.max_norm).full_tensor()
 
         # Update the model parameters
         logger.debug("Updating model")
