@@ -2,6 +2,7 @@ from collections import defaultdict
 import logging
 import os
 import time
+import lovely_tensors as lt
 from copy import deepcopy
 
 # Import environment before any other imports
@@ -213,9 +214,6 @@ def train(config: TrainerConfig):
 
                     micro_batch["logprobs"] = recomputed_logprobs.cpu()
                     recomputed_logprob_errors[micro_step] = recomputed_logprob_error.detach().cpu()
-                    logger.debug(
-                        f"Recomputed logprob error for micro batch {micro_step + 1}/{num_micro_batches} (recomputed_logprob_error={recomputed_logprob_error.sum().item() / loss_mask.sum().item():.2f})"
-                    )
 
             # here we sepcifically don't save the tensor offloaded, they are alreay consumed and we will never use it again.
             # this avoid having to make sure we don't keep too much tensor offloaded in cpu memory
@@ -281,8 +279,10 @@ def train(config: TrainerConfig):
             loss.backward()
 
             # We report per-micro batch length normalized metrics here
+            for k, v in loss_tensors.items():
+                logger.debug(f"{k}={lt.lovely(v)}")
             logger.debug(
-                f"Completed micro batch {micro_step + 1}/{num_micro_batches} (loss={(loss.item() / loss_mask.sum()):.2f})"
+                f"Completed micro batch {micro_step + 1}/{num_micro_batches} (micro_loss={(loss_tensors["loss"].sum().item() / loss_mask.sum()):.4f}, micro_logprob_ratio={loss_tensors['logprob_ratio'].sum().item() / loss_mask.sum():.4f}, micro_entropy={loss_tensors['entropy'].sum().item() / loss_mask.sum():.4f})"
             )
 
         # Synchronize the batch metrics across all ranks
@@ -347,7 +347,7 @@ def train(config: TrainerConfig):
         # Log step metrics
         step_time = time.time() - step_start_time
         current_lr = optimizer.param_groups[0]["lr"]
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_metrics['loss/mean']:.2f} | Entropy: {tensor_metrics['entropy/mean']:.2f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}%"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_metrics['loss/mean']:.4f} | Entropy: {tensor_metrics['entropy/mean']:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}%"
         logger.success(step_message)
 
         # Log performance metrics
