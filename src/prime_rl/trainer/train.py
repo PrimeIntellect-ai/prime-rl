@@ -352,8 +352,8 @@ def train(config: TrainerConfig):
 
         # Log performance metrics
         perf_metrics = {
-            "perf/train/throughput": throughput,
-            "perf/train/mfu": mfu,
+            "perf/throughput": throughput,
+            "perf/mfu": mfu,
             "step": progress.step,
         }
         monitor.log(perf_metrics)

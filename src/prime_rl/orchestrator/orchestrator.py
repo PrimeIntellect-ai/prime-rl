@@ -356,7 +356,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Log performance metrics to monitor
         perf_metrics = {
-            "perf/infer/throughput": throughput,
+            "perf/throughput": throughput,
             "perf/problem_requests": problem_requests,
             "perf/completion_requests": completion_requests,
             "perf/calls_to_generate": calls_to_generate,
