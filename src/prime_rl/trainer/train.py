@@ -200,7 +200,8 @@ def train(config: TrainerConfig):
 
             with torch.no_grad():
                 num_micro_batches = len(micro_batches)
-                for micro_step, micro_batch in enumerate(micro_batches, start=1):
+                recomputed_logprob_errors = [torch.tensor(0.0)] * num_micro_batches
+                for micro_step, micro_batch in enumerate(micro_batches):
                     input_ids = micro_batch["input_ids"].to("cuda")
                     position_ids = micro_batch["position_ids"].to("cuda")
                     loss_mask = micro_batch["loss_mask"].to("cuda")
@@ -210,8 +211,11 @@ def train(config: TrainerConfig):
                     recomputed_logprobs = compute_logprobs(logprob_model, input_ids, position_ids, temperature)
                     recomputed_logprob_error = torch.exp(recomputed_logprobs - logprobs) * loss_mask
 
-                    micro_batch["recomputed_logprob_error"] = recomputed_logprob_error.to("cpu")
                     micro_batch["logprobs"] = recomputed_logprobs.to("cpu")
+                    recomputed_logprob_errors.append(recomputed_logprob_error.to("cpu"))
+                    logger.debug(
+                        f"Recomputed logprob error for micro batch {micro_step + 1}/{num_micro_batches} (recomputed_logprob_error={recomputed_logprob_error.sum().item() / loss_mask.sum().item():.2f})"
+                    )
 
             # here we sepcifically don't save the tensor offloaded, they are alreay consumed and we will never use it again.
             # this avoid having to make sure we don't keep too much tensor offloaded in cpu memory
@@ -235,7 +239,7 @@ def train(config: TrainerConfig):
         loss_scale = total_non_masked_tokens
 
         logger.info(f"Starting forward and backward pass ({num_micro_batches=}, {loss_scale=})")
-        for micro_step, micro_batch in enumerate(micro_batches, start=1):
+        for micro_step, micro_batch in enumerate(micro_batches):
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
@@ -262,8 +266,7 @@ def train(config: TrainerConfig):
             )
 
             # Accumulate unnormalized local metrics
-            loss_tensors["recomputed_logprob_error"] = micro_batch.get("recomputed_logprob_error", torch.tensor(1.0))
-            logger.debug(f"Got loss tensors for {loss_tensors.keys}")
+            loss_tensors["recomputed_logprob_error"] = recomputed_logprob_errors[micro_step]
             for key, value in loss_tensors.items():
                 tensor_metrics[f"{key}/min"] = min(tensor_metrics.get(f"{key}/min", float("inf")), value.min().item())
                 tensor_metrics[f"{key}/max"] = max(tensor_metrics.get(f"{key}/max", float("-inf")), value.max().item())
@@ -279,7 +282,7 @@ def train(config: TrainerConfig):
 
             # We report per-micro batch length normalized metrics here
             logger.debug(
-                f"Completed micro batch {micro_step}/{num_micro_batches} (loss={(loss.item() / loss_mask.sum()):.2f})"
+                f"Completed micro batch {micro_step + 1}/{num_micro_batches} (loss={(loss.item() / loss_mask.sum()):.2f})"
             )
 
         # Synchronize the batch metrics across all ranks
