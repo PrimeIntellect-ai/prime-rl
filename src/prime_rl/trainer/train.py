@@ -20,7 +20,7 @@ from prime_rl.trainer.config import TrainerConfig
 from prime_rl.trainer.data import DataLoader, FakeDataLoader
 from prime_rl.trainer.logger import setup_logger
 from prime_rl.trainer.loss import (
-    grpo_loss_ratio,
+    grpo_loss,
     shift_logits,
     compute_logprobs,
 )
@@ -188,6 +188,8 @@ def train(config: TrainerConfig):
 
         # Optionally, compute the logprobs for the training batch
         compute_logprobs_time = 0
+        num_micro_batches = len(micro_batches)
+        recomputed_logprob_errors = [torch.tensor(0.0)] * num_micro_batches
         if config.recompute_logprobs:
             compute_logprobs_start_time = time.time()
             og_infer_step = progress.step - config.async_level
@@ -200,8 +202,6 @@ def train(config: TrainerConfig):
                 del tensor_offloaded_repository[infer_step]
 
             with torch.no_grad():
-                num_micro_batches = len(micro_batches)
-                recomputed_logprob_errors = [torch.tensor(0.0)] * num_micro_batches
                 for micro_step, micro_batch in enumerate(micro_batches):
                     input_ids = micro_batch["input_ids"].to("cuda")
                     position_ids = micro_batch["position_ids"].to("cuda")
@@ -228,7 +228,6 @@ def train(config: TrainerConfig):
 
         forward_backward_start_time = time.time()
         tensor_metrics = defaultdict(float)
-        num_micro_batches = len(micro_batches)
         micro_batch_size, seq_len = micro_batches[0]["input_ids"].shape
         batch_size = micro_batch_size * num_micro_batches
 
@@ -254,13 +253,13 @@ def train(config: TrainerConfig):
             del logits
 
             # Compute loss
-            loss, loss_tensors = grpo_loss_ratio(
+            loss, loss_tensors = grpo_loss(
                 shifted_logits=shifted_logits,
                 input_ids=input_ids,
                 original_logprobs=original_logprobs,
                 advantages=advantages,
                 loss_mask=loss_mask,
-                clip_ratio=config.loss.clip_ratio,
+                loss_config=config.loss,
             )
 
             # Accumulate unnormalized local metrics
