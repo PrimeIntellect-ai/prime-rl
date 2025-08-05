@@ -211,8 +211,8 @@ def train(config: TrainerConfig):
                     recomputed_logprobs = compute_logprobs(logprob_model, input_ids, position_ids, temperature)
                     recomputed_logprob_error = torch.exp(recomputed_logprobs - logprobs) * loss_mask
 
-                    micro_batch["logprobs"] = recomputed_logprobs.to("cpu")
-                    recomputed_logprob_errors.append(recomputed_logprob_error.to("cpu"))
+                    micro_batch["logprobs"] = recomputed_logprobs.cpu()
+                    recomputed_logprob_errors[micro_step] = recomputed_logprob_error.detach().cpu()
                     logger.debug(
                         f"Recomputed logprob error for micro batch {micro_step + 1}/{num_micro_batches} (recomputed_logprob_error={recomputed_logprob_error.sum().item() / loss_mask.sum().item():.2f})"
                     )
