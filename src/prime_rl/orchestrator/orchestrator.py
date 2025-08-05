@@ -82,8 +82,8 @@ async def orchestrate(config: OrchestratorConfig):
         ckpt_step = max(progress.step - config.async_level, 0)
         await reload_weights(client, config.weights_path, ckpt_step)
     else:
-        logger.info("Training from scratch. Resetting weights to base model")
-        await reset_weights(client)
+        logger.info("Training from scratch. Skipping reset weights because of vLLM v0 engine.")
+        # await reset_weights(client)
 
     # Load environment and extract dataset
     logger.info(f"Loading environment {config.environment.id} with args {config.environment.args}")
