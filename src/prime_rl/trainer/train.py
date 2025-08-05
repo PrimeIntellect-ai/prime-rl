@@ -232,8 +232,8 @@ def train(config: TrainerConfig):
         batch_size = micro_batch_size * num_micro_batches
 
         # Normalize by the number of unmasked tokens in the batch (per-batch length normalization)
-        total_non_masked_tokens = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
-        loss_scale = total_non_masked_tokens
+        loss_scale = torch.tensor(sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches), device="cuda")
+        dist.all_reduce(loss_scale, op=torch.distributed.ReduceOp.SUM)
 
         logger.info(f"Starting forward and backward pass ({num_micro_batches=}, {loss_scale=})")
         for micro_step, micro_batch in enumerate(micro_batches):
