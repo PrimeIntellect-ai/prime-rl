@@ -269,6 +269,7 @@ def train(config: TrainerConfig):
                 tensor_metrics[f"{key}/max"] = max(tensor_metrics.get(f"{key}/max", float("-inf")), value.max().item())
                 tensor_metrics[f"{key}/sum"] += value.sum().item()
                 tensor_metrics[f"{key}/mean"] += value.sum().item() / loss_scale
+                tensor_metrics[f"{key}/numel"] += loss_mask.sum().item()
 
             # Scale loss by scale factor before backward pass
             loss = loss / loss_scale
@@ -290,7 +291,7 @@ def train(config: TrainerConfig):
                 dist.all_reduce(tensor_value, op=dist.ReduceOp.MIN)
             elif "max" in key:
                 dist.all_reduce(tensor_value, op=dist.ReduceOp.MAX)
-            elif "sum" in key:
+            elif "sum" in key or "numel" in key:
                 dist.all_reduce(tensor_value, op=dist.ReduceOp.SUM)
             elif "mean" in key:
                 dist.all_reduce(tensor_value, op=dist.ReduceOp.AVG)
