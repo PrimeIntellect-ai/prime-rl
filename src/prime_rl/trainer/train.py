@@ -189,7 +189,7 @@ def train(config: TrainerConfig):
         # Optionally, compute the logprobs for the training batch
         compute_logprobs_time = 0
         num_micro_batches = len(micro_batches)
-        recomputed_logprob_errors = [torch.tensor(0.0)] * num_micro_batches
+        recomputed_logprob_errors = [torch.tensor(0.0, device="cuda")] * num_micro_batches
         if config.recompute_logprobs:
             compute_logprobs_start_time = time.time()
             og_infer_step = progress.step - config.async_level
@@ -213,7 +213,7 @@ def train(config: TrainerConfig):
                     recomputed_logprob_error = torch.exp(recomputed_logprobs - logprobs) * loss_mask
 
                     micro_batch["logprobs"] = recomputed_logprobs.cpu()
-                    recomputed_logprob_errors[micro_step] = recomputed_logprob_error.detach().cpu()
+                    recomputed_logprob_errors[micro_step] = recomputed_logprob_error.detach()
 
             # here we sepcifically don't save the tensor offloaded, they are alreay consumed and we will never use it again.
             # this avoid having to make sure we don't keep too much tensor offloaded in cpu memory
@@ -262,14 +262,29 @@ def train(config: TrainerConfig):
                 loss_config=config.loss,
             )
 
-            # Accumulate unnormalized local metrics
-            loss_tensors["recomputed_logprob_error"] = recomputed_logprob_errors[micro_step]
+            # Apply loss mask to all loss tensors
+            assert all(v.shape == loss_mask.shape for v in loss_tensors.values())
+            assert all(v.device == loss_mask.device for v in loss_tensors.values())
+            for key, value in loss_tensors.items():
+                loss_tensors[key] = value * loss_mask
+
+            # Add recomputed logprob error to loss tensors
+            loss_tensors["recomputed_logprob_error"] = recomputed_logprob_errors[micro_step] * loss_mask
+
+            # Compute point aggregates
             for key, value in loss_tensors.items():
                 tensor_metrics[f"{key}/min"] = min(tensor_metrics.get(f"{key}/min", float("inf")), value.min().item())
                 tensor_metrics[f"{key}/max"] = max(tensor_metrics.get(f"{key}/max", float("-inf")), value.max().item())
                 tensor_metrics[f"{key}/sum"] += value.sum().item()
-                tensor_metrics[f"{key}/mean"] += value.sum().item() / loss_scale
                 tensor_metrics[f"{key}/numel"] += loss_mask.sum().item()
+                # Mean will be computed as {key}/sum / {key}/numel outside the loop
+
+            # Compute micro batch metrics
+            micro_numel = loss_mask.sum().item()
+            micro_loss_metrics = {}
+            for k, v in loss_tensors.items():
+                micro_loss_metrics[f"micro_{k}"] = v.sum().item() / micro_numel
+
 
             # Scale loss by scale factor before backward pass
             loss = loss / loss_scale
@@ -278,11 +293,7 @@ def train(config: TrainerConfig):
             loss.backward()
 
             # We report per-micro batch length normalized metrics here
-            for k, v in loss_tensors.items():
-                logger.debug(f"{k}={lt.lovely(v)}")
-            logger.debug(
-                f"Completed micro batch {micro_step + 1}/{num_micro_batches} (micro_loss={(loss_tensors["loss"].sum().item() / loss_mask.sum()):.4f}, micro_logprob_ratio={loss_tensors['logprob_ratio'].sum().item() / loss_mask.sum():.4f}, micro_entropy={loss_tensors['entropy'].sum().item() / loss_mask.sum():.4f})"
-            )
+            logger.debug(f"Completed micro batch {micro_step + 1}/{num_micro_batches} ({', '.join(f'{k}={v:.4f}' for k, v in micro_loss_metrics.items())})")
 
         # Synchronize the batch metrics across all ranks
         logger.debug(f"All-reduce tensor metrics with keys {list(tensor_metrics.keys())}")
@@ -295,11 +306,17 @@ def train(config: TrainerConfig):
                 dist.all_reduce(tensor_value, op=dist.ReduceOp.MAX)
             elif "sum" in key or "numel" in key:
                 dist.all_reduce(tensor_value, op=dist.ReduceOp.SUM)
-            elif "mean" in key:
-                dist.all_reduce(tensor_value, op=dist.ReduceOp.AVG)
             else:
                 raise ValueError(f"Unknown key {key}")
             tensor_metrics[key] = tensor_value.item()
+
+        # Compute mean for all keys that have sum and numel keys
+        for key in loss_tensors.keys():
+            if f"{key}/sum" in tensor_metrics and f"{key}/numel" in tensor_metrics:
+                assert tensor_metrics[f"{key}/numel"] == loss_scale, f"tensor_metrics[f{key}/numel] {tensor_metrics[f"{key}/numel"]} != loss_scale {loss_scale}, but should be when normalizing by number of unmasked tokens"
+                tensor_metrics[f"{key}/mean"] = tensor_metrics[f"{key}/sum"] / tensor_metrics[f"{key}/numel"]
+                del tensor_metrics[f"{key}/sum"]
+                del tensor_metrics[f"{key}/numel"]
 
         # Optionally, clip the gradients
         logger.debug(f"Clipping gradients to {config.loss.max_norm}")

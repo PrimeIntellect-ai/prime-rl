@@ -65,18 +65,18 @@ def grpo_loss_clip(
 
     with torch.no_grad():
         is_clipped = (loss_1 < loss_2).float()
-        entropy = compute_entropy(shifted_logits, loss_mask)
+        entropy = compute_entropy(shifted_logits)
 
     # Sum-reduce the loss for all unmasked tokens
     summed_loss = (loss * loss_mask).sum()
 
     return summed_loss, {
-        "loss": loss.detach().cpu(),
-        "logprob_ratio": logprob_ratio.detach().cpu(),
-        "coef_1": coef_1.detach().cpu(),
-        "coef_2": coef_2.detach().cpu(),
-        "is_clipped": is_clipped.detach().cpu(),
-        "entropy": entropy.detach().cpu(),
+        "loss": loss.detach(),
+        "logprob_ratio": logprob_ratio.detach(),
+        "coef_1": coef_1.detach(),
+        "coef_2": coef_2.detach(),
+        "is_clipped": is_clipped.detach(),
+        "entropy": entropy.detach(),
     }
 
 
@@ -95,22 +95,22 @@ def grpo_loss_ratio(
     logprobs = selective_log_softmax(shifted_logits, input_ids)
 
     # Compute the per-token loss
-    logprob_ratio = torch.exp(logprobs - original_logprobs) * loss_mask  # (B, L)
+    logprob_ratio = torch.exp(logprobs - original_logprobs)  # (B, L)
     clipped_logprob_ratio = torch.clamp(logprob_ratio, 0, clip_ratio)  # (B, L)
     loss = -clipped_logprob_ratio * advantages  # (B, L)
     with torch.no_grad():
         is_clipped = (logprob_ratio > clip_ratio).float()  # (B, L)
-        entropy = compute_entropy(shifted_logits, loss_mask)
+        entropy = compute_entropy(shifted_logits)
 
     # Sum-reduce the loss for all unmasked tokens
     summed_loss = (loss * loss_mask).sum()
 
     return summed_loss, {
-        "loss": loss.detach().cpu(),
-        "logprob_ratio": logprob_ratio.detach().cpu(),
-        "clipped_logprob_ratio": clipped_logprob_ratio.detach().cpu(),
-        "is_clipped": is_clipped.detach().cpu(),
-        "entropy": entropy.detach().cpu(),
+        "loss": loss.detach(),
+        "logprob_ratio": logprob_ratio.detach(),
+        "clipped_logprob_ratio": clipped_logprob_ratio.detach(),
+        "is_clipped": is_clipped.detach(),
+        "entropy": entropy.detach(),
     }
 
 
@@ -172,11 +172,9 @@ def compute_logprobs(
 @jaxtyped(typechecker=typechecker)
 def compute_entropy(
     shifted_logits: Float[Tensor, "B L V"],
-    loss_mask: Int[Tensor, "B L"],
 ) -> Float[Tensor, "B L"]:
     pd = torch.nn.functional.softmax(shifted_logits, dim=-1)
     entropy = torch.logsumexp(shifted_logits, dim=-1) - torch.sum(pd * shifted_logits, dim=-1)
-    entropy *= loss_mask
 
     return entropy
 
