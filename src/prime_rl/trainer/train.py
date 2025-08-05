@@ -275,15 +275,16 @@ def train(config: TrainerConfig):
             for key, value in loss_tensors.items():
                 tensor_metrics[f"{key}/min"] = min(tensor_metrics.get(f"{key}/min", float("inf")), value.min().item())
                 tensor_metrics[f"{key}/max"] = max(tensor_metrics.get(f"{key}/max", float("-inf")), value.max().item())
+                # Mean will be computed as {key}/sum / {key}/numel outside the loop
+                assert value.sum().item() == loss.detach().item()
                 tensor_metrics[f"{key}/sum"] += value.sum().item()
                 tensor_metrics[f"{key}/numel"] += loss_mask.sum().item()
-                # Mean will be computed as {key}/sum / {key}/numel outside the loop
 
             # Compute micro batch metrics
             micro_numel = loss_mask.sum().item()
             micro_loss_metrics = {}
             for k, v in loss_tensors.items():
-                micro_loss_metrics[f"micro_{k}"] = v.sum().item() / micro_numel
+                micro_loss_metrics[f"micro_{k}"] = v.sum().item() / micro_numel if micro_numel > 0 else 0.0
 
 
             # Scale loss by scale factor before backward pass
@@ -320,7 +321,7 @@ def train(config: TrainerConfig):
 
         # Optionally, clip the gradients
         logger.debug(f"Clipping gradients to {config.loss.max_norm}")
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.loss.max_norm).full_tensor()
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.loss.max_norm)
 
         # Update the model parameters
         logger.debug("Updating model")
