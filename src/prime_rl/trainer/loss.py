@@ -32,7 +32,7 @@ def grpo_loss(
     loss_mask: Int[Tensor, "batch seq"],
     temperature: float,
     loss_config: LossConfig,
-) -> tuple[Tensor, RatioInfo]:
+) -> tuple[Tensor, dict[str, Tensor]]:
     if loss_config.type == "clip":
         return grpo_loss_clip(
             shifted_logits=shifted_logits,
@@ -102,39 +102,34 @@ def grpo_loss_clip(
 
 @jaxtyped(typechecker=typechecker)
 def grpo_loss_ratio(
-    shifted_logits: Float[Tensor, "batch seq vocab"],
-    input_ids: Int[Tensor, "batch seq"],
-    advantages: Float[Tensor, "batch seq"],
-    original_logprobs: Float[Tensor, "batch seq"],
-    loss_mask: Int[Tensor, "batch seq"],
-    temperature: float,
+    shifted_logits: Float[Tensor, "B L V"],
+    input_ids: Int[Tensor, "B L"],
+    original_logprobs: Float[Tensor, "B L"],
+    advantages: Float[Tensor, "B L"],
+    loss_mask: Int[Tensor, "B L"],
     clip_ratio: float,
-) -> tuple[Tensor, RatioInfo]:
-    assert shifted_logits.dtype == torch.float32, "shifted_logits must be float32"
-    shifted_logits = shifted_logits / temperature
-    per_token_logps = selective_log_softmax(shifted_logits, input_ids)
+) -> tuple[Tensor, dict[str, Tensor]]:
+    # Compute the logprobs
+    logprobs = selective_log_softmax(shifted_logits, input_ids)
 
-    raw_ratio = torch.exp(per_token_logps - original_logprobs)
+    # Compute the per-token loss
+    logprob_ratio = torch.exp(logprobs - original_logprobs) * loss_mask  # (B, L)
+    clipped_logprob_ratio = torch.clamp(logprob_ratio, 0, clip_ratio)  # (B, L)
+    loss = -clipped_logprob_ratio * advantages  # (B, L)
+    with torch.no_grad():
+        is_clipped = (logprob_ratio > clip_ratio).float()  # (B, L)
+        entropy = compute_entropy(shifted_logits, loss_mask)
 
-    is_clipped = (raw_ratio > clip_ratio).float()
-    clipped_token_count = _masked_sum(is_clipped, loss_mask)
+    # Sum-reduce the loss for all unmasked tokens
+    reduced_loss = _masked_sum(loss, loss_mask)
 
-    ratio = torch.clamp(raw_ratio, 0, clip_ratio)
-    loss = -ratio * advantages
-
-    loss = _masked_sum(loss, loss_mask)
-
-    raw_ratio = (raw_ratio.detach() - 1) * loss_mask
-    ratio = (ratio.detach() - 1) * loss_mask
-
-    return loss, RatioInfo(
-        ratio_sum=ratio.sum(),
-        clipped_token_count=clipped_token_count,
-        raw_ratio_sum=raw_ratio.sum().float(),
-        raw_ratio_max=raw_ratio.max().float() + 1,
-        raw_ratio_min=raw_ratio.min().float() + 1,
-        raw_ratio_abs_sum=raw_ratio.abs().sum().float(),
-    )
+    return reduced_loss, {
+        "loss": loss.detach().cpu(),
+        "logprob_ratio": logprob_ratio.detach().cpu(),
+        "clipped_logprob_ratio": clipped_logprob_ratio.detach().cpu(),
+        "is_clipped": is_clipped.detach().cpu(),
+        "entropy": entropy.detach().cpu(),
+    }
 
 
 @jaxtyped(typechecker=typechecker)
@@ -196,9 +191,7 @@ def compute_logprobs(
 def compute_entropy(
     shifted_logits: Float[Tensor, "batch seq vocab"],
     loss_mask: Int[Tensor, "batch seq"],
-    temperature: float,
 ) -> Tensor:
-    shifted_logits = shifted_logits / temperature
     pd = torch.nn.functional.softmax(shifted_logits, dim=-1)
     entropy = torch.logsumexp(shifted_logits, dim=-1) - torch.sum(pd * shifted_logits, dim=-1)
 
