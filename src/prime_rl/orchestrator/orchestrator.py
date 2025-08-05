@@ -311,6 +311,10 @@ async def orchestrate(config: OrchestratorConfig):
                 step=progress.step,
             )
 
+        # Divide logprobs by temperature because vllm v1 does not do it
+        for rollout in rollouts:
+            rollout.completion_logprobs = rollout.completion_logprobs / config.sampling.temperature
+
         # Write serialized batch to disk for trainer workers to consume
         all_data_ranks_batches = prepare_batch(
             rollouts=rollouts,
