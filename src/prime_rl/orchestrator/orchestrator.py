@@ -300,8 +300,8 @@ async def orchestrate(config: OrchestratorConfig):
                 step=progress.step,
             )
             monitor.wandb.log_distributions(
-                rewards,
-                advantages,
+                rewards.tolist(),
+                advantages.tolist(),
                 rollouts_per_problem=config.rollouts_per_prompt,
                 step=progress.step,
             )
