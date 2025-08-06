@@ -2,7 +2,6 @@ from collections import defaultdict
 import logging
 import os
 import time
-import lovely_tensors as lt
 from copy import deepcopy
 
 # Import environment before any other imports
@@ -232,8 +231,10 @@ def train(config: TrainerConfig):
         batch_size = micro_batch_size * num_micro_batches
 
         # Normalize by the number of unmasked tokens in the batch (per-batch length normalization)
-        loss_scale = torch.tensor(sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches), device="cuda")
-        dist.all_reduce(loss_scale, op=torch.distributed.ReduceOp.SUM)
+        loss_scale = torch.tensor(
+            sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches), device="cuda"
+        )
+        dist.all_reduce(loss_scale, op=dist.ReduceOp.SUM)
 
         logger.info(f"Starting forward and backward pass ({num_micro_batches=}, {loss_scale=})")
         for micro_step, micro_batch in enumerate(micro_batches):
@@ -273,7 +274,9 @@ def train(config: TrainerConfig):
             # Compute point aggregates
             for key, value in loss_tensors.items():
                 if key == "loss":
-                    assert value.sum().item() == loss.detach().item(), f"loss {value.sum().item()} != {loss.detach().item()}"
+                    assert value.sum().item() == loss.detach().item(), (
+                        f"loss {value.sum().item()} != {loss.detach().item()}"
+                    )
                 tensor_metrics[f"{key}/min"] = min(tensor_metrics.get(f"{key}/min", float("inf")), value.min().item())
                 tensor_metrics[f"{key}/max"] = max(tensor_metrics.get(f"{key}/max", float("-inf")), value.max().item())
                 # Mean will be computed as {key}/sum / {key}/numel outside the loop
@@ -286,9 +289,6 @@ def train(config: TrainerConfig):
             for k, v in loss_tensors.items():
                 micro_loss_metrics[f"micro_{k}"] = v.sum().item() / micro_numel if micro_numel > 0 else 0.0
 
-            # Sum-reduce local losses
-            dist.all_reduce(loss, op=dist.ReduceOp.SUM)
-
             # Scale loss by scale factor before backward pass
             loss = loss / loss_scale
 
@@ -296,7 +296,9 @@ def train(config: TrainerConfig):
             loss.backward()
 
             # We report per-micro batch length normalized metrics here
-            logger.debug(f"Completed micro batch {micro_step + 1}/{num_micro_batches} (loss={loss.item():.4f}, {', '.join(f'{k}={v:.4f}' for k, v in micro_loss_metrics.items())})")
+            logger.debug(
+                f"Completed micro batch {micro_step + 1}/{num_micro_batches} (loss={loss.item():.4f}, {', '.join(f'{k}={v:.4f}' for k, v in micro_loss_metrics.items())})"
+            )
 
         # Synchronize the batch metrics across all ranks
         logger.debug(f"All-reduce tensor metrics with keys {list(tensor_metrics.keys())}")
@@ -316,7 +318,9 @@ def train(config: TrainerConfig):
         # Compute mean for all keys that have sum and numel keys
         for key in loss_tensors.keys():
             if f"{key}/sum" in tensor_metrics and f"{key}/numel" in tensor_metrics:
-                assert tensor_metrics[f"{key}/numel"] == loss_scale, f"tensor_metrics[f{key}/numel] {tensor_metrics[f"{key}/numel"]} != loss_scale {loss_scale}, but should be when normalizing by number of unmasked tokens"
+                assert tensor_metrics[f"{key}/numel"] == loss_scale, (
+                    f"tensor_metrics[f{key}/numel] {tensor_metrics[f'{key}/numel']} != loss_scale {loss_scale}, but should be when normalizing by number of unmasked tokens"
+                )
                 tensor_metrics[f"{key}/mean"] = tensor_metrics[f"{key}/sum"] / tensor_metrics[f"{key}/numel"]
                 del tensor_metrics[f"{key}/sum"]
                 del tensor_metrics[f"{key}/numel"]
