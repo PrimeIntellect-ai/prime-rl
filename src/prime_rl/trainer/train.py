@@ -9,6 +9,7 @@ from copy import deepcopy
 from prime_rl.trainer import envs
 
 import shardcast
+import lovely_tensors as lt
 import torch
 import torch.distributed as dist
 from torch._guards import log as torch_log
@@ -298,6 +299,10 @@ def train(config: TrainerConfig):
             logger.debug(
                 f"Completed micro batch {micro_step + 1}/{num_micro_batches} (loss={loss.item():.4f}, {', '.join(f'{k}={v:.4f}' for k, v in micro_loss_metrics.items())})"
             )
+
+            if micro_step == 0:
+                for k, v in loss_tensors.items():
+                    logger.debug(f"{k}={lt.lovely(v)}")
 
         # Synchronize the batch metrics across all ranks
         logger.debug(f"All-reduce tensor metrics with keys {list(tensor_metrics.keys())}")
