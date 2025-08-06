@@ -189,7 +189,7 @@ def train(config: TrainerConfig):
         # Optionally, compute the logprobs for the training batch
         compute_logprobs_time = 0
         num_micro_batches = len(micro_batches)
-        recomputed_logprob_errors = [torch.tensor(0.0, device="cuda")] * num_micro_batches
+        recomputed_logprob_errors = [torch.zeros_like(mb["logprobs"], device="cuda") for mb in micro_batches]
         if config.recompute_logprobs:
             compute_logprobs_start_time = time.time()
             og_infer_step = progress.step - config.async_level
