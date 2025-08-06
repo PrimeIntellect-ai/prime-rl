@@ -270,10 +270,14 @@ async def orchestrate(config: OrchestratorConfig):
         logger.debug(f"Computed advantages ({config.advantage_type}): {lt.lovely(advantages)}")
 
         # Compute throughput
-        prompt_lens = torch.tensor([len(p) for p in prompt_tokens]).float()
-        completion_lens = torch.tensor([len(c) for c in completion_tokens]).float()
+        prompt_lens = (
+            torch.tensor([len(p) for p in prompt_tokens]).float().reshape(-1, config.rollouts_per_prompt).mean(-1)
+        )
+        completion_lens = (
+            torch.tensor([len(c) for c in completion_tokens]).float().reshape(-1, config.rollouts_per_prompt).mean(-1)
+        )
         seq_lens = prompt_lens + completion_lens
-        assert seq_lens.numel() == prompt_lens.numel() == completion_lens.numel() == config.batch_size
+        assert seq_lens.numel() == prompt_lens.numel() == completion_lens.numel() == problems_per_batch
         num_tokens = seq_lens.sum().item()
         progress.total_tokens += num_tokens
         progress.total_samples += config.batch_size
