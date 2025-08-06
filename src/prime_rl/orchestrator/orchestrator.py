@@ -249,7 +249,6 @@ async def orchestrate(config: OrchestratorConfig):
                 completion_logprobs=results.completion_logprobs,
                 rewards=outputs.reward,
                 advantages=advantages,
-                temperature=config.sampling.temperature,
             )
             buffer.update(rollouts)
             accepted_rollouts.extend(buffer.sample_rollouts(problems_to_sample))

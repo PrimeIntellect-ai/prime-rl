@@ -35,7 +35,6 @@ def make_rollouts(
     completion_logprobs: list[list[float]],
     rewards: list[float],
     advantages: list[float],
-    temperature: float,
 ) -> list[Rollout]:
     assert (
         len(problem_ids)
@@ -56,7 +55,7 @@ def make_rollouts(
             prompt_mask=prompt_mask,
             completion_tokens=completion_tokens,
             completion_mask=completion_mask,
-            completion_logprobs=[logprob / temperature for logprob in completion_logprobs],
+            completion_logprobs=completion_logprobs,
             reward=reward,
             advantage=advantage,
         )

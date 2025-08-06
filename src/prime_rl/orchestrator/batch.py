@@ -78,6 +78,8 @@ def prepare_micro_batch(samples: list[MicroBatch], temperature: float):
     for key in ["input_ids", "advantages", "loss_mask", "logprobs", "position_ids"]:
         micro_batch[key] = torch.stack([sample[key] for sample in samples], dim=0)
 
+    # Scale logprobs by temperature
+    micro_batch["logprobs"] /= temperature
     micro_batch["temperature"] = temperature
 
     return micro_batch
@@ -164,6 +166,8 @@ def prepare_micro_batch_packing(samples: list[BatchSample], max_seq_len: int, te
     for key in ["input_ids", "advantages", "loss_mask", "position_ids", "logprobs"]:
         micro_batch[key] = torch.cat([sample[key] for sample in samples], dim=0).unsqueeze(0)
 
+    # Scale logprobs by temperature
+    micro_batch["logprobs"] /= temperature
     micro_batch["temperature"] = temperature
 
     return micro_batch
