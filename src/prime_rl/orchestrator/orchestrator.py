@@ -390,14 +390,6 @@ async def orchestrate(config: OrchestratorConfig):
         }
         monitor.log(reward_metrics)
 
-        advantage_metrics = {
-            "advantage/mean": advantages.mean().item(),
-            "advantage/min": advantages.min().item(),
-            "advantage/max": advantages.max().item(),
-            "step": progress.step,
-        }
-        monitor.log(advantage_metrics)
-
         # Log rewards metrics to monitor
         solve_metrics = {
             "batch/solve_none": solve_none,
