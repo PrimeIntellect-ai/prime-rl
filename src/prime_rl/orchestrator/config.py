@@ -35,7 +35,7 @@ class ClientConfig(BaseConfig):
 
 
 class SamplingConfig(BaseConfig):
-    """Configures how tokens are sampled from the model. Largely follows the vLLM sampling parameters (https://docs.vllm.ai/en/latest/api/vllm.sampling_params.html)."""
+    """Configures how tokens are sampled from the model. Largely follows the vLLM sampling parameters."""
 
     temperature: Annotated[
         float,
@@ -44,31 +44,6 @@ class SamplingConfig(BaseConfig):
             description="Scales the output probability distribution. Lower values => more deterministic, higher values => more random. If 0, will sample greedily.",
         ),
     ] = 1.0
-
-    top_p: Annotated[
-        float,
-        Field(
-            gt=0,
-            le=1,
-            description="Cumulative probability of the top tokens to consider. If 1, all tokens are considered.",
-        ),
-    ] = 1
-
-    top_k: Annotated[
-        int,
-        Field(
-            ge=-1,
-            description="Number of top tokens to consider. If -1, all tokens are considered.",
-        ),
-    ] = -1
-
-    min_p: Annotated[
-        float,
-        Field(
-            ge=0,
-            description="Minimum probability for a token to be considered, relative to the probability of the most likely token. If 0, all tokens are considered.",
-        ),
-    ] = 0.0
 
     max_tokens: Annotated[
         int | None,

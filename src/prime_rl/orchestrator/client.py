@@ -98,13 +98,10 @@ async def generate_completion(
         messages=messages,
         model=model_config.name,
         temperature=sampling_config.temperature,
-        top_p=sampling_config.top_p,
         max_tokens=sampling_config.max_tokens,
         seed=sampling_config.seed,
         logprobs=True,
         extra_body={
-            "top_k": sampling_config.top_k,
-            "min_p": sampling_config.min_p,
             "min_tokens": sampling_config.min_tokens,
             "return_tokens_as_token_ids": True,
         },
