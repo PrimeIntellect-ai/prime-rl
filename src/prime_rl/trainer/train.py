@@ -318,8 +318,6 @@ def train(config: TrainerConfig):
         for key in loss_tensors.keys():
             if f"{key}/sum" in tensor_metrics and f"{key}/numel" in tensor_metrics:
                 tensor_metrics[f"{key}/mean"] = tensor_metrics[f"{key}/sum"] / tensor_metrics[f"{key}/numel"]
-                del tensor_metrics[f"{key}/sum"]
-                del tensor_metrics[f"{key}/numel"]
 
         # Optionally, clip the gradients
         logger.debug(f"Clipping gradients to {config.loss.max_norm}")
