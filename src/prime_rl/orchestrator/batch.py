@@ -204,9 +204,10 @@ def prepare_batch_packing(
 
     # because of fsdp we need to make sure that each data ran has the same number of micro batches otherwise training will hang.
     # We create fake micro batches to fill the gap with real data but zero advantages, they would not contribute to the loss.
-    if num_padding_batch > 0:
+    if num_train_workers > 1 and num_padding_batch > 0:
         padded_batch = copy.deepcopy(micro_batches[0])
         padded_batch["advantages"] = torch.zeros_like(padded_batch["advantages"])
+        padded_batch["loss_mask"] = torch.zeros_like(padded_batch["loss_mask"])
         micro_batches.extend([padded_batch for _ in range(num_padding_batch)])
 
     assert len(micro_batches) % num_train_workers == 0, (
