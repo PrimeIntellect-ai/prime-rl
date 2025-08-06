@@ -242,7 +242,7 @@ def train(config: TrainerConfig):
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
-            original_logprobs = micro_batch["logprobs"].to("cuda")
+            old_logprobs = micro_batch["logprobs"].to("cuda")
             temperature = micro_batch["temperature"]
             micro_batch_size, seq_len = input_ids.shape
 
@@ -256,7 +256,7 @@ def train(config: TrainerConfig):
             loss, loss_tensors = grpo_loss(
                 shifted_logits=shifted_logits,
                 input_ids=input_ids,
-                original_logprobs=original_logprobs,
+                old_logprobs=old_logprobs,
                 advantages=advantages,
                 loss_mask=loss_mask,
                 loss_config=config.loss,
