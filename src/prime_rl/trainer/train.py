@@ -230,11 +230,10 @@ def train(config: TrainerConfig):
         micro_batch_size, seq_len = micro_batches[0]["input_ids"].shape
         batch_size = micro_batch_size * num_micro_batches
 
-        # Normalize by the number of unmasked tokens in the batch (per-batch length normalization)
+        # Normalize by the local number of unmasked tokens in the batch (per-batch length normalization)
         loss_scale = torch.tensor(
             sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches), device="cuda"
         )
-        dist.all_reduce(loss_scale, op=dist.ReduceOp.SUM)
 
         logger.info(f"Starting forward and backward pass ({num_micro_batches=}, {loss_scale=})")
         for micro_step, micro_batch in enumerate(micro_batches):
@@ -318,9 +317,6 @@ def train(config: TrainerConfig):
         # Compute mean for all keys that have sum and numel keys
         for key in loss_tensors.keys():
             if f"{key}/sum" in tensor_metrics and f"{key}/numel" in tensor_metrics:
-                assert tensor_metrics[f"{key}/numel"] == loss_scale, (
-                    f"tensor_metrics[f{key}/numel] {tensor_metrics[f'{key}/numel']} != loss_scale {loss_scale}, but should be when normalizing by number of unmasked tokens"
-                )
                 tensor_metrics[f"{key}/mean"] = tensor_metrics[f"{key}/sum"] / tensor_metrics[f"{key}/numel"]
                 del tensor_metrics[f"{key}/sum"]
                 del tensor_metrics[f"{key}/numel"]
