@@ -295,7 +295,10 @@ def train(config: TrainerConfig):
                     f"{key} is on device {loss_tensor.device} but loss_mask is on device {loss_mask.device}"
                 )
                 loss_tensors[key] = loss_tensor[loss_mask.bool()]
-                tensor_metrics.update(key, loss_tensor)
+                if key == "is_clipped":
+                    tensor_metrics.update(key, loss_tensor, reduce_types=["sum"])
+                else:
+                    tensor_metrics.update(key, loss_tensor, reduce_types=["min", "max", "mean"])
 
             # Compute micro batch metrics
             micro_numel = loss_mask.sum().item()

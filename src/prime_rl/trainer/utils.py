@@ -1,5 +1,5 @@
 from itertools import chain
-from typing import Any, TypeAlias
+from typing import Any, Literal, TypeAlias
 
 import pandas as pd
 import torch
@@ -114,47 +114,64 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
     console.print(table)
 
 
+ReduceType: TypeAlias = Literal["min", "max", "mean", "sum", "numel"]
+
+
 class TensorMetrics(dict):
     """A class to aggregate tensor statistics across multiple steps. Only support synchronizing once."""
+
+    REDUCE_TYPES: list[ReduceType] = ["min", "max", "mean", "sum", "numel"]
 
     def __init__(self, *args, **kwargs):
         assert dist.is_initialized(), "TensorMetrics requires a distributed environment"
         super().__init__(*args, **kwargs)
+        self.stored_keys: dict[str, list[ReduceType]] = {}  # key -> list[ReduceType]
         self.synced = False
 
-    def update(self, key: str, value: Tensor) -> None:
-        """Compute and accumulate statistics (min/max/sum/numel) of a tensor"""
+    def update(self, key: str, value: Tensor, reduce_types: list[ReduceType] = REDUCE_TYPES) -> None:
+        """Accumulate relevant statistics for specified reduction types of a tensor"""
+        if key not in self.stored_keys:
+            self.stored_keys[key] = reduce_types
+        else:
+            assert self.stored_keys[key] == reduce_types, (
+                f"Key {key} has already been updated with different reduce types. "
+                f"Previous: {self.stored_keys[key]}, new: {reduce_types}"
+            )
         self[f"{key}/min"] = min(self.get(f"{key}/min", float("inf")), value.min().item())
         self[f"{key}/max"] = max(self.get(f"{key}/max", float("-inf")), value.max().item())
         self[f"{key}/sum"] = self.get(f"{key}/sum", 0.0) + value.sum().item()
         self[f"{key}/numel"] = self.get(f"{key}/numel", 0) + value.numel()
 
     def sync(self) -> None:
-        """Synchronize the statistics across all ranks. If sum and numel are present, also compute the mean."""
+        """Synchronize the specified statistics of all stored keys across ranks."""
         assert not self.synced, (
             "TensorMetrics has already been synced. Syncing again is not supported. It is recommended to re-initialize the object across steps."
         )
-        for key, value in self.items():
+
+        def _reduce_value(value: float | int, op: dist.ReduceOp) -> float | int:
             assert isinstance(value, float) or isinstance(value, int), (
                 f"Expected float or int, got {type(value)} for key {key}"
             )
             tensor_value = torch.tensor(value).to("cuda")
-            if "min" in key:
-                dist.all_reduce(tensor_value, op=dist.ReduceOp.MIN)
-            elif "max" in key:
-                dist.all_reduce(tensor_value, op=dist.ReduceOp.MAX)
-            elif "sum" in key or "numel" in key:
-                dist.all_reduce(tensor_value, op=dist.ReduceOp.SUM)
-            else:
-                raise ValueError(f"Unknown key {key}")
-            self[key] = tensor_value.item()
+            dist.all_reduce(tensor_value, op=op)
+            return tensor_value.item()
 
-        # Synchronize the mean values, if sum and numel are present
-        keys = list(set([k.split("/")[0] for k in self.keys()]))
-        for key in keys:
-            if f"{key}/sum" in self and f"{key}/numel" in self:
+        for key in self.stored_keys.keys():
+            # Min/max/sum/numel reduction
+            self[f"{key}/min"] = _reduce_value(self[f"{key}/min"], dist.ReduceOp.MIN)
+            self[f"{key}/max"] = _reduce_value(self[f"{key}/max"], dist.ReduceOp.MAX)
+            self[f"{key}/sum"] = _reduce_value(self[f"{key}/sum"], dist.ReduceOp.SUM)
+            self[f"{key}/numel"] = _reduce_value(self[f"{key}/numel"], dist.ReduceOp.SUM)
+
+            # Mean reduction
+            reduce_types = self.stored_keys[key]
+            if "mean" in reduce_types:
+                assert f"{key}/sum" in self and f"{key}/numel" in self
                 self[f"{key}/mean"] = self[f"{key}/sum"] / self[f"{key}/numel"]
-                del self[f"{key}/sum"]
-                del self[f"{key}/numel"]
+
+            # Delete all keys that are not in the reduce types
+            for reduce_type in self.REDUCE_TYPES:
+                if reduce_type not in reduce_types and f"{key}/{reduce_type}" in self:
+                    del self[f"{key}/{reduce_type}"]
 
         self.synced = True
