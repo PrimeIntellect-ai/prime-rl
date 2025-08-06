@@ -51,7 +51,10 @@ def grpo_loss_clip(
     clip_ratio: float,
 ) -> tuple[Tensor, dict[str, Tensor]]:
     assert shifted_logits.dtype == torch.float32, "shifted_logits must be float32"
-    
+    assert original_logprobs.dtype == torch.float32, "original_logprobs must be float32"
+    assert input_ids.dtype == torch.long, "input_ids must be long"
+    assert advantages.dtype == torch.float32, "advantages must be float32"
+
     # Compute the logprobs
     logprobs = selective_log_softmax(shifted_logits, input_ids)
     logprob_ratio = torch.exp(logprobs - original_logprobs)
@@ -72,6 +75,7 @@ def grpo_loss_clip(
 
     return summed_loss, {
         "loss": loss.detach(),
+        "logprobs": logprobs.detach(),
         "logprob_ratio": logprob_ratio.detach(),
         "coef_1": coef_1.detach(),
         "coef_2": coef_2.detach(),
@@ -90,6 +94,9 @@ def grpo_loss_ratio(
     clip_ratio: float,
 ) -> tuple[Tensor, dict[str, Tensor]]:
     assert shifted_logits.dtype == torch.float32, "shifted_logits must be float32"
+    assert original_logprobs.dtype == torch.float32, "original_logprobs must be float32"
+    assert input_ids.dtype == torch.long, "input_ids must be long"
+    assert advantages.dtype == torch.float32, "advantages must be float32"
 
     # Compute the logprobs
     logprobs = selective_log_softmax(shifted_logits, input_ids)
@@ -107,6 +114,7 @@ def grpo_loss_ratio(
 
     return summed_loss, {
         "loss": loss.detach(),
+        "logprobs": logprobs.detach(),
         "logprob_ratio": logprob_ratio.detach(),
         "clipped_logprob_ratio": clipped_logprob_ratio.detach(),
         "is_clipped": is_clipped.detach(),
@@ -115,9 +123,7 @@ def grpo_loss_ratio(
 
 
 @jaxtyped(typechecker=typechecker)
-def selective_log_softmax(
-    logits: Float[Tensor, "B L V"], index: Int[Tensor, "B L"]
-) -> Float[Tensor, "B L"]:
+def selective_log_softmax(logits: Float[Tensor, "B L V"], index: Int[Tensor, "B L"]) -> Float[Tensor, "B L"]:
     """
     credits to https://github.com/huggingface/trl/blob/07cfe1677e552b7d5c92b7740e5b2f0b057661d8/trl/trainer/utils.py#L1659
 
