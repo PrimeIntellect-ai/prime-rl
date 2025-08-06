@@ -198,21 +198,18 @@ async def orchestrate(config: OrchestratorConfig):
                 "answer": [problem.get("answer", "") for problem in problems],
             }
 
+            # Convert SamplingConfig to vLLM OAI sampling args
+            # https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#extra-parameters_2
+            sampling_args = dict(config.sampling)
+            sampling_args["logprobs"] = True
+            sampling_args["extra_body"] = {"return_tokens_as_token_ids": True}
+            sampling_args["extra_body"]["top_k"] = sampling_args.pop("top_k")
+            sampling_args["extra_body"]["min_p"] = sampling_args.pop("min_p")
+            sampling_args["extra_body"]["min_tokens"] = sampling_args.pop("min_tokens")
+
             # Generate completions + rewards with verifiers
             logger.info(f"Sending {len(problems)} requests to environments")
             generate_completions_start_time = time.time()
-            sampling_args = dict(config.sampling)
-            sampling_args["logprobs"] = True
-
-            # Sanitize for vLLM OpenAI client
-            sampling_args["extra_body"] = {"return_tokens_as_token_ids": True}
-            if "top_k" in sampling_args:
-                sampling_args["extra_body"]["top_k"] = sampling_args.pop("top_k")
-            if "min_p" in sampling_args:
-                sampling_args["extra_body"]["min_p"] = sampling_args.pop("min_p")
-            if "min_tokens" in sampling_args:
-                sampling_args["extra_body"]["min_tokens"] = sampling_args.pop("min_tokens")
-
             outputs = await vf_env.a_generate(
                 inputs=inputs, client=client, model=config.model.name, sampling_args=sampling_args
             )
