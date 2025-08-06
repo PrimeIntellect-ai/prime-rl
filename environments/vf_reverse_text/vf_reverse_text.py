@@ -1,19 +1,9 @@
-import json
-
 import verifiers as vf
 from datasets import load_dataset
 
 
 def load_environment() -> vf.Environment:
-    train_dataset = load_dataset("mikasenghaas/reverse_text_dataset_debug_50_seq_len", split="train").map(
-        lambda x: {
-            "question": x["prompt"],
-            "answer": json.loads(x["verification_info"])["ground_truth"],
-            "info": {},
-            "task": x["task_type"],
-        }
-    )
-    train_dataset = train_dataset.remove_columns(["prompt", "verification_info", "task_type"])
+    train_dataset = load_dataset("mikasenghaas/reverse_text_dataset_debug_50_seq_len", split="train")
     train_dataset = train_dataset.shuffle(seed=42)
 
     parser = vf.XMLParser(["answer"], answer_field="answer")

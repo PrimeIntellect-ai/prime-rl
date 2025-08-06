@@ -56,7 +56,7 @@ def compute_advantages(rewards: list[float], samples_per_problem: int, advantage
     all_group_rewards = [rewards[i : i + samples_per_problem] for i in range(0, len(rewards), samples_per_problem)]
     compute_advantage = REGISTRY[advantage_type]
     for group_rewards in all_group_rewards:
-        group_rewards_tensor = torch.tensor(group_rewards)
+        group_rewards_tensor = torch.tensor(group_rewards).float()
         group_advantages_tensor = compute_advantage(group_rewards_tensor)
         assert len(group_advantages_tensor) == len(group_rewards_tensor)
         advantages.extend(group_advantages_tensor.tolist())

@@ -2,12 +2,17 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import torch
 from openai.types.chat import ChatCompletion
 from rich.console import Console
 from rich.table import Table
+from transformers import AutoTokenizer
+from vllm import LLM
+from vllm.model_executor.model_loader.utils import process_weights_after_loading
 
 from prime_rl.orchestrator.client import tokenize
 from prime_rl.orchestrator.genesys import TaskType, get_reward_function
+from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import format_num, format_time, get_weight_ckpt_model_path, wait_for_path
 
 
@@ -157,3 +162,70 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
 
     # Display table
     console.print(table)
+
+
+def reload_model_weights(llm: LLM, ckpt_path: Path):
+    # Access the internal model from vLLM
+    model = llm.llm_engine.model_executor.driver_worker.model_runner.model
+    # Load state dict
+    logger = get_logger()
+    logger.info(f"Reloading model weights from {ckpt_path}")
+    state_dict = torch.load(ckpt_path, map_location="cpu")
+
+    # Create a better weight iterator that filters out empty keys and handles prefixes
+    def weights_iterator():
+        for key, value in state_dict.items():
+            # Skip empty keys
+            if not key:
+                continue
+            yield key, value
+
+    model.load_weights(weights_iterator())
+
+    # Process weights after loading (important for some models)
+    model_config = llm.llm_engine.model_config
+    device = next(model.parameters()).device
+    process_weights_after_loading(model, model_config, device)
+
+    return llm
+
+
+def format_prompts(
+    prompts: list[str],
+    tokenizer: AutoTokenizer,
+    enable_thinking: bool = True,
+    tokenize: bool = False,
+) -> list[str] | list[list[int]]:
+    """
+    Formats a batch of raw prompts. Relies on the default chat template of the
+    LLM's tokenizer to call `apply_chat_template`. We call with
+    `add_generation_prompt=True` to add the generation prompt to the beginning
+    of the prompt. We also call with `enable_thinking=True` to enable thinking
+    for models that support it. For example, for `Qwen/QwQ-32B` this will add an
+    unclosed `</think>` tag to the beginning of the system response.
+
+    Args:
+        prompts: A list of raw prompts.
+        target_lengths: A list of target lengths (will be [-1, -1, ...] if no length rewards are configured).
+        len_rewards_config: A configuration for length rewards. If `None`, no length rewards are configured.
+        tokenizer: Any HF tokenizer instance
+        enable_thinking: Whether to enable thinking for the model. Used by the `apply_chat_template` to prepend a thinking prompt (for some models)
+        tokenize: Whether to tokenize the formatted prompts. If True, returns BatchEncoding; if False (default), returns list[str].
+
+    Returns:
+        A list of formatted prompts if tokenize=False, or a BatchEncoding if tokenize=True.
+    """
+    # No length prompt additions, just use the prompts as is
+    messages = [[{"role": "user", "content": prompt}] for prompt in prompts]
+
+    # Apply chat template
+    formatted_prompts = tokenizer.apply_chat_template(
+        messages, tokenize=tokenize, enable_thinking=enable_thinking, add_generation_prompt=True
+    )
+
+    if not tokenize:
+        for i, _formatted_prompt in enumerate(formatted_prompts):
+            if tokenizer.bos_token and _formatted_prompt.startswith(tokenizer.bos_token):
+                formatted_prompts[i] = _formatted_prompt[len(tokenizer.bos_token) :]
+
+    return formatted_prompts
