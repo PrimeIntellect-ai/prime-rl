@@ -270,14 +270,12 @@ async def orchestrate(config: OrchestratorConfig):
         logger.debug(f"Computed advantages ({config.advantage_type}): {lt.lovely(advantages)}")
 
         # Compute throughput
-        prompt_lens = (
-            torch.tensor([len(p) for p in prompt_tokens]).float().reshape(-1, config.rollouts_per_prompt).mean(-1)
-        )
+        prompt_lens = torch.tensor([len(p) for p in prompt_tokens]).float().reshape(-1, config.rollouts_per_prompt)
         completion_lens = (
-            torch.tensor([len(c) for c in completion_tokens]).float().reshape(-1, config.rollouts_per_prompt).mean(-1)
+            torch.tensor([len(c) for c in completion_tokens]).float().reshape(-1, config.rollouts_per_prompt)
         )
         seq_lens = prompt_lens + completion_lens
-        assert seq_lens.numel() == prompt_lens.numel() == completion_lens.numel() == problems_per_batch
+        assert seq_lens.numel() == prompt_lens.numel() == completion_lens.numel() == config.batch_size
         num_tokens = seq_lens.sum().item()
         progress.total_tokens += num_tokens
         progress.total_samples += config.batch_size
@@ -351,25 +349,25 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Log sequence lengths to monitor
         seq_len_metrics = {
-            "seq_len/mean": seq_lens.mean().item(),
-            "seq_len/max": seq_lens.max().item(),
-            "seq_len/min": seq_lens.min().item(),
+            "seq_len/mean": seq_lens.mean(-1).mean().item(),
+            "seq_len/max": seq_lens.mean(-1).max().item(),
+            "seq_len/min": seq_lens.mean(-1).min().item(),
             "step": progress.step,
         }
         monitor.log(seq_len_metrics)
 
         prompt_len_metrics = {
-            "prompt_len/mean": prompt_lens.mean().item(),
-            "prompt_len/max": prompt_lens.max().item(),
-            "prompt_len/min": prompt_lens.min().item(),
+            "prompt_len/mean": prompt_lens.mean(-1).mean().item(),
+            "prompt_len/max": prompt_lens.mean(-1).max().item(),
+            "prompt_len/min": prompt_lens.mean(-1).min().item(),
             "step": progress.step,
         }
         monitor.log(prompt_len_metrics)
 
         completion_len_metrics = {
-            "completion_len/mean": completion_lens.mean().item(),
-            "completion_len/max": completion_lens.max().item(),
-            "completion_len/min": completion_lens.min().item(),
+            "completion_len/mean": completion_lens.mean(-1).mean().item(),
+            "completion_len/max": completion_lens.mean(-1).max().item(),
+            "completion_len/min": completion_lens.mean(-1).min().item(),
             "step": progress.step,
         }
         monitor.log(completion_len_metrics)
