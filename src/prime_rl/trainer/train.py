@@ -260,11 +260,6 @@ def train(config: TrainerConfig):
             shifted_logits = shifted_logits / temperature
             logprobs = selective_log_softmax(shifted_logits, input_ids)
 
-            torch.save(
-                {"logprobs": logprobs, "old_logprobs": old_logprobs, "loss_mask": loss_mask},
-                f"logprobs_{micro_step}.pt",
-            )
-
             # Compute loss
             loss, loss_tensors = compute_loss(
                 logprobs=logprobs,
