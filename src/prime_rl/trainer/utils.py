@@ -154,5 +154,7 @@ class TensorMetrics(dict):
         for key in keys:
             if f"{key}/sum" in self and f"{key}/numel" in self:
                 self[f"{key}/mean"] = self[f"{key}/sum"] / self[f"{key}/numel"]
+                del self[f"{key}/sum"]
+                del self[f"{key}/numel"]
 
         self.synced = True
