@@ -50,8 +50,8 @@ def grpo_loss_clip(
     assert advantages.dtype == torch.float32, "advantages must be float32"
 
     # Compute the per-token loss
-    logprob_ratio = torch.exp(logprobs - old_logprobs)
-    coef_1 = torch.clamp(logprob_ratio, 0, clip_ratio)
+    importance_ratio = torch.exp(logprobs - old_logprobs)
+    coef_1 = torch.clamp(importance_ratio, 0, clip_ratio)
     coef_2 = torch.clamp(coef_1, 1 - epsilon_low, 1 + epsilon_high)
     loss_1 = -coef_1 * advantages
     loss_2 = -coef_2 * advantages
@@ -63,7 +63,7 @@ def grpo_loss_clip(
 
     return summed_loss, {
         "loss": loss.detach(),
-        "logprob_ratio": logprob_ratio.detach(),
+        "importance_ratio": importance_ratio.detach(),
         "coef_1": coef_1.detach(),
         "coef_2": coef_2.detach(),
         "is_clipped": is_clipped.detach(),
@@ -83,18 +83,18 @@ def grpo_loss_ratio(
     assert advantages.dtype == torch.float32, "advantages must be float32"
 
     # Compute the per-token loss
-    logprob_ratio = torch.exp(logprobs - old_logprobs)  # (B, L)
-    clipped_logprob_ratio = torch.clamp(logprob_ratio, 0, clip_ratio)  # (B, L)
-    loss = -clipped_logprob_ratio * advantages  # (B, L)
-    is_clipped = (logprob_ratio > clip_ratio).float()  # (B, L)
+    importance_ratio = torch.exp(logprobs - old_logprobs)  # (B, L)
+    clipped_importance_ratio = torch.clamp(importance_ratio, 0, clip_ratio)  # (B, L)
+    loss = -clipped_importance_ratio * advantages  # (B, L)
+    is_clipped = (importance_ratio > clip_ratio).float()  # (B, L)
 
     # Sum-reduce the loss for all unmasked tokens
     summed_loss = (loss * loss_mask).sum()
 
     return summed_loss, {
         "loss": loss.detach(),
-        "logprob_ratio": logprob_ratio.detach(),
-        "clipped_logprob_ratio": clipped_logprob_ratio.detach(),
+        "importance_ratio": importance_ratio.detach(),
+        "clipped_importance_ratio": clipped_importance_ratio.detach(),
         "is_clipped": is_clipped.detach(),
     }
 
