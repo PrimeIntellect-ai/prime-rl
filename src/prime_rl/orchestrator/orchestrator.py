@@ -391,6 +391,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Increment progress
         progress.step += 1
+        is_first_step = False
 
     # Log final (immutable) samples and distributions to W&B table
     if monitor.wandb:
