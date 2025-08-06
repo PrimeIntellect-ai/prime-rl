@@ -5,13 +5,11 @@ from torch import Tensor
 from torch.nn import functional as F
 
 from prime_rl.trainer.config import LossConfig
-from prime_rl.trainer.model import Model, forward
 
 
 @jaxtyped(typechecker=typechecker)
-def grpo_loss(
-    shifted_logits: Float[Tensor, "B L V"],
-    input_ids: Int[Tensor, "B L"],
+def compute_loss(
+    logprobs: Float[Tensor, "B L"],
     old_logprobs: Float[Tensor, "B L"],
     advantages: Float[Tensor, "B L"],
     loss_mask: Int[Tensor, "B L"],
@@ -19,8 +17,7 @@ def grpo_loss(
 ) -> tuple[Tensor, dict[str, Tensor]]:
     if loss_config.type == "clip":
         return grpo_loss_clip(
-            shifted_logits=shifted_logits,
-            input_ids=input_ids,
+            logprobs=logprobs,
             old_logprobs=old_logprobs,
             advantages=advantages,
             loss_mask=loss_mask,
@@ -30,8 +27,7 @@ def grpo_loss(
         )
     elif loss_config.type == "ratio":
         return grpo_loss_ratio(
-            shifted_logits=shifted_logits,
-            input_ids=input_ids,
+            logprobs=logprobs,
             old_logprobs=old_logprobs,
             advantages=advantages,
             loss_mask=loss_mask,
@@ -41,8 +37,7 @@ def grpo_loss(
 
 @jaxtyped(typechecker=typechecker)
 def grpo_loss_clip(
-    shifted_logits: Float[Tensor, "B L V"],
-    input_ids: Int[Tensor, "B L"],
+    logprobs: Float[Tensor, "B L"],
     old_logprobs: Float[Tensor, "B L"],
     advantages: Float[Tensor, "B L"],
     loss_mask: Int[Tensor, "B L"],
@@ -50,77 +45,57 @@ def grpo_loss_clip(
     epsilon_high: float,
     clip_ratio: float,
 ) -> tuple[Tensor, dict[str, Tensor]]:
-    assert shifted_logits.dtype == torch.float32, "shifted_logits must be float32"
+    assert logprobs.dtype == torch.float32, "logprobs must be float32"
     assert old_logprobs.dtype == torch.float32, "old_logprobs must be float32"
-    assert input_ids.dtype == torch.long, "input_ids must be long"
     assert advantages.dtype == torch.float32, "advantages must be float32"
 
-    # Compute the logprobs
-    logprobs = selective_log_softmax(shifted_logits, input_ids)
-    logprob_ratio = torch.exp(logprobs - old_logprobs)
-
     # Compute the per-token loss
+    logprob_ratio = torch.exp(logprobs - old_logprobs)
     coef_1 = torch.clamp(logprob_ratio, 0, clip_ratio)
     coef_2 = torch.clamp(coef_1, 1 - epsilon_low, 1 + epsilon_high)
     loss_1 = -coef_1 * advantages
     loss_2 = -coef_2 * advantages
     loss = torch.max(loss_1, loss_2)
-
-    with torch.no_grad():
-        is_clipped = (loss_1 < loss_2).float()
-        entropy = compute_entropy(shifted_logits)
+    is_clipped = (loss_1 < loss_2).float()
 
     # Sum-reduce the loss for all unmasked tokens
     summed_loss = (loss * loss_mask).sum()
 
     return summed_loss, {
         "loss": loss.detach(),
-        "logprobs": logprobs.detach(),
-        "old_logprobs": old_logprobs.detach(),
         "logprob_ratio": logprob_ratio.detach(),
         "coef_1": coef_1.detach(),
         "coef_2": coef_2.detach(),
         "is_clipped": is_clipped.detach(),
-        "entropy": entropy.detach(),
     }
 
 
 @jaxtyped(typechecker=typechecker)
 def grpo_loss_ratio(
-    shifted_logits: Float[Tensor, "B L V"],
-    input_ids: Int[Tensor, "B L"],
+    logprobs: Float[Tensor, "B L"],
     old_logprobs: Float[Tensor, "B L"],
     advantages: Float[Tensor, "B L"],
     loss_mask: Int[Tensor, "B L"],
     clip_ratio: float,
 ) -> tuple[Tensor, dict[str, Tensor]]:
-    assert shifted_logits.dtype == torch.float32, "shifted_logits must be float32"
+    assert logprobs.dtype == torch.float32, "logprobs must be float32"
     assert old_logprobs.dtype == torch.float32, "old_logprobs must be float32"
-    assert input_ids.dtype == torch.long, "input_ids must be long"
     assert advantages.dtype == torch.float32, "advantages must be float32"
-
-    # Compute the logprobs
-    logprobs = selective_log_softmax(shifted_logits, input_ids)
 
     # Compute the per-token loss
     logprob_ratio = torch.exp(logprobs - old_logprobs)  # (B, L)
     clipped_logprob_ratio = torch.clamp(logprob_ratio, 0, clip_ratio)  # (B, L)
     loss = -clipped_logprob_ratio * advantages  # (B, L)
-    with torch.no_grad():
-        is_clipped = (logprob_ratio > clip_ratio).float()  # (B, L)
-        entropy = compute_entropy(shifted_logits)
+    is_clipped = (logprob_ratio > clip_ratio).float()  # (B, L)
 
     # Sum-reduce the loss for all unmasked tokens
     summed_loss = (loss * loss_mask).sum()
 
     return summed_loss, {
         "loss": loss.detach(),
-        "logprobs": logprobs.detach(),
-        "old_logprobs": old_logprobs.detach(),
         "logprob_ratio": logprob_ratio.detach(),
         "clipped_logprob_ratio": clipped_logprob_ratio.detach(),
         "is_clipped": is_clipped.detach(),
-        "entropy": entropy.detach(),
     }
 
 
@@ -163,24 +138,8 @@ def selective_log_softmax(logits: Float[Tensor, "B L V"], index: Int[Tensor, "B 
 
 
 @jaxtyped(typechecker=typechecker)
-def compute_logprobs(
-    model: Model,
-    input_ids: Int[Tensor, "B L"],
-    position_ids: Int[Tensor, "B L"],
-    temperature: float,
-) -> Float[Tensor, "B L"]:
-    logits = forward(model, input_ids, position_ids).contiguous()
-    shifted_logits = shift_logits(logits)
-    shifted_logits = shifted_logits / temperature
-    logprobs = selective_log_softmax(shifted_logits, input_ids)
-    del logits, shifted_logits
-    return logprobs
-
-
-@jaxtyped(typechecker=typechecker)
-def compute_entropy(
-    shifted_logits: Float[Tensor, "B L V"],
-) -> Float[Tensor, "B L"]:
+@torch.no_grad()
+def compute_entropy(shifted_logits: Float[Tensor, "B L V"]) -> Float[Tensor, "B L"]:
     pd = torch.nn.functional.softmax(shifted_logits, dim=-1)
     entropy = torch.logsumexp(shifted_logits, dim=-1) - torch.sum(pd * shifted_logits, dim=-1)
 

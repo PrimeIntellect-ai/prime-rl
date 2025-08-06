@@ -20,9 +20,10 @@ from prime_rl.trainer.config import TrainerConfig
 from prime_rl.trainer.data import DataLoader, FakeDataLoader
 from prime_rl.trainer.logger import setup_logger
 from prime_rl.trainer.loss import (
-    grpo_loss,
+    compute_loss,
     shift_logits,
-    compute_logprobs,
+    selective_log_softmax,
+    compute_entropy,
 )
 from prime_rl.trainer.scheduler import create_lr_scheduler
 from prime_rl.trainer.model import (
@@ -209,8 +210,15 @@ def train(config: TrainerConfig):
                     logprobs = micro_batch["logprobs"].to("cuda")
                     temperature = micro_batch["temperature"]
 
-                    recomputed_logprobs = compute_logprobs(logprob_model, input_ids, position_ids, temperature)
-                    recomputed_logprob_error = torch.exp(recomputed_logprobs - logprobs) * loss_mask
+                    # Compute the logprobs
+                    logits = forward(logprob_model, input_ids, position_ids).contiguous()
+                    shifted_logits = shift_logits(logits)
+                    shifted_logits = shifted_logits / temperature
+                    recomputed_logprobs = selective_log_softmax(shifted_logits, input_ids)
+                    del logits, shifted_logits
+
+                    # Compute the recomputed logprob error
+                    recomputed_logprob_error = torch.exp(recomputed_logprobs - logprobs)
 
                     micro_batch["logprobs"] = recomputed_logprobs.cpu()
                     recomputed_logprob_errors[micro_step] = recomputed_logprob_error.detach()
@@ -250,26 +258,39 @@ def train(config: TrainerConfig):
             logits = forward(model, input_ids, position_ids).contiguous()
             shifted_logits = shift_logits(logits)
             shifted_logits = shifted_logits / temperature
-            del logits
+            logprobs = selective_log_softmax(shifted_logits, input_ids)
+
+            torch.save(
+                {"logprobs": logprobs, "old_logprobs": old_logprobs, "loss_mask": loss_mask},
+                f"logprobs_{micro_step}.pt",
+            )
 
             # Compute loss
-            loss, loss_tensors = grpo_loss(
-                shifted_logits=shifted_logits,
-                input_ids=input_ids,
+            loss, loss_tensors = compute_loss(
+                logprobs=logprobs,
                 old_logprobs=old_logprobs,
                 advantages=advantages,
                 loss_mask=loss_mask,
                 loss_config=config.loss,
             )
 
+            # Compute entropy
+            entropy = compute_entropy(shifted_logits)
+
+            # Delete logits and shifted_logits to save memory
+            del logits, shifted_logits
+
+            # Add loss tensors
+            loss_tensors["recomputed_logprob_error"] = recomputed_logprob_errors[micro_step]
+            loss_tensors["old_logprobs"] = old_logprobs
+            loss_tensors["logprobs"] = logprobs
+            loss_tensors["entropy"] = entropy
+
             # Apply loss mask to all loss tensors
             assert all(v.shape == loss_mask.shape for v in loss_tensors.values())
             assert all(v.device == loss_mask.device for v in loss_tensors.values())
             for key, value in loss_tensors.items():
-                loss_tensors[key] = value * loss_mask
-
-            # Add recomputed logprob error to loss tensors
-            loss_tensors["recomputed_logprob_error"] = recomputed_logprob_errors[micro_step] * loss_mask
+                loss_tensors[key] = value[loss_mask.bool()]
 
             # Compute point aggregates
             for key, value in loss_tensors.items():
@@ -301,8 +322,9 @@ def train(config: TrainerConfig):
             )
 
             if micro_step == 0:
+                logger.debug("Logging loss tensors at first micro step")
                 for k, v in loss_tensors.items():
-                    logger.debug(f"{k}={lt.lovely(v)}")
+                    logger.debug(f"\t{k}={lt.lovely(v)}")
 
         # Synchronize the batch metrics across all ranks
         logger.debug(f"All-reduce tensor metrics with keys {list(tensor_metrics.keys())}")
