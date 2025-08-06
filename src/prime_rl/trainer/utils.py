@@ -12,17 +12,6 @@ from prime_rl.trainer.model import Model
 from prime_rl.utils.utils import format_num, format_time
 
 
-class FakeTokenizer:
-    def __init__(self):
-        self.vocab_size = 1000
-        self.bos_token_id = 0
-        self.eos_token_id = 1
-        self.pad_token_id = 2
-
-    def __len__(self):
-        return self.vocab_size
-
-
 def get_real_tensor(tensor: Tensor | DTensor) -> Tensor:
     if isinstance(tensor, DTensor):
         return tensor.to_local()
