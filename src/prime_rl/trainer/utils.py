@@ -3,6 +3,7 @@ from typing import Any, TypeAlias
 
 import pandas as pd
 import torch
+import torch.distributed as dist
 from rich.console import Console
 from rich.table import Table
 from torch import Tensor
@@ -111,3 +112,47 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
 
     # Display table
     console.print(table)
+
+
+class TensorMetrics(dict):
+    """A class to aggregate tensor statistics across multiple steps. Only support synchronizing once."""
+
+    def __init__(self, *args, **kwargs):
+        assert dist.is_initialized(), "TensorMetrics requires a distributed environment"
+        super().__init__(*args, **kwargs)
+        self.synced = False
+
+    def update(self, key: str, value: Tensor) -> None:
+        """Compute and accumulate statistics (min/max/sum/numel) of a tensor"""
+        self[f"{key}/min"] = min(self.get(f"{key}/min", float("inf")), value.min().item())
+        self[f"{key}/max"] = max(self.get(f"{key}/max", float("-inf")), value.max().item())
+        self[f"{key}/sum"] = self.get(f"{key}/sum", 0.0) + value.sum().item()
+        self[f"{key}/numel"] = self.get(f"{key}/numel", 0) + value.numel()
+
+    def sync(self) -> None:
+        """Synchronize the statistics across all ranks. If sum and numel are present, also compute the mean."""
+        assert not self.synced, (
+            "TensorMetrics has already been synced. Syncing again is not supported. It is recommended to re-initialize the object across steps."
+        )
+        for key, value in self.items():
+            assert isinstance(value, float) or isinstance(value, int), (
+                f"Expected float or int, got {type(value)} for key {key}"
+            )
+            tensor_value = torch.tensor(value).to("cuda")
+            if "min" in key:
+                dist.all_reduce(tensor_value, op=dist.ReduceOp.MIN)
+            elif "max" in key:
+                dist.all_reduce(tensor_value, op=dist.ReduceOp.MAX)
+            elif "sum" in key or "numel" in key:
+                dist.all_reduce(tensor_value, op=dist.ReduceOp.SUM)
+            else:
+                raise ValueError(f"Unknown key {key}")
+            self[key] = tensor_value.item()
+
+        # Synchronize the mean values, if sum and numel are present
+        keys = list(set([k.split("/")[0] for k in self.keys()]))
+        for key in keys:
+            if f"{key}/sum" in self and f"{key}/numel" in self:
+                self[f"{key}/mean"] = self[f"{key}/sum"] / self[f"{key}/numel"]
+
+        self.synced = True

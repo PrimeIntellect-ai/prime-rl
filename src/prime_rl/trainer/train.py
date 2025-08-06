@@ -1,4 +1,3 @@
-from collections import defaultdict
 import logging
 import os
 import time
@@ -11,7 +10,6 @@ from prime_rl.trainer import envs
 import shardcast
 import lovely_tensors as lt
 import torch
-import torch.distributed as dist
 from torch._guards import log as torch_log
 from loguru import logger
 from prime_rl.trainer.ckpt import CheckpointManager, Progress
@@ -35,6 +33,7 @@ from prime_rl.trainer.model import (
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     OffloadedTensor,
+    TensorMetrics,
     copy_model_to_cpu,
     offload_model_to_cpu,
     wake_up_model_from_cpu,
@@ -235,7 +234,7 @@ def train(config: TrainerConfig):
             torch.cuda.memory._record_memory_history()
 
         forward_backward_start_time = time.time()
-        tensor_metrics = defaultdict(float)
+        tensor_metrics = TensorMetrics()
         micro_batch_size, seq_len = micro_batches[0]["input_ids"].shape
         batch_size = micro_batch_size * num_micro_batches
 
@@ -275,11 +274,17 @@ def train(config: TrainerConfig):
             # Delete logits and shifted_logits to save memory
             del logits, shifted_logits
 
-            # Add loss tensors
+            # Scale loss by scale factor before backward pass
+            loss = loss / loss_scale
+
+            # Backward pass (ensures loss reduction across FSDP ranks)
+            loss.backward()
+
+            # Add loss tensors for logging purposes
             loss_tensors["recomputed_logprob_error"] = recomputed_logprob_errors[micro_step]
-            loss_tensors["old_logprobs"] = old_logprobs
-            loss_tensors["logprobs"] = logprobs
-            loss_tensors["entropy"] = entropy
+            loss_tensors["old_logprobs"] = old_logprobs.detach()
+            loss_tensors["logprobs"] = logprobs.detach()
+            loss_tensors["entropy"] = entropy.detach()
 
             # Apply loss mask to all loss tensors
             assert all(v.shape == loss_mask.shape for v in loss_tensors.values())
@@ -287,26 +292,15 @@ def train(config: TrainerConfig):
             for key, value in loss_tensors.items():
                 loss_tensors[key] = value[loss_mask.bool()]
 
-            # Compute point aggregates
-            for key, value in loss_tensors.items():
-                if key == "loss":
-                    assert torch.allclose(value.sum(), loss.detach())
-                tensor_metrics[f"{key}/min"] = min(tensor_metrics.get(f"{key}/min", float("inf")), value.min().item())
-                tensor_metrics[f"{key}/max"] = max(tensor_metrics.get(f"{key}/max", float("-inf")), value.max().item())
-                tensor_metrics[f"{key}/sum"] += value.sum().item()
-                tensor_metrics[f"{key}/numel"] += loss_mask.sum().item()
+            # Accumulate point aggregates (min/max/sum/numel)
+            for key, loss_tensor in loss_tensors.items():
+                tensor_metrics.update(key, loss_tensor)
 
             # Compute micro batch metrics
             micro_numel = loss_mask.sum().item()
             micro_loss_metrics = {}
             for k, v in loss_tensors.items():
                 micro_loss_metrics[f"micro_{k}"] = v.sum().item() / micro_numel if micro_numel > 0 else 0.0
-
-            # Scale loss by scale factor before backward pass
-            loss = loss / loss_scale
-
-            # Backward pass (ensures loss reduction across FSDP ranks)
-            loss.backward()
 
             # We report per-micro batch length normalized metrics here
             logger.debug(
@@ -320,23 +314,7 @@ def train(config: TrainerConfig):
 
         # Synchronize the batch metrics across all ranks
         logger.debug(f"All-reduce tensor metrics with keys {list(tensor_metrics.keys())}")
-        for key, value in tensor_metrics.items():
-            assert isinstance(value, float), f"Expected float, got {type(value)} for key {key}"
-            tensor_value = torch.tensor(value).to("cuda")
-            if "min" in key:
-                dist.all_reduce(tensor_value, op=dist.ReduceOp.MIN)
-            elif "max" in key:
-                dist.all_reduce(tensor_value, op=dist.ReduceOp.MAX)
-            elif "sum" in key or "numel" in key:
-                dist.all_reduce(tensor_value, op=dist.ReduceOp.SUM)
-            else:
-                raise ValueError(f"Unknown key {key}")
-            tensor_metrics[key] = tensor_value.item()
-
-        # Compute mean for all keys that have sum and numel keys
-        for key in loss_tensors.keys():
-            if f"{key}/sum" in tensor_metrics and f"{key}/numel" in tensor_metrics:
-                tensor_metrics[f"{key}/mean"] = tensor_metrics[f"{key}/sum"] / tensor_metrics[f"{key}/numel"]
+        tensor_metrics.sync()
 
         # Optionally, clip the gradients
         logger.debug(f"Clipping gradients to {config.loss.max_norm}")
