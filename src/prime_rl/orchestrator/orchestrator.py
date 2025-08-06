@@ -388,8 +388,6 @@ async def orchestrate(config: OrchestratorConfig):
         assert advantages.numel() == rewards.numel() == config.batch_size
         reward_metrics = {
             "reward/mean": rewards.mean().item(),
-            "reward/min": rewards.min().item(),
-            "reward/max": rewards.max().item(),
             "step": progress.step,
         }
         monitor.log(reward_metrics)
