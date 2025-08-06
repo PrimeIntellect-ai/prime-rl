@@ -286,14 +286,15 @@ def train(config: TrainerConfig):
             loss_tensors["logprobs"] = logprobs.detach()
             loss_tensors["entropy"] = entropy.detach()
 
-            # Apply loss mask to all loss tensors
-            assert all(v.shape == loss_mask.shape for v in loss_tensors.values())
-            assert all(v.device == loss_mask.device for v in loss_tensors.values())
-            for key, value in loss_tensors.items():
-                loss_tensors[key] = value[loss_mask.bool()]
-
-            # Accumulate point aggregates (min/max/sum/numel)
+            # Apply loss mask to all loss tensors and update tensor metrics
             for key, loss_tensor in loss_tensors.items():
+                assert loss_tensor.shape == loss_mask.shape, (
+                    f"{key} has shape {loss_tensor.shape} but loss_mask has shape {loss_mask.shape}"
+                )
+                assert loss_tensor.device == loss_mask.device, (
+                    f"{key} is on device {loss_tensor.device} but loss_mask is on device {loss_mask.device}"
+                )
+                loss_tensors[key] = loss_tensor[loss_mask.bool()]
                 tensor_metrics.update(key, loss_tensor)
 
             # Compute micro batch metrics
