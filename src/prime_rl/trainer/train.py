@@ -290,12 +290,9 @@ def train(config: TrainerConfig):
             # Compute point aggregates
             for key, value in loss_tensors.items():
                 if key == "loss":
-                    assert value.sum().item() == loss.detach().item(), (
-                        f"loss {value.sum().item()} != {loss.detach().item()}"
-                    )
+                    assert torch.allclose(value.sum(), loss.detach())
                 tensor_metrics[f"{key}/min"] = min(tensor_metrics.get(f"{key}/min", float("inf")), value.min().item())
                 tensor_metrics[f"{key}/max"] = max(tensor_metrics.get(f"{key}/max", float("-inf")), value.max().item())
-                # Mean will be computed as {key}/sum / {key}/numel outside the loop
                 tensor_metrics[f"{key}/sum"] += value.sum().item()
                 tensor_metrics[f"{key}/numel"] += loss_mask.sum().item()
 
