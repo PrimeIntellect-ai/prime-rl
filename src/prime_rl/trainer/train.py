@@ -296,7 +296,7 @@ def train(config: TrainerConfig):
                 )
                 loss_tensors[key] = loss_tensor[loss_mask.bool()]
                 if key == "is_clipped":
-                    tensor_metrics.update(key, loss_tensor, reduce_types=["sum"])
+                    tensor_metrics.update(key, loss_tensor, reduce_types=["sum", "mean"])
                 else:
                     tensor_metrics.update(key, loss_tensor, reduce_types=["min", "max", "mean"])
 
