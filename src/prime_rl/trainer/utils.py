@@ -115,75 +115,56 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
     console.print(table)
 
 
-def flexible_all_gather(input_tensor: Tensor) -> Tensor:
+def flexible_all_gather(tensor: Tensor) -> Tensor:
     """
-    All gather a tensor between all ranks. All ranks does not need to have the same number of elements.
-    return type is a concatanation of all the tensors from all ranks without padded elements.
+    All-gather a 1D tensor between all ranks, with potentially different numbr of element per rank.
+    Returns a tensor of shape (world_size * max_numel, dtype=tensor.dtype, device=tensor.device)
     """
 
-    assert len(input_tensor.shape) == 1, "input_tensor must be a 1D tensor"
+    assert tensor.ndim == 1, "Can only flexibly all-gather 1D tensors"
 
-    local_numel = torch.tensor(input_tensor.shape[0], device=input_tensor.device)
-    all_numels = [torch.tensor(0, device=input_tensor.device)] * dist.get_world_size()
+    # Find the tensor with the most elements
+    local_numel = torch.tensor(tensor.shape[0], device=tensor.device)
+    all_numels = [torch.tensor(0, device=tensor.device)] * dist.get_world_size()
     dist.all_gather(all_numels, local_numel)
     all_numels = [numel.item() for numel in all_numels]
     max_numel = max(all_numels)
 
+    # Pad the tensor with zeros if it has less elements than the maximum
     if local_numel < max_numel:
-        inputs_tensor_padded = torch.cat(
-            [input_tensor, torch.zeros(max_numel - local_numel, dtype=input_tensor.dtype, device=input_tensor.device)]
-        )
-    else:
-        inputs_tensor_padded = input_tensor
+        tensor = torch.cat([tensor, torch.zeros(max_numel - local_numel, dtype=tensor.dtype, device=tensor.device)])
 
-    all_input_tensors = [
-        torch.zeros(max_numel, dtype=input_tensor.dtype, device=input_tensor.device)
-        for _ in range(dist.get_world_size())
-    ]
-    dist.all_gather(all_input_tensors, inputs_tensor_padded)
+    # All-gather the tensors
+    all_tensors = [torch.zeros(max_numel, dtype=tensor.dtype, device=tensor.device)] * dist.get_world_size()
+    dist.all_gather(all_tensors, tensor)
+    all_tensors_unpadded = [tensor[:numel] for tensor, numel in zip(all_tensors, all_numels)]
 
-    all_non_padded_input_tensors = [all_input_tensors[i][: all_numels[i]] for i in range(dist.get_world_size())]
-    return torch.cat(all_non_padded_input_tensors, dim=0)
+    return torch.cat(all_tensors_unpadded, dim=0)
 
 
-class TensorMetrics:
-    """
-    This class acunulate tensor across multiple steps (example grad accumulation steps).
-
-    It then gather the all the tensor across the steps and rank and log distribution metrics including:
-    - mean
-    - std
-    - min
-    - max
-    - median
-    - 1%, 5%, 10%, 90%, 95%, 99% quantiles
-
-    TODO: decide on adding wandb histogram logging
-    """
+class Tensors(defaultdict):
+    """A class to accumulate tensors and compute statistics (mean, median, std, min, max) across multiple steps and ranks."""
 
     def __init__(self):
-        self.all_tensors = defaultdict(list)
+        assert dist.is_initialized(), "Tensors requires a distributed environment"
+        super().__init__(list)
 
-    def update(self, key: str, value: Tensor) -> None:
-        self.all_tensors[key].append(value)
+    def compute_stats(self) -> dict[str, float | int]:
+        """Synchronize the tensor statistic across all ranks for each key and compute relevant statistics."""
 
-    def sync(self) -> dict[str, Any]:
         metrics = {}
-        for k, v in self.all_tensors.items():
-            # concatenate all the tensors across the steps and rank and move to cuda for nccl communication
-            tensor = torch.cat(v, dim=0).to("cuda")
+        for key, tensors in self.items():
+            # All-gather tensors across steps and ranks (get global distribution)
+            tensor = torch.cat(tensors, dim=0).to("cuda")
+            assert tensor.ndim == 1, "Can only aggregate 1D tensors"
             tensor = flexible_all_gather(tensor)
+            assert tensor.ndim == 1, "Can only aggregate 1D tensors"
 
-            metrics[f"{k}/mean"] = tensor.mean().item()
-            metrics[f"{k}/std"] = tensor.std().item()
-            metrics[f"{k}/min"] = tensor.min().item()
-            metrics[f"{k}/max"] = tensor.max().item()
-            metrics[f"{k}/median"] = torch.median(tensor).item()
-            metrics[f"{k}/1%"] = torch.quantile(tensor, 0.01).item()
-            metrics[f"{k}/5%"] = torch.quantile(tensor, 0.05).item()
-            metrics[f"{k}/10%"] = torch.quantile(tensor, 0.1).item()
-            metrics[f"{k}/90%"] = torch.quantile(tensor, 0.9).item()
-            metrics[f"{k}/95%"] = torch.quantile(tensor, 0.95).item()
-            metrics[f"{k}/99%"] = torch.quantile(tensor, 0.99).item()
+            # Compute relevant tensor statistics
+            metrics[f"{key}/mean"] = tensor.mean().item()
+            metrics[f"{key}/median"] = torch.median(tensor).item()
+            metrics[f"{key}/std"] = tensor.std().item()
+            metrics[f"{key}/min"] = tensor.min().item()
+            metrics[f"{key}/max"] = tensor.max().item()
 
         return metrics

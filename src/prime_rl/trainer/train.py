@@ -32,7 +32,7 @@ from prime_rl.trainer.model import (
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     OffloadedTensor,
-    TensorMetrics,
+    Tensors,
     copy_model_to_cpu,
     offload_model_to_cpu,
     wake_up_model_from_cpu,
@@ -236,13 +236,13 @@ def train(config: TrainerConfig):
         micro_batch_size, seq_len = micro_batches[0]["input_ids"].shape
         batch_size = micro_batch_size * num_micro_batches
 
-        tensor_metrics = TensorMetrics()
+        tensors = Tensors()
         # Normalize by the local number of unmasked tokens in the batch (per-batch length normalization)
         loss_scale = torch.tensor(
             sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches), device="cuda"
         )
 
-        logger.info(f"Starting forward and backward pass ({num_micro_batches=}, {loss_scale=})")
+        logger.info(f"Starting forward and backward pass ({num_micro_batches=}, {loss_scale.item()=})")
         for micro_step, micro_batch in enumerate(micro_batches):
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
@@ -279,17 +279,18 @@ def train(config: TrainerConfig):
             # Backward pass
             loss.backward()
 
-            # Add loss tensors for logging purposes
-            loss_tensors["recomputed_logprob_error"] = recomputed_logprob_errors[micro_step].detach()
-            loss_tensors["old_probs"] = torch.exp(old_logprobs).detach()
-            loss_tensors["probs"] = torch.exp(logprobs).detach()
-            loss_tensors["entropy"] = entropy.detach()
-            loss_tensors["loss"] = loss.detach()
+            # Add relevant tensors to tensor metrics for logging purposes
+            tensors["probs"].append(torch.exp(logprobs)[loss_mask.bool()].detach().to("cpu"))
+            tensors["old_probs"].append(torch.exp(old_logprobs)[loss_mask.bool()].detach().to("cpu"))
+            tensors["entropy"].append(entropy[loss_mask.bool()].detach().to("cpu"))
+            tensors["recomputed_logprob_error"].append(
+                recomputed_logprob_errors[micro_step][loss_mask.bool()].detach().to("cpu")
+            )
 
-            # Update tensor metrics by storing the flattened, unmasked elements of each tensor
-            for k, loss_tensor in loss_tensors.items():
-                tensor = loss_tensor.detach()[loss_mask.bool()].to("cpu")
-                tensor_metrics.update(k, tensor)
+            # Add loss tensors to tensor metrics for logging purposes
+            for key, loss_tensor in loss_tensors.items():
+                loss_tensor = loss_tensor.detach()[loss_mask.bool()].detach().to("cpu")
+                tensors[key].append(loss_tensor)
 
             logger.debug(f"Completed micro batch {micro_step + 1}/{num_micro_batches} (loss={loss.item():.4f})")
 
@@ -324,9 +325,8 @@ def train(config: TrainerConfig):
             torch.cuda.memory._dump_snapshot(profile_path.as_posix())
             torch.cuda.memory._record_memory_history(enabled=False)
 
-        # Synchronize the tensor metrics across all ranks
-        processes_tensor_metrics = tensor_metrics.sync()
-        del tensor_metrics
+        # Synchronize the tensor metrics across all steps and ranks
+        tensor_stats = tensors.compute_stats()
 
         # Compute step metrics
         num_local_tokens = micro_batch_size * seq_len * num_micro_batches
@@ -342,7 +342,7 @@ def train(config: TrainerConfig):
         # Log step metrics
         step_time = time.time() - step_start_time
         current_lr = optimizer.param_groups[0]["lr"]
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {processes_tensor_metrics['loss/mean']:.4f} | Grad. Norm: {grad_norm:.4f} | Entropy: {processes_tensor_metrics['entropy/mean']:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}%"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Grad. Norm: {grad_norm:.4f} | Entropy: {tensor_stats['entropy/mean']:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}%"
         logger.success(step_message)
 
         # Log performance metrics
@@ -361,10 +361,9 @@ def train(config: TrainerConfig):
         }
         monitor.log(optim_metrics)
 
-        # Log loss metrics
-        processes_tensor_metrics["step"] = progress.step
-
-        monitor.log(processes_tensor_metrics)
+        # Log tensor stats
+        tensor_stats["step"] = progress.step
+        monitor.log(tensor_stats)
 
         # Log time metrics
         time_metrics = {
