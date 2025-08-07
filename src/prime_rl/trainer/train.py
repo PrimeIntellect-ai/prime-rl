@@ -292,14 +292,16 @@ def train(config: TrainerConfig):
                 loss_tensor = loss_tensor.detach()[loss_mask.bool()].detach().to("cpu")
                 tensors[key].append(loss_tensor)
 
-            logger.debug(f"Completed micro batch {micro_step + 1}/{num_micro_batches} (loss={loss.item():.4f})")
+            # Debug log with *local, micro step* stats
+            logger.debug(
+                f"Micro Step {micro_step} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy'][-1].mean().item():.4f} | Importance Ratio: {tensors['importance_ratio'][-1].mean().item():.4f}"
+            )
 
         # Optionally, clip the gradients
         logger.debug(f"Clipping gradients to {config.loss.max_norm}")
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.loss.max_norm).full_tensor()
 
         # Update the model parameters
-        logger.debug("Updating model")
         optimizer.step()
         optimizer.zero_grad()
 
@@ -342,7 +344,7 @@ def train(config: TrainerConfig):
         # Log step metrics
         step_time = time.time() - step_start_time
         current_lr = optimizer.param_groups[0]["lr"]
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Grad. Norm: {grad_norm:.4f} | Entropy: {tensor_stats['entropy/mean']:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}%"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Entropy: {tensor_stats['entropy/mean']:.4f} | Importance Ratio: {tensor_stats['importance_ratio/mean']:.4f} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}%"
         logger.success(step_message)
 
         # Log performance metrics
