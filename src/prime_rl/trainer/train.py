@@ -279,15 +279,15 @@ def train(config: TrainerConfig):
             loss.backward()
 
             # Add loss tensors for logging purposes
-            loss_tensors["importance_ratio/recomputed_logprob_error"] = recomputed_logprob_errors[micro_step]
-            loss_tensors["importance_ratio/old_proba"] = torch.exp(old_logprobs)
-            loss_tensors["importance_ratio/proba"] = torch.exp(logprobs)
+            loss_tensors["recomputed_logprob_error"] = recomputed_logprob_errors[micro_step]
+            loss_tensors["old_probs"] = torch.exp(old_logprobs)
+            loss_tensors["probs"] = torch.exp(logprobs)
             loss_tensors["entropy"] = entropy
             loss_tensors["loss"] = loss
 
-            for k, v in loss_tensors.items():
-                # we flatten every tensor and only keep the unmasked elements
-                tensor = v.detach()[loss_mask.bool()].to("cpu")
+            # Update tensor metrics by storing the flattened, unmasked elements of each tensor
+            for k, loss_tensor in loss_tensors.items():
+                tensor = loss_tensor.detach()[loss_mask.bool()].to("cpu")
                 tensor_metrics.update(k, tensor)
 
             logger.debug(f"Completed micro batch {micro_step + 1}/{num_micro_batches} (loss={loss.item():.4f})")
@@ -323,7 +323,7 @@ def train(config: TrainerConfig):
             torch.cuda.memory._dump_snapshot(profile_path.as_posix())
             torch.cuda.memory._record_memory_history(enabled=False)
 
-        # synchronize the tensor metrics across all ranks
+        # Synchronize the tensor metrics across all ranks
         processes_tensor_metrics = tensor_metrics.sync()
         del tensor_metrics
 
