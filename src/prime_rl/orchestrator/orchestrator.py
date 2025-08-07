@@ -315,14 +315,14 @@ async def orchestrate(config: OrchestratorConfig):
             monitor.wandb.log_samples(
                 input_tokens=prompt_tokens,
                 output_tokens=completion_tokens,
-                rewards=rewards,
-                advantages=advantages,
+                rewards=rewards.flatten().tolist(),
+                advantages=advantages.flatten().tolist(),
                 rollouts_per_problem=config.rollouts_per_prompt,
                 step=progress.step,
             )
             monitor.wandb.log_distributions(
-                rewards.flatten().tolist(),
-                advantages.flatten().tolist(),
+                rewards=rewards.flatten().tolist(),
+                advantages=advantages.flatten().tolist(),
                 rollouts_per_problem=config.rollouts_per_prompt,
                 step=progress.step,
             )
