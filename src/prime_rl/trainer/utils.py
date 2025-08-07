@@ -153,18 +153,21 @@ class Tensors(defaultdict):
         """Synchronize the tensor statistic across all ranks for each key and compute relevant statistics."""
 
         metrics = {}
-        for key, tensors in self.items():
+        for key in list(self.keys()):
             # All-gather tensors across steps and ranks (get global distribution)
-            tensor = torch.cat(tensors, dim=0).to("cuda")
-            assert tensor.ndim == 1, "Can only aggregate 1D tensors"
-            tensor = flexible_all_gather(tensor)
-            assert tensor.ndim == 1, "Can only aggregate 1D tensors"
+            tensors = torch.cat(self.pop(key), dim=0).to("cuda")
+            assert tensors.ndim == 1, "Can only aggregate 1D tensors"
+            tensors = flexible_all_gather(tensors)
+            assert tensors.ndim == 1, "Can only aggregate 1D tensors"
 
             # Compute relevant tensor statistics
-            metrics[f"{key}/mean"] = tensor.mean().item()
-            metrics[f"{key}/median"] = torch.median(tensor).item()
-            metrics[f"{key}/std"] = tensor.std().item()
-            metrics[f"{key}/min"] = tensor.min().item()
-            metrics[f"{key}/max"] = tensor.max().item()
+            metrics[f"{key}/mean"] = tensors.mean().item()
+            metrics[f"{key}/median"] = torch.median(tensors).item()
+            metrics[f"{key}/std"] = tensors.std().item()
+            metrics[f"{key}/min"] = tensors.min().item()
+            metrics[f"{key}/max"] = tensors.max().item()
+
+            # Add back all-gathered tensors to self
+            self[key].append(tensors.tolist())
 
         return metrics

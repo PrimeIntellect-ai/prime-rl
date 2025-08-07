@@ -380,6 +380,15 @@ def train(config: TrainerConfig):
         }
         monitor.log(time_metrics)
 
+        # Log distributions to W&B table if enabled
+        if monitor.wandb:
+            assert all(len(tensors) == 1 for tensors in tensors.values()), "Tensors must be lists of length 1"
+            distributions = {key: tensors[key][0] for key in tensors.keys()}
+            monitor.wandb.log_distributions(
+                distributions=distributions,
+                step=progress.step,
+            )
+
         progress.step += 1
         is_first_step = False
 

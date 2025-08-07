@@ -276,13 +276,13 @@ class WandbMonitor(Monitor):
         ):
             return
         assert self.last_log_distributions_step <= step, "Step must be greater than last logged step"
-        self.logger.debug(f"Logging distributions to W&B table at step {step}")
+        self.logger.debug(f"Logging distributions for keys {list(distributions.keys())} to W&B table at step {step}")
 
         # Initialize incremental table if not already done
         if self.distributions_table is None:
             self.distributions_cols = list(distributions.keys())
             self.distributions_table = wandb.Table(
-                columns=self.distributions_cols,
+                columns=["step"] + self.distributions_cols,
                 log_mode="INCREMENTAL",
             )
         assert self.distributions_cols == list(distributions.keys()), (
