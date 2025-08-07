@@ -236,13 +236,13 @@ def train(config: TrainerConfig):
         micro_batch_size, seq_len = micro_batches[0]["input_ids"].shape
         batch_size = micro_batch_size * num_micro_batches
 
-        tensors = Tensors()
         # Normalize by the local number of unmasked tokens in the batch (per-batch length normalization)
         loss_scale = torch.tensor(
             sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches), device="cuda"
         )
 
         logger.info(f"Starting forward and backward pass ({num_micro_batches=}, {loss_scale.item()=})")
+        tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
         for micro_step, micro_batch in enumerate(micro_batches):
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
@@ -279,7 +279,7 @@ def train(config: TrainerConfig):
             # Backward pass
             loss.backward()
 
-            # Add relevant tensors to tensor metrics for logging purposes
+            # Add relevant tensors to tensor dict for logging purposes
             tensors["probs"].append(torch.exp(logprobs)[loss_mask.bool()].detach().to("cpu"))
             tensors["old_probs"].append(torch.exp(old_logprobs)[loss_mask.bool()].detach().to("cpu"))
             tensors["entropy"].append(entropy[loss_mask.bool()].detach().to("cpu"))
@@ -287,7 +287,7 @@ def train(config: TrainerConfig):
                 recomputed_logprob_errors[micro_step][loss_mask.bool()].detach().to("cpu")
             )
 
-            # Add loss tensors to tensor metrics for logging purposes
+            # Add loss tensors to tensor dict for logging purposes
             for key, loss_tensor in loss_tensors.items():
                 loss_tensor = loss_tensor.detach()[loss_mask.bool()].detach().to("cpu")
                 tensors[key].append(loss_tensor)
