@@ -94,9 +94,6 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info(f"Setting up buffer ({config.buffer})")
     buffer = setup_buffer(dataset, config.buffer)
 
-    # Load tokenizer -- placeholder until reworking verifiers to use vLLM tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(config.model.name)
-
     # Iterate over dataset in batches
     max_steps = config.max_steps or int(1e9)
     logger.info(f"Starting orchestrator loop ({max_steps=}")
