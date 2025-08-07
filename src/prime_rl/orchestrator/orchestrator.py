@@ -392,9 +392,9 @@ async def orchestrate(config: OrchestratorConfig):
         monitor.log(completion_len_metrics)
 
         truncated_metrics = {
-            "truncated/mean": is_truncated.mean(-1).mean().item(),
-            "truncated/max": is_truncated.mean(-1).max().item(),
-            "truncated/min": is_truncated.mean(-1).min().item(),
+            "is_truncated/mean": is_truncated.mean(-1).mean().item(),
+            "is_truncated/max": is_truncated.mean(-1).max().item(),
+            "is_truncated/min": is_truncated.mean(-1).min().item(),
             "step": progress.step,
         }
         monitor.log(truncated_metrics)
