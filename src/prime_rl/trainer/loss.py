@@ -13,7 +13,7 @@ def compute_loss(
     old_logprobs: Float[Tensor, "B L"],
     advantages: Float[Tensor, "B L"],
     loss_config: LossConfig,
-) -> tuple[Tensor, dict[str, Tensor]]:
+) -> tuple[Float[Tensor, "B L"], dict[str, Float[Tensor, "B L"]]]:
     if loss_config.type == "clip":
         return grpo_loss_clip(
             logprobs=logprobs,
@@ -40,7 +40,7 @@ def grpo_loss_clip(
     epsilon_low: float,
     epsilon_high: float,
     clip_ratio: float,
-) -> tuple[Tensor, dict[str, Tensor]]:
+) -> tuple[Float[Tensor, "B L"], dict[str, Float[Tensor, "B L"]]]:
     assert logprobs.dtype == torch.float32, "logprobs must be float32"
     assert old_logprobs.dtype == torch.float32, "old_logprobs must be float32"
     assert advantages.dtype == torch.float32, "advantages must be float32"
@@ -55,8 +55,8 @@ def grpo_loss_clip(
     is_clipped = (loss_1 < loss_2).float()
 
     return loss, {
-        "importance_ratio/importance_ratio": coef_2,
-        "importance_ratio/is_clipped": is_clipped,
+        "importance_ratio": coef_2,
+        "is_clipped": is_clipped,
     }
 
 
@@ -66,7 +66,7 @@ def grpo_loss_ratio(
     old_logprobs: Float[Tensor, "B L"],
     advantages: Float[Tensor, "B L"],
     clip_ratio: float,
-) -> tuple[Tensor, dict[str, Tensor]]:
+) -> tuple[Float[Tensor, "B L"], dict[str, Float[Tensor, "B L"]]]:
     assert logprobs.dtype == torch.float32, "logprobs must be float32"
     assert old_logprobs.dtype == torch.float32, "old_logprobs must be float32"
     assert advantages.dtype == torch.float32, "advantages must be float32"
@@ -77,11 +77,9 @@ def grpo_loss_ratio(
     loss = -clipped_importance_ratio * advantages  # (B, L)
     is_clipped = (importance_ratio > clip_ratio).float()  # (B, L)
 
-    # Sum-reduce the loss for all unmasked tokens
-
     return loss, {
-        "importance_ratio/importance_ratio": clipped_importance_ratio,
-        "importance_ratio/is_clipped": is_clipped,
+        "importance_ratio": clipped_importance_ratio,
+        "is_clipped": is_clipped,
     }
 
 
