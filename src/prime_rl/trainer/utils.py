@@ -1,5 +1,6 @@
+from collections import defaultdict
 from itertools import chain
-from typing import Any, Literal, TypeAlias
+from typing import Any, TypeAlias
 
 import pandas as pd
 import torch
@@ -114,64 +115,75 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
     console.print(table)
 
 
-ReduceType: TypeAlias = Literal["min", "max", "mean", "sum", "numel"]
+def flexible_all_gather(input_tensor: Tensor) -> Tensor:
+    """
+    All gather a tensor between all ranks. All ranks does not need to have the same number of elements.
+    return type is a concatanation of all the tensors from all ranks without padded elements.
+    """
 
+    assert len(input_tensor.shape) == 1, "input_tensor must be a 1D tensor"
 
-class TensorMetrics(dict):
-    """A class to aggregate tensor statistics across multiple steps. Only support synchronizing once."""
+    local_numel = torch.tensor(input_tensor.shape[0], device=input_tensor.device)
+    all_numels = [torch.tensor(0, device=input_tensor.device)] * dist.get_world_size()
+    dist.all_gather(all_numels, local_numel)
+    all_numels = [numel.item() for numel in all_numels]
+    max_numel = max(all_numels)
 
-    REDUCE_TYPES: list[ReduceType] = ["min", "max", "mean", "sum", "numel"]
-
-    def __init__(self, *args, **kwargs):
-        assert dist.is_initialized(), "TensorMetrics requires a distributed environment"
-        super().__init__(*args, **kwargs)
-        self.stored_keys: dict[str, list[ReduceType]] = {}  # key -> list[ReduceType]
-        self.synced = False
-
-    def update(self, key: str, value: Tensor, reduce_types: list[ReduceType] = REDUCE_TYPES) -> None:
-        """Accumulate relevant statistics for specified reduction types of a tensor"""
-        if key not in self.stored_keys:
-            self.stored_keys[key] = reduce_types
-        else:
-            assert self.stored_keys[key] == reduce_types, (
-                f"Key {key} has already been updated with different reduce types. "
-                f"Previous: {self.stored_keys[key]}, new: {reduce_types}"
-            )
-        self[f"{key}/min"] = min(self.get(f"{key}/min", float("inf")), value.min().item())
-        self[f"{key}/max"] = max(self.get(f"{key}/max", float("-inf")), value.max().item())
-        self[f"{key}/sum"] = self.get(f"{key}/sum", 0.0) + value.sum().item()
-        self[f"{key}/numel"] = self.get(f"{key}/numel", 0) + value.numel()
-
-    def sync(self) -> None:
-        """Synchronize the specified statistics of all stored keys across ranks."""
-        assert not self.synced, (
-            "TensorMetrics has already been synced. Syncing again is not supported. It is recommended to re-initialize the object across steps."
+    if local_numel < max_numel:
+        inputs_tensor_padded = torch.cat(
+            [input_tensor, torch.zeros(max_numel - local_numel, dtype=input_tensor.dtype, device=input_tensor.device)]
         )
+    else:
+        inputs_tensor_padded = input_tensor
 
-        def _reduce_value(value: float | int, op: dist.ReduceOp) -> float | int:
-            assert isinstance(value, float) or isinstance(value, int), (
-                f"Expected float or int, got {type(value)} for key {key}"
-            )
-            tensor_value = torch.tensor(value).to("cuda")
-            dist.all_reduce(tensor_value, op=op)
-            return tensor_value.item()
+    all_input_tensors = [
+        torch.zeros(max_numel, dtype=input_tensor.dtype, device=input_tensor.device)
+        for _ in range(dist.get_world_size())
+    ]
+    dist.all_gather(all_input_tensors, inputs_tensor_padded)
 
-        for key in self.stored_keys.keys():
-            # Min/max/sum/numel reduction
-            self[f"{key}/min"] = _reduce_value(self[f"{key}/min"], dist.ReduceOp.MIN)
-            self[f"{key}/max"] = _reduce_value(self[f"{key}/max"], dist.ReduceOp.MAX)
-            self[f"{key}/sum"] = _reduce_value(self[f"{key}/sum"], dist.ReduceOp.SUM)
-            self[f"{key}/numel"] = _reduce_value(self[f"{key}/numel"], dist.ReduceOp.SUM)
+    all_non_padded_input_tensors = [all_input_tensors[i][: all_numels[i]] for i in range(dist.get_world_size())]
+    return torch.cat(all_non_padded_input_tensors, dim=0)
 
-            # Mean reduction
-            reduce_types = self.stored_keys[key]
-            if "mean" in reduce_types:
-                assert f"{key}/sum" in self and f"{key}/numel" in self
-                self[f"{key}/mean"] = self[f"{key}/sum"] / self[f"{key}/numel"]
 
-            # Delete all keys that are not in the reduce types
-            for reduce_type in self.REDUCE_TYPES:
-                if reduce_type not in reduce_types and f"{key}/{reduce_type}" in self:
-                    del self[f"{key}/{reduce_type}"]
+class TensorMetrics:
+    """
+    This class acunulate tensor across multiple steps (example grad accumulation steps).
 
-        self.synced = True
+    It then gather the all the tensor across the steps and rank and log distribution metrics including:
+    - mean
+    - std
+    - min
+    - max
+    - median
+    - 1%, 5%, 10%, 90%, 95%, 99% quantiles
+
+    TODO: decide on adding wandb histogram logging
+    """
+
+    def __init__(self):
+        self.all_tensors = defaultdict(list)
+
+    def update(self, key: str, value: Tensor) -> None:
+        self.all_tensors[key].append(value)
+
+    def sync(self) -> dict[str, Any]:
+        metrics = {}
+        for k, v in self.all_tensors.items():
+            # concatenate all the tensors across the steps and rank and move to cuda for nccl communication
+            tensor = torch.cat(v, dim=0).to("cuda")
+            tensor = flexible_all_gather(tensor)
+
+            metrics[f"{k}/mean"] = tensor.mean().item()
+            metrics[f"{k}/std"] = tensor.std().item()
+            metrics[f"{k}/min"] = tensor.min().item()
+            metrics[f"{k}/max"] = tensor.max().item()
+            metrics[f"{k}/median"] = torch.median(tensor).item()
+            metrics[f"{k}/1%"] = torch.quantile(tensor, 0.01).item()
+            metrics[f"{k}/5%"] = torch.quantile(tensor, 0.05).item()
+            metrics[f"{k}/10%"] = torch.quantile(tensor, 0.1).item()
+            metrics[f"{k}/90%"] = torch.quantile(tensor, 0.9).item()
+            metrics[f"{k}/95%"] = torch.quantile(tensor, 0.95).item()
+            metrics[f"{k}/99%"] = torch.quantile(tensor, 0.99).item()
+
+        return metrics

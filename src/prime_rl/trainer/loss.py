@@ -12,7 +12,6 @@ def compute_loss(
     logprobs: Float[Tensor, "B L"],
     old_logprobs: Float[Tensor, "B L"],
     advantages: Float[Tensor, "B L"],
-    loss_mask: Int[Tensor, "B L"],
     loss_config: LossConfig,
 ) -> tuple[Tensor, dict[str, Tensor]]:
     if loss_config.type == "clip":
@@ -20,7 +19,6 @@ def compute_loss(
             logprobs=logprobs,
             old_logprobs=old_logprobs,
             advantages=advantages,
-            loss_mask=loss_mask,
             epsilon_low=loss_config.epsilon_low,
             epsilon_high=loss_config.epsilon_high,
             clip_ratio=loss_config.clip_ratio,
@@ -30,7 +28,6 @@ def compute_loss(
             logprobs=logprobs,
             old_logprobs=old_logprobs,
             advantages=advantages,
-            loss_mask=loss_mask,
             clip_ratio=loss_config.clip_ratio,
         )
 
@@ -40,7 +37,6 @@ def grpo_loss_clip(
     logprobs: Float[Tensor, "B L"],
     old_logprobs: Float[Tensor, "B L"],
     advantages: Float[Tensor, "B L"],
-    loss_mask: Int[Tensor, "B L"],
     epsilon_low: float,
     epsilon_high: float,
     clip_ratio: float,
@@ -58,15 +54,9 @@ def grpo_loss_clip(
     loss = torch.max(loss_1, loss_2)
     is_clipped = (loss_1 < loss_2).float()
 
-    # Sum-reduce the loss for all unmasked tokens
-    summed_loss = (loss * loss_mask).sum()
-
-    return summed_loss, {
-        "loss": loss.detach(),
-        "importance_ratio": importance_ratio.detach(),
-        "coef_1": coef_1.detach(),
-        "coef_2": coef_2.detach(),
-        "is_clipped": is_clipped.detach(),
+    return loss, {
+        "importance_ratio/importance_ratio": coef_2,
+        "importance_ratio/is_clipped": is_clipped,
     }
 
 
@@ -75,7 +65,6 @@ def grpo_loss_ratio(
     logprobs: Float[Tensor, "B L"],
     old_logprobs: Float[Tensor, "B L"],
     advantages: Float[Tensor, "B L"],
-    loss_mask: Int[Tensor, "B L"],
     clip_ratio: float,
 ) -> tuple[Tensor, dict[str, Tensor]]:
     assert logprobs.dtype == torch.float32, "logprobs must be float32"
@@ -89,13 +78,10 @@ def grpo_loss_ratio(
     is_clipped = (importance_ratio > clip_ratio).float()  # (B, L)
 
     # Sum-reduce the loss for all unmasked tokens
-    summed_loss = (loss * loss_mask).sum()
 
-    return summed_loss, {
-        "loss": loss.detach(),
-        "importance_ratio": importance_ratio.detach(),
-        "clipped_importance_ratio": clipped_importance_ratio.detach(),
-        "is_clipped": is_clipped.detach(),
+    return loss, {
+        "importance_ratio/importance_ratio": clipped_importance_ratio,
+        "importance_ratio/is_clipped": is_clipped,
     }
 
 
@@ -138,7 +124,6 @@ def selective_log_softmax(logits: Float[Tensor, "B L V"], index: Int[Tensor, "B 
 
 
 @jaxtyped(typechecker=typechecker)
-@torch.no_grad()
 def compute_entropy(shifted_logits: Float[Tensor, "B L V"]) -> Float[Tensor, "B L"]:
     pd = torch.nn.functional.softmax(shifted_logits, dim=-1)
     entropy = torch.logsumexp(shifted_logits, dim=-1) - torch.sum(pd * shifted_logits, dim=-1)
