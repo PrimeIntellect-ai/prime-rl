@@ -19,7 +19,9 @@ def compute_advantage_drgrpo(rewards: Float[Tensor, "group"], _: Int[Tensor, "gr
 
 
 @jaxtyped(typechecker=typechecker)
-def compute_advantage_drgrpo_negclipped(rewards: Float[Tensor, "group"], _: Int[Tensor, "group"]) -> Float[Tensor, "group"]:
+def compute_advantage_drgrpo_negclipped(
+    rewards: Float[Tensor, "group"], _: Int[Tensor, "group"]
+) -> Float[Tensor, "group"]:
     """
     Computes DR.GRPO advantages for a single group, but clips all negative advantages to zero.
     For example:
@@ -42,7 +44,9 @@ def compute_advantage_rloo(rewards: Float[Tensor, "group"], _: Int[Tensor, "grou
 
 
 @jaxtyped(typechecker=typechecker)
-def compute_advantage_opo(rewards: Float[Tensor, "group"], response_lengths: Int[Tensor, "group"]) -> Float[Tensor, "group"]:
+def compute_advantage_opo(
+    rewards: Float[Tensor, "group"], response_lengths: Int[Tensor, "group"]
+) -> Float[Tensor, "group"]:
     """
     Computes OPO advantages for a single group.
     The baseline is the *weighted* mean of rewards where each reward is
@@ -51,6 +55,7 @@ def compute_advantage_opo(rewards: Float[Tensor, "group"], response_lengths: Int
     weights = response_lengths.to(dtype=rewards.dtype)
     baseline = (rewards * weights).sum() / weights.sum()
     return rewards - baseline
+
 
 AdvantageType = Literal["drgrpo", "drgrpo-negclipped", "rloo", "opo"]
 
@@ -65,9 +70,9 @@ REGISTRY: dict[AdvantageType, Callable[[Float[Tensor, "group"], Int[Tensor, "gro
 
 def compute_advantages(
     rewards: list[float],
+    completion_lengths: list[int],
     samples_per_problem: int,
     advantage_type: AdvantageType,
-    response_lengths: list[int] | None = None,
 ) -> list[float]:
     """
     Computes advantages and statistics for logging from a flattened list of rewards for a given advantage type.
@@ -76,7 +81,7 @@ def compute_advantages(
         rewards: Flattened list of rewards where first `samples_per_problem` rewards are for the first problem
         samples_per_problem: Number of samples (and thus, rewards) per problem
         advantage_type: Type of advantage computation to use
-        response_lengths: List of response lengths for each reward. Required for OPO advantage computation.
+        completion_lengths: List of completion lengths for each reward. Required for OPO advantage computation.
 
     Returns:
         Tuple of (advantages, advantage_stats)
@@ -84,8 +89,10 @@ def compute_advantages(
     advantages = []
     assert len(rewards) % samples_per_problem == 0
     all_group_rewards = [rewards[i : i + samples_per_problem] for i in range(0, len(rewards), samples_per_problem)]
+    all_group_lengths = [
+        completion_lengths[i : i + samples_per_problem] for i in range(0, len(completion_lengths), samples_per_problem)
+    ]
     compute_advantage = REGISTRY[advantage_type]
-    all_group_lengths = [response_lengths[i : i + samples_per_problem] for i in range(0, len(response_lengths), samples_per_problem)]
     for group_rewards, group_lengths in zip(all_group_rewards, all_group_lengths):
         group_rewards_tensor = torch.tensor(group_rewards)
         group_lengths_tensor = torch.tensor(group_lengths)
