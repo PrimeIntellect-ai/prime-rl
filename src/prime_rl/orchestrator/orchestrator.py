@@ -10,6 +10,7 @@ from prime_rl.orchestrator import envs
 import lovely_tensors as lt
 import torch
 from verifiers import load_environment
+from verifiers.types import GenerateOutputs, ProcessedOutputs
 from transformers import AutoTokenizer
 
 from prime_rl.eval.utils import run_benchmark
@@ -208,7 +209,7 @@ async def orchestrate(config: OrchestratorConfig):
             # Generate completions + rewards with verifiers
             logger.info(f"Sending {len(problems)} requests to environments")
             generate_completions_start_time = time.time()
-            outputs = await vf_env.a_generate(
+            generate_outputs: GenerateOutputs = await vf_env.a_generate(
                 inputs=inputs, client=client, model=config.model.name, sampling_args=sampling_args
             )
             generate_completions_time = time.time() - generate_completions_start_time
@@ -216,11 +217,11 @@ async def orchestrate(config: OrchestratorConfig):
             completion_requests += problems_to_sample * config.rollouts_per_prompt
             calls_to_generate += 1
 
-            results = vf_env.process_env_results_vllm(
-                prompts=outputs.prompt,
-                completions=outputs.completion,
-                states=outputs.state,
-                rewards=outputs.reward,
+            processed_outputs: ProcessedOutputs = vf_env.process_env_results_vllm(
+                prompts=generate_outputs.prompt,
+                completions=generate_outputs.completion,
+                states=generate_outputs.state,
+                rewards=generate_outputs.reward,
                 processing_class=tokenizer,
                 max_seq_len=config.seq_len,
                 mask_env_responses=config.mask_env_responses,
@@ -229,8 +230,8 @@ async def orchestrate(config: OrchestratorConfig):
             )
 
             advantages = compute_advantages(
-                rewards=outputs.reward,
-                completion_lengths=list(map(len, results.completion_ids)),
+                rewards=processed_outputs.rewards,
+                completion_lengths=list(map(len, processed_outputs.completion_ids)),
                 samples_per_problem=config.rollouts_per_prompt,
                 advantage_type=config.advantage_type,
             )
@@ -238,12 +239,12 @@ async def orchestrate(config: OrchestratorConfig):
             # Update pool
             rollouts = make_rollouts(
                 problem_ids=problem_ids,
-                prompt_tokens=results.prompt_ids,
-                prompt_masks=results.prompt_mask,
-                completion_tokens=results.completion_ids,
-                completion_masks=results.completion_mask,
-                completion_logprobs=results.completion_logprobs,
-                rewards=outputs.reward,
+                prompt_tokens=processed_outputs.prompt_ids,
+                prompt_masks=processed_outputs.prompt_mask,
+                completion_tokens=processed_outputs.completion_ids,
+                completion_masks=processed_outputs.completion_mask,
+                completion_logprobs=processed_outputs.completion_logprobs,
+                rewards=processed_outputs.rewards,
                 advantages=advantages,
             )
             buffer.update(rollouts)
