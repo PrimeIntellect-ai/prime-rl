@@ -259,7 +259,7 @@ def train(config: TrainerConfig):
             logprobs = selective_log_softmax(shifted_logits, input_ids)
 
             # Compute loss
-            per_token_loss, loss_tensors = compute_loss(
+            loss, loss_tensors = compute_loss(
                 logprobs=logprobs,
                 old_logprobs=old_logprobs,
                 advantages=advantages,
@@ -269,8 +269,13 @@ def train(config: TrainerConfig):
             with torch.no_grad():
                 entropy = compute_entropy(shifted_logits).detach()
 
-            loss = (per_token_loss * loss_mask).sum() / loss_scale
-            del logits, shifted_logits  # save memory before backward pass TODO: fix this
+            # Reduce the loss
+            loss = (loss * loss_mask).sum() / loss_scale
+
+            # Delete logits and shifted_logits before backward pass to avoid memory spike
+            del logits, shifted_logits
+
+            # Backward pass
             loss.backward()
 
             # Add loss tensors for logging purposes
@@ -278,7 +283,7 @@ def train(config: TrainerConfig):
             loss_tensors["importance_ratio/old_proba"] = torch.exp(old_logprobs)
             loss_tensors["importance_ratio/proba"] = torch.exp(logprobs)
             loss_tensors["entropy"] = entropy
-            loss_tensors["loss"] = per_token_loss
+            loss_tensors["loss"] = loss
 
             for k, v in loss_tensors.items():
                 # we flatten every tensor and only keep the unmasked elements
