@@ -364,6 +364,12 @@ def train(config: TrainerConfig):
         monitor.log(optim_metrics)
 
         # Log tensor stats
+        for key in tensor_stats.keys():
+            value = tensor_stats.pop(key)
+            if "mean" in key:
+                tensor_stats[f"tensor/{key.replace('/mean', '')}"] = value
+            else:
+                tensor_stats[f"tensor_details/{key}"] = value
         tensor_stats["step"] = progress.step
         monitor.log(tensor_stats)
 
