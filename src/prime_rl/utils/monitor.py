@@ -217,7 +217,7 @@ class WandbMonitor(Monitor):
         assert self.tokenizer is not None, "Tokenizer is required for sample logging"
         assert self.last_log_samples_step <= step, "Step must be greater than last logged step"
 
-        self.logger.debug(f"Logging samples to W&B table at step {step}")
+        self.logger.info(f"Logging samples to W&B table at step {step}")
         start_time = time.time()
         batch_size = len(input_tokens)
         num_problems = batch_size // rollouts_per_problem
@@ -276,7 +276,7 @@ class WandbMonitor(Monitor):
         ):
             return
         assert self.last_log_distributions_step <= step, "Step must be greater than last logged step"
-        self.logger.debug(f"Logging distributions for keys {list(distributions.keys())} to W&B table at step {step}")
+        self.logger.info(f"Logging distributions for keys {list(distributions.keys())} to W&B table at step {step}")
 
         # Initialize incremental table if not already done
         if self.distributions_table is None:
