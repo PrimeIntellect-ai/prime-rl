@@ -219,7 +219,7 @@ def train(config: TrainerConfig):
                     recomputed_logprob_error = torch.exp(recomputed_logprobs - logprobs)
 
                     micro_batch["logprobs"] = recomputed_logprobs.cpu()
-                    recomputed_logprob_errors[micro_step] = recomputed_logprob_error.detach()
+                    recomputed_logprob_errors[micro_step] = recomputed_logprob_error
 
             # here we sepcifically don't save the tensor offloaded, they are alreay consumed and we will never use it again.
             # this avoid having to make sure we don't keep too much tensor offloaded in cpu memory
@@ -266,8 +266,9 @@ def train(config: TrainerConfig):
                 loss_config=config.loss,
             )
 
+            # Compute entropy
             with torch.no_grad():
-                entropy = compute_entropy(shifted_logits).detach()
+                entropy = compute_entropy(shifted_logits)
 
             # Reduce the loss
             loss = (loss * loss_mask).sum() / loss_scale
@@ -279,11 +280,11 @@ def train(config: TrainerConfig):
             loss.backward()
 
             # Add loss tensors for logging purposes
-            loss_tensors["recomputed_logprob_error"] = recomputed_logprob_errors[micro_step]
-            loss_tensors["old_probs"] = torch.exp(old_logprobs)
-            loss_tensors["probs"] = torch.exp(logprobs)
-            loss_tensors["entropy"] = entropy
-            loss_tensors["loss"] = loss
+            loss_tensors["recomputed_logprob_error"] = recomputed_logprob_errors[micro_step].detach()
+            loss_tensors["old_probs"] = torch.exp(old_logprobs).detach()
+            loss_tensors["probs"] = torch.exp(logprobs).detach()
+            loss_tensors["entropy"] = entropy.detach()
+            loss_tensors["loss"] = loss.detach()
 
             # Update tensor metrics by storing the flattened, unmasked elements of each tensor
             for k, loss_tensor in loss_tensors.items():
