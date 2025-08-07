@@ -22,6 +22,7 @@ class Rollout:
     completion_tokens: list[int]
     completion_mask: list[int]
     completion_logprobs: list[float]
+    is_truncated: bool
     reward: float
     advantage: float
 
@@ -33,6 +34,7 @@ def make_rollouts(
     completion_tokens: list[list[int]],
     completion_masks: list[list[int]],
     completion_logprobs: list[list[float]],
+    is_truncated: list[bool],
     rewards: list[float],
     advantages: list[float],
 ) -> list[Rollout]:
@@ -43,10 +45,11 @@ def make_rollouts(
         == len(completion_tokens)
         == len(completion_masks)
         == len(completion_logprobs)
+        == len(is_truncated)
         == len(rewards)
         == len(advantages)
     ), (
-        f"The number of problem_ids, prompt_tokens, prompt_masks, completion_tokens, completion_masks, completion_logprobs, rewards, and advantages must be equal, but got ({len(problem_ids)=}, {len(prompt_tokens)=}, {len(prompt_masks)=}, {len(completion_tokens)=}, {len(completion_masks)=}, {len(completion_logprobs)=}, {len(rewards)=}, {len(advantages)=})"
+        f"The number of problem_ids, prompt_tokens, prompt_masks, completion_tokens, completion_masks, completion_logprobs, is_truncated, rewards, and advantages must be equal, but got ({len(problem_ids)=}, {len(prompt_tokens)=}, {len(prompt_masks)=}, {len(completion_tokens)=}, {len(completion_masks)=}, {len(completion_logprobs)=}, {len(is_truncated)=}, {len(rewards)=}, {len(advantages)=})"
     )
     return [
         Rollout(
@@ -56,16 +59,18 @@ def make_rollouts(
             completion_tokens=completion_tokens,
             completion_mask=completion_mask,
             completion_logprobs=completion_logprobs,
+            is_truncated=is_truncated,
             reward=reward,
             advantage=advantage,
         )
-        for problem_id, prompt_tokens, prompt_mask, completion_tokens, completion_mask, completion_logprobs, reward, advantage in zip(
+        for problem_id, prompt_tokens, prompt_mask, completion_tokens, completion_mask, completion_logprobs, is_truncated, reward, advantage in zip(
             problem_ids,
             prompt_tokens,
             prompt_masks,
             completion_tokens,
             completion_masks,
             completion_logprobs,
+            is_truncated,
             rewards,
             advantages,
         )

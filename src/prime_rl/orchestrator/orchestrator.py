@@ -27,10 +27,7 @@ from prime_rl.orchestrator.buffer import setup_buffer, make_rollouts, Rollout
 from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.orchestrator.logger import setup_logger
 from prime_rl.orchestrator.advantage import compute_advantages
-from prime_rl.orchestrator.utils import (
-    wait_for_weight_checkpoint,
-    print_benchmark,
-)
+from prime_rl.orchestrator.utils import wait_for_weight_checkpoint, print_benchmark, parse_truncated_completions
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format, format_num
@@ -226,12 +223,16 @@ async def orchestrate(config: OrchestratorConfig):
                 mask_truncated_completions=config.mask_truncated_completions,
             )
 
+            # Compute advantages
             advantages = compute_advantages(
                 rewards=processed_outputs.rewards,
                 completion_lengths=list(map(len, processed_outputs.completion_ids)),
                 samples_per_problem=config.rollouts_per_prompt,
                 advantage_type=config.advantage_type,
             )
+
+            # Parse whether the completions were truncated
+            is_truncated = parse_truncated_completions(states=generate_outputs.state)
 
             # Update pool
             rollouts = make_rollouts(
@@ -241,6 +242,7 @@ async def orchestrate(config: OrchestratorConfig):
                 completion_tokens=processed_outputs.completion_ids,
                 completion_masks=processed_outputs.completion_mask,
                 completion_logprobs=processed_outputs.completion_logprobs,
+                is_truncated=is_truncated,
                 rewards=processed_outputs.rewards,
                 advantages=advantages,
             )
@@ -257,37 +259,56 @@ async def orchestrate(config: OrchestratorConfig):
             problems_to_sample = problems_per_batch - problems_sampled
 
         # Unpack accepted rollouts
-        problem_ids = [rollout.problem_id for rollout in accepted_rollouts]
-        rewards = torch.tensor([rollout.reward for rollout in accepted_rollouts])
-        advantages = torch.tensor([rollout.advantage for rollout in accepted_rollouts])
-        assert rewards.numel() == advantages.numel() == config.batch_size
+        rewards = (
+            torch.tensor([rollout.reward for rollout in accepted_rollouts])
+            .reshape(-1, config.rollouts_per_prompt)
+            .float()
+        )
+        advantages = (
+            torch.tensor([rollout.advantage for rollout in accepted_rollouts])
+            .reshape(-1, config.rollouts_per_prompt)
+            .float()
+        )
+        is_truncated = (
+            torch.tensor([rollout.is_truncated for rollout in accepted_rollouts])
+            .reshape(-1, config.rollouts_per_prompt)
+            .float()
+        )
+        assert (
+            rewards.shape == advantages.shape == is_truncated.shape == (problems_per_batch, config.rollouts_per_prompt)
+        )
+        assert rewards.numel() == advantages.numel() == is_truncated.numel() == config.batch_size
         prompt_tokens = [rollout.prompt_tokens for rollout in accepted_rollouts]
         completion_tokens = [rollout.completion_tokens for rollout in accepted_rollouts]
-
-        logger.debug(f"Computed rewards: {lt.lovely(rewards)}")
-        logger.debug(f"Computed advantages ({config.advantage_type}): {lt.lovely(advantages)}")
-
-        # Compute throughput
         prompt_lens = torch.tensor([len(p) for p in prompt_tokens]).float().reshape(-1, config.rollouts_per_prompt)
         completion_lens = (
             torch.tensor([len(c) for c in completion_tokens]).float().reshape(-1, config.rollouts_per_prompt)
         )
         seq_lens = prompt_lens + completion_lens
+        assert (
+            seq_lens.shape
+            == prompt_lens.shape
+            == completion_lens.shape
+            == (problems_per_batch, config.rollouts_per_prompt)
+        )
         assert seq_lens.numel() == prompt_lens.numel() == completion_lens.numel() == config.batch_size
+        assert is_truncated.shape == (problems_per_batch, config.rollouts_per_prompt)
+        assert is_truncated.numel() == config.batch_size
+
+        logger.debug(f"Got rewards: {lt.lovely(rewards)}")
+        logger.debug(f"Got advantages ({config.advantage_type}): {lt.lovely(advantages)}")
+
+        # Compute progress metrics and throughput
         num_tokens = seq_lens.sum().item()
         progress.total_tokens += num_tokens
         progress.total_samples += config.batch_size
         progress.total_problems += config.batch_size // config.rollouts_per_prompt
         throughput = num_tokens / (generate_completions_time)
 
-        # Compute solve all/ none and effective batch size
-        grouped_rewards = [
-            rewards[i : i + config.rollouts_per_prompt] for i in range(0, len(rewards), config.rollouts_per_prompt)
-        ]
-        assert len(grouped_rewards) == problems_per_batch
-        solve_all = sum(1 for group in grouped_rewards if all(reward == 1 for reward in group)) / problems_per_batch
-        solve_none = sum(1 for group in grouped_rewards if all(reward == 0 for reward in group)) / problems_per_batch
-        effective_batch_size = 1 - solve_all - solve_none
+        # Compute solve all and none tensors
+        solve_all = rewards.sum(-1).eq(config.rollouts_per_prompt).float().mean().item()
+        solve_none = rewards.sum(-1).eq(0).float().mean().item()
+        effective_batch_size = 1 - solve_none - solve_all
 
         # Log samples to W&B table if enabled
         if monitor.wandb:
@@ -300,8 +321,8 @@ async def orchestrate(config: OrchestratorConfig):
                 step=progress.step,
             )
             monitor.wandb.log_distributions(
-                rewards.tolist(),
-                advantages.tolist(),
+                rewards.flatten().tolist(),
+                advantages.flatten().tolist(),
                 rollouts_per_problem=config.rollouts_per_prompt,
                 step=progress.step,
             )
@@ -345,7 +366,7 @@ async def orchestrate(config: OrchestratorConfig):
         }
         monitor.log(progress_metrics)
 
-        # Log sequence lengths to monitor
+        # Log sequence lengths to monitor (first reduce over group dimension, then over problem dimension)
         seq_len_metrics = {
             "seq_len/mean": seq_lens.mean(-1).mean().item(),
             "seq_len/max": seq_lens.mean(-1).max().item(),
@@ -370,6 +391,14 @@ async def orchestrate(config: OrchestratorConfig):
         }
         monitor.log(completion_len_metrics)
 
+        truncated_metrics = {
+            "truncated/mean": is_truncated.mean(-1).mean().item(),
+            "truncated/max": is_truncated.mean(-1).max().item(),
+            "truncated/min": is_truncated.mean(-1).min().item(),
+            "step": progress.step,
+        }
+        monitor.log(truncated_metrics)
+
         # Log performance metrics to monitor
         perf_metrics = {
             "perf/throughput": throughput,
@@ -380,8 +409,7 @@ async def orchestrate(config: OrchestratorConfig):
         }
         monitor.log(perf_metrics)
 
-        # Log reward and advantage metrics to monitor
-        assert advantages.numel() == rewards.numel() == config.batch_size
+        # Log reward metrics to monitor
         reward_metrics = {
             "reward/mean": rewards.mean().item(),
             "step": progress.step,

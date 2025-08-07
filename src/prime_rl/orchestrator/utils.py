@@ -5,6 +5,7 @@ import pandas as pd
 from openai.types.chat import ChatCompletion
 from rich.console import Console
 from rich.table import Table
+from verifiers.types import State
 
 from prime_rl.orchestrator.client import tokenize
 from prime_rl.orchestrator.genesys import TaskType, get_reward_function
@@ -88,6 +89,14 @@ def parse_completions(chat_completions: list[ChatCompletion]) -> list[str]:
         assert len(chat_completion.choices) == 1, "Response should always have one choice"
         completions.append(chat_completion.choices[0].message.content)
     return completions
+
+
+def parse_truncated_completions(states: list[State]) -> list[bool]:
+    print(states[0])
+    is_truncated = []
+    for state in states:
+        is_truncated.append(True)
+    return is_truncated
 
 
 def wait_for_weight_checkpoint(path: Path, step: int, interval: int = 1, log_interval: int = 10) -> None:
