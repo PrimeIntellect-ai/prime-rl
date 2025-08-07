@@ -392,6 +392,11 @@ def train(config: TrainerConfig):
         progress.step += 1
         is_first_step = False
 
+    # Log final (immutable) distributions to W&B table
+    if monitor.wandb:
+        logger.info("Logging final distributions as W&B table")
+        monitor.wandb.log_final_distributions()
+
     # Write final checkpoint
     if config.ckpt:
         logger.info("Writing final checkpoint")

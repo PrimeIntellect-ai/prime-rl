@@ -310,26 +310,6 @@ async def orchestrate(config: OrchestratorConfig):
         solve_none = rewards.sum(-1).eq(0).float().mean().item()
         effective_batch_size = 1 - solve_none - solve_all
 
-        # Log samples to W&B table if enabled
-        if monitor.wandb:
-            monitor.wandb.log_samples(
-                input_tokens=prompt_tokens,
-                output_tokens=completion_tokens,
-                rewards=rewards.flatten().tolist(),
-                advantages=advantages.flatten().tolist(),
-                rollouts_per_problem=config.rollouts_per_prompt,
-                step=progress.step,
-            )
-            monitor.wandb.log_distributions(
-                distributions={
-                    "rewards": rewards.flatten().tolist(),
-                    "advantages": advantages.flatten().tolist(),
-                    "problem_rewards": rewards.mean(-1).tolist(),
-                    "problem_advantages": advantages.mean(-1).tolist(),
-                },
-                step=progress.step,
-            )
-
         # Write serialized batch to disk for trainer workers to consume
         all_data_ranks_batches = prepare_batch(
             rollouts=rollouts,
@@ -439,6 +419,26 @@ async def orchestrate(config: OrchestratorConfig):
             "step": progress.step,
         }
         monitor.log(time_metrics)
+
+        # Log samples and distributions to W&B table if enabled
+        if monitor.wandb:
+            monitor.wandb.log_samples(
+                input_tokens=prompt_tokens,
+                output_tokens=completion_tokens,
+                rewards=rewards.flatten().tolist(),
+                advantages=advantages.flatten().tolist(),
+                rollouts_per_problem=config.rollouts_per_prompt,
+                step=progress.step,
+            )
+            monitor.wandb.log_distributions(
+                distributions={
+                    "rewards": rewards.flatten().tolist(),
+                    "advantages": advantages.flatten().tolist(),
+                    "problem_rewards": rewards.mean(-1).tolist(),
+                    "problem_advantages": advantages.mean(-1).tolist(),
+                },
+                step=progress.step,
+            )
 
         # Increment progress
         progress.step += 1
