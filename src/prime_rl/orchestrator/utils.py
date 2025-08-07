@@ -92,10 +92,18 @@ def parse_completions(chat_completions: list[ChatCompletion]) -> list[str]:
 
 
 def parse_truncated_completions(states: list[State]) -> list[bool]:
-    print(states[0])
     is_truncated = []
     for state in states:
-        is_truncated.append(True)
+        assert "responses" in state, "Responses should be present in the state"
+        assert all(isinstance(r, ChatCompletion) for r in state["responses"]), (
+            "Responses should be ChatCompletion objects"
+        )
+        for chat_completion in state["responses"]:
+            assert len(chat_completion.choices) == 1, "Response should always have one choice"
+            if chat_completion.choices[0].finish_reason == "length":
+                is_truncated.append(True)
+            else:
+                is_truncated.append(False)
     return is_truncated
 
 
