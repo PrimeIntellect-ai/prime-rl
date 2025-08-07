@@ -9,11 +9,11 @@ from prime_rl.trainer.config import LossConfig
 
 @jaxtyped(typechecker=typechecker)
 def compute_loss(
-    logprobs: Float[Tensor, "B L"],
-    old_logprobs: Float[Tensor, "B L"],
-    advantages: Float[Tensor, "B L"],
+    logprobs: Float[Tensor, "batch seq"],
+    old_logprobs: Float[Tensor, "batch seq"],
+    advantages: Float[Tensor, "batch seq"],
     loss_config: LossConfig,
-) -> tuple[Float[Tensor, "B L"], dict[str, Float[Tensor, "B L"]]]:
+) -> tuple[Float[Tensor, "batch seq"], dict[str, Float[Tensor, "batch seq"]]]:
     if loss_config.type == "clip":
         return grpo_loss_clip(
             logprobs=logprobs,
@@ -34,13 +34,13 @@ def compute_loss(
 
 @jaxtyped(typechecker=typechecker)
 def grpo_loss_clip(
-    logprobs: Float[Tensor, "B L"],
-    old_logprobs: Float[Tensor, "B L"],
-    advantages: Float[Tensor, "B L"],
+    logprobs: Float[Tensor, "batch seq"],
+    old_logprobs: Float[Tensor, "batch seq"],
+    advantages: Float[Tensor, "batch seq"],
     epsilon_low: float,
     epsilon_high: float,
     clip_ratio: float,
-) -> tuple[Float[Tensor, "B L"], dict[str, Float[Tensor, "B L"]]]:
+) -> tuple[Float[Tensor, "batch seq"], dict[str, Float[Tensor, "batch seq"]]]:
     assert logprobs.dtype == torch.float32, "logprobs must be float32"
     assert old_logprobs.dtype == torch.float32, "old_logprobs must be float32"
     assert advantages.dtype == torch.float32, "advantages must be float32"
@@ -64,11 +64,11 @@ def grpo_loss_clip(
 
 @jaxtyped(typechecker=typechecker)
 def grpo_loss_ratio(
-    logprobs: Float[Tensor, "B L"],
-    old_logprobs: Float[Tensor, "B L"],
-    advantages: Float[Tensor, "B L"],
+    logprobs: Float[Tensor, "batch seq"],
+    old_logprobs: Float[Tensor, "batch seq"],
+    advantages: Float[Tensor, "batch seq"],
     clip_ratio: float,
-) -> tuple[Float[Tensor, "B L"], dict[str, Float[Tensor, "B L"]]]:
+) -> tuple[Float[Tensor, "batch seq"], dict[str, Float[Tensor, "batch seq"]]]:
     assert logprobs.dtype == torch.float32, "logprobs must be float32"
     assert old_logprobs.dtype == torch.float32, "old_logprobs must be float32"
     assert advantages.dtype == torch.float32, "advantages must be float32"
@@ -88,7 +88,9 @@ def grpo_loss_ratio(
 
 
 @jaxtyped(typechecker=typechecker)
-def selective_log_softmax(logits: Float[Tensor, "B L V"], index: Int[Tensor, "B L"]) -> Float[Tensor, "B L"]:
+def selective_log_softmax(
+    logits: Float[Tensor, "batch seq vocab"], index: Int[Tensor, "batch seq"]
+) -> Float[Tensor, "batch seq"]:
     """
     credits to https://github.com/huggingface/trl/blob/07cfe1677e552b7d5c92b7740e5b2f0b057661d8/trl/trainer/utils.py#L1659
 
@@ -126,7 +128,7 @@ def selective_log_softmax(logits: Float[Tensor, "B L V"], index: Int[Tensor, "B 
 
 
 @jaxtyped(typechecker=typechecker)
-def compute_entropy(shifted_logits: Float[Tensor, "B L V"]) -> Float[Tensor, "B L"]:
+def compute_entropy(shifted_logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq"]:
     pd = torch.nn.functional.softmax(shifted_logits, dim=-1)
     entropy = torch.logsumexp(shifted_logits, dim=-1) - torch.sum(pd * shifted_logits, dim=-1)
 
@@ -134,11 +136,11 @@ def compute_entropy(shifted_logits: Float[Tensor, "B L V"]) -> Float[Tensor, "B 
 
 
 @jaxtyped(typechecker=typechecker)
-def shift_logits(logits: Float[Tensor, "B L V"]) -> Float[Tensor, "B L V"]:
+def shift_logits(logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq vocab"]:
     """Removes final token logits and adds a zero logit for the first token."""
     # We drop the last logit because it corresponds to the next token that will be sampled but is not here yet
-    B, _, V = logits.shape
-    logits = logits[:, :-1, :]  # (B, L-1, V)
-    zeros = torch.zeros(B, 1, V, device=logits.device, dtype=logits.dtype)  # (B, 1, V)
-    logits = torch.cat([zeros, logits], dim=1)  # (B, L, V)
+    batch, seq, vocab = logits.shape
+    logits = logits[:, :-1, :]  # (batch, seq-1, vocab)
+    zeros = torch.zeros(batch, 1, vocab, device=logits.device, dtype=logits.dtype)  # (batch, 1, vocab)
+    logits = torch.cat([zeros, logits], dim=1)  # (batch, seq, vocab)
     return logits

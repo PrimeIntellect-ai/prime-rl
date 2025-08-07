@@ -11,11 +11,11 @@ from prime_rl.utils.utils import wait_for_path
 
 class MicroBatch(TypedDict):
     # Token level
-    input_ids: Int[torch.Tensor, "micro_bs seq"]
-    position_ids: Int[torch.Tensor, "micro_bs seq"]
-    advantages: Float[torch.Tensor, "micro_bs seq"]
-    logprobs: Float[torch.Tensor, "micro_bs seq"]
-    loss_mask: Int[torch.Tensor, "micro_bs seq"]
+    input_ids: Int[torch.Tensor, "batch seq"]
+    position_ids: Int[torch.Tensor, "batch seq"]
+    advantages: Float[torch.Tensor, "batch seq"]
+    logprobs: Float[torch.Tensor, "batch seq"]
+    loss_mask: Int[torch.Tensor, "batch seq"]
 
     # Batch level
     temperature: float
