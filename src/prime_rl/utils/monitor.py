@@ -149,7 +149,6 @@ class WandbMonitor(Monitor):
         # Optionally, initialize sample logging attributes
         if config.log_extras:
             if config.log_extras.samples:
-                assert tokenizer is not None, "Tokenizer is required for sample logging"
                 self.last_log_samples_step = -1
                 self.samples_cols = [
                     "step",
