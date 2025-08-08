@@ -55,7 +55,7 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Load tokenizer
     logger.info(f"Initializing tokenizer for {config.model.name}")
-    tokenizer = AutoTokenizer.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
+    tokenizer = AutoTokenizer.from_pretrained(config.model.name)
 
     # Setup monitor
     logger.info(f"Initializing monitor ({config.monitor})")
@@ -94,7 +94,7 @@ async def orchestrate(config: OrchestratorConfig):
     buffer = setup_buffer(dataset, config.buffer)
 
     # Load tokenizer -- placeholder until reworking verifiers to use vLLM tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
+    tokenizer = AutoTokenizer.from_pretrained(config.model.name)
 
     # Iterate over dataset in batches
     max_steps = config.max_steps or int(1e9)
