@@ -75,6 +75,7 @@ class RLConfig(BaseSettings):
     """Configures an RL training run."""
 
     ### Submodule configurations
+
     trainer: TrainerConfig
     orchestrator: OrchestratorConfig
     inference: Annotated[
@@ -85,6 +86,14 @@ class RLConfig(BaseSettings):
     ] = None
 
     ### Top-level configurations
+
+    log: Annotated[
+        LogConfig,
+        Field(
+            description="Shared log configs. If None, will fallback to the log configs specified on submodule configs."
+        ),
+    ] = LogConfig()
+
     clean: Annotated[
         bool,
         Field(
@@ -115,13 +124,6 @@ class RLConfig(BaseSettings):
         WandbConfig | None,
         Field(
             description="Shared W&B configs. If None, will fallback to the W&B configs specified on submodule configs."
-        ),
-    ] = None
-
-    log: Annotated[
-        LogConfig | None,
-        Field(
-            description="Shared log configs. If None, will fallback to the log configs specified on submodule configs."
         ),
     ] = None
 
