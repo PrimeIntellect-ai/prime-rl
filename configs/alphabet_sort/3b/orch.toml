@@ -2,7 +2,7 @@ max_steps = 500
 batch_size = 1024
 micro_batch_size = 1
 seq_len = 2048
-rollouts_per_prompt = 16
+rollouts_per_example = 16
 mask_truncated_completions = false
 
 [model]

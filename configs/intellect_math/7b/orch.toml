@@ -2,7 +2,7 @@ max_steps = 1000
 batch_size = 2048
 micro_batch_size = 1
 seq_len = 8192
-rollouts_per_prompt = 16
+rollouts_per_example = 16
 mask_truncated_completions = false
 
 [model]
@@ -23,7 +23,7 @@ interval = 50
 
 [eval]
 interval = 50
-benchmarks = ["math500", "aime24", "aime25"]
-rollouts_per_prompt = [1, 16, 16]
+ids = ["math500", "aime24", "aime25"]
+rollouts_per_example = [1, 16, 16]
 
 [ckpt]
