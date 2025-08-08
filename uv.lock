@@ -1580,10 +1580,14 @@ wheels = [
 
 [[package]]
 name = "muon-fsdp2"
-version = "0.2.1"
-source = { git = "https://github.com/samsja/muon_fsdp_2?subdirectory=src%2Fmuon&rev=fix-impl#e160a6d91fd178361a61021d94ea6274cda5e099" }
+version = "0.3.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "torch" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0d/86/ef76622d6a59a4dc48fa79d947464d91f225e07f9feb376a003f4d1d6f82/muon_fsdp2-0.3.0.tar.gz", hash = "sha256:a230d86e9a839c43234cbc3b24fa3e4d5917787af5e670b0ab8dc95846b6efb3", size = 10183, upload-time = "2025-08-08T13:45:52.42Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0e/44/b4b024332e7dbcbc65469a4ea60f9552172ea51a3ad004858dc79e1ee7f4/muon_fsdp2-0.3.0-py3-none-any.whl", hash = "sha256:55387a0ffbcd90cc204341e570a8be7d546af4c06432b3c962af262dd34170d2", size = 13406, upload-time = "2025-08-08T13:45:51.247Z" },
 ]
 
 [[package]]
@@ -2071,7 +2075,7 @@ requires-dist = [
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "lovely-tensors", specifier = ">=0.1.18" },
     { name = "math-verify", specifier = ">=0.8.0" },
-    { name = "muon-fsdp2", git = "https://github.com/samsja/muon_fsdp_2?subdirectory=src%2Fmuon&rev=fix-impl" },
+    { name = "muon-fsdp2", specifier = ">=0.3.0" },
     { name = "nltk", specifier = ">=3.9.1" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "openai", specifier = ">=1.90.0" },
