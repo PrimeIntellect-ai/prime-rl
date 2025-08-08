@@ -282,3 +282,9 @@ class TrainerConfig(BaseSettings):
                 )
 
         return self
+
+    @model_validator(mode="after")
+    def disable_logging_wandb_samples(self):
+        if self.monitor.wandb and self.monitor.wandb.log_extras:
+            self.monitor.wandb.log_extras.samples = False
+        return self
