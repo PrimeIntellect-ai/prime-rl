@@ -80,6 +80,8 @@ class CosineSchedulerConfig(BaseModel):
 
 SchedulerConfig: TypeAlias = ConstantSchedulerConfig | LinearSchedulerConfig | CosineSchedulerConfig
 
+OptimizerType: TypeAlias = Literal["AdamW", "Muon"]
+
 
 class OptimizerConfig(BaseConfig):
     """Configures the Adam optimizer and learning rate scheduler."""
@@ -88,6 +90,8 @@ class OptimizerConfig(BaseConfig):
     weight_decay: Annotated[float, Field(ge=0)] = 0.01
     betas1: Annotated[float, Field(ge=0)] = 0.9
     betas2: Annotated[float, Field(ge=0)] = 0.999
+
+    name: Annotated[OptimizerType, Field(description="The optimizer to use. By default use AdamW")] = "AdamW"
 
     # LR Scheduler configuration
     scheduler: SchedulerConfig = Field(discriminator="type", default=ConstantSchedulerConfig())
