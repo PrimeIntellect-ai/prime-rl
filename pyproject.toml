@@ -32,6 +32,7 @@ dependencies = [
     "textarena>=0.6.16",
     "nltk>=3.9.1",
     "math-verify>=0.8.0",
+    "torchtitan",
 ]
 
 [project.scripts]
@@ -67,6 +68,7 @@ prerelease = "allow"
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu128" }]
 verifiers = { git = "https://github.com/willccbb/verifiers", rev = "74c604f" }
+torchtitan = { git = "https://github.com/pytorch/torchtitan" }
 
 vf-intellect-math = { workspace = true }
 vf-wordle = { git = "https://github.com/willccbb/verifiers.git", subdirectory = "environments/vf_wordle", rev = "main" }
