@@ -6,8 +6,7 @@ from jaxtyping import Float, Int, jaxtyped
 from torch import Tensor
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, fully_shard
-
-# from torchtitan.models.deepseek_v3.model.moe import DeepSeekV3ModelArgs, MoE
+from torchtitan.models.moe import MoE, MoEArgs
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
@@ -26,34 +25,36 @@ def convert_tt_moe(model: nn.Module) -> None:
             continue
 
         # Map HF MoE args to TT MoE args
-        model_args = DeepSeekV3ModelArgs()
+        model_args = MoEArgs()
         hf_config = transformer_block.mlp.config
-        model_args.n_routed_experts = transformer_block.mlp.gate.n_routed_experts
-        model_args.dim = hf_config.hidden_size
-        model_args.moe_inter_dim = hf_config.moe_intermediate_size
-        model_args.n_activated_experts = transformer_block.mlp.gate.top_k
-        model_args.route_scale = transformer_block.mlp.gate.routed_scaling_factor
-        model_args.use_grouped_mm = False
-        model_args.score_func = transformer_block.mlp.gate.scoring_func
-        model_args.n_shared_experts = hf_config.n_shared_experts
-        model_args.load_balance_coeff = None
+        model_args.num_experts = hf_config.n_routed_experts
+        model_args.num_shared_experts = hf_config.n_shared_experts
 
-        new_mlp = MoE(model_args)
+        model_args.score_func = transformer_block.mlp.gate.scoring_func
+        model_args.route_norm = False
+        model_args.route_scale = transformer_block.mlp.gate.routed_scaling_factor
+        model_args.score_before_experts = True
+
+        model_args.top_k = transformer_block.mlp.gate.top_k
+        model_args.use_grouped_mm = False
+        model_args.load_balance_coeff = 1e-3
+
+        new_mlp = MoE(model_args, dim=hf_config.hidden_size, hidden_dim=hf_config.moe_intermediate_size)
         # Router
         new_mlp.router.gate.weight.data.copy_(transformer_block.mlp.gate.weight.data)
         # Shared experts
-        new_mlp.shared_expert.w1.data[0].copy_(transformer_block.mlp.shared_experts.gate_proj.weight.data.T)
-        new_mlp.shared_expert.w2.data[0].copy_(transformer_block.mlp.shared_experts.down_proj.weight.data.T)
-        new_mlp.shared_expert.w3.data[0].copy_(transformer_block.mlp.shared_experts.up_proj.weight.data.T)
+        new_mlp.shared_expert.w1.data[0].copy_(transformer_block.mlp.shared_experts.gate_proj.weight.data)
+        new_mlp.shared_expert.w2.data[0].copy_(transformer_block.mlp.shared_experts.down_proj.weight.data)
+        new_mlp.shared_expert.w3.data[0].copy_(transformer_block.mlp.shared_experts.up_proj.weight.data)
         # Routed experts
-        for i in range(model_args.n_routed_experts):
-            new_mlp.experts.w1.data[i].copy_(transformer_block.mlp.experts[i].gate_proj.weight.data.T)
-            new_mlp.experts.w2.data[i].copy_(transformer_block.mlp.experts[i].down_proj.weight.data.T)
-            new_mlp.experts.w3.data[i].copy_(transformer_block.mlp.experts[i].up_proj.weight.data.T)
+        for i in range(model_args.num_experts):
+            new_mlp.experts.w1.data[i].copy_(transformer_block.mlp.experts[i].gate_proj.weight.data)
+            new_mlp.experts.w2.data[i].copy_(transformer_block.mlp.experts[i].down_proj.weight.data)
+            new_mlp.experts.w3.data[i].copy_(transformer_block.mlp.experts[i].up_proj.weight.data)
         transformer_block.mlp = new_mlp
 
 
-def get_model(config: ModelConfig) -> Model:
+def get_model(config: ModelConfig) -> nn.Module:
     config_model = AutoConfig.from_pretrained(
         config.name, attn_implementation=config.attn, trust_remote_code=config.trust_remote_code
     )
@@ -76,7 +77,7 @@ def get_model(config: ModelConfig) -> Model:
         trust_remote_code=config.trust_remote_code,
     )
 
-    # convert_tt_moe(model)
+    convert_tt_moe(model)
     return model
 
 
