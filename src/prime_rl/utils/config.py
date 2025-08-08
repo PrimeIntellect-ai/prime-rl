@@ -77,19 +77,13 @@ class LogExtrasConfig(BaseConfig):
 class WandbMonitorConfig(BaseConfig):
     """Configures logging to Weights and Biases."""
 
+    # Shared configs (May be overwritten by WandbConfig from `rl.py`)
     project: Annotated[str, Field(description="The W&B project to log to.")] = "prime-rl"
 
     name: Annotated[
         str | None,
         Field(
             description="The W&B name to to use for logging.",
-        ),
-    ] = None
-
-    id: Annotated[
-        str | None,
-        Field(
-            description="The W&B run ID to log to. If None, a random ID will be generated. If you want to resume a run, you can set the ID to the run ID you want to resume.",
         ),
     ] = None
 
@@ -101,6 +95,14 @@ class WandbMonitorConfig(BaseConfig):
     ] = Path("logs")
 
     offline: Annotated[bool, Field(description="Whether to run W&B in offline mode.")] = False
+
+    # Individual configs (can only be specified on trainer or orchestrator)
+    id: Annotated[
+        str | None,
+        Field(
+            description="The W&B run ID to log to. If None, a random ID will be generated. If you want to resume a run, you can set the ID to the run ID you want to resume.",
+        ),
+    ] = None
 
     log_extras: Annotated[
         LogExtrasConfig | None,

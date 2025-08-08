@@ -5,7 +5,6 @@ import subprocess
 import sys
 import time
 import warnings
-from copy import deepcopy
 from pathlib import Path
 from subprocess import Popen
 from threading import Event, Thread
@@ -18,8 +17,10 @@ from loguru._logger import Logger
 from pydantic import Field, model_validator
 
 from prime_rl.inference.config import InferenceConfig
+from prime_rl.orchestrator.config import CheckpointConfig as OrchestratorCheckpointConfig
 from prime_rl.orchestrator.config import OrchestratorConfig
-from prime_rl.trainer.config import CheckpointConfig, FakeDataLoaderConfig, TrainerConfig
+from prime_rl.trainer.config import CheckpointConfig as TrainerCheckpointConfig
+from prime_rl.trainer.config import FakeDataLoaderConfig, TrainerConfig
 from prime_rl.utils.config import WandbMonitorConfig
 from prime_rl.utils.logger import format_message, format_time, get_logger, set_logger, setup_handlers
 from prime_rl.utils.pydantic_config import BaseSettings, get_temp_toml_file, parse_argv
@@ -27,23 +28,53 @@ from prime_rl.utils.utils import get_cuda_visible_devices, get_free_port
 
 
 class LogConfig(BaseSettings):
-    """Configures the logging for the RL run."""
+    """Configures shared logging."""
 
-    path: Annotated[Path, Field(description="The path to the logs directory.")] = Path("logs")
+    path: Annotated[Path | None, Field(description="The path to the logs directory.")] = Path("logs")
 
-    level: Annotated[str, Field(description="The log level to use.")] = "info"
+    level: Annotated[str | None, Field(description="The log level to use.")] = "info"
 
     utc: Annotated[
-        bool,
+        bool | None,
         Field(
             description="Whether to use UTC time in the logger. If False, it will default to the local time. If the local time is wrong, you can set it by setting the `TZ` environment variable. For example, `TZ=America/Los_Angeles` will set the local time to SF time."
         ),
     ] = False
 
 
+class WandbConfig(BaseSettings):
+    """Configures shared W&B configs."""
+
+    project: Annotated[str | None, Field(description="The W&B project to use.")] = "prime-rl"
+
+    name: Annotated[str | None, Field(description="The W&B run name to use.")] = None
+
+    dir: Annotated[
+        Path | None,
+        Field(
+            description="Path to the directory to keep local logs. It will automatically create a `wandb` subdirectory to store run logs.",
+        ),
+    ] = Path("logs")
+
+    offline: Annotated[bool | None, Field(description="Whether to run W&B in offline mode.")] = False
+
+
+class CheckpointConfig(BaseSettings):
+    """Configures shared checkpoint configs."""
+
+    path: Annotated[Path | None, Field(description="The path to the checkpoint directory.")] = Path("checkpoints")
+
+    interval: Annotated[int | None, Field(description="The interval at which to save checkpoints.")] = 50
+
+    resume_step: Annotated[
+        int | None, Field(description="The step to resume from. If None, will not resume from a checkpoint.")
+    ] = None
+
+
 class RLConfig(BaseSettings):
     """Configures an RL training run."""
 
+    ### Submodule configurations
     trainer: TrainerConfig
     orchestrator: OrchestratorConfig
     inference: Annotated[
@@ -53,7 +84,17 @@ class RLConfig(BaseSettings):
         ),
     ] = None
 
-    log: LogConfig = LogConfig()
+    ### Top-level configurations
+    clean: Annotated[
+        bool,
+        Field(
+            description="Whether to clean the rollouts, checkpoint, checkpoint weights and logs directories at the beginning of the run. If True, will forceably, and irreversibly, delete all directories.",
+        ),
+    ] = True
+
+    trainer_gpus: Annotated[int, Field(description="The number of GPUs to use for trainer.")] = 1
+
+    inference_gpus: Annotated[int, Field(description="The number of GPUs to use for inference.")] = 1
 
     exp_id: Annotated[
         str | None,
@@ -62,9 +103,69 @@ class RLConfig(BaseSettings):
         ),
     ] = "rl"  # This value has to match the `DEFAULT_EXPERIMENT_ID` in `tmux.sh`
 
-    trainer_gpus: Annotated[int, Field(description="The number of GPUs to use for trainer.")] = 1
+    ### Shared configurations
+    ckpt: Annotated[
+        CheckpointConfig | None,
+        Field(
+            description="Shared checkpoint configs. If None, will fallback to the checkpoint configs specified on submodule configs."
+        ),
+    ] = None
 
-    inference_gpus: Annotated[int, Field(description="The number of GPUs to use for inference.")] = 1
+    wandb: Annotated[
+        WandbConfig | None,
+        Field(
+            description="Shared W&B configs. If None, will fallback to the W&B configs specified on submodule configs."
+        ),
+    ] = None
+
+    log: Annotated[
+        LogConfig | None,
+        Field(
+            description="Shared log configs. If None, will fallback to the log configs specified on submodule configs."
+        ),
+    ] = None
+
+    model_name: Annotated[
+        str | None,
+        Field(
+            description="The name of the model to use. If None, will fallback to the model names specified on submodule configs."
+        ),
+    ] = None
+
+    max_steps: Annotated[
+        int | None,
+        Field(
+            description="The maximum number of steps to train for. If None, will fallback to the max steps specified on submodule configs."
+        ),
+    ] = None
+
+    max_model_len: Annotated[
+        int | None,
+        Field(
+            description="The maximum model length to use. If None, will fallback to the max model length specified on submodule configs."
+        ),
+    ] = None
+
+    async_level: Annotated[
+        int | None,
+        Field(
+            description="The async level to use. If None, will fallback to the async level specified on submodule configs."
+        ),
+    ] = None
+
+    rollout_path: Annotated[
+        Path | None,
+        Field(
+            description="The path to the rollout directory. If None, will fallback to the rollout path specified on submodule configs."
+        ),
+    ] = None
+
+    weights_path: Annotated[
+        Path | None,
+        Field(
+            description="The path to the weights directory. If None, will fallback to the weights path specified on submodule configs."
+        ),
+    ] = None
 
     bench: Annotated[
         bool,
@@ -72,13 +173,6 @@ class RLConfig(BaseSettings):
             description="Whether to run in benchmark mode. It will automatically set the trainer and orchestrator to benchmark mode and, if present, configure the W&B project by suffixing the project with `-bench`.",
         ),
     ] = False
-
-    clean: Annotated[
-        bool,
-        Field(
-            description="Whether to clean the rollouts, checkpoint, checkpoint weights and logs directories at the beginning of the run. If True, will forceably, and irreversibly, delete all directories.",
-        ),
-    ] = True
 
     @model_validator(mode="after")
     def validate_device(self):
@@ -91,6 +185,80 @@ class RLConfig(BaseSettings):
             raise ValueError(
                 f"Total number of inference GPUs ({self.inference_gpus}) does not match the local sharding strategy ({self.inference.parallel.dp} DP + {self.inference.parallel.tp} TP)"
             )
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_num_train_workers(self):
+        if self.trainer_gpus > 1:
+            self.orchestrator.num_train_workers = self.trainer_gpus
+        return self
+
+    ### Setup and validate shared configs
+
+    @model_validator(mode="after")
+    def auto_setup_ckpt(self):
+        # Ensures that trainer and orchestrator checkpoints are synchronized
+        if self.ckpt:
+            # Create checkpoint configs if not specified
+            if not self.trainer.ckpt:
+                self.trainer.ckpt = TrainerCheckpointConfig()
+            if not self.orchestrator.ckpt:
+                self.orchestrator.ckpt = OrchestratorCheckpointConfig()
+
+            # If specified, use the same ckpt path
+            if self.ckpt.path:
+                self.trainer.ckpt.path = self.ckpt.path
+                self.orchestrator.ckpt.path = self.ckpt.path
+
+            # If specified, use the same ckpt interval
+            if self.ckpt.interval:
+                self.trainer.ckpt.interval = self.ckpt.interval
+                self.orchestrator.ckpt.interval = self.ckpt.interval
+
+            # If resuming training, ensure orchestrator resume from the same step
+            if self.ckpt.resume_step:
+                self.trainer.ckpt.resume_step = self.ckpt.resume_step
+                self.orchestrator.ckpt.resume_step = self.ckpt.resume_step
+
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_wandb(self):
+        # If specified, automatically use shared W&B project for orchestrator and trainer
+        if self.wandb:
+            if not self.trainer.monitor.wandb:
+                self.trainer.monitor.wandb = WandbMonitorConfig()
+            if not self.orchestrator.monitor.wandb:
+                self.orchestrator.monitor.wandb = WandbMonitorConfig()
+
+            if self.wandb.project:
+                self.trainer.monitor.wandb.project = self.wandb.project
+                self.orchestrator.monitor.wandb.project = self.wandb.project
+
+            # If specified, automatically use shared W&B name for orchestrator and trainer with suffixes
+            if self.wandb.name:
+                self.trainer.monitor.wandb.name = f"{self.wandb.name}-trainer"
+                self.orchestrator.monitor.wandb.name = f"{self.wandb.name}-orchestrator"
+
+            # If specified, automatically use shared W&B directory for orchestrator and trainer
+            if self.wandb.dir:
+                self.trainer.monitor.wandb.dir = self.wandb.dir
+                self.orchestrator.monitor.wandb.dir = self.wandb.dir
+
+            # If specified, automatically use shared W&B offline mode for orchestrator and trainer
+            if self.wandb.offline:
+                self.trainer.monitor.wandb.offline = self.wandb.offline
+                self.orchestrator.monitor.wandb.offline = self.wandb.offline
+
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_logs(self):
+        # Copy log level
+        if self.log and self.log.level:
+            self.trainer.log.level = self.log.level
+            self.orchestrator.log.level = self.log.level
+
         return self
 
     @model_validator(mode="after")
@@ -110,85 +278,68 @@ class RLConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_logs(self):
-        # Copy log level
-        self.trainer.log.level = self.log.level
-        self.orchestrator.log.level = self.log.level
-
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_wandb(self):
-        # Automatically use same W&B project for orchestrator and trainer
-        if self.orchestrator and self.trainer.monitor.wandb:
-            if not self.orchestrator.monitor.wandb:
-                self.orchestrator.monitor.wandb = WandbMonitorConfig()
-            self.orchestrator.monitor.wandb.project = self.trainer.monitor.wandb.project
-
-            # If name is set on trainer, copy it and add suffixes
-            if self.trainer.monitor.wandb.name:
-                run_name = deepcopy(self.trainer.monitor.wandb.name)
-                self.trainer.monitor.wandb.name = f"{run_name}-trainer"
-                self.orchestrator.monitor.wandb.name = f"{run_name}-orchestrator"
-        return self
-
-    @model_validator(mode="after")
     def auto_setup_model(self):
-        # Use trainer model on orchestrator and inference
-        self.orchestrator.model.name = self.trainer.model.name
-        if self.inference:
-            self.inference.model.name = self.trainer.model.name
+        # Use the same model for trainer, orchestrator and inference
+        if self.model_name:
+            self.trainer.model.name = self.model_name
+            self.orchestrator.model.name = self.model_name
+            if self.inference:
+                self.inference.model.name = self.model_name
+
         return self
 
     @model_validator(mode="after")
-    def auto_setup_orchestrator_log_level(self):
-        # Use trainer log level on orchestrator
-        self.orchestrator.log.level = self.trainer.log.level
+    def auto_setup_max_steps(self):
+        # If specified, use the same max steps for trainer and orchestrator
+        if self.max_steps:
+            self.trainer.max_steps = self.max_steps
+            self.orchestrator.max_steps = self.max_steps
+
         return self
 
     @model_validator(mode="after")
-    def auto_setup_max_step(self):
-        # Use trainer max steps on orchestrator
-        if self.trainer.max_steps is not None:
-            self.orchestrator.max_steps = self.trainer.max_steps
+    def auto_setup_max_model_len(self):
+        if self.max_model_len:
+            self.orchestrator.seq_len = self.max_model_len
+            if self.inference:
+                self.inference.model.max_model_len = self.max_model_len
         return self
 
     @model_validator(mode="after")
     def auto_setup_async_level(self):
-        # Use trainer async level on orchestrator
-        self.orchestrator.async_level = self.trainer.async_level
-        return self
+        # If specified, use the same async level for trainer and orchestrator
+        if self.async_level:
+            self.trainer.async_level = self.async_level
+            self.orchestrator.async_level = self.async_level
 
-    @model_validator(mode="after")
-    def auto_setup_exp(self):
-        if self.exp_id:
-            self.log.path = self.log.path / self.exp_id
-            # Will be shared to orchestrator via `auto_setup_paths`
-            self.trainer.data.path = self.trainer.data.path / self.exp_id
-            self.trainer.weights.path = self.trainer.weights.path / self.exp_id
-            # Will be shared to orchestrator via `auto_setup_ckpt`
-            if self.trainer.ckpt:
-                self.trainer.ckpt.path = self.trainer.ckpt.path / self.exp_id
         return self
 
     @model_validator(mode="after")
     def auto_setup_paths(self):
         # Ensure trainer and orchestrator use the same paths for communicating data and weights
-        self.orchestrator.rollout_path = self.trainer.data.path
-        self.orchestrator.weights_path = self.trainer.weights.path
+        if self.rollout_path:
+            self.trainer.data.path = self.rollout_path
+            self.orchestrator.rollout_path = self.rollout_path
+
+        if self.weights_path:
+            self.trainer.weights.path = self.weights_path
+            self.orchestrator.weights_path = self.weights_path
+
         return self
 
     @model_validator(mode="after")
-    def auto_setup_ckpt(self):
-        # Ensures that trainer and orchestrator checkpoints are synchronized
-        if self.trainer.ckpt:
-            self.orchestrator.ckpt = CheckpointConfig()
-            self.orchestrator.ckpt.path = self.trainer.ckpt.path
-            self.orchestrator.ckpt.interval = self.trainer.ckpt.interval
-
-            # If resuming training, ensure orchestrator resumes from the same step
-            if self.trainer.ckpt.resume_step:
-                self.orchestrator.ckpt.resume_step = self.trainer.ckpt.resume_step
+    def auto_setup_exp_id(self):
+        if self.exp_id:
+            # Create subdirectories for logs, rollouts, weights and checkpoints
+            self.log.path = self.log.path / self.exp_id
+            self.trainer.data.path = self.trainer.data.path / self.exp_id
+            self.orchestrator.rollout_path = self.orchestrator.rollout_path / self.exp_id
+            self.trainer.weights.path = self.trainer.weights.path / self.exp_id
+            self.orchestrator.weights_path = self.orchestrator.weights_path / self.exp_id
+            if self.trainer.ckpt:
+                self.trainer.ckpt.path = self.trainer.ckpt.path / self.exp_id
+            if self.orchestrator.ckpt:
+                self.orchestrator.ckpt.path = self.orchestrator.ckpt.path / self.exp_id
         return self
 
     @model_validator(mode="after")
@@ -203,18 +354,6 @@ class RLConfig(BaseSettings):
                 warnings.warn(
                     "W&B run ID is not set for orchestrator even though resuming training. The current run will be created as a new run."
                 )
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_num_train_workers(self):
-        if self.trainer_gpus > 1:
-            self.orchestrator.num_train_workers = self.trainer_gpus
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_seq_len(self):
-        if self.inference:
-            self.inference.model.max_model_len = self.orchestrator.seq_len
         return self
 
 
