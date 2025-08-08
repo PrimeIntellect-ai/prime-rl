@@ -211,6 +211,12 @@ class RLConfig(BaseSettings):
             self.orchestrator.num_train_workers = self.trainer_gpus
         return self
 
+    @model_validator(mode="after")
+    def auto_setup_seq_len(self):
+        if self.inference:
+            self.inference.model.max_model_len = self.orchestrator.seq_len
+        return self
+
 
 def setup_logger(log_config: LogConfig) -> Logger:
     if get_logger():

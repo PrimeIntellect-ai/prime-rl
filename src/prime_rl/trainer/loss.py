@@ -5,112 +5,86 @@ from torch import Tensor
 from torch.nn import functional as F
 
 from prime_rl.trainer.config import LossConfig
-from prime_rl.trainer.model import Model, forward
 
 
 @jaxtyped(typechecker=typechecker)
-def grpo_loss(
-    shifted_logits: Float[Tensor, "batch seq vocab"],
-    input_ids: Int[Tensor, "batch seq"],
+def compute_loss(
+    logprobs: Float[Tensor, "batch seq"],
+    old_logprobs: Float[Tensor, "batch seq"],
     advantages: Float[Tensor, "batch seq"],
-    original_logprobs: Float[Tensor, "batch seq"],
-    loss_mask: Int[Tensor, "batch seq"],
-    temperature: float,
     loss_config: LossConfig,
-) -> tuple[Tensor, Tensor, Tensor]:
+) -> tuple[Float[Tensor, "batch seq"], dict[str, Float[Tensor, "batch seq"]]]:
     if loss_config.type == "clip":
         return grpo_loss_clip(
-            shifted_logits=shifted_logits,
-            input_ids=input_ids,
+            logprobs=logprobs,
+            old_logprobs=old_logprobs,
             advantages=advantages,
-            original_logprobs=original_logprobs,
-            loss_mask=loss_mask,
-            temperature=temperature,
             epsilon_low=loss_config.epsilon_low,
             epsilon_high=loss_config.epsilon_high,
             clip_ratio=loss_config.clip_ratio,
         )
     elif loss_config.type == "ratio":
         return grpo_loss_ratio(
-            shifted_logits=shifted_logits,
-            input_ids=input_ids,
+            logprobs=logprobs,
+            old_logprobs=old_logprobs,
             advantages=advantages,
-            original_logprobs=original_logprobs,
-            loss_mask=loss_mask,
-            temperature=temperature,
             clip_ratio=loss_config.clip_ratio,
         )
 
+
 @jaxtyped(typechecker=typechecker)
 def grpo_loss_clip(
-    shifted_logits: Float[Tensor, "batch seq vocab"],
-    input_ids: Int[Tensor, "batch seq"],
+    logprobs: Float[Tensor, "batch seq"],
+    old_logprobs: Float[Tensor, "batch seq"],
     advantages: Float[Tensor, "batch seq"],
-    original_logprobs: Float[Tensor, "batch seq"],
-    loss_mask: Int[Tensor, "batch seq"],
-    temperature: float,
     epsilon_low: float,
     epsilon_high: float,
     clip_ratio: float,
-) -> tuple[Tensor, Tensor, Tensor]:
-    """
-    DeepSeek Math Loss: https://arxiv.org/abs/2402.03300
+) -> tuple[Float[Tensor, "batch seq"], dict[str, Float[Tensor, "batch seq"]]]:
+    assert logprobs.dtype == torch.float32, "logprobs must be float32"
+    assert old_logprobs.dtype == torch.float32, "old_logprobs must be float32"
+    assert advantages.dtype == torch.float32, "advantages must be float32"
 
-    Args:
-        policy_logprobs: Log probabilities from the policy model
-        ref_logprobs: Log probabilities from the reference model
-        advantages: Advantages for each token
-        beta: KL penalty coefficient
-        epsilon: Clipping parameter for PPO
-        ignore_index: Specifies a target value that is ignored and does not contribute to the loss
-    """
-    # Divide logits by sampling temperature.
-    # See https://huggingface.co/blog/the_n_implementation_details_of_rlhf_with_ppo#policy-training-implementation-details
-    shifted_logits = shifted_logits / temperature
-    per_token_logps = selective_log_softmax(shifted_logits, input_ids)
-
-    coef_1 = torch.clamp(torch.exp(per_token_logps - original_logprobs), 0, clip_ratio)
-
+    # Compute the per-token loss
+    importance_ratio = torch.exp(logprobs - old_logprobs)
+    coef_1 = torch.clamp(importance_ratio, 0, clip_ratio)
     coef_2 = torch.clamp(coef_1, 1 - epsilon_low, 1 + epsilon_high)
-    per_token_loss1 = -coef_1 * advantages
-    per_token_loss2 = -coef_2 * advantages
-    per_token_loss = torch.max(per_token_loss1, per_token_loss2)
+    loss_1 = -coef_1 * advantages
+    loss_2 = -coef_2 * advantages
+    loss = torch.max(loss_1, loss_2)
+    is_clipped = (loss_1 < loss_2).float()
 
-    is_clipped = (per_token_loss1 < per_token_loss2).float()
-    clipped_token_count = _masked_sum(is_clipped, loss_mask)
-
-    loss = _masked_sum(per_token_loss, loss_mask)
-    ratio = _masked_sum(coef_2, loss_mask)
-    return loss, ratio, clipped_token_count
+    return loss, {
+        "loss": loss,
+        "coef_1": coef_1,
+        "coef_2": coef_2,
+        "is_clipped": is_clipped,
+    }
 
 
 @jaxtyped(typechecker=typechecker)
 def grpo_loss_ratio(
-    shifted_logits: Float[Tensor, "batch seq vocab"],
-    input_ids: Int[Tensor, "batch seq"],
+    logprobs: Float[Tensor, "batch seq"],
+    old_logprobs: Float[Tensor, "batch seq"],
     advantages: Float[Tensor, "batch seq"],
-    original_logprobs: Float[Tensor, "batch seq"],
-    loss_mask: Int[Tensor, "batch seq"],
-    temperature: float,
     clip_ratio: float,
-) -> tuple[Tensor, Tensor, Tensor]:
-    # Divide logits by sampling temperature.
-    # See https://huggingface.co/blog/the_n_implementation_details_of_rlhf_with_ppo#policy-training-implementation-details
-    shifted_logits = shifted_logits / temperature
-    per_token_logps = selective_log_softmax(shifted_logits, input_ids)
+) -> tuple[Float[Tensor, "batch seq"], dict[str, Float[Tensor, "batch seq"]]]:
+    assert logprobs.dtype == torch.float32, "logprobs must be float32"
+    assert old_logprobs.dtype == torch.float32, "old_logprobs must be float32"
+    assert advantages.dtype == torch.float32, "advantages must be float32"
 
-    raw_ratio = torch.exp(per_token_logps - original_logprobs)
+    # Compute the per-token loss
+    importance_ratio = torch.exp(logprobs - old_logprobs)  # (B, L)
+    clipped_importance_ratio = torch.clamp(importance_ratio, 0, clip_ratio)  # (B, L)
+    loss = -clipped_importance_ratio * advantages  # (B, L)
+    is_clipped = (importance_ratio > clip_ratio).float()  # (B, L)
 
-    is_clipped = (raw_ratio > clip_ratio).float()
-    clipped_token_count = _masked_sum(is_clipped, loss_mask)
-
-    ratio = torch.clamp(raw_ratio, 0, clip_ratio)
-    loss = -ratio * advantages
-
-    loss = _masked_sum(loss, loss_mask)
-    ratio = _masked_sum(ratio, loss_mask)
-
-    return loss, ratio, clipped_token_count
+    return loss, {
+        "loss": loss,
+        "importance_ratio": importance_ratio,
+        "clipped_importance_ratio": clipped_importance_ratio,
+        "is_clipped": is_clipped,
+    }
 
 
 @jaxtyped(typechecker=typechecker)
@@ -154,44 +128,19 @@ def selective_log_softmax(
 
 
 @jaxtyped(typechecker=typechecker)
-def compute_logprobs(
-    model: Model,
-    input_ids: Int[Tensor, "batch seq"],
-    position_ids: Int[Tensor, "batch seq"],
-    temperature: float,
-) -> Float[Tensor, "batch seq"]:
-    logits = forward(model, input_ids, position_ids).contiguous()
-    shifted_logits = shift_logits(logits)
-    shifted_logits = shifted_logits / temperature
-    logprobs = selective_log_softmax(shifted_logits, input_ids)
-    del logits, shifted_logits
-    return logprobs
-
-
-@jaxtyped(typechecker=typechecker)
-def compute_entropy(
-    shifted_logits: Float[Tensor, "batch seq vocab"],
-    loss_mask: Int[Tensor, "batch seq"],
-    temperature: float,
-) -> Tensor:
-    shifted_logits = shifted_logits / temperature
+def compute_entropy(shifted_logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq"]:
     pd = torch.nn.functional.softmax(shifted_logits, dim=-1)
     entropy = torch.logsumexp(shifted_logits, dim=-1) - torch.sum(pd * shifted_logits, dim=-1)
 
-    return _masked_sum(entropy, loss_mask)
-
-
-def _masked_sum(tensor: Tensor, mask: Tensor) -> Tensor:
-    """Sums over the unmasked tensor values"""
-    return (tensor * mask).sum()
+    return entropy
 
 
 @jaxtyped(typechecker=typechecker)
 def shift_logits(logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq vocab"]:
     """Removes final token logits and adds a zero logit for the first token."""
     # We drop the last logit because it corresponds to the next token that will be sampled but is not here yet
-    B, _, V = logits.shape
-    logits = logits[:, :-1, :]  # (B, L-1, V)
-    zeros = torch.zeros(B, 1, V, device=logits.device, dtype=logits.dtype)  # (B, 1, V)
-    logits = torch.cat([zeros, logits], dim=1)  # (B, L, V)
+    batch, seq, vocab = logits.shape
+    logits = logits[:, :-1, :]  # (batch, seq-1, vocab)
+    zeros = torch.zeros(batch, 1, vocab, device=logits.device, dtype=logits.dtype)  # (batch, 1, vocab)
+    logits = torch.cat([zeros, logits], dim=1)  # (batch, seq, vocab)
     return logits

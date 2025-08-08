@@ -12,6 +12,7 @@ weights/*
 *.ipynb
 *.jsonl
 .pydantic_config/*
+configs/endpoints.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -1,0 +1,28 @@
+max_steps = 500
+batch_size = 1024
+micro_batch_size = 1
+seq_len = 8192
+rollouts_per_prompt = 8
+mask_truncated_completions = false
+
+[sampling]
+temperature = 0.6
+
+[model]
+name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+
+[monitor.wandb]
+
+[environment]
+id = "vf-acereason-math"
+
+[monitor.wandb.log_extras]
+interval = 50
+
+[eval]
+interval = 50
+benchmarks = ["math500", "aime24", "aime25"]
+rollouts_per_prompt = [1, 32, 32]
+
+[ckpt]
+interval = 100

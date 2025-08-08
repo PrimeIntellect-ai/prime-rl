@@ -1,0 +1,26 @@
+max_steps = 500
+batch_size = 1024
+micro_batch_size = 1
+seq_len = 2048
+rollouts_per_prompt = 16
+mask_truncated_completions = false
+
+[model]
+name = "Qwen/Qwen2.5-3B-Instruct"
+
+[monitor.wandb.log_extras]
+samples = true
+distributions = true
+interval = 2
+
+[environment]
+id = "vf-alphabet-sort"
+
+[environment.args]
+min_turns = 2
+max_turns = 2
+
+[sampling]
+max_tokens = 512
+
+[ckpt]

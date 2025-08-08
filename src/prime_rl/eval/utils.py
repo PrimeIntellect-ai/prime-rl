@@ -12,7 +12,7 @@ from prime_rl.eval.registry import (
 )
 from prime_rl.orchestrator.client import generate_completion
 from prime_rl.orchestrator.config import ModelConfig, SamplingConfig
-from prime_rl.orchestrator.utils import compute_rewards, parse_completions
+from prime_rl.orchestrator.utils import compute_rewards, parse_completion_tokens, parse_completions
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor import MultiMonitor
 from prime_rl.utils.utils import capitalize
@@ -74,6 +74,14 @@ async def run_benchmark(
     generate_completions_time = time.time() - generate_completions_start_time
     logger.debug(f"Generated completions in {generate_completions_time:.2f}s")
 
+    completion_lengths = [len(parse_completion_tokens(c)) for c in chat_completions]
+    avg_completion_len = sum(completion_lengths) / len(completion_lengths)
+    
+    completion_len_df = pd.DataFrame({"problem_id": problem_ids, "completion_len": completion_lengths})
+    avg_completion_len_per_problem = completion_len_df.groupby("problem_id").completion_len.mean()
+    max_avg_completion_len = avg_completion_len_per_problem.max()
+    min_avg_completion_len = avg_completion_len_per_problem.min()
+
     # Compute rewards
     logger.debug("Computing rewards")
     compute_rewards_start_time = time.time()
@@ -114,10 +122,19 @@ async def run_benchmark(
     if could_be_binary:
         for pass_rate, pass_rate_score in pass_at_k.mean().items():
             message += f", {capitalize(pass_rate)}: {pass_rate_score:.2f}"
+    message += (
+        f", Seq. Len: {avg_completion_len:.2f}, Max Seq. Len: {max_avg_completion_len:.2f}, "
+        f"Min Seq. Len: {min_avg_completion_len:.2f}"
+    )
     logger.success(message + ")")
 
     # Log statistics to monitor
-    eval_metrics = {f"avg@{k}": float(sample_stats.reward.mean())}
+    eval_metrics = {
+        f"avg@{k}": float(sample_stats.reward.mean()),
+        "completion_len": float(avg_completion_len),
+        "max_completion_len": float(max_avg_completion_len),
+        "min_completion_len": float(min_avg_completion_len),
+    }
     if could_be_binary:
         eval_metrics.update(pass_at_k.mean().to_dict())
     eval_metrics = {**{f"eval/{benchmark}/{k}": v for k, v in eval_metrics.items()}}
@@ -131,7 +148,6 @@ async def run_benchmark(
     time_metrics = {
         "step": step,
         f"time/eval/{benchmark}": benchmark_time,
-        f"time/eval/{benchmark}/load_data": load_data_time,
         f"time/eval/{benchmark}/generate_completions": generate_completions_time,
         f"time/eval/{benchmark}/compute_rewards": compute_rewards_time,
     }

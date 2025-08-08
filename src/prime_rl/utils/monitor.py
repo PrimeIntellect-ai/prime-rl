@@ -149,7 +149,6 @@ class WandbMonitor(Monitor):
         # Optionally, initialize sample logging attributes
         if config.log_extras:
             if config.log_extras.samples:
-                assert tokenizer is not None, "Tokenizer is required for sample logging"
                 self.last_log_samples_step = -1
                 self.samples_cols = [
                     "step",
@@ -174,17 +173,8 @@ class WandbMonitor(Monitor):
 
             if config.log_extras.distributions:
                 self.last_log_distributions_step = -1
-                self.distributions_cols = [
-                    "step",
-                    "rewards",
-                    "advantages",
-                    "problem_rewards",
-                    "problem_advantages",
-                ]
-                self.distributions_table = wandb.Table(
-                    columns=self.distributions_cols,
-                    log_mode="INCREMENTAL",
-                )
+                # Incremental table is initialized dynamically in `log_distributions`
+                self.distributions_table = None
                 self.distributions = []
 
     def _maybe_overwrite_wandb_command(self) -> None:
@@ -227,7 +217,7 @@ class WandbMonitor(Monitor):
         assert self.tokenizer is not None, "Tokenizer is required for sample logging"
         assert self.last_log_samples_step <= step, "Step must be greater than last logged step"
 
-        self.logger.debug(f"Logging samples to W&B table at step {step}")
+        self.logger.info(f"Logging samples to W&B table at step {step}")
         start_time = time.time()
         batch_size = len(input_tokens)
         num_problems = batch_size // rollouts_per_problem
@@ -278,9 +268,7 @@ class WandbMonitor(Monitor):
         self.last_log_samples_step = step
         self.logger.debug(f"Logged samples at step {step} to W&B table in {time.time() - start_time:.2f}s")
 
-    def log_distributions(
-        self, rewards: list[float], advantages: list[float], rollouts_per_problem: int, step: int
-    ) -> None:
+    def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:
         if (
             not self.config.log_extras
             or not self.config.log_extras.distributions
@@ -288,34 +276,24 @@ class WandbMonitor(Monitor):
         ):
             return
         assert self.last_log_distributions_step <= step, "Step must be greater than last logged step"
-        self.logger.debug(f"Logging distributions to W&B table at step {step}")
+        self.logger.info(f"Logging distributions for keys {list(distributions.keys())} to W&B table at step {step}")
 
-        # Group by problem
-        problem_rewards = defaultdict(list)
-        problem_advantages = defaultdict(list)
-        for i, (reward, advantage) in enumerate(zip(rewards, advantages)):
-            problem_id = i // rollouts_per_problem
-            problem_rewards[problem_id].append(reward)
-            problem_advantages[problem_id].append(advantage)
-
-        # Compute mean per-problem
-        problem_mean_rewards = [sum(rewards) / len(rewards) for rewards in problem_rewards.values()]
-        problem_mean_advantages = [sum(advantages) / len(advantages) for advantages in problem_advantages.values()]
+        # Initialize incremental table if not already done
+        if self.distributions_table is None:
+            self.distributions_cols = list(distributions.keys())
+            self.distributions_table = wandb.Table(
+                columns=["step"] + self.distributions_cols,
+                log_mode="INCREMENTAL",
+            )
+        assert self.distributions_cols == list(distributions.keys()), (
+            "Columns in the table must be the same across all steps"
+        )
 
         # Append to distributions
         start_time = time.time()
-        distribution = {
-            "step": step,
-            "rewards": rewards,
-            "advantages": advantages,
-            "problem_rewards": problem_mean_rewards,
-            "problem_advantages": problem_mean_advantages,
-        }
-        assert list(distribution.keys()) == self.distributions_cols, (
-            "Order of columns in the table must be the same as order of the keys here"
-        )
-        self.distributions.append(distribution)
-        self.distributions_table.add_data(*distribution.values())
+        distributions = {"step": step, **distributions}
+        self.distributions.append(distributions)
+        self.distributions_table.add_data(*distributions.values())
         wandb.log({"distributions": self.distributions_table}, step=step)
         self.last_log_distributions_step = step
         self.logger.debug(f"Logged distributions at step {step} to W&B table in {time.time() - start_time:.2f}s")

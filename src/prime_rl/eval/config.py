@@ -7,10 +7,68 @@ from prime_rl.eval.registry import Benchmark
 from prime_rl.orchestrator.config import (
     ClientConfig,
     LogConfig,
-    SamplingConfig,
 )
 from prime_rl.utils.config import ModelConfig, MultiMonitorConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
+
+
+class SamplingConfig(BaseConfig):
+    """Configures how tokens are sampled from the model. Largely follows the vLLM sampling parameters."""
+
+    temperature: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="Scales the output probability distribution. Lower values => more deterministic, higher values => more random. If 0, will sample greedily.",
+        ),
+    ] = 1.0
+
+    top_p: Annotated[
+        float,
+        Field(
+            gt=0,
+            le=1,
+            description="Cumulative probability of the top tokens to consider. If 1, all tokens are considered.",
+        ),
+    ] = 1
+
+    top_k: Annotated[
+        int,
+        Field(
+            ge=-1,
+            description="Number of top tokens to consider. If -1, all tokens are considered.",
+        ),
+    ] = -1
+
+    min_p: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="Minimum probability for a token to be considered, relative to the probability of the most likely token. If 0, all tokens are considered.",
+        ),
+    ] = 0.0
+
+    max_tokens: Annotated[
+        int | None,
+        Field(
+            description="Maximum number of output tokens to generate per turn. If None, will generate until maximum context length or EOS token is hit.",
+        ),
+    ] = None
+
+    min_tokens: Annotated[
+        int,
+        Field(
+            ge=0,
+            description="Minimum number of output tokens to generate per sequence.",
+        ),
+    ] = 0
+
+    seed: Annotated[
+        int | None,
+        Field(
+            description="Random seed to use for sampling. If None, no seeding is used.",
+        ),
+    ] = None
 
 
 class OnlineEvalConfig(BaseConfig):

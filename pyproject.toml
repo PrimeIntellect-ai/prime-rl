@@ -31,6 +31,7 @@ dependencies = [
     "verifiers",
     "textarena>=0.6.16",
     "nltk>=3.9.1",
+    "math-verify>=0.8.0",
 ]
 
 [project.scripts]
@@ -48,18 +49,52 @@ build-backend = "hatchling.build"
 flash-attn = ["flash-attn>=2.8.0"]
 flash-infer = ["flashinfer-python>=0.2.8rc1"]
 
+vf = [
+    "vf-intellect-math",
+    "vf-reverse-text",
+    "vf-ascii-tree",
+    "vf-pydantic-adherence",
+    "vf-hendrycks-math",
+    "vf-skywork-math",
+    "vf-unscramble",
+    "vf-alphabet-sort",
+]
+
 [tool.uv]
 no-build-isolation-package = ["flash-attn"]
 prerelease = "allow"
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu128" }]
-verifiers = { git = "https://github.com/willccbb/verifiers", rev = "90c06b2" }
+verifiers = { git = "https://github.com/willccbb/verifiers", rev = "74c604f" }
+
+vf-intellect-math = { workspace = true }
+vf-wordle = { git = "https://github.com/willccbb/verifiers.git", subdirectory = "environments/vf_wordle", rev = "main" }
+vf-reverse-text = { workspace = true }
+vf-ascii-tree = { workspace = true }
+vf-pydantic-adherence = { workspace = true }
+vf-hendrycks-math = { workspace = true }
+vf-skywork-math = { workspace = true }
+vf-unscramble = { workspace = true }
+vf-alphabet-sort = { workspace = true }
+
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/test/cu128"
 explicit = true
+
+[tool.uv.workspace]
+members = [
+    "environments/vf_intellect_math",
+    "environments/vf_reverse_text",
+    "environments/vf_ascii_tree",
+    "environments/vf_pydantic_adherence",
+    "environments/vf_hendrycks_math",
+    "environments/vf_skywork_math",
+    "environments/vf_unscramble",
+    "environments/vf_alphabet_sort",
+]
 
 [dependency-groups]
 dev = [

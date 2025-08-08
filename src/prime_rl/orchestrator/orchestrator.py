@@ -8,13 +8,13 @@ from pathlib import Path
 from prime_rl.orchestrator import envs
 
 import lovely_tensors as lt
-import numpy as np
 import torch
+from verifiers import load_environment
+from verifiers.types import GenerateOutputs, ProcessedOutputs
 from transformers import AutoTokenizer
 
 from prime_rl.eval.utils import run_benchmark
 from prime_rl.orchestrator.ckpt import CheckpointManager, Progress
-from prime_rl.environments.registry import load_environment
 from prime_rl.orchestrator.client import (
     check_has_model,
     check_health,
@@ -27,10 +27,7 @@ from prime_rl.orchestrator.buffer import setup_buffer, make_rollouts, Rollout
 from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.orchestrator.logger import setup_logger
 from prime_rl.orchestrator.advantage import compute_advantages
-from prime_rl.orchestrator.utils import (
-    wait_for_weight_checkpoint,
-    print_benchmark,
-)
+from prime_rl.orchestrator.utils import wait_for_weight_checkpoint, print_benchmark, parse_truncated_completions
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format, format_num
@@ -68,6 +65,7 @@ async def orchestrate(config: OrchestratorConfig):
     logger.success("Inference pool ready")
 
     # Get checkpoint manager
+    ckpt_manager = None
     if config.ckpt:
         logger.info(f"Initializing checkpoint manager ({config.ckpt})")
         ckpt_manager = CheckpointManager(config.ckpt)
@@ -75,7 +73,7 @@ async def orchestrate(config: OrchestratorConfig):
     # Reset weights to base model if starting from scratch
     progress = Progress()
     ckpt_step = 0
-    if config.ckpt and config.ckpt.resume_step:
+    if config.ckpt and ckpt_manager and config.ckpt.resume_step:
         logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
         ckpt_manager.load(progress, step=config.ckpt.resume_step)
         ckpt_step = max(progress.step - config.async_level, 0)
@@ -86,15 +84,12 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Load environment and extract dataset
     logger.info(f"Loading environment {config.environment.id} with args {config.environment.args}")
-    vf_env = load_environment(config.environment.id, config.environment.args)
+    vf_env = load_environment(config.environment.id, **config.environment.args)
     dataset = vf_env.get_dataset(seed=config.seed)
 
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
     buffer = setup_buffer(dataset, config.buffer)
-
-    # Load tokenizer -- placeholder until reworking verifiers to use vLLM tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(config.model.name)
 
     # Iterate over dataset in batches
     max_steps = config.max_steps or int(1e9)
@@ -105,7 +100,13 @@ async def orchestrate(config: OrchestratorConfig):
     while True:
         # Save checkpoint (if we are not at the first step)
         save_ckpt_time = 0
-        if config.ckpt and config.ckpt.interval and not is_first_step and progress.step % config.ckpt.interval == 0:
+        if (
+            config.ckpt
+            and ckpt_manager
+            and config.ckpt.interval
+            and not is_first_step
+            and progress.step % config.ckpt.interval == 0
+        ):
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.time()
             ckpt_manager.save(progress, step=progress.step)
@@ -191,22 +192,18 @@ async def orchestrate(config: OrchestratorConfig):
                 "answer": [problem.get("answer", "") for problem in problems],
             }
 
+            # Convert SamplingConfig to vLLM OAI sampling args
+            # https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#extra-parameters_2
+            sampling_args = dict(config.sampling)
+            sampling_args["top_p"] = 1.0
+            sampling_args["logprobs"] = True
+            sampling_args["extra_body"] = {"return_tokens_as_token_ids": True, "top_k": -1, "min_p": 0.0}
+            sampling_args["extra_body"]["min_tokens"] = sampling_args.pop("min_tokens")
+
             # Generate completions + rewards with verifiers
             logger.info(f"Sending {len(problems)} requests to environments")
             generate_completions_start_time = time.time()
-            sampling_args = dict(config.sampling)
-            sampling_args["logprobs"] = True
-
-            # Sanitize for vLLM OpenAI client
-            sampling_args["extra_body"] = {"return_tokens_as_token_ids": True}
-            if "top_k" in sampling_args:
-                sampling_args["extra_body"]["top_k"] = sampling_args.pop("top_k")
-            if "min_p" in sampling_args:
-                sampling_args["extra_body"]["min_p"] = sampling_args.pop("min_p")
-            if "min_tokens" in sampling_args:
-                sampling_args["extra_body"]["min_tokens"] = sampling_args.pop("min_tokens")
-
-            outputs = await vf_env.a_generate(
+            generate_outputs: GenerateOutputs = await vf_env.a_generate(
                 inputs=inputs, client=client, model=config.model.name, sampling_args=sampling_args
             )
             generate_completions_time = time.time() - generate_completions_start_time
@@ -214,11 +211,11 @@ async def orchestrate(config: OrchestratorConfig):
             completion_requests += problems_to_sample * config.rollouts_per_prompt
             calls_to_generate += 1
 
-            results = vf_env.process_env_results_vllm(
-                prompts=outputs["prompt"],
-                completions=outputs["completion"],
-                states=outputs["state"],
-                rewards=outputs["reward"],
+            processed_outputs: ProcessedOutputs = vf_env.process_env_results_vllm(
+                prompts=generate_outputs.prompt,
+                completions=generate_outputs.completion,
+                states=generate_outputs.state,
+                rewards=generate_outputs.reward,
                 processing_class=tokenizer,
                 max_seq_len=config.seq_len,
                 mask_env_responses=config.mask_env_responses,
@@ -226,21 +223,27 @@ async def orchestrate(config: OrchestratorConfig):
                 mask_truncated_completions=config.mask_truncated_completions,
             )
 
+            # Compute advantages
             advantages = compute_advantages(
-                rewards=outputs["reward"],
+                rewards=processed_outputs.rewards,
+                completion_lengths=list(map(len, processed_outputs.completion_ids)),
                 samples_per_problem=config.rollouts_per_prompt,
                 advantage_type=config.advantage_type,
             )
 
+            # Parse whether the completions were truncated
+            is_truncated = parse_truncated_completions(states=generate_outputs.state)
+
             # Update pool
             rollouts = make_rollouts(
                 problem_ids=problem_ids,
-                prompt_tokens=results["prompt_ids"],
-                prompt_masks=results["prompt_mask"],
-                completion_tokens=results["completion_ids"],
-                completion_masks=results["completion_mask"],
-                completion_logprobs=results["completion_logprobs"],
-                rewards=outputs["reward"],
+                prompt_tokens=processed_outputs.prompt_ids,
+                prompt_masks=processed_outputs.prompt_mask,
+                completion_tokens=processed_outputs.completion_ids,
+                completion_masks=processed_outputs.completion_mask,
+                completion_logprobs=processed_outputs.completion_logprobs,
+                is_truncated=is_truncated,
+                rewards=processed_outputs.rewards,
                 advantages=advantages,
             )
             buffer.update(rollouts)
@@ -256,53 +259,56 @@ async def orchestrate(config: OrchestratorConfig):
             problems_to_sample = problems_per_batch - problems_sampled
 
         # Unpack accepted rollouts
-        rewards = [rollout.reward for rollout in accepted_rollouts]
-        advantages = [rollout.advantage for rollout in accepted_rollouts]
-        problem_ids = [rollout.problem_id for rollout in accepted_rollouts]
+        rewards = (
+            torch.tensor([rollout.reward for rollout in accepted_rollouts])
+            .reshape(-1, config.rollouts_per_prompt)
+            .float()
+        )
+        advantages = (
+            torch.tensor([rollout.advantage for rollout in accepted_rollouts])
+            .reshape(-1, config.rollouts_per_prompt)
+            .float()
+        )
+        is_truncated = (
+            torch.tensor([rollout.is_truncated for rollout in accepted_rollouts])
+            .reshape(-1, config.rollouts_per_prompt)
+            .float()
+        )
+        assert (
+            rewards.shape == advantages.shape == is_truncated.shape == (problems_per_batch, config.rollouts_per_prompt)
+        )
+        assert rewards.numel() == advantages.numel() == is_truncated.numel() == config.batch_size
         prompt_tokens = [rollout.prompt_tokens for rollout in accepted_rollouts]
         completion_tokens = [rollout.completion_tokens for rollout in accepted_rollouts]
+        prompt_lens = torch.tensor([len(p) for p in prompt_tokens]).float().reshape(-1, config.rollouts_per_prompt)
+        completion_lens = (
+            torch.tensor([len(c) for c in completion_tokens]).float().reshape(-1, config.rollouts_per_prompt)
+        )
+        seq_lens = prompt_lens + completion_lens
+        assert (
+            seq_lens.shape
+            == prompt_lens.shape
+            == completion_lens.shape
+            == (problems_per_batch, config.rollouts_per_prompt)
+        )
+        assert seq_lens.numel() == prompt_lens.numel() == completion_lens.numel() == config.batch_size
+        assert is_truncated.shape == (problems_per_batch, config.rollouts_per_prompt)
+        assert is_truncated.numel() == config.batch_size
 
-        logger.debug(f"Computed rewards: {lt.lovely(torch.tensor(rewards))}")
-        logger.debug(f"Computed advantages ({config.advantage_type}): {lt.lovely(torch.tensor(advantages))}")
+        logger.debug(f"Got rewards: {lt.lovely(rewards)}")
+        logger.debug(f"Got advantages ({config.advantage_type}): {lt.lovely(advantages)}")
 
-        # compute batch metrics
-        num_prompt_tokens = sum(len(prompt_tokens[i]) for i in range(len(prompt_tokens)))
-        num_completion_tokens = sum(len(completion_tokens[i]) for i in range(len(completion_tokens)))
-        num_tokens = num_prompt_tokens + num_completion_tokens
-
+        # Compute progress metrics and throughput
+        num_tokens = seq_lens.sum().item()
         progress.total_tokens += num_tokens
         progress.total_samples += config.batch_size
         progress.total_problems += config.batch_size // config.rollouts_per_prompt
         throughput = num_tokens / (generate_completions_time)
 
-        seq_lens = np.array([len(p) + len(c) for p, c in zip(prompt_tokens, completion_tokens)])
-        problem_seqlens = seq_lens.reshape(-1, config.rollouts_per_prompt).mean(axis=-1)
-
-        # Compute solve all/ none and critical batch size
-        grouped_rewards = [
-            rewards[i : i + config.rollouts_per_prompt] for i in range(0, len(rewards), config.rollouts_per_prompt)
-        ]
-        assert len(grouped_rewards) == problems_per_batch
-        solve_all = sum(1 for group in grouped_rewards if all(reward == 1 for reward in group)) / problems_per_batch
-        solve_none = sum(1 for group in grouped_rewards if all(reward == 0 for reward in group)) / problems_per_batch
-        effective_batch_size = 1 - solve_all - solve_none
-
-        # Log samples to W&B table if enabled
-        if monitor.wandb:
-            monitor.wandb.log_samples(
-                input_tokens=prompt_tokens,
-                output_tokens=completion_tokens,
-                rewards=rewards,
-                advantages=advantages,
-                rollouts_per_problem=config.rollouts_per_prompt,
-                step=progress.step,
-            )
-            monitor.wandb.log_distributions(
-                rewards,
-                advantages,
-                rollouts_per_problem=config.rollouts_per_prompt,
-                step=progress.step,
-            )
+        # Compute solve all and none tensors
+        solve_all = rewards.sum(-1).eq(config.rollouts_per_prompt).float().mean().item()
+        solve_none = rewards.sum(-1).eq(0).float().mean().item()
+        effective_batch_size = 1 - solve_none - solve_all
 
         # Write serialized batch to disk for trainer workers to consume
         all_data_ranks_batches = prepare_batch(
@@ -327,11 +333,14 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Log step metrics
         step_time = time.time() - step_start_time
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {np.mean(rewards):.2f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {float(problem_seqlens.mean()):.1f} tokens/sample"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {rewards.mean().item():.4f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {seq_lens.mean().item():.1f} tokens/sample"
         logger.success(step_message)
 
         # Log progress metrics to monitor
         progress_metrics = {
+            "progress/tokens": num_tokens,
+            "progress/samples": config.batch_size,
+            "progress/problems": config.batch_size // config.rollouts_per_prompt,
             "progress/total_tokens": progress.total_tokens,
             "progress/total_samples": progress.total_samples,
             "progress/total_problems": progress.total_problems,
@@ -340,19 +349,42 @@ async def orchestrate(config: OrchestratorConfig):
         }
         monitor.log(progress_metrics)
 
-        # Log sequence length metrics to monitor
-        seq_metrics = {
-            "seq/len": float(problem_seqlens.mean()),
-            "seq/len/max": float(problem_seqlens.max()),
-            "seq/len/min": float(problem_seqlens.min()),
-            "seq/len/std": float(problem_seqlens.std()),
+        # Log sequence lengths to monitor (first reduce over group dimension, then over problem dimension)
+        seq_len_metrics = {
+            "seq_len/mean": seq_lens.mean(-1).mean().item(),
+            "seq_len/max": seq_lens.mean(-1).max().item(),
+            "seq_len/min": seq_lens.mean(-1).min().item(),
             "step": progress.step,
         }
-        monitor.log(seq_metrics)
+        monitor.log(seq_len_metrics)
+
+        prompt_len_metrics = {
+            "prompt_len/mean": prompt_lens.mean(-1).mean().item(),
+            "prompt_len/max": prompt_lens.mean(-1).max().item(),
+            "prompt_len/min": prompt_lens.mean(-1).min().item(),
+            "step": progress.step,
+        }
+        monitor.log(prompt_len_metrics)
+
+        completion_len_metrics = {
+            "completion_len/mean": completion_lens.mean(-1).mean().item(),
+            "completion_len/max": completion_lens.mean(-1).max().item(),
+            "completion_len/min": completion_lens.mean(-1).min().item(),
+            "step": progress.step,
+        }
+        monitor.log(completion_len_metrics)
+
+        truncated_metrics = {
+            "is_truncated/mean": is_truncated.mean(-1).mean().item(),
+            "is_truncated/max": is_truncated.mean(-1).max().item(),
+            "is_truncated/min": is_truncated.mean(-1).min().item(),
+            "step": progress.step,
+        }
+        monitor.log(truncated_metrics)
 
         # Log performance metrics to monitor
         perf_metrics = {
-            "perf/infer/throughput": throughput,
+            "perf/throughput": throughput,
             "perf/problem_requests": problem_requests,
             "perf/completion_requests": completion_requests,
             "perf/calls_to_generate": calls_to_generate,
@@ -360,30 +392,57 @@ async def orchestrate(config: OrchestratorConfig):
         }
         monitor.log(perf_metrics)
 
-        # Log rewards metrics to monitor
+        # Log reward metrics to monitor
         reward_metrics = {
-            "reward/reward": np.mean(rewards),
-            "reward/solve_none": solve_none,
-            "reward/solve_all": solve_all,
-            "reward/effective_batch_size": effective_batch_size,
+            "reward/mean": rewards.mean().item(),
             "step": progress.step,
         }
         monitor.log(reward_metrics)
 
+        # Log rewards metrics to monitor
+        solve_metrics = {
+            "batch/solve_none": solve_none,
+            "batch/solve_all": solve_all,
+            "batch/effective_batch_size": effective_batch_size,
+            "step": progress.step,
+        }
+        monitor.log(solve_metrics)
+
         # Log time metrics to monitor
         time_metrics = {
-            "time/orchestrator": step_time,
-            "time/orchestrator/wait_for_weight_ckpt": wait_for_weight_ckpt_time,
-            "time/orchestrator/generate_completions": generate_completions_time,
-            "time/orchestrator/reload_weights": reload_weights_time,
-            "time/orchestrator/save_ckpt": save_ckpt_time,
-            "time/orchestrator/eval": eval_time,
+            "time/step": step_time,
+            "time/wait_for_weight_ckpt": wait_for_weight_ckpt_time,
+            "time/generate_completions": generate_completions_time,
+            "time/reload_weights": reload_weights_time,
+            "time/save_ckpt": save_ckpt_time,
+            "time/eval": eval_time,
             "step": progress.step,
         }
         monitor.log(time_metrics)
 
+        # Log samples and distributions to W&B table if enabled
+        if monitor.wandb:
+            monitor.wandb.log_samples(
+                input_tokens=prompt_tokens,
+                output_tokens=completion_tokens,
+                rewards=rewards.flatten().tolist(),
+                advantages=advantages.flatten().tolist(),
+                rollouts_per_problem=config.rollouts_per_prompt,
+                step=progress.step,
+            )
+            monitor.wandb.log_distributions(
+                distributions={
+                    "rewards": rewards.flatten().tolist(),
+                    "advantages": advantages.flatten().tolist(),
+                    "problem_rewards": rewards.mean(-1).tolist(),
+                    "problem_advantages": advantages.mean(-1).tolist(),
+                },
+                step=progress.step,
+            )
+
         # Increment progress
         progress.step += 1
+        is_first_step = False
 
     # Log final (immutable) samples and distributions to W&B table
     if monitor.wandb:
@@ -392,7 +451,7 @@ async def orchestrate(config: OrchestratorConfig):
         monitor.wandb.log_final_distributions()
 
     # Write final checkpoint
-    if config.ckpt:
+    if config.ckpt and ckpt_manager:
         logger.info("Writing final checkpoint")
         ckpt_manager.save(progress, step=progress.step)
 

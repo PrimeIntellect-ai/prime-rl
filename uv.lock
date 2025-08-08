@@ -9,6 +9,19 @@ resolution-markers = [
 [options]
 prerelease-mode = "allow"
 
+[manifest]
+members = [
+    "prime-rl",
+    "vf-alphabet-sort",
+    "vf-ascii-tree",
+    "vf-hendrycks-math",
+    "vf-intellect-math",
+    "vf-pydantic-adherence",
+    "vf-reverse-text",
+    "vf-skywork-math",
+    "vf-unscramble",
+]
+
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.6.1"
@@ -81,6 +94,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/ee/67/531ea369ba64dcff5ec9c3402f9f51bf748cec26dde048a2f973a4eea7f5/annotated_types-0.7.0.tar.gz", hash = "sha256:aff07c09a53a08bc8cfccb9c85b05f1aa9a2a6f23728d790723543408344ce89", size = 16081, upload-time = "2024-05-20T21:33:25.928Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/78/b6/6307fbef88d9b5ee7421e68d78a9f162e0da4900bc5f5793f6d3d0e34fb8/annotated_types-0.7.0-py3-none-any.whl", hash = "sha256:1f02e8b43a8fbbc3f3e0d4f0f4bfc8131bcb4eebe8849b8e5c773f3a1c582a53", size = 13643, upload-time = "2024-05-20T21:33:24.1Z" },
+]
+
+[[package]]
+name = "antlr4-python3-runtime"
+version = "4.13.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/33/5f/2cdf6f7aca3b20d3f316e9f505292e1f256a32089bd702034c29ebde6242/antlr4_python3_runtime-4.13.2.tar.gz", hash = "sha256:909b647e1d2fc2b70180ac586df3933e38919c85f98ccc656a96cd3f25ef3916", size = 117467, upload-time = "2024-08-03T19:00:12.757Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/89/03/a851e84fcbb85214dc637b6378121ef9a0dd61b4c65264675d8a5c9b1ae7/antlr4_python3_runtime-4.13.2-py3-none-any.whl", hash = "sha256:fe3835eb8d33daece0e799090eda89719dbccee7aa39ef94eed3818cafa5a7e8", size = 144462, upload-time = "2024-08-03T19:00:11.134Z" },
 ]
 
 [[package]]
@@ -1244,6 +1266,19 @@ wheels = [
 ]
 
 [[package]]
+name = "latex2sympy2-extended"
+version = "1.10.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "antlr4-python3-runtime" },
+    { name = "sympy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f4/de/472f9115c14c6f6d8a5889cabe3418283d708bde62ce00402c29441deed4/latex2sympy2_extended-1.10.2.tar.gz", hash = "sha256:41a517ffcc5a140e910a7d1646ce6ff440817e5f9d48fc8279d88bd0925bc389", size = 206188, upload-time = "2025-07-02T15:26:06.225Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ab/60/dfbbf40e3a371388c0e03ff65b01319b7d4023e883df6d7261125772ffdc/latex2sympy2_extended-1.10.2-py3-none-any.whl", hash = "sha256:f910442c5b02a466c1046f47d05cc5285181068b882399281f30102715337fb7", size = 207855, upload-time = "2025-07-02T15:26:04.88Z" },
+]
+
+[[package]]
 name = "liger-kernel"
 version = "0.5.10"
 source = { registry = "https://pypi.org/simple" }
@@ -1390,6 +1425,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/a2/82/8be4c96ffee03c5b4a034e60a31294daf481e12c7c43ab8e34a1453ee48b/MarkupSafe-3.0.2-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:ad10d3ded218f1039f11a75f8091880239651b52e9bb592ca27de44eed242a48", size = 23352, upload-time = "2024-10-18T15:21:20.971Z" },
     { url = "https://files.pythonhosted.org/packages/51/ae/97827349d3fcffee7e184bdf7f41cd6b88d9919c80f0263ba7acd1bbcb18/MarkupSafe-3.0.2-cp312-cp312-win32.whl", hash = "sha256:0f4ca02bea9a23221c0182836703cbf8930c5e9454bacce27e767509fa286a30", size = 15097, upload-time = "2024-10-18T15:21:22.646Z" },
     { url = "https://files.pythonhosted.org/packages/c1/80/a61f99dc3a936413c3ee4e1eecac96c0da5ed07ad56fd975f1a9da5bc630/MarkupSafe-3.0.2-cp312-cp312-win_amd64.whl", hash = "sha256:8e06879fc22a25ca47312fbe7c8264eb0b662f6db27cb2d3bbbc74b1df4b9b87", size = 15601, upload-time = "2024-10-18T15:21:23.499Z" },
+]
+
+[[package]]
+name = "math-verify"
+version = "0.8.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "latex2sympy2-extended" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/35/b5/b1db6fa6b6c28ebbe1889ee11a4703a72a2ca7750ec415f4559c758cf01a/math_verify-0.8.0.tar.gz", hash = "sha256:3295e0adb94bfe553ff6e3189c44f1916a85aa24ab5d1900f2086a706e28f7c4", size = 60191, upload-time = "2025-07-02T15:52:07.209Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fe/9f/59979f699b5c97334298f1295bc9fcdc9904d98d2276479bffff863d23b1/math_verify-0.8.0-py3-none-any.whl", hash = "sha256:31ca651296d817a9bb3fd58ca1fd0d192dcea709b1e5ecf2d0a4514c16f89087", size = 29994, upload-time = "2025-07-02T15:52:05.023Z" },
 ]
 
 [[package]]
@@ -2123,6 +2170,7 @@ dependencies = [
     { name = "liger-kernel" },
     { name = "loguru" },
     { name = "lovely-tensors" },
+    { name = "math-verify" },
     { name = "nltk" },
     { name = "numpy" },
     { name = "openai" },
@@ -2150,6 +2198,16 @@ flash-attn = [
 flash-infer = [
     { name = "flashinfer-python" },
 ]
+vf = [
+    { name = "vf-alphabet-sort" },
+    { name = "vf-ascii-tree" },
+    { name = "vf-hendrycks-math" },
+    { name = "vf-intellect-math" },
+    { name = "vf-pydantic-adherence" },
+    { name = "vf-reverse-text" },
+    { name = "vf-skywork-math" },
+    { name = "vf-unscramble" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -2173,6 +2231,7 @@ requires-dist = [
     { name = "liger-kernel", specifier = ">=0.5.10" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "lovely-tensors", specifier = ">=0.1.18" },
+    { name = "math-verify", specifier = ">=0.8.0" },
     { name = "nltk", specifier = ">=3.9.1" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "openai", specifier = ">=1.93.0" },
@@ -2188,11 +2247,19 @@ requires-dist = [
     { name = "torch", specifier = ">=2.7.0", index = "https://download.pytorch.org/whl/test/cu128" },
     { name = "transformers", specifier = ">=4.53.0" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/willccbb/verifiers?rev=90c06b2" },
+    { name = "verifiers", git = "https://github.com/willccbb/verifiers?rev=74c604f" },
+    { name = "vf-alphabet-sort", marker = "extra == 'vf'", editable = "environments/vf_alphabet_sort" },
+    { name = "vf-ascii-tree", marker = "extra == 'vf'", editable = "environments/vf_ascii_tree" },
+    { name = "vf-hendrycks-math", marker = "extra == 'vf'", editable = "environments/vf_hendrycks_math" },
+    { name = "vf-intellect-math", marker = "extra == 'vf'", editable = "environments/vf_intellect_math" },
+    { name = "vf-pydantic-adherence", marker = "extra == 'vf'", editable = "environments/vf_pydantic_adherence" },
+    { name = "vf-reverse-text", marker = "extra == 'vf'", editable = "environments/vf_reverse_text" },
+    { name = "vf-skywork-math", marker = "extra == 'vf'", editable = "environments/vf_skywork_math" },
+    { name = "vf-unscramble", marker = "extra == 'vf'", editable = "environments/vf_unscramble" },
     { name = "vllm", specifier = ">=0.9.1" },
     { name = "wandb", specifier = ">=0.20.1" },
 ]
-provides-extras = ["flash-attn", "flash-infer"]
+provides-extras = ["flash-attn", "flash-infer", "vf"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -3286,11 +3353,114 @@ wheels = [
 
 [[package]]
 name = "verifiers"
-version = "0.1.1"
-source = { git = "https://github.com/willccbb/verifiers?rev=90c06b2#90c06b22e5d9a062c3fb3bf056fb83de88acd19f" }
+version = "0.1.2"
+source = { git = "https://github.com/willccbb/verifiers?rev=74c604f#74c604f7481aa6db8abbb949becf8e23b20de8b0" }
 dependencies = [
     { name = "datasets" },
     { name = "openai" },
+    { name = "pydantic" },
+]
+
+[[package]]
+name = "vf-alphabet-sort"
+version = "0.1.0"
+source = { editable = "environments/vf_alphabet_sort" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers", git = "https://github.com/willccbb/verifiers?rev=74c604f" }]
+
+[[package]]
+name = "vf-ascii-tree"
+version = "0.1.0"
+source = { editable = "environments/vf_ascii_tree" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers", git = "https://github.com/willccbb/verifiers?rev=74c604f" }]
+
+[[package]]
+name = "vf-hendrycks-math"
+version = "0.1.0"
+source = { editable = "environments/vf_hendrycks_math" }
+dependencies = [
+    { name = "datasets" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets" },
+    { name = "verifiers", git = "https://github.com/willccbb/verifiers?rev=74c604f" },
+]
+
+[[package]]
+name = "vf-intellect-math"
+version = "0.1.0"
+source = { editable = "environments/vf_intellect_math" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers", git = "https://github.com/willccbb/verifiers?rev=74c604f" }]
+
+[[package]]
+name = "vf-pydantic-adherence"
+version = "0.1.0"
+source = { editable = "environments/vf_pydantic_adherence" }
+dependencies = [
+    { name = "datasets" },
+    { name = "pydantic" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets" },
+    { name = "pydantic" },
+    { name = "verifiers", git = "https://github.com/willccbb/verifiers?rev=74c604f" },
+]
+
+[[package]]
+name = "vf-reverse-text"
+version = "0.1.0"
+source = { editable = "environments/vf_reverse_text" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers", git = "https://github.com/willccbb/verifiers?rev=74c604f" }]
+
+[[package]]
+name = "vf-skywork-math"
+version = "0.1.0"
+source = { editable = "environments/vf_skywork_math" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers", git = "https://github.com/willccbb/verifiers?rev=74c604f" }]
+
+[[package]]
+name = "vf-unscramble"
+version = "0.1.0"
+source = { editable = "environments/vf_unscramble" }
+dependencies = [
+    { name = "datasets" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets" },
+    { name = "verifiers", git = "https://github.com/willccbb/verifiers?rev=74c604f" },
 ]
 
 [[package]]

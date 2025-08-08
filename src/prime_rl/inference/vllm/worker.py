@@ -13,7 +13,7 @@ class CheckpointWorker:
 
     def reload_weights(self, model_path: Path) -> None:
         """Reload the weights from a specified path."""
-        state_dict = torch.load(model_path, map_location="cpu")
+        state_dict = torch.load(model_path, map_location="cpu", mmap=True)
 
         def weights_iterator():
             for key, value in state_dict.items():

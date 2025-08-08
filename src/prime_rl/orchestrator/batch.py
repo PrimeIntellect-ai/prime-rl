@@ -78,6 +78,8 @@ def prepare_micro_batch(samples: list[MicroBatch], temperature: float):
     for key in ["input_ids", "advantages", "loss_mask", "logprobs", "position_ids"]:
         micro_batch[key] = torch.stack([sample[key] for sample in samples], dim=0)
 
+    # Scale logprobs by temperature
+    micro_batch["logprobs"] /= temperature
     micro_batch["temperature"] = temperature
 
     return micro_batch
@@ -164,6 +166,8 @@ def prepare_micro_batch_packing(samples: list[BatchSample], max_seq_len: int, te
     for key in ["input_ids", "advantages", "loss_mask", "position_ids", "logprobs"]:
         micro_batch[key] = torch.cat([sample[key] for sample in samples], dim=0).unsqueeze(0)
 
+    # Scale logprobs by temperature
+    micro_batch["logprobs"] /= temperature
     micro_batch["temperature"] = temperature
 
     return micro_batch
@@ -204,9 +208,10 @@ def prepare_batch_packing(
 
     # because of fsdp we need to make sure that each data ran has the same number of micro batches otherwise training will hang.
     # We create fake micro batches to fill the gap with real data but zero advantages, they would not contribute to the loss.
-    if num_padding_batch > 0:
+    if num_train_workers > 1 and num_padding_batch > 0:
         padded_batch = copy.deepcopy(micro_batches[0])
         padded_batch["advantages"] = torch.zeros_like(padded_batch["advantages"])
+        padded_batch["loss_mask"] = torch.zeros_like(padded_batch["loss_mask"])
         micro_batches.extend([padded_batch for _ in range(num_padding_batch)])
 
     assert len(micro_batches) % num_train_workers == 0, (

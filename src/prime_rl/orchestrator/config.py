@@ -35,7 +35,7 @@ class ClientConfig(BaseConfig):
 
 
 class SamplingConfig(BaseConfig):
-    """Configures how tokens are sampled from the model. Largely follows the vLLM sampling parameters (https://docs.vllm.ai/en/latest/api/vllm.sampling_params.html)."""
+    """Configures how tokens are sampled from the model. Largely follows the vLLM sampling parameters."""
 
     temperature: Annotated[
         float,
@@ -44,31 +44,6 @@ class SamplingConfig(BaseConfig):
             description="Scales the output probability distribution. Lower values => more deterministic, higher values => more random. If 0, will sample greedily.",
         ),
     ] = 1.0
-
-    top_p: Annotated[
-        float,
-        Field(
-            gt=0,
-            le=1,
-            description="Cumulative probability of the top tokens to consider. If 1, all tokens are considered.",
-        ),
-    ] = 1
-
-    top_k: Annotated[
-        int,
-        Field(
-            ge=-1,
-            description="Number of top tokens to consider. If -1, all tokens are considered.",
-        ),
-    ] = -1
-
-    min_p: Annotated[
-        float,
-        Field(
-            ge=0,
-            description="Minimum probability for a token to be considered, relative to the probability of the most likely token. If 0, all tokens are considered.",
-        ),
-    ] = 0.0
 
     max_tokens: Annotated[
         int | None,
@@ -96,7 +71,7 @@ class SamplingConfig(BaseConfig):
 class EnvironmentConfig(BaseConfig):
     """Configures the environment to be used for inference."""
 
-    id: Annotated[str, Field(description="ID of the environment to use.")] = "reverse-text"
+    id: Annotated[str, Field(description="ID of the environment to use.")] = "vf-reverse-text"
     args: Annotated[dict, Field(description="Arguments to pass to the environment.")] = {}
 
 
@@ -336,7 +311,7 @@ class OrchestratorConfig(BaseSettings):
         Field(
             description="Whether to override reward scores with 0 for truncated completions.",
         ),
-    ] = True
+    ] = False
 
     # TODO(Mika): This should be automatic from the number of ZMQ connections
     num_train_workers: Annotated[
@@ -396,10 +371,11 @@ class OrchestratorConfig(BaseSettings):
     def auto_setup_bench(self):
         if self.bench:
             self.max_steps = 4  # Run for 1 warmup step + 3 evaluation steps
-            self.async_level = 1e9  # Never wait for RL weight checkpoints
+            self.async_level = int(1e9)  # Never wait for RL weight checkpoints
 
             # Disable evaluation
             self.eval = None
-            self.monitor.wandb.log_extras = None
+            if self.monitor.wandb:
+                self.monitor.wandb.log_extras = None
 
         return self

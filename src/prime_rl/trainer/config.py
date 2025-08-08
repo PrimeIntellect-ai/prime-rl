@@ -54,13 +54,57 @@ class ModelConfig(BaseConfig):
     ] = "world"
 
 
+class ConstantSchedulerConfig(BaseModel):
+    """Configuration for constant learning rate scheduler."""
+
+    type: Literal["constant"] = "constant"
+
+
+class LinearSchedulerConfig(BaseModel):
+    """Configuration for linear learning rate scheduler."""
+
+    type: Literal["linear"] = "linear"
+
+    warmup_steps: Annotated[int, Field(ge=0, description="Number of warmup steps for the learning rate scheduler.")] = 0
+
+    decay_steps: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Number of steps to decay the learning rate during the final portion of training. If None, will use remaining steps after warmup.",
+        ),
+    ] = None
+
+
+class CosineSchedulerConfig(BaseModel):
+    """Configuration for cosine learning rate scheduler."""
+
+    type: Literal["cosine"] = "cosine"
+
+    warmup_steps: Annotated[int, Field(ge=0, description="Number of warmup steps for the learning rate scheduler.")] = 0
+
+    decay_steps: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Number of steps to decay the learning rate during the final portion of training. If None, will use remaining steps after warmup.",
+        ),
+    ] = None
+
+
+SchedulerConfig: TypeAlias = ConstantSchedulerConfig | LinearSchedulerConfig | CosineSchedulerConfig
+
+
 class OptimizerConfig(BaseConfig):
-    """Configures the Adam optimizer."""
+    """Configures the Adam optimizer and learning rate scheduler."""
 
     lr: Annotated[float, Field(ge=0)] = 4e-4
     weight_decay: Annotated[float, Field(ge=0)] = 0.01
     betas1: Annotated[float, Field(ge=0)] = 0.9
-    betas2: Annotated[float, Field(ge=0)] = 0.99
+    betas2: Annotated[float, Field(ge=0)] = 0.999
+
+    # LR Scheduler configuration
+    scheduler: SchedulerConfig = Field(discriminator="type", default=ConstantSchedulerConfig())
 
 
 class CheckpointConfig(BaseConfig):
@@ -224,4 +268,31 @@ class TrainerConfig(BaseSettings):
             self.max_steps = 4  # 1 Warmup + 3 Benchmark
             if not self.data.fake:
                 self.data.fake = FakeDataLoaderConfig()
+        return self
+
+    @model_validator(mode="after")
+    def validate_scheduler(self):
+        # Constant scheduler does not require any validation/ setup
+        if self.optim.scheduler.type == "constant":
+            return self
+
+        # Must specify max_steps when using a scheduler other than `constant`
+        if self.max_steps is None:
+            raise ValueError("Must specify max_steps when using a scheduler other than `constant`")
+
+        # If decay_steps is not specified, use remaining steps after warmup
+        if self.optim.scheduler.decay_steps is None:
+            if not (self.optim.scheduler.warmup_steps <= self.max_steps):
+                raise ValueError("config.optim.scheduler.warmup_steps must be less than or equal to config.max_steps")
+
+            self.optim.scheduler.decay_steps = self.max_steps - self.optim.scheduler.warmup_steps
+            assert self.optim.scheduler.decay_steps >= 0, "config.optim.scheduler.decay_steps must be positive"
+
+        # If decay_steps is specified, validate it
+        else:
+            if not (self.optim.scheduler.warmup_steps + self.optim.scheduler.decay_steps <= self.max_steps):
+                raise ValueError(
+                    "config.optim.scheduler.warmup_steps + config.optim.scheduler.decay_steps must be less than or equal to config.max_steps"
+                )
+
         return self

@@ -11,7 +11,7 @@ CMD = [
     "run",
     "eval",
     "@",
-    "configs/eval/debug.toml",
+    "configs/debug/eval.toml",
     "--model.name",
     "willcb/Qwen2.5-0.5B-Reverse-SFT",
 ]

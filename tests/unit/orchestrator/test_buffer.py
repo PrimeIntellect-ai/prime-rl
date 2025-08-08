@@ -53,6 +53,7 @@ def make_rollouts():
                     completion_tokens=[1],
                     completion_mask=[1],
                     completion_logprobs=[0.0],
+                    is_truncated=False,
                     reward=reward,
                     advantage=advantage,
                 )
