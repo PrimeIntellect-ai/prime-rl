@@ -123,9 +123,12 @@ def flexible_all_gather(tensor: Tensor) -> Tensor:
 
     assert tensor.ndim == 1, "Can only flexibly all-gather 1D tensors"
 
+    if dist.get_world_size() == 1:
+        return tensor
+
     # Find the tensor with the most elements
-    local_numel = torch.tensor(tensor.shape[0], device=tensor.device)
-    all_numels = [torch.tensor(0, device=tensor.device)] * dist.get_world_size()
+    local_numel = torch.tensor(tensor.numel(), device=tensor.device)
+    all_numels = [torch.tensor(0, device=tensor.device) for _ in range(dist.get_world_size())]
     dist.all_gather(all_numels, local_numel)
     all_numels = [numel.item() for numel in all_numels]
     max_numel = max(all_numels)
@@ -135,11 +138,11 @@ def flexible_all_gather(tensor: Tensor) -> Tensor:
         tensor = torch.cat([tensor, torch.zeros(max_numel - local_numel, dtype=tensor.dtype, device=tensor.device)])
 
     # All-gather the tensors
-    all_tensors = [torch.zeros(max_numel, dtype=tensor.dtype, device=tensor.device)] * dist.get_world_size()
+    all_tensors = [torch.zeros(max_numel, dtype=tensor.dtype, device=tensor.device) for _ in range(dist.get_world_size())]
     dist.all_gather(all_tensors, tensor)
-    all_tensors_unpadded = [tensor[:numel] for tensor, numel in zip(all_tensors, all_numels)]
+    all_tensors_unpadded = torch.cat([tensor[:numel] for tensor, numel in zip(all_tensors, all_numels)])
 
-    return torch.cat(all_tensors_unpadded, dim=0)
+    return all_tensors_unpadded
 
 
 class Tensors(defaultdict):
