@@ -363,7 +363,7 @@ class RLConfig(BaseSettings):
 
         if (
             self.inference
-            and self.inference.max_model_len
+            and self.inference.model.max_model_len
             and self.orchestrator.seq_len != self.inference.model.max_model_len
         ):
             raise ValueError(
