@@ -61,7 +61,7 @@ class LogExtrasConfig(BaseConfig):
     distributions: Annotated[
         bool,
         Field(
-            description="Whether to log distributions, like rewards, advantages, etc. to W&B tables.",
+            description="Whether to log distributions (like rewards, advantages, etc.) to W&B tables.",
         ),
     ] = True
 
@@ -107,7 +107,7 @@ class WandbMonitorConfig(BaseConfig):
         Field(
             description="Configuration for logging extras to W&B tables. If None, no extras are logged.",
         ),
-    ] = None
+    ] = LogExtrasConfig()
 
 
 class MultiMonitorConfig(BaseConfig):
