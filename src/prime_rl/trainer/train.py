@@ -213,7 +213,6 @@ def train(config: TrainerConfig):
                     shifted_logits = shift_logits(logits)
                     shifted_logits = shifted_logits / temperature
                     recomputed_logprobs = selective_log_softmax(shifted_logits, input_ids)
-                    del logits, shifted_logits
 
                     # Compute the recomputed logprob error
                     recomputed_logprob_error = torch.exp(recomputed_logprobs - logprobs)
