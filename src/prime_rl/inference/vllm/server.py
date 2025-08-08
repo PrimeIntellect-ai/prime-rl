@@ -117,6 +117,11 @@ def server(config: InferenceConfig, vllm_args: list[str]):
     parser = make_arg_parser(parser)
     args = parser.parse_args(args=vllm_args, namespace=config.to_vllm())
     validate_parsed_serve_args(args)
+
+    # Raise error if logprobs_mode is not set to processed_logprobs
+    if args.logprobs_mode != "processed_logprobs":
+        raise ValueError("logprobs_mode must be 'processed_logprobs' to be compatible with the orchestrator.")
+
     if args.headless or args.api_server_count < 1:
         run_headless(args)
     else:
