@@ -47,7 +47,6 @@ build-backend = "hatchling.build"
 
 [project.optional-dependencies]
 flash-attn = ["flash-attn>=2.8.0"]
-flash-infer = ["flashinfer-python>=0.2.8rc1"]
 
 vf = [
     "vf-intellect-math",
