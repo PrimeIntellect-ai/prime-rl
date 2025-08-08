@@ -59,20 +59,20 @@ async def check_has_model(client: AsyncOpenAI, model_name: str) -> None:
     logger.debug(f"Model {model_name} was found in the inference pool")
 
 
-async def reload_weights(client: AsyncOpenAI, path: Path, step: int) -> None:
-    """Make a HTTP post request to the vLLM server to reload the weights."""
+async def update_weights(client: AsyncOpenAI, path: Path, step: int) -> None:
+    """Make a HTTP post request to the vLLM server to update the weights."""
     logger = get_logger()
-    url = str(client.base_url)[:-4] + "/reload_weights"
+    url = str(client.base_url)[:-4] + "/update_weights"
     model_path = get_weight_ckpt_model_path(path, step)
-    logger.debug(f"Sending request to {url} to reload weights from {model_path}")
+    logger.debug(f"Sending request to {url} to update weights from {model_path}")
     await client.post(url, cast_to=Response, body={"model_path": model_path.as_posix()})
 
 
-async def reset_weights(client: AsyncOpenAI) -> None:
-    """Make a HTTP post request to the vLLM server to reset weights to the base model."""
+async def reload_weights(client: AsyncOpenAI) -> None:
+    """Make a HTTP post request to the vLLM server to reload weights (reset to base model)."""
     logger = get_logger()
-    url = str(client.base_url)[:-4] + "/reset_weights"
-    logger.debug(f"Sending request to {url} to reset weights to base model")
+    url = str(client.base_url)[:-4] + "/reload_weights"
+    logger.debug(f"Sending request to {url} to reload weights (reset to base model)")
     await client.post(url, cast_to=Response, body={})
 
 

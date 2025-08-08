@@ -19,7 +19,7 @@ from prime_rl.orchestrator.client import (
     check_has_model,
     check_health,
     reload_weights,
-    reset_weights,
+    update_weights,
     setup_client,
 )
 from prime_rl.orchestrator.config import OrchestratorConfig
@@ -77,10 +77,10 @@ async def orchestrate(config: OrchestratorConfig):
         logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
         ckpt_manager.load(progress, step=config.ckpt.resume_step)
         ckpt_step = max(progress.step - config.async_level, 0)
-        await reload_weights(client, config.weights_path, ckpt_step)
+        await update_weights(client, config.weights_path, ckpt_step)
     else:
         logger.info("Training from scratch. Resetting weights to base model")
-        await reset_weights(client)
+        await reload_weights(client)
 
     # Load environment and extract dataset
     logger.info(f"Loading environment {config.environment.id} with args {config.environment.args}")
@@ -120,7 +120,7 @@ async def orchestrate(config: OrchestratorConfig):
         step_start_time = time.time()
 
         # Optionally, wait for the next checkpoint to be available
-        wait_for_weight_ckpt_time, reload_weights_time = 0, 0
+        wait_for_weight_ckpt_time, update_weights_time = 0, 0
         if progress.step - ckpt_step > config.async_level:
             logger.debug(
                 f"Hit async barrier because step {progress.step} is {progress.step - ckpt_step} (>{config.async_level}) steps ahead of checkpoint step {ckpt_step}."
@@ -135,11 +135,11 @@ async def orchestrate(config: OrchestratorConfig):
             logger.debug(f"Waited {wait_for_weight_ckpt_time:.2f}s for weight checkpoint")
 
             # Reload the weights
-            logger.info(f"Reloading weight checkpoint {ckpt_step}")
-            reload_weights_start_time = time.time()
-            await reload_weights(client, config.weights_path, ckpt_step)
-            reload_weights_time = time.time() - reload_weights_start_time
-            logger.debug(f"Reloaded weights in {reload_weights_time:.2f}s")
+            logger.info(f"Updating weights to weight checkpoint {ckpt_step}")
+            update_weights_start_time = time.time()
+            await update_weights(client, config.weights_path, ckpt_step)
+            update_weights_time = time.time() - update_weights_start_time
+            logger.debug(f"Updated weights in {update_weights_time:.2f}s")
 
         # Optionally, run online evals at the specified interval
         eval_time = 0
@@ -413,7 +413,7 @@ async def orchestrate(config: OrchestratorConfig):
             "time/step": step_time,
             "time/wait_for_weight_ckpt": wait_for_weight_ckpt_time,
             "time/generate_completions": generate_completions_time,
-            "time/reload_weights": reload_weights_time,
+            "time/update_weights": update_weights_time,
             "time/save_ckpt": save_ckpt_time,
             "time/eval": eval_time,
             "step": progress.step,
