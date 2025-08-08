@@ -5,19 +5,22 @@ from beartype import beartype as typechecker
 from jaxtyping import Float, Int, jaxtyped
 from torch import Tensor
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
+from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, fully_shard
 from torchtitan.models.moe import MoE, MoEArgs
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
     AutoTokenizer,
+    PretrainedConfig,
 )
+from transformers.models.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig
 
 from prime_rl.trainer.config import ModelConfig
 from prime_rl.trainer.world import get_world
 
 
-def convert_tt_moe(model: nn.Module) -> None:
+def convert_tt_moe(model: nn.Module, config: PretrainedConfig) -> None:
     for layer_id, transformer_block in model.model.layers.named_children():
         # Skip non MoE layers
         if not hasattr(transformer_block.mlp, "gate"):
@@ -26,32 +29,46 @@ def convert_tt_moe(model: nn.Module) -> None:
 
         # Map HF MoE args to TT MoE args
         model_args = MoEArgs()
-        hf_config = transformer_block.mlp.config
-        model_args.num_experts = hf_config.n_routed_experts
-        model_args.num_shared_experts = hf_config.n_shared_experts
+        if isinstance(config, Qwen3MoeConfig):
+            model_args.num_experts = config.num_experts
+            model_args.num_shared_experts = 0
 
-        model_args.score_func = transformer_block.mlp.gate.scoring_func
-        model_args.route_norm = False
-        model_args.route_scale = transformer_block.mlp.gate.routed_scaling_factor
-        model_args.score_before_experts = True
+            model_args.score_func = "softmax"
+            model_args.route_norm = config.norm_topk_prob  # TODO: Check if this is correct
+            model_args.route_scale = 1.0
+            model_args.score_before_experts = False
 
-        model_args.top_k = transformer_block.mlp.gate.top_k
-        model_args.use_grouped_mm = False
-        model_args.load_balance_coeff = 1e-3
+            model_args.top_k = config.num_experts_per_tok
+            model_args.use_grouped_mm = True
+            model_args.load_balance_coeff = None
 
-        new_mlp = MoE(model_args, dim=hf_config.hidden_size, hidden_dim=hf_config.moe_intermediate_size)
-        # Router
-        new_mlp.router.gate.weight.data.copy_(transformer_block.mlp.gate.weight.data)
-        # Shared experts
-        new_mlp.shared_expert.w1.data[0].copy_(transformer_block.mlp.shared_experts.gate_proj.weight.data)
-        new_mlp.shared_expert.w2.data[0].copy_(transformer_block.mlp.shared_experts.down_proj.weight.data)
-        new_mlp.shared_expert.w3.data[0].copy_(transformer_block.mlp.shared_experts.up_proj.weight.data)
-        # Routed experts
-        for i in range(model_args.num_experts):
-            new_mlp.experts.w1.data[i].copy_(transformer_block.mlp.experts[i].gate_proj.weight.data)
-            new_mlp.experts.w2.data[i].copy_(transformer_block.mlp.experts[i].down_proj.weight.data)
-            new_mlp.experts.w3.data[i].copy_(transformer_block.mlp.experts[i].up_proj.weight.data)
-        transformer_block.mlp = new_mlp
+        else:  # Moonlight
+            hf_config = transformer_block.mlp.config
+            model_args.num_experts = hf_config.n_routed_experts
+            model_args.num_shared_experts = hf_config.n_shared_experts
+
+            model_args.score_func = transformer_block.mlp.gate.scoring_func
+            model_args.route_norm = False
+            model_args.route_scale = transformer_block.mlp.gate.routed_scaling_factor
+            model_args.score_before_experts = True
+
+            model_args.top_k = transformer_block.mlp.gate.top_k
+            model_args.use_grouped_mm = True
+            model_args.load_balance_coeff = None
+
+            new_mlp = MoE(model_args, dim=hf_config.hidden_size, hidden_dim=hf_config.moe_intermediate_size)
+            # Router
+            new_mlp.router.gate.weight.data.copy_(transformer_block.mlp.gate.weight.data)
+            # Shared experts
+            new_mlp.shared_expert.w1.data[0].copy_(transformer_block.mlp.shared_experts.gate_proj.weight.data)
+            new_mlp.shared_expert.w2.data[0].copy_(transformer_block.mlp.shared_experts.down_proj.weight.data)
+            new_mlp.shared_expert.w3.data[0].copy_(transformer_block.mlp.shared_experts.up_proj.weight.data)
+            # Routed experts
+            for i in range(model_args.num_experts):
+                new_mlp.experts.w1.data[i].copy_(transformer_block.mlp.experts[i].gate_proj.weight.data)
+                new_mlp.experts.w2.data[i].copy_(transformer_block.mlp.experts[i].down_proj.weight.data)
+                new_mlp.experts.w3.data[i].copy_(transformer_block.mlp.experts[i].up_proj.weight.data)
+            transformer_block.mlp = new_mlp
 
 
 def get_model(config: ModelConfig) -> nn.Module:
@@ -77,7 +94,7 @@ def get_model(config: ModelConfig) -> nn.Module:
         trust_remote_code=config.trust_remote_code,
     )
 
-    convert_tt_moe(model)
+    convert_tt_moe(model, config_model)
     return model
 
 
@@ -87,20 +104,31 @@ def get_tokenizer(config: ModelConfig) -> AutoTokenizer:
     return tokenizer
 
 
-def setup_fsdp(model: nn.Module, config: ModelConfig):
+def setup_fsdp(model: nn.Module, config: ModelConfig, world_mesh: DeviceMesh):
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
+    hsdp_mesh = world_mesh["ep", "fsdp"]
+    fsdp_mesh = world_mesh["fsdp"]
 
     for layer_id, transformer_block in enumerate(model.model.layers):
         if config.reshard_after_forward:
             layer_reshard_after_forward = layer_id < len(model.model.layers) - 1
         else:
             layer_reshard_after_forward = False
+        if hasattr(transformer_block.mlp, "experts"):
+            fully_shard(
+                transformer_block,
+                mesh=fsdp_mesh,
+                mp_policy=mp_policy,
+                reshard_after_forward=layer_reshard_after_forward,
+            )
         fully_shard(
             transformer_block,
+            mesh=hsdp_mesh,
             mp_policy=mp_policy,
             reshard_after_forward=layer_reshard_after_forward,
         )
-    fully_shard(model, mp_policy=mp_policy, reshard_after_forward=config.reshard_after_forward)
+
+    fully_shard(model, mesh=hsdp_mesh, mp_policy=mp_policy, reshard_after_forward=config.reshard_after_forward)
 
 
 def reshard_module(model: nn.Module):
@@ -119,8 +147,11 @@ def setup_ac(model: nn.Module, config: ModelConfig) -> None:
 
 def setup_model(config: ModelConfig) -> nn.Module:
     dist.init_process_group()
+    assert dist.get_world_size() % config.ep_mode == 0, "World size must be divisible by EP mode"
+    fsdp_dim = dist.get_world_size() // config.ep_mode
+    world_mesh = dist.init_device_mesh("cuda", (config.ep_mode, fsdp_dim), mesh_dim_names=("ep", "fsdp"))
     model = get_model(config)
-    setup_fsdp(model, config)
+    setup_fsdp(model, config, world_mesh)
     setup_ac(model, config)
     if config.compile:
         model = torch.compile(model)
