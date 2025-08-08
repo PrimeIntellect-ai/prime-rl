@@ -1,5 +1,3 @@
-from typing import TypeAlias
-
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -8,21 +6,16 @@ from jaxtyping import Float, Int, jaxtyped
 from torch import Tensor
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, fully_shard
-from torchtitan.models.deepseek_v3.model.moe import DeepSeekV3ModelArgs, MoE
+
+# from torchtitan.models.deepseek_v3.model.moe import DeepSeekV3ModelArgs, MoE
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
     AutoTokenizer,
-    LlamaForCausalLM,
-    Qwen2ForCausalLM,
-    Qwen3ForCausalLM,
 )
 
 from prime_rl.trainer.config import ModelConfig
 from prime_rl.trainer.world import get_world
-
-# TODO: Change all to nn.Module
-Model: TypeAlias = LlamaForCausalLM | Qwen2ForCausalLM | Qwen3ForCausalLM | nn.Module
 
 
 def convert_tt_moe(model: nn.Module) -> None:
@@ -83,7 +76,7 @@ def get_model(config: ModelConfig) -> Model:
         trust_remote_code=config.trust_remote_code,
     )
 
-    convert_tt_moe(model)
+    # convert_tt_moe(model)
     return model
 
 
@@ -93,7 +86,7 @@ def get_tokenizer(config: ModelConfig) -> AutoTokenizer:
     return tokenizer
 
 
-def setup_fsdp(model: Model, config: ModelConfig):
+def setup_fsdp(model: nn.Module, config: ModelConfig):
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
 
     for layer_id, transformer_block in enumerate(model.model.layers):
@@ -115,7 +108,7 @@ def reshard_module(model: nn.Module):
             module.reshard()
 
 
-def setup_ac(model: Model, config: ModelConfig) -> None:
+def setup_ac(model: nn.Module, config: ModelConfig) -> None:
     if not config.ac:
         return
     for layer_id, transformer_block in model.model.layers.named_children():
@@ -123,7 +116,7 @@ def setup_ac(model: Model, config: ModelConfig) -> None:
         model.model.layers.register_module(layer_id, transformer_block)
 
 
-def setup_model(config: ModelConfig) -> Model:
+def setup_model(config: ModelConfig) -> nn.Module:
     dist.init_process_group()
     model = get_model(config)
     setup_fsdp(model, config)
@@ -136,6 +129,6 @@ def setup_model(config: ModelConfig) -> Model:
 
 @jaxtyped(typechecker=typechecker)
 def forward(
-    model: Model, input_ids: Int[Tensor, "batch seq"], position_ids: Int[Tensor, "batch seq"]
+    model: nn.Module, input_ids: Int[Tensor, "batch seq"], position_ids: Int[Tensor, "batch seq"]
 ) -> Float[Tensor, "batch seq vocab"]:
     return model(input_ids=input_ids, position_ids=position_ids).logits.float()

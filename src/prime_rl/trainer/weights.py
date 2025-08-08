@@ -4,13 +4,12 @@ import time
 from pathlib import Path
 
 import torch
-from torch import Tensor
+from torch import Tensor, nn
 from torch.distributed.checkpoint.state_dict import _get_fqns as get_fqns
 from torch.distributed.tensor import DTensor
 from transformers import AutoTokenizer
 
 from prime_rl.trainer.config import CheckpointConfig, WeightCheckpointConfig
-from prime_rl.trainer.model import Model
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import get_step_path, get_weight_ckpt_model_path
@@ -33,7 +32,7 @@ class WeightCheckpointManager:
     def _get_step_path(self, step: int) -> Path:
         return get_step_path(self.config.path, step)
 
-    def _gather_weights(self, model: Model, dtype: torch.dtype = torch.bfloat16) -> dict[str, Tensor]:
+    def _gather_weights(self, model: nn.Module, dtype: torch.dtype = torch.bfloat16) -> dict[str, Tensor]:
         """Gather distributed weights for weight checkpoint."""
         start_time = time.time()
         self._logger.debug("Gathering sharded weights")
@@ -57,7 +56,7 @@ class WeightCheckpointManager:
 
         return cpu_state
 
-    def _save_to_path(self, cpu_state: dict[str, Tensor], model: Model, tokenizer: AutoTokenizer, step: int):
+    def _save_to_path(self, cpu_state: dict[str, Tensor], model: nn.Module, tokenizer: AutoTokenizer, step: int):
         """Save weight checkpoint for given step."""
         step_path = self._get_step_path(step)
         step_path.mkdir(parents=True, exist_ok=True)
@@ -81,7 +80,7 @@ class WeightCheckpointManager:
 
     def save(
         self,
-        model: Model,
+        model: nn.Module,
         tokenizer: AutoTokenizer,
         step: int,
         dtype: torch.dtype = torch.bfloat16,
