@@ -378,6 +378,7 @@ We support logging samples (e.g. prompt, completion, reward, advantage for selec
 uv run rl   \
   --trainer @ configs/reverse_text/train.toml  \
   --orchestrator @ configs/reverse_text/orch.toml \
+  --inference @ configs/reverse_text/infer.toml \
   --wandb.project example-project \
   --wandb.name example-run \
   --trainer.monitor.wandb.log-extras.distributions \
