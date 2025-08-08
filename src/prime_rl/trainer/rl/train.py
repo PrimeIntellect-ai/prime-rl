@@ -9,6 +9,7 @@ import shardcast
 import torch
 from loguru import logger
 from prime_rl.trainer.ckpt import CheckpointManager, Progress
+from prime_rl.trainer.optim import create_optimizer
 from prime_rl.trainer.weights import WeightCheckpointManager
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
@@ -77,12 +78,8 @@ def train(config: RLTrainerConfig):
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
     logger.info(f"Using `{config.loss.type}` loss ({config.loss})")
-    optimizer = torch.optim.AdamW(
-        params=model.parameters(),
-        lr=config.optim.lr,
-        weight_decay=config.optim.weight_decay,
-        betas=(config.optim.betas1, config.optim.betas2),
-    )
+
+    optimizer = create_optimizer(config.optim, model)
 
     # Set up the learning rate scheduler
     scheduler = create_lr_scheduler(optimizer, config.optim.scheduler, config.max_steps)

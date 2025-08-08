@@ -78,6 +78,8 @@ class CosineSchedulerConfig(BaseModel):
 
 SchedulerConfig: TypeAlias = ConstantSchedulerConfig | LinearSchedulerConfig | CosineSchedulerConfig
 
+OptimizerType: TypeAlias = Literal["AdamW", "Muon"]
+
 
 class OptimizerConfig(BaseConfig):
     """Configures the Adam optimizer and learning rate scheduler."""
@@ -90,6 +92,8 @@ class OptimizerConfig(BaseConfig):
     # Gradient clipping
     max_norm: Annotated[float, Field(ge=0, description="Maximum gradient norm to clip.")] = 1.0
 
+    name: Annotated[OptimizerType, Field(description="The optimizer to use. By default use AdamW")] = "AdamW"
+
     # LR Scheduler configuration
     scheduler: SchedulerConfig = Field(discriminator="type", default=ConstantSchedulerConfig())
 
@@ -97,7 +101,13 @@ class OptimizerConfig(BaseConfig):
 class CheckpointConfig(BaseConfig):
     """Configures checkpointing the full model, optimizer and training state for resuming training."""
 
-    interval: Annotated[int | None, Field(ge=1, description="Interval at which to save the checkpoint. If None, will only checkpoint at the end of training.")] = None
+    interval: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Interval at which to save the checkpoint. If None, will only checkpoint at the end of training.",
+        ),
+    ] = None
 
     save_async: Annotated[
         bool,
@@ -122,10 +132,17 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = None
 
+
 class WeightCheckpointConfig(BaseConfig):
     """Configures checkpointing the model weights for updating the inference engines (RL trainer) or continued post-training (on SFT trainer)."""
 
-    interval: Annotated[int | None, Field(ge=1, description="Interval at which to save the weights. If None, will only keep necessary weight checkpoints for resuming training.")] = None
+    interval: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Interval at which to save the weights. If None, will only keep necessary weight checkpoints for resuming training.",
+        ),
+    ] = None
 
     save_async: Annotated[
         bool,

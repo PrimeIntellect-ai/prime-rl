@@ -1,6 +1,6 @@
 version = 1
 revision = 2
-requires-python = "==3.12.*"
+requires-python = ">=3.12.0, <3.13"
 resolution-markers = [
     "sys_platform == 'linux'",
     "sys_platform != 'linux'",
@@ -1579,6 +1579,14 @@ wheels = [
 ]
 
 [[package]]
+name = "muon-fsdp2"
+version = "0.2.1"
+source = { git = "https://github.com/samsja/muon_fsdp_2?subdirectory=src%2Fmuon&rev=fix-impl#e160a6d91fd178361a61021d94ea6274cda5e099" }
+dependencies = [
+    { name = "torch" },
+]
+
+[[package]]
 name = "nest-asyncio"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2002,6 +2010,7 @@ dependencies = [
     { name = "loguru" },
     { name = "lovely-tensors" },
     { name = "math-verify" },
+    { name = "muon-fsdp2" },
     { name = "nltk" },
     { name = "numpy" },
     { name = "openai" },
@@ -2062,6 +2071,7 @@ requires-dist = [
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "lovely-tensors", specifier = ">=0.1.18" },
     { name = "math-verify", specifier = ">=0.8.0" },
+    { name = "muon-fsdp2", git = "https://github.com/samsja/muon_fsdp_2?subdirectory=src%2Fmuon&rev=fix-impl" },
     { name = "nltk", specifier = ">=3.9.1" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "openai", specifier = ">=1.90.0" },
