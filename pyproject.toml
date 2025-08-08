@@ -32,6 +32,7 @@ dependencies = [
     "textarena>=0.6.16",
     "nltk>=3.9.1",
     "math-verify>=0.8.0",
+    "muon_fsdp2>=0.3.0"
 ]
 
 [project.scripts]
@@ -77,7 +78,6 @@ vf-hendrycks-math = { workspace = true }
 vf-skywork-math = { workspace = true }
 vf-unscramble = { workspace = true }
 vf-alphabet-sort = { workspace = true }
-
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
