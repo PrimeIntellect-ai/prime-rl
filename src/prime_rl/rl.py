@@ -30,16 +30,9 @@ from prime_rl.utils.utils import get_cuda_visible_devices, get_free_port
 class LogConfig(BaseSettings):
     """Configures shared logging."""
 
-    path: Annotated[Path | None, Field(description="The path to the logs directory.")] = Path("logs")
+    path: Annotated[Path, Field(description="The path to the logs directory.")] = Path("logs")
 
     level: Annotated[str | None, Field(description="The log level to use.")] = "info"
-
-    utc: Annotated[
-        bool | None,
-        Field(
-            description="Whether to use UTC time in the logger. If False, it will default to the local time. If the local time is wrong, you can set it by setting the `TZ` environment variable. For example, `TZ=America/Los_Angeles` will set the local time to SF time."
-        ),
-    ] = False
 
 
 class WandbConfig(BaseSettings):
