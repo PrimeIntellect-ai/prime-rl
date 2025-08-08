@@ -20,7 +20,6 @@ CMD = [
     "--orchestrator",
     "@",
     "configs/reverse_text/orch.toml",
-    "--orchestrator.monitor.wandb.log-extras",
     "--orchestrator.sampling.max-tokens",
     "128",
 ]
