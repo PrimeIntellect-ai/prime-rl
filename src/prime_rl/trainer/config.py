@@ -19,7 +19,7 @@ class ModelConfig(BaseConfig):
         ),
     ] = "Qwen/Qwen3-0.6B"
 
-    attn: Annotated[AttnImplementation, Field(description="The attention implementation to use.")] = "flash_attention_2"
+    attn: Annotated[AttnImplementation, Field(description="The attention implementation to use.")] = "sdpa"
 
     compile: Annotated[
         bool,
