@@ -126,7 +126,7 @@ def train(config: TrainerConfig):
                 model_name_or_path = (
                     config.model.name
                     if not (config.ckpt and config.ckpt.resume_step)
-                    else weight_ckpt_manager.path / f"step_{step}"
+                    else weight_ckpt_manager._get_step_path(step)
                 )
                 model_config = deepcopy(config.model)
                 model_config.name = model_name_or_path
