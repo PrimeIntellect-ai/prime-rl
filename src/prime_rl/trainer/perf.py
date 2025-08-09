@@ -1,8 +1,8 @@
 import time
 
 import torch
+from torch import nn
 
-from prime_rl.trainer.model import Model
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
@@ -15,7 +15,7 @@ class PerfCounter:
     Inspired from https://github.com/pytorch/torchtitan/blob/4b3f2e41a084bf79a8540068ed525539d1244edd/torchtitan/utils.py#L119
     """
 
-    def __init__(self, model: Model, seq_len: int, window_size: int):
+    def __init__(self, model: nn.Module, seq_len: int, window_size: int):
         self.window_size = window_size
         self.tokens = []
         self.times = []
@@ -89,7 +89,7 @@ class PerfCounter:
 
         return flop_per_token
 
-    def _get_num_params(self, model: Model, exclude_embedding: bool = False) -> int:
+    def _get_num_params(self, model: nn.Module, exclude_embedding: bool = False) -> int:
         num_params = sum(p.numel() for p in model.parameters())
         if exclude_embedding:
             num_params -= model.lm_head.weight.numel()
@@ -99,7 +99,7 @@ class PerfCounter:
 _PERF_COUNTER: PerfCounter | None = None
 
 
-def get_perf_counter(model: Model, seq_len: int, window_size: int = 10) -> PerfCounter:
+def get_perf_counter(model: nn.Module, seq_len: int, window_size: int = 10) -> PerfCounter:
     global _PERF_COUNTER
     if _PERF_COUNTER is None:
         _PERF_COUNTER = PerfCounter(model, seq_len, window_size)

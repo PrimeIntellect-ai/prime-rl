@@ -19,7 +19,7 @@ class ModelConfig(BaseConfig):
         ),
     ] = "Qwen/Qwen3-0.6B"
 
-    attn: Annotated[AttnImplementation, Field(description="The attention implementation to use.")] = "flash_attention_2"
+    attn: Annotated[AttnImplementation, Field(description="The attention implementation to use.")] = "sdpa"
 
     compile: Annotated[
         bool,
@@ -38,6 +38,20 @@ class ModelConfig(BaseConfig):
     reshard_after_forward: Annotated[
         bool, Field(description="Whether to reshard the model after each forward pass.")
     ] = True
+
+    trust_remote_code: Annotated[
+        bool,
+        Field(
+            description="Whether to trust remote code for model and tokenizer initialization.",
+        ),
+    ] = False
+
+    ep_mode: Annotated[
+        Literal["world", "local"] | int,
+        Field(
+            description="The expert parallelism to use if the model has MoE layers. If 'world', will use the world size. If 'local', will use the local world size. If an integer, will use that EP size.",
+        ),
+    ] = "world"
 
 
 class ConstantSchedulerConfig(BaseModel):

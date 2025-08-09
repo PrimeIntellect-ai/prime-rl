@@ -69,6 +69,13 @@ class ModelConfig(BaseConfig):
         ),
     ] = False
 
+    trust_remote_code: Annotated[
+        bool,
+        Field(
+            description="Whether to trust remote code. Passed to vLLM engine init",
+        ),
+    ] = False
+
 
 class InferenceConfig(BaseSettings):
     """Configures inference."""
@@ -99,6 +106,7 @@ class InferenceConfig(BaseSettings):
             "model.dtype": "dtype",
             "model.max_model_len": "max_model_len",
             "model.enforce_eager": "enforce_eager",
+            "model.trust_remote_code": "trust_remote_code",
             "parallel.tp": "tensor_parallel_size",
             "parallel.dp": "data_parallel_size",
         }
