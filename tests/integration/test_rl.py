@@ -44,12 +44,12 @@ RL_RESUME_CMD = [
 
 
 @pytest.fixture(scope="module")
-def username():
+def username() -> str:
     return os.environ.get("USERNAME_CI", os.getlogin())
 
 
 @pytest.fixture(scope="module")
-def branch_name():
+def branch_name() -> str:
     branch_name_ = os.environ.get("GITHUB_REF_NAME", None)
 
     if branch_name_ is None:
@@ -61,12 +61,12 @@ def branch_name():
 
 
 @pytest.fixture(scope="module")
-def commit_hash():
+def commit_hash() -> str:
     return subprocess.check_output(["git", "rev-parse", "--short", "HEAD"]).decode("utf-8").strip()
 
 
 @pytest.fixture(scope="module")
-def wandb_project(username: str):
+def wandb_project(username: str) -> str:
     project = "ci-reverse-text"
     if username != "CI_RUNNER":
         project += "-local"
@@ -98,7 +98,7 @@ def rl_resume_process(
     wandb_project: str,
     branch_name: str,
     commit_hash: str,
-):
+) -> ProcessResult:
     wandb_name = f"{branch_name}-{commit_hash}-resume"
 
     return run_process(
