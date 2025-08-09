@@ -70,7 +70,7 @@ def wandb_project(username: str):
     project = "ci-reverse-text"
     if username != "CI_RUNNER":
         project += "-local"
-    return "ci-reverse-text"
+    return project
 
 
 @pytest.fixture(scope="module")
