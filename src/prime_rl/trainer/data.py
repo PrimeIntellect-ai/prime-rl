@@ -6,7 +6,7 @@ from jaxtyping import Float, Int
 
 from prime_rl.trainer.config import FakeDataLoaderConfig
 from prime_rl.trainer.world import get_world
-from prime_rl.utils.utils import wait_for_path
+from prime_rl.utils.utils import get_rollout_dir, wait_for_path
 
 
 class MicroBatch(TypedDict):
@@ -49,8 +49,8 @@ class FakeDataLoader:
 class DataLoader:
     """Loads serialized data from a data path written by the orchestrator."""
 
-    def __init__(self, output_dir: Path, start_step: int):
-        self.rollout_dir = output_dir / "rollouts"
+    def __init__(self, outputs_dir: Path, start_step: int):
+        self.rollout_dir = get_rollout_dir(outputs_dir)
         self.current_step = start_step
         self.world = get_world()
 

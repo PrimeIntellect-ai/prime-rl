@@ -6,6 +6,7 @@ import torch
 
 from prime_rl.orchestrator.config import CheckpointConfig
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.utils import get_ckpt_dir
 
 
 @dataclass
@@ -19,12 +20,12 @@ class Progress:
 class CheckpointManager:
     """Utility class to save and load orchestrator checkpoints to resume orchestrator."""
 
-    def __init__(self, output_dir: Path, config: CheckpointConfig):
-        self.path = output_dir / "checkpoints"
+    def __init__(self, outputs_dir: Path, config: CheckpointConfig):
+        self.ckpt_dir = get_ckpt_dir(outputs_dir)
         self._logger = get_logger()
 
     def _get_step_path(self, step: int) -> Path:
-        return self.path / f"step_{step}"
+        return self.ckpt_dir / f"step_{step}"
 
     def _get_ckpt_path(self, step: int) -> Path:
         return self._get_step_path(step) / "orchestrator.pt"

@@ -25,7 +25,14 @@ from prime_rl.trainer.config import FakeDataLoaderConfig, TrainerConfig
 from prime_rl.utils.config import WandbMonitorConfig
 from prime_rl.utils.logger import format_message, format_time, get_logger, set_logger, setup_handlers
 from prime_rl.utils.pydantic_config import BaseSettings, get_temp_toml_file, parse_argv
-from prime_rl.utils.utils import get_cuda_visible_devices, get_free_port
+from prime_rl.utils.utils import (
+    get_ckpt_dir,
+    get_cuda_visible_devices,
+    get_free_port,
+    get_log_dir,
+    get_rollout_dir,
+    get_weights_dir,
+)
 from prime_rl.utils.validation import (
     validate_shared_async_level,
     validate_shared_ckpt_config,
@@ -57,20 +64,11 @@ class WandbConfig(BaseSettings):
 
     name: Annotated[str | None, Field(description="The W&B run name to use.")] = None
 
-    dir: Annotated[
-        Path | None,
-        Field(
-            description="Path to the directory to keep local logs. It will automatically create a `wandb` subdirectory to store run logs.",
-        ),
-    ] = Path("logs")
-
     offline: Annotated[bool | None, Field(description="Whether to run W&B in offline mode.")] = False
 
 
 class CheckpointConfig(BaseSettings):
     """Configures shared checkpoint configs."""
-
-    path: Annotated[Path | None, Field(description="The path to the checkpoint directory.")] = Path("checkpoints")
 
     interval: Annotated[int | None, Field(description="The interval at which to save checkpoints.")] = 50
 
@@ -242,11 +240,6 @@ class RLConfig(BaseSettings):
                 self.trainer.monitor.wandb.name = f"{self.wandb.name}-trainer"
                 self.orchestrator.monitor.wandb.name = f"{self.wandb.name}-orchestrator"
 
-            # If specified, automatically use shared W&B directory for orchestrator and trainer
-            if self.wandb.dir:
-                self.trainer.monitor.wandb.dir = self.wandb.dir
-                self.orchestrator.monitor.wandb.dir = self.wandb.dir
-
             # If specified, automatically use shared W&B offline mode for orchestrator and trainer
             if self.wandb.offline:
                 self.trainer.monitor.wandb.offline = self.wandb.offline
@@ -324,8 +317,8 @@ class RLConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_output_dir(self):
-        # If specified, use the same paths for communicating data and weights
+    def auto_setup_outputs_dir(self):
+        # If specified, use the same outputs directory for trainer and orchestrator
         if self.outputs_dir:
             self.trainer.outputs_dir = self.outputs_dir
             self.orchestrator.outputs_dir = self.outputs_dir
@@ -401,10 +394,10 @@ def rl(config: RLConfig):
     logger.debug(f"RL start command: {' '.join(start_command)}")
 
     # Prepare paths to communicate with the trainer
-    log_dir = config.outputs_dir / "logs"
-    ckpt_dir = config.outputs_dir / "checkpoints"
-    weights_dir = config.outputs_dir / "weights"
-    rollout_dir = config.outputs_dir / "rollouts"
+    log_dir = get_log_dir(config.outputs_dir)
+    ckpt_dir = get_ckpt_dir(config.outputs_dir)
+    weights_dir = get_weights_dir(config.outputs_dir)
+    rollout_dir = get_rollout_dir(config.outputs_dir)
 
     # Clean up directories if specified
     if config.clean:

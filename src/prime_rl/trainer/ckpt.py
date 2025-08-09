@@ -11,6 +11,7 @@ from prime_rl.trainer.config import CheckpointConfig
 from prime_rl.trainer.model import Model
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.utils import get_ckpt_dir
 
 
 @dataclass
@@ -23,14 +24,14 @@ class Progress:
 class CheckpointManager:
     """Utility class to save and load training checkpoints to resume training."""
 
-    def __init__(self, output_dir: Path, config: CheckpointConfig):
-        self.path = output_dir / "checkpoints"
+    def __init__(self, outputs_dir: Path, config: CheckpointConfig):
+        self.ckpt_dir = get_ckpt_dir(outputs_dir)
         self.save_async = config.save_async
         self._logger = get_logger()
         self._world = get_world()
 
     def _get_step_path(self, step: int) -> Path:
-        return self.path / f"step_{step}"
+        return self.ckpt_dir / f"step_{step}"
 
     def _get_ckpt_path(self, step: int) -> Path:
         ckpt_name = f"trainer_{self._world.local_rank}.pt" if self._world.world_size > 1 else "trainer.pt"

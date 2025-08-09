@@ -213,14 +213,6 @@ def format_num(num: float | int, precision: int = 2) -> str:
         return f"{sign}{num / 1e9:.{precision}f}B"
 
 
-def get_step_path(path: Path, step: int) -> Path:
-    return path / f"step_{step}"
-
-
-def get_weight_ckpt_model_path(weight_dir: Path, step: int) -> Path:
-    return weight_dir / f"step_{step}" / "pytorch_model.bin"
-
-
 def get_free_port() -> int:
     """Find and return a free port"""
     import socket
@@ -239,3 +231,31 @@ def get_cuda_visible_devices() -> list[int]:
         # Default to all devices if the environment variable is not set
         return list(range(torch.cuda.device_count()))
     return list(sorted([int(device) for device in cuda_visible.split(",")]))
+
+
+def get_log_dir(outputs_dir: Path) -> Path:
+    return outputs_dir / "logs"
+
+
+def get_ckpt_dir(outputs_dir: Path) -> Path:
+    return outputs_dir / "checkpoints"
+
+
+def get_weights_dir(outputs_dir: Path) -> Path:
+    return outputs_dir / "weights"
+
+
+def get_rollout_dir(outputs_dir: Path) -> Path:
+    return outputs_dir / "rollouts"
+
+
+def get_wandb_dir(outputs_dir: Path) -> Path:
+    return outputs_dir / "wandb"
+
+
+def get_step_path(path: Path, step: int) -> Path:
+    return path / f"step_{step}"
+
+
+def get_weight_ckpt_model_path(weights_dir: Path, step: int) -> Path:
+    return weights_dir / f"step_{step}" / "pytorch_model.bin"
