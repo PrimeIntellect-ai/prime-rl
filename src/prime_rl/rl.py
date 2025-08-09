@@ -113,11 +113,10 @@ class RLConfig(BaseSettings):
 
     ### Shared configurations
 
-    # NOTE: This value should match the `DEFAULT_OUTPUTS_DIR` in `scripts/tmux.sh` to properly stream file logs
     outputs_dir: Annotated[
         Path,
         Field(description="The directory to store the outputs. Should typically be set to an experiment identifier."),
-    ] = Path("outputs")
+    ] = Path("outputs")  # NOTE: Must match `OUTPUTS_DIR` in `tmux.sh` to see logs
 
     ckpt: Annotated[
         CheckpointConfig | None,
