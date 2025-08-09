@@ -19,7 +19,7 @@ ENV = {"CUDA_VISIBLE_DEVICES": "1"}
 
 
 @pytest.fixture(scope="module")
-def eval_process(_vllm_server, run_process: Callable[[Command, Environment], ProcessResult]) -> ProcessResult:
+def eval_process(vllm_server, run_process: Callable[[Command, Environment], ProcessResult]) -> ProcessResult:
     return run_process(CMD, ENV)
 
 
