@@ -19,8 +19,8 @@ class Progress:
 class CheckpointManager:
     """Utility class to save and load orchestrator checkpoints to resume orchestrator."""
 
-    def __init__(self, config: CheckpointConfig):
-        self.path = config.path
+    def __init__(self, output_dir: Path, config: CheckpointConfig):
+        self.path = output_dir / "checkpoints"
         self._logger = get_logger()
 
     def _get_step_path(self, step: int) -> Path:

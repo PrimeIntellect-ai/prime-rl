@@ -19,7 +19,10 @@ from prime_rl.utils.utils import get_step_path, get_weight_ckpt_model_path
 class WeightCheckpointManager:
     """Utility class to save and cleanup HF-compatible weight checkpoints."""
 
-    def __init__(self, config: WeightCheckpointConfig, ckpt_config: CheckpointConfig, async_level: int):
+    def __init__(
+        self, output_dir: Path, config: WeightCheckpointConfig, ckpt_config: CheckpointConfig, async_level: int
+    ):
+        self.path = output_dir / "weights"
         self.config = config
         self.ckpt_config = ckpt_config
         self.async_level = async_level
@@ -28,10 +31,10 @@ class WeightCheckpointManager:
         self._is_master = self._world.rank == 0
 
     def _get_model_path(self, step: int) -> Path:
-        return get_weight_ckpt_model_path(self.config.path, step)
+        return get_weight_ckpt_model_path(self.path, step)
 
     def _get_step_path(self, step: int) -> Path:
-        return get_step_path(self.config.path, step)
+        return get_step_path(self.path, step)
 
     def _gather_weights(self, model: Model, dtype: torch.dtype = torch.bfloat16) -> dict[str, Tensor]:
         """Gather distributed weights for weight checkpoint."""

@@ -23,8 +23,8 @@ class Progress:
 class CheckpointManager:
     """Utility class to save and load training checkpoints to resume training."""
 
-    def __init__(self, config: CheckpointConfig):
-        self.path = config.path
+    def __init__(self, output_dir: Path, config: CheckpointConfig):
+        self.path = output_dir / "checkpoints"
         self.save_async = config.save_async
         self._logger = get_logger()
         self._world = get_world()
