@@ -1,7 +1,7 @@
 ## to run on 2 H200
 batch_size = 512
 micro_batch_size = 1
-rollouts_per_prompt = 16
+rollouts_per_example = 16
 seq_len = 2048
 mask_truncated_completions = false
 
@@ -18,5 +18,5 @@ interval = 10
 
 [eval]
 interval = 50
-benchmarks = ["math500", "aime24", "aime25"]
-rollouts_per_prompt = [1, 16, 16]
+ids = ["math500", "aime24", "aime25"]
+rollouts_per_example = [1, 16, 16]

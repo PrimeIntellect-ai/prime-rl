@@ -3,7 +3,6 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
 
-from prime_rl.eval.registry import Benchmark
 from prime_rl.orchestrator.advantage import AdvantageType
 from prime_rl.utils.config import LogConfig, ModelConfig, MultiMonitorConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
@@ -89,21 +88,40 @@ class PathConfig(BaseConfig):
 
 
 class EvalConfig(BaseConfig):
-    """Configures evaluation."""
+    """Configures evaluation using verifiers environments."""
 
-    benchmarks: Annotated[
-        list[Benchmark],
+    ids: Annotated[
+        list[str],
         Field(
-            description="Benchmarks to evaluate on. By default, it will evaluate only on the MATH-500 benchmark.",
+            description="List of verifiers environment IDs to evaluate on. Each ID also serves as the metric prefix."
         ),
-    ] = ["math500"]
+    ] = []
 
-    rollouts_per_prompt: Annotated[
+    num_examples: Annotated[
+        list[int] | None,
+        Field(
+            description="Number of examples to evaluate per environment. Set all or none; if None, defaults to -1 for every ID."
+        ),
+    ] = None
+
+    rollouts_per_example: Annotated[
         list[int],
         Field(
-            description="Number of samples to generate for each benchmark.",
+            description="Number of samples to generate per example for each environment (length must match eval.ids)."
         ),
     ] = [1]
+
+    sampling: SamplingConfig = Field(
+        default_factory=SamplingConfig,
+        description="Shared sampling configuration for evals; can differ from training sampling.",
+    )
+
+    args: Annotated[
+        dict[str, dict],
+        Field(
+            description="Per-environment overrides keyed by ID; forwarded as kwargs to verifiers.load_environment(id, **args)."
+        ),
+    ] = {}
 
     interval: Annotated[
         int,
@@ -121,9 +139,21 @@ class EvalConfig(BaseConfig):
     ] = True
 
     @model_validator(mode="after")
-    def validate_rollouts_per_prompt(self):
-        if len(self.rollouts_per_prompt) != len(self.benchmarks):
-            raise ValueError("Number of rollouts per prompt must be the same as the number of benchmarks")
+    def _validate_and_fill_eval_lists(self):
+        # Validate ids
+        if not isinstance(self.ids, list):
+            raise ValueError("eval.ids must be a list of environment IDs")
+
+        # rollouts_per_example length must match ids
+        if len(self.rollouts_per_example) != len(self.ids):
+            raise ValueError("Number of rollouts_per_example entries must match number of ids")
+
+        # num_examples: if None, default to -1 for all; else length must match ids
+        if self.num_examples is None:
+            self.num_examples = [-1 for _ in self.ids]
+        elif len(self.num_examples) != len(self.ids):
+            raise ValueError("Number of num_examples entries must match number of ids")
+
         return self
 
 
@@ -270,11 +300,11 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = 128
 
-    rollouts_per_prompt: Annotated[
+    rollouts_per_example: Annotated[
         int,
         Field(
             ge=1,
-            description="Number of output sequences to return for the given prompt.",
+            description="Number of output sequences to return per example during training.",
         ),
     ] = 1
 
@@ -359,7 +389,7 @@ class OrchestratorConfig(BaseSettings):
 
     @model_validator(mode="after")
     def validate_batch_size(self):
-        if self.batch_size % self.rollouts_per_prompt != 0:
+        if self.batch_size % self.rollouts_per_example != 0:
             raise ValueError("Batch size must be divisible by the number of samples per problem")
         if self.batch_size % self.micro_batch_size != 0:
             raise ValueError("Batch size must be divisible by micro batch size")
