@@ -1,7 +1,7 @@
+max_steps = 500
 
 [monitor.wandb]
 project = "wordle"
-name = "14b-debug"
 
 [model]
 name = "willcb/Qwen3-14B"

@@ -9,6 +9,7 @@ mask_truncated_completions = true
 name = "willcb/Qwen3-14B"
 
 [monitor.wandb]
+project = "wordle"
 
 [environment]
 id = "wordle"

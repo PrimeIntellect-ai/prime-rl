@@ -8,6 +8,9 @@ mask_truncated_completions = false
 [model]
 name = "Qwen/Qwen2.5-3B-Instruct"
 
+[monitor.wandb]
+project = "alphabet-sort"
+
 [monitor.wandb.log_extras]
 samples = true
 distributions = true
@@ -24,3 +27,4 @@ max_turns = 2
 max_tokens = 512
 
 [ckpt]
+interval = 100
