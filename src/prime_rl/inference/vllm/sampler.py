@@ -62,7 +62,7 @@ class Sampler(nn.Module):
         logits = self.apply_penalties(logits, sampling_metadata)
 
         # Apply temperature.
-        # Note(Mika): Moved out of `sample` method to export temperature-scaled logits and logprobs.
+        # NOTE(Mika): Moved out of `sample` method to export temperature-scaled logits and logprobs.
         logits = self.apply_temperature(logits, sampling_metadata.temperature)
 
         # Get the process logprobs or logits.
