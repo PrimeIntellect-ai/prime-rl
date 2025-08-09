@@ -15,7 +15,7 @@ from prime_rl.utils.validation import (
     validate_shared_max_model_len,
     validate_shared_max_steps,
     validate_shared_model_name,
-    validate_shared_paths,
+    validate_shared_outputs_dir,
     validate_shared_wandb_config,
 )
 
@@ -93,7 +93,7 @@ def test_shared_config_validation(config_dir: Path, monkeypatch: pytest.MonkeyPa
     assert trainer and orchestrator and inference
     validate_shared_ckpt_config(trainer, orchestrator)
     validate_shared_model_name(trainer, orchestrator, inference)
-    validate_shared_paths(trainer, orchestrator)
+    validate_shared_outputs_dir(trainer, orchestrator)
     validate_shared_wandb_config(trainer, orchestrator)
     validate_shared_max_model_len(orchestrator, inference)
     validate_shared_async_level(trainer, orchestrator)
