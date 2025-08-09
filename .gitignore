@@ -1,12 +1,15 @@
 .vscode/*
 *.ipynb
 *.jsonl
-.pydantic_config/*
 configs/endpoints.py
+
+# Artifacts
 **/weights
 **/checkpoints
 **/rollouts
 **/logs
+**/wandb
+.pydantic_config
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
