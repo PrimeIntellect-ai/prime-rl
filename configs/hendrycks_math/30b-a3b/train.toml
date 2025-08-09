@@ -1,3 +1,5 @@
+recompute_logprobs = false
+
 [monitor.wandb]
 
 [model]
