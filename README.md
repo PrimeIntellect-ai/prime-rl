@@ -183,7 +183,7 @@ uv run rl \
 
 For small models/ quick ablations, it can be more efficient to parallelize experiments within a node (e.g. split your GPUs to run two experiments in parallel). Because the trainer communicates with the orchestrator via a shared file system, and the orchestrator communicates with the inference engine via an OAI-compatible API, the connection points have to be uniquely set. For example, if you have access to 4 GPUs you can run two 2 GPU training runs in parallel as follows:
 
-Start the first experiment as normal, but specify a unique experiment identifier (*will use the first 2 GPUs*)
+Start the first experiment in a tmux session `exp-1` with outputs directory `outputs`. Specify it both in the tmux script, as well as in the start command (*will use the first 2 GPUs*)
 
 ```bash
 bash scripts/tmux.sh -s exp-1 -o outputs1
@@ -198,7 +198,7 @@ uv run rl \
   --outputs-dir outputs1
 ```
 
-For the second experiment, configure a new server port for the inference engine and orchestrator and choose a new experiment identifier (*will use the first 2 GPUs*)
+For the second experiment, start a second tmux session named `exp-2` with outputs directory `outputs2`. In addition, specify a new server port for the inference engine and orchestrator (*will use the first 2 GPUs*)
 
 ```bash
 bash scripts/tmux.sh -s exp-2 -o outputs2
