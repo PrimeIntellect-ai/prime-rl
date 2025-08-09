@@ -142,7 +142,7 @@ class WandbMonitor(Monitor):
             project=config.project,
             name=config.name,
             id=config.id,
-            dir=outputs_dir / "wandb",
+            dir=outputs_dir,
             resume="allow",
             config=run_config.model_dump() if run_config else None,
             mode="offline" if config.offline else None,

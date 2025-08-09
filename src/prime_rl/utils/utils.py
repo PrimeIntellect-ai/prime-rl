@@ -249,10 +249,6 @@ def get_rollout_dir(outputs_dir: Path) -> Path:
     return outputs_dir / "rollouts"
 
 
-def get_wandb_dir(outputs_dir: Path) -> Path:
-    return outputs_dir / "wandb"
-
-
 def get_step_path(path: Path, step: int) -> Path:
     return path / f"step_{step}"
 
