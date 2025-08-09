@@ -122,7 +122,7 @@ ulimit -n 32000
 bash scripts/tmux.sh
 ```
 
-Then, paste the experiment entrypoints detailed below in the `Trainer` pane to start your run!
+The default session name is `prime-rl` and outputs directory is `outputs`. They are configurable, as described in `bash scripts/tmux.sh -h`.
 
 ## RL
 
@@ -186,7 +186,7 @@ For small models/ quick ablations, it can be more efficient to parallelize exper
 Start the first experiment as normal, but specify a unique experiment identifier (*will use the first 2 GPUs*)
 
 ```bash
-bash scripts/tmux.sh exp-1
+bash scripts/tmux.sh -s exp-1 -o outputs1
 ```
 
 ```bash
@@ -195,13 +195,13 @@ uv run rl \
   --trainer @ configs/reverse_text/train.toml \
   --orchestrator @ configs/reverse_text/orch.toml \
   --inference @ configs/reverse_text/infer.toml \
-  --exp-id exp-1
+  --outputs-dir outputs1
 ```
 
 For the second experiment, configure a new server port for the inference engine and orchestrator and choose a new experiment identifier (*will use the first 2 GPUs*)
 
 ```bash
-bash scripts/tmux.sh exp-2
+bash scripts/tmux.sh -s exp-2 -o outputs2
 ```
 
 ```bash
@@ -212,7 +212,7 @@ CUDA_VISIBLE_DEVICES=2,3 uv run rl \
   --inference @ configs/reverse_text/infer.toml \
   --inference.server.port 8001 \
   --orchestrator.client.port 8001 \
-  --exp-id exp-2
+  --outputs-dir outputs2
 ```
 
 ## Evals
@@ -305,7 +305,7 @@ uv run rl \
 To kill the tmux session when you're done:
 
 ```bash
-bash scripts/tmux.sh kill
+tmux kill-session -t prime-rl
 ```
 
 ### Environments
@@ -412,10 +412,7 @@ checkpoints
     └── trainer.pt
 ```
 
-Checkpointing is configured by the `CheckpointConfig`, with the config key `--ckpt`. One can specify:
-- `--ckpt.path` to change the checkpoint directory (default: `checkpoints`)
-- `--ckpt.interval` to change the interval frequency (default: `50`)
-- `--ckpt.save-async` to save the checkpoint asynchronously (default: `False`)
+Checkpointing is configured by the `CheckpointConfig`, with the config key `--ckpt`. One can specify the interval (`--ckpt.interval`, defaults to `50`) and whether to save checkpoints asynchronoously  (`--ckpt.save-async`, defaults to `False`)
 
 By default, runs do no write checkpoints to save disk space. To checkpoint every 10 steps on our debug RL run, run the following command
 
@@ -447,7 +444,7 @@ uv run orchestrator @ configs/reverse_text/orch.toml \
   --monitor.wandb.id <orchestrator-run-id>
 ```
 
-If you started your run using the rl.py script, you can resume the same run by passing the same W&B run ID for both the trainer and the orchestrator, e.g.
+If you started your run using `rl.py`, you can resume the same run by passing the same W&B run ID for both the trainer and the orchestrator, e.g.
 
 ```bash
 uv run rl \
