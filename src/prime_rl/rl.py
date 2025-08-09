@@ -25,6 +25,14 @@ from prime_rl.utils.config import WandbMonitorConfig
 from prime_rl.utils.logger import format_message, format_time, get_logger, set_logger, setup_handlers
 from prime_rl.utils.pydantic_config import BaseSettings, get_temp_toml_file, parse_argv
 from prime_rl.utils.utils import get_cuda_visible_devices, get_free_port
+from prime_rl.utils.validation import (
+    validate_shared_async_level,
+    validate_shared_ckpt_config,
+    validate_shared_max_model_len,
+    validate_shared_max_steps,
+    validate_shared_model_name,
+    validate_shared_wandb_config,
+)
 
 
 class LogConfig(BaseSettings):
@@ -231,35 +239,7 @@ class RLConfig(BaseSettings):
                 self.trainer.ckpt.resume_step = self.ckpt.resume_step
                 self.orchestrator.ckpt.resume_step = self.ckpt.resume_step
 
-        # Validate
-        if self.trainer.ckpt and not self.orchestrator.ckpt:
-            raise ValueError(
-                "Trainer checkpoint config is specified, but orchestrator checkpoint config is not. Please setup checkpointing on both for checkpointing to work properly."
-            )
-        if self.orchestrator.ckpt and not self.trainer.ckpt:
-            raise ValueError(
-                "Orchestrator checkpoint config is specified, but trainer checkpoint config is not. Please setup checkpointing on both for checkpointing to work properly."
-            )
-        if self.trainer.ckpt and self.orchestrator.ckpt and self.trainer.ckpt.path != self.orchestrator.ckpt.path:
-            raise ValueError(
-                f"Trainer checkpoint path ({self.trainer.ckpt.path}) and orchestrator checkpoint path ({self.orchestrator.ckpt.path}) are not the same. Please specify the same checkpoint path for both."
-            )
-        if (
-            self.trainer.ckpt
-            and self.orchestrator.ckpt
-            and self.trainer.ckpt.interval != self.orchestrator.ckpt.interval
-        ):
-            raise ValueError(
-                f"Trainer checkpoint interval ({self.trainer.ckpt.interval}) and orchestrator checkpoint interval ({self.orchestrator.ckpt.interval}) are not the same. Please specify the same checkpoint interval for both."
-            )
-        if (
-            self.trainer.ckpt
-            and self.orchestrator.ckpt
-            and self.trainer.ckpt.resume_step != self.orchestrator.ckpt.resume_step
-        ):
-            raise ValueError(
-                "Trainer checkpoint resume step ({self.trainer.ckpt.resume_step}) and orchestrator checkpoint resume step ({self.orchestrator.ckpt.resume_step}) are not the same. Please specify the same checkpoint resume step for both."
-            )
+        validate_shared_ckpt_config(self.trainer, self.orchestrator)
 
         return self
 
@@ -291,11 +271,7 @@ class RLConfig(BaseSettings):
                 self.trainer.monitor.wandb.offline = self.wandb.offline
                 self.orchestrator.monitor.wandb.offline = self.wandb.offline
 
-        if self.trainer.monitor.wandb and self.orchestrator.monitor.wandb:
-            if self.trainer.monitor.wandb.project != self.orchestrator.monitor.wandb.project:
-                raise ValueError(
-                    f"Trainer W&B project ({self.trainer.monitor.wandb.project}) and orchestrator W&B project ({self.orchestrator.monitor.wandb.project}) are not the same. Please specify the same W&B project for both."
-                )
+        validate_shared_wandb_config(self.trainer, self.orchestrator)
 
         return self
 
@@ -329,14 +305,7 @@ class RLConfig(BaseSettings):
             if self.inference:
                 self.inference.model.name = self.model_name
 
-        if self.trainer.model.name != self.orchestrator.model.name:
-            raise ValueError(
-                f"Trainer model name ({self.trainer.model.name}) and orchestrator model name ({self.orchestrator.model.name}) are not the same. Please specify the same model name for both."
-            )
-        if self.inference and self.inference.model.name != self.orchestrator.model.name:
-            raise ValueError(
-                f"Inference model name ({self.inference.model.name}) and orchestrator model name ({self.orchestrator.model.name}. Please specify the same model name for both."
-            )
+        validate_shared_model_name(self.trainer, self.orchestrator, self.inference)
 
         return self
 
@@ -347,10 +316,7 @@ class RLConfig(BaseSettings):
             self.trainer.max_steps = self.max_steps
             self.orchestrator.max_steps = self.max_steps
 
-        if self.trainer.max_steps != self.orchestrator.max_steps:
-            raise ValueError(
-                f"Trainer max steps ({self.trainer.max_steps}) and orchestrator max steps ({self.orchestrator.max_steps}) are not the same. Please specify the same max steps for both."
-            )
+        validate_shared_max_steps(self.trainer, self.orchestrator)
 
         return self
 
@@ -361,14 +327,7 @@ class RLConfig(BaseSettings):
             if self.inference:
                 self.inference.model.max_model_len = self.max_model_len
 
-        if (
-            self.inference
-            and self.inference.model.max_model_len
-            and self.orchestrator.seq_len != self.inference.model.max_model_len
-        ):
-            raise ValueError(
-                f"Orchestrator sequence length ({self.orchestrator.seq_len}) and inference model max model length ({self.inference.model.max_model_len}) are not the same. Please specify the same max model length for both."
-            )
+        validate_shared_max_model_len(self.orchestrator, self.inference)
 
         return self
 
@@ -379,10 +338,7 @@ class RLConfig(BaseSettings):
             self.trainer.async_level = self.async_level
             self.orchestrator.async_level = self.async_level
 
-        if self.trainer.async_level != self.orchestrator.async_level:
-            raise ValueError(
-                f"Trainer async level ({self.trainer.async_level}) and orchestrator async level ({self.orchestrator.async_level}) are not the same. Please specify the same async level for both."
-            )
+        validate_shared_async_level(self.trainer, self.orchestrator)
 
         return self
 
@@ -397,14 +353,7 @@ class RLConfig(BaseSettings):
             self.trainer.weights.path = self.weights_path
             self.orchestrator.weights_path = self.weights_path
 
-        if self.trainer.data.path != self.orchestrator.rollout_path:
-            raise ValueError(
-                f"Trainer data path ({self.trainer.data.path}) and orchestrator rollout path ({self.orchestrator.rollout_path}) are not the same. Please specify the same path for both."
-            )
-        if self.trainer.weights.path != self.orchestrator.weights_path:
-            raise ValueError(
-                f"Trainer weights path ({self.trainer.weights.path}) and orchestrator weights path ({self.orchestrator.weights_path}) are not the same. Please specify the same path for both."
-            )
+        assert_equal_paths(self.trainer, self.orchestrator)
 
         return self
 
