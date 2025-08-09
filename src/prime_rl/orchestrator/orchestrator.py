@@ -98,13 +98,13 @@ async def orchestrate(config: OrchestratorConfig):
     last_eval_step = -1
     is_first_step = True
     while True:
-        # Save checkpoint (if we are not at the first step)
+        # Save checkpoint (if we are at an interval step and not at the first or last step)
+        is_last_step = config.max_steps is not None and progress.step == config.max_steps - 1
         save_ckpt_time = 0
         if (
             config.ckpt
-            and ckpt_manager
             and config.ckpt.interval
-            and not is_first_step
+            and not (is_first_step or is_last_step)
             and progress.step % config.ckpt.interval == 0
         ):
             logger.info(f"Saving checkpoint at step {progress.step}")
@@ -451,7 +451,7 @@ async def orchestrate(config: OrchestratorConfig):
         monitor.wandb.log_final_distributions()
 
     # Write final checkpoint
-    if config.ckpt and ckpt_manager:
+    if config.ckpt:
         logger.info("Writing final checkpoint")
         ckpt_manager.save(progress, step=progress.step)
 
