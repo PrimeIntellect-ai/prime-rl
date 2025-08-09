@@ -3,6 +3,13 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
+# Overwrite sampler import before any other imports
+# ruff: noqa: I001
+import vllm
+from prime_rl.inference.vllm.sampler import Sampler as CustomSampler
+
+vllm.v1.sample.Sampler = CustomSampler
+
 import uvloop
 import vllm.envs as envs
 from fastapi import Request
