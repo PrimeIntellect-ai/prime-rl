@@ -1,177 +1,108 @@
 #!/bin/bash
 
-# Default session name
-DEFAULT_OUTPUTS_DIR="exp-1"
+SESSION_NAME="prime-rl"
+OUTPUTS_DIR="outputs"
 
-# Parse arguments
-EXPERIMENT_NAME="$DEFAULT_OUTPUTS_DIR"
-KILL_SESSION=false
-
-# Parse command line arguments
+# Optional CLI parsing
+# Supports:
+#   -s|--session-name NAME
+#   -o|--outputs-dir DIR
+#   Positional: [SESSION_NAME [OUTPUTS_DIR]]
+POSITIONAL=()
 while [[ $# -gt 0 ]]; do
-    case $1 in
-        kill)
-            KILL_SESSION=true
-            shift
-            ;;
-        *)
-            # If it's not 'kill', treat it as session name
-            EXPERIMENT_NAME="$1"
-            shift
-            ;;
-    esac
+  case "$1" in
+    -s|--session-name)
+      if [[ -z "$2" ]]; then
+        echo "Error: --session-name requires a value" >&2
+        exit 1
+      fi
+      SESSION_NAME="$2"
+      shift 2
+      ;;
+    -o|--outputs-dir)
+      if [[ -z "$2" ]]; then
+        echo "Error: --outputs-dir requires a value" >&2
+        exit 1
+      fi
+      OUTPUTS_DIR="$2"
+      shift 2
+      ;;
+    -h|--help)
+      echo "Usage: $0 [-s SESSION_NAME] [-o OUTPUTS_DIR] [SESSION_NAME [OUTPUTS_DIR]]"
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    *)
+      POSITIONAL+=("$1")
+      shift
+      ;;
+  esac
 done
 
-# Handle kill command
-if [ "$KILL_SESSION" = true ]; then
-    if tmux has-session -t "$EXPERIMENT_NAME" 2>/dev/null; then
-        echo "Killing tmux session: $EXPERIMENT_NAME"
-        tmux kill-session -t "$EXPERIMENT_NAME"
-        echo "Session '$EXPERIMENT_NAME' terminated."
-    else
-        echo "Session '$EXPERIMENT_NAME' not found."
-    fi
-    exit 0
+if [[ ${#POSITIONAL[@]} -ge 1 ]]; then
+  SESSION_NAME="${POSITIONAL[0]}"
+fi
+if [[ ${#POSITIONAL[@]} -ge 2 ]]; then
+  OUTPUTS_DIR="${POSITIONAL[1]}"
 fi
 
-# Check if we're already inside a tmux session
-if [ -n "$TMUX" ]; then
-    # We're inside tmux, so switch to the session instead of attaching
-    if tmux has-session -t "$EXPERIMENT_NAME" 2>/dev/null; then
-        echo "Session '$EXPERIMENT_NAME' already exists. Switching..."
-        tmux switch-client -t "$EXPERIMENT_NAME"
-    else
-        echo "Creating new tmux session: $EXPERIMENT_NAME"
-        tmux new-session -d -s "$EXPERIMENT_NAME" -n "RL"
-        
-        # Window 1: RL - Create the layout first
-        # Create 2 more panes for a total of 3
-        tmux split-window -v -t "$EXPERIMENT_NAME:RL.0"
-        tmux split-window -v -t "$EXPERIMENT_NAME:RL.1"
-        
-        # Apply even-vertical layout to distribute panes evenly
-        tmux select-layout -t "$EXPERIMENT_NAME:RL" even-vertical
-        
-        # Set pane titles
-        tmux select-pane -t "$EXPERIMENT_NAME:RL.0" -T "Trainer"
-        tmux select-pane -t "$EXPERIMENT_NAME:RL.1" -T "Orchestrator"
-        tmux select-pane -t "$EXPERIMENT_NAME:RL.2" -T "Inference"
-        
-        # Send commands to panes
-        # Pane 1: Trainer - stays empty
-        
-        # Pane 2: Orchestrator
-  tmux send-keys -t "$EXPERIMENT_NAME:RL.1" 'while true; do
-  echo "Waiting for orchestrator log file..."
-  while [ ! -f '"$EXPERIMENT_NAME"'/logs/orchestrator.log ]; do sleep 1; done
-  echo "Following orchestrator.log..."
-  tail -F '"$EXPERIMENT_NAME"'/logs/orchestrator.log
-done' C-m
-        
-        # Pane 3: Inference
-  tmux send-keys -t "$EXPERIMENT_NAME:RL.2" 'while true; do
-  echo "Waiting for inference log file..."
-  while [ ! -f '"$EXPERIMENT_NAME"'/logs/inference.log ]; do sleep 1; done
-  echo "Following inference.log..."
-  tail -F '"$EXPERIMENT_NAME"'/logs/inference.log
-done' C-m
-        
-        # Create second window
-        tmux new-window -t "$EXPERIMENT_NAME:2" -n "Monitor"
-        
-        # Window 2: Monitor - Create horizontal split
-        tmux split-window -h -t "$EXPERIMENT_NAME:Monitor"
-        tmux select-layout -t "$EXPERIMENT_NAME:Monitor" even-horizontal
-        
-        # Set pane titles and run commands
-        tmux select-pane -t "$EXPERIMENT_NAME:Monitor.0" -T "GPU"
-        tmux send-keys -t "$EXPERIMENT_NAME:Monitor.0" "nvtop" C-m
-        
-        tmux select-pane -t "$EXPERIMENT_NAME:Monitor.1" -T "CPU"
-        tmux send-keys -t "$EXPERIMENT_NAME:Monitor.1" "htop" C-m
-        
-        # Enable pane titles for all windows
-        tmux set-option -t "$EXPERIMENT_NAME" -g pane-border-status top
-        tmux set-option -t "$EXPERIMENT_NAME" -g pane-border-format " #{pane_title} "
-        
-        # Also set for each window explicitly
-        tmux set-window-option -t "$EXPERIMENT_NAME:RL" pane-border-status top
-        tmux set-window-option -t "$EXPERIMENT_NAME:Monitor" pane-border-status
-        
-        # Select first window and first pane
-        tmux select-window -t "$EXPERIMENT_NAME:RL"
-        tmux select-pane -t "$EXPERIMENT_NAME:RL.0"
-        
-        # Switch to the new session
-        tmux switch-client -t "$EXPERIMENT_NAME"
-    fi
+if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+  echo "Attaching to tmux session: $SESSION_NAME"
+  exec tmux attach-session -t "$SESSION_NAME"
 else
-    # Not inside tmux, use attach
-    if tmux has-session -t "$EXPERIMENT_NAME" 2>/dev/null; then
-        echo "Session '$EXPERIMENT_NAME' already exists. Attaching..."
-        tmux attach-session -t "$EXPERIMENT_NAME"
-    else
-        echo "Creating new tmux session: $EXPERIMENT_NAME"
-        
-        # Start new tmux session with first window
-        tmux new-session -d -s "$EXPERIMENT_NAME" -n "RL"
-        
-        # Window 1: RL - Create 2 more panes for a total of 3
-        tmux split-window -v -t "$EXPERIMENT_NAME:RL.0"
-        tmux split-window -v -t "$EXPERIMENT_NAME:RL.1"
-        
-        # Apply even-vertical layout
-        tmux select-layout -t "$EXPERIMENT_NAME:RL" even-vertical
-        
-        # Set pane titles
-        tmux select-pane -t "$EXPERIMENT_NAME:RL.0" -T "Trainer"
-        tmux select-pane -t "$EXPERIMENT_NAME:RL.1" -T "Orchestrator"
-        tmux select-pane -t "$EXPERIMENT_NAME:RL.2" -T "Inference"
-        
-        # Send commands to panes
-        # Pane 2: Orchestrator
-        tmux send-keys -t "$EXPERIMENT_NAME:RL.1" 'while true; do
-  echo "Waiting for orchestrator log file..."
-  while [ ! -f '"$EXPERIMENT_NAME"'/logs/orchestrator.log ]; do sleep 1; done
-  echo "Following orchestrator.log..."
-  tail -F '"$EXPERIMENT_NAME"'/logs/orchestrator.log
+  echo "Creating new tmux session: $SESSION_NAME"
+
+  # Start new tmux session with first window
+  tmux new-session -d -s "$SESSION_NAME" -n "RL"
+
+  # Window 1: RL - 3 vertical panes
+  tmux split-window -v -t "$SESSION_NAME:RL.0"
+  tmux split-window -v -t "$SESSION_NAME:RL.1"
+  tmux select-layout -t "$SESSION_NAME:RL" even-vertical
+
+  # Pane titles
+  tmux select-pane -t "$SESSION_NAME:RL.0" -T "Trainer"
+  tmux select-pane -t "$SESSION_NAME:RL.1" -T "Orchestrator"
+  tmux select-pane -t "$SESSION_NAME:RL.2" -T "Inference"
+
+  # Logs: Orchestrator
+  tmux send-keys -t "$SESSION_NAME:RL.1" 'while true; do
+echo "Waiting for orchestrator log file..."
+while [ ! -f '"$OUTPUTS_DIR"'/logs/orchestrator.log ]; do sleep 1; done
+echo "Following orchestrator.log..."
+tail -F '"$OUTPUTS_DIR"'/logs/orchestrator.log
 done' C-m
-        
-        # Pane 3: Inference
-        tmux send-keys -t "$EXPERIMENT_NAME:RL.2" 'while true; do
-  echo "Waiting for inference log file..."
-  while [ ! -f '"$EXPERIMENT_NAME"'/logs/inference.log ]; do sleep 1; done
-  echo "Following inference.log..."
-  tail -F '"$EXPERIMENT_NAME"'/logs/inference.log
+
+  # Logs: Inference
+  tmux send-keys -t "$SESSION_NAME:RL.2" 'while true; do
+echo "Waiting for inference log file..."
+while [ ! -f '"$OUTPUTS_DIR"'/logs/inference.log ]; do sleep 1; done
+echo "Following inference.log..."
+tail -F '"$OUTPUTS_DIR"'/logs/inference.log
 done' C-m
-        
-        # Create second window
-        tmux new-window -t "$EXPERIMENT_NAME" -n "Monitor"
-        
-        # Window 2: Monitor
-        tmux split-window -h -t "$EXPERIMENT_NAME:Monitor"
-        tmux select-layout -t "$EXPERIMENT_NAME:Monitor" even-horizontal
-        
-        # Set pane titles and run commands
-        tmux select-pane -t "$EXPERIMENT_NAME:Monitor.0" -T "GPU"
-        tmux send-keys -t "$EXPERIMENT_NAME:Monitor.0" "nvtop" C-m
-        
-        tmux select-pane -t "$EXPERIMENT_NAME:Monitor.1" -T "CPU"
-        tmux send-keys -t "$EXPERIMENT_NAME:Monitor.1" "htop" C-m
-        
-        # Enable pane titles for all windows
-        tmux set-option -t "$EXPERIMENT_NAME" -g pane-border-status top
-        tmux set-option -t "$EXPERIMENT_NAME" -g pane-border-format " #{pane_title} "
-        
-        # Also set for each window explicitly
-        tmux set-window-option -t "$EXPERIMENT_NAME:RL" pane-border-status top
-        tmux set-window-option -t "$EXPERIMENT_NAME:Monitor" pane-border-status top
-        
-        # Select first window and first pane
-        tmux select-window -t "$EXPERIMENT_NAME:RL"
-        tmux select-pane -t "$EXPERIMENT_NAME:RL.0"
-        
-        # Attach to the session
-        tmux attach-session -t "$EXPERIMENT_NAME"
-    fi
-fi 
+
+  # Window 2: Monitor
+  tmux new-window -t "$SESSION_NAME" -n "Monitor"
+  tmux split-window -h -t "$SESSION_NAME:Monitor"
+  tmux select-layout -t "$SESSION_NAME:Monitor" even-horizontal
+
+  tmux select-pane -t "$SESSION_NAME:Monitor.0" -T "GPU"
+  tmux send-keys -t "$SESSION_NAME:Monitor.0" "nvtop" C-m
+
+  tmux select-pane -t "$SESSION_NAME:Monitor.1" -T "CPU"
+  tmux send-keys -t "$SESSION_NAME:Monitor.1" "htop" C-m
+
+  # Pane title styling
+  tmux set-option -t "$SESSION_NAME" -g pane-border-status top
+  tmux set-option -t "$SESSION_NAME" -g pane-border-format " #{pane_title} "
+  tmux set-window-option -t "$SESSION_NAME:RL" pane-border-status top
+  tmux set-window-option -t "$SESSION_NAME:Monitor" pane-border-status top
+
+  # Focus trainer pane and attach
+  tmux select-window -t "$SESSION_NAME:RL"
+  tmux select-pane -t "$SESSION_NAME:RL.0"
+  exec tmux attach-session -t "$SESSION_NAME"
+fi

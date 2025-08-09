@@ -114,12 +114,12 @@ class RLConfig(BaseSettings):
     inference_gpus: Annotated[int, Field(description="The number of GPUs to use for inference.")] = 1
 
     ### Shared configurations
+
+    # NOTE: This value should match the `DEFAULT_OUTPUTS_DIR` in `scripts/tmux.sh` to properly stream file logs
     outputs_dir: Annotated[
         Path,
         Field(description="The directory to store the outputs. Should typically be set to an experiment identifier."),
-    ] = Path(
-        "exp-1"
-    )  # NOTE: This value should match the `EXPERIMENT_NAME` in `scripts/tmux.sh` to properly stream file logs
+    ] = Path("outputs")
 
     ckpt: Annotated[
         CheckpointConfig | None,
