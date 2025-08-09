@@ -8,6 +8,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from pathlib import Path
 from typing import Any, Literal
 
 import aiohttp
@@ -124,6 +125,7 @@ class WandbMonitor(Monitor):
     def __init__(
         self,
         config: WandbMonitorConfig,
+        outputs_dir: Path,
         tokenizer: PreTrainedTokenizer | None = None,
         task_id: str | None = None,
         run_config: BaseSettings | None = None,
@@ -140,7 +142,7 @@ class WandbMonitor(Monitor):
             project=config.project,
             name=config.name,
             id=config.id,
-            dir=config.dir,
+            dir=outputs_dir / "wandb",
             resume="allow",
             config=run_config.model_dump() if run_config else None,
             mode="offline" if config.offline else None,
@@ -328,12 +330,14 @@ class MultiMonitor:
     def __init__(
         self,
         config: MultiMonitorConfig,
+        outputs_dir: Path,
         task_id: str | None = None,
         tokenizer: PreTrainedTokenizer | None = None,
         run_config: BaseSettings | None = None,
     ):
         self.logger = get_logger()
         self.history: list[dict[str, Any]] = []
+        self.outputs_dir = outputs_dir
         # Initialize outputs
         self.outputs: dict[MonitorType, Monitor] = {}
         self.wandb = None
@@ -344,7 +348,7 @@ class MultiMonitor:
         if config.api:
             self.outputs["api"] = APIMonitor(config.api, task_id)
         if config.wandb:
-            self.wandb = WandbMonitor(config.wandb, tokenizer, task_id, run_config=run_config)
+            self.wandb = WandbMonitor(config.wandb, outputs_dir, tokenizer, task_id, run_config=run_config)
             self.outputs["wandb"] = self.wandb
 
         self.disabled = len(self.outputs) == 0
@@ -443,6 +447,7 @@ def get_monitor() -> MultiMonitor:
 
 def setup_monitor(
     config: MultiMonitorConfig,
+    outputs_dir: Path,
     task_id: str | None = None,
     tokenizer: PreTrainedTokenizer | None = None,
     run_config: BaseSettings | None = None,
@@ -451,5 +456,5 @@ def setup_monitor(
     global _MONITOR
     if _MONITOR is not None:
         raise RuntimeError("Monitor already initialized. Please call `setup_monitor` only once.")
-    _MONITOR = MultiMonitor(config, task_id, tokenizer, run_config)
+    _MONITOR = MultiMonitor(config, outputs_dir, task_id, tokenizer, run_config)
     return _MONITOR

@@ -56,7 +56,7 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup monitor
     logger.info(f"Initializing monitor ({config.monitor})")
-    monitor = setup_monitor(config.monitor, None, tokenizer, config)
+    monitor = setup_monitor(config.monitor, outputs_dir=config.outputs_dir, tokenizer=tokenizer, run_config=config)
 
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")

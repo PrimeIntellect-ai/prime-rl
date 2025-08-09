@@ -58,7 +58,7 @@ def train(config: TrainerConfig):
 
     # Setup the monitor
     logger.info(f"Initializing monitor ({config.monitor})")
-    monitor = setup_monitor(config.monitor, run_config=config)
+    monitor = setup_monitor(config.monitor, outputs_dir=config.outputs_dir, run_config=config)
 
     # TODO(Mika): Move this to typed env var
     # Allow eager fallback during production so that training runs don't die if compile fails
