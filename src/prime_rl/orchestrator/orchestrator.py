@@ -322,7 +322,7 @@ async def orchestrate(config: OrchestratorConfig):
             collate_mode=config.collate_mode,
         )
 
-        step_path = Path(config.rollout_path) / f"step_{progress.step}"
+        step_path = config.outputs_dir / "rollouts" / f"step_{progress.step}"
         step_path.mkdir(parents=True, exist_ok=True)
         for i, batches in enumerate(all_data_ranks_batches):
             batch_path = step_path / f"rank_{i}.pt"

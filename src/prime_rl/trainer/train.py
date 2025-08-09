@@ -136,7 +136,7 @@ def train(config: TrainerConfig):
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
-    dataloader = DataLoader(config.data.path, progress.step)
+    dataloader = DataLoader(config.outputs_dir, progress.step)
     if config.data.fake:
         dataloader = FakeDataLoader(config.data.fake)
 

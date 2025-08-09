@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 import warnings
 from pathlib import Path
 from subprocess import Popen
@@ -31,15 +32,13 @@ from prime_rl.utils.validation import (
     validate_shared_max_model_len,
     validate_shared_max_steps,
     validate_shared_model_name,
-    validate_shared_paths,
+    validate_shared_outputs_dir,
     validate_shared_wandb_config,
 )
 
 
 class LogConfig(BaseSettings):
     """Configures shared logging."""
-
-    path: Annotated[Path | None, Field(description="The path to the logs directory.")] = Path("logs")
 
     level: Annotated[str | None, Field(description="The log level to use.")] = "info"
 
@@ -114,13 +113,6 @@ class RLConfig(BaseSettings):
 
     inference_gpus: Annotated[int, Field(description="The number of GPUs to use for inference.")] = 1
 
-    exp_id: Annotated[
-        str | None,
-        Field(
-            description="The experiment ID. If set, will be used to identify shared resources, like log files, weight and rollout directories, etc."
-        ),
-    ] = "rl"  # This value has to match the `DEFAULT_EXPERIMENT_ID` in `tmux.sh`
-
     ### Shared configurations
     ckpt: Annotated[
         CheckpointConfig | None,
@@ -161,20 +153,6 @@ class RLConfig(BaseSettings):
         int | None,
         Field(
             description="The async level to use. If None, will fallback to the async level specified on submodule configs."
-        ),
-    ] = None
-
-    rollout_path: Annotated[
-        Path | None,
-        Field(
-            description="The path to the rollout directory. If None, will fallback to the rollout path specified on submodule configs."
-        ),
-    ] = None
-
-    weights_path: Annotated[
-        Path | None,
-        Field(
-            description="The path to the weights directory. If None, will fallback to the weights path specified on submodule configs."
         ),
     ] = None
 
@@ -224,11 +202,6 @@ class RLConfig(BaseSettings):
                 self.trainer.ckpt = TrainerCheckpointConfig()
             if not self.orchestrator.ckpt:
                 self.orchestrator.ckpt = OrchestratorCheckpointConfig()
-
-            # If specified, use the same ckpt path
-            if self.ckpt.path:
-                self.trainer.ckpt.path = self.ckpt.path
-                self.orchestrator.ckpt.path = self.ckpt.path
 
             # If specified, use the same ckpt interval
             if self.ckpt.interval:
@@ -344,33 +317,14 @@ class RLConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_paths(self):
+    def auto_setup_output_dir(self):
         # If specified, use the same paths for communicating data and weights
-        if self.rollout_path:
-            self.trainer.data.path = self.rollout_path
-            self.orchestrator.rollout_path = self.rollout_path
+        if self.outputs_dir:
+            self.trainer.outputs_dir = self.outputs_dir
+            self.orchestrator.outputs_dir = self.outputs_dir
 
-        if self.weights_path:
-            self.trainer.weights.path = self.weights_path
-            self.orchestrator.weights_path = self.weights_path
+        validate_shared_outputs_dir(self.trainer, self.orchestrator)
 
-        validate_shared_paths(self.trainer, self.orchestrator)
-
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_exp_id(self):
-        if self.exp_id:
-            # Create subdirectories for logs, rollouts, weights and checkpoints
-            self.log.path = self.log.path / self.exp_id
-            self.trainer.data.path = self.trainer.data.path / self.exp_id
-            self.orchestrator.rollout_path = self.orchestrator.rollout_path / self.exp_id
-            self.trainer.weights.path = self.trainer.weights.path / self.exp_id
-            self.orchestrator.weights_path = self.orchestrator.weights_path / self.exp_id
-            if self.trainer.ckpt:
-                self.trainer.ckpt.path = self.trainer.ckpt.path / self.exp_id
-            if self.orchestrator.ckpt:
-                self.orchestrator.ckpt.path = self.orchestrator.ckpt.path / self.exp_id
         return self
 
     @model_validator(mode="after")
@@ -441,28 +395,29 @@ def rl(config: RLConfig):
 
     # Prepare paths to communicate with the trainer
     if config.clean:
-        logger.info("Cleaning checkpoint, logs, checkpoint weights and rollout directories")
+        logger.info("Cleaning checkpoint, logs, weights and rollout directories")
 
         # Cleaning logs
-        logger.info(f"Cleaning logs ({config.log.path})")
-        shutil.rmtree(config.log.path, ignore_errors=True)
-        config.log.path.mkdir(parents=True, exist_ok=True)
+        log_dir = config.outputs_dir / "logs"
+        logger.info(f"Cleaning log dir ({log_dir})")
+        shutil.rmtree(log_dir, ignore_errors=True)
+        log_dir.mkdir(parents=True, exist_ok=True)
 
-        # Cleaning checkpoints
-        if config.trainer.ckpt and not config.trainer.ckpt.resume_step:  # Only clean if we don't resume
-            logger.info(f"Cleaning trainer checkpoint path ({config.trainer.ckpt.path})")
-            shutil.rmtree(config.trainer.ckpt.path, ignore_errors=True)
+        # Cleaning checkpoints and weights, unless resuming
+        do_resume = config.trainer.ckpt and config.trainer.ckpt.resume_step
+        if not do_resume:  # Only clean if we don't resume
+            ckpt_dir = config.outputs_dir / "checkpoints"
+            logger.info(f"Cleaning checkpoint directory ({ckpt_dir})")
+            shutil.rmtree(ckpt_dir, ignore_errors=True)
 
-        if config.orchestrator.ckpt and not config.orchestrator.ckpt.resume_step:  # Only clean if we don't resume
-            logger.info(f"Cleaning orchestrator checkpoint path ({config.orchestrator.ckpt.path})")
-            shutil.rmtree(config.orchestrator.ckpt.path, ignore_errors=True)
+            weights_dir = config.outputs_dir / "weights"
+            logger.info(f"Cleaning checkpoint weights directory ({weights_dir})")
+            shutil.rmtree(weights_dir, ignore_errors=True)
 
-        if not (config.orchestrator.ckpt and config.orchestrator.ckpt.resume_step):  # Only clean if we don't resume
-            logger.info(f"Cleaning checkpoint weights path ({config.orchestrator.weights_path})")
-            shutil.rmtree(config.orchestrator.weights_path, ignore_errors=True)
-
-        logger.info(f"Cleaning rollout path ({config.trainer.data.path})")
-        shutil.rmtree(config.trainer.data.path, ignore_errors=True)
+        # Cleaning rollouts
+        rollout_dir = config.outputs_dir / "rollouts"
+        logger.info(f"Cleaning rollout dir ({rollout_dir})")
+        shutil.rmtree(rollout_dir, ignore_errors=True)
 
     # Start processes
     processes: list[Popen] = []
@@ -558,7 +513,7 @@ def rl(config: RLConfig):
             "run",
             "torchrun",
             f"--rdzv-endpoint=localhost:{get_free_port()}",
-            f"--rdzv-id={config.exp_id}",
+            f"--rdzv-id={uuid.uuid4().hex}",
             "--nproc-per-node",
             str(config.trainer_gpus),
             "src/prime_rl/trainer/train.py",

@@ -49,18 +49,18 @@ class FakeDataLoader:
 class DataLoader:
     """Loads serialized data from a data path written by the orchestrator."""
 
-    def __init__(self, data_path: Path, start_step: int):
-        self.data_path = data_path
+    def __init__(self, output_dir: Path, start_step: int):
+        self.rollout_dir = output_dir / "rollouts"
         self.current_step = start_step
         self.world = get_world()
 
-    def get_batch_path(self) -> Path:
-        return self.data_path / f"step_{self.current_step}" / f"rank_{self.world.rank}.pt"
+    def get_rollout_path(self) -> Path:
+        return self.rollout_dir / f"step_{self.current_step}" / f"rank_{self.world.rank}.pt"
 
     def wait_for_batch(self) -> None:
-        wait_for_path(self.get_batch_path())
+        wait_for_path(self.get_rollout_path())
 
     def get_batch(self) -> list[MicroBatch]:
-        batches = torch.load(self.get_batch_path())
+        batches = torch.load(self.get_rollout_path())
         self.current_step += 1
         return batches
