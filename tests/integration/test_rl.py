@@ -80,7 +80,7 @@ def wandb_project(username: str):
 
 @pytest.fixture(scope="module")
 def rl_process(
-    vllm_server: str,
+    _vllm_server,  # Can only run with vLLM server
     run_process: Callable[[Command, Environment, int], ProcessResult],
     wandb_project: str,
     branch_name: str,
@@ -97,7 +97,8 @@ def rl_process(
 
 @pytest.fixture
 def rl_resume_process(
-    rl_process: ProcessResult,
+    _vllm_server,  # Can only run with vLLM server
+    _rl_process,  # Resume training can only start when regular RL process is finished
     run_process: Callable[[Command, Environment, int], ProcessResult],
     wandb_project: str,
     branch_name: str,

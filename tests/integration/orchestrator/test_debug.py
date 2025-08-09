@@ -18,9 +18,7 @@ CMD = [
 
 
 @pytest.fixture(scope="module")
-def orchestrator_process(
-    vllm_server: str, run_process: Callable[[Command, Environment], ProcessResult]
-) -> ProcessResult:
+def orchestrator_process(_vllm_server, run_process: Callable[[Command, Environment], ProcessResult]) -> ProcessResult:
     return run_process(CMD, {})
 
 
