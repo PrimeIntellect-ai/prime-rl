@@ -31,6 +31,7 @@ from prime_rl.utils.validation import (
     validate_shared_max_model_len,
     validate_shared_max_steps,
     validate_shared_model_name,
+    validate_shared_paths,
     validate_shared_wandb_config,
 )
 
@@ -353,7 +354,7 @@ class RLConfig(BaseSettings):
             self.trainer.weights.path = self.weights_path
             self.orchestrator.weights_path = self.weights_path
 
-        assert_equal_paths(self.trainer, self.orchestrator)
+        validate_shared_paths(self.trainer, self.orchestrator)
 
         return self
 
