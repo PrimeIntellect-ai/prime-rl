@@ -77,7 +77,7 @@ async def orchestrate(config: OrchestratorConfig):
         logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
         ckpt_manager.load(progress, step=config.ckpt.resume_step)
         ckpt_step = max(progress.step - config.async_level, 0)
-        await update_weights(client, config.weights_path, ckpt_step)
+        await update_weights(client, config.outputs_dir / "weights", ckpt_step)
     else:
         logger.info("Training from scratch. Resetting weights to base model")
         await reload_weights(client)
@@ -130,14 +130,14 @@ async def orchestrate(config: OrchestratorConfig):
             ckpt_step = progress.step - config.async_level
             logger.info(f"Waiting for weight checkpoint {ckpt_step}")
             wait_for_weight_ckpt_start_time = time.time()
-            wait_for_weight_checkpoint(config.weights_path, ckpt_step)
+            wait_for_weight_checkpoint(config.outputs_dir / "weights", ckpt_step)
             wait_for_weight_ckpt_time = time.time() - wait_for_weight_ckpt_start_time
             logger.debug(f"Waited {wait_for_weight_ckpt_time:.2f}s for weight checkpoint")
 
-            # Reload the weights
+            # Update the weights
             logger.info(f"Updating weights to weight checkpoint {ckpt_step}")
             update_weights_start_time = time.time()
-            await update_weights(client, config.weights_path, ckpt_step)
+            await update_weights(client, config.outputs_dir / "weights", ckpt_step)
             update_weights_time = time.time() - update_weights_start_time
             logger.debug(f"Updated weights in {update_weights_time:.2f}s")
 

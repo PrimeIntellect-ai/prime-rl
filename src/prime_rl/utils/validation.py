@@ -19,10 +19,6 @@ def validate_shared_ckpt_config(
         raise ValueError(
             "Orchestrator checkpoint config is specified, but trainer checkpoint config is not. Please setup checkpointing on both for checkpointing to work properly."
         )
-    if trainer.ckpt and orchestrator.ckpt and trainer.ckpt.path != orchestrator.ckpt.path:
-        raise ValueError(
-            f"Trainer checkpoint path ({trainer.ckpt.path}) and orchestrator checkpoint path ({orchestrator.ckpt.path}) are not the same. Please specify the same checkpoint path for both."
-        )
     if trainer.ckpt and orchestrator.ckpt and trainer.ckpt.interval != orchestrator.ckpt.interval:
         raise ValueError(
             f"Trainer checkpoint interval ({trainer.ckpt.interval}) and orchestrator checkpoint interval ({orchestrator.ckpt.interval}) are not the same. Please specify the same checkpoint interval for both."

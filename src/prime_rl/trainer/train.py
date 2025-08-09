@@ -69,14 +69,13 @@ def train(config: TrainerConfig):
     torch.set_float32_matmul_precision("high")
     torch.cuda.set_device(world.rank)
 
-    if config.weights.path and world.rank == 0:
-        if envs.SHARDCAST_OUTPUT_DIR is not None:
-            logger.info(f"Initializing shardcast from {envs.SHARDCAST_OUTPUT_DIR}")
-            shardcast.initialize(
-                envs.SHARDCAST_OUTPUT_DIR,
-                # +1 to ensure to not delete current checkpoint when async_level=0
-                max_distribution_folders=config.async_level + 1,
-            )
+    if world.rank == 0 and envs.SHARDCAST_OUTPUT_DIR is not None:
+        logger.info(f"Initializing shardcast from {envs.SHARDCAST_OUTPUT_DIR}")
+        shardcast.initialize(
+            envs.SHARDCAST_OUTPUT_DIR,
+            # +1 to ensure to not delete current checkpoint when async_level=0
+            max_distribution_folders=config.async_level + 1,
+        )
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model and tokenizer ({config.model})")
@@ -127,7 +126,7 @@ def train(config: TrainerConfig):
                 model_name_or_path = (
                     config.model.name
                     if not (config.ckpt and config.ckpt.resume_step)
-                    else config.weights.path / f"step_{step}"
+                    else weight_ckpt_manager.path / f"step_{step}"
                 )
                 model_config = deepcopy(config.model)
                 model_config.name = model_name_or_path

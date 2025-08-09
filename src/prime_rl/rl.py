@@ -114,6 +114,13 @@ class RLConfig(BaseSettings):
     inference_gpus: Annotated[int, Field(description="The number of GPUs to use for inference.")] = 1
 
     ### Shared configurations
+    outputs_dir: Annotated[
+        Path,
+        Field(description="The directory to store the outputs. Should typically be set to an experiment identifier."),
+    ] = Path(
+        "exp-1"
+    )  # NOTE: This value should match the `EXPERIMENT_NAME` in `scripts/tmux.sh` to properly stream file logs
+
     ckpt: Annotated[
         CheckpointConfig | None,
         Field(
@@ -394,11 +401,16 @@ def rl(config: RLConfig):
     logger.debug(f"RL start command: {' '.join(start_command)}")
 
     # Prepare paths to communicate with the trainer
+    log_dir = config.outputs_dir / "logs"
+    ckpt_dir = config.outputs_dir / "checkpoints"
+    weights_dir = config.outputs_dir / "weights"
+    rollout_dir = config.outputs_dir / "rollouts"
+
+    # Clean up directories if specified
     if config.clean:
         logger.info("Cleaning checkpoint, logs, weights and rollout directories")
 
         # Cleaning logs
-        log_dir = config.outputs_dir / "logs"
         logger.info(f"Cleaning log dir ({log_dir})")
         shutil.rmtree(log_dir, ignore_errors=True)
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -406,16 +418,13 @@ def rl(config: RLConfig):
         # Cleaning checkpoints and weights, unless resuming
         do_resume = config.trainer.ckpt and config.trainer.ckpt.resume_step
         if not do_resume:  # Only clean if we don't resume
-            ckpt_dir = config.outputs_dir / "checkpoints"
             logger.info(f"Cleaning checkpoint directory ({ckpt_dir})")
             shutil.rmtree(ckpt_dir, ignore_errors=True)
 
-            weights_dir = config.outputs_dir / "weights"
             logger.info(f"Cleaning checkpoint weights directory ({weights_dir})")
             shutil.rmtree(weights_dir, ignore_errors=True)
 
         # Cleaning rollouts
-        rollout_dir = config.outputs_dir / "rollouts"
         logger.info(f"Cleaning rollout dir ({rollout_dir})")
         shutil.rmtree(rollout_dir, ignore_errors=True)
 
@@ -440,7 +449,7 @@ def rl(config: RLConfig):
             logger.info(f"Starting inference process on GPU(s) {' '.join(map(str, inference_gpu_ids))}")
             logger.debug(f"Inference start command: {' '.join(inference_cmd)}")
             # If we don't log stdout, the server hangs
-            with open(config.log.path / "inference.log", "w") as log_file:
+            with open(log_dir / "inference.log", "w") as log_file:
                 inference_process = Popen(
                     inference_cmd,
                     env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, inference_gpu_ids))},
@@ -478,7 +487,7 @@ def rl(config: RLConfig):
         ]
         logger.info("Starting orchestrator process")
         logger.debug(f"Orchestrator start command: {' '.join(orchestrator_cmd)}")
-        with open(config.log.path / "orchestrator.log", "w") as log_file:
+        with open(log_dir / "orchestrator.log", "w") as log_file:
             orchestrator_process = Popen(
                 orchestrator_cmd,
                 stdout=log_file,
@@ -523,7 +532,7 @@ def rl(config: RLConfig):
         train_gpu_ids = devices[config.inference_gpus :]
         logger.info(f"Starting trainer process on GPU(s) {' '.join(map(str, train_gpu_ids))}")
         logger.debug(f"Training start command: {' '.join(trainer_cmd)}")
-        with open(config.log.path / "trainer.log", "w") as log_file:
+        with open(log_dir / "trainer.log", "w") as log_file:
             trainer_process = Popen(
                 trainer_cmd,
                 env={
@@ -550,7 +559,7 @@ def rl(config: RLConfig):
         # Monitor all processes for failures
         logger.success("Startup complete. Showing trainer logs...")
 
-        tail_process = Popen(["tail", "-F", config.log.path / "trainer.log"])
+        tail_process = Popen(["tail", "-F", log_dir / "trainer.log"])
         processes.append(tail_process)
 
         # Check for errors from monitor threads

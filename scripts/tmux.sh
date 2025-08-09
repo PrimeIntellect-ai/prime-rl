@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # Default session name
-DEFAULT_EXPERIMENT_ID="rl"
+DEFAULT_OUTPUTS_DIR="exp-1"
 
 # Parse arguments
-EXPERIMENT_NAME="$DEFAULT_EXPERIMENT_ID"
+EXPERIMENT_NAME="$DEFAULT_OUTPUTS_DIR"
 KILL_SESSION=false
 
 # Parse command line arguments
@@ -61,19 +61,19 @@ if [ -n "$TMUX" ]; then
         # Pane 1: Trainer - stays empty
         
         # Pane 2: Orchestrator
-        tmux send-keys -t "$EXPERIMENT_NAME:RL.1" 'while true; do
+  tmux send-keys -t "$EXPERIMENT_NAME:RL.1" 'while true; do
   echo "Waiting for orchestrator log file..."
-  while [ ! -f logs/'"$EXPERIMENT_NAME"'/orchestrator.log ]; do sleep 1; done
+  while [ ! -f '"$EXPERIMENT_NAME"'/logs/orchestrator.log ]; do sleep 1; done
   echo "Following orchestrator.log..."
-  tail -F logs/'"$EXPERIMENT_NAME"'/orchestrator.log
+  tail -F '"$EXPERIMENT_NAME"'/logs/orchestrator.log
 done' C-m
         
         # Pane 3: Inference
-        tmux send-keys -t "$EXPERIMENT_NAME:RL.2" 'while true; do
+  tmux send-keys -t "$EXPERIMENT_NAME:RL.2" 'while true; do
   echo "Waiting for inference log file..."
-  while [ ! -f logs/'"$EXPERIMENT_NAME"'/inference.log ]; do sleep 1; done
+  while [ ! -f '"$EXPERIMENT_NAME"'/logs/inference.log ]; do sleep 1; done
   echo "Following inference.log..."
-  tail -F logs/'"$EXPERIMENT_NAME"'/inference.log
+  tail -F '"$EXPERIMENT_NAME"'/logs/inference.log
 done' C-m
         
         # Create second window
@@ -132,17 +132,17 @@ else
         # Pane 2: Orchestrator
         tmux send-keys -t "$EXPERIMENT_NAME:RL.1" 'while true; do
   echo "Waiting for orchestrator log file..."
-  while [ ! -f logs/'"$EXPERIMENT_NAME"'/orchestrator.log ]; do sleep 1; done
+  while [ ! -f '"$EXPERIMENT_NAME"'/logs/orchestrator.log ]; do sleep 1; done
   echo "Following orchestrator.log..."
-  tail -F logs/'"$EXPERIMENT_NAME"'/orchestrator.log
+  tail -F '"$EXPERIMENT_NAME"'/logs/orchestrator.log
 done' C-m
         
         # Pane 3: Inference
         tmux send-keys -t "$EXPERIMENT_NAME:RL.2" 'while true; do
   echo "Waiting for inference log file..."
-  while [ ! -f logs/'"$EXPERIMENT_NAME"'/inference.log ]; do sleep 1; done
+  while [ ! -f '"$EXPERIMENT_NAME"'/logs/inference.log ]; do sleep 1; done
   echo "Following inference.log..."
-  tail -F logs/'"$EXPERIMENT_NAME"'/inference.log
+  tail -F '"$EXPERIMENT_NAME"'/logs/inference.log
 done' C-m
         
         # Create second window
