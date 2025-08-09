@@ -1,4 +1,3 @@
-from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
@@ -75,19 +74,6 @@ class EnvironmentConfig(BaseConfig):
     args: Annotated[dict, Field(description="Arguments to pass to the environment.")] = {}
 
 
-class PathConfig(BaseConfig):
-    """Configures a path used for input/ output operations"""
-
-    path: Annotated[Path, Field(description="Path to write to.")]
-
-    clean: Annotated[
-        bool,
-        Field(
-            description="Whether to clean the path at the beginning of the run. If True, will delete the entire directory.",
-        ),
-    ] = False
-
-
 class EvalConfig(BaseConfig):
     """Configures evaluation."""
 
@@ -129,8 +115,6 @@ class EvalConfig(BaseConfig):
 
 class CheckpointConfig(BaseConfig):
     """Configures checkpointing the orchestrator."""
-
-    path: Annotated[Path, Field(description="Directory to write checkpoints to.")] = Path("checkpoints")
 
     interval: Annotated[int, Field(ge=1, description="Interval at which to save the checkpoint.")] = 50
 
@@ -333,20 +317,6 @@ class OrchestratorConfig(BaseSettings):
             description="Maximum number of async levels to use. If 0, will do synchronous RL. Else, it will allow to go `async_level` steps ahead of training.",
         ),
     ] = 2
-
-    rollout_path: Annotated[
-        Path,
-        Field(
-            description="Path to write inference outputs to. Will be populated by the orchestrator with responses from inference pool.",
-        ),
-    ] = Path("rollouts")
-
-    weights_path: Annotated[
-        Path,
-        Field(
-            description="Path to read updated model weights from. Will be populated by the trainer.",
-        ),
-    ] = Path("weights")
 
     bench: Annotated[
         bool,
