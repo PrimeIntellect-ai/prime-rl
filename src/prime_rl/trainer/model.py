@@ -55,58 +55,60 @@ def to_tt_moe_args(config: PretrainedConfig, use_grouped_mm: bool = True) -> MoE
 
 def to_tt_moe(moe_args: MoEArgs, config: PretrainedConfig, transformer_block: nn.Module) -> MoE:
     new_mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
-    # with torch.no_grad():
-    #    if isinstance(config, Qwen3MoeConfig):
-    #        # Router
-    #        new_mlp.router.gate.weight.data.copy_(transformer_block.mlp.gate.weight.data)
-    #        # Routed experts
-    #        for i in range(moe_args.num_experts):
-    #            new_mlp.experts.w1.data[i].copy_(transformer_block.mlp.experts[i].gate_proj.weight.data)
-    #            new_mlp.experts.w2.data[i].copy_(transformer_block.mlp.experts[i].down_proj.weight.data)
-    #            new_mlp.experts.w3.data[i].copy_(transformer_block.mlp.experts[i].up_proj.weight.data)
-    #    elif isinstance(config, DeepseekV3Config):
-    #        # Router
-    #        new_mlp.router.gate.weight.data.copy_(transformer_block.mlp.gate.weight.data)
-    #        # Shared experts
-    #        new_mlp.shared_expert.w1.data[0].copy_(transformer_block.mlp.shared_experts.gate_proj.weight.data)
-    #        new_mlp.shared_expert.w2.data[0].copy_(transformer_block.mlp.shared_experts.down_proj.weight.data)
-    #        new_mlp.shared_expert.w3.data[0].copy_(transformer_block.mlp.shared_experts.up_proj.weight.data)
-    #        # Routed experts
-    #        for i in range(moe_args.num_experts):
-    #            new_mlp.experts.w1.data[i].copy_(transformer_block.mlp.experts[i].gate_proj.weight.data)
-    #            new_mlp.experts.w2.data[i].copy_(transformer_block.mlp.experts[i].down_proj.weight.data)
-    #            new_mlp.experts.w3.data[i].copy_(transformer_block.mlp.experts[i].up_proj.weight.data)
-    #    else:
-    #        raise ValueError(f"Unsupported config: {config}")
+    with torch.no_grad():
+       if isinstance(config, Qwen3MoeConfig):
+           # Router
+           new_mlp.router.gate.weight.data.copy_(transformer_block.mlp.gate.weight.data)
+           # Routed experts
+           for i in range(moe_args.num_experts):
+               new_mlp.experts.w1.data[i].copy_(transformer_block.mlp.experts[i].gate_proj.weight.data)
+               new_mlp.experts.w2.data[i].copy_(transformer_block.mlp.experts[i].down_proj.weight.data)
+               new_mlp.experts.w3.data[i].copy_(transformer_block.mlp.experts[i].up_proj.weight.data)
+       elif isinstance(config, DeepseekV3Config):
+           # Router
+           new_mlp.router.gate.weight.data.copy_(transformer_block.mlp.gate.weight.data)
+           # Shared experts
+           new_mlp.shared_expert.w1.data[0].copy_(transformer_block.mlp.shared_experts.gate_proj.weight.data)
+           new_mlp.shared_expert.w2.data[0].copy_(transformer_block.mlp.shared_experts.down_proj.weight.data)
+           new_mlp.shared_expert.w3.data[0].copy_(transformer_block.mlp.shared_experts.up_proj.weight.data)
+           # Routed experts
+           for i in range(moe_args.num_experts):
+               new_mlp.experts.w1.data[i].copy_(transformer_block.mlp.experts[i].gate_proj.weight.data)
+               new_mlp.experts.w2.data[i].copy_(transformer_block.mlp.experts[i].down_proj.weight.data)
+               new_mlp.experts.w3.data[i].copy_(transformer_block.mlp.experts[i].up_proj.weight.data)
+       else:
+           raise ValueError(f"Unsupported config: {config}")
     return new_mlp
 
 
 import psutil
 
-meow = []
-
+def get_memory_usage() -> tuple[float, float]:
+    rss = psutil.Process().memory_info().rss / 1024 / 1024
+    vms = psutil.Process().memory_info().vms / 1024 / 1024
+    print(f"RSS: {rss:.2f} MB, VMS: {vms:.2f} MB")
+    return rss, vms
 
 def convert_tt_moe(model: nn.Module, config: PretrainedConfig) -> None:
-    global meow
     moe_args = to_tt_moe_args(config)
-    for layer_id, transformer_block in model.model.layers.named_children():
-        # Skip non MoE layers
-        if not hasattr(transformer_block.mlp, "gate"):
-            print(f"Skipping non MoE layer: {layer_id}")
-            continue
+    for param in model.parameters():
+        #get_memory_usage()
+        param.untyped_storage().resize_(1)
+        #get_memory_usage()
+    #for layer_id, transformer_block in model.model.layers.named_children():
+    #    # Skip non MoE layers
+    #    if not hasattr(transformer_block.mlp, "gate"):
+    #        print(f"Skipping non MoE layer: {layer_id}")
+    #        continue
 
-        # print(f"Converting MoE layer: {layer_id}/{len(model.model.layers)}")
-        new_mlp = to_tt_moe(moe_args, config, transformer_block)
-        ram_usage = psutil.Process().memory_info().rss / 1024 / 1024
-        print(f"RAM usage before resize: {ram_usage:.2f} MB")
-        for param in transformer_block.mlp.parameters():
-            # Hack: for whatever reason, the magic dumpster is needed for the resize trick to work
-            print(param.data.shape, param.data.device, end="")
-            param.data.untyped_storage().resize_(0)
-        ram_usage = psutil.Process().memory_info().rss / 1024 / 1024
-        print(f"RAM usage after resize: {ram_usage:.2f} MB")
-        meow.append(new_mlp)
-        # transformer_block.mlp = new_mlp
+    #    # print(f"Converting MoE layer: {layer_id}/{len(model.model.layers)}")
+    #    #new_mlp = to_tt_moe(moe_args, config, transformer_block)
+    #    get_memory_usage()
+    #    for param in transformer_block.mlp.parameters():
+    #        # Hack: for whatever reason, the magic dumpster is needed for the resize trick to work
+    #        param.data.untyped_storage().resize_(0)
+    #    get_memory_usage()
+    #    #transformer_block.mlp = new_mlp
 
 
 def get_model(config: ModelConfig) -> nn.Module:

@@ -1,19 +1,12 @@
-import openai
+from prime_rl.trainer.model import get_model
+from prime_rl.trainer.config import ModelConfig
 
-# Use OpenAI client with custom base URL
-client = openai.OpenAI(
-    base_url="http://89.169.111.0:30000/v1",
-    api_key="dummy-key",  # Replace with actual key if needed; can be dummy for local server
-)
-print("Hello")
-
-response = client.chat.completions.create(
-    model="/data/models--deepseek-ai--DeepSeek-R1",  # Replace with your model name if needed
-    messages=[
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "Hello, who won the world cup in 2018?"},
-    ],
-    max_tokens=100,
+model_config = ModelConfig(
+    name="Qwen/Qwen3-30B-A3B",
+    attn="sdpa",
+    trust_remote_code=True,
+    ep_mode=1,
 )
 
-print(response.choices[0].message.content)
+model = get_model(model_config)
+print(model)
