@@ -1,4 +1,5 @@
 import functools
+import gc
 import os
 import time
 from collections import defaultdict
@@ -239,3 +240,16 @@ def get_cuda_visible_devices() -> list[int]:
         # Default to all devices if the environment variable is not set
         return list(range(torch.cuda.device_count()))
     return list(sorted([int(device) for device in cuda_visible.split(",")]))
+
+
+def who_refs(obj):
+    refs = gc.get_referrers(obj)
+    for r in refs:
+        if isinstance(r, dict):
+            # show which names in this dict point to obj
+            keys = [k for k, v in r.items() if v is obj]
+            if keys:
+                mod = r.get("__name__", None)
+                print(f"dict from {mod or 'locals/globals'} -> {keys}")
+        else:
+            print(type(r), r)

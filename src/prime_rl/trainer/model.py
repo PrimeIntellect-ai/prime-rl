@@ -53,7 +53,41 @@ def to_tt_moe_args(config: PretrainedConfig, use_grouped_mm: bool = True) -> MoE
         raise ValueError(f"Unsupported config: {config}")
 
 
+def to_tt_moe(moe_args: MoEArgs, config: PretrainedConfig, transformer_block: nn.Module) -> MoE:
+    new_mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
+    # with torch.no_grad():
+    #    if isinstance(config, Qwen3MoeConfig):
+    #        # Router
+    #        new_mlp.router.gate.weight.data.copy_(transformer_block.mlp.gate.weight.data)
+    #        # Routed experts
+    #        for i in range(moe_args.num_experts):
+    #            new_mlp.experts.w1.data[i].copy_(transformer_block.mlp.experts[i].gate_proj.weight.data)
+    #            new_mlp.experts.w2.data[i].copy_(transformer_block.mlp.experts[i].down_proj.weight.data)
+    #            new_mlp.experts.w3.data[i].copy_(transformer_block.mlp.experts[i].up_proj.weight.data)
+    #    elif isinstance(config, DeepseekV3Config):
+    #        # Router
+    #        new_mlp.router.gate.weight.data.copy_(transformer_block.mlp.gate.weight.data)
+    #        # Shared experts
+    #        new_mlp.shared_expert.w1.data[0].copy_(transformer_block.mlp.shared_experts.gate_proj.weight.data)
+    #        new_mlp.shared_expert.w2.data[0].copy_(transformer_block.mlp.shared_experts.down_proj.weight.data)
+    #        new_mlp.shared_expert.w3.data[0].copy_(transformer_block.mlp.shared_experts.up_proj.weight.data)
+    #        # Routed experts
+    #        for i in range(moe_args.num_experts):
+    #            new_mlp.experts.w1.data[i].copy_(transformer_block.mlp.experts[i].gate_proj.weight.data)
+    #            new_mlp.experts.w2.data[i].copy_(transformer_block.mlp.experts[i].down_proj.weight.data)
+    #            new_mlp.experts.w3.data[i].copy_(transformer_block.mlp.experts[i].up_proj.weight.data)
+    #    else:
+    #        raise ValueError(f"Unsupported config: {config}")
+    return new_mlp
+
+
+import psutil
+
+meow = []
+
+
 def convert_tt_moe(model: nn.Module, config: PretrainedConfig) -> None:
+    global meow
     moe_args = to_tt_moe_args(config)
     for layer_id, transformer_block in model.model.layers.named_children():
         # Skip non MoE layers
@@ -61,22 +95,24 @@ def convert_tt_moe(model: nn.Module, config: PretrainedConfig) -> None:
             print(f"Skipping non MoE layer: {layer_id}")
             continue
 
-        new_mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
-        # Router
-        new_mlp.router.gate.weight.data.copy_(transformer_block.mlp.gate.weight.data)
-        # Shared experts
-        new_mlp.shared_expert.w1.data[0].copy_(transformer_block.mlp.shared_experts.gate_proj.weight.data)
-        new_mlp.shared_expert.w2.data[0].copy_(transformer_block.mlp.shared_experts.down_proj.weight.data)
-        new_mlp.shared_expert.w3.data[0].copy_(transformer_block.mlp.shared_experts.up_proj.weight.data)
-        # Routed experts
-        for i in range(moe_args.num_experts):
-            new_mlp.experts.w1.data[i].copy_(transformer_block.mlp.experts[i].gate_proj.weight.data)
-            new_mlp.experts.w2.data[i].copy_(transformer_block.mlp.experts[i].down_proj.weight.data)
-            new_mlp.experts.w3.data[i].copy_(transformer_block.mlp.experts[i].up_proj.weight.data)
-        transformer_block.mlp = new_mlp
+        # print(f"Converting MoE layer: {layer_id}/{len(model.model.layers)}")
+        new_mlp = to_tt_moe(moe_args, config, transformer_block)
+        ram_usage = psutil.Process().memory_info().rss / 1024 / 1024
+        print(f"RAM usage before resize: {ram_usage:.2f} MB")
+        for param in transformer_block.mlp.parameters():
+            # Hack: for whatever reason, the magic dumpster is needed for the resize trick to work
+            print(param.data.shape, param.data.device, end="")
+            param.data.untyped_storage().resize_(0)
+        ram_usage = psutil.Process().memory_info().rss / 1024 / 1024
+        print(f"RAM usage after resize: {ram_usage:.2f} MB")
+        meow.append(new_mlp)
+        # transformer_block.mlp = new_mlp
 
 
 def get_model(config: ModelConfig) -> nn.Module:
+    ram_usage = psutil.Process().memory_info().rss / 1024 / 1024
+    print(f"RAM usage before model init: {ram_usage:.2f} MB")
+
     config_model = AutoConfig.from_pretrained(
         config.name, attn_implementation=config.attn, trust_remote_code=config.trust_remote_code
     )
@@ -99,7 +135,12 @@ def get_model(config: ModelConfig) -> nn.Module:
         trust_remote_code=config.trust_remote_code,
     )
 
+    # Get ram usage
+    ram_usage = psutil.Process().memory_info().rss / 1024 / 1024
+    print(f"RAM usage after model init: {ram_usage:.2f} MB")
     convert_tt_moe(model, config_model)
+    ram_usage = psutil.Process().memory_info().rss / 1024 / 1024
+    print(f"RAM usage: {ram_usage:.2f} MB")
     return model
 
 
@@ -111,7 +152,9 @@ def get_tokenizer(config: ModelConfig) -> AutoTokenizer:
 
 def setup_fsdp(model: nn.Module, config: ModelConfig, world_mesh: DeviceMesh):
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
-    hsdp_mesh = world_mesh["ep", "fsdp"]
+    # TODO: Is there a way to transpose here?
+    # hsdp_mesh = world_mesh["fsdp", "ep"]
+    hsdp_mesh = world_mesh["fsdp"]
     ep_mesh = world_mesh["ep"]
     fsdp_mesh = world_mesh["fsdp"]
 
@@ -132,12 +175,13 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, world_mesh: DeviceMesh):
                 mp_policy=mp_policy,
                 reshard_after_forward=layer_reshard_after_forward,
             )
-        fully_shard(
-            transformer_block,
-            mesh=hsdp_mesh,
-            mp_policy=mp_policy,
-            reshard_after_forward=layer_reshard_after_forward,
-        )
+        else:
+            fully_shard(
+                transformer_block,
+                mesh=hsdp_mesh,
+                mp_policy=mp_policy,
+                reshard_after_forward=layer_reshard_after_forward,
+            )
 
     fully_shard(model, mesh=hsdp_mesh, mp_policy=mp_policy, reshard_after_forward=config.reshard_after_forward)
 
@@ -160,7 +204,7 @@ def setup_model(config: ModelConfig) -> nn.Module:
     dist.init_process_group()
     assert dist.get_world_size() % config.ep_mode == 0, "World size must be divisible by EP mode"
     fsdp_dim = dist.get_world_size() // config.ep_mode
-    world_mesh = dist.init_device_mesh("cuda", (config.ep_mode, fsdp_dim), mesh_dim_names=("ep", "fsdp"))
+    world_mesh = dist.init_device_mesh("cuda", (fsdp_dim, config.ep_mode), mesh_dim_names=("fsdp", "ep"))
     model = get_model(config)
     setup_fsdp(model, config, world_mesh)
     setup_ac(model, config)

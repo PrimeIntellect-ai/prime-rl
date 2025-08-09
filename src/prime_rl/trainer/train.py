@@ -81,6 +81,8 @@ def train(config: TrainerConfig):
     # Initialize the model and tokenizer
     logger.info(f"Initializing model and tokenizer ({config.model})")
     model = setup_model(config.model)
+    if world.rank == 0:
+        print(model)
     tokenizer = get_tokenizer(config.model)
 
     # Set up the optimizer
@@ -299,7 +301,8 @@ def train(config: TrainerConfig):
 
         # Optionally, clip the gradients
         logger.debug(f"Clipping gradients to {config.loss.max_norm}")
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.loss.max_norm).full_tensor()
+        # TODO: grad norm doesnt like the EP
+        # grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.loss.max_norm).full_tensor()
 
         # Update the model parameters
         optimizer.step()
