@@ -3,7 +3,10 @@
 *.jsonl
 .pydantic_config/*
 configs/endpoints.py
-exp-*
+**/weights
+**/checkpoints
+**/rollouts
+**/logs
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
