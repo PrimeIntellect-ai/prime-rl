@@ -22,8 +22,7 @@ RL_CMD = [
     "configs/reverse_text/orch.toml",
     "--orchestrator.sampling.max-tokens",
     "128",
-    "--trainer.ckpt",
-    "--orchestrator.ckpt",
+    "--ckpt",
 ]
 RL_RESUME_CMD = [
     "uv",
@@ -37,13 +36,9 @@ RL_RESUME_CMD = [
     "configs/reverse_text/orch.toml",
     "--orchestrator.sampling.max-tokens",
     "128",
-    "--trainer.max-steps",
+    "--max-steps",
     "40",
-    "--orchestrator.max-steps",
-    "40",
-    "--trainer.ckpt.resume-step",
-    "20",
-    "--orchestrator.ckpt.resume-step",
+    "--ckpt.resume-step",
     "20",
 ]
 
