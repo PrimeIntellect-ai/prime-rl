@@ -68,7 +68,7 @@ async def orchestrate(config: OrchestratorConfig):
     ckpt_manager = None
     if config.ckpt:
         logger.info(f"Initializing checkpoint manager ({config.ckpt})")
-        ckpt_manager = CheckpointManager(config.ckpt)
+        ckpt_manager = CheckpointManager(config.outputs_dir, config.ckpt)
 
     # Reset weights to base model if starting from scratch
     progress = Progress()

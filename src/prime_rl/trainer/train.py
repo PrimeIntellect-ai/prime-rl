@@ -99,10 +99,10 @@ def train(config: TrainerConfig):
 
     # Get checkpoint managers
     logger.info(f"Initializing weight checkpoint manager ({config.weights})")
-    weight_ckpt_manager = WeightCheckpointManager(config.weights, config.ckpt, config.async_level)
+    weight_ckpt_manager = WeightCheckpointManager(config.outputs_dir, config.weights, config.ckpt, config.async_level)
     if config.ckpt:
         logger.info(f"Initializing checkpoint manager ({config.ckpt})")
-        ckpt_manager = CheckpointManager(config.ckpt)
+        ckpt_manager = CheckpointManager(config.outputs_dir, config.ckpt)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
