@@ -412,7 +412,7 @@ checkpoints
     └── trainer.pt
 ```
 
-Checkpointing is configured by the `CheckpointConfig`, with the config key `--ckpt`. One can specify the interval (`--ckpt.interval`, defaults to `50`) and whether to save checkpoints asynchronoously  (`--ckpt.save-async`, defaults to `False`)
+Checkpointing is configured by the `CheckpointConfig`, with the config key `--ckpt`. One can specify the interval (`--ckpt.interval`, defaults to `50`), whether to save checkpoints asynchronoously  (`--ckpt.save-async`, defaults to `False`), and how many recent step checkpoints to keep on disk (`--ckpt.keep`, defaults to `None` which means no cleanup).
 
 By default, runs do no write checkpoints to save disk space. To checkpoint every 10 steps on our debug RL run, run the following command
 

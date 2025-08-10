@@ -76,6 +76,14 @@ class CheckpointConfig(BaseSettings):
         int | None, Field(description="The step to resume from. If None, will not resume from a checkpoint.")
     ] = None
 
+    keep: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints.",
+        ),
+    ] = None
+
 
 class RLConfig(BaseSettings):
     """Configures an RL training run."""
@@ -216,6 +224,11 @@ class RLConfig(BaseSettings):
             if self.ckpt.resume_step:
                 self.trainer.ckpt.resume_step = self.ckpt.resume_step
                 self.orchestrator.ckpt.resume_step = self.ckpt.resume_step
+
+            # If specified, propagate keep policy
+            if self.ckpt.keep:
+                self.trainer.ckpt.keep = self.ckpt.keep
+                self.orchestrator.ckpt.keep = self.ckpt.keep
 
         validate_shared_ckpt_config(self.trainer, self.orchestrator)
 

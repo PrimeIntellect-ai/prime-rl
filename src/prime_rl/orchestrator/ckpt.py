@@ -23,6 +23,7 @@ class CheckpointManager:
     def __init__(self, outputs_dir: Path, config: CheckpointConfig):
         self.ckpt_dir = get_ckpt_dir(outputs_dir)
         self._logger = get_logger()
+        self._keep = getattr(config, "keep", None)
 
     def _get_step_path(self, step: int) -> Path:
         return self.ckpt_dir / f"step_{step}"
@@ -58,6 +59,32 @@ class CheckpointManager:
 
         self._logger.debug(f"Orchestrator checkpoint loaded in {time.time() - start_time:.2f} seconds")
 
+    def _cleanup_old_checkpoints(self):
+        if not self._keep:
+            return
+        try:
+            # Collect step directories of the form step_<int>
+            step_dirs = []
+            if self.ckpt_dir.exists():
+                for child in self.ckpt_dir.iterdir():
+                    if child.is_dir() and child.name.startswith("step_"):
+                        try:
+                            step_num = int(child.name.split("_")[-1])
+                            step_dirs.append((step_num, child))
+                        except ValueError:
+                            continue
+            # Sort by step number descending (newest first)
+            step_dirs.sort(key=lambda x: x[0], reverse=True)
+            # Determine which to delete beyond the first `keep`
+            to_delete = step_dirs[self._keep :]
+            for step_num, path in to_delete:
+                self._logger.debug(f"Removing past orchestrator checkpoint {path}")
+                import shutil
+
+                shutil.rmtree(path, ignore_errors=True)
+        except Exception as e:
+            self._logger.warning(f"Failed to cleanup old orchestrator checkpoints: {e}")
+
     def load(self, progress: Progress, step: int) -> Path:
         """Loads a checkpoint from a given path."""
         ckpt_path = self._get_ckpt_path(step)
@@ -75,3 +102,6 @@ class CheckpointManager:
         step_path.mkdir(parents=True, exist_ok=True)
         ckpt_path = self._get_ckpt_path(step)
         self._save_to_path(ckpt_path, progress)
+
+        # Cleanup old checkpoints after saving
+        self._cleanup_old_checkpoints()

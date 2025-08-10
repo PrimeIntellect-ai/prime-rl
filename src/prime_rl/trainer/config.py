@@ -113,6 +113,14 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = None
 
+    keep: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints.",
+        ),
+    ] = None
+
 
 class WeightCheckpointConfig(BaseConfig):
     """Configures checkpointing the model weights for updating the inference engines."""
