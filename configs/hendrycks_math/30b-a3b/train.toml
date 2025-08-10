@@ -3,8 +3,10 @@ recompute_logprobs = false
 [monitor.wandb]
 
 [model]
-name = "Qwen/Qwen3-30B-A3B"
+name = "Jackmin108/Qwen3-30B-A3B-Fast"
+attn = "sdpa"
 ac = true
+trust_remote_code = true
 
 [optim]
 lr = 1e-6
