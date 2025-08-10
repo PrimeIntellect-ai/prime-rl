@@ -9,71 +9,14 @@ from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, fully_shard
 from torch.distributed.tensor.parallel import parallelize_module
 from torchtitan.distributed.expert_parallel import ExpertParallel
-from torchtitan.models.moe import MoE, MoEArgs
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
     AutoTokenizer,
-    PretrainedConfig,
 )
-from transformers.models.deepseek_v3.configuration_deepseek_v3 import DeepseekV3Config
-from transformers.models.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig
 
 from prime_rl.trainer.config import ModelConfig
 from prime_rl.trainer.world import get_world
-
-
-def to_tt_moe_args(config: PretrainedConfig, use_grouped_mm: bool = True) -> MoEArgs:
-    """Map HF config to TT MoE args"""
-    if isinstance(config, Qwen3MoeConfig):
-        return MoEArgs(
-            num_experts=config.num_experts,
-            num_shared_experts=0,
-            score_func="softmax",
-            route_norm=config.norm_topk_prob,
-            route_scale=1.0,
-            score_before_experts=False,
-            top_k=config.num_experts_per_tok,
-            use_grouped_mm=use_grouped_mm,
-            load_balance_coeff=None,
-        )
-    elif isinstance(config, DeepseekV3Config):
-        return MoEArgs(
-            num_experts=config.n_routed_experts,
-            num_shared_experts=config.n_shared_experts,
-            score_func="sigmoid",
-            route_norm=config.norm_topk_prob,
-            route_scale=config.routed_scaling_factor,
-            score_before_experts=False,
-            top_k=config.num_experts_per_tok,
-            use_grouped_mm=use_grouped_mm,
-            load_balance_coeff=None,
-        )
-    else:
-        raise ValueError(f"Unsupported config: {config}")
-
-
-def convert_tt_moe(model: nn.Module, config: PretrainedConfig) -> None:
-    moe_args = to_tt_moe_args(config)
-    for layer_id, transformer_block in model.model.layers.named_children():
-        # Skip non MoE layers
-        if not hasattr(transformer_block.mlp, "gate"):
-            print(f"Skipping non MoE layer: {layer_id}")
-            continue
-
-        new_mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
-        # Router
-        new_mlp.router.gate.weight.data.copy_(transformer_block.mlp.gate.weight.data)
-        # Shared experts
-        new_mlp.shared_expert.w1.data[0].copy_(transformer_block.mlp.shared_experts.gate_proj.weight.data)
-        new_mlp.shared_expert.w2.data[0].copy_(transformer_block.mlp.shared_experts.down_proj.weight.data)
-        new_mlp.shared_expert.w3.data[0].copy_(transformer_block.mlp.shared_experts.up_proj.weight.data)
-        # Routed experts
-        for i in range(moe_args.num_experts):
-            new_mlp.experts.w1.data[i].copy_(transformer_block.mlp.experts[i].gate_proj.weight.data)
-            new_mlp.experts.w2.data[i].copy_(transformer_block.mlp.experts[i].down_proj.weight.data)
-            new_mlp.experts.w3.data[i].copy_(transformer_block.mlp.experts[i].up_proj.weight.data)
-        transformer_block.mlp = new_mlp
 
 
 def get_model(config: ModelConfig) -> nn.Module:
@@ -99,7 +42,6 @@ def get_model(config: ModelConfig) -> nn.Module:
         trust_remote_code=config.trust_remote_code,
     )
 
-    convert_tt_moe(model, config_model)
     return model
 
 
@@ -111,7 +53,9 @@ def get_tokenizer(config: ModelConfig) -> AutoTokenizer:
 
 def setup_fsdp(model: nn.Module, config: ModelConfig, world_mesh: DeviceMesh):
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
-    hsdp_mesh = world_mesh["ep", "fsdp"]
+    # TODO: Is there a way to transpose here?
+    # hsdp_mesh = world_mesh["fsdp", "ep"]
+    hsdp_mesh = world_mesh["fsdp"]
     ep_mesh = world_mesh["ep"]
     fsdp_mesh = world_mesh["fsdp"]
 
@@ -132,12 +76,13 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, world_mesh: DeviceMesh):
                 mp_policy=mp_policy,
                 reshard_after_forward=layer_reshard_after_forward,
             )
-        fully_shard(
-            transformer_block,
-            mesh=hsdp_mesh,
-            mp_policy=mp_policy,
-            reshard_after_forward=layer_reshard_after_forward,
-        )
+        else:
+            fully_shard(
+                transformer_block,
+                mesh=hsdp_mesh,
+                mp_policy=mp_policy,
+                reshard_after_forward=layer_reshard_after_forward,
+            )
 
     fully_shard(model, mesh=hsdp_mesh, mp_policy=mp_policy, reshard_after_forward=config.reshard_after_forward)
 
@@ -160,7 +105,7 @@ def setup_model(config: ModelConfig) -> nn.Module:
     dist.init_process_group()
     assert dist.get_world_size() % config.ep_mode == 0, "World size must be divisible by EP mode"
     fsdp_dim = dist.get_world_size() // config.ep_mode
-    world_mesh = dist.init_device_mesh("cuda", (config.ep_mode, fsdp_dim), mesh_dim_names=("ep", "fsdp"))
+    world_mesh = dist.init_device_mesh("cuda", (fsdp_dim, config.ep_mode), mesh_dim_names=("fsdp", "ep"))
     model = get_model(config)
     setup_fsdp(model, config, world_mesh)
     setup_ac(model, config)
