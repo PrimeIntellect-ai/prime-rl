@@ -162,6 +162,8 @@ def train(config: TrainerConfig):
             save_ckpt_start_time = time.time()
             ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step)
             save_ckpt_time = time.time() - save_ckpt_start_time
+            # Maybe clean up old trainer checkpoints
+            ckpt_manager.maybe_clean(progress.step)
 
         # Break if we have reached the maximum number of steps
         if config.max_steps is not None and progress.step >= config.max_steps:

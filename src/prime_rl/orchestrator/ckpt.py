@@ -23,7 +23,12 @@ class CheckpointManager:
     def __init__(self, outputs_dir: Path, config: CheckpointConfig):
         self.ckpt_dir = get_ckpt_dir(outputs_dir)
         self._logger = get_logger()
-        self._keep = getattr(config, "keep", None)
+        self.keep = config.keep
+        # Track saved checkpoint steps to avoid scanning directory
+        import threading
+
+        self._saved_steps: list[int] = []
+        self._lock = threading.Lock()
 
     def _get_step_path(self, step: int) -> Path:
         return self.ckpt_dir / f"step_{step}"
@@ -42,6 +47,17 @@ class CheckpointManager:
         with open(ckpt_path, "wb") as f:
             torch.save(ckpt_state, f)
 
+        # Record saved step after successful write
+        try:
+            step_str = ckpt_path.parent.name.split("_")[-1]
+            step_num = int(step_str)
+            with self._lock:
+                self._saved_steps.append(step_num)
+                self._saved_steps.sort()
+        except Exception:
+            # Best-effort: ignore if parsing fails
+            pass
+
         self._logger.debug(f"Orchestrator checkpoint saved in {time.time() - start_time:.2f} seconds")
 
     def _load_from_path(self, ckpt_path: Path, progress: Progress) -> None:
@@ -59,29 +75,27 @@ class CheckpointManager:
 
         self._logger.debug(f"Orchestrator checkpoint loaded in {time.time() - start_time:.2f} seconds")
 
-    def _cleanup_old_checkpoints(self):
-        if not self._keep:
+    def maybe_clean(self, step: int):
+        """Delete past orchestrator checkpoints beyond the most recent `keep` steps. No-op if `keep` is None."""
+        if self.keep is None:
             return
         try:
-            # Collect step directories of the form step_<int>
-            step_dirs = []
-            if self.ckpt_dir.exists():
-                for child in self.ckpt_dir.iterdir():
-                    if child.is_dir() and child.name.startswith("step_"):
+            with self._lock:
+                # Ensure sorted ascending
+                self._saved_steps.sort()
+                num_to_delete = max(0, len(self._saved_steps) - self.keep)
+                steps_to_delete = [self._saved_steps.pop(0) for _ in range(num_to_delete)]
+            for old_step in steps_to_delete:
+                path = self._get_ckpt_path(old_step)
+                if path.exists():
+                    self._logger.debug(f"Removing past orchestrator checkpoint {path}")
+                    try:
+                        path.unlink(missing_ok=True)
+                    except TypeError:
                         try:
-                            step_num = int(child.name.split("_")[-1])
-                            step_dirs.append((step_num, child))
-                        except ValueError:
-                            continue
-            # Sort by step number descending (newest first)
-            step_dirs.sort(key=lambda x: x[0], reverse=True)
-            # Determine which to delete beyond the first `keep`
-            to_delete = step_dirs[self._keep :]
-            for step_num, path in to_delete:
-                self._logger.debug(f"Removing past orchestrator checkpoint {path}")
-                import shutil
-
-                shutil.rmtree(path, ignore_errors=True)
+                            path.unlink()
+                        except FileNotFoundError:
+                            pass
         except Exception as e:
             self._logger.warning(f"Failed to cleanup old orchestrator checkpoints: {e}")
 
@@ -102,6 +116,3 @@ class CheckpointManager:
         step_path.mkdir(parents=True, exist_ok=True)
         ckpt_path = self._get_ckpt_path(step)
         self._save_to_path(ckpt_path, progress)
-
-        # Cleanup old checkpoints after saving
-        self._cleanup_old_checkpoints()
