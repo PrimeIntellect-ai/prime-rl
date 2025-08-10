@@ -109,7 +109,6 @@ class WeightCheckpointManager:
         """Synchronous helper of `clean`."""
         step = max(step - (self.async_level + 1), 0)  # Consider deleting async_level + 1 steps ago
         candidate_path_to_delete = self._get_step_path(step)
-        self._logger.debug(f"Considering to delete weight checkpoint {candidate_path_to_delete}")
         keep_for_eval = self.config.interval and step % self.config.interval == 0
         # For checkpointing step x, we need all weight checkpoints in [x-async_level, x] (for logprob model)
         # To get [n-k, n] with interval n and buffer k over all natural numbers x, we use the condition (n - (x % n)) % n <= k
