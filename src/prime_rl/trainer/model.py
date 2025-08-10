@@ -65,11 +65,12 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, world_mesh: DeviceMesh):
         else:
             layer_reshard_after_forward = False
         if hasattr(transformer_block.mlp, "experts"):
-            parallelize_module(
-                module=transformer_block.mlp.experts,
-                device_mesh=ep_mesh,
-                parallelize_plan=ExpertParallel(),
-            )
+            if config.ep_mode > 1:
+                parallelize_module(
+                    module=transformer_block.mlp.experts,
+                    device_mesh=ep_mesh,
+                    parallelize_plan=ExpertParallel(),
+                )
             fully_shard(
                 transformer_block,
                 mesh=fsdp_mesh,
