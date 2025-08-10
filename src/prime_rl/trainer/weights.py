@@ -15,6 +15,29 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import get_step_path, get_weight_ckpt_model_path
 
 
+def convert_tt_moe_to_hf_(state_dict: dict[str, Tensor]):
+    num_layers = len(list(i for i in state_dict.keys() if "mlp.router.gate" in i))
+    num_experts, moe_dim, dim = state_dict["model.layers.0.mlp.experts.w1"].shape
+    for i in range(num_layers):
+        state_dict[f"model.layers.{i}.mlp.gate.weight"] = state_dict[f"model.layers.{i}.mlp.router.gate.weight"]
+        del state_dict[f"model.layers.{i}.mlp.router.gate.weight"]
+
+        for j in range(num_experts):
+            state_dict[f"model.layers.{i}.mlp.experts.{j}.gate_proj.weight"] = state_dict[
+                f"model.layers.{i}.mlp.experts.w1"
+            ][j]
+            state_dict[f"model.layers.{i}.mlp.experts.{j}.down_proj.weight"] = state_dict[
+                f"model.layers.{i}.mlp.experts.w2"
+            ][j]
+            state_dict[f"model.layers.{i}.mlp.experts.{j}.up_proj.weight"] = state_dict[
+                f"model.layers.{i}.mlp.experts.w3"
+            ][j]
+
+        del state_dict[f"model.layers.{i}.mlp.experts.w1"]
+        del state_dict[f"model.layers.{i}.mlp.experts.w2"]
+        del state_dict[f"model.layers.{i}.mlp.experts.w3"]
+
+
 class WeightCheckpointManager:
     """Utility class to save and cleanup HF-compatible weight checkpoints."""
 
@@ -87,6 +110,8 @@ class WeightCheckpointManager:
     ):
         """Save a HF-compatible weight-only checkpoint for a given step."""
         cpu_state = self._gather_weights(model, dtype)
+        if "model.layers.0.mlp.router.gate.weight" in cpu_state:
+            convert_tt_moe_to_hf_(cpu_state)
 
         if self._is_master:
             if self.config.save_async:
