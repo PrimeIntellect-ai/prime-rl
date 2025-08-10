@@ -10,6 +10,7 @@ from prime_rl.trainer import envs
 import shardcast
 import torch
 from torch._guards import log as torch_log
+from torchtitan.distributed.utils import clip_grad_norm_
 from loguru import logger
 from prime_rl.trainer.ckpt import CheckpointManager, Progress
 from prime_rl.trainer.weights import WeightCheckpointManager
@@ -299,7 +300,9 @@ def train(config: TrainerConfig):
 
         # Optionally, clip the gradients
         logger.debug(f"Clipping gradients to {config.loss.max_norm}")
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.loss.max_norm).full_tensor()
+        grad_norm = clip_grad_norm_(
+            model.parameters(), max_norm=config.loss.max_norm, ep_enabled=config.model.ep_mode > 1
+        )
 
         # Update the model parameters
         optimizer.step()
