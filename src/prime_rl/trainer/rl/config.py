@@ -36,7 +36,7 @@ class RatioLossConfig(BaseLossConfig):
     clip_ratio: Annotated[float, Field(ge=0)] = 8.0
 
 
-LossConfig: TypeAlias = ClippingLossConfig | RatioLossConfig
+LossTypeConfig: TypeAlias = ClippingLossConfig | RatioLossConfig
 
 
 class FakeDataLoaderConfig(BaseConfig):

@@ -2,11 +2,11 @@ import torch
 from muon_fsdp2 import Muon
 from torch.optim import Optimizer
 
-from prime_rl.trainer.config import OptimizerType
+from prime_rl.trainer.config import OptimizerConfigType
 from prime_rl.trainer.model import Model
 
 
-def setup_optimizer(config: OptimizerType, model: Model) -> Optimizer:
+def setup_optimizer(config: OptimizerConfigType, model: Model) -> Optimizer:
     match config.type:
         case "adamw":
             return torch.optim.AdamW(

@@ -218,7 +218,7 @@ class OnlineDifficultyBufferConfig(BaseModel):
     ] = 1.0
 
 
-DataBufferConfig: TypeAlias = SimpleBufferConfig | DifficultyPoolBufferConfig | OnlineDifficultyBufferConfig
+DataBufferConfigType: TypeAlias = SimpleBufferConfig | DifficultyPoolBufferConfig | OnlineDifficultyBufferConfig
 
 
 class OrchestratorConfig(BaseSettings):
@@ -240,7 +240,7 @@ class OrchestratorConfig(BaseSettings):
     eval: EvalConfig | None = None
 
     # Data buffer configuration
-    buffer: DataBufferConfig = Field(discriminator="type", default=SimpleBufferConfig())
+    buffer: DataBufferConfigType = Field(discriminator="type", default=SimpleBufferConfig())
 
     # The logging configuration
     log: LogConfig = LogConfig()

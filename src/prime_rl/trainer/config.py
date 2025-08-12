@@ -76,7 +76,7 @@ class CosineSchedulerConfig(BaseModel):
     ] = None
 
 
-SchedulerType: TypeAlias = ConstantSchedulerConfig | LinearSchedulerConfig | CosineSchedulerConfig
+SchedulerConfigType: TypeAlias = ConstantSchedulerConfig | LinearSchedulerConfig | CosineSchedulerConfig
 
 
 class AdamWConfig(BaseModel):
@@ -99,7 +99,7 @@ class MuonConfig(BaseModel):
     adam_betas2: Annotated[float, Field(ge=0)] = 0.999
 
 
-OptimizerType: TypeAlias = AdamWConfig | MuonConfig
+OptimizerConfigType: TypeAlias = AdamWConfig | MuonConfig
 
 
 class CheckpointConfig(BaseConfig):

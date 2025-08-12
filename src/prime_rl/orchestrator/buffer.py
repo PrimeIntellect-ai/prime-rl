@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datasets import Dataset
 
 from prime_rl.orchestrator.config import (
-    DataBufferConfig,
+    DataBufferConfigType,
     DifficultyPoolBufferConfig,
     OnlineDifficultyBufferConfig,
     SimpleBufferConfig,
@@ -84,7 +84,7 @@ class Buffer(ABC):
     class defines a strategy for sampling from the dataset and the rollouts.
     """
 
-    def __init__(self, dataset: Dataset, buffer_config: DataBufferConfig):
+    def __init__(self, dataset: Dataset, buffer_config: DataBufferConfigType):
         self.dataset = dataset
         self.config = buffer_config
         self.logger = get_logger()
@@ -409,7 +409,7 @@ class OnlineDifficultyBuffer(Buffer):
         return sampled_rollouts
 
 
-def setup_buffer(dataset: Dataset, buffer_config: DataBufferConfig) -> Buffer:
+def setup_buffer(dataset: Dataset, buffer_config: DataBufferConfigType) -> Buffer:
     if buffer_config.type == "simple":
         return SimpleBuffer(dataset, buffer_config)
     elif buffer_config.type == "difficulty-pool":
