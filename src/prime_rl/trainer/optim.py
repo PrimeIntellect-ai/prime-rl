@@ -2,20 +2,20 @@ import torch
 from muon_fsdp2 import Muon
 from torch.optim import Optimizer
 
-from prime_rl.trainer.config import OptimizerConfig
+from prime_rl.trainer.config import OptimizerType
 from prime_rl.trainer.model import Model
 
 
-def create_optimizer(config: OptimizerConfig, model: Model) -> Optimizer:
-    match config.name:
-        case "AdamW":
+def setup_optimizer(config: OptimizerType, model: Model) -> Optimizer:
+    match config.type:
+        case "adamw":
             return torch.optim.AdamW(
                 params=model.parameters(),
                 lr=config.lr,
                 weight_decay=config.weight_decay,
                 betas=(config.betas1, config.betas2),
             )
-        case "Muon":
+        case "muon":
 
             def muon_enabled(n, p):
                 if p.ndim < 2:
@@ -36,7 +36,7 @@ def create_optimizer(config: OptimizerConfig, model: Model) -> Optimizer:
                         params=adamw_params,
                         lr=config.lr,
                         weight_decay=config.weight_decay,
-                        betas=(config.betas1, config.betas2),
+                        betas=(config.adam_betas1, config.adam_betas2),
                         use_muon=False,
                     ),
                 ]

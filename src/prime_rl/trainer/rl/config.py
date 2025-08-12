@@ -3,7 +3,15 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
 
-from prime_rl.trainer.config import CheckpointConfig, ModelConfig, OptimizerConfig, WeightCheckpointConfig
+from prime_rl.trainer.config import (
+    AdamWConfig,
+    CheckpointConfig,
+    ConstantSchedulerConfig,
+    ModelConfig,
+    OptimizerType,
+    SchedulerType,
+    WeightCheckpointConfig,
+)
 from prime_rl.utils.config import LogConfig, MultiMonitorConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
@@ -63,7 +71,14 @@ class RLTrainerConfig(BaseSettings):
     data: DataLoaderConfig = DataLoaderConfig()
 
     # The optimizer configuration
-    optim: OptimizerConfig = OptimizerConfig()
+    optim: Annotated[
+        OptimizerType, Field(discriminator="type", description="The optimizer to use. By default use AdamW")
+    ] = AdamWConfig()
+
+    # The learning rate scheduler configuration
+    scheduler: Annotated[
+        SchedulerType, Field(discriminator="type", description="The learning rate scheduler to use.")
+    ] = ConstantSchedulerConfig()
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None

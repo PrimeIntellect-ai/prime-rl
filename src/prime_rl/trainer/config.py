@@ -76,14 +76,11 @@ class CosineSchedulerConfig(BaseModel):
     ] = None
 
 
-SchedulerConfig: TypeAlias = ConstantSchedulerConfig | LinearSchedulerConfig | CosineSchedulerConfig
-
-OptimizerType: TypeAlias = Literal["AdamW", "Muon"]
+SchedulerType: TypeAlias = ConstantSchedulerConfig | LinearSchedulerConfig | CosineSchedulerConfig
 
 
-class OptimizerConfig(BaseConfig):
-    """Configures the Adam optimizer and learning rate scheduler."""
-
+class AdamWConfig(BaseModel):
+    type: Literal["adamw"] = "adamw"
     lr: Annotated[float, Field(ge=0)] = 4e-4
     weight_decay: Annotated[float, Field(ge=0)] = 0.01
     betas1: Annotated[float, Field(ge=0)] = 0.9
@@ -92,10 +89,17 @@ class OptimizerConfig(BaseConfig):
     # Gradient clipping
     max_norm: Annotated[float, Field(ge=0, description="Maximum gradient norm to clip.")] = 1.0
 
-    name: Annotated[OptimizerType, Field(description="The optimizer to use. By default use AdamW")] = "AdamW"
 
-    # LR Scheduler configuration
-    scheduler: SchedulerConfig = Field(discriminator="type", default=ConstantSchedulerConfig())
+class MuonConfig(BaseModel):
+    type: Literal["muon"] = "muon"
+    lr: Annotated[float, Field(ge=0)] = 4e-4
+    weight_decay: Annotated[float, Field(ge=0)] = 0.01
+
+    adam_betas1: Annotated[float, Field(ge=0)] = 0.9
+    adam_betas2: Annotated[float, Field(ge=0)] = 0.999
+
+
+OptimizerType: TypeAlias = AdamWConfig | MuonConfig
 
 
 class CheckpointConfig(BaseConfig):
