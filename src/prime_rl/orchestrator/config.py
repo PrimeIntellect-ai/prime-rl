@@ -75,19 +75,6 @@ class EnvironmentConfig(BaseConfig):
     args: Annotated[dict, Field(description="Arguments to pass to the environment.")] = {}
 
 
-class PathConfig(BaseConfig):
-    """Configures a path used for input/ output operations"""
-
-    path: Annotated[Path, Field(description="Path to write to.")]
-
-    clean: Annotated[
-        bool,
-        Field(
-            description="Whether to clean the path at the beginning of the run. If True, will delete the entire directory.",
-        ),
-    ] = False
-
-
 class EvalConfig(BaseConfig):
     """Configures evaluation."""
 
@@ -130,8 +117,6 @@ class EvalConfig(BaseConfig):
 class CheckpointConfig(BaseConfig):
     """Configures checkpointing the orchestrator."""
 
-    path: Annotated[Path, Field(description="Directory to write checkpoints to.")] = Path("checkpoints")
-
     interval: Annotated[int, Field(ge=1, description="Interval at which to save the checkpoint.")] = 50
 
     resume_step: Annotated[
@@ -139,6 +124,14 @@ class CheckpointConfig(BaseConfig):
         Field(
             ge=1,
             description="Step to resume orchestrator from. If None, will start from scratch.",
+        ),
+    ] = None
+
+    keep: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints.",
         ),
     ] = None
 
@@ -258,6 +251,13 @@ class OrchestratorConfig(BaseSettings):
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
 
+    outputs_dir: Annotated[
+        Path,
+        Field(
+            description="Directory to write outputs to. Will be populated with checkpoints, weights, rollouts and logs as subdirectories. Should be set to a persistent directory with enough disk space. This value should be distinct across experiments running on a single node. See the README for more details."
+        ),
+    ] = Path("outputs")
+
     collate_mode: Annotated[Literal["packing", "padding"], Field(description="Collate mode to use.")] = "packing"
 
     batch_size: Annotated[int, Field(ge=1, description="Number of samples to train on per step.")] = 128
@@ -334,20 +334,6 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = 2
 
-    rollout_path: Annotated[
-        Path,
-        Field(
-            description="Path to write inference outputs to. Will be populated by the orchestrator with responses from inference pool.",
-        ),
-    ] = Path("rollouts")
-
-    weights_path: Annotated[
-        Path,
-        Field(
-            description="Path to read updated model weights from. Will be populated by the trainer.",
-        ),
-    ] = Path("weights")
-
     bench: Annotated[
         bool,
         Field(
@@ -355,7 +341,7 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = False
 
-    seed: Annotated[int | None, Field(description="Random seed for the orchestrator.")] = None
+    seed: Annotated[int | None, Field(description="Random seed for the orchestrator.")] = 42
 
     @model_validator(mode="after")
     def validate_batch_size(self):

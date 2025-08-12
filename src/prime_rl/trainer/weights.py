@@ -12,7 +12,7 @@ from transformers import AutoTokenizer
 from prime_rl.trainer.config import CheckpointConfig, WeightCheckpointConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.utils import get_step_path, get_weight_ckpt_model_path
+from prime_rl.utils.utils import get_step_path, get_weight_ckpt_model_path, get_weights_dir
 
 
 def convert_tt_moe_to_hf_(state_dict: dict[str, Tensor]):
@@ -41,7 +41,10 @@ def convert_tt_moe_to_hf_(state_dict: dict[str, Tensor]):
 class WeightCheckpointManager:
     """Utility class to save and cleanup HF-compatible weight checkpoints."""
 
-    def __init__(self, config: WeightCheckpointConfig, ckpt_config: CheckpointConfig, async_level: int):
+    def __init__(
+        self, outputs_dir: Path, config: WeightCheckpointConfig, ckpt_config: CheckpointConfig, async_level: int
+    ):
+        self.weights_dir = get_weights_dir(outputs_dir)
         self.config = config
         self.ckpt_config = ckpt_config
         self.async_level = async_level
@@ -50,10 +53,10 @@ class WeightCheckpointManager:
         self._is_master = self._world.rank == 0
 
     def _get_model_path(self, step: int) -> Path:
-        return get_weight_ckpt_model_path(self.config.path, step)
+        return get_weight_ckpt_model_path(self.weights_dir, step)
 
     def _get_step_path(self, step: int) -> Path:
-        return get_step_path(self.config.path, step)
+        return get_step_path(self.weights_dir, step)
 
     def _gather_weights(self, model: nn.Module, dtype: torch.dtype = torch.bfloat16) -> dict[str, Tensor]:
         """Gather distributed weights for weight checkpoint."""
@@ -130,7 +133,6 @@ class WeightCheckpointManager:
         """Synchronous helper of `clean`."""
         step = max(step - (self.async_level + 1), 0)  # Consider deleting async_level + 1 steps ago
         candidate_path_to_delete = self._get_step_path(step)
-        self._logger.debug(f"Considering to delete weight checkpoint {candidate_path_to_delete}")
         keep_for_eval = self.config.interval and step % self.config.interval == 0
         # For checkpointing step x, we need all weight checkpoints in [x-async_level, x] (for logprob model)
         # To get [n-k, n] with interval n and buffer k over all natural numbers x, we use the condition (n - (x % n)) % n <= k

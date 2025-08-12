@@ -6,6 +6,7 @@ import torch
 
 from prime_rl.orchestrator.batch import BatchSample
 from prime_rl.trainer.data import MicroBatch
+from prime_rl.utils.utils import get_rollout_dir
 from tests import Command, Environment, ProcessResult
 
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
@@ -40,7 +41,7 @@ def fake_rollout_dir(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> Callable[[list[int], int, int, int], Path]:
     """Create a temporary directory with dummy batches."""
-    path = tmp_path_factory.mktemp("fake-rollouts")
+    outputs_dir = tmp_path_factory.mktemp("outputs")
 
     def write_dummy_batches(
         steps: list[int] = [1],
@@ -49,7 +50,7 @@ def fake_rollout_dir(
         seq_len: int = 10,
     ) -> Path:
         for step in steps:
-            step_path = path / f"step_{step}"
+            step_path = get_rollout_dir(outputs_dir) / f"step_{step}"
             step_path.mkdir(parents=True, exist_ok=True)
             batch_path = step_path / "rank_0.pt"
             tmp_path = batch_path.with_suffix(".tmp")
@@ -61,14 +62,9 @@ def fake_rollout_dir(
             torch.save(batches, tmp_path)
             tmp_path.rename(batch_path)
 
-        return path
+        return outputs_dir
 
     return write_dummy_batches
-
-
-@pytest.fixture(scope="module")
-def output_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    return tmp_path_factory.mktemp("test_rollout_run")
 
 
 @pytest.fixture(scope="module")
@@ -76,8 +72,10 @@ def train_process(
     run_process: Callable[[Command, Environment], ProcessResult],
     fake_rollout_dir: Callable[[list[int], int, int, int], Path],
 ):
-    rollout_path = fake_rollout_dir(list(range(5)), 16, 8, 16)
-    return run_process(CMD + ["--data.path", rollout_path.as_posix(), "--data.fake", "None"], ENV)
+    outputs_dir = fake_rollout_dir(list(range(5)), 16, 8, 16)
+    return run_process(
+        CMD + ["--outputs-dir", outputs_dir.as_posix(), "--data.fake", "None", "--log.level", "debug"], ENV
+    )
 
 
 def test_no_error(train_process: ProcessResult):

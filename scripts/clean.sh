@@ -10,6 +10,26 @@ log_info() {
     echo -e "${GREEN}[INFO]${NC} $1"
 }
 
-# Remove logs, checkpoints, weights, rollouts
-rm -rf logs checkpoints weights rollouts .pydantic_config
+# Confirm destructive action
+confirm_cleanup() {
+    echo "This will remove the following paths recursively:"
+    echo "  - **/logs"
+    echo "  - **/checkpoints"
+    echo "  - **/weights"
+    echo "  - **/rollouts"
+    echo "  - **/wandb"
+    echo "  - .pydantic_config"
+    while true; do
+        read -r -p "Proceed? [y/N]: " response
+        case "$response" in
+            [yY]|[yY][eE][sS]) break ;;
+            [nN]|[nN][oO]|"") echo "Aborted."; exit 1 ;;
+            *) echo "Please answer y or n." ;;
+        esac
+    done
+}
+
+# Remove logs, checkpoints, weights, rollouts, wandb
+confirm_cleanup
+rm -rf **/logs **/checkpoints **/weights **/rollouts **/wandb .pydantic_config
 log_info "Cleaned up!"

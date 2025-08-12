@@ -5,7 +5,7 @@ from prime_rl.eval.utils import run_benchmark
 from prime_rl.orchestrator.client import (
     check_has_model,
     check_health,
-    reset_weights,
+    reload_weights,
     setup_client,
 )
 from prime_rl.orchestrator.logger import setup_logger
@@ -39,7 +39,7 @@ async def eval(config: EvalConfig):
 
     # Reset weights to base model to allow reusing inference server across runs
     logger.info("Resetting weights to base model")
-    await reset_weights(client)
+    await reload_weights(client)
 
     # Run benchmarks on base model
     logger.info(f"Running evals on base model {config.model.name}")

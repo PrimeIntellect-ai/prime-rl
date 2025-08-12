@@ -146,7 +146,6 @@ def load_environment() -> vf.Environment:
     )
 
     dataset = dataset.remove_columns(["prompt", "verification_info"])
-    dataset = dataset.shuffle(seed=42)
 
     parser = PydanticParser(extract_fn=extract_last_json)
 

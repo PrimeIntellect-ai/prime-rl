@@ -65,7 +65,7 @@ def math_verify_reward_function(completion: str, verification_info: Dict):
     # 0 in case parsing cannot be completed
     try:
         math_verify_parsed = parse(completion, parsing_timeout=5)
-    except Exception:
+    except BaseException:
         return 0.0
     
     # 0 if parsing is problematic
@@ -81,7 +81,7 @@ def math_verify_reward_function(completion: str, verification_info: Dict):
                 timeout_seconds=5,
             ):
                 return 1.0
-        except Exception:
+        except BaseException:
             continue
     
     # Very unlikely to be correct after the above matches

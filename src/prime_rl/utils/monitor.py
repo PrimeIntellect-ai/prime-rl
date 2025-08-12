@@ -8,6 +8,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from pathlib import Path
 from typing import Any, Literal
 
 import aiohttp
@@ -124,6 +125,7 @@ class WandbMonitor(Monitor):
     def __init__(
         self,
         config: WandbMonitorConfig,
+        outputs_dir: Path,
         tokenizer: PreTrainedTokenizer | None = None,
         task_id: str | None = None,
         run_config: BaseSettings | None = None,
@@ -140,7 +142,7 @@ class WandbMonitor(Monitor):
             project=config.project,
             name=config.name,
             id=config.id,
-            dir=config.dir,
+            dir=outputs_dir,
             resume="allow",
             config=run_config.model_dump() if run_config else None,
             mode="offline" if config.offline else None,
@@ -207,6 +209,8 @@ class WandbMonitor(Monitor):
             task_rewards: Optional list of task-specific rewards
             step: Current training step
         """
+        if not self.is_master:
+            return
         if (
             not self.config.log_extras
             or not self.config.log_extras.samples
@@ -269,6 +273,8 @@ class WandbMonitor(Monitor):
         self.logger.debug(f"Logged samples at step {step} to W&B table in {time.time() - start_time:.2f}s")
 
     def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:
+        if not self.is_master:
+            return
         if (
             not self.config.log_extras
             or not self.config.log_extras.distributions
@@ -300,6 +306,8 @@ class WandbMonitor(Monitor):
 
     def log_final_samples(self) -> None:
         """Log final samples to W&B table."""
+        if not self.is_master:
+            return
         if not self.config.log_extras or not self.config.log_extras.samples:
             return
         self.logger.debug("Logging final samples to W&B table")
@@ -309,6 +317,8 @@ class WandbMonitor(Monitor):
 
     def log_final_distributions(self) -> None:
         """Log final distributions to W&B table."""
+        if not self.is_master:
+            return
         if not self.config.log_extras or not self.config.log_extras.distributions:
             return
         self.logger.debug("Logging final distributions to W&B table")
@@ -328,12 +338,14 @@ class MultiMonitor:
     def __init__(
         self,
         config: MultiMonitorConfig,
+        outputs_dir: Path,
         task_id: str | None = None,
         tokenizer: PreTrainedTokenizer | None = None,
         run_config: BaseSettings | None = None,
     ):
         self.logger = get_logger()
         self.history: list[dict[str, Any]] = []
+        self.outputs_dir = outputs_dir
         # Initialize outputs
         self.outputs: dict[MonitorType, Monitor] = {}
         self.wandb = None
@@ -344,7 +356,7 @@ class MultiMonitor:
         if config.api:
             self.outputs["api"] = APIMonitor(config.api, task_id)
         if config.wandb:
-            self.wandb = WandbMonitor(config.wandb, tokenizer, task_id, run_config=run_config)
+            self.wandb = WandbMonitor(config.wandb, outputs_dir, tokenizer, task_id, run_config=run_config)
             self.outputs["wandb"] = self.wandb
 
         self.disabled = len(self.outputs) == 0
@@ -443,6 +455,7 @@ def get_monitor() -> MultiMonitor:
 
 def setup_monitor(
     config: MultiMonitorConfig,
+    outputs_dir: Path,
     task_id: str | None = None,
     tokenizer: PreTrainedTokenizer | None = None,
     run_config: BaseSettings | None = None,
@@ -451,5 +464,5 @@ def setup_monitor(
     global _MONITOR
     if _MONITOR is not None:
         raise RuntimeError("Monitor already initialized. Please call `setup_monitor` only once.")
-    _MONITOR = MultiMonitor(config, task_id, tokenizer, run_config)
+    _MONITOR = MultiMonitor(config, outputs_dir, task_id, tokenizer, run_config)
     return _MONITOR

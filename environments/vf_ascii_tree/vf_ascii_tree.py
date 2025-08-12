@@ -17,7 +17,6 @@ def load_environment(**kwargs) -> vf.Environment:
         return example
 
     dataset = dataset.map(process_dataset)
-    dataset = dataset.shuffle(seed=42)
 
     parser = vf.XMLParser(["think", "ascii_formatted"], answer_field="ascii_formatted")
 

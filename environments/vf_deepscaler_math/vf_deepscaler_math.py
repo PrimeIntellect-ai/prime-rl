@@ -18,7 +18,6 @@ def load_environment(
         }
     )
     train_dataset = train_dataset.remove_columns(["problem", "solution", "answer"])
-    train_dataset = train_dataset.shuffle(seed=42)
 
     def correct_answer_reward_func(completion, info, **kwargs) -> float:
         completion_text = completion[-1]["content"]

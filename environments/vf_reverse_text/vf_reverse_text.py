@@ -13,8 +13,7 @@ def load_environment() -> vf.Environment:
             "task": x["task_type"],
         }
     )
-    train_dataset = train_dataset.remove_columns(["prompt", "verification_info", "task_type"])
-    train_dataset = train_dataset.shuffle(seed=42)
+    train_dataset = train_dataset.remove_columns(["prompt", "verification_info", "task_type"]) 
 
     parser = vf.XMLParser(["answer"], answer_field="answer")
 

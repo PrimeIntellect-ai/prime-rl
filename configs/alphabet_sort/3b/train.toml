@@ -1,6 +1,7 @@
+max_steps = 500
+
 [monitor.wandb]
 project = "alphabet-sort"
-name = "3b-multiturn-sort-debug"
 
 [model]
 name = "Qwen/Qwen2.5-3B-Instruct"

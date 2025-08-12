@@ -6,6 +6,7 @@ import torch
 
 from prime_rl.orchestrator.config import CheckpointConfig
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.utils import get_ckpt_dir
 
 
 @dataclass
@@ -19,17 +20,19 @@ class Progress:
 class CheckpointManager:
     """Utility class to save and load orchestrator checkpoints to resume orchestrator."""
 
-    def __init__(self, config: CheckpointConfig):
-        self.path = config.path
+    def __init__(self, outputs_dir: Path, config: CheckpointConfig):
+        self.config = config
+        self.ckpt_dir = get_ckpt_dir(outputs_dir)
         self._logger = get_logger()
+        self.ckpt_steps: list[int] = []
 
     def _get_step_path(self, step: int) -> Path:
-        return self.path / f"step_{step}"
+        return self.ckpt_dir / f"step_{step}"
 
     def _get_ckpt_path(self, step: int) -> Path:
         return self._get_step_path(step) / "orchestrator.pt"
 
-    def _save_to_path(self, ckpt_path: Path, progress: Progress):
+    def _save_to_path(self, ckpt_path: Path, ckpt_step: int, progress: Progress):
         self._logger.debug(f"Saving orchestrator checkpoint to {ckpt_path}")
         start_time = time.time()
 
@@ -39,6 +42,9 @@ class CheckpointManager:
         # Save checkpoint state
         with open(ckpt_path, "wb") as f:
             torch.save(ckpt_state, f)
+
+        # Append to list of saved steps
+        self.ckpt_steps.append(ckpt_step)
 
         self._logger.debug(f"Orchestrator checkpoint saved in {time.time() - start_time:.2f} seconds")
 
@@ -57,7 +63,7 @@ class CheckpointManager:
 
         self._logger.debug(f"Orchestrator checkpoint loaded in {time.time() - start_time:.2f} seconds")
 
-    def load(self, progress: Progress, step: int) -> Path:
+    def load(self, progress: Progress, step: int) -> None:
         """Loads a checkpoint from a given path."""
         ckpt_path = self._get_ckpt_path(step)
         if not ckpt_path.exists():
@@ -68,9 +74,29 @@ class CheckpointManager:
         self,
         progress: Progress,
         step: int,
-    ):
+    ) -> None:
         """Saves the full checkpoint state for a specified step."""
         step_path = self._get_step_path(step)
         step_path.mkdir(parents=True, exist_ok=True)
         ckpt_path = self._get_ckpt_path(step)
-        self._save_to_path(ckpt_path, progress)
+        self._save_to_path(ckpt_path, step, progress)
+
+    def maybe_clean(self) -> None:
+        """Deletes past orchestrator checkpoints beyond the most recent `keep` steps. No-op if `keep` is None."""
+        if self.config.keep is None:
+            return
+
+        # Get all the checkpoint steps to delete
+        assert list(self.ckpt_steps) == sorted(self.ckpt_steps)
+        ckpt_steps_to_keep = self.ckpt_steps[-self.config.keep :]
+        ckpt_steps_to_delete = self.ckpt_steps[: -self.config.keep]
+        for ckpt_step in ckpt_steps_to_delete:
+            ckpt_path = self._get_ckpt_path(ckpt_step)
+            if ckpt_path.exists():
+                self._logger.debug(
+                    f"Removing past orchestrator checkpoint for step {ckpt_step} ({ckpt_path}), because got checkpoints for {ckpt_steps_to_keep} ({len(self.ckpt_steps)} > {self.config.keep})"
+                )
+                ckpt_path.unlink(missing_ok=True)
+
+        # Update checkpoint steps
+        self.ckpt_steps = self.ckpt_steps[-self.config.keep :]

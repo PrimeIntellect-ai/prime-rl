@@ -17,7 +17,6 @@ def load_environment(**kwargs) -> vf.Environment:
         }
     )
     train_dataset = train_dataset.remove_columns(["prompt", "verification_info"])
-    train_dataset = train_dataset.shuffle(seed=42)
 
     parser = vf.ThinkParser(extract_fn=extract_boxed_answer)
 

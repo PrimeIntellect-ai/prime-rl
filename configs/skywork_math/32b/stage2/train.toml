@@ -1,3 +1,4 @@
+max_steps = 1130
 
 [monitor.wandb]
 

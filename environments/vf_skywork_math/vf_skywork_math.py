@@ -25,7 +25,6 @@ def load_environment(
         if max_solve_rate is not None:
             train_dataset = train_dataset.filter(lambda x: x[solve_rate_field] <= max_solve_rate)
     train_dataset = train_dataset.remove_columns(["prompt", "verification_info"])
-    train_dataset = train_dataset.shuffle(seed=42)
 
     def correct_answer_reward_func(completion, info, **kwargs) -> float:
         completion_text = completion[-1]["content"]
