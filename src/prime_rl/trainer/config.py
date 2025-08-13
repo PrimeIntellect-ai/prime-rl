@@ -97,7 +97,7 @@ class OptimizerConfig(BaseConfig):
 class CheckpointConfig(BaseConfig):
     """Configures checkpointing the full model, optimizer and training state for resuming training."""
 
-    interval: Annotated[int, Field(ge=1, description="Interval at which to save the checkpoint. If None, will only checkpoint at the end of training.")] = None
+    interval: Annotated[int | None, Field(ge=1, description="Interval at which to save the checkpoint. If None, will only checkpoint at the end of training.")] = None
 
     save_async: Annotated[
         bool,
