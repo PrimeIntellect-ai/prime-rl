@@ -15,7 +15,7 @@ class ConstantLRScheduler(LRScheduler):
         return [group["lr"] for group in self.optimizer.param_groups]
 
 
-def create_lr_scheduler(optimizer: Optimizer, config: SchedulerConfigType, max_steps: int | None) -> LRScheduler:
+def setup_scheduler(optimizer: Optimizer, config: SchedulerConfigType, max_steps: int | None) -> LRScheduler:
     """Create learning rate scheduler based on config."""
 
     if config.type == "constant":

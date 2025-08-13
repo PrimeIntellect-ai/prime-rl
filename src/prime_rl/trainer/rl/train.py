@@ -20,10 +20,10 @@ from prime_rl.trainer.rl.loss import (
     selective_log_softmax,
     compute_entropy,
 )
-from prime_rl.trainer.scheduler import create_lr_scheduler
+from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
-    get_tokenizer,
+    setup_tokenizer,
     reshard_module,
     setup_model,
 )
@@ -73,7 +73,7 @@ def train(config: RLTrainerConfig):
     # Initialize the model and tokenizer
     logger.info(f"Initializing model and tokenizer ({config.model})")
     model = setup_model(config.model)
-    tokenizer = get_tokenizer(config.model)
+    tokenizer = setup_tokenizer(config.model)
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -82,7 +82,7 @@ def train(config: RLTrainerConfig):
     optimizer = setup_optimizer(config.optim, model)
 
     # Set up the learning rate scheduler
-    scheduler = create_lr_scheduler(optimizer, config.scheduler, config.max_steps)
+    scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps)
     logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
 
     # Get checkpoint managers

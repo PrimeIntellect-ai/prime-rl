@@ -11,10 +11,10 @@ from prime_rl.trainer.weights import WeightCheckpointManager
 from prime_rl.trainer.sft.config import SFTTrainerConfig
 from prime_rl.trainer.logger import setup_logger
 from prime_rl.trainer.optim import setup_optimizer
-from prime_rl.trainer.scheduler import create_lr_scheduler
+from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
-    get_tokenizer,
+    setup_tokenizer,
     setup_model,
 )
 from prime_rl.trainer.perf import get_perf_counter
@@ -52,14 +52,14 @@ def train(config: SFTTrainerConfig):
     # Initialize the model and tokenizer
     logger.info(f"Initializing model and tokenizer ({config.model})")
     model = setup_model(config.model)
-    tokenizer = get_tokenizer(config.model)
+    tokenizer = setup_tokenizer(config.model)
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
     optimizer = setup_optimizer(config.optim, model)
 
     # Set up the learning rate scheduler
-    scheduler = create_lr_scheduler(optimizer, config.scheduler, config.max_steps)
+    scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps)
     logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
 
     # Get checkpoint manager
