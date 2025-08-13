@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Callable
 
 import pytest
@@ -31,8 +32,14 @@ def wandb_project(username: str) -> str:
 
 
 @pytest.fixture(scope="module")
+def outputs_dir(tmp_path: Path) -> Path:
+    return tmp_path / "outputs"
+
+
+@pytest.fixture(scope="module")
 def sft_process(
     run_process: Callable[[Command, Environment], ProcessResult],
+    outputs_dir: Path,
     wandb_project: str,
     branch_name: str,
     commit_hash: str,
@@ -40,7 +47,17 @@ def sft_process(
     wandb_name = f"{branch_name}-{commit_hash}"
 
     return run_process(
-        SFT_CMD + ["--monitor.wandb.project", wandb_project, "--monitor.wandb.name", wandb_name], ENV, TIMEOUT
+        SFT_CMD
+        + [
+            "--monitor.wandb.project",
+            wandb_project,
+            "--monitor.wandb.name",
+            wandb_name,
+            "--outputs-dir",
+            outputs_dir.as_posix(),
+        ],
+        ENV,
+        TIMEOUT,
     )
 
 
@@ -48,6 +65,7 @@ def sft_process(
 def sft_resume_process(
     sft_process,  # Resume training can only start when regular SFT process is finished
     run_process: Callable[[Command, Environment, int], ProcessResult],
+    outputs_dir: Path,
     wandb_project: str,
     branch_name: str,
     commit_hash: str,
@@ -55,7 +73,15 @@ def sft_resume_process(
     wandb_name = f"{branch_name}-{commit_hash}-resume"
 
     return run_process(
-        SFT_RESUME_CMD + ["--monitor.wandb.project", wandb_project, "--monitor.wandb.name", wandb_name],
+        SFT_RESUME_CMD
+        + [
+            "--monitor.wandb.project",
+            wandb_project,
+            "--monitor.wandb.name",
+            wandb_name,
+            "--outputs-dir",
+            outputs_dir.as_posix(),
+        ],
         ENV,
         TIMEOUT,
     )
