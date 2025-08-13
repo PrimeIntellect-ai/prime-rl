@@ -17,7 +17,7 @@ from prime_rl.trainer.model import (
     setup_model,
 )
 from prime_rl.trainer.perf import get_perf_counter
-from prime_rl.trainer.sft.data import get_dataloader
+from prime_rl.trainer.sft.data import setup_dataloader
 from prime_rl.trainer.utils import (
     Tensors,
     print_benchmark,
@@ -83,7 +83,7 @@ def train(config: SFTTrainerConfig):
 
     # Set up the dataset (optionaly, use a fake dataset for debugging)
     logger.info(f"Initializing dataset ({config.data})")
-    dataloader = iter(get_dataloader(tokenizer, config.data))
+    dataloader = iter(setup_dataloader(tokenizer, config.data))
 
     logger.info(f"Starting training loop ({config.max_steps=})")
     is_first_step = True
@@ -122,7 +122,7 @@ def train(config: SFTTrainerConfig):
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             target_ids = micro_batch["target_ids"].to("cuda")
-            loss_mask = micro_batch["loss_mask"].bool().to("cuda")
+            loss_mask = micro_batch["loss_mask"].to("cuda")
             assert input_ids.shape[0] == position_ids.shape[0]
 
             # Forward pass

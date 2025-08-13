@@ -24,8 +24,8 @@ class Sample(TypedDict):
 class Batch(TypedDict):
     input_ids: Int[Tensor, "batch seq"]
     position_ids: Int[Tensor, "batch seq"]
-    loss_mask: Bool[Tensor, "batch seq"]
     target_ids: Int[Tensor, "batch seq"]
+    loss_mask: Bool[Tensor, "batch seq"]
 
 
 class FakeDataset(IterableDataset):
@@ -65,37 +65,27 @@ class SFTDataset(IterableDataset):
         if "prompt" not in self.dataset.column_names or "completion" not in self.dataset.column_names:
             raise ValueError("HF dataset must have a 'prompt' and 'completion' column for SFT")
 
-        self._init_process_id()
-
-    def _init_process_id(self):
-        world = get_world()
-        rank = world.rank
-        world_size = world.world_size
-
-        # Get dataloader worker info
+        # Get the data rank and world size
         worker_info = get_worker_info()
+        worker_id, num_workers = 0, 1
         if worker_info is not None:
             worker_id = worker_info.id
             num_workers = worker_info.num_workers
-        else:
-            worker_id = 0
-            num_workers = 1
-
-        self.world_size = world_size * num_workers
-        self.rank = rank * num_workers + worker_id
+        self.data_rank = get_world().rank * num_workers + worker_id
+        self.data_world_size = get_world().world_size * num_workers
 
     def __iter__(self) -> Iterator[Sample]:
         """
         Apply chat template and tokenize a single example in prompt + completion format (https://github.com/huggingface/trl/blob/de27d612b026526ba39b88eee348994d7636e033/trl/trainer/sft_trainer.py#L661)
         """
-
-        counter = 0
+        counter = -1
         while True:
             for example in self.dataset:
+                # Increment the counter (0, 1, ...)
                 counter += 1
 
-                # Skip samples that don't belong to this process
-                if counter % self.world_size != self.rank:
+                # Skip samples that don't belong to this data rank
+                if counter % self.data_world_size != self.data_rank:
                     continue
 
                 assert "prompt" in example and "completion" in example, (
@@ -123,13 +113,12 @@ class SFTDataset(IterableDataset):
                         "token handling. Verify that the tokenizer is processing text consistently."
                     )
 
-                # Create sample
-                # we still want to keep a power of 2 for the sequence length so adding a fake target for the last token
+                # Create sample (with one fake target for the last token)
                 sample = {
                     "input_ids": prompt_completion_ids,
                     "position_ids": list(range(len(prompt_completion_ids))),
-                    "loss_mask": [0] * len(prompt_ids) + [1] * (len(prompt_completion_ids) - len(prompt_ids) - 1) + [0],
-                    "target_ids": prompt_completion_ids[1:] + [self.tokenizer.pad_token_id],
+                    "loss_mask": [False] * len(prompt_ids) + [True] * (len(prompt_completion_ids) - len(prompt_ids) - 1) + [False],
+                    "target_ids": prompt_completion_ids[1:] + [0],
                 }
 
                 yield sample
@@ -143,23 +132,21 @@ class PackingDataset(IterableDataset):
         self.seq_len = seq_len
 
     def __iter__(self) -> Iterator[Sample]:
-        current_samples = defaultdict(list)
-        current_seq_len = 0
-
+        packed_samples, seq_len = defaultdict(list), 0
         for sample in self.dataset:
+            # Add sample to packed samples
             for key, value in sample.items():
-                current_samples[key].extend(value)
+                packed_samples[key].extend(value)
 
-            current_seq_len += len(sample["input_ids"])
+            # Update sequence length
+            seq_len += len(sample["input_ids"])
 
-            if current_seq_len >= self.seq_len:
-                batch = {}
-                for key, value in current_samples.items():
-                    batch[key] = torch.tensor(value[: self.seq_len])
-
-                current_samples = defaultdict(list)
-                current_seq_len = 0
-                yield batch
+            # If batch is full, truncate and yield it
+            if seq_len >= self.seq_len:
+                for key, value in packed_samples.items():
+                    packed_samples[key] = value[: self.seq_len]
+                yield packed_samples
+                packed_samples, seq_len = defaultdict(list), 0
 
 
 class PaddingDataset(IterableDataset):
@@ -172,34 +159,32 @@ class PaddingDataset(IterableDataset):
 
     def __iter__(self) -> Iterator[Sample]:
         for sample in self.dataset:
-            if len(sample["input_ids"]) < self.seq_len:
-                padding_len = self.seq_len - len(sample["input_ids"])
-                sample["input_ids"] = sample["input_ids"] + [self.pad_token_id] * padding_len
-                sample["loss_mask"] = sample["loss_mask"] + [0] * padding_len
-                sample["position_ids"] = sample["position_ids"] + [0] * padding_len
-                sample["target_ids"] = sample["target_ids"] + [self.pad_token_id] * padding_len
+            if len(sample["input_ids"]) < self.seq_len: # Pad
+                num_padding_tokens = self.seq_len - len(sample["input_ids"])
+                sample["input_ids"] = sample["input_ids"] + [self.pad_token_id] * num_padding_tokens
+                sample["loss_mask"] = sample["loss_mask"] + [0] * num_padding_tokens
+                sample["position_ids"] = sample["position_ids"] + [0] * num_padding_tokens
+                sample["target_ids"] = sample["target_ids"] + [self.pad_token_id] * num_padding_tokens
 
+            # Truncate if too long
             for key, value in sample.items():
-                sample[key] = torch.tensor(value[: self.seq_len])
+                sample[key] = value[: self.seq_len]
 
             yield sample
 
+def collate(samples: list[Sample]) -> Batch:
+    return {
+        "input_ids": torch.stack([torch.tensor(sample["input_ids"]) for sample in samples], dim=0).long(),
+        "position_ids": torch.stack([torch.tensor(sample["position_ids"]) for sample in samples], dim=0).long(),
+        "loss_mask": torch.stack([torch.tensor(sample["loss_mask"]) for sample in samples], dim=0).bool(),
+        "target_ids": torch.stack([torch.tensor(sample["target_ids"]) for sample in samples], dim=0).long(),
+    }
 
-def get_dataloader(tokenizer: AutoTokenizer, config: DataConfig) -> DataLoader:
-    if config.collate_mode == "packing":
-        seq_len = config.micro_batch_size * config.seq_len
-    else:
-        seq_len = config.seq_len
-
-    if config.fake:
-        dataset = FakeDataset(tokenizer, seq_len)
-    else:
-        dataset = SFTDataset(tokenizer, config.name, config.split)
-
+def setup_dataloader(tokenizer: AutoTokenizer, config: DataConfig) -> DataLoader:
+    seq_len = config.micro_batch_size * config.seq_len if config.collate_mode == "packing" else config.seq_len
+    dataset = FakeDataset(tokenizer, seq_len) if config.fake else SFTDataset(tokenizer, config.name, config.split)
     if config.collate_mode == "packing":
         packing_dataset = PackingDataset(dataset, seq_len)
-        return DataLoader(packing_dataset, batch_size=1)
-
-    else:
-        padding_dataset = PaddingDataset(dataset, seq_len, tokenizer.pad_token_id)
-        return DataLoader(padding_dataset, batch_size=config.micro_batch_size)
+        return DataLoader(packing_dataset, batch_size=1, collate_fn=collate)
+    padding_dataset = PaddingDataset(dataset, seq_len, tokenizer.pad_token_id)
+    return DataLoader(padding_dataset, batch_size=config.micro_batch_size, collate_fn=collate)
