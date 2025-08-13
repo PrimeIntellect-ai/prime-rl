@@ -8,8 +8,8 @@ from prime_rl.trainer.config import (
     CheckpointConfig,
     ConstantSchedulerConfig,
     ModelConfig,
-    OptimizerType,
-    SchedulerType,
+    OptimizerConfigType,
+    SchedulerConfigType,
     WeightCheckpointConfig,
 )
 from prime_rl.utils.config import LogConfig, MultiMonitorConfig
@@ -50,14 +50,10 @@ class SFTTrainerConfig(BaseSettings):
     data: DataConfig = DataConfig()
 
     # The optimizer configuration
-    optim: Annotated[
-        OptimizerType, Field(discriminator="type", description="The optimizer to use. By default use AdamW")
-    ] = AdamWConfig()
+    optim: Annotated[OptimizerConfigType, Field(discriminator="type")] = AdamWConfig()
 
     # The learning rate scheduler configuration
-    scheduler: Annotated[
-        SchedulerType, Field(discriminator="type", description="The learning rate scheduler to use.")
-    ] = ConstantSchedulerConfig()
+    scheduler: Annotated[SchedulerConfigType, Field(discriminator="type")] = ConstantSchedulerConfig()
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
