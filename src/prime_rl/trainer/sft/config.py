@@ -22,6 +22,14 @@ class BatchConfig(BaseConfig):
     seq_len: Annotated[int, Field(ge=1)] = 128
     collate_mode: Annotated[Literal["padding", "packing"], Field(description="Collate mode to use.")] = "padding"
 
+    @model_validator(mode="after")
+    def validate_batch_size(self):
+        if self.batch_size % self.micro_batch_size != 0:
+            raise ValueError("Batch size must be divisible by micro batch size")
+        if self.batch_size < self.micro_batch_size:
+            raise ValueError("Batch size must be greater than or equal to micro batch size")
+        return self
+
 
 class DataConfig(BaseConfig):
     """Configures the data used for training."""
@@ -33,14 +41,6 @@ class DataConfig(BaseConfig):
 
     fake: Annotated[FakeDataConfig | None, Field(description="Whether to use a fake dataset.")] = None
 
-    @model_validator(mode="after")
-    def validate_batch_size(self):
-        if self.batch_size % self.micro_batch_size != 0:
-            raise ValueError("Batch size must be divisible by micro batch size")
-        if self.batch_size < self.micro_batch_size:
-            raise ValueError("Batch size must be greater than or equal to micro batch size")
-        return self
-
 
 class SFTTrainerConfig(BaseSettings):
     """Configures the SFT trainer"""
@@ -50,6 +50,9 @@ class SFTTrainerConfig(BaseSettings):
 
     # The data configuration
     data: DataConfig = DataConfig()
+
+    # The batch configuration
+    batch: BatchConfig = BatchConfig()
 
     # The optimizer configuration
     optim: OptimizerConfig = OptimizerConfig(lr=5e-5)

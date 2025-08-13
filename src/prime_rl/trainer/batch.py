@@ -116,5 +116,5 @@ def setup_dataloader(samples: list[Sample], tokenizer: AutoTokenizer, config: Ba
     batch_dataset = (
         PackedBatchDataset(samples, config) if config.collate_mode == "packing" else BatchDataset(samples, config)
     )
-    sampler = DistributedSampler(batch_dataset, shuffle=config.shuffle, drop_last=True)
+    sampler = DistributedSampler(batch_dataset, drop_last=True) # TODO(Mika): Check if we wanna drop or pad
     return iter(DataLoader(batch_dataset, batch_size=config.micro_batch_size, collate_fn=collate_fn, sampler=sampler))

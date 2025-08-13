@@ -84,11 +84,11 @@ def train(config: SFTTrainerConfig):
 
     # Set up the dataset (optionaly, use a fake dataset for debugging)
     logger.info(f"Initializing dataset ({config.data})")
-    dataset = setup_dataset(tokenizer, config=config.data)
+    dataset = setup_dataset(tokenizer, data_config=config.data, batch_config=config.batch)
 
     logger.info(f"Starting training loop ({config.max_steps=})")
     is_first_step = True
-    steps_per_epoch = len(dataset) // config.data.batch_size
+    steps_per_epoch = len(dataset) // config.batch.batch_size  # TODO(Mika): This is not correct for packing
     epoch, epoch_step = 0, 0
     while True:
         # Save the full checkpoint (if we are at an interval step and not at the first or last step)
@@ -123,20 +123,20 @@ def train(config: SFTTrainerConfig):
             torch.cuda.memory._record_memory_history()
 
         # Get the next batch of samples
-        batch = [dataset[i] for i in range(progress.step, progress.step + config.data.batch_size)]
-        micro_batches = setup_dataloader(batch, tokenizer, config=config.data)
+        batch = [dataset[i] for i in range(progress.step, progress.step + config.batch.batch_size)]
+        micro_batches = setup_dataloader(batch, tokenizer, config=config.batch)
 
         step_start_time = time.time()
         forward_backward_start_time = time.time()
         tensors = Tensors()  # Used to accumulate tensor statistics across grad acc and ranks for logging
-        grad_accum_steps = config.data.batch_size // (config.data.micro_batch_size * world.world_size)
+        grad_accum_steps = config.batch.batch_size // (config.batch.micro_batch_size * world.world_size)
         for micro_step in range(grad_accum_steps):
             micro_batch = next(micro_batches)
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             target_ids = micro_batch["target_ids"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
-            assert input_ids.shape[0] == position_ids.shape[0] == config.data.micro_batch_size
+            assert input_ids.shape[0] == position_ids.shape[0] == config.batch.micro_batch_size
 
             # Forward pass
             logits = forward(model, input_ids, position_ids).contiguous()
@@ -197,10 +197,10 @@ def train(config: SFTTrainerConfig):
         tensor_stats = tensors.compute_stats()
 
         # Compute step metrics
-        num_tokens = config.data.batch_size * config.data.seq_len
+        num_tokens = config.batch.batch_size * config.batch.seq_len
         progress.total_tokens += num_tokens
-        progress.total_samples += config.data.batch_size
-        perf_counter = get_perf_counter(model, config.data.seq_len)
+        progress.total_samples += config.batch.batch_size
+        perf_counter = get_perf_counter(model, config.batch.seq_len)
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_tokens_per_second() or 0
         mfu = perf_counter.get_mfu() or 0

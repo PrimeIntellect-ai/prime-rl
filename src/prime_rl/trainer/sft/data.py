@@ -6,7 +6,7 @@ from datasets import load_dataset
 from torch.utils.data import Dataset
 from transformers import AutoTokenizer
 
-from prime_rl.trainer.sft.config import DataConfig
+from prime_rl.trainer.sft.config import BatchConfig, DataConfig
 from prime_rl.utils.logger import get_logger
 
 
@@ -19,15 +19,16 @@ class Sample(TypedDict):
 class FakeDataset(Dataset):
     """A dataset of fake tokens"""
 
-    def __init__(self, tokenizer: AutoTokenizer, config: DataConfig):
-        self.config = config
+    def __init__(self, tokenizer: AutoTokenizer, batch_config: BatchConfig, data_config: DataConfig):
+        self.batch_config = batch_config
+        self.data_config = data_config
         self.vocab_size = tokenizer.vocab_size
 
     def __len__(self) -> int:
         return self.config.fake.n
 
     def __getitem__(self, index: int) -> Sample:
-        input_ids = torch.randint(0, self.vocab_size, (self.config.seq_len + 1,)).long()
+        input_ids = torch.randint(0, self.vocab_size, (self.batch_config.seq_len + 1,)).long()
         position_ids = torch.arange(len(input_ids)).long()
         loss_mask = torch.ones(len(input_ids)).bool()
         return {
@@ -40,14 +41,15 @@ class FakeDataset(Dataset):
 class SFTDataset(Dataset):
     """A dataset wrapping a HF SFT dataset with prompt + completion format."""
 
-    def __init__(self, tokenizer: AutoTokenizer, config: DataConfig):
-        assert not config.fake, "HFDataset does not support fake data"
-        self.config = config
+    def __init__(self, tokenizer: AutoTokenizer, data_config: DataConfig, batch_config: BatchConfig):
+        assert not data_config.fake, "HFDataset does not support fake data"
+        self.data_config = data_config
+        self.batch_config = batch_config
         self.tokenizer = tokenizer
         self._logger = get_logger()
 
         # Load dataset
-        self.dataset: HFDataset = load_dataset(config.name, split=config.split)
+        self.dataset: HFDataset = load_dataset(data_config.name, split=data_config.split)
 
         # Assert that the dataset has a 'text' column
         if "prompt" not in self.dataset.column_names or "completion" not in self.dataset.column_names:
@@ -99,7 +101,7 @@ class SFTDataset(Dataset):
         return self.samples[index]
 
 
-def setup_dataset(tokenizer: AutoTokenizer, config: DataConfig) -> Dataset:
-    if config.fake:
-        return FakeDataset(tokenizer, config)
-    return SFTDataset(tokenizer, config)
+def setup_dataset(tokenizer: AutoTokenizer, data_config: DataConfig, batch_config: BatchConfig) -> Dataset:
+    if data_config.fake:
+        return FakeDataset(tokenizer, batch_config, data_config)
+    return SFTDataset(tokenizer, data_config, batch_config)
