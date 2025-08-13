@@ -180,9 +180,13 @@ def collate(samples: list[Sample]) -> Batch:
         "target_ids": torch.stack([torch.tensor(sample["target_ids"]) for sample in samples], dim=0).long(),
     }
 
-def setup_dataloader(tokenizer: AutoTokenizer, config: DataConfig) -> DataLoader:
+def setup_dataset(tokenizer: AutoTokenizer, config: DataConfig) -> IterableDataset:
+    if config.fake:
+        return FakeDataset(tokenizer, config.seq_len)
+    return SFTDataset(tokenizer, name=config.name, split=config.split)
+
+def setup_dataloader(dataset: IterableDataset, tokenizer: AutoTokenizer, config: DataConfig) -> DataLoader:
     seq_len = config.micro_batch_size * config.seq_len if config.collate_mode == "packing" else config.seq_len
-    dataset = FakeDataset(tokenizer, seq_len) if config.fake else SFTDataset(tokenizer, config.name, config.split)
     if config.collate_mode == "packing":
         packing_dataset = PackingDataset(dataset, seq_len)
         return DataLoader(packing_dataset, batch_size=1, collate_fn=collate)

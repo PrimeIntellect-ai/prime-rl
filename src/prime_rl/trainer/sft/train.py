@@ -17,7 +17,7 @@ from prime_rl.trainer.model import (
     setup_model,
 )
 from prime_rl.trainer.perf import get_perf_counter
-from prime_rl.trainer.sft.data import setup_dataloader
+from prime_rl.trainer.sft.data import setup_dataloader, setup_dataset
 from prime_rl.trainer.utils import (
     Tensors,
     print_benchmark,
@@ -25,7 +25,7 @@ from prime_rl.trainer.utils import (
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
-from prime_rl.utils.utils import clean_exit, to_col_format
+from prime_rl.utils.utils import clean_exit, format_num, to_col_format
 
 
 @clean_exit
@@ -81,9 +81,13 @@ def train(config: SFTTrainerConfig):
         f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
     )
 
-    # Set up the dataset (optionaly, use a fake dataset for debugging)
-    logger.info(f"Initializing dataset ({config.data})")
-    dataloader = iter(setup_dataloader(tokenizer, config.data))
+    # Set up the dataset and dataloader (optionaly, use a fake dataset for debugging)
+    logger.info(f"Initializing dataset (name={config.data.name}, split={config.data.split})")
+    dataset = setup_dataset(tokenizer, config.data)
+
+    # Set up the dataloader over micro batches
+    logger.info(f"Initializing dataloader (micro_batch_size={config.data.micro_batch_size}, batch_size={config.data.batch_size}, collate_mode={config.data.collate_mode})")
+    dataloader = iter(setup_dataloader(dataset, tokenizer, config.data))
 
     logger.info(f"Starting training loop ({config.max_steps=})")
     is_first_step = True
