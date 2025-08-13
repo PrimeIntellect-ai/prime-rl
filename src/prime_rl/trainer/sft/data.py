@@ -6,10 +6,11 @@ from datasets import Dataset as HFDataset
 from datasets import load_dataset
 from jaxtyping import Bool, Int
 from torch import Tensor
-from torch.utils.data import DataLoader, IterableDataset
+from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 from transformers import AutoTokenizer
 
 from prime_rl.trainer.sft.config import DataConfig
+from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
 
@@ -64,16 +65,38 @@ class SFTDataset(IterableDataset):
         if "prompt" not in self.dataset.column_names or "completion" not in self.dataset.column_names:
             raise ValueError("HF dataset must have a 'prompt' and 'completion' column for SFT")
 
+        self._init_process_id()
+
+    def _init_process_id(self):
+        world = get_world()
+        rank = world.rank
+        world_size = world.world_size
+
+        # Get dataloader worker info
+        worker_info = get_worker_info()
+        if worker_info is not None:
+            worker_id = worker_info.id
+            num_workers = worker_info.num_workers
+        else:
+            worker_id = 0
+            num_workers = 1
+
+        self.world_size = world_size * num_workers
+        self.rank = rank * num_workers + worker_id
+
     def __iter__(self) -> Iterator[Sample]:
         """
         Apply chat template and tokenize a single example in prompt + completion format (https://github.com/huggingface/trl/blob/de27d612b026526ba39b88eee348994d7636e033/trl/trainer/sft_trainer.py#L661)
         """
+
         counter = 0
         while True:
             for example in self.dataset:
                 counter += 1
 
-                # todo handle distributed sampling
+                # Skip samples that don't belong to this process
+                if counter % self.world_size != self.rank:
+                    continue
 
                 assert "prompt" in example and "completion" in example, (
                     "Prompt and completion must be present in the example"
