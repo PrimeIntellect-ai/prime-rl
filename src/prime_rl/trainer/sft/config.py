@@ -14,16 +14,22 @@ class FakeDataConfig(BaseConfig):
     n: Annotated[int, Field(ge=1)] = 1000
 
 
-class DataConfig(BaseConfig):
-    """Configures the data used for training."""
+class BatchConfig(BaseConfig):
+    """Configures how to batch the dataset."""
 
-    name: Annotated[str, Field(description="Name or path of the HF dataset to use.")] = "PrimeIntellect/Reverse-Text-SFT"
-    split: Annotated[str, Field(description="Split to use from the HF dataset.")] = "train"
-    collate_mode: Annotated[Literal["padding", "packing"], Field(description="Collate mode to use.")] = "padding"
     micro_batch_size: Annotated[int, Field(ge=1)] = 8
     batch_size: Annotated[int, Field(ge=1)] = 128
     seq_len: Annotated[int, Field(ge=1)] = 128
-    shuffle: Annotated[bool, Field(description="Whether to shuffle the dataset at the beginning of each epoch.")] = True
+    collate_mode: Annotated[Literal["padding", "packing"], Field(description="Collate mode to use.")] = "padding"
+
+
+class DataConfig(BaseConfig):
+    """Configures the data used for training."""
+
+    name: Annotated[str, Field(description="Name or path of the HF dataset to use.")] = (
+        "PrimeIntellect/Reverse-Text-SFT"
+    )
+    split: Annotated[str, Field(description="Split to use from the HF dataset.")] = "train"
 
     fake: Annotated[FakeDataConfig | None, Field(description="Whether to use a fake dataset.")] = None
 

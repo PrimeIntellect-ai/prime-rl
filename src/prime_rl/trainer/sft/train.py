@@ -6,6 +6,7 @@ import time
 import torch
 from torch.nn.functional import cross_entropy, softmax
 from loguru import logger
+from prime_rl.trainer.batch import setup_dataloader
 from prime_rl.trainer.ckpt import CheckpointManager, Progress
 from prime_rl.trainer.weights import WeightCheckpointManager
 from prime_rl.trainer.sft.config import SFTTrainerConfig
@@ -17,7 +18,7 @@ from prime_rl.trainer.model import (
     setup_model,
 )
 from prime_rl.trainer.perf import get_perf_counter
-from prime_rl.trainer.sft.data import get_dataloader, get_dataset
+from prime_rl.trainer.sft.data import setup_dataset
 from prime_rl.trainer.utils import (
     Tensors,
     print_benchmark,
@@ -83,8 +84,7 @@ def train(config: SFTTrainerConfig):
 
     # Set up the dataset (optionaly, use a fake dataset for debugging)
     logger.info(f"Initializing dataset ({config.data})")
-    dataset = get_dataset(tokenizer, config=config.data)
-    logger.info(f"Initialized {dataset.__class__.__name__} for `{config.data.name}` with {len(dataset)}{' packed' if config.data.collate_mode == 'packing' else ''} samples")
+    dataset = setup_dataset(tokenizer, config=config.data)
 
     logger.info(f"Starting training loop ({config.max_steps=})")
     is_first_step = True
@@ -115,18 +115,23 @@ def train(config: SFTTrainerConfig):
 
         # Re-initialize the dataloader if we are the beginning of an epoch
         if epoch_step == 0:
-            dataloader = get_dataloader(dataset, tokenizer, config=config.data)
+            pass
+            # dataloader = get_dataloader(dataset, tokenizer, config=config.data)
             epoch += 1 if progress.step > 0 else 0  # Only increment epoch if we are not at the first step
 
         if config.profile_path and world.rank == 0:
             torch.cuda.memory._record_memory_history()
+
+        # Get the next batch of samples
+        batch = [dataset[i] for i in range(progress.step, progress.step + config.data.batch_size)]
+        micro_batches = setup_dataloader(batch, tokenizer, config=config.data)
 
         step_start_time = time.time()
         forward_backward_start_time = time.time()
         tensors = Tensors()  # Used to accumulate tensor statistics across grad acc and ranks for logging
         grad_accum_steps = config.data.batch_size // (config.data.micro_batch_size * world.world_size)
         for micro_step in range(grad_accum_steps):
-            micro_batch = next(dataloader)
+            micro_batch = next(micro_batches)
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             target_ids = micro_batch["target_ids"].to("cuda")
