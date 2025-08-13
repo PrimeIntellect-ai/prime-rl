@@ -45,7 +45,7 @@ class PackedBatchDataset(BatchDataset):
     def _pack_samples(self, samples: list[Sample]) -> list[Sample]:
         """Offline sample packing using `First Fit Decreasing` algorithm."""
         # Sort samples in reverse order of length
-        sorted_samples = sorted(samples, key=lambda x: len(x["input_ids"]), reverse=True)
+        sorted_samples = sorted(samples, key=lambda x: x["num_tokens"], reverse=True)
 
         # Create packed samples
         packed_samples: list[Sample] = []

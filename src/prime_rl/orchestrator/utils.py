@@ -189,6 +189,7 @@ def convert_to_samples(rollouts: list[Rollout]) -> list[RLSample]:
         position_ids = list(range(num_tokens))
         advantages = [rollout.advantage] * num_tokens
         samples.append({
+            "num_tokens": num_tokens,
             "input_ids": input_ids,
             "position_ids": position_ids,
             "loss_mask": loss_mask,

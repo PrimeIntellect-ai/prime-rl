@@ -28,6 +28,7 @@ class FakeDataset(Dataset):
         position_ids = torch.arange(len(input_ids)).long()
         loss_mask = torch.ones(len(input_ids)).bool()
         return {
+            "num_tokens": len(input_ids),
             "input_ids": input_ids,
             "position_ids": position_ids,
             "loss_mask": loss_mask,
@@ -53,7 +54,9 @@ class SFTDataset(Dataset):
 
         # Preprocess dataset (apply chat template and tokenize)
         columns = self.dataset.column_names
-        self.samples = self.dataset.map(self._preprocess, remove_columns=columns).to_list()
+        self.samples = self.dataset.map(self._preprocess, remove_columns=columns).select_columns([
+            "num_tokens", "input_ids", "position_ids", "loss_mask"
+        ]).to_list()
 
     def _preprocess(self, example: dict) -> SFTSample:
         """
@@ -84,10 +87,12 @@ class SFTDataset(Dataset):
 
         # Create sample
         sample = {
+            "num_tokens": len(prompt_completion_ids),
             "input_ids": prompt_completion_ids,
             "position_ids": list(range(len(prompt_completion_ids))),
             "loss_mask": [0] * len(prompt_ids) + [1] * (len(prompt_completion_ids) - len(prompt_ids)),
         }
+        print("sample in preprocess", sample.keys())
 
         return sample
 

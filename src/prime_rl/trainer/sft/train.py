@@ -87,6 +87,7 @@ def train(config: SFTTrainerConfig):
     # Set up the dataset (optionaly, use a fake dataset for debugging)
     logger.info(f"Initializing dataset ({config.data})")
     dataset = setup_dataset(tokenizer, data_config=config.data, batch_config=config.batch)
+    print(dataset[0].keys())
 
     logger.info(f"Starting training loop ({config.max_steps=})")
     is_first_step = True
