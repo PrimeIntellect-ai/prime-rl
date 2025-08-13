@@ -46,12 +46,12 @@ class ModelConfig(BaseConfig):
         ),
     ] = False
 
-    ep_mode: Annotated[
-        Literal["world", "local"] | int,
+    ep: Annotated[
+        int,
         Field(
-            description="The expert parallelism to use if the model has MoE layers. If 'world', will use the world size. If 'local', will use the local world size. If an integer, will use that EP size.",
+            description="The expert parallelism to use if the model has MoE layers. If 1, then no EP will be used.",
         ),
-    ] = "world"
+    ] = 1
 
 
 class ConstantSchedulerConfig(BaseModel):

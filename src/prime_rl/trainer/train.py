@@ -307,9 +307,7 @@ def train(config: TrainerConfig):
 
         # Optionally, clip the gradients
         logger.debug(f"Clipping gradients to {config.loss.max_norm}")
-        grad_norm = clip_grad_norm_(
-            model.parameters(), max_norm=config.loss.max_norm, ep_enabled=config.model.ep_mode > 1
-        )
+        grad_norm = clip_grad_norm_(model.parameters(), max_norm=config.loss.max_norm, ep_enabled=config.model.ep > 1)
 
         # Update the model parameters
         optimizer.step()
