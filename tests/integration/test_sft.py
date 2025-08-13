@@ -32,8 +32,8 @@ def wandb_project(username: str) -> str:
 
 
 @pytest.fixture(scope="module")
-def outputs_dir(tmp_path: Path) -> Path:
-    return tmp_path / "outputs"
+def outputs_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return tmp_path_factory.mktemp("outputs")
 
 
 @pytest.fixture(scope="module")
