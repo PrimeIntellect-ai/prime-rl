@@ -1,6 +1,5 @@
-import torch
 from muon_fsdp2 import Muon
-from torch.optim import Optimizer
+from torch.optim import SGD, AdamW, Optimizer
 
 from prime_rl.trainer.config import OptimizerConfigType
 from prime_rl.trainer.model import Model
@@ -8,8 +7,14 @@ from prime_rl.trainer.model import Model
 
 def setup_optimizer(config: OptimizerConfigType, model: Model) -> Optimizer:
     match config.type:
+        case "sgd":
+            return SGD(
+                params=model.parameters(),
+                lr=config.lr,
+                weight_decay=config.weight_decay,
+            )
         case "adamw":
-            return torch.optim.AdamW(
+            return AdamW(
                 params=model.parameters(),
                 lr=config.lr,
                 weight_decay=config.weight_decay,
@@ -36,7 +41,7 @@ def setup_optimizer(config: OptimizerConfigType, model: Model) -> Optimizer:
                         params=adamw_params,
                         lr=config.lr,
                         weight_decay=config.weight_decay,
-                        betas=(config.adam_betas1, config.adam_betas2),
+                        betas=(config.betas1, config.betas2),
                         use_muon=False,
                     ),
                 ]

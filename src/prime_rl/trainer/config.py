@@ -79,27 +79,31 @@ class CosineSchedulerConfig(BaseModel):
 SchedulerConfigType: TypeAlias = ConstantSchedulerConfig | LinearSchedulerConfig | CosineSchedulerConfig
 
 
-class AdamWConfig(BaseModel):
-    type: Literal["adamw"] = "adamw"
+class BaseOptimizerConfig(BaseModel):
     lr: Annotated[float, Field(ge=0)] = 4e-4
     weight_decay: Annotated[float, Field(ge=0)] = 0.01
-    betas1: Annotated[float, Field(ge=0)] = 0.9
-    betas2: Annotated[float, Field(ge=0)] = 0.999
-
-    # Gradient clipping
     max_norm: Annotated[float, Field(ge=0, description="Maximum gradient norm to clip.")] = 1.0
 
 
-class MuonConfig(BaseModel):
+class SGDConfig(BaseOptimizerConfig):
+    type: Literal["sgd"] = "sgd"
+
+
+class AdamWConfig(BaseOptimizerConfig):
+    type: Literal["adamw"] = "adamw"
+
+    betas1: Annotated[float, Field(ge=0)] = 0.9
+    betas2: Annotated[float, Field(ge=0)] = 0.999
+
+
+class MuonConfig(BaseOptimizerConfig):
     type: Literal["muon"] = "muon"
-    lr: Annotated[float, Field(ge=0)] = 4e-4
-    weight_decay: Annotated[float, Field(ge=0)] = 0.01
 
-    adam_betas1: Annotated[float, Field(ge=0)] = 0.9
-    adam_betas2: Annotated[float, Field(ge=0)] = 0.999
+    betas1: Annotated[float, Field(ge=0)] = 0.9
+    betas2: Annotated[float, Field(ge=0)] = 0.999
 
 
-OptimizerConfigType: TypeAlias = AdamWConfig | MuonConfig
+OptimizerConfigType: TypeAlias = SGDConfig | AdamWConfig | MuonConfig
 
 
 class CheckpointConfig(BaseConfig):
