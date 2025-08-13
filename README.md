@@ -66,13 +66,19 @@ uv run python -V
 uv run python -c "import flash_attn"
 ```
 
-3. Check that you can run training debug mode (*this requires 1 GPU*)
+3. Check that you can run SFT trainer in debug model (*this requires 1 GPU)
+
+```bash
+uv run sft @ configs/debug/train.toml
+```
+
+4. Check that you can run the RL trainer debug mode (*this requires 1 GPU*)
 
 ```bash
 uv run trainer @ configs/debug/train.toml
 ```
 
-4. Check that you can run the orchestrator against an inference server (*this requires 1 GPU*)
+5. Check that you can run the orchestrator against an inference server (*this requires 1 GPU*)
 
 ```bash
 uv run inference @ configs/debug/infer.toml
