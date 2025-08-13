@@ -9,7 +9,8 @@ from prime_rl.trainer import envs
 import shardcast
 import torch
 from loguru import logger
-from prime_rl.trainer.batch import collate_rl, prepare_batch
+from prime_rl.trainer.rl.batch import collate
+from prime_rl.trainer.batch import prepare_batch
 from prime_rl.trainer.ckpt import CheckpointManager, Progress
 from prime_rl.trainer.weights import WeightCheckpointManager
 from prime_rl.trainer.rl.config import RLTrainerConfig
@@ -184,7 +185,7 @@ def train(config: RLTrainerConfig):
         logger.debug("Loading batch")
         load_data_start_time = time.time()
         batch_samples = dataloader.get_samples()
-        batch_dataset, micro_batches = prepare_batch(batch_samples, tokenizer, config=config.batch, collate_fn=partial(collate_rl, seq_len=config.batch.seq_len, tokenizer=tokenizer))
+        batch_dataset, micro_batches = prepare_batch(batch_samples, config=config.batch, collate_fn=partial(collate, seq_len=config.batch.seq_len, tokenizer=tokenizer))
         micro_batches = list(micro_batches)
         load_data_time = time.time() - load_data_start_time
         logger.debug(f"Loaded batch in {load_data_time:.2f} seconds")

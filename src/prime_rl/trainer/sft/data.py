@@ -9,7 +9,7 @@ from transformers import AutoTokenizer
 from prime_rl.trainer.config import BatchConfig
 from prime_rl.trainer.sft.config import DataConfig
 from prime_rl.utils.logger import get_logger
-from prime_rl.trainer.batch import SFTSample
+from prime_rl.trainer.sft.batch import SFTSample
 
 
 class FakeDataset(Dataset):
