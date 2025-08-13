@@ -139,15 +139,44 @@ class PackingDataset(IterableDataset):
                 yield batch
 
 
+class PaddingDataset(IterableDataset):
+    """A dataset that pads samples to a fixed sequence length."""
+
+    def __init__(self, dataset: SFTDataset, seq_len: int, pad_token_id: int):
+        self.dataset = dataset
+        self.seq_len = seq_len
+        self.pad_token_id = pad_token_id
+
+    def __iter__(self) -> Iterator[Sample]:
+        for sample in self.dataset:
+            if len(sample["input_ids"]) < self.seq_len:
+                padding_len = self.seq_len - len(sample["input_ids"])
+                sample["input_ids"] = sample["input_ids"] + [self.pad_token_id] * padding_len
+                sample["loss_mask"] = sample["loss_mask"] + [0] * padding_len
+                sample["position_ids"] = sample["position_ids"] + [0] * padding_len
+                sample["target_ids"] = sample["target_ids"] + [self.pad_token_id] * padding_len
+
+            for key, value in sample.items():
+                sample[key] = torch.tensor(value[: self.seq_len])
+
+            yield sample
+
+
 def get_dataloader(tokenizer: AutoTokenizer, config: DataConfig) -> DataLoader:
-    assert config.collate_mode == "packing", "Only packing mode is supported for now"
-    seq_len = config.micro_batch_size * config.seq_len
+    if config.collate_mode == "packing":
+        seq_len = config.micro_batch_size * config.seq_len
+    else:
+        seq_len = config.seq_len
 
     if config.fake:
         dataset = FakeDataset(tokenizer, seq_len)
     else:
         dataset = SFTDataset(tokenizer, config.name, config.split)
 
-    packing_dataset = PackingDataset(dataset, seq_len)
+    if config.collate_mode == "packing":
+        packing_dataset = PackingDataset(dataset, seq_len)
+        return DataLoader(packing_dataset, batch_size=1)
 
-    return DataLoader(packing_dataset, batch_size=1)
+    else:
+        padding_dataset = PaddingDataset(dataset, seq_len, tokenizer.pad_token_id)
+        return DataLoader(padding_dataset, batch_size=config.micro_batch_size)
