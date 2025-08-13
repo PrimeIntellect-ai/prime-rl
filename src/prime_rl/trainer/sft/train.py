@@ -10,6 +10,7 @@ from prime_rl.trainer.ckpt import CheckpointManager, Progress
 from prime_rl.trainer.weights import WeightCheckpointManager
 from prime_rl.trainer.sft.config import SFTTrainerConfig
 from prime_rl.trainer.logger import setup_logger
+from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import create_lr_scheduler
 from prime_rl.trainer.model import (
     forward,
@@ -55,12 +56,7 @@ def train(config: SFTTrainerConfig):
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
-    optimizer = torch.optim.AdamW(
-        params=model.parameters(),
-        lr=config.optim.lr,
-        weight_decay=config.optim.weight_decay,
-        betas=(config.optim.betas1, config.optim.betas2),
-    )
+    optimizer = setup_optimizer(config.optim, model)
 
     # Set up the learning rate scheduler
     scheduler = create_lr_scheduler(optimizer, config.scheduler, config.max_steps)
