@@ -79,12 +79,9 @@ class SFTTrainerConfig(BaseSettings):
     ] = Path("outputs")
 
     max_steps: Annotated[
-        int,
-        Field(
-            ge=1,
-            description="Maximum number of steps to run training for.",
-        ),
-    ] = 100
+        int | None,
+        Field(description="Maximum number of steps to run training for. If None, will run indefinitely."),
+    ] = None
 
     profile_path: Annotated[Path | None, Field(description="Path to write memory profile to.")] = None
 
@@ -106,22 +103,26 @@ class SFTTrainerConfig(BaseSettings):
     @model_validator(mode="after")
     def validate_scheduler(self):
         # Constant scheduler does not require any validation/ setup
-        if self.optim.scheduler.type == "constant":
+        if self.scheduler.type == "constant":
             return self
 
-        # If decay_steps is not specified, use remaining steps after warmup
-        if self.optim.scheduler.decay_steps is None:
-            if not (self.optim.scheduler.warmup_steps <= self.max_steps):
-                raise ValueError("config.optim.scheduler.warmup_steps must be less than or equal to config.max_steps")
+        # Must specify max_steps when using a scheduler other than `constant`
+        if self.max_steps is None:
+            raise ValueError("Must specify max_steps when using a scheduler other than `constant`")
 
-            self.optim.scheduler.decay_steps = self.max_steps - self.optim.scheduler.warmup_steps
-            assert self.optim.scheduler.decay_steps >= 0, "config.optim.scheduler.decay_steps must be positive"
+        # If decay_steps is not specified, use remaining steps after warmup
+        if self.scheduler.decay_steps is None:
+            if not (self.warmup_steps <= self.max_steps):
+                raise ValueError("config.scheduler.warmup_steps must be less than or equal to config.max_steps")
+
+            self.scheduler.decay_steps = self.max_steps - self.scheduler.warmup_steps
+            assert self.scheduler.decay_steps >= 0, "config.scheduler.decay_steps must be positive"
 
         # If decay_steps is specified, validate it
         else:
-            if not (self.optim.scheduler.warmup_steps + self.optim.scheduler.decay_steps <= self.max_steps):
+            if not (self.scheduler.warmup_steps + self.scheduler.decay_steps <= self.max_steps):
                 raise ValueError(
-                    "config.optim.scheduler.warmup_steps + config.optim.scheduler.decay_steps must be less than or equal to config.max_steps"
+                    "config.scheduler.warmup_steps + config.scheduler.decay_steps must be less than or equal to config.max_steps"
                 )
 
         return self

@@ -136,12 +136,15 @@ class CheckpointConfig(BaseConfig):
     ] = None
 
 
+DataBufferType: TypeAlias = Literal["simple", "difficulty-pool", "online-difficulty"]
+
+
 class SimpleBufferConfig(BaseModel):
-    type: Literal["simple"] = "simple"
+    type: DataBufferType = "simple"
 
 
 class DifficultyPoolBufferConfig(BaseModel):
-    type: Literal["difficulty-pool"] = "difficulty-pool"
+    type: DataBufferType = "difficulty-pool"
 
     difficulty_field: Annotated[
         str | None,
@@ -189,7 +192,7 @@ class DifficultyPoolBufferConfig(BaseModel):
 
 
 class OnlineDifficultyBufferConfig(BaseModel):
-    type: Literal["online-difficulty"] = "online-difficulty"
+    type: DataBufferType = "online-difficulty"
 
     min_reward: Annotated[
         float | None,
@@ -240,7 +243,7 @@ class OrchestratorConfig(BaseSettings):
     eval: EvalConfig | None = None
 
     # Data buffer configuration
-    buffer: DataBufferConfigType = Field(discriminator="type", default=SimpleBufferConfig())
+    buffer: Annotated[DataBufferConfigType, Field(discriminator="type")] = SimpleBufferConfig()
 
     # The logging configuration
     log: LogConfig = LogConfig()

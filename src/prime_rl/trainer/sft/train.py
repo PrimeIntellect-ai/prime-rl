@@ -63,8 +63,8 @@ def train(config: SFTTrainerConfig):
     )
 
     # Set up the learning rate scheduler
-    scheduler = create_lr_scheduler(optimizer, config.optim.scheduler, config.max_steps)
-    logger.info(f"Using `{config.optim.scheduler.type}` scheduler ({config.optim.scheduler})")
+    scheduler = create_lr_scheduler(optimizer, config.scheduler, config.max_steps)
+    logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
 
     # Get checkpoint manager
     if config.ckpt:
@@ -86,7 +86,9 @@ def train(config: SFTTrainerConfig):
     dataset = setup_dataset(tokenizer, config.data)
 
     # Set up the dataloader over micro batches
-    logger.info(f"Initializing dataloader (micro_batch_size={config.data.micro_batch_size}, batch_size={config.data.batch_size}, collate_mode={config.data.collate_mode})")
+    logger.info(
+        f"Initializing dataloader (micro_batch_size={config.data.micro_batch_size}, batch_size={config.data.batch_size}, collate_mode={config.data.collate_mode})"
+    )
     dataloader = iter(setup_dataloader(dataset, tokenizer, config.data))
 
     logger.info(f"Starting training loop ({config.max_steps=})")
