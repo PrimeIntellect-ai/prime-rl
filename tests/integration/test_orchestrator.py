@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Callable
 
 import pytest
@@ -18,8 +19,10 @@ CMD = [
 
 
 @pytest.fixture(scope="module")
-def orchestrator_process(vllm_server, run_process: Callable[[Command, Environment], ProcessResult]) -> ProcessResult:
-    return run_process(CMD, {})
+def orchestrator_process(
+    vllm_server, run_process: Callable[[Command, Environment], ProcessResult], outputs_dir: Path
+) -> ProcessResult:
+    return run_process(CMD + ["--outputs-dir", outputs_dir.as_posix()], {})
 
 
 def test_no_error(orchestrator_process: ProcessResult):
