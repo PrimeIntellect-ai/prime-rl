@@ -6,7 +6,8 @@ from datasets import load_dataset
 from torch.utils.data import Dataset
 from transformers import AutoTokenizer
 
-from prime_rl.trainer.sft.config import BatchConfig, DataConfig
+from prime_rl.trainer.config import BatchConfig
+from prime_rl.trainer.sft.config import DataConfig
 from prime_rl.utils.logger import get_logger
 
 

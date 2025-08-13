@@ -8,8 +8,9 @@ from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
 from transformers import AutoTokenizer
 
-from prime_rl.trainer.sft.config import BatchConfig
+from prime_rl.trainer.config import BatchConfig
 from prime_rl.trainer.sft.data import Sample
+from prime_rl.trainer.world import get_world
 
 
 class Batch(TypedDict):
@@ -24,12 +25,15 @@ class BatchDataset(Dataset):
 
     def __init__(self, samples: list[Sample], config: BatchConfig):
         self.config = config
-        self.n = len(samples)
         self.samples = samples
 
     def get_num_samples(self) -> int:
         """The number of samples in the batch"""
-        return self.n
+        return len(self.samples)
+
+    def get_num_tokens(self) -> int:
+        """The number of tokens in the batch."""
+        return sum(len(sample["input_ids"]) for sample in self.samples)
 
     def __len__(self) -> int:
         return self.get_num_samples()
@@ -42,8 +46,8 @@ class PackedBatchDataset(BatchDataset):
     """A dataset wrapping a list of samples in a batch."""
 
     def __init__(self, samples: list[Sample], config: BatchConfig):
-        super().__init__(samples)
-        self.samples = self._pack_samples(self.samples)
+        super().__init__(samples, config)
+        self.packed_samples = self._pack_samples(self.samples)
 
     def _pack_samples(self, samples: list[Sample]) -> list[Sample]:
         """Offline sample packing using `First Fit Decreasing` algorithm."""
@@ -70,15 +74,12 @@ class PackedBatchDataset(BatchDataset):
 
         return packed_samples
 
-    def get_num_samples(self) -> int:
-        """The number of samples in the unpacked batch."""
-        return self.n
-
     def __len__(self) -> int:
-        return len(self.samples)
+        world_size = get_world().world_size
+        return len(self.packed_samples) // world_size * world_size # Ensure divisible by number of ranks
 
     def __getitem__(self, index: int) -> Sample:
-        return self.samples[index]
+        return self.packed_samples[index]
 
 
 def collate(samples: list[Sample], seq_len: int, tokenizer: AutoTokenizer) -> Batch:
@@ -108,13 +109,13 @@ def collate(samples: list[Sample], seq_len: int, tokenizer: AutoTokenizer) -> Ba
     }
 
 
-def setup_dataloader(samples: list[Sample], tokenizer: AutoTokenizer, config: BatchConfig) -> Iterable[Batch]:
+def prepare_batch(samples: list[Sample], tokenizer: AutoTokenizer, config: BatchConfig) -> tuple[BatchDataset, Iterable[Batch]]:
+    """Returns the global batch dataset and an iterator over local micro batches."""
     # Initialize padding collate function
     collate_fn = partial(collate, seq_len=config.seq_len, tokenizer=tokenizer)
 
     # Initialize rank-aware sampler
-    batch_dataset = (
-        PackedBatchDataset(samples, config) if config.collate_mode == "packing" else BatchDataset(samples, config)
-    )
-    sampler = DistributedSampler(batch_dataset, drop_last=True) # TODO(Mika): Check if we wanna drop or pad
-    return iter(DataLoader(batch_dataset, batch_size=config.micro_batch_size, collate_fn=collate_fn, sampler=sampler))
+    batch_dataset = PackedBatchDataset(samples, config) if config.collate_mode == "packing" else BatchDataset(samples, config)
+    assert len(batch_dataset) % get_world().world_size == 0, "Batch size must be divisible by number of ranks"
+    sampler = DistributedSampler(batch_dataset, drop_last=True)  # TODO(Mika): Check if we wanna drop or pad
+    return batch_dataset, iter(DataLoader(batch_dataset, batch_size=config.micro_batch_size, collate_fn=collate_fn, sampler=sampler))

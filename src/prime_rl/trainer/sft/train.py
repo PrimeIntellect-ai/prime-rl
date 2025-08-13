@@ -6,7 +6,7 @@ import time
 import torch
 from torch.nn.functional import cross_entropy, softmax
 from loguru import logger
-from prime_rl.trainer.batch import setup_dataloader
+from prime_rl.trainer.batch import prepare_batch
 from prime_rl.trainer.ckpt import CheckpointManager, Progress
 from prime_rl.trainer.weights import WeightCheckpointManager
 from prime_rl.trainer.sft.config import SFTTrainerConfig
@@ -115,22 +115,19 @@ def train(config: SFTTrainerConfig):
 
         # Re-initialize the dataloader if we are the beginning of an epoch
         if epoch_step == 0:
-            pass
-            # dataloader = get_dataloader(dataset, tokenizer, config=config.data)
             epoch += 1 if progress.step > 0 else 0  # Only increment epoch if we are not at the first step
 
         if config.profile_path and world.rank == 0:
             torch.cuda.memory._record_memory_history()
 
         # Get the next batch of samples
-        batch = [dataset[i] for i in range(progress.step, progress.step + config.batch.batch_size)]
-        micro_batches = setup_dataloader(batch, tokenizer, config=config.batch)
+        samples = [dataset[i] for i in range(progress.step, progress.step + config.batch.batch_size)]
+        batch_dataset, micro_batches = prepare_batch(samples, tokenizer, config=config.batch)
 
         step_start_time = time.time()
         forward_backward_start_time = time.time()
         tensors = Tensors()  # Used to accumulate tensor statistics across grad acc and ranks for logging
-        grad_accum_steps = config.batch.batch_size // (config.batch.micro_batch_size * world.world_size)
-        for micro_step in range(grad_accum_steps):
+        for micro_step in range(len(micro_batches)):
             micro_batch = next(micro_batches)
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
@@ -158,7 +155,7 @@ def train(config: SFTTrainerConfig):
             loss = loss[loss_mask].mean()
 
             # Scale loss by number of gradient accumulation steps
-            loss /= grad_accum_steps
+            loss /= len(micro_batches)
 
             # Delete logits before backward pass to avoid memory spike
             del logits
@@ -197,9 +194,10 @@ def train(config: SFTTrainerConfig):
         tensor_stats = tensors.compute_stats()
 
         # Compute step metrics
-        num_tokens = config.batch.batch_size * config.batch.seq_len
+        num_tokens = batch_dataset.get_num_tokens()
+        num_samples = batch_dataset.get_num_samples()
         progress.total_tokens += num_tokens
-        progress.total_samples += config.batch.batch_size
+        progress.total_samples += num_samples
         perf_counter = get_perf_counter(model, config.batch.seq_len)
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_tokens_per_second() or 0

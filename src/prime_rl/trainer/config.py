@@ -1,6 +1,6 @@
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from prime_rl.utils.pydantic_config import BaseConfig
 
@@ -97,7 +97,13 @@ class OptimizerConfig(BaseConfig):
 class CheckpointConfig(BaseConfig):
     """Configures checkpointing the full model, optimizer and training state for resuming training."""
 
-    interval: Annotated[int, Field(ge=1, description="Interval at which to save the checkpoint. If None, will only checkpoint at the end of training.")] = None
+    interval: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Interval at which to save the checkpoint. If None, will only checkpoint at the end of training.",
+        ),
+    ] = None
 
     save_async: Annotated[
         bool,
@@ -122,10 +128,17 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = None
 
+
 class WeightCheckpointConfig(BaseConfig):
     """Configures checkpointing the model weights for updating the inference engines (RL trainer) or continued post-training (on SFT trainer)."""
 
-    interval: Annotated[int | None, Field(ge=1, description="Interval at which to save the weights. If None, will only keep necessary weight checkpoints for resuming training.")] = None
+    interval: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Interval at which to save the weights. If None, will only keep necessary weight checkpoints for resuming training.",
+        ),
+    ] = None
 
     save_async: Annotated[
         bool,
@@ -133,3 +146,20 @@ class WeightCheckpointConfig(BaseConfig):
             description="Whether to save the weights asynchronously.",
         ),
     ] = True
+
+
+class BatchConfig(BaseConfig):
+    """Configures how to batch the dataset."""
+
+    micro_batch_size: Annotated[int, Field(ge=1)] = 8
+    batch_size: Annotated[int, Field(ge=1)] = 128
+    seq_len: Annotated[int, Field(ge=1)] = 128
+    collate_mode: Annotated[Literal["padding", "packing"], Field(description="Collate mode to use.")] = "padding"
+
+    @model_validator(mode="after")
+    def validate_batch_size(self):
+        if self.batch_size % self.micro_batch_size != 0:
+            raise ValueError("Batch size must be divisible by micro batch size")
+        if self.batch_size < self.micro_batch_size:
+            raise ValueError("Batch size must be greater than or equal to micro batch size")
+        return self

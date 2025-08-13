@@ -1,9 +1,9 @@
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated
 
 from pydantic import Field, model_validator
 
-from prime_rl.trainer.config import CheckpointConfig, ModelConfig, OptimizerConfig, WeightCheckpointConfig
+from prime_rl.trainer.config import BatchConfig, CheckpointConfig, ModelConfig, OptimizerConfig, WeightCheckpointConfig
 from prime_rl.utils.config import LogConfig, MultiMonitorConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
@@ -12,23 +12,6 @@ class FakeDataConfig(BaseConfig):
     """Configures a fake dataset for debugging."""
 
     n: Annotated[int, Field(ge=1)] = 1000
-
-
-class BatchConfig(BaseConfig):
-    """Configures how to batch the dataset."""
-
-    micro_batch_size: Annotated[int, Field(ge=1)] = 8
-    batch_size: Annotated[int, Field(ge=1)] = 128
-    seq_len: Annotated[int, Field(ge=1)] = 128
-    collate_mode: Annotated[Literal["padding", "packing"], Field(description="Collate mode to use.")] = "padding"
-
-    @model_validator(mode="after")
-    def validate_batch_size(self):
-        if self.batch_size % self.micro_batch_size != 0:
-            raise ValueError("Batch size must be divisible by micro batch size")
-        if self.batch_size < self.micro_batch_size:
-            raise ValueError("Batch size must be greater than or equal to micro batch size")
-        return self
 
 
 class DataConfig(BaseConfig):
