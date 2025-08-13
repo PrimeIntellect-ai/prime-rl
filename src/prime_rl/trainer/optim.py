@@ -12,6 +12,9 @@ def setup_optimizer(config: OptimizerConfigType, model: Model) -> Optimizer:
                 params=model.parameters(),
                 lr=config.lr,
                 weight_decay=config.weight_decay,
+                momentum = config.momentum,
+                nesterov = config.nesterov
+      
             )
         case "adamw":
             return AdamW(
