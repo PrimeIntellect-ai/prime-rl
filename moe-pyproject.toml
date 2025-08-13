@@ -20,7 +20,7 @@ dependencies = [
     "pynvml>=12.0.0",
     "shardcast>=0.3.2",
     "tomli>=2.2.1",
-    "torch>=2.7.0",
+    "torch>=2.8.0",
     "transformers>=4.53.0",
     "uvloop>=0.21.0",
     "vllm==0.10.0",
@@ -32,6 +32,8 @@ dependencies = [
     "textarena>=0.6.16",
     "nltk>=3.9.1",
     "math-verify>=0.8.0",
+    "torchtitan",
+    "blobfile>=3.0.0",
 ]
 
 [project.scripts]
@@ -46,7 +48,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project.optional-dependencies]
-flash-attn = ["flash-attn>=2.8.0"]
+flash-attn = ["pi-flash-attn>=2.8.0"]
 flash-infer = ["flashinfer-python>=0.2.8rc1"]
 
 vf = [
@@ -63,10 +65,15 @@ vf = [
 [tool.uv]
 no-build-isolation-package = ["flash-attn"]
 prerelease = "allow"
+override-dependencies = [
+  "torch==2.8.0", # Temporary patch as vllm hasnt updated but needed by MoE
+  "torchvision==0.23.0", # Temporary patch as vllm hasnt updated but needed by MoE
+]
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu128" }]
 verifiers = { git = "https://github.com/willccbb/verifiers", rev = "74c604f" }
+torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e43694bbfeff5d6ad8ac738c067bb90d41" }
 
 vf-intellect-math = { workspace = true }
 vf-wordle = { git = "https://github.com/willccbb/verifiers.git", subdirectory = "environments/vf_wordle", rev = "main" }
@@ -119,3 +126,9 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "gpu: marks tests as gpu (deselect with '-m \"not gpu\"')",
 ]
+
+[tool.uv.extra-build-dependencies]
+pi-flash-attn = [{ requirement = "torch", match-runtime = true }]
+
+[tool.uv.extra-build-variables]
+pi-flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
