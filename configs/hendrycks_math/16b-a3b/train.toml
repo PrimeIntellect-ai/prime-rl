@@ -4,8 +4,8 @@ recompute_logprobs = false
 project = "prime-rl-moe-debug" # TODO: Remove before merging
 
 [model]
-name = "moonshotai/Moonlight-16B-A3B"
-ac = true
+name = "Jackmin108/Moonlight-16B-A3B-Instruct-Fast"
+ac = false
 trust_remote_code = true
 
 [optim]
