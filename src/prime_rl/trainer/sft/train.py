@@ -122,7 +122,7 @@ def train(config: SFTTrainerConfig):
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             target_ids = micro_batch["target_ids"].to("cuda")
-            loss_mask = micro_batch["loss_mask"].to("cuda")
+            loss_mask = micro_batch["loss_mask"].bool().to("cuda")
             assert input_ids.shape[0] == position_ids.shape[0]
 
             # Forward pass

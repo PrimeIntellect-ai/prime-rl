@@ -105,11 +105,8 @@ class SFTDataset(IterableDataset):
                 sample = {
                     "input_ids": prompt_completion_ids,
                     "position_ids": list(range(len(prompt_completion_ids))),
-                    "loss_mask": [0] * len(prompt_ids)
-                    + [1] * (len(prompt_completion_ids) - len(prompt_ids) - 1)
-                    + [0],  # loss last token
-                    "target_ids": prompt_completion_ids[1:]
-                    + [self.tokenizer.pad_token_id],  # create fake target for last token
+                    "loss_mask": [0] * len(prompt_ids) + [1] * (len(prompt_completion_ids) - len(prompt_ids) - 1) + [0],
+                    "target_ids": prompt_completion_ids[1:] + [self.tokenizer.pad_token_id],
                 }
 
                 yield sample
