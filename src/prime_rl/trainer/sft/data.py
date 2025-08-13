@@ -15,6 +15,7 @@ from prime_rl.utils.logger import get_logger
 
 
 class Sample(TypedDict):
+    epoch: int # TODO: Argh, can we find a way to export epoch metainformation in a nicer way?
     input_ids: list[int]
     position_ids: list[int]
     loss_mask: list[bool]
@@ -22,6 +23,7 @@ class Sample(TypedDict):
 
 
 class Batch(TypedDict):
+    epoch: int
     input_ids: Int[Tensor, "batch seq"]
     position_ids: Int[Tensor, "batch seq"]
     target_ids: Int[Tensor, "batch seq"]
@@ -48,6 +50,7 @@ class FakeDataset(IterableDataset):
                 "position_ids": position_ids,
                 "loss_mask": loss_mask,
                 "target_ids": input_ids[1:] + [0],
+                "epoch": 0,
             }
 
 
@@ -78,8 +81,9 @@ class SFTDataset(IterableDataset):
         """
         Apply chat template and tokenize a single example in prompt + completion format (https://github.com/huggingface/trl/blob/de27d612b026526ba39b88eee348994d7636e033/trl/trainer/sft_trainer.py#L661)
         """
-        counter = -1
+        counter, epoch = -1, -1
         while True:
+            epoch += 1
             for example in self.dataset:
                 # Increment the counter (0, 1, ...)
                 counter += 1
@@ -119,6 +123,7 @@ class SFTDataset(IterableDataset):
                     "position_ids": list(range(len(prompt_completion_ids))),
                     "loss_mask": [False] * len(prompt_ids) + [True] * (len(prompt_completion_ids) - len(prompt_ids) - 1) + [False],
                     "target_ids": prompt_completion_ids[1:] + [0],
+                    "epoch": epoch,
                 }
 
                 yield sample
@@ -136,7 +141,10 @@ class PackingDataset(IterableDataset):
         for sample in self.dataset:
             # Add sample to packed samples
             for key, value in sample.items():
-                packed_samples[key].extend(value)
+                if key == "epoch":
+                    packed_samples[key] = min(packed_samples.get(key, float("inf")), value)
+                else:
+                    packed_samples[key].extend(value)
 
             # Update sequence length
             seq_len += len(sample["input_ids"])
@@ -144,7 +152,8 @@ class PackingDataset(IterableDataset):
             # If batch is full, truncate and yield it
             if seq_len >= self.seq_len:
                 for key, value in packed_samples.items():
-                    packed_samples[key] = value[: self.seq_len]
+                    if isinstance(value, list):
+                        packed_samples[key] = value[: self.seq_len]
                 yield packed_samples
                 packed_samples, seq_len = defaultdict(list), 0
 
@@ -167,8 +176,10 @@ class PaddingDataset(IterableDataset):
                 sample["target_ids"] = sample["target_ids"] + [self.pad_token_id] * num_padding_tokens
 
             # Truncate if too long
-            for key, value in sample.items():
-                sample[key] = value[: self.seq_len]
+            sample["input_ids"] = sample["input_ids"][: self.seq_len]
+            sample["loss_mask"] = sample["loss_mask"][: self.seq_len]
+            sample["position_ids"] = sample["position_ids"][: self.seq_len]
+            sample["target_ids"] = sample["target_ids"][: self.seq_len]
 
             yield sample
 
@@ -178,6 +189,7 @@ def collate(samples: list[Sample]) -> Batch:
         "position_ids": torch.stack([torch.tensor(sample["position_ids"]) for sample in samples], dim=0).long(),
         "loss_mask": torch.stack([torch.tensor(sample["loss_mask"]) for sample in samples], dim=0).bool(),
         "target_ids": torch.stack([torch.tensor(sample["target_ids"]) for sample in samples], dim=0).long(),
+        "epoch": min([sample["epoch"] for sample in samples]),
     }
 
 def setup_dataset(tokenizer: AutoTokenizer, config: DataConfig) -> IterableDataset:

@@ -127,6 +127,7 @@ def train(config: SFTTrainerConfig):
             position_ids = micro_batch["position_ids"].to("cuda")
             target_ids = micro_batch["target_ids"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
+            epoch = micro_batch["epoch"]
             assert input_ids.shape[0] == position_ids.shape[0]
 
             # Forward pass
@@ -204,8 +205,7 @@ def train(config: SFTTrainerConfig):
 
         # Log progress metrics
         progress_metrics = {
-            "progress/epoch": 0,  # todo add epoch
-            "progress/epoch_step": 0,  # todo add epoch step
+            "progress/epoch": epoch,
             "progress/total_samples": progress.total_samples,
             "progress/total_tokens": progress.total_tokens,
             "step": progress.step,
