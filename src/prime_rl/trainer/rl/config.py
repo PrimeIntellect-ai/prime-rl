@@ -15,8 +15,6 @@ from prime_rl.trainer.config import (
 from prime_rl.utils.config import LogConfig, MultiMonitorConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
-LossType: TypeAlias = Literal["clip", "ratio"]
-
 
 class BaseLossConfig(BaseModel):
     """Base config for loss."""
@@ -25,7 +23,7 @@ class BaseLossConfig(BaseModel):
 class ClippingLossConfig(BaseLossConfig):
     """Configures the clipping loss."""
 
-    type: LossType = "clip"
+    type: Literal["clip"] = "clip"
     epsilon_low: Annotated[float, Field(ge=0)] = 0.2
     epsilon_high: Annotated[float, Field(ge=0)] = 0.2
     clip_ratio: Annotated[float, Field(ge=0)] = 4.0
@@ -34,7 +32,7 @@ class ClippingLossConfig(BaseLossConfig):
 class RatioLossConfig(BaseLossConfig):
     """Configures the ratio loss."""
 
-    type: LossType = "ratio"
+    type: Literal["ratio"] = "ratio"
     clip_ratio: Annotated[float, Field(ge=0)] = 8.0
 
 

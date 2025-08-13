@@ -136,15 +136,12 @@ class CheckpointConfig(BaseConfig):
     ] = None
 
 
-DataBufferType: TypeAlias = Literal["simple", "difficulty-pool", "online-difficulty"]
-
-
 class SimpleBufferConfig(BaseModel):
-    type: DataBufferType = "simple"
+    type: Literal["simple"] = "simple"
 
 
 class DifficultyPoolBufferConfig(BaseModel):
-    type: DataBufferType = "difficulty-pool"
+    type: Literal["difficulty-pool"] = "difficulty-pool"
 
     difficulty_field: Annotated[
         str | None,
@@ -192,7 +189,7 @@ class DifficultyPoolBufferConfig(BaseModel):
 
 
 class OnlineDifficultyBufferConfig(BaseModel):
-    type: DataBufferType = "online-difficulty"
+    type: Literal["online-difficulty"] = "online-difficulty"
 
     min_reward: Annotated[
         float | None,

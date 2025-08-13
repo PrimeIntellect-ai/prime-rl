@@ -38,19 +38,16 @@ class ModelConfig(BaseConfig):
     ] = True
 
 
-SchedulerType: TypeAlias = Literal["constant", "linear", "cosine"]
-
-
 class ConstantSchedulerConfig(BaseModel):
     """Configuration for constant learning rate scheduler."""
 
-    type: SchedulerType = "constant"
+    type: Literal["constant"] = "constant"
 
 
 class LinearSchedulerConfig(BaseModel):
     """Configuration for linear learning rate scheduler."""
 
-    type: SchedulerType = "linear"
+    type: Literal["linear"] = "linear"
 
     warmup_steps: Annotated[int, Field(ge=0, description="Number of warmup steps for the learning rate scheduler.")] = 0
 
@@ -66,7 +63,7 @@ class LinearSchedulerConfig(BaseModel):
 class CosineSchedulerConfig(BaseModel):
     """Configuration for cosine learning rate scheduler."""
 
-    type: SchedulerType = "cosine"
+    type: Literal["cosine"] = "cosine"
 
     warmup_steps: Annotated[int, Field(ge=0, description="Number of warmup steps for the learning rate scheduler.")] = 0
 
@@ -82,11 +79,8 @@ class CosineSchedulerConfig(BaseModel):
 SchedulerConfigType: TypeAlias = ConstantSchedulerConfig | LinearSchedulerConfig | CosineSchedulerConfig
 
 
-OptimizerType: TypeAlias = Literal["adamw", "muon"]
-
-
 class AdamWConfig(BaseModel):
-    type: OptimizerType = "adamw"
+    type: Literal["adamw"] = "adamw"
     lr: Annotated[float, Field(ge=0)] = 4e-4
     weight_decay: Annotated[float, Field(ge=0)] = 0.01
     betas1: Annotated[float, Field(ge=0)] = 0.9
@@ -97,7 +91,7 @@ class AdamWConfig(BaseModel):
 
 
 class MuonConfig(BaseModel):
-    type: OptimizerType = "muon"
+    type: Literal["muon"] = "muon"
     lr: Annotated[float, Field(ge=0)] = 4e-4
     weight_decay: Annotated[float, Field(ge=0)] = 0.01
 
