@@ -48,7 +48,6 @@ class CheckpointManager:
         optimizers: list[Optimizer],
         scheduler: LRScheduler,
         progress: Progress,
-        dataloader: DataLoader | None = None,
     ):
         self._logger.debug(f"Saving training checkpoint to {ckpt_path}")
         start_time = time.time()
@@ -60,8 +59,6 @@ class CheckpointManager:
             "scheduler": scheduler.state_dict(),
             "progress": progress,
         }
-        if dataloader is not None:
-            ckpt_state["dataloader"] = dataloader.state_dict()
 
         # Create checkpoint directory if it doesn't exist
         ckpt_path.parent.mkdir(parents=True, exist_ok=True)
@@ -75,7 +72,7 @@ class CheckpointManager:
         self._logger.debug(f"Training checkpoint saved in {time.time() - start_time:.2f} seconds")
 
     def _load_from_path(
-        self, ckpt_path: Path, model: Model, optimizers: list[Optimizer], scheduler: LRScheduler, progress: Progress, dataloader: DataLoader | None = None
+        self, ckpt_path: Path, model: Model, optimizers: list[Optimizer], scheduler: LRScheduler, progress: Progress
     ):
         """Loads a checkpoint from a given path in-place."""
         self._logger.debug(f"Loading training checkpoint from {ckpt_path}")
@@ -91,9 +88,6 @@ class CheckpointManager:
             optimizer.load_state_dict(optimizer_state)
         scheduler.load_state_dict(state["scheduler"])
 
-        if dataloader is not None:
-            dataloader.load_state_dict(state["dataloader"])
-
         # Load progress
         for key, value in asdict(state["progress"]).items():
             setattr(progress, key, value)
@@ -101,13 +95,13 @@ class CheckpointManager:
         self._logger.debug(f"Training checkpoint loaded in {time.time() - start_time:.2f} seconds")
 
     def load(
-        self, model: Model, optimizers: list[Optimizer], scheduler: LRScheduler, progress: Progress, step: int, dataloader: DataLoader | None = None
+        self, model: Model, optimizers: list[Optimizer], scheduler: LRScheduler, progress: Progress, step: int
     ) -> None:
         """Loads a checkpoint from a given path in-place."""
         ckpt_path = self._get_ckpt_path(step)
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
-        self._load_from_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
+        self._load_from_path(ckpt_path, model, optimizers, scheduler, progress)
 
     def save(
         self,
@@ -116,7 +110,6 @@ class CheckpointManager:
         scheduler: LRScheduler,
         progress: Progress,
         step: int,
-        dataloader: DataLoader | None = None,
     ) -> None:
         """Saves the full checkpoint state for a specified step."""
         step_path = self._get_step_path(step)
@@ -127,13 +120,13 @@ class CheckpointManager:
             # Run save in a separate thread
             thread = threading.Thread(
                 target=self._save_to_path,
-                args=(ckpt_path, step, model, optimizers, scheduler, progress, dataloader),
+                args=(ckpt_path, step, model, optimizers, scheduler, progress),
                 name=f"ckpt-save-{step}",
             )
             thread.start()
         else:
             # Run save synchronously
-            self._save_to_path(ckpt_path, step, model, optimizers, scheduler, progress, dataloader)
+            self._save_to_path(ckpt_path, step, model, optimizers, scheduler, progress)
 
     def maybe_clean(self) -> None:
         """Deletes past local checkpoints beyond the most recent `config.keep` steps. No-op if `config.keep` is None."""
