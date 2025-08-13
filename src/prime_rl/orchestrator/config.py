@@ -117,7 +117,7 @@ class EvalConfig(BaseConfig):
 class CheckpointConfig(BaseConfig):
     """Configures checkpointing the orchestrator."""
 
-    interval: Annotated[int, Field(ge=1, description="Interval at which to save the checkpoint.")] = None
+    interval: Annotated[int | None, Field(ge=1, description="Interval at which to save the checkpoint.")] = None
 
     resume_step: Annotated[
         int | None,
