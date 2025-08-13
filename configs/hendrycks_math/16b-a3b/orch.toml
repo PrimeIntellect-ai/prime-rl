@@ -12,7 +12,7 @@ trust_remote_code = true
 [monitor.wandb]
 
 [environment]
-id = "hendrycks-math"
+id = "vf-hendrycks-math"
 
 [monitor.wandb.log_extras]
 interval = 10
