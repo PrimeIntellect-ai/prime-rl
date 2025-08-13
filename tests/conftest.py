@@ -51,7 +51,7 @@ def setup_world():
 
 @pytest.fixture(scope="session")
 def outputs_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    outputs_dir = os.environ.get("PYTEST_OUTPUTS_DIR", tmp_path_factory.mktemp("outputs"))
+    outputs_dir = Path(os.environ.get("PYTEST_OUTPUTS_DIR", tmp_path_factory.mktemp("outputs")))
     yield outputs_dir
     shutil.rmtree(outputs_dir, ignore_errors=True)
 
