@@ -24,10 +24,9 @@ from prime_rl.orchestrator.client import (
 )
 from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.orchestrator.buffer import setup_buffer, make_rollouts, Rollout
-from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.orchestrator.logger import setup_logger
 from prime_rl.orchestrator.advantage import compute_advantages
-from prime_rl.orchestrator.utils import wait_for_weight_checkpoint, print_benchmark, parse_truncated_completions
+from prime_rl.orchestrator.utils import convert_to_samples, wait_for_weight_checkpoint, print_benchmark, parse_truncated_completions
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, format_num, get_rollout_dir, get_weights_dir, to_col_format
@@ -313,26 +312,14 @@ async def orchestrate(config: OrchestratorConfig):
         solve_none = rewards.sum(-1).eq(0).float().mean().item()
         effective_batch_size = 1 - solve_none - solve_all
 
-        # Write serialized batch to disk for trainer workers to consume
-        all_data_ranks_batches = prepare_batch(
-            rollouts=rollouts,
-            temperature=config.sampling.temperature,
-            tokenizer=tokenizer,
-            batch_size=config.batch_size,
-            micro_batch_size=config.micro_batch_size,
-            num_train_workers=config.num_train_workers,
-            seq_len=config.seq_len,
-            collate_mode=config.collate_mode,
-        )
-
+        # Broadcast rollouts to all ranks via filesystem
         step_path = get_rollout_dir(config.outputs_dir) / f"step_{progress.step}"
         step_path.mkdir(parents=True, exist_ok=True)
-        for i, batches in enumerate(all_data_ranks_batches):
-            batch_path = step_path / f"rank_{i}.pt"
-            tmp_path = batch_path.with_suffix(".tmp")
-            logger.debug(f"Saving rollouts for step {progress.step} for rank {i} to {batch_path}")
-            torch.save(batches, tmp_path)
-            tmp_path.rename(batch_path)
+        rollouts_path = step_path / "rollouts.pt"
+        tmp_path = rollouts_path.with_suffix(".tmp")
+        torch.save(convert_to_samples(accepted_rollouts), tmp_path)
+        tmp_path.rename(rollouts_path)
+        logger.debug(f"Saving rollouts for step {progress.step} to {rollouts_path}")
 
         # Log step metrics
         step_time = time.time() - step_start_time

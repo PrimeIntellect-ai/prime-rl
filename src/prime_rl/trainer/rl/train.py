@@ -1,3 +1,4 @@
+from functools import partial
 import time
 from copy import deepcopy
 
@@ -8,10 +9,11 @@ from prime_rl.trainer import envs
 import shardcast
 import torch
 from loguru import logger
+from prime_rl.trainer.batch import collate_rl, prepare_batch
 from prime_rl.trainer.ckpt import CheckpointManager, Progress
 from prime_rl.trainer.weights import WeightCheckpointManager
 from prime_rl.trainer.rl.config import RLTrainerConfig
-from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
+from prime_rl.trainer.rl.data import BatchLoader, FakeBatchLoader
 from prime_rl.trainer.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
     compute_loss,
@@ -127,9 +129,9 @@ def train(config: RLTrainerConfig):
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
-    dataloader = DataLoader(config.outputs_dir, progress.step)
+    dataloader = BatchLoader(config.outputs_dir, progress.step) # TODO: Find better name
     if config.data.fake:
-        dataloader = FakeDataLoader(config.data.fake)
+        dataloader = FakeBatchLoader(config.data.fake) # TODO: Find better name
 
     logger.info(f"Starting training loop ({config.max_steps=})")
     is_first_step = True
@@ -174,14 +176,16 @@ def train(config: RLTrainerConfig):
         # Wait for the batch to be available
         logger.info("Waiting for training batch to arrive")
         wait_for_batch_start_time = time.time()
-        dataloader.wait_for_batch()
+        dataloader.wait_for_samples()
         wait_for_batch_time = time.time() - wait_for_batch_start_time
         logger.debug(f"Waited for batch to arrive for {wait_for_batch_time:.2f} seconds")
 
         # Load the training batch
         logger.debug("Loading batch")
         load_data_start_time = time.time()
-        micro_batches = dataloader.get_batch()
+        batch_samples = dataloader.get_samples()
+        batch_dataset, micro_batches = prepare_batch(batch_samples, tokenizer, config=config.batch, collate_fn=partial(collate_rl, seq_len=config.batch.seq_len, tokenizer=tokenizer))
+        micro_batches = list(micro_batches)
         load_data_time = time.time() - load_data_start_time
         logger.debug(f"Loaded batch in {load_data_time:.2f} seconds")
 
@@ -206,12 +210,12 @@ def train(config: RLTrainerConfig):
                     position_ids = micro_batch["position_ids"].to("cuda")
                     loss_mask = micro_batch["loss_mask"].to("cuda")
                     logprobs = micro_batch["logprobs"].to("cuda")
-                    temperature = micro_batch["temperature"]
+                    # temperature = micro_batch["temperature"]
 
                     # Compute the logprobs
                     logits = forward(logprob_model, input_ids, position_ids).contiguous()
                     shifted_logits = shift_logits(logits)
-                    shifted_logits = shifted_logits / temperature
+                    # shifted_logits = shifted_logits / temperature
                     recomputed_logprobs = selective_log_softmax(shifted_logits, input_ids)
 
                     # Compute the recomputed logprob error
@@ -248,13 +252,13 @@ def train(config: RLTrainerConfig):
             advantages = micro_batch["advantages"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
             old_logprobs = micro_batch["logprobs"].to("cuda")
-            temperature = micro_batch["temperature"]
+            # temperature = micro_batch["temperature"]
             micro_batch_size, seq_len = input_ids.shape
 
             # Forward pass
             logits = forward(model, input_ids, position_ids).contiguous()
             shifted_logits = shift_logits(logits)
-            shifted_logits = shifted_logits / temperature
+            # shifted_logits = shifted_logits / temperature
             logprobs = selective_log_softmax(shifted_logits, input_ids)
 
             # Compute loss

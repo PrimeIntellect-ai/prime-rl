@@ -1,5 +1,10 @@
 max_steps = 20
 
+[batch]
+batch_size = 128
+seq_len = 128
+micro_batch_size = 16
+
 [model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 

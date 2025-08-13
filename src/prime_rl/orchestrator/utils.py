@@ -9,6 +9,8 @@ from verifiers.types import State
 
 from prime_rl.orchestrator.client import tokenize
 from prime_rl.orchestrator.genesys import TaskType, get_reward_function
+from prime_rl.orchestrator.buffer import Rollout
+from prime_rl.trainer.batch import RLSample
 from prime_rl.utils.utils import format_num, format_time, get_weight_ckpt_model_path, wait_for_path
 
 
@@ -174,3 +176,23 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
 
     # Display table
     console.print(table)
+
+def convert_to_samples(rollouts: list[Rollout]) -> list[RLSample]:
+    samples = []
+    for rollout in rollouts:
+        # Concatenate tokens, masks and logprobs
+        input_ids = rollout.prompt_tokens + rollout.completion_tokens
+        loss_mask = rollout.prompt_mask + rollout.completion_mask
+        logprobs = [0] * len(rollout.prompt_tokens) + rollout.completion_logprobs
+        assert len(input_ids) == len(loss_mask) == len(logprobs)
+        num_tokens = len(input_ids)
+        position_ids = list(range(num_tokens))
+        advantages = [rollout.advantage] * num_tokens
+        samples.append({
+            "input_ids": input_ids,
+            "position_ids": position_ids,
+            "loss_mask": loss_mask,
+            "logprobs": logprobs,
+            "advantages": advantages,
+        })
+    return samples

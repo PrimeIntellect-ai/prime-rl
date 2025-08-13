@@ -1,3 +1,4 @@
+from functools import partial
 import time
 
 # Import environment before any other imports
@@ -6,7 +7,7 @@ import time
 import torch
 from torch.nn.functional import cross_entropy, softmax
 from loguru import logger
-from prime_rl.trainer.batch import prepare_batch
+from prime_rl.trainer.batch import collate_sft, prepare_batch
 from prime_rl.trainer.ckpt import CheckpointManager, Progress
 from prime_rl.trainer.weights import WeightCheckpointManager
 from prime_rl.trainer.sft.config import SFTTrainerConfig
@@ -121,8 +122,8 @@ def train(config: SFTTrainerConfig):
             torch.cuda.memory._record_memory_history()
 
         # Get the next batch of samples
-        samples = [dataset[i] for i in range(progress.step, progress.step + config.batch.batch_size)]
-        batch_dataset, micro_batches = prepare_batch(samples, tokenizer, config=config.batch)
+        batch_samples = [dataset[i] for i in range(progress.step, progress.step + config.batch.batch_size)]
+        batch_dataset, micro_batches = prepare_batch(batch_samples, tokenizer, config=config.batch, collate_fn=partial(collate_sft, seq_len=config.batch.seq_len, tokenizer=tokenizer))
 
         step_start_time = time.time()
         forward_backward_start_time = time.time()

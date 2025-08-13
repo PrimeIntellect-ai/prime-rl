@@ -3,7 +3,7 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
 
-from prime_rl.trainer.config import CheckpointConfig, ModelConfig, OptimizerConfig, WeightCheckpointConfig
+from prime_rl.trainer.config import BatchConfig, CheckpointConfig, ModelConfig, OptimizerConfig, WeightCheckpointConfig
 from prime_rl.utils.config import LogConfig, MultiMonitorConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
@@ -47,7 +47,7 @@ class FakeDataLoaderConfig(BaseConfig):
         return self
 
 
-class DataLoaderConfig(BaseConfig):
+class DataConfig(BaseConfig):
     """Configures the data loader used for training."""
 
     fake: Annotated[FakeDataLoaderConfig | None, Field(description="Whether to use a fake data loader.")] = None
@@ -60,7 +60,10 @@ class RLTrainerConfig(BaseSettings):
     model: ModelConfig = ModelConfig()
 
     # The data configuration
-    data: DataLoaderConfig = DataLoaderConfig()
+    data: DataConfig = DataConfig()
+
+    # The batch configuration
+    batch: BatchConfig = BatchConfig()
 
     # The optimizer configuration
     optim: OptimizerConfig = OptimizerConfig()

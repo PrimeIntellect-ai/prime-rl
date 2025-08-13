@@ -107,13 +107,6 @@ class EvalConfig(BaseConfig):
         ),
     ] = True
 
-    @model_validator(mode="after")
-    def validate_rollouts_per_prompt(self):
-        if len(self.rollouts_per_prompt) != len(self.benchmarks):
-            raise ValueError("Number of rollouts per prompt must be the same as the number of benchmarks")
-        return self
-
-
 class CheckpointConfig(BaseConfig):
     """Configures checkpointing the orchestrator."""
 
@@ -260,13 +253,19 @@ class OrchestratorConfig(BaseSettings):
 
     collate_mode: Annotated[Literal["packing", "padding"], Field(description="Collate mode to use.")] = "packing"
 
-    batch_size: Annotated[int, Field(ge=1, description="Number of samples to train on per step.")] = 128
-
-    micro_batch_size: Annotated[
+    batch_size: Annotated[
         int,
         Field(
             ge=1,
-            description="Number of samples to train on per micro batch. This value should be tuned based on the hardware available. Usually, to the largest value divisble by the training batch size.",
+            description="Number of samples to train on per step.",
+        ),
+    ] = 128
+
+    seq_len: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Sequence length to use for training. If a sample is shorter than this, it will be padded. If a sequence is longer than this, it will be truncated.",
         ),
     ] = 128
 
@@ -284,13 +283,6 @@ class OrchestratorConfig(BaseSettings):
             description="Type of advantage computation to use. For details on the variants please refer directly to their docstrings."
         ),
     ] = "drgrpo"
-
-    seq_len: Annotated[
-        int,
-        Field(
-            description="Sequence length to use for training. If a sample is shorter than this, it will be padded. If a sequence is longer than this, it will be truncated.",
-        ),
-    ] = 2048
 
     mask_env_responses: Annotated[
         bool,
@@ -312,12 +304,6 @@ class OrchestratorConfig(BaseSettings):
             description="Whether to override reward scores with 0 for truncated completions.",
         ),
     ] = False
-
-    # TODO(Mika): This should be automatic from the number of ZMQ connections
-    num_train_workers: Annotated[
-        int,
-        Field(default=1, ge=1, description="Number of training workers to use for training."),
-    ] = 1
 
     max_steps: Annotated[
         int | None,
@@ -347,10 +333,6 @@ class OrchestratorConfig(BaseSettings):
     def validate_batch_size(self):
         if self.batch_size % self.rollouts_per_prompt != 0:
             raise ValueError("Batch size must be divisible by the number of samples per problem")
-        if self.batch_size % self.micro_batch_size != 0:
-            raise ValueError("Batch size must be divisible by micro batch size")
-        if self.batch_size < self.micro_batch_size:
-            raise ValueError("Batch size must be greater than or equal to micro batch size")
         return self
 
     @model_validator(mode="after")

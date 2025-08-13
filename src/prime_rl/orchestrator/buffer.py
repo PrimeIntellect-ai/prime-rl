@@ -1,7 +1,8 @@
 import random
+
+from dataclasses import dataclass
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
-from dataclasses import dataclass
 
 from datasets import Dataset
 
@@ -12,7 +13,6 @@ from prime_rl.orchestrator.config import (
     SimpleBufferConfig,
 )
 from prime_rl.utils.logger import get_logger
-
 
 @dataclass
 class Rollout:
@@ -75,6 +75,8 @@ def make_rollouts(
             advantages,
         )
     ]
+
+
 
 
 class Buffer(ABC):

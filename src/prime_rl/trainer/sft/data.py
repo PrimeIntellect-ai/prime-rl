@@ -1,4 +1,4 @@
-from typing import TypedDict
+from dataclasses import dataclass
 
 import torch
 from datasets import Dataset as HFDataset
@@ -9,12 +9,7 @@ from transformers import AutoTokenizer
 from prime_rl.trainer.config import BatchConfig
 from prime_rl.trainer.sft.config import DataConfig
 from prime_rl.utils.logger import get_logger
-
-
-class Sample(TypedDict):
-    input_ids: list[int]
-    position_ids: list[int]
-    loss_mask: list[int]
+from prime_rl.trainer.batch import SFTSample
 
 
 class FakeDataset(Dataset):
@@ -28,7 +23,7 @@ class FakeDataset(Dataset):
     def __len__(self) -> int:
         return self.config.fake.n
 
-    def __getitem__(self, index: int) -> Sample:
+    def __getitem__(self, index: int) -> SFTSample:
         input_ids = torch.randint(0, self.vocab_size, (self.batch_config.seq_len + 1,)).long()
         position_ids = torch.arange(len(input_ids)).long()
         loss_mask = torch.ones(len(input_ids)).bool()
@@ -57,9 +52,10 @@ class SFTDataset(Dataset):
             raise ValueError("HF dataset must have a 'prompt' and 'completion' column for SFT")
 
         # Preprocess dataset (apply chat template and tokenize)
-        self.samples = self.dataset.map(self._preprocess).to_list()
+        columns = self.dataset.column_names
+        self.samples = self.dataset.map(self._preprocess, remove_columns=columns).to_list()
 
-    def _preprocess(self, example: dict) -> Sample:
+    def _preprocess(self, example: dict) -> SFTSample:
         """
         Apply chat template and tokenize a single example in prompt + completion format (https://github.com/huggingface/trl/blob/de27d612b026526ba39b88eee348994d7636e033/trl/trainer/sft_trainer.py#L661)
         """
@@ -98,7 +94,7 @@ class SFTDataset(Dataset):
     def __len__(self) -> int:
         return len(self.samples)
 
-    def __getitem__(self, index: int) -> Sample:
+    def __getitem__(self, index: int) -> SFTSample:
         return self.samples[index]
 
 
