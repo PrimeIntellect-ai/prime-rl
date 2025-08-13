@@ -87,6 +87,8 @@ class BaseOptimizerConfig(BaseModel):
 
 class SGDConfig(BaseOptimizerConfig):
     type: Literal["sgd"] = "sgd"
+    nesterov: bool = True
+    momentum: float = 0.9
 
 
 class AdamWConfig(BaseOptimizerConfig):
