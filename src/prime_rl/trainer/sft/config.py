@@ -8,24 +8,20 @@ from prime_rl.utils.config import LogConfig, MultiMonitorConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
-class FakeDataConfig(BaseConfig):
-    """Configures a fake dataset for debugging."""
-
-    n: Annotated[int, Field(ge=1)] = 1000
-
-
 class DataConfig(BaseConfig):
     """Configures the data used for training."""
 
-    name: Annotated[str, Field(description="Name or path of the HF dataset to use.")] = "PrimeIntellect/Reverse-Text-SFT"
+    name: Annotated[str, Field(description="Name or path of the HF dataset to use.")] = (
+        "PrimeIntellect/Reverse-Text-SFT"
+    )
     split: Annotated[str, Field(description="Split to use from the HF dataset.")] = "train"
-    collate_mode: Annotated[Literal["padding", "packing"], Field(description="Collate mode to use.")] = "padding"
+    collate_mode: Annotated[Literal["padding", "packing"], Field(description="Collate mode to use.")] = "packing"
     micro_batch_size: Annotated[int, Field(ge=1)] = 8
     batch_size: Annotated[int, Field(ge=1)] = 128
     seq_len: Annotated[int, Field(ge=1)] = 128
     shuffle: Annotated[bool, Field(description="Whether to shuffle the dataset at the beginning of each epoch.")] = True
 
-    fake: Annotated[FakeDataConfig | None, Field(description="Whether to use a fake dataset.")] = None
+    fake: Annotated[bool, Field(description="Whether to use a fake dataset.")] = False
 
     @model_validator(mode="after")
     def validate_batch_size(self):

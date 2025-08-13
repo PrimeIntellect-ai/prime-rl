@@ -17,7 +17,7 @@ from prime_rl.trainer.model import (
     setup_model,
 )
 from prime_rl.trainer.perf import get_perf_counter
-from prime_rl.trainer.sft.data import get_dataloader, get_dataset
+from prime_rl.trainer.sft.data import get_dataloader
 from prime_rl.trainer.utils import (
     Tensors,
     print_benchmark,
@@ -83,13 +83,10 @@ def train(config: SFTTrainerConfig):
 
     # Set up the dataset (optionaly, use a fake dataset for debugging)
     logger.info(f"Initializing dataset ({config.data})")
-    dataset = get_dataset(tokenizer, config=config.data)
-    logger.info(f"Initialized {dataset.__class__.__name__} for `{config.data.name}` with {len(dataset)}{' packed' if config.data.collate_mode == 'packing' else ''} samples")
+    dataloader = iter(get_dataloader(tokenizer, config.data))
 
     logger.info(f"Starting training loop ({config.max_steps=})")
     is_first_step = True
-    steps_per_epoch = len(dataset) // config.data.batch_size
-    epoch, epoch_step = 0, 0
     while True:
         # Save the full checkpoint (if we are at an interval step and not at the first or last step)
         is_last_step = progress.step == config.max_steps - 1
@@ -113,11 +110,6 @@ def train(config: SFTTrainerConfig):
         if progress.step >= config.max_steps:
             break
 
-        # Re-initialize the dataloader if we are the beginning of an epoch
-        if epoch_step == 0:
-            dataloader = get_dataloader(dataset, tokenizer, config=config.data)
-            epoch += 1 if progress.step > 0 else 0  # Only increment epoch if we are not at the first step
-
         if config.profile_path and world.rank == 0:
             torch.cuda.memory._record_memory_history()
 
@@ -131,7 +123,7 @@ def train(config: SFTTrainerConfig):
             position_ids = micro_batch["position_ids"].to("cuda")
             target_ids = micro_batch["target_ids"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
-            assert input_ids.shape[0] == position_ids.shape[0] == config.data.micro_batch_size
+            assert input_ids.shape[0] == position_ids.shape[0]
 
             # Forward pass
             logits = forward(model, input_ids, position_ids).contiguous()
@@ -208,8 +200,8 @@ def train(config: SFTTrainerConfig):
 
         # Log progress metrics
         progress_metrics = {
-            "progress/epoch": epoch,
-            "progress/epoch_step": epoch_step,
+            "progress/epoch": 0,  # todo add epoch
+            "progress/epoch_step": 0,  # todo add epoch step
             "progress/total_samples": progress.total_samples,
             "progress/total_tokens": progress.total_tokens,
             "step": progress.step,
@@ -256,7 +248,6 @@ def train(config: SFTTrainerConfig):
 
         is_first_step = False
         progress.step += 1
-        epoch_step = (epoch_step + 1) % steps_per_epoch
 
     # Log final (immutable) distributions to W&B table
     if monitor.wandb:
