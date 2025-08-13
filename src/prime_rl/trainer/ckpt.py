@@ -6,7 +6,6 @@ from pathlib import Path
 import torch
 from torch.optim.lr_scheduler import LRScheduler
 from torch.optim.optimizer import Optimizer
-from torch.utils.data import DataLoader
 
 from prime_rl.trainer.config import CheckpointConfig
 from prime_rl.trainer.model import Model
