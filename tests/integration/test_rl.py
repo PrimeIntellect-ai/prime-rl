@@ -51,11 +51,6 @@ def wandb_project(username: str) -> str:
 
 
 @pytest.fixture(scope="module")
-def outputs_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    return tmp_path_factory.mktemp("outputs")
-
-
-@pytest.fixture(scope="module")
 def rl_process(
     vllm_server,  # Can only run with vLLM server
     run_process: Callable[[Command, Environment, int], ProcessResult],

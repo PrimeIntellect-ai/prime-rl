@@ -32,11 +32,6 @@ def wandb_project(username: str) -> str:
 
 
 @pytest.fixture(scope="module")
-def outputs_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    return tmp_path_factory.mktemp("outputs")
-
-
-@pytest.fixture(scope="module")
 def sft_process(
     run_process: Callable[[Command, Environment], ProcessResult],
     outputs_dir: Path,

@@ -1,6 +1,8 @@
 import concurrent.futures
 import os
+import shutil
 import subprocess
+from pathlib import Path
 from typing import Callable, Generator
 
 import pytest
@@ -45,6 +47,13 @@ def setup_world():
     """
     yield
     reset_world()
+
+
+@pytest.fixture(scope="session")
+def outputs_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    outputs_dir = tmp_path_factory.mktemp("outputs")
+    yield outputs_dir
+    shutil.rmtree(outputs_dir)
 
 
 @pytest.fixture(scope="session")
