@@ -52,7 +52,7 @@ def setup_scheduler(optimizer: Optimizer, config: SchedulerConfigType, max_steps
     if config.type == "linear":
         decay_scheduler = LinearLR(optimizer, start_factor=1.0, end_factor=0.0, total_iters=decay_steps)
     elif config.type == "cosine":
-        decay_scheduler = CosineAnnealingLR(optimizer, T_max=decay_steps, eta_min=0.0)
+        decay_scheduler = CosineAnnealingLR(optimizer, T_max=decay_steps, eta_min=config.min_lr)
 
     schedulers.append(decay_scheduler)
 
