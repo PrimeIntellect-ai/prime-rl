@@ -10,7 +10,6 @@ from torch.distributed.tensor import DTensor
 from transformers import AutoTokenizer
 
 from prime_rl.trainer.config import CheckpointConfig
-from prime_rl.trainer.model import Model
 from prime_rl.trainer.rl.config import WeightCheckpointConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger

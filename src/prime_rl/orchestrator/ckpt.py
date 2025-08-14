@@ -16,6 +16,7 @@ class RLProgress:
     total_samples: int = 0
     total_problems: int = 0
 
+
 @dataclass
 class SFTProgress(RLProgress):
     epoch: int = 0
