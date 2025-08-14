@@ -1,0 +1,10 @@
+max_steps = 5
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B" 
+
+[data]
+fake = true
+batch_size = 16
+micro_batch_size = 8
+seq_len = 128

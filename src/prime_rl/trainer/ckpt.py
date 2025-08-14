@@ -58,6 +58,7 @@ class CheckpointManager:
             "scheduler": scheduler.state_dict(),
             "progress": progress,
         }
+
         # Create checkpoint directory if it doesn't exist
         ckpt_path.parent.mkdir(parents=True, exist_ok=True)
         with open(ckpt_path, "wb") as f:

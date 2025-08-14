@@ -1,6 +1,9 @@
 [project]
 name = "vf-reverse-text"
-version = "0.1.0"
+version = "0.1.1"
+tags = ["text", "transformation", "single-turn", "xml"]
+license = "Apache-2.0"
+description = "Reverse a given text; evaluated by LCS similarity between the parsed answer and ground-truth reversal."
 dependencies = [
     "verifiers>=0.1.2",
 ]

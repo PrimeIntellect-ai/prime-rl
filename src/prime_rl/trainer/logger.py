@@ -1,8 +1,8 @@
 from loguru import logger as loguru_logger
 from loguru._logger import Logger
 
-from prime_rl.trainer.config import LogConfig
 from prime_rl.trainer.world import World
+from prime_rl.utils.config import LogConfig
 from prime_rl.utils.logger import format_debug, format_message, format_time, get_logger, set_logger, setup_handlers
 
 

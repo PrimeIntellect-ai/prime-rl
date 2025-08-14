@@ -4,11 +4,11 @@ from typing import Optional
 
 from prime_rl.inference.config import InferenceConfig
 from prime_rl.orchestrator.config import OrchestratorConfig
-from prime_rl.trainer.config import TrainerConfig
+from prime_rl.trainer.rl.config import RLTrainerConfig
 
 
 def validate_shared_ckpt_config(
-    trainer: TrainerConfig,
+    trainer: RLTrainerConfig,
     orchestrator: OrchestratorConfig,
 ) -> None:
     if trainer.ckpt and not orchestrator.ckpt:
@@ -30,7 +30,7 @@ def validate_shared_ckpt_config(
 
 
 def validate_shared_model_name(
-    trainer: TrainerConfig,
+    trainer: RLTrainerConfig,
     orchestrator: OrchestratorConfig,
     inference: Optional[InferenceConfig] = None,
 ) -> None:
@@ -56,7 +56,7 @@ def validate_shared_max_model_len(
 
 
 def validate_shared_outputs_dir(
-    trainer: TrainerConfig,
+    trainer: RLTrainerConfig,
     orchestrator: OrchestratorConfig,
 ) -> None:
     if trainer.outputs_dir != orchestrator.outputs_dir:
@@ -66,7 +66,7 @@ def validate_shared_outputs_dir(
 
 
 def validate_shared_wandb_config(
-    trainer: TrainerConfig,
+    trainer: RLTrainerConfig,
     orchestrator: OrchestratorConfig,
 ) -> None:
     if trainer.monitor.wandb and orchestrator.monitor.wandb:
@@ -77,7 +77,7 @@ def validate_shared_wandb_config(
 
 
 def validate_shared_max_steps(
-    trainer: TrainerConfig,
+    trainer: RLTrainerConfig,
     orchestrator: OrchestratorConfig,
 ) -> None:
     if trainer.max_steps != orchestrator.max_steps:
@@ -87,7 +87,7 @@ def validate_shared_max_steps(
 
 
 def validate_shared_async_level(
-    trainer: TrainerConfig,
+    trainer: RLTrainerConfig,
     orchestrator: OrchestratorConfig,
 ) -> None:
     if trainer.async_level != orchestrator.async_level:

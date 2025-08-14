@@ -2,20 +2,21 @@ from pathlib import Path
 from typing import TypedDict
 
 import torch
-from jaxtyping import Float, Int
+from jaxtyping import Bool, Float, Int
+from torch import Tensor
 
-from prime_rl.trainer.config import FakeDataLoaderConfig
+from prime_rl.trainer.rl.config import FakeDataLoaderConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.utils import get_rollout_dir, wait_for_path
 
 
 class MicroBatch(TypedDict):
     # Token level
-    input_ids: Int[torch.Tensor, "batch seq"]
-    position_ids: Int[torch.Tensor, "batch seq"]
-    advantages: Float[torch.Tensor, "batch seq"]
-    logprobs: Float[torch.Tensor, "batch seq"]
-    loss_mask: Int[torch.Tensor, "batch seq"]
+    input_ids: Int[Tensor, "batch seq"]
+    position_ids: Int[Tensor, "batch seq"]
+    advantages: Float[Tensor, "batch seq"]
+    logprobs: Float[Tensor, "batch seq"]
+    loss_mask: Bool[Tensor, "batch seq"]
 
     # Batch level
     temperature: float
@@ -42,7 +43,7 @@ class FakeDataLoader:
             "advantages": torch.randn(self.micro_batch_size, self.seq_len),
             "logprobs": torch.randn(self.micro_batch_size, self.seq_len),
             "temperature": 1.0,
-            "loss_mask": torch.ones(self.micro_batch_size, self.seq_len, dtype=torch.int32),
+            "loss_mask": torch.ones(self.micro_batch_size, self.seq_len, dtype=torch.bool),
         }
 
 

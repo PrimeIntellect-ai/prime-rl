@@ -1,5 +1,4 @@
 from typing import TYPE_CHECKING, Any
-import os
 
 from prime_rl.utils.envs import _ENV_PARSERS as _BASE_ENV_PARSERS, get_env_value, get_dir, set_defaults
 
@@ -9,7 +8,6 @@ if TYPE_CHECKING:
     from prime_rl.utils.envs import *
 
     # Prime
-    TRAINING_ENABLE_ACCEPTED_CHECK: bool = False
     SHARDCAST_OUTPUT_DIR: str | None = None
 
     # PyTorch
@@ -22,7 +20,6 @@ if TYPE_CHECKING:
 
 
 _TRAINING_ENV_PARSERS = {
-    "TRAINING_ENABLE_ACCEPTED_CHECK": lambda x: x.lower() in ["true", "1", "yes", "y"],
     "SHARDCAST_OUTPUT_DIR": str,
     "RANK": int,
     "WORLD_SIZE": int,

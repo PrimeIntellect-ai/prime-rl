@@ -5,7 +5,7 @@ import pytest
 import torch
 
 from prime_rl.orchestrator.batch import BatchSample
-from prime_rl.trainer.data import MicroBatch
+from prime_rl.trainer.rl.data import MicroBatch
 from prime_rl.utils.utils import get_rollout_dir
 from tests import Command, Environment, ProcessResult
 
@@ -20,7 +20,7 @@ def create_sample(seq_len: int) -> BatchSample:
         "input_ids": torch.randint(0, 100, (seq_len,)).long(),
         "position_ids": torch.zeros(seq_len).long(),
         "advantages": torch.randn(seq_len).float(),
-        "loss_mask": torch.ones(seq_len).long(),
+        "loss_mask": torch.ones(seq_len).bool(),
         "logprobs": torch.randn(seq_len).float(),
         "total_tokens": seq_len,
     }

@@ -1,7 +1,10 @@
 <p align="center">
 </p>
 
-<img src="https://github.com/user-attachments/assets/51e44795-5206-49d6-a12a-ecacd2799df2" alt="Prime Intellect" style="width: 100%; height: auto;"/>
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/40c36e38-c5bd-4c5a-9cb3-f7b902cd155d#gh-light-mode-only" alt="Prime Intellect" width="312">
+  <img src="https://github.com/user-attachments/assets/6414bc9b-126b-41ca-9307-9e982430cde8#gh-dark-mode-only"  alt="Prime Intellect" width="312">
+</p>
 
 ---
 
@@ -66,13 +69,19 @@ uv run python -V
 uv run python -c "import flash_attn"
 ```
 
-3. Check that you can run training debug mode (*this requires 1 GPU*)
+3. Check that you can run SFT trainer in debug model (*this requires 1 GPU)
+
+```bash
+uv run sft @ configs/debug/train.toml
+```
+
+4. Check that you can run the RL trainer debug mode (*this requires 1 GPU*)
 
 ```bash
 uv run trainer @ configs/debug/train.toml
 ```
 
-4. Check that you can run the orchestrator against an inference server (*this requires 1 GPU*)
+5. Check that you can run the orchestrator against an inference server (*this requires 1 GPU*)
 
 ```bash
 uv run inference @ configs/debug/infer.toml
@@ -82,7 +91,13 @@ uv run inference @ configs/debug/infer.toml
 uv run orchestrator @ configs/debug/orch.toml
 ```
 
-5. Check that you can run a toy RL run (*this requires 2 GPUs and lasts 5 min, see more below*)
+4. Check that you can run a simple SFT warmup (*this requires 1 GPU*)
+
+```bash
+uv run sft @ configs/reverse_text/sft.toml
+```
+
+5. Check that you can run a toy RL run (*this requires 2 GPUs*)
 
 ```bash
 uv run rl \
@@ -126,15 +141,13 @@ The default session name is `prime-rl` and outputs directory is `outputs`. They 
 
 ## RL
 
-### Single Node Training
-
 We provide a convenience endpoint `rl` for single-node RL experiments. It configures and starts the trainer, orchestrator and, optionally, an inference server. It allows setting shared configs conveniently (e.g. the model name or async level should be the same across all modules) and dispatches and monitors subprocesses. To stream the logs from each module we use file logging. By default, only the trainer logs will be displayed on the main process (*use the tmux layout script to conveniently view all logs*).
 
 To check all available configuration options, run `uv run rl --help`.
 
 **Reverse Text**
 
-Train a tiny model (`willcb/Qwen2.5-0.5B-Reverse-SFT`) to learn to reverse a small chunk of text. Training is extremely quick because we allow a maximum context of 128 tokens. 
+Train a tiny model (`PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT`) that has undergone SFT warmup (see below) to learn to reverse a small chunk of text. Training is extremely quick because we allow a maximum context of 128 tokens. We use this run in CI.
 
 ```bash
 uv run rl \
@@ -215,6 +228,26 @@ CUDA_VISIBLE_DEVICES=2,3 uv run rl \
   --outputs-dir outputs2
 ```
 
+## SFT
+
+We have built-in support for SFT using the `sft` entrypoint. SFT often proves useful prior to RL training to get the model in-distribution and have higher initial reward that it can hillclimb from. 
+
+To check all available configuration options, run `uv run sft --help`.
+
+**Reverse Text**
+
+Finetune `PrimeIntellect/Qwen3-0.6B` (`Qwen/Qwen3-0.6B` but with Qwen-2.5 chat template) to reverse a tiny chunk of text, used as a warmup model train in `vf-reverse-text` environment. We use this run in CI.
+
+```bash
+uv run sft @ configs/reverse_text/sft.toml
+```
+
+If you want to train on multiple GPUs or nodes, use `torchrun`. For example, to do the same run as above on 4 colocated GPUs.
+
+```bash
+uv run torchrun --nproc-per-node 4 src/prime_rl/trainer/sft/train.py @ configs/reverse_text/sft.toml
+```
+
 ## Evals
 
 We provide a convenience endpoint for running a full evaluation suite of common benchmarks such as AIME, MATH-500 or LiveCodeBench against your model using the `eval` entrypoint.
@@ -229,6 +262,9 @@ uv run eval --model.name Qwen/Qwen3-0.6B --benchmarks math500,aime24,aime25
 
 To check all available configuration options, run `uv run eval --help`.
 
+## Multi-Node Training
+
+*TBD*
 
 ## Developer
 

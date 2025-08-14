@@ -1,6 +1,9 @@
 [project]
 name = "vf-unscramble"
-version = "0.1.0"
+version = "0.1.1"
+tags = ["text", "ordering", "single-turn", "xml", "synthetic"]
+license = "Apache-2.0"
+description = "Single-turn transformation where the model unscrambles numbered sentences into the correct order."
 dependencies = [
     "verifiers>=0.1.2",
     "datasets",

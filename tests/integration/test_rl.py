@@ -1,5 +1,4 @@
-import os
-import subprocess
+from pathlib import Path
 from typing import Callable
 
 import pytest
@@ -44,30 +43,8 @@ RL_RESUME_CMD = [
 
 
 @pytest.fixture(scope="module")
-def username() -> str:
-    return os.environ.get("USERNAME_CI", os.getlogin())
-
-
-@pytest.fixture(scope="module")
-def branch_name() -> str:
-    branch_name_ = os.environ.get("GITHUB_REF_NAME", None)
-
-    if branch_name_ is None:
-        branch_name = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"]).decode("utf-8").strip()
-    else:
-        branch_name = branch_name_.replace("/merge", "")
-        branch_name = f"pr-{branch_name}"
-    return branch_name
-
-
-@pytest.fixture(scope="module")
-def commit_hash() -> str:
-    return subprocess.check_output(["git", "rev-parse", "--short", "HEAD"]).decode("utf-8").strip()
-
-
-@pytest.fixture(scope="module")
 def wandb_project(username: str) -> str:
-    project = "ci-reverse-text"
+    project = "ci-reverse-text-rl"
     if username != "CI_RUNNER":
         project += "-local"
     return project
@@ -77,6 +54,7 @@ def wandb_project(username: str) -> str:
 def rl_process(
     vllm_server,  # Can only run with vLLM server
     run_process: Callable[[Command, Environment, int], ProcessResult],
+    outputs_dir: Path,
     wandb_project: str,
     branch_name: str,
     commit_hash: str,
@@ -84,7 +62,8 @@ def rl_process(
     wandb_name = f"{branch_name}-{commit_hash}"
 
     return run_process(
-        RL_CMD + ["--wandb.project", wandb_project, "--wandb.name", wandb_name],
+        RL_CMD
+        + ["--wandb.project", wandb_project, "--wandb.name", wandb_name, "--outputs-dir", outputs_dir.as_posix()],
         {},
         TIMEOUT,
     )
@@ -95,6 +74,7 @@ def rl_resume_process(
     vllm_server,  # Can only run with vLLM server
     rl_process,  # Resume training can only start when regular RL process is finished
     run_process: Callable[[Command, Environment, int], ProcessResult],
+    outputs_dir: Path,
     wandb_project: str,
     branch_name: str,
     commit_hash: str,
@@ -102,7 +82,8 @@ def rl_resume_process(
     wandb_name = f"{branch_name}-{commit_hash}-resume"
 
     return run_process(
-        RL_RESUME_CMD + ["--wandb.project", wandb_project, "--wandb.name", wandb_name],
+        RL_RESUME_CMD
+        + ["--wandb.project", wandb_project, "--wandb.name", wandb_name, "--outputs-dir", outputs_dir.as_posix()],
         {},
         TIMEOUT,
     )

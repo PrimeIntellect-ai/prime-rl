@@ -13,7 +13,7 @@ CMD = [
     "@",
     "configs/debug/eval.toml",
     "--model.name",
-    "willcb/Qwen2.5-0.5B-Reverse-SFT",
+    "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT",
 ]
 ENV = {"CUDA_VISIBLE_DEVICES": "1"}
 

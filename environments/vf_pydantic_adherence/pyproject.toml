@@ -1,6 +1,9 @@
 [project]
 name = "vf-pydantic-adherence"
-version = "0.1.0"
+version = "0.1.1"
+tags = ["json", "structure", "single-turn", "pydantic", "parsing"]
+license = "Apache-2.0"
+description = "Single-turn JSON-structured output validated against per-sample Pydantic models."
 dependencies = [
     "verifiers>=0.1.2",
     "datasets",

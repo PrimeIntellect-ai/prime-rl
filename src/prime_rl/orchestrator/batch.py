@@ -2,18 +2,18 @@ import copy
 from typing import Literal, TypedDict
 
 import torch
-from jaxtyping import Float, Int
+from jaxtyping import Bool, Float, Int
 from torch import Tensor
 from transformers import AutoTokenizer
 
 from prime_rl.orchestrator.buffer import Rollout
-from prime_rl.trainer.data import MicroBatch
+from prime_rl.trainer.rl.data import MicroBatch
 
 
 class BatchSample(TypedDict):
     input_ids: Int[Tensor, "seq"]
     position_ids: Int[Tensor, "seq"]
-    loss_mask: Int[Tensor, "seq"]
+    loss_mask: Bool[Tensor, "seq"]
     advantages: Float[Tensor, "seq"]
     logprobs: Float[Tensor, "seq"]
 
@@ -39,7 +39,7 @@ def prepare_sample(
 
     # Prepare input_ids, loss_mask, position_ids, logprobs, and advantages
     input_ids = torch.cat([prompt_token_ids, completion_token_ids]).long()
-    loss_mask = torch.cat([prompt_token_mask, completion_token_mask]).long()
+    loss_mask = torch.cat([prompt_token_mask, completion_token_mask]).bool()
     logprobs = torch.cat([torch.zeros(len(prompt_token_ids)), torch.tensor(rollout.completion_logprobs)]).float()
     position_ids = torch.arange(len(input_ids)).long()
     advantages = torch.tensor(rollout.advantage).repeat(len(input_ids)).float()
@@ -55,7 +55,7 @@ def prepare_sample(
     if pad:
         num_padding_tokens = seq_len - len(input_ids)
         input_ids = torch.cat([input_ids, torch.full((num_padding_tokens,), tokenizer.pad_token_id)])
-        loss_mask = torch.cat([loss_mask, torch.zeros(num_padding_tokens)]).long()
+        loss_mask = torch.cat([loss_mask, torch.zeros(num_padding_tokens)]).bool()
         position_ids = torch.cat([position_ids, torch.zeros(num_padding_tokens)]).long()
         logprobs = torch.cat([logprobs, torch.zeros(num_padding_tokens)]).float()
         advantages = torch.cat([advantages, torch.zeros(num_padding_tokens)]).float()
@@ -207,7 +207,7 @@ def prepare_batch_packing(
     if num_train_workers > 1 and num_padding_batch > 0:
         padded_batch = copy.deepcopy(micro_batches[0])
         padded_batch["advantages"] = torch.zeros_like(padded_batch["advantages"])
-        padded_batch["loss_mask"] = torch.zeros_like(padded_batch["loss_mask"])
+        padded_batch["loss_mask"] = torch.zeros_like(padded_batch["loss_mask"], dtype=torch.bool)
         micro_batches.extend([padded_batch for _ in range(num_padding_batch)])
 
     assert len(micro_batches) % num_train_workers == 0, (

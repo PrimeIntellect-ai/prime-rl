@@ -39,7 +39,9 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
       - name: Run unit tests
-        run: uv run pytest tests/unit -m gpu
+        run: PYTEST_OUTPUTS_DIR=/tmp/outputs uv run pytest tests/unit -m gpu
+      - name: Cleanup outputs_dir
+        run: rm -rf /tmp/outputs
 
   integration-tests:
     name: Integration tests
@@ -57,4 +59,6 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
           GITHUB_HEAD_REF: ${{ github.head_ref }}
-        run: uv run pytest tests/integration -m gpu
+        run: PYTEST_OUTPUTS_DIR=/tmp/outputs uv run pytest tests/integration -m gpu
+      - name: Cleanup outputs_dir
+        run: rm -rf /tmp/outputs

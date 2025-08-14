@@ -9,7 +9,9 @@ from torch.distributed.checkpoint.state_dict import _get_fqns as get_fqns
 from torch.distributed.tensor import DTensor
 from transformers import AutoTokenizer
 
-from prime_rl.trainer.config import CheckpointConfig, WeightCheckpointConfig
+from prime_rl.trainer.config import CheckpointConfig
+from prime_rl.trainer.model import Model
+from prime_rl.trainer.rl.config import WeightCheckpointConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import get_step_path, get_weight_ckpt_model_path, get_weights_dir

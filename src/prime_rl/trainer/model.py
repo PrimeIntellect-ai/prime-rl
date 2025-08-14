@@ -31,8 +31,8 @@ def get_model(config: ModelConfig) -> nn.Module:
     return model
 
 
-def get_tokenizer(config: ModelConfig) -> AutoTokenizer:
-    tokenizer = AutoTokenizer.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
+def setup_tokenizer(config: ModelConfig) -> AutoTokenizer:
+    tokenizer = AutoTokenizer.from_pretrained(config.name)
     tokenizer.pad_token_id = tokenizer.eos_token_id
     return tokenizer
 

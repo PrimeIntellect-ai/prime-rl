@@ -1,6 +1,8 @@
 import concurrent.futures
 import os
+import shutil
 import subprocess
+from pathlib import Path
 from typing import Callable, Generator
 
 import pytest
@@ -48,9 +50,38 @@ def setup_world():
 
 
 @pytest.fixture(scope="session")
+def outputs_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    outputs_dir = Path(os.environ.get("PYTEST_OUTPUTS_DIR", tmp_path_factory.mktemp("outputs")))
+    yield outputs_dir
+    shutil.rmtree(outputs_dir, ignore_errors=True)
+
+
+@pytest.fixture(scope="session")
 def hf_api() -> HfApi:
     """Hugging Face API to use for tests."""
     return HfApi()
+
+
+@pytest.fixture(scope="module")
+def username() -> str:
+    return os.environ.get("USERNAME_CI", os.getlogin())
+
+
+@pytest.fixture(scope="module")
+def branch_name() -> str:
+    branch_name_ = os.environ.get("GITHUB_REF_NAME", None)
+
+    if branch_name_ is None:
+        branch_name = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"]).decode("utf-8").strip()
+    else:
+        branch_name = branch_name_.replace("/merge", "")
+        branch_name = f"pr-{branch_name}"
+    return branch_name
+
+
+@pytest.fixture(scope="module")
+def commit_hash() -> str:
+    return subprocess.check_output(["git", "rev-parse", "--short", "HEAD"]).decode("utf-8").strip()
 
 
 class ProcessResult:

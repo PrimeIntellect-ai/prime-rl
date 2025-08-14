@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings
 
 from prime_rl.inference.config import InferenceConfig
 from prime_rl.orchestrator.config import OrchestratorConfig
-from prime_rl.trainer.config import TrainerConfig
+from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.validation import (
     validate_shared_async_level,
@@ -23,7 +23,7 @@ ConfigType: TypeAlias = Literal["train", "orch", "infer"]
 
 # Map config type to its corresponding settings class
 CONFIG_MAP: dict[ConfigType, type[BaseSettings]] = {
-    "train": TrainerConfig,
+    "train": RLTrainerConfig,
     "orch": OrchestratorConfig,
     "infer": InferenceConfig,
 }

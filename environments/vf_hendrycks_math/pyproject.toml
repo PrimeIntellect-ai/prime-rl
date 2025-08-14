@@ -1,6 +1,9 @@
 [project]
 name = "vf-hendrycks-math"
-version = "0.1.0"
+version = "0.1.1"
+tags = ["math", "single-turn", "think", "boxed-answer"]
+license = "Apache-2.0"
+description = "Single-turn Hendrycks MATH-style problems with boxed numeric answers and CoT."
 dependencies = [
     "verifiers>=0.1.2",
     "datasets",

@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from prime_rl.trainer.loss import compute_entropy, grpo_loss_clip, grpo_loss_ratio
+from prime_rl.trainer.rl.loss import compute_entropy, grpo_loss_clip, grpo_loss_ratio
 
 pytestmark = [pytest.mark.gpu]
 

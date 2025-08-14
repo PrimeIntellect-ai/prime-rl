@@ -4,7 +4,7 @@ from jaxtyping import Float, Int, jaxtyped
 from torch import Tensor
 from torch.nn import functional as F
 
-from prime_rl.trainer.config import LossConfig
+from prime_rl.trainer.rl.config import LossConfigType
 
 
 @jaxtyped(typechecker=typechecker)
@@ -12,7 +12,7 @@ def compute_loss(
     logprobs: Float[Tensor, "batch seq"],
     old_logprobs: Float[Tensor, "batch seq"],
     advantages: Float[Tensor, "batch seq"],
-    loss_config: LossConfig,
+    loss_config: LossConfigType,
 ) -> tuple[Float[Tensor, "batch seq"], dict[str, Float[Tensor, "batch seq"]]]:
     if loss_config.type == "clip":
         return grpo_loss_clip(

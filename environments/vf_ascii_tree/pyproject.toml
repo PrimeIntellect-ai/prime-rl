@@ -1,6 +1,9 @@
 [project]
 name = "vf-ascii-tree"
-version = "0.1.0"
+version = "0.1.4"
+tags = ["formatting", "ascii", "single-turn", "xml", "synthetic"]
+license = "Apache-2.0"
+description = "Single-turn evaluation where the model generates ASCII tree diagrams from prompts."
 dependencies = [
     "verifiers>=0.1.2",
 ]

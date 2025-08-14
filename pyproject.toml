@@ -32,14 +32,15 @@ dependencies = [
     "textarena>=0.6.16",
     "nltk>=3.9.1",
     "math-verify>=0.8.0",
-    "torchtitan",
+    "muon_fsdp2>=0.3.0"
 ]
 
 [project.scripts]
 rl = "prime_rl.rl:main"
-trainer = "prime_rl.trainer.train:main"
+trainer = "prime_rl.trainer.rl.train:main"
 orchestrator = "prime_rl.orchestrator.orchestrator:main"
 inference = "prime_rl.inference.server:main"
+sft = "prime_rl.trainer.sft.train:main"
 eval = "prime_rl.eval.eval:main"
 
 [build-system]
@@ -79,7 +80,6 @@ vf-hendrycks-math = { workspace = true }
 vf-skywork-math = { workspace = true }
 vf-unscramble = { workspace = true }
 vf-alphabet-sort = { workspace = true }
-
 
 [[tool.uv.index]]
 name = "pytorch-cu128"

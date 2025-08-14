@@ -117,7 +117,7 @@ class EvalConfig(BaseConfig):
 class CheckpointConfig(BaseConfig):
     """Configures checkpointing the orchestrator."""
 
-    interval: Annotated[int, Field(ge=1, description="Interval at which to save the checkpoint.")] = 50
+    interval: Annotated[int | None, Field(ge=1, description="Interval at which to save the checkpoint.")] = None
 
     resume_step: Annotated[
         int | None,
@@ -218,7 +218,7 @@ class OnlineDifficultyBufferConfig(BaseModel):
     ] = 1.0
 
 
-DataBufferConfig: TypeAlias = SimpleBufferConfig | DifficultyPoolBufferConfig | OnlineDifficultyBufferConfig
+DataBufferConfigType: TypeAlias = SimpleBufferConfig | DifficultyPoolBufferConfig | OnlineDifficultyBufferConfig
 
 
 class OrchestratorConfig(BaseSettings):
@@ -240,7 +240,7 @@ class OrchestratorConfig(BaseSettings):
     eval: EvalConfig | None = None
 
     # Data buffer configuration
-    buffer: DataBufferConfig = Field(discriminator="type", default=SimpleBufferConfig())
+    buffer: Annotated[DataBufferConfigType, Field(discriminator="type")] = SimpleBufferConfig()
 
     # The logging configuration
     log: LogConfig = LogConfig()
