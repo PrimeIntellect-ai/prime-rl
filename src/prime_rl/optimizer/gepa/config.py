@@ -3,9 +3,9 @@ from typing import Annotated, Literal
 
 from pydantic import Field
 
-from prime_rl.utils.config import LogConfig, MultiMonitorConfig, ModelConfig
 from prime_rl.inference.config import InferenceConfig
 from prime_rl.orchestrator.config import ClientConfig
+from prime_rl.utils.config import LogConfig, MultiMonitorConfig, ModelConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 

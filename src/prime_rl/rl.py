@@ -24,7 +24,7 @@ from prime_rl.trainer.config import CheckpointConfig as TrainerCheckpointConfig
 from prime_rl.trainer.rl.config import FakeDataLoaderConfig
 from prime_rl.trainer.rl.config import RLTrainerConfig as TrainerConfig
 from prime_rl.utils.config import WandbMonitorConfig
-from prime_rl.utils.logger import format_message, format_time, get_logger, set_logger, setup_handlers
+from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pydantic_config import BaseSettings, get_temp_toml_file, parse_argv
 from prime_rl.utils.utils import (
     get_ckpt_dir,

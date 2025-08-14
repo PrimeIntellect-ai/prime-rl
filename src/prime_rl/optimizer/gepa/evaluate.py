@@ -8,8 +8,16 @@ from openai import AsyncOpenAI
 
 from prime_rl.eval.registry import get_benchmark_dataset
 from prime_rl.orchestrator.client import generate_completion, setup_client
-from prime_rl.orchestrator.config import ClientConfig, ModelConfig as OrchestratorModelConfig, SamplingConfig
-from prime_rl.orchestrator.utils import compute_rewards, parse_completion_tokens, parse_completions
+from prime_rl.orchestrator.config import (
+    ClientConfig,
+    ModelConfig as OrchestratorModelConfig,
+    SamplingConfig,
+)
+from prime_rl.orchestrator.utils import (
+    compute_rewards,
+    parse_completion_tokens,
+    parse_completions,
+)
 from prime_rl.utils.logger import get_logger
 
 
@@ -71,7 +79,6 @@ async def _score_on_benchmark(
     unique = set(rewards)
     pass_at_k = None
     if unique.issubset({0, 1, 0.0, 1.0}):
-        k = rollouts_per_prompt
         rows: dict[int, list[float]] = {}
         for pid, r in zip(problem_ids, rewards):
             rows.setdefault(pid, []).append(float(r))
@@ -92,7 +99,6 @@ async def score_prompt(
     max_tokens: int | None,
     min_tokens: int,
 ) -> PromptScore:
-    logger = get_logger()
     client = setup_client(client_cfg)
 
     sampling = SamplingConfig(
@@ -143,7 +149,6 @@ async def score_prompt_instances(
     offset: int = 0,
 ) -> list[float]:
     """Return per-instance average reward for a contiguous slice of the dataset."""
-    logger = get_logger()
     client = setup_client(client_cfg)
     sampling = SamplingConfig(
         temperature=1.0,

@@ -3,9 +3,10 @@ from __future__ import annotations
 import random
 from typing import Sequence
 
-from prime_rl.optimizer.gepa.config import OperatorsConfig
 from openai import AsyncOpenAI
-from prime_rl.orchestrator.config import ModelConfig as OrchestratorModelConfig, ClientConfig
+
+from prime_rl.optimizer.gepa.config import OperatorsConfig
+from prime_rl.orchestrator.config import ClientConfig, ModelConfig as OrchestratorModelConfig
 
 
 REFLECT_TEMPLATE = (
