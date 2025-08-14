@@ -43,7 +43,11 @@ def setup_fsdp(model: nn.Module, config: ModelConfig):
     fsdp_dim = dist.get_world_size() // config.ep
     world_mesh = dist.init_device_mesh("cuda", (fsdp_dim, config.ep), mesh_dim_names=("fsdp", "ep"))
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
-    # TODO: Do we need to include ep in hsdp mesh?
+    # TODO: Lets not support EP for now.
+    # (1) Im not sure how the hsdp mesh is supposed to work with EP.
+    # (2) The EP implementation seems to have changes every week in TT and is unstable at the moment
+    # (3) There doesnt seem to be significant MFU gains from EP in my benchmarks
+    assert config.ep == 1, "EP is not supported for now"
     hsdp_mesh = world_mesh["fsdp"]
     ep_mesh = world_mesh["ep"] if config.ep > 1 else None
     fsdp_mesh = world_mesh["fsdp"]
