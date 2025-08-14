@@ -2,8 +2,7 @@ from collections import defaultdict
 from typing import Iterator, TypedDict
 
 import torch
-from datasets import Dataset as HFDataset
-from datasets import load_dataset
+from datasets import concatenate_datasets, load_dataset
 from jaxtyping import Bool, Int
 from torch import Tensor
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
@@ -15,7 +14,7 @@ from prime_rl.utils.logger import get_logger
 
 
 class Sample(TypedDict):
-    epoch: int # TODO: Argh, can we find a way to export epoch metainformation in a nicer way?
+    epoch: int  # TODO: Argh, can we find a way to export epoch metainformation in a nicer way?
     input_ids: list[int]
     position_ids: list[int]
     loss_mask: list[bool]
@@ -57,12 +56,12 @@ class FakeDataset(IterableDataset):
 class SFTDataset(IterableDataset):
     """A dataset wrapping a HF SFT dataset with prompt + completion format."""
 
-    def __init__(self, tokenizer: AutoTokenizer, name: str, split: str):
+    def __init__(self, tokenizer: AutoTokenizer, name: str, splits: list[str]):
         self.tokenizer = tokenizer
         self._logger = get_logger()
 
         # Load dataset
-        self.dataset: HFDataset = load_dataset(name, split=split)
+        self.dataset = concatenate_datasets([load_dataset(name, split=split) for split in splits])
 
         # Assert that the dataset has a 'text' column
         if "prompt" not in self.dataset.column_names or "completion" not in self.dataset.column_names:
@@ -121,7 +120,9 @@ class SFTDataset(IterableDataset):
                 sample = {
                     "input_ids": prompt_completion_ids,
                     "position_ids": list(range(len(prompt_completion_ids))),
-                    "loss_mask": [False] * len(prompt_ids) + [True] * (len(prompt_completion_ids) - len(prompt_ids) - 1) + [False],
+                    "loss_mask": [False] * len(prompt_ids)
+                    + [True] * (len(prompt_completion_ids) - len(prompt_ids) - 1)
+                    + [False],
                     "target_ids": prompt_completion_ids[1:] + [0],
                     "epoch": epoch,
                 }
@@ -168,7 +169,7 @@ class PaddingDataset(IterableDataset):
 
     def __iter__(self) -> Iterator[Sample]:
         for sample in self.dataset:
-            if len(sample["input_ids"]) < self.seq_len: # Pad
+            if len(sample["input_ids"]) < self.seq_len:  # Pad
                 num_padding_tokens = self.seq_len - len(sample["input_ids"])
                 sample["input_ids"] = sample["input_ids"] + [self.pad_token_id] * num_padding_tokens
                 sample["loss_mask"] = sample["loss_mask"] + [0] * num_padding_tokens
@@ -183,6 +184,7 @@ class PaddingDataset(IterableDataset):
 
             yield sample
 
+
 def collate(samples: list[Sample]) -> Batch:
     return {
         "input_ids": torch.stack([torch.tensor(sample["input_ids"]) for sample in samples], dim=0).long(),
@@ -192,10 +194,12 @@ def collate(samples: list[Sample]) -> Batch:
         "epoch": min([sample["epoch"] for sample in samples]),
     }
 
+
 def setup_dataset(tokenizer: AutoTokenizer, config: DataConfig) -> IterableDataset:
     if config.fake:
         return FakeDataset(tokenizer, config.seq_len)
     return SFTDataset(tokenizer, name=config.name, split=config.split)
+
 
 def setup_dataloader(dataset: IterableDataset, tokenizer: AutoTokenizer, config: DataConfig) -> DataLoader:
     seq_len = config.micro_batch_size * config.seq_len if config.collate_mode == "packing" else config.seq_len
