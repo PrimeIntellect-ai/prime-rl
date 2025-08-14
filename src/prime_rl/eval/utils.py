@@ -76,7 +76,7 @@ async def run_benchmark(
 
     completion_lengths = [len(parse_completion_tokens(c)) for c in chat_completions]
     avg_completion_len = sum(completion_lengths) / len(completion_lengths)
-    
+
     completion_len_df = pd.DataFrame({"problem_id": problem_ids, "completion_len": completion_lengths})
     avg_completion_len_per_problem = completion_len_df.groupby("problem_id").completion_len.mean()
     max_avg_completion_len = avg_completion_len_per_problem.max()

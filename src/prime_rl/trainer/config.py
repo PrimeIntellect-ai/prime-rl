@@ -37,6 +37,20 @@ class ModelConfig(BaseConfig):
         bool, Field(description="Whether to reshard the model after each forward pass.")
     ] = True
 
+    trust_remote_code: Annotated[
+        bool,
+        Field(
+            description="Whether to trust remote code for model and tokenizer initialization.",
+        ),
+    ] = False
+
+    ep: Annotated[
+        int,
+        Field(
+            description="The expert parallelism to use if the model has MoE layers. If 1, then no EP will be used.",
+        ),
+    ] = 1
+
 
 class ConstantSchedulerConfig(BaseModel):
     """Configuration for constant learning rate scheduler."""

@@ -7,10 +7,9 @@ import torch
 import torch.distributed as dist
 from rich.console import Console
 from rich.table import Table
-from torch import Tensor
+from torch import Tensor, nn
 from torch.distributed.tensor import DTensor
 
-from prime_rl.trainer.model import Model
 from prime_rl.utils.utils import format_num, format_time
 
 
@@ -23,7 +22,7 @@ def get_real_tensor(tensor: Tensor | DTensor) -> Tensor:
 OffloadedTensor: TypeAlias = list[tuple[Tensor, int]]
 
 
-def offload_model_to_cpu(model: Model) -> OffloadedTensor:
+def offload_model_to_cpu(model: nn.Module) -> OffloadedTensor:
     """
     Retun a list of cpu tensor representing the model weight.
     Also reduce to 0 the gpu memory usage.
@@ -40,7 +39,7 @@ def offload_model_to_cpu(model: Model) -> OffloadedTensor:
     return tensors_offloaded
 
 
-def copy_model_to_cpu(model: Model) -> OffloadedTensor:
+def copy_model_to_cpu(model: nn.Module) -> OffloadedTensor:
     """
     Retun a list of cpu tensor representing the model weight.
     Keep gpu memory intact.
@@ -56,7 +55,7 @@ def copy_model_to_cpu(model: Model) -> OffloadedTensor:
     return tensors_offloaded
 
 
-def wake_up_model_from_cpu(model: Model, tensors: OffloadedTensor):
+def wake_up_model_from_cpu(model: nn.Module, tensors: OffloadedTensor):
     for param, (cpu_data, storage_size) in zip(chain(model.parameters(), model.buffers()), tensors):
         data = get_real_tensor(param.data)
         data.untyped_storage().resize_(storage_size)
@@ -138,7 +137,9 @@ def flexible_all_gather(tensor: Tensor) -> Tensor:
         tensor = torch.cat([tensor, torch.zeros(max_numel - local_numel, dtype=tensor.dtype, device=tensor.device)])
 
     # All-gather the tensors
-    all_tensors = [torch.zeros(max_numel, dtype=tensor.dtype, device=tensor.device) for _ in range(dist.get_world_size())]
+    all_tensors = [
+        torch.zeros(max_numel, dtype=tensor.dtype, device=tensor.device) for _ in range(dist.get_world_size())
+    ]
     dist.all_gather(all_tensors, tensor)
     all_tensors_unpadded = torch.cat([tensor[:numel] for tensor, numel in zip(all_tensors, all_numels)])
 

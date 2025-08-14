@@ -1,0 +1,11 @@
+recompute_logprobs = false
+
+[monitor.wandb]
+
+[model]
+name = "Jackmin108/Qwen3-30B-A3B-Fast"
+ac = true
+trust_remote_code = true
+
+[optim]
+lr = 1e-6

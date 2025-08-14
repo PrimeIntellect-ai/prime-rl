@@ -4,11 +4,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import torch
+from torch import nn
 from torch.optim.lr_scheduler import LRScheduler
 from torch.optim.optimizer import Optimizer
 
 from prime_rl.trainer.config import CheckpointConfig
-from prime_rl.trainer.model import Model
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import get_ckpt_dir
@@ -43,7 +43,7 @@ class CheckpointManager:
         self,
         ckpt_path: Path,
         ckpt_step: int,
-        model: Model,
+        model: nn.Module,
         optimizers: list[Optimizer],
         scheduler: LRScheduler,
         progress: Progress,
@@ -71,7 +71,7 @@ class CheckpointManager:
         self._logger.debug(f"Training checkpoint saved in {time.time() - start_time:.2f} seconds")
 
     def _load_from_path(
-        self, ckpt_path: Path, model: Model, optimizers: list[Optimizer], scheduler: LRScheduler, progress: Progress
+        self, ckpt_path: Path, model: nn.Module, optimizers: list[Optimizer], scheduler: LRScheduler, progress: Progress
     ):
         """Loads a checkpoint from a given path in-place."""
         self._logger.debug(f"Loading training checkpoint from {ckpt_path}")
@@ -94,7 +94,7 @@ class CheckpointManager:
         self._logger.debug(f"Training checkpoint loaded in {time.time() - start_time:.2f} seconds")
 
     def load(
-        self, model: Model, optimizers: list[Optimizer], scheduler: LRScheduler, progress: Progress, step: int
+        self, model: nn.Module, optimizers: list[Optimizer], scheduler: LRScheduler, progress: Progress, step: int
     ) -> None:
         """Loads a checkpoint from a given path in-place."""
         ckpt_path = self._get_ckpt_path(step)
@@ -104,7 +104,7 @@ class CheckpointManager:
 
     def save(
         self,
-        model: Model,
+        model: nn.Module,
         optimizers: list[Optimizer],
         scheduler: LRScheduler,
         progress: Progress,

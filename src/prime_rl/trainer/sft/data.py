@@ -201,6 +201,7 @@ def setup_dataset(tokenizer: AutoTokenizer, config: DataConfig) -> IterableDatas
     return SFTDataset(tokenizer, config)
 
 
+
 def setup_dataloader(dataset: IterableDataset, tokenizer: AutoTokenizer, config: DataConfig) -> DataLoader:
     seq_len = config.micro_batch_size * config.seq_len if config.collate_mode == "packing" else config.seq_len
     if config.collate_mode == "packing":

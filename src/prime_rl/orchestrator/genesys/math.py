@@ -52,26 +52,26 @@ def compute_math_reward(completion: str, verification_info: Dict):
 
     return 0
 
+
 def math_verify_reward_function(completion: str, verification_info: Dict):
     ground_truth = verification_info["ground_truth"]
     if isinstance(ground_truth, (str, float, int)):
         ground_truth = [ground_truth]
-    
 
     # We always take the final solution
     if "</think>" in completion:
         completion = completion.split("</think>")[1]
-    
+
     # 0 in case parsing cannot be completed
     try:
         math_verify_parsed = parse(completion, parsing_timeout=5)
     except BaseException:
         return 0.0
-    
+
     # 0 if parsing is problematic
     if len(math_verify_parsed) < 2:
         return 0.0
-    
+
     # We now fallback to semantic verification
     for gt in ground_truth:
         try:
@@ -83,6 +83,6 @@ def math_verify_reward_function(completion: str, verification_info: Dict):
                 return 1.0
         except BaseException:
             continue
-    
+
     # Very unlikely to be correct after the above matches
     return 0.0

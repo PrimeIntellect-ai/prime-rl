@@ -1,0 +1,135 @@
+[project]
+name = "prime-rl"
+version = "0.1.0"
+description = ""
+readme = "README.md"
+requires-python = "~=3.12.0"
+dependencies = [
+    "beartype>=0.21.0",
+    "cydifflib>=1.2.0",
+    "datasets>=3.6.0",
+    "google-cloud-storage>=3.1.1", # TODO: Delete after refactor
+    "jaxtyping>=0.3.2",
+    "liger-kernel>=0.5.10",
+    "loguru>=0.7.3",
+    "numpy>=2.2.6",
+    "openai>=1.90.0",
+    "pydantic>=1.10.13",
+    "pydantic-settings>=2.10.1",
+    "pylatexenc>=2.10",
+    "pynvml>=12.0.0",
+    "shardcast>=0.3.2",
+    "tomli>=2.2.1",
+    "torch>=2.8.0",
+    "transformers>=4.53.0",
+    "uvloop>=0.21.0",
+    "vllm==0.10.0",
+    "wandb>=0.20.1",
+    "lovely-tensors>=0.1.18",
+    "rich>=14.0.0",
+    "tomli-w",
+    "verifiers",
+    "textarena>=0.6.16",
+    "nltk>=3.9.1",
+    "math-verify>=0.8.0",
+    "torchtitan",
+    "blobfile>=3.0.0",
+    "muon_fsdp2>=0.3.0",
+]
+
+[project.scripts]
+rl = "prime_rl.rl:main"
+trainer = "prime_rl.trainer.train:main"
+orchestrator = "prime_rl.orchestrator.orchestrator:main"
+inference = "prime_rl.inference.server:main"
+eval = "prime_rl.eval.eval:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.optional-dependencies]
+flash-attn = ["pi-flash-attn>=2.8.0"]
+flash-infer = ["flashinfer-python>=0.2.8rc1"]
+
+vf = [
+    "vf-intellect-math",
+    "vf-reverse-text",
+    "vf-ascii-tree",
+    "vf-pydantic-adherence",
+    "vf-hendrycks-math",
+    "vf-skywork-math",
+    "vf-unscramble",
+    "vf-alphabet-sort",
+]
+
+[tool.uv]
+no-build-isolation-package = ["flash-attn"]
+prerelease = "allow"
+override-dependencies = [
+  "torch==2.8.0", # Temporary patch as vllm hasnt updated but needed by MoE
+  "torchvision==0.23.0", # Temporary patch as vllm hasnt updated but needed by MoE
+]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu128" }]
+verifiers = { git = "https://github.com/willccbb/verifiers", rev = "74c604f" }
+torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e43694bbfeff5d6ad8ac738c067bb90d41" }
+
+vf-intellect-math = { workspace = true }
+vf-wordle = { git = "https://github.com/willccbb/verifiers.git", subdirectory = "environments/vf_wordle", rev = "main" }
+vf-reverse-text = { workspace = true }
+vf-ascii-tree = { workspace = true }
+vf-pydantic-adherence = { workspace = true }
+vf-hendrycks-math = { workspace = true }
+vf-skywork-math = { workspace = true }
+vf-unscramble = { workspace = true }
+vf-alphabet-sort = { workspace = true }
+
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/test/cu128"
+explicit = true
+
+[tool.uv.workspace]
+members = [
+    "environments/vf_intellect_math",
+    "environments/vf_reverse_text",
+    "environments/vf_ascii_tree",
+    "environments/vf_pydantic_adherence",
+    "environments/vf_hendrycks_math",
+    "environments/vf_skywork_math",
+    "environments/vf_unscramble",
+    "environments/vf_alphabet_sort",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=6.29.5",
+    "ipywidgets>=8.1.7",
+    "pre-commit>=4.2.0",
+    "pytest>=8.4.1",
+    "ruff>=0.12.1",
+]
+
+
+[tool.ruff.lint]
+select = ["F", "I"]
+ignore = ["F722", "F821"] # Need to ignore for jaxtyping (https://docs.kidger.site/jaxtyping/faq/)
+
+[tool.ruff]
+line-length = 120
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "gpu: marks tests as gpu (deselect with '-m \"not gpu\"')",
+]
+
+[tool.uv.extra-build-dependencies]
+pi-flash-attn = [{ requirement = "torch", match-runtime = true }]
+
+[tool.uv.extra-build-variables]
+pi-flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
