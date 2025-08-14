@@ -149,7 +149,7 @@ class RLTrainerConfig(BaseSettings):
 
         # If decay_steps is not specified, use remaining steps after warmup
         if self.scheduler.decay_steps is None:
-            if not (self.warmup_steps <= self.max_steps):
+            if not (self.scheduler.warmup_steps <= self.max_steps):
                 raise ValueError("config.scheduler.warmup_steps must be less than or equal to config.max_steps")
 
             self.scheduler.decay_steps = self.max_steps - self.scheduler.warmup_steps
