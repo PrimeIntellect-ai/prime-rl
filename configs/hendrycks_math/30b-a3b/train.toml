@@ -4,7 +4,6 @@ recompute_logprobs = false
 
 [model]
 name = "Jackmin108/Qwen3-30B-A3B-Fast"
-attn = "sdpa"
 ac = true
 trust_remote_code = true
 
