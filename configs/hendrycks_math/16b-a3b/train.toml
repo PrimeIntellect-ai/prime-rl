@@ -2,7 +2,6 @@
 recompute_logprobs = false
 
 [monitor.wandb]
-project = "prime-rl-moe-debug" # TODO: Remove before merging
 
 [model]
 name = "Jackmin108/Moonlight-16B-A3B-Instruct-Fast"

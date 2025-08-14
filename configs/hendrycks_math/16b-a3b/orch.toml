@@ -6,7 +6,7 @@ seq_len = 2048
 mask_truncated_completions = false
 
 [model]
-name = "moonshotai/Moonlight-16B-A3B"
+name = "moonshotai/Moonlight-16B-A3B-Instruct"
 trust_remote_code = true
 
 [monitor.wandb]
