@@ -1,0 +1,34 @@
+[model]
+name = "Qwen/Qwen3-0.6B"
+
+[evaluate]
+benchmarks = ["math500"]
+subset_size = 32
+rollouts_per_prompt = 1
+max_tokens = 64
+min_tokens = 0
+
+[operators]
+mutation_rate = 0.7
+crossover_rate = 0.3
+max_prompt_chars = 2000
+enforce_diversity = true
+min_levenshtein_distance = 40
+
+[selection]
+strategy = "top-k"
+k = 6
+keep_elite = 2
+
+population_size = 8
+generations = 3
+seed = 42
+
+[log]
+level = "info"
+
+[monitor]
+# Enable W&B by adding a [monitor.wandb] section externally if desired
+system_log_frequency = 0
+
+

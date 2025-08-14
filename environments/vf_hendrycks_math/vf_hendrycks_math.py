@@ -2,7 +2,7 @@ import verifiers as vf
 from datasets import load_dataset
 
 
-def load_environment(**kwargs) -> vf.Environment:
+def load_environment(system_prompt: str | None = None, **kwargs) -> vf.Environment:
     import json
 
     from verifiers.utils.data_utils import extract_boxed_answer
@@ -31,5 +31,9 @@ def load_environment(**kwargs) -> vf.Environment:
         weights=[1.0],
     )
 
-    vf_env = vf.SingleTurnEnv(dataset=train_dataset, parser=parser, rubric=rubric)
+    # Pass optional system prompt if provided (SingleTurnEnv supports it)
+    if system_prompt is not None:
+        vf_env = vf.SingleTurnEnv(dataset=train_dataset, parser=parser, rubric=rubric, system_prompt=system_prompt)
+    else:
+        vf_env = vf.SingleTurnEnv(dataset=train_dataset, parser=parser, rubric=rubric)
     return vf_env

@@ -2,7 +2,7 @@ import verifiers as vf
 from datasets import load_dataset
 
 
-def load_environment() -> vf.Environment:
+def load_environment(system_prompt: str | None = None) -> vf.Environment:
     train_dataset = load_dataset("PrimeIntellect/Reverse-Text-RL", split="train").map(
         lambda x: {
             "question": x["prompt"],
@@ -38,7 +38,8 @@ def load_environment() -> vf.Environment:
         weights=[1.0],
     )
 
-    system_prompt = "Reverse the text character-by-character. Put your answer in <reversed_text> tags."
+    base_system_prompt = "Reverse the text character-by-character. Put your answer in <reversed_text> tags."
+    system_prompt = system_prompt or base_system_prompt
 
     vf_env = vf.SingleTurnEnv(
         dataset=train_dataset,

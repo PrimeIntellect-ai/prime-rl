@@ -176,6 +176,9 @@ class RLConfig(BaseSettings):
         ),
     ] = False
 
+    # Optional: run GEPA instead of RL (reuses shared top-level runner UX)
+    gepa: Annotated[bool, Field(description="If true, run GEPA optimizer instead of RL trainer.")] = False
+
     @model_validator(mode="after")
     def validate_device(self):
         available_gpus = torch.cuda.device_count()
@@ -405,6 +408,16 @@ def rl(config: RLConfig):
     start_command = sys.argv
     logger.info("Starting RL run")
     logger.debug(f"RL start command: {' '.join(start_command)}")
+
+    # Redirect to GEPA optimizer if requested
+    if getattr(config, "gepa", False):
+        from prime_rl.optimizer.gepa.gepa import gepa as run_gepa
+        from prime_rl.optimizer.gepa.config import GEPAConfig
+        from prime_rl.utils.pydantic_config import parse_argv as parse_gepa_argv
+        logger.info("GEPA flag set; launching GEPA optimizer")
+        import asyncio
+        asyncio.run(run_gepa(parse_gepa_argv(GEPAConfig)))
+        return
 
     # Prepare paths to communicate with the trainer
     log_dir = get_log_dir(config.outputs_dir)

@@ -42,6 +42,7 @@ orchestrator = "prime_rl.orchestrator.orchestrator:main"
 inference = "prime_rl.inference.server:main"
 sft = "prime_rl.trainer.sft.train:main"
 eval = "prime_rl.eval.eval:main"
+gepa = "prime_rl.optimizer.gepa.gepa:main"
 
 [build-system]
 requires = ["hatchling"]
