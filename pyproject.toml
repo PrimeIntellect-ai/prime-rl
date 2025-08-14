@@ -69,7 +69,6 @@ prerelease = "allow"
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu128" }]
 verifiers = { git = "https://github.com/willccbb/verifiers", rev = "74c604f" }
-torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e43694bbfeff5d6ad8ac738c067bb90d41" }
 
 vf-intellect-math = { workspace = true }
 vf-wordle = { git = "https://github.com/willccbb/verifiers.git", subdirectory = "environments/vf_wordle", rev = "main" }
