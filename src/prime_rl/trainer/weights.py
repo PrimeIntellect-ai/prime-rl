@@ -144,8 +144,9 @@ class WeightCheckpointManager:
 
 
 def setup_weight_ckpt_manager(
-    outputs_dir: Path, weight_ckpt_config: WeightCheckpointConfig | None, ckpt_config: CheckpointConfig | None
-) -> WeightCheckpointManager | None:
-    if weight_ckpt_config is None:
-        return None
-    return WeightCheckpointManager(outputs_dir, weight_ckpt_config, ckpt_config, async_level=0)
+    outputs_dir: Path,
+    weight_ckpt_config: WeightCheckpointConfig,
+    ckpt_config: CheckpointConfig | None,
+    async_level: int,
+) -> WeightCheckpointManager:
+    return WeightCheckpointManager(outputs_dir, weight_ckpt_config, ckpt_config, async_level=async_level)

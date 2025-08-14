@@ -68,7 +68,7 @@ def train(config: SFTTrainerConfig):
 
     # Set up the weight checkpoint manager
     logger.info(f"Initializing weight checkpoint manager ({config.weights})")
-    weight_ckpt_manager = setup_weight_ckpt_manager(config.outputs_dir, config.weights, config.ckpt)
+    weight_ckpt_manager = setup_weight_ckpt_manager(config.outputs_dir, config.weights, config.ckpt, async_level=0)
     assert ckpt_manager is None or (ckpt_manager is not None and weight_ckpt_manager is not None), (
         "If ckpt_manager is set, weight_ckpt_manager must also be set"
     )

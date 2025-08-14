@@ -87,8 +87,7 @@ def train(config: RLTrainerConfig):
 
     # Get checkpoint managers
     logger.info(f"Initializing weight checkpoint manager ({config.weights})")
-    weight_ckpt_manager = setup_weight_ckpt_manager(config.outputs_dir, config.weights, config.ckpt)
-    assert weight_ckpt_manager is not None
+    weight_ckpt_manager = setup_weight_ckpt_manager(config.outputs_dir, config.weights, config.ckpt, config.async_level)
 
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
     ckpt_manager = setup_ckpt_manager(config.outputs_dir, config.ckpt)
@@ -111,7 +110,7 @@ def train(config: RLTrainerConfig):
         logprob_model = setup_model(config.model)
 
         # Load async models from weights checkpoint if resuming from checkpoint
-        if config.ckpt and config.ckpt.resume_step and weight_ckpt_manager is not None:
+        if config.ckpt and config.ckpt.resume_step:
             for step in range(max(progress.step - config.async_level, 0), progress.step):
                 logger.info(f"Initializing logprob model ({config.model}) for step {step}")
                 model_name_or_path = (
@@ -145,8 +144,7 @@ def train(config: RLTrainerConfig):
         save_ckpt_time = 0
         if (
             ckpt_manager is not None
-            and config.ckpt
-            and config.ckpt.interval
+            and (config.ckpt and config.ckpt.interval)
             and not (is_first_step or is_last_step)
             and progress.step % config.ckpt.interval == 0
         ):
