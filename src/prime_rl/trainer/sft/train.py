@@ -62,14 +62,15 @@ def train(config: SFTTrainerConfig):
     scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps)
     logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
 
-    # Get checkpoint manager
-    logger.info(f"Initializing weight checkpoint manager ({config.weights})")
-    weight_ckpt_manager = setup_weight_ckpt_manager(config.outputs_dir, config.weights, config.ckpt)
-
+    # Set up the checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
     ckpt_manager = setup_ckpt_manager(config.outputs_dir, config.ckpt)
-    assert ckpt_manager is not None == weight_ckpt_manager is not None, (
-        "Checkpoint and weight checkpoint managers must be either both None or both not None"
+
+    # Set up the weight checkpoint manager
+    logger.info(f"Initializing weight checkpoint manager ({config.weights})")
+    weight_ckpt_manager = setup_weight_ckpt_manager(config.outputs_dir, config.weights, config.ckpt)
+    assert ckpt_manager is None or (ckpt_manager is not None and weight_ckpt_manager is not None), (
+        "If ckpt_manager is set, weight_ckpt_manager must also be set"
     )
 
     # Optionally, resume training from a checkpoint
