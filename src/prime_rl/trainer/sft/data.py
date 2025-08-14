@@ -2,7 +2,7 @@ from collections import defaultdict
 from typing import Iterator, TypedDict
 
 import torch
-from datasets import concatenate_datasets, load_dataset
+from datasets import Dataset, concatenate_datasets, load_dataset
 from jaxtyping import Bool, Int
 from torch import Tensor
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
@@ -61,7 +61,7 @@ class SFTDataset(IterableDataset):
         self._logger = get_logger()
 
         # Load dataset
-        self.dataset = concatenate_datasets([load_dataset(config.name, split=split) for split in config.splits])
+        self.dataset: Dataset = concatenate_datasets([load_dataset(config.name, split=split) for split in config.splits])
 
         # Assert that the dataset has a 'text' column
         if "prompt" not in self.dataset.column_names or "completion" not in self.dataset.column_names:
@@ -83,7 +83,8 @@ class SFTDataset(IterableDataset):
         counter, epoch = -1, -1
         while True:
             epoch += 1
-            for example in self.dataset:
+            shuffled_dataset = self.dataset.shuffle(seed=epoch)
+            for example in shuffled_dataset:
                 # Increment the counter (0, 1, ...)
                 counter += 1
 
