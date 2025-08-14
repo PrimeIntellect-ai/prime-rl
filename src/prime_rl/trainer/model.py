@@ -6,8 +6,6 @@ from jaxtyping import Float, Int, jaxtyped
 from torch import Tensor
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, fully_shard
-from torch.distributed.tensor.parallel import parallelize_module
-from torchtitan.distributed.expert_parallel import ExpertParallel
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
@@ -49,34 +47,17 @@ def setup_fsdp(model: nn.Module, config: ModelConfig):
     # (3) There doesnt seem to be significant MFU gains from EP in my benchmarks
     assert config.ep == 1, "EP is not supported for now"
     hsdp_mesh = world_mesh["fsdp"]
-    ep_mesh = world_mesh["ep"] if config.ep > 1 else None
-    fsdp_mesh = world_mesh["fsdp"]
-
     for layer_id, transformer_block in enumerate(model.model.layers):
         if config.reshard_after_forward:
             layer_reshard_after_forward = layer_id < len(model.model.layers) - 1
         else:
             layer_reshard_after_forward = False
-        if hasattr(transformer_block.mlp, "experts"):
-            if ep_mesh is not None:
-                parallelize_module(
-                    module=transformer_block.mlp.experts,
-                    device_mesh=ep_mesh,
-                    parallelize_plan=ExpertParallel(),
-                )
-            fully_shard(
-                transformer_block,
-                mesh=fsdp_mesh,
-                mp_policy=mp_policy,
-                reshard_after_forward=layer_reshard_after_forward,
-            )
-        else:
-            fully_shard(
-                transformer_block,
-                mesh=hsdp_mesh,
-                mp_policy=mp_policy,
-                reshard_after_forward=layer_reshard_after_forward,
-            )
+        fully_shard(
+            transformer_block,
+            mesh=hsdp_mesh,
+            mp_policy=mp_policy,
+            reshard_after_forward=layer_reshard_after_forward,
+        )
 
     fully_shard(model, mesh=hsdp_mesh, mp_policy=mp_policy, reshard_after_forward=config.reshard_after_forward)
 
