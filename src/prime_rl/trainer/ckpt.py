@@ -146,3 +146,9 @@ class CheckpointManager:
 
         # Update checkpoint steps
         self.ckpt_steps = self.ckpt_steps[-self.config.keep :]
+
+
+def setup_ckpt_manager(outputs_dir: Path, config: CheckpointConfig | None) -> CheckpointManager | None:
+    if config is None:
+        return None
+    return CheckpointManager(outputs_dir, config)

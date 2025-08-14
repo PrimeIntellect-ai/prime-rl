@@ -7,7 +7,7 @@ import torch
 from torch import Tensor
 from torch.distributed.checkpoint.state_dict import _get_fqns as get_fqns
 from torch.distributed.tensor import DTensor
-from transformers import AutoTokenizer
+from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.config import CheckpointConfig
 from prime_rl.trainer.model import Model
@@ -21,7 +21,7 @@ class WeightCheckpointManager:
     """Utility class to save and cleanup HF-compatible weight checkpoints."""
 
     def __init__(
-        self, outputs_dir: Path, config: WeightCheckpointConfig, ckpt_config: CheckpointConfig, async_level: int
+        self, outputs_dir: Path, config: WeightCheckpointConfig, ckpt_config: CheckpointConfig | None, async_level: int
     ):
         self.weights_dir = get_weights_dir(outputs_dir)
         self.config = config
@@ -61,7 +61,7 @@ class WeightCheckpointManager:
 
         return cpu_state
 
-    def _save_to_path(self, cpu_state: dict[str, Tensor], model: Model, tokenizer: AutoTokenizer, step: int):
+    def _save_to_path(self, cpu_state: dict[str, Tensor], model: Model, tokenizer: PreTrainedTokenizer, step: int):
         """Save weight checkpoint for given step."""
         step_path = self._get_step_path(step)
         step_path.mkdir(parents=True, exist_ok=True)
@@ -78,7 +78,8 @@ class WeightCheckpointManager:
 
         # Save model config, generation arguments and tokenizer
         model.config.save_pretrained(step_path)
-        model.generation_config.save_pretrained(step_path)
+        if model.generation_config:
+            model.generation_config.save_pretrained(step_path)
         tokenizer.save_pretrained(step_path)
 
         self._logger.debug(f"Saved weight checkpoint to {step_path} in {time.time() - start_time:.2f} seconds")
@@ -86,7 +87,7 @@ class WeightCheckpointManager:
     def save(
         self,
         model: Model,
-        tokenizer: AutoTokenizer,
+        tokenizer: PreTrainedTokenizer,
         step: int,
         dtype: torch.dtype = torch.bfloat16,
     ):
@@ -115,6 +116,7 @@ class WeightCheckpointManager:
         # To get [n-k, n] with interval n and buffer k over all natural numbers x, we use the condition (n - (x % n)) % n <= k
         keep_for_ckpt = (
             self.ckpt_config
+            and self.ckpt_config.interval
             and (self.ckpt_config.interval - (step % self.ckpt_config.interval)) % self.ckpt_config.interval
             <= self.async_level
         )
@@ -139,3 +141,11 @@ class WeightCheckpointManager:
             thread.start()
         else:
             self._maybe_clean(step)
+
+
+def setup_weight_ckpt_manager(
+    outputs_dir: Path, weight_ckpt_config: WeightCheckpointConfig | None, ckpt_config: CheckpointConfig | None
+) -> WeightCheckpointManager | None:
+    if weight_ckpt_config is None:
+        return None
+    return WeightCheckpointManager(outputs_dir, weight_ckpt_config, ckpt_config, async_level=0)

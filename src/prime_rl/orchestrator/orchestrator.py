@@ -14,7 +14,7 @@ from verifiers.types import GenerateOutputs, ProcessedOutputs
 from transformers import AutoTokenizer
 
 from prime_rl.eval.utils import run_benchmark
-from prime_rl.orchestrator.ckpt import CheckpointManager, RLProgress as Progress
+from prime_rl.orchestrator.ckpt import CheckpointManager, RLProgress as Progress, setup_ckpt_manager
 from prime_rl.orchestrator.client import (
     check_has_model,
     check_health,
@@ -65,10 +65,8 @@ async def orchestrate(config: OrchestratorConfig):
     logger.success("Inference pool ready")
 
     # Get checkpoint manager
-    ckpt_manager = None
-    if config.ckpt:
-        logger.info(f"Initializing checkpoint manager ({config.ckpt})")
-        ckpt_manager = CheckpointManager(config.outputs_dir, config.ckpt)
+    logger.info(f"Initializing checkpoint manager ({config.ckpt})")
+    ckpt_manager = setup_ckpt_manager(config.outputs_dir, config.ckpt)
 
     # Reset weights to base model if starting from scratch
     progress = Progress()
@@ -102,8 +100,8 @@ async def orchestrate(config: OrchestratorConfig):
         is_last_step = config.max_steps is not None and progress.step == config.max_steps - 1
         save_ckpt_time = 0
         if (
-            config.ckpt
-            and config.ckpt.interval
+            ckpt_manager is not None
+            and (config.ckpt and config.ckpt.interval)
             and not (is_first_step or is_last_step)
             and progress.step % config.ckpt.interval == 0
         ):
@@ -302,7 +300,7 @@ async def orchestrate(config: OrchestratorConfig):
         logger.debug(f"Got advantages ({config.advantage_type}): {lt.lovely(advantages)}")
 
         # Compute progress metrics and throughput
-        num_tokens = seq_lens.sum().item()
+        num_tokens = int(seq_lens.sum().item())
         progress.total_tokens += num_tokens
         progress.total_samples += config.batch_size
         progress.total_problems += config.batch_size // config.rollouts_per_prompt
@@ -454,7 +452,7 @@ async def orchestrate(config: OrchestratorConfig):
         monitor.wandb.log_final_distributions()
 
     # Write final checkpoint
-    if config.ckpt:
+    if ckpt_manager is not None:
         logger.info("Writing final checkpoint")
         ckpt_manager.save(progress, step=progress.step)
 

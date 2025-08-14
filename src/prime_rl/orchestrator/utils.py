@@ -160,7 +160,7 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
         table.add_row(*([str(step)] + [str(x) for x in row]))
 
     # Separator
-    table.add_row(*([""] * len(row)))
+    table.add_row(*([""] * len(formatted_df.columns)))
 
     # Add row for formatted, aggregated statistics
     mean_df = df.describe().loc[["mean", "std", "min", "max"], :]

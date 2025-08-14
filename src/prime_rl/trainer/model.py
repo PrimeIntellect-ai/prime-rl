@@ -15,6 +15,7 @@ from transformers import (
     Qwen2ForCausalLM,
     Qwen3ForCausalLM,
 )
+from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.config import ModelConfig
 
@@ -28,7 +29,7 @@ def get_model(config: ModelConfig) -> Model:
     return model
 
 
-def setup_tokenizer(config: ModelConfig) -> AutoTokenizer:
+def setup_tokenizer(config: ModelConfig) -> PreTrainedTokenizer:
     tokenizer = AutoTokenizer.from_pretrained(config.name)
     tokenizer.pad_token_id = tokenizer.eos_token_id
     return tokenizer

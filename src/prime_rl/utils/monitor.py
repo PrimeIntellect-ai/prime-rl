@@ -297,8 +297,7 @@ class WandbMonitor(Monitor):
 
         # Append to distributions
         start_time = time.time()
-        distributions = {"step": step, **distributions}
-        self.distributions.append(distributions)
+        self.distributions.append({"step": step, **distributions})
         self.distributions_table.add_data(*distributions.values())
         wandb.log({"distributions": self.distributions_table}, step=step)
         self.last_log_distributions_step = step
