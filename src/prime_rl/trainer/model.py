@@ -21,6 +21,13 @@ from prime_rl.trainer.config import ModelConfig
 Model: TypeAlias = LlamaForCausalLM | Qwen2ForCausalLM | Qwen3ForCausalLM
 
 
+def get_model(config: ModelConfig) -> Model:
+    config_model = AutoConfig.from_pretrained(config.name, attn_implementation=config.attn)
+    config_model.use_cache = False
+    model = AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=config.name, config=config_model)
+    return model
+
+
 def setup_tokenizer(config: ModelConfig) -> AutoTokenizer:
     tokenizer = AutoTokenizer.from_pretrained(config.name)
     tokenizer.pad_token_id = tokenizer.eos_token_id
@@ -58,9 +65,7 @@ def setup_ac(model: Model, config: ModelConfig) -> None:
 
 
 def setup_model(config: ModelConfig) -> Model:
-    config_model = AutoConfig.from_pretrained(config.name, attn_implementation=config.attn)
-    config_model.use_cache = False
-    model = AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=config.name, config=config_model)
+    model = get_model(config)
     setup_fsdp(model, config)
     setup_ac(model, config)
     if config.compile:
