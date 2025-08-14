@@ -16,10 +16,37 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import get_step_path, get_weight_ckpt_model_path, get_weights_dir
 
 
-def convert_tt_moe_to_hf_(state_dict: dict[str, Tensor]):
-    num_layers = len(list(i for i in state_dict.keys() if "mlp.router.gate" in i))
-    num_experts, moe_dim, dim = state_dict["model.layers.0.mlp.experts.w1"].shape
+def _has_tt_moe_layers(state_dict: dict[str, Tensor]) -> bool:
+    return any("mlp.router.gate" in i for i in state_dict.keys())
+
+
+def _get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
+    return max(int(i.split(".")[2]) for i in state_dict.keys() if "model.layers." in i)
+
+
+def _convert_tt_moe_to_hf_(state_dict: dict[str, Tensor]):
+    num_layers = _get_max_layer_num(state_dict)
     for i in range(num_layers):
+        if not f"model.layers.{i}.mlp.router.gate.weight" in state_dict:
+            continue  # Not a TT-MoE layer
+
+        # TODO: Shared experts
+        if f"model.layers.{i}.mlp.shared_experts.w1" in state_dict:
+            state_dict[f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"] = state_dict[
+                f"model.layers.{i}.mlp.shared_experts.w1"
+            ]
+            state_dict[f"model.layers.{i}.mlp.shared_experts.down_proj.weight"] = state_dict[
+                f"model.layers.{i}.mlp.shared_experts.w2"
+            ]
+            state_dict[f"model.layers.{i}.mlp.shared_experts.up_proj.weight"] = state_dict[
+                f"model.layers.{i}.mlp.shared_experts.w3"
+            ]
+            del state_dict[f"model.layers.{i}.mlp.shared_experts.w1"]
+            del state_dict[f"model.layers.{i}.mlp.shared_experts.w2"]
+            del state_dict[f"model.layers.{i}.mlp.shared_experts.w3"]
+            continue
+
+        num_experts, moe_dim, dim = state_dict[f"model.layers.{i}.mlp.experts.w1"].shape
         state_dict[f"model.layers.{i}.mlp.gate.weight"] = state_dict[f"model.layers.{i}.mlp.router.gate.weight"]
         del state_dict[f"model.layers.{i}.mlp.router.gate.weight"]
 
@@ -114,8 +141,8 @@ class WeightCheckpointManager:
     ):
         """Save a HF-compatible weight-only checkpoint for a given step."""
         cpu_state = self._gather_weights(model, dtype)
-        if "model.layers.0.mlp.router.gate.weight" in cpu_state:
-            convert_tt_moe_to_hf_(cpu_state)
+        if _has_tt_moe_layers(cpu_state):
+            _convert_tt_moe_to_hf_(cpu_state)
 
         if self._is_master:
             if self.config.save_async:
