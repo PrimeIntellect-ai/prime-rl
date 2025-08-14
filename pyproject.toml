@@ -28,10 +28,11 @@ dependencies = [
     "lovely-tensors>=0.1.18",
     "rich>=14.0.0",
     "tomli-w",
-    "verifiers",
+    "verifiers>=0.1.2.post0",
     "textarena>=0.6.16",
     "nltk>=3.9.1",
     "math-verify>=0.8.0",
+    "prime>=0.3.14",
 ]
 
 [project.scripts]
@@ -67,7 +68,7 @@ prerelease = "allow"
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu128" }]
-verifiers = { git = "https://github.com/willccbb/verifiers", rev = "74c604f" }
+prime = { git = "https://github.com/rasdani/prime-cli.git", rev = "5ed6ef4806195fa2307849b1005359bda659f341" }
 
 vf-intellect-math = { workspace = true }
 vf-wordle = { git = "https://github.com/willccbb/verifiers.git", subdirectory = "environments/vf_wordle", rev = "main" }
