@@ -32,13 +32,13 @@ class Batch(TypedDict):
 class FakeDataset(IterableDataset):
     """A dataset of fake tokens"""
 
-    def __init__(self, tokenizer: AutoTokenizer, seq_len: int):
-        self.seq_len = seq_len
+    def __init__(self, tokenizer: AutoTokenizer, config: DataConfig):
+        self.config = config
         self.vocab_size = tokenizer.vocab_size
 
     def __iter__(self) -> Iterator[Sample]:
         while True:
-            rand_seq_len = torch.randint(1, self.seq_len + 1, (1,)).item()
+            rand_seq_len = torch.randint(1, self.config.seq_len + 1, (1,)).item()
             # simulate different sequence lengths
             input_ids = torch.randint(0, self.vocab_size, (rand_seq_len + 1,)).long().tolist()
             position_ids = torch.arange(len(input_ids)).long()
@@ -56,12 +56,12 @@ class FakeDataset(IterableDataset):
 class SFTDataset(IterableDataset):
     """A dataset wrapping a HF SFT dataset with prompt + completion format."""
 
-    def __init__(self, tokenizer: AutoTokenizer, name: str, splits: list[str]):
+    def __init__(self, tokenizer: AutoTokenizer, config: DataConfig):
         self.tokenizer = tokenizer
         self._logger = get_logger()
 
         # Load dataset
-        self.dataset = concatenate_datasets([load_dataset(name, split=split) for split in splits])
+        self.dataset = concatenate_datasets([load_dataset(config.name, split=split) for split in config.splits])
 
         # Assert that the dataset has a 'text' column
         if "prompt" not in self.dataset.column_names or "completion" not in self.dataset.column_names:
@@ -197,8 +197,8 @@ def collate(samples: list[Sample]) -> Batch:
 
 def setup_dataset(tokenizer: AutoTokenizer, config: DataConfig) -> IterableDataset:
     if config.fake:
-        return FakeDataset(tokenizer, config.seq_len)
-    return SFTDataset(tokenizer, name=config.name, split=config.split)
+        return FakeDataset(tokenizer, config)
+    return SFTDataset(tokenizer, config)
 
 
 def setup_dataloader(dataset: IterableDataset, tokenizer: AutoTokenizer, config: DataConfig) -> DataLoader:
