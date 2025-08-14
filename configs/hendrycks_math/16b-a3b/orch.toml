@@ -1,4 +1,4 @@
-## to run on 8H100
+## to run on 8H200
 batch_size = 512
 micro_batch_size = 8
 rollouts_per_prompt = 16
