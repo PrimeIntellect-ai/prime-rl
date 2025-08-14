@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from verifiers import Messages, Parser
 
 
-def load_environment() -> vf.Environment:
+def load_environment(system_prompt: str | None = None) -> vf.Environment:
     """
     Loads a custom environment.
     """
@@ -169,10 +169,6 @@ def load_environment() -> vf.Environment:
         weights=[1.0],
     )
 
-    vf_env = vf.SingleTurnEnv(
-        dataset=dataset,
-        parser=parser,
-        rubric=rubric,
-    )
+    vf_env = vf.SingleTurnEnv(dataset=dataset, parser=parser, rubric=rubric, system_prompt=system_prompt) if system_prompt is not None else vf.SingleTurnEnv(dataset=dataset, parser=parser, rubric=rubric)
 
     return vf_env

@@ -8,6 +8,7 @@ def load_environment(
     solve_rate_field: str | None = None,
     min_solve_rate: float | None = None,
     max_solve_rate: float | None = None,
+    system_prompt: str | None = None,
     **kwargs,
 ) -> vf.Environment:
     train_dataset = load_dataset("agentica-org/DeepScaleR-Preview-Dataset", split="train").map(
@@ -30,5 +31,9 @@ def load_environment(
         weights=[1.0],
     )
 
-    vf_env = vf.SingleTurnEnv(dataset=train_dataset, rubric=rubric)
+    vf_env = (
+        vf.SingleTurnEnv(dataset=train_dataset, rubric=rubric, system_prompt=system_prompt)
+        if system_prompt is not None
+        else vf.SingleTurnEnv(dataset=train_dataset, rubric=rubric)
+    )
     return vf_env

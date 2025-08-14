@@ -15,7 +15,7 @@ from prime_rl.optimizer.gepa.evaluate import (
     score_prompt_instances_dry_run,
 )
 from prime_rl.optimizer.gepa.operators import crossover, mutate
-from prime_rl.optimizer.gepa.reflection import reflect
+from prime_rl.optimizer.gepa.reflection import reflect, reflect_llm
 from prime_rl.optimizer.gepa.selection import select_indices
 from prime_rl.orchestrator.config import ClientConfig, ModelConfig as OrchestratorModelConfig
 from prime_rl.utils.monitor import setup_monitor
@@ -199,8 +199,20 @@ async def gepa(cfg: GEPAConfig) -> None:
             else:
                 a_idx = rng.choice(survivors)
                 child = population[a_idx]
-            # Reflect then mutate
-            child = reflect(child, failures, cfg.operators, rng)
+            # Reflect then mutate (use LLM reflection if not dry_run)
+            if cfg.dry_run:
+                child = reflect(child, failures, cfg.operators, rng)
+            else:
+                try:
+                    child = await reflect_llm(
+                        cfg.client,
+                        OrchestratorModelConfig(name=cfg.model.name),
+                        child,
+                        list(failures),
+                        cfg.operators.max_prompt_chars,
+                    )
+                except Exception:
+                    child = reflect(child, failures, cfg.operators, rng)
             if rng.random() < cfg.operators.mutation_rate:
                 child = mutate(child, cfg.operators, rng)
             # Acceptance: compare on a minibatch from feedback pool
