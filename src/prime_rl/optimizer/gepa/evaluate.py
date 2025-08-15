@@ -10,8 +10,10 @@ from prime_rl.eval.registry import get_benchmark_dataset
 from prime_rl.orchestrator.client import generate_completion, setup_client
 from prime_rl.orchestrator.config import (
     ClientConfig,
-    ModelConfig as OrchestratorModelConfig,
     SamplingConfig,
+)
+from prime_rl.orchestrator.config import (
+    ModelConfig as OrchestratorModelConfig,
 )
 from prime_rl.orchestrator.utils import (
     compute_rewards,

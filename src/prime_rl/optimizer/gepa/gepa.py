@@ -3,9 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import random
-from pathlib import Path
-from typing import Any
 
+# (std imports pruned)
 from prime_rl.optimizer.gepa.config import GEPAConfig
 from prime_rl.optimizer.gepa.evaluate import (
     PromptScore,
@@ -17,11 +16,12 @@ from prime_rl.optimizer.gepa.evaluate import (
 from prime_rl.optimizer.gepa.operators import crossover, mutate
 from prime_rl.optimizer.gepa.reflection import reflect, reflect_llm
 from prime_rl.orchestrator.config import ModelConfig as OrchestratorModelConfig
+from prime_rl.utils.config import LogConfig
+from prime_rl.utils.logger import format_message, format_time, get_logger, set_logger, setup_handlers
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
-from prime_rl.utils.logger import format_message, format_time, get_logger, set_logger, setup_handlers
-from prime_rl.utils.config import LogConfig
-from prime_rl.utils.utils import clean_exit
+
+# (no clean_exit usage)
 
 
 async def _evaluate_population(

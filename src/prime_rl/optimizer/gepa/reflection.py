@@ -6,8 +6,8 @@ from typing import Sequence
 from openai import AsyncOpenAI
 
 from prime_rl.optimizer.gepa.config import OperatorsConfig
-from prime_rl.orchestrator.config import ClientConfig, ModelConfig as OrchestratorModelConfig
-
+from prime_rl.orchestrator.config import ClientConfig
+from prime_rl.orchestrator.config import ModelConfig as OrchestratorModelConfig
 
 REFLECT_TEMPLATE = (
     "You are optimizing a system instruction for a model on a benchmark.\n"
