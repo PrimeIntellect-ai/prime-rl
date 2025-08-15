@@ -18,8 +18,9 @@ from unittest.mock import mock_open, patch
 
 import numpy as np
 
-from prime_rl.orchestrator.genesys.deepcoder_utils.sandbox_utils import start_sandbox, start_sandbox_and_run_command, pipe_file_content_into_sandbox
+from prime_cli.api.sandbox import SandboxNotRunningError, CommandTimeoutError
 
+from prime_rl.orchestrator.genesys.deepcoder_utils.sandbox_utils import start_sandbox, start_sandbox_and_run_command, pipe_file_content_into_sandbox
 from prime_rl.orchestrator.genesys.deepcoder_utils.pyext2 import RuntimeModule
 
 from .utils import BASE_IMPORTS
@@ -124,6 +125,7 @@ def run_test(in_outs, test=None, debug=False, timeout=TIMEOUT):
             if len(detail_results) == 1:
                 detail_results = detail_results * len(inputs_list)
             detail_results = dict(zip([i for i in range(len(inputs_list))], detail_results))
+        print(detail_results)
         for test_id, test_result in detail_results.items():
             if test_result[1] == "passed":
                 results.append(True)
@@ -353,15 +355,33 @@ def execute_std_code(method, synthesized_code, inputs_list, outputs_list, timeou
     if debug:
         exec_results['debug'] = {}
 
-    deps_command = "pip install numpy pandas"
-    sandbox_client, sandbox = start_sandbox()
-    sandbox_client.wait_for_creation(sandbox.id)
-    write_result = pipe_file_content_into_sandbox(sandbox_client=sandbox_client, sandbox_id=sandbox.id, file_path=temp_program_path, content=synthesized_code)
-    if write_result.exit_code != 0:
-        raise Exception(f"Failed to write synthesized code to sandbox: stdout={write_result.stdout}, stderr={write_result.stderr}")
-    deps_result = sandbox_client.execute_command(sandbox_id=sandbox.id, command=deps_command)
-    if deps_result.exit_code != 0:
-        raise Exception(f"Failed to install dependencies: stdout={deps_result.stdout}, stderr={deps_result.stderr}")
+    try:
+        # setup sandbox for all test inputs
+        # raise SandboxNotRunningError("TEST")
+        deps_command = "pip install numpy pandas"
+        sandbox_client, sandbox = start_sandbox()
+        sandbox_client.wait_for_creation(sandbox.id, max_attempts=120)
+        write_result = pipe_file_content_into_sandbox(sandbox_client=sandbox_client, sandbox_id=sandbox.id, file_path=temp_program_path, content=synthesized_code)
+        if write_result.exit_code != 0:
+            raise Exception(f"Failed to write synthesized code to sandbox: stdout={write_result.stdout}, stderr={write_result.stderr}")
+        deps_result = sandbox_client.execute_command(sandbox_id=sandbox.id, command=deps_command)
+        if deps_result.exit_code != 0:
+            raise Exception(f"Failed to install dependencies: stdout={deps_result.stdout}, stderr={deps_result.stderr}")
+    except SandboxNotRunningError as e:
+        print(f"Sandbox not running error: {repr(e)}")
+        # Return timeout-like results for all test cases to enable early exit
+        exec_results = {}
+        for i in range(len(inputs_list)):
+            exec_results[i] = (False, EXECUTION_RESULTS[-1])  # "timeout"
+        return exec_results
+    except Exception as e:
+        print(f"Sandbox creation error: {repr(e)}")
+        # Return timeout-like results for all test cases to enable early exit
+        exec_results = {}
+        for i in range(len(inputs_list)):
+            exec_results[i] = (False, EXECUTION_RESULTS[-1])  # "timeout"
+        return exec_results
+
 
     for i, inputs in enumerate(inputs_list):
         remove_tmp_files()
@@ -379,15 +399,7 @@ def execute_std_code(method, synthesized_code, inputs_list, outputs_list, timeou
             temp_file_name = temp_input.name
             stdout, stderr = "", ""
             try:
-                # result = subprocess.run(['bash', '-c', 'ulimit -v 10485760; python3 ' + temp_program_path], 
-                #                         stdin=temp_input,
-                #                         stdout=subprocess.PIPE,
-                #                         stderr=subprocess.PIPE,
-                #                         preexec_fn=os.setsid,
-                #                         universal_newlines=True,
-                #                         timeout=timeout,
-                #                         text=True)
-                # command = f"bash -c 'ulimit -v 10485760; epython3 {temp_program_path}'"
+                # run a test input in the sandbox
                 command = f"bash -c 'ulimit -v 10485760; echo \"{inputs}\" | python {temp_program_path}'"
                 result = sandbox_client.execute_command(sandbox_id=sandbox.id, command=command, timeout=timeout)
                 # exit()
@@ -398,7 +410,9 @@ def execute_std_code(method, synthesized_code, inputs_list, outputs_list, timeou
                 return_code = result.exit_code
                 # result = subprocess.run(['python3', temp_program_path], input=inputs, text=True, capture_output=True, timeout=timeout)
                 exec_code = 999
-            except subprocess.TimeoutExpired as e:
+                if i == 2:
+                    raise CommandTimeoutError("TEST")
+            except CommandTimeoutError as e:
                 print(e, temp_file_name)
                 stderr = "TIMEOUT"
                 return_code = -9
