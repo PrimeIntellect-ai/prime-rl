@@ -1,0 +1,12 @@
+## to run on 8H200
+recompute_logprobs = false
+max_steps = 20
+
+[model]
+name = "Jackmin108/Moonlight-16B-A3B-Instruct-Fast"
+ac = true
+trust_remote_code = true
+
+
+[optim]
+lr = 3e-6

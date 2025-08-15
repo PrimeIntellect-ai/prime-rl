@@ -1,0 +1,15 @@
+## to run on 8H200
+batch_size = 128
+micro_batch_size = 16
+rollouts_per_prompt = 16
+seq_len = 128
+max_steps = 20
+mask_truncated_completions = false
+
+[model]
+name = "moonshotai/Moonlight-16B-A3B-Instruct"
+trust_remote_code = true
+
+
+[environment]
+id = "vf-reverse-text"
