@@ -30,17 +30,16 @@ def _convert_tt_moe_to_hf_(state_dict: dict[str, Tensor]):
         if not f"model.layers.{i}.mlp.router.gate.weight" in state_dict:
             continue  # Not a TT-MoE layer
 
-        # TODO: Shared experts
         if f"model.layers.{i}.mlp.shared_experts.w1" in state_dict:
             state_dict[f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"] = state_dict[
                 f"model.layers.{i}.mlp.shared_experts.w1"
-            ]
+            ][0]
             state_dict[f"model.layers.{i}.mlp.shared_experts.down_proj.weight"] = state_dict[
                 f"model.layers.{i}.mlp.shared_experts.w2"
-            ]
+            ][0]
             state_dict[f"model.layers.{i}.mlp.shared_experts.up_proj.weight"] = state_dict[
                 f"model.layers.{i}.mlp.shared_experts.w3"
-            ]
+            ][0]
             del state_dict[f"model.layers.{i}.mlp.shared_experts.w1"]
             del state_dict[f"model.layers.{i}.mlp.shared_experts.w2"]
             del state_dict[f"model.layers.{i}.mlp.shared_experts.w3"]
