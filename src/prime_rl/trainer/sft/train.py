@@ -6,8 +6,8 @@ import time
 import torch
 from torch.nn.functional import cross_entropy, softmax
 from loguru import logger
-from prime_rl.trainer.ckpt import CheckpointManager, Progress
-from prime_rl.trainer.weights import WeightCheckpointManager
+from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
+from prime_rl.trainer.weights import setup_weight_ckpt_manager
 from prime_rl.trainer.sft.config import SFTTrainerConfig
 from prime_rl.trainer.logger import setup_logger
 from prime_rl.trainer.optim import setup_optimizer
@@ -62,15 +62,20 @@ def train(config: SFTTrainerConfig):
     scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps)
     logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
 
-    # Get checkpoint manager
-    if config.ckpt:
-        logger.info(f"Initializing checkpoint manager ({config.ckpt})")
-        weight_ckpt_manager = WeightCheckpointManager(config.outputs_dir, config.weights, config.ckpt, async_level=0)
-        ckpt_manager = CheckpointManager(config.outputs_dir, config.ckpt)
+    # Set up the checkpoint manager
+    logger.info(f"Initializing checkpoint manager ({config.ckpt})")
+    ckpt_manager = setup_ckpt_manager(config.outputs_dir, config.ckpt)
+
+    # Set up the weight checkpoint manager
+    logger.info(f"Initializing weight checkpoint manager ({config.weights})")
+    weight_ckpt_manager = setup_weight_ckpt_manager(config.outputs_dir, config.weights, config.ckpt, async_level=0)
+    assert ckpt_manager is None or (ckpt_manager is not None and weight_ckpt_manager is not None), (
+        "If ckpt_manager is set, weight_ckpt_manager must also be set"
+    )
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
-    if config.ckpt and config.ckpt.resume_step:
+    if ckpt_manager is not None and config.ckpt and config.ckpt.resume_step:
         logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
         ckpt_manager.load(model, [optimizer], scheduler, progress, step=config.ckpt.resume_step)
     logger.info(
@@ -78,7 +83,7 @@ def train(config: SFTTrainerConfig):
     )
 
     # Set up the dataset and dataloader (optionaly, use a fake dataset for debugging)
-    logger.info(f"Initializing dataset (name={config.data.name}, split={config.data.split})")
+    logger.info(f"Initializing dataset (name={config.data.name}, splits={config.data.splits})")
     dataset = setup_dataset(tokenizer, config.data)
 
     # Set up the dataloader over micro batches
@@ -91,10 +96,12 @@ def train(config: SFTTrainerConfig):
     is_first_step = True
     while True:
         # Save the full checkpoint (if we are at an interval step and not at the first or last step)
-        is_last_step = progress.step == config.max_steps - 1
+        is_last_step = config.max_steps is not None and progress.step == config.max_steps - 1
         save_ckpt_time = 0
         if (
-            config.ckpt
+            ckpt_manager is not None
+            and weight_ckpt_manager is not None
+            and config.ckpt
             and config.ckpt.interval
             and not (is_first_step or is_last_step)
             and progress.step % config.ckpt.interval == 0
@@ -109,7 +116,7 @@ def train(config: SFTTrainerConfig):
             ckpt_manager.maybe_clean()
 
         # Break if we have reached the maximum number of steps
-        if progress.step >= config.max_steps:
+        if config.max_steps is not None and progress.step >= config.max_steps:
             break
 
         if config.profile_path and world.rank == 0:
@@ -181,7 +188,7 @@ def train(config: SFTTrainerConfig):
             if not profile_path.suffix == ".pickle":
                 profile_path = profile_path.with_suffix(".pickle")
             torch.cuda.memory._dump_snapshot(profile_path.as_posix())
-            torch.cuda.memory._record_memory_history(enabled=False)
+            torch.cuda.memory._record_memory_history(enabled=None)
 
         # Synchronize the tensor metrics across all steps and ranks
         tensor_stats = tensors.compute_stats()
@@ -257,7 +264,7 @@ def train(config: SFTTrainerConfig):
         monitor.wandb.log_final_distributions()
 
     # Write final checkpoint
-    if config.ckpt:
+    if config.ckpt and ckpt_manager is not None and weight_ckpt_manager is not None:
         logger.info("Writing final checkpoint")
         ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step)
         weight_ckpt_manager.save(model, tokenizer, step=progress.step)

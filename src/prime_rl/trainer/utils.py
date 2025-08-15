@@ -99,7 +99,7 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
         table.add_row(*([str(step)] + [str(x) for x in row]))
 
     # Separator
-    table.add_row(*([""] * len(row)))
+    table.add_row(*([""] * len(formatted_df.columns)))
 
     # Add row for formatted, aggregated statistics
     mean_df = df.describe().loc[["mean", "std", "min", "max"], :]
@@ -127,18 +127,21 @@ def flexible_all_gather(tensor: Tensor) -> Tensor:
         return tensor
 
     # Find the tensor with the most elements
-    local_numel = torch.tensor(tensor.numel(), device=tensor.device)
-    all_numels = [torch.tensor(0, device=tensor.device) for _ in range(dist.get_world_size())]
-    dist.all_gather(all_numels, local_numel)
-    all_numels = [numel.item() for numel in all_numels]
-    max_numel = max(all_numels)
+    local_numel = tensor.numel()
+    local_numel_tensor = torch.tensor(local_numel, device=tensor.device)
+    all_numel_tensors = [torch.tensor(0, device=tensor.device) for _ in range(dist.get_world_size())]
+    dist.all_gather(all_numel_tensors, local_numel_tensor)
+    all_numels = [numel.item() for numel in all_numel_tensors]
+    max_numel = int(max(all_numels))
 
     # Pad the tensor with zeros if it has less elements than the maximum
     if local_numel < max_numel:
         tensor = torch.cat([tensor, torch.zeros(max_numel - local_numel, dtype=tensor.dtype, device=tensor.device)])
 
     # All-gather the tensors
-    all_tensors = [torch.zeros(max_numel, dtype=tensor.dtype, device=tensor.device) for _ in range(dist.get_world_size())]
+    all_tensors = [
+        torch.zeros(max_numel, dtype=tensor.dtype, device=tensor.device) for _ in range(dist.get_world_size())
+    ]
     dist.all_gather(all_tensors, tensor)
     all_tensors_unpadded = torch.cat([tensor[:numel] for tensor, numel in zip(all_tensors, all_numels)])
 

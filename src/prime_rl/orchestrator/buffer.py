@@ -84,9 +84,8 @@ class Buffer(ABC):
     class defines a strategy for sampling from the dataset and the rollouts.
     """
 
-    def __init__(self, dataset: Dataset, buffer_config: DataBufferConfigType):
+    def __init__(self, dataset: Dataset):
         self.dataset = dataset
-        self.config = buffer_config
         self.logger = get_logger()
 
         # Initialize prompt and rollout buffers
@@ -149,7 +148,8 @@ class SimpleBuffer(Buffer):
     """
 
     def __init__(self, dataset: Dataset, buffer_config: SimpleBufferConfig):
-        super().__init__(dataset, buffer_config)
+        super().__init__(dataset)
+        self.config = buffer_config
 
     def sample_problems(self, n: int) -> tuple[list[int], list[dict]]:
         # Get indices to sample
@@ -203,9 +203,10 @@ class DifficultyPoolBuffer(Buffer):
     """
 
     def __init__(self, dataset: Dataset, buffer_config: DifficultyPoolBufferConfig):
-        super().__init__(dataset, buffer_config)
+        super().__init__(dataset)
 
         # Add difficulty information to metadata
+        self.config = buffer_config
         if self.config.difficulty_field is not None:
             assert self.config.difficulty_field in self.dataset.column_names
             difficulties = self.dataset[self.config.difficulty_field]
@@ -336,7 +337,8 @@ class OnlineDifficultyBuffer(Buffer):
     """
 
     def __init__(self, dataset: Dataset, buffer_config: OnlineDifficultyBufferConfig):
-        super().__init__(dataset, buffer_config)
+        super().__init__(dataset)
+        self.config = buffer_config
 
     def sample_problems(self, n: int) -> tuple[list[int], list[dict]]:
         # Multiply by oversampling factor

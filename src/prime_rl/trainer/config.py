@@ -67,6 +67,8 @@ class CosineSchedulerConfig(BaseModel):
 
     warmup_steps: Annotated[int, Field(ge=0, description="Number of warmup steps for the learning rate scheduler.")] = 0
 
+    min_lr: Annotated[float, Field(ge=0, description="Minimum learning rate to converge to.")] = 0.0
+
     decay_steps: Annotated[
         int | None,
         Field(

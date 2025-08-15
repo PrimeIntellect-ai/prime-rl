@@ -16,6 +16,7 @@ class RLProgress:
     total_samples: int = 0
     total_problems: int = 0
 
+
 @dataclass
 class SFTProgress(RLProgress):
     epoch: int = 0
@@ -105,3 +106,9 @@ class CheckpointManager:
 
         # Update checkpoint steps
         self.ckpt_steps = self.ckpt_steps[-self.config.keep :]
+
+
+def setup_ckpt_manager(outputs_dir: Path, config: CheckpointConfig | None) -> CheckpointManager | None:
+    if config is None:
+        return None
+    return CheckpointManager(outputs_dir, config)

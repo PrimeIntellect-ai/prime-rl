@@ -22,7 +22,7 @@ class DataConfig(BaseConfig):
     name: Annotated[str, Field(description="Name or path of the HF dataset to use.")] = (
         "PrimeIntellect/Reverse-Text-SFT"
     )
-    split: Annotated[str, Field(description="Split to use from the HF dataset.")] = "train"
+    splits: Annotated[list[str], Field(description="Splits to use from the HF dataset.")] = ["train"]
     collate_mode: Annotated[Literal["padding", "packing"], Field(description="Collate mode to use.")] = "packing"
     micro_batch_size: Annotated[int, Field(ge=1)] = 8
     batch_size: Annotated[int, Field(ge=1)] = 128
@@ -108,7 +108,7 @@ class SFTTrainerConfig(BaseSettings):
 
         # If decay_steps is not specified, use remaining steps after warmup
         if self.scheduler.decay_steps is None:
-            if not (self.warmup_steps <= self.max_steps):
+            if not (self.scheduler.warmup_steps <= self.max_steps):
                 raise ValueError("config.scheduler.warmup_steps must be less than or equal to config.max_steps")
 
             self.scheduler.decay_steps = self.max_steps - self.scheduler.warmup_steps

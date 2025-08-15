@@ -21,6 +21,8 @@ def setup_scheduler(optimizer: Optimizer, config: SchedulerConfigType, max_steps
     if config.type == "constant":
         return ConstantLRScheduler(optimizer)
 
+    assert max_steps is not None, "max_steps must be specified when using a scheduler other than `constant`"
+
     warmup_steps = config.warmup_steps
     decay_steps = config.decay_steps
 
@@ -52,7 +54,9 @@ def setup_scheduler(optimizer: Optimizer, config: SchedulerConfigType, max_steps
     if config.type == "linear":
         decay_scheduler = LinearLR(optimizer, start_factor=1.0, end_factor=0.0, total_iters=decay_steps)
     elif config.type == "cosine":
-        decay_scheduler = CosineAnnealingLR(optimizer, T_max=decay_steps, eta_min=0.0)
+        decay_scheduler = CosineAnnealingLR(optimizer, T_max=decay_steps, eta_min=config.min_lr)
+    else:
+        raise ValueError(f"Invalid scheduler type: {config.type}")
 
     schedulers.append(decay_scheduler)
 
