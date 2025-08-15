@@ -20,15 +20,15 @@ class TestCheckCorrectness:
         """Sample code string."""
         return "def solve():\n    return sum(map(int, input().split()))"
     
-    # def test_all_tests_pass(self, sample_tests, sample_code):
-    #     """Test case where all tests pass - should return True."""
-    #     mock_test_fn = MagicMock()
-    #     # Simulate all tests passing: results = [True, True, True]
-    #     mock_test_fn.return_value = [True, True, True]
+    def test_all_tests_pass(self, sample_tests, sample_code):
+        """Test case where all tests pass - should return True."""
+        mock_test_fn = MagicMock()
+        # Simulate all tests passing: results = [True, True, True]
+        mock_test_fn.return_value = [True, True, True]
         
-    #     result = check_correctness(sample_tests, sample_code, mock_test_fn)
-    #     assert result is True
-    #     mock_test_fn.assert_called_once_with(sample_tests, test=sample_code, debug=False, timeout=12)
+        result = check_correctness(sample_tests, sample_code, mock_test_fn)
+        assert result is True
+        mock_test_fn.assert_called_once_with(sample_tests, test=sample_code, debug=False, timeout=12)
     
     def test_wrong_output(self, sample_tests, sample_code):
         """Test case where some tests fail with wrong output - should return False."""
@@ -40,11 +40,7 @@ class TestCheckCorrectness:
         assert result is False
     
     def test_timeout_case(self, sample_tests, sample_code):
-        """Test case where tests timeout - should return False.
-        
-        CURRENT BUG: This currently returns True because all([-1, -1, -1]) is True
-        EXPECTED: Should return False because timeouts are failures
-        """
+        """Test case where tests timeout - should return False."""
         mock_test_fn = MagicMock()
         # Simulate timeout: results = [-1, -1, -1]
         mock_test_fn.return_value = [-1, -1, -1]
@@ -53,11 +49,7 @@ class TestCheckCorrectness:
         assert result is False
     
     def test_runtime_error_case(self, sample_tests, sample_code):
-        """Test case where tests have runtime errors - should return False.
-        
-        CURRENT BUG: This currently returns True because all([-3, -3, -3]) is True  
-        EXPECTED: Should return False because runtime errors are failures
-        """
+        """Test case where tests have runtime errors - should return False."""
         mock_test_fn = MagicMock()
         # Simulate runtime error: results = [-3, -3, -3]
         mock_test_fn.return_value = [-3, -3, -3]
@@ -66,11 +58,7 @@ class TestCheckCorrectness:
         assert result is False
     
     def test_compilation_error_case(self, sample_tests, sample_code):
-        """Test case where code fails to compile - should return False.
-        
-        CURRENT BUG: This currently returns True because all([-2]) is True
-        EXPECTED: Should return False because compilation errors are failures
-        """
+        """Test case where code fails to compile - should return False."""
         mock_test_fn = MagicMock()
         # Simulate compilation error: results = [-2]
         mock_test_fn.return_value = [-2]
@@ -105,10 +93,7 @@ class TestCheckCorrectness:
         assert result is True
     
     def test_single_test_timeout(self):
-        """Test case with single test that times out - should return False.
-        
-        CURRENT BUG: Returns True because all([-1]) is True
-        """
+        """Test case with single test that times out - should return False."""
         mock_test_fn = MagicMock()
         mock_test_fn.return_value = [-1]
         
