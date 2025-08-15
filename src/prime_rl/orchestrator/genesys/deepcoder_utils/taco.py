@@ -352,6 +352,17 @@ def execute_std_code(method, synthesized_code, inputs_list, outputs_list, timeou
     exec_results = {}
     if debug:
         exec_results['debug'] = {}
+
+    deps_command = "pip install numpy pandas"
+    sandbox_client, sandbox = start_sandbox()
+    sandbox_client.wait_for_creation(sandbox.id)
+    write_result = pipe_file_content_into_sandbox(sandbox_client=sandbox_client, sandbox_id=sandbox.id, file_path=temp_program_path, content=synthesized_code)
+    if write_result.exit_code != 0:
+        raise Exception(f"Failed to write synthesized code to sandbox: stdout={write_result.stdout}, stderr={write_result.stderr}")
+    deps_result = sandbox_client.execute_command(sandbox_id=sandbox.id, command=deps_command)
+    if deps_result.exit_code != 0:
+        raise Exception(f"Failed to install dependencies: stdout={deps_result.stdout}, stderr={deps_result.stderr}")
+
     for i, inputs in enumerate(inputs_list):
         remove_tmp_files()
         outputs = outputs_list[i]
@@ -377,15 +388,8 @@ def execute_std_code(method, synthesized_code, inputs_list, outputs_list, timeou
                 #                         timeout=timeout,
                 #                         text=True)
                 # command = f"bash -c 'ulimit -v 10485760; epython3 {temp_program_path}'"
-                deps_command = "pip install numpy pandas"
                 command = f"bash -c 'ulimit -v 10485760; echo \"{inputs}\" | python {temp_program_path}'"
-                sandbox_client, sandbox = start_sandbox()
-                write_result = pipe_file_content_into_sandbox(sandbox_client=sandbox_client, sandbox_id=sandbox.id, file_path=temp_program_path, content=synthesized_code)
-                if write_result.exit_code != 0:
-                    raise Exception(f"Failed to write to sandbox: stdout={write_result.stdout}, stderr={write_result.stderr}")
-                deps_result = sandbox_client.execute_command(sandbox_id=sandbox.id, command=deps_command)
                 result = sandbox_client.execute_command(sandbox_id=sandbox.id, command=command, timeout=timeout)
-                sandbox_client.delete(sandbox.id)
                 # exit()
                 
                 
@@ -404,6 +408,7 @@ def execute_std_code(method, synthesized_code, inputs_list, outputs_list, timeou
                 return_code = -99
                 stderr = f"{e}"
                 exec_code = -2
+
 
         stdout = clean_stdout(stdout)
 
@@ -451,6 +456,7 @@ def execute_std_code(method, synthesized_code, inputs_list, outputs_list, timeou
                 }
         if early_stop and exec_code<=0:
             break
+    sandbox_client.delete(sandbox.id)
     return exec_results
 
 def print_debug_info(inputs, outputs, exec_outputs):
