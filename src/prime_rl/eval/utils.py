@@ -58,14 +58,14 @@ async def run_eval(
 
     run_eval_start_time = time.time()
     sampling_args = {
-        "temperature": sampling_config.temperature,
-        "max_tokens": sampling_config.max_tokens,
-        "top_p": sampling_config.top_p,
+        # "temperature": sampling_config.temperature,
+        # "max_tokens": sampling_config.max_tokens,
+        # "top_p": sampling_config.top_p,
         "logprobs": True,
         "extra_body": {
-            "top_k": sampling_config.top_k,
-            "min_p": sampling_config.min_p,
-            "min_tokens": sampling_config.min_tokens,
+            # "top_k": sampling_config.top_k,
+            # "min_p": sampling_config.min_p,
+            # "min_tokens": sampling_config.min_tokens,
             "return_tokens_as_token_ids": True,
         },
     }
