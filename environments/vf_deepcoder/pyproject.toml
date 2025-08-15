@@ -1,0 +1,13 @@
+[project]
+name = "vf-deepcoder"
+version = "0.1.0"
+description = "DeepCoder coding problems environment with executable verification"
+requires-python = ">=3.10"
+dependencies = [
+    "verifiers",
+    "datasets",
+]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"

@@ -60,6 +60,7 @@ vf = [
     "vf-skywork-math",
     "vf-unscramble",
     "vf-alphabet-sort",
+    "vf-deepcoder",
 ]
 
 [tool.uv]
@@ -79,6 +80,7 @@ vf-hendrycks-math = { workspace = true }
 vf-skywork-math = { workspace = true }
 vf-unscramble = { workspace = true }
 vf-alphabet-sort = { workspace = true }
+vf-deepcoder = { workspace = true }
 
 
 [[tool.uv.index]]
@@ -96,6 +98,7 @@ members = [
     "environments/vf_skywork_math",
     "environments/vf_unscramble",
     "environments/vf_alphabet_sort",
+    "environments/vf_deepcoder",
 ]
 
 [dependency-groups]

@@ -14,6 +14,7 @@ members = [
     "prime-rl",
     "vf-alphabet-sort",
     "vf-ascii-tree",
+    "vf-deepcoder",
     "vf-hendrycks-math",
     "vf-intellect-math",
     "vf-pydantic-adherence",
@@ -2097,6 +2098,7 @@ flash-infer = [
 vf = [
     { name = "vf-alphabet-sort" },
     { name = "vf-ascii-tree" },
+    { name = "vf-deepcoder" },
     { name = "vf-hendrycks-math" },
     { name = "vf-intellect-math" },
     { name = "vf-pydantic-adherence" },
@@ -2146,6 +2148,7 @@ requires-dist = [
     { name = "verifiers", specifier = ">=0.1.2.post0" },
     { name = "vf-alphabet-sort", marker = "extra == 'vf'", editable = "environments/vf_alphabet_sort" },
     { name = "vf-ascii-tree", marker = "extra == 'vf'", editable = "environments/vf_ascii_tree" },
+    { name = "vf-deepcoder", marker = "extra == 'vf'", editable = "environments/vf_deepcoder" },
     { name = "vf-hendrycks-math", marker = "extra == 'vf'", editable = "environments/vf_hendrycks_math" },
     { name = "vf-intellect-math", marker = "extra == 'vf'", editable = "environments/vf_intellect_math" },
     { name = "vf-pydantic-adherence", marker = "extra == 'vf'", editable = "environments/vf_pydantic_adherence" },
@@ -3376,6 +3379,21 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "verifiers", specifier = ">=0.1.2" }]
+
+[[package]]
+name = "vf-deepcoder"
+version = "0.1.0"
+source = { editable = "environments/vf_deepcoder" }
+dependencies = [
+    { name = "datasets" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets" },
+    { name = "verifiers" },
+]
 
 [[package]]
 name = "vf-hendrycks-math"
