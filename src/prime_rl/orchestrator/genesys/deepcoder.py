@@ -116,7 +116,7 @@ def check_correctness(tests: Union[List[Dict[str, str]], Dict[str, List[str]]], 
         return False
     #assert len(test_results) == 1, f"Expected exactly one test result, but got {test_results}"
     test_results = test_results[0]
-    return all(test_results)
+    return all(result is True for result in test_results)
 
 
 def postprocess_lcb_sample(sample):
