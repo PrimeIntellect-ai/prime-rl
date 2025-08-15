@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from prime_rl.orchestrator.genesys.deepcoder import check_correctness
 
@@ -20,15 +20,24 @@ class TestCheckCorrectness:
         """Sample code string."""
         return "def solve():\n    return sum(map(int, input().split()))"
     
-    def test_all_tests_pass(self, sample_tests, sample_code):
+    @patch('prime_rl.orchestrator.genesys.deepcoder.multiprocessing.Process')
+    def test_all_tests_pass(self, mock_process_class, sample_tests, sample_code):
         """Test case where all tests pass - should return True."""
-        mock_test_fn = MagicMock()
-        # Simulate all tests passing: results = [True, True, True]
-        mock_test_fn.return_value = [True, True, True]
+        # Mock the process to not actually fork
+        mock_process = MagicMock()
+        mock_process_class.return_value = mock_process
+        mock_process.is_alive.return_value = False
         
-        result = check_correctness(sample_tests, sample_code, mock_test_fn)
-        assert result is True
-        mock_test_fn.assert_called_once_with(sample_tests, test=sample_code, debug=False, timeout=12)
+        # Mock Manager().list() to return test results
+        with patch('prime_rl.orchestrator.genesys.deepcoder.Manager') as mock_manager:
+            mock_list = MagicMock()
+            # Simulate successful test results: [[True, True, True]]
+            test_results = [True, True, True]
+            mock_list.__iter__ = MagicMock(return_value=iter([test_results]))
+            mock_manager.return_value.list.return_value = mock_list
+            
+            result = check_correctness(sample_tests, sample_code, MagicMock())
+            assert result is True
     
     def test_wrong_output(self, sample_tests, sample_code):
         """Test case where some tests fail with wrong output - should return False."""
@@ -75,13 +84,22 @@ class TestCheckCorrectness:
         result = check_correctness(sample_tests, sample_code, mock_test_fn)
         assert result is False
     
-    def test_empty_results(self, sample_tests, sample_code):
+    @patch('prime_rl.orchestrator.genesys.deepcoder.multiprocessing.Process')
+    def test_empty_results(self, mock_process_class, sample_tests, sample_code):
         """Test case where test function returns empty results - should return False."""
-        mock_test_fn = MagicMock()
-        mock_test_fn.return_value = []
+        # Mock the process to not actually fork
+        mock_process = MagicMock()
+        mock_process_class.return_value = mock_process
+        mock_process.is_alive.return_value = False
         
-        result = check_correctness(sample_tests, sample_code, mock_test_fn)
-        assert result is False
+        # The key: mock Manager().list() to return our controlled list
+        with patch('prime_rl.orchestrator.genesys.deepcoder.Manager') as mock_manager:
+            mock_list = MagicMock()
+            mock_list.__iter__ = MagicMock(return_value=iter([]))  # Empty list for list()
+            mock_manager.return_value.list.return_value = mock_list
+            
+            result = check_correctness(sample_tests, sample_code, MagicMock())
+            assert result is False
     
     def test_single_test_pass(self):
         """Test case with single test that passes."""

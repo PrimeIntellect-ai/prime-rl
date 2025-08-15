@@ -111,7 +111,7 @@ def check_correctness(tests: Union[List[Dict[str, str]], Dict[str, List[str]]], 
 
     if process.is_alive():
         process.kill()
-    test_results = test_results[:]
+    test_results = list(test_results)
     if len(test_results) == 0:
         return False
     #assert len(test_results) == 1, f"Expected exactly one test result, but got {test_results}"
