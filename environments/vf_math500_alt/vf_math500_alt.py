@@ -491,8 +491,11 @@ def grade_answer_verl(solution_str, ground_truth):
 
 
 def compute_math_reward(completion: str, verification_info: Dict):
+    print("\n\n")
     model_response = completion
     ground_truths = verification_info["ground_truth"]
+    print(f"{model_response=}")
+    print(f"{ground_truths=}")
 
     # Extract solution.
     if "</think>" in model_response:
@@ -501,6 +504,7 @@ def compute_math_reward(completion: str, verification_info: Dict):
         return 0
 
     model_answer = extract_answer(model_solution)
+    print(f"{model_answer=}")
     if model_answer is None:
         return 0
 
@@ -547,15 +551,19 @@ def load_environment() -> vf.SingleTurnEnv:
 
     def correct_answer_reward_fn(completion, info) -> float:
         completion_text = completion[-1]["content"]
-        return compute_math_reward(completion_text, info)
+        reward = compute_math_reward(completion_text, info)
+        print(f"{reward=}")
+        return reward
 
-    parser = vf.Parser(extract_fn=extract_boxed_answer)
-    rubric = vf.Rubric(funcs=[correct_answer_reward_fn], weights=[1.0])
+    rubric = vf.Rubric(
+        funcs=[
+            correct_answer_reward_fn,
+        ],
+        weights=[1.0],
+    )
 
     vf_env = vf.SingleTurnEnv(
         eval_dataset=eval_dataset,
-        parser=parser,
-        # system_prompt=system_prompt,
         rubric=rubric,
     )
     return vf_env
