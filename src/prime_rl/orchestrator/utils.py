@@ -124,6 +124,27 @@ def compute_rewards(
         rewards.append(reward)
     return rewards
 
+def apply_length_bonus(
+    rewards: list[float],
+    completion_lengths: list[int],
+    rollouts_per_prompt: int,
+    bonus: float = 0.5,
+) -> list[float]:
+    """Return a new reward list where the shortest *correct* rollout(s) in each
+    fully correct group receive a bonus."""
+
+    assert len(rewards) == len(completion_lengths), "Rewards and lengths must align"
+
+    new_rewards = list(rewards)
+    for start in range(0, len(rewards), rollouts_per_prompt):
+        group_rewards = new_rewards[start : start + rollouts_per_prompt]
+        if sum(group_rewards) == rollouts_per_prompt:
+            group_lengths = completion_lengths[start : start + rollouts_per_prompt]
+            min_len = min(group_lengths)
+            for idx, length in enumerate(group_lengths):
+                if length == min_len:
+                    new_rewards[start + idx] += bonus
+    return new_rewards
 
 def print_benchmark(history: dict[str, list[Any]]) -> None:
     """

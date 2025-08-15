@@ -27,7 +27,12 @@ from prime_rl.orchestrator.buffer import setup_buffer, make_rollouts, Rollout
 from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.orchestrator.logger import setup_logger
 from prime_rl.orchestrator.advantage import compute_advantages
-from prime_rl.orchestrator.utils import wait_for_weight_checkpoint, print_benchmark, parse_truncated_completions
+from prime_rl.orchestrator.utils import (
+    wait_for_weight_checkpoint,
+    print_benchmark,
+    parse_truncated_completions,
+    apply_length_bonus,
+)
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, format_num, get_rollout_dir, get_weights_dir, to_col_format
@@ -224,9 +229,19 @@ async def orchestrate(config: OrchestratorConfig):
                 mask_truncated_completions=config.mask_truncated_completions,
             )
 
+            if config.length_bonus is not None:
+                train_rewards = apply_length_bonus(
+                    rewards=processed_outputs.rewards,
+                    completion_lengths=list(map(len, processed_outputs.completion_ids)),
+                    rollouts_per_prompt=config.rollouts_per_prompt,
+                    bonus=config.length_bonus,
+                )
+            else:
+                train_rewards = processed_outputs.rewards
+
             # Compute advantages
             advantages = compute_advantages(
-                rewards=processed_outputs.rewards,
+                rewards=train_rewards,
                 completion_lengths=list(map(len, processed_outputs.completion_ids)),
                 samples_per_problem=config.rollouts_per_prompt,
                 advantage_type=config.advantage_type,

@@ -313,6 +313,13 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = False
 
+    length_bonus: Annotated[
+        float | None,
+        Field(
+            description="If not None, add an extra reward to the shortest correct answer in fully correct rollout groups. If None, no bonus is applied.",
+        ),
+    ] = None
+
     # TODO(Mika): This should be automatic from the number of ZMQ connections
     num_train_workers: Annotated[
         int,
