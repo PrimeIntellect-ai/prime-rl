@@ -1,3 +1,5 @@
+import base64
+
 from prime_cli.api.client import APIClient
 from prime_cli.api.sandbox import CreateSandboxRequest, SandboxClient, CommandResponse
 
@@ -28,9 +30,9 @@ def start_sandbox_and_run_command(name: str="deepcoder-sandbox", docker_image: s
 def pipe_file_content_into_sandbox(
     sandbox_client: SandboxClient, sandbox_id: str, file_path: str, content: str
 ) -> CommandResponse:
-    # Use cat with heredoc to avoid quote issues
-    escaped_content = content.replace("\\", "\\\\").replace("$", "\\$").replace("`", "\\`")
+    # Use base64 encoding to avoid shell parsing issues
+    encoded_content = base64.b64encode(content.encode('utf-8')).decode('ascii')
     return sandbox_client.execute_command(
-        sandbox_id, f"cat > {file_path} << 'EOF'\n{escaped_content}\nEOF"
+        sandbox_id, f"echo '{encoded_content}' | base64 -d > {file_path}"
     )
 

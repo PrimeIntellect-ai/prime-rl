@@ -377,21 +377,16 @@ def execute_std_code(method, synthesized_code, inputs_list, outputs_list, timeou
                 #                         timeout=timeout,
                 #                         text=True)
                 # command = f"bash -c 'ulimit -v 10485760; epython3 {temp_program_path}'"
-                deps_command = "python3 -m venv /sandbox-workspace/venv && /sandbox-workspace/venv/bin/pip install --no-cache-dir numpy pandas"
-                command = f"bash -c 'ulimit -v 10485760; echo \"{inputs}\" | /sandbox-workspace/venv/bin/python {temp_program_path}'"
-                # print(command)
-                # sandbox_client, sandbox = start_sandbox(docker_image="continuumio/miniconda3:25.3.1-1")
+                deps_command = "pip install numpy pandas"
+                command = f"bash -c 'ulimit -v 10485760; echo \"{inputs}\" | python {temp_program_path}'"
                 sandbox_client, sandbox = start_sandbox()
-                # print(synthesized_code)
                 write_result = pipe_file_content_into_sandbox(sandbox_client=sandbox_client, sandbox_id=sandbox.id, file_path=temp_program_path, content=synthesized_code)
                 if write_result.exit_code != 0:
                     raise Exception(f"Failed to write to sandbox: stdout={write_result.stdout}, stderr={write_result.stderr}")
-                # result = start_sandbox_and_run_command(command=command, command_timeout_seconds=timeout)
                 deps_result = sandbox_client.execute_command(sandbox_id=sandbox.id, command=deps_command)
-                print(deps_result)
                 result = sandbox_client.execute_command(sandbox_id=sandbox.id, command=command, timeout=timeout)
                 sandbox_client.delete(sandbox.id)
-                exit()
+                # exit()
                 
                 
                 print(result)
