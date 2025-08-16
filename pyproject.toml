@@ -32,7 +32,10 @@ dependencies = [
     "textarena>=0.6.16",
     "nltk>=3.9.1",
     "math-verify>=0.8.0",
-    "muon_fsdp2>=0.3.0"
+    "muon_fsdp2>=0.3.0",
+    "vf-math500",
+    "vf-aime2024",
+    "vf-aime2025",
 ]
 
 [project.scripts]
@@ -68,7 +71,7 @@ prerelease = "allow"
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu128" }]
-verifiers = { git = "https://github.com/willccbb/verifiers", rev = "74c604f" }
+verifiers = { git = "https://github.com/willccbb/verifiers", rev = "4ac1178" }
 
 vf-intellect-math = { workspace = true }
 vf-wordle = { git = "https://github.com/willccbb/verifiers.git", subdirectory = "environments/vf_wordle", rev = "main" }
@@ -79,6 +82,9 @@ vf-hendrycks-math = { workspace = true }
 vf-skywork-math = { workspace = true }
 vf-unscramble = { workspace = true }
 vf-alphabet-sort = { workspace = true }
+vf-math500 = { url = "https://hub.primeintellect.ai/will/vf-math500/@latest/vf_math500-0.1.7-py3-none-any.whl" }
+vf-aime2024 = { url = "https://hub.primeintellect.ai/will/vf-aime2024/@latest/vf_aime2024-0.1.7-py3-none-any.whl" }
+vf-aime2025 = { url = "https://hub.primeintellect.ai/will/vf-aime2025/@latest/vf_aime2025-0.1.7-py3-none-any.whl" }
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
