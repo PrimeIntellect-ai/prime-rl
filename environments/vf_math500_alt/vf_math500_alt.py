@@ -1,13 +1,12 @@
 import json
-from typing import Dict
 
 import verifiers as vf
 from datasets import load_dataset
 from math_verify import parse, verify
 
 
-def math_verify_reward_function(completion: str, verification_info: Dict):
-    ground_truth = verification_info["ground_truth"]
+def math_verify_reward_function(completion: str, answer: str | float | int | list[str | float | int]):
+    ground_truth = answer
     if isinstance(ground_truth, (str, float, int)):
         ground_truth = [ground_truth]
 
@@ -44,18 +43,16 @@ def math_verify_reward_function(completion: str, verification_info: Dict):
 def load_environment() -> vf.SingleTurnEnv:
     eval_dataset = load_dataset("PrimeIntellect/MATH-500", split="train").map(
         lambda example: {
-            "prompt": [{"role": "user", "content": example["prompt"]}],
-            "answer": "Not used",
-            "info": json.loads(example["verification_info"]),
+            "question": example["prompt"],
+            "answer": json.loads(example["verification_info"])["ground_truth"],
         }
     )
-    eval_dataset = eval_dataset.remove_columns(["problem_id", "task_type", "verification_info"])
-    assert eval_dataset.column_names == ["prompt", "answer", "info"], eval_dataset.column_names
+    eval_dataset = eval_dataset.remove_columns(["problem_id", "prompt", "task_type", "verification_info"])
+    assert eval_dataset.column_names == ["question", "answer"], eval_dataset.column_names
 
-    def correct_answer_reward_fn(completion, info) -> float:
+    def correct_answer_reward_fn(completion, answer) -> float:
         completion_text = completion[-1]["content"]
-        reward = math_verify_reward_function(completion_text, info)
-        return reward
+        return math_verify_reward_function(completion_text, answer)
 
     rubric = vf.Rubric(
         funcs=[
