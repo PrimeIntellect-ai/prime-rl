@@ -71,37 +71,33 @@ class EvalSamplingConfig(BaseConfig):
     """Configures how tokens are sampled from the model for evaluation. Largely follows the vLLM sampling parameters."""
 
     temperature: Annotated[
-        float,
+        float | None,
         Field(
             ge=0,
-            description="Scales the output probability distribution. Lower values => more deterministic, higher values => more random. If 0, will sample greedily.",
+            description="Scales the output probability distribution. Lower values => more deterministic, higher values => more random. If 0, will sample greedily. Defaults to None, which means we fall back to the inference server's default value.",
         ),
-    ] = 1.0
+    ] = None
 
     top_p: Annotated[
-        float,
+        float | None,
         Field(
-            gt=0,
-            le=1,
-            description="Cumulative probability of the top tokens to consider. If 1, all tokens are considered.",
+            description="Cumulative probability of the top tokens to consider. If 1, all tokens are considered. Defaults to None, which means we fall back to the inference server's default value.",
         ),
-    ] = 1
+    ] = None
 
     top_k: Annotated[
-        int,
+        int | None,
         Field(
-            ge=-1,
-            description="Number of top tokens to consider. If -1, all tokens are considered.",
+            description="Number of top tokens to consider. If -1, all tokens are considered. Defaults to None, which means we fall back to the inference server's default value.",
         ),
-    ] = -1
+    ] = None
 
     min_p: Annotated[
-        float,
+        float | None,
         Field(
-            ge=0,
-            description="Minimum probability for a token to be considered, relative to the probability of the most likely token. If 0, all tokens are considered.",
+            description="Minimum probability for a token to be considered, relative to the probability of the most likely token. If 0, all tokens are considered. Defaults to None, which means we fall back to the inference server's default value.",
         ),
-    ] = 0.0
+    ] = None
 
     max_tokens: Annotated[
         int | None,
@@ -111,17 +107,16 @@ class EvalSamplingConfig(BaseConfig):
     ] = None
 
     min_tokens: Annotated[
-        int,
+        int | None,
         Field(
-            ge=0,
-            description="Minimum number of output tokens to generate per sequence.",
+            description="Minimum number of output tokens to generate per sequence. Defaults to None, which means we fall back to the inference server's default value.",
         ),
-    ] = 0
+    ] = None
 
     seed: Annotated[
         int | None,
         Field(
-            description="Random seed to use for sampling. If None, no seeding is used.",
+            description="Random seed to use for sampling. If None, no seeding is used. Defaults to None, which means we fall back to the inference server's default value.",
         ),
     ] = None
 

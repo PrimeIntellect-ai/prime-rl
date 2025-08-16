@@ -1,4 +1,5 @@
 import time
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -56,20 +57,30 @@ async def run_eval(
         f"Evaluating {eval_id} (num_examples={num_unique_examples}, rollouts_per_example={rollouts_per_example}) with args {env_args}"
     )
 
-    run_eval_start_time = time.time()
-    sampling_args = {
-        # "temperature": sampling_config.temperature,
-        # "max_tokens": sampling_config.max_tokens,
-        # "top_p": sampling_config.top_p,
+    # Always return logprobs to parser response length
+    sampling_args: dict[str, Any] = {
         "logprobs": True,
         "extra_body": {
-            # "top_k": sampling_config.top_k,
-            # "min_p": sampling_config.min_p,
-            # "min_tokens": sampling_config.min_tokens,
             "return_tokens_as_token_ids": True,
         },
     }
+
+    # Apply sampling config only if specified
+    if sampling_config.temperature is not None:
+        sampling_args["temperature"] = sampling_config.temperature
+    if sampling_config.max_tokens is not None:
+        sampling_args["max_tokens"] = sampling_config.max_tokens
+    if sampling_config.top_p is not None:
+        sampling_args["top_p"] = sampling_config.top_p
+    if sampling_config.top_k is not None:
+        sampling_args["extra_body"]["top_k"] = sampling_config.top_k
+    if sampling_config.min_p is not None:
+        sampling_args["extra_body"]["min_p"] = sampling_config.min_p
+    if sampling_config.min_tokens is not None:
+        sampling_args["extra_body"]["min_tokens"] = sampling_config.min_tokens
+
     # Run async generation and scoring
+    run_eval_start_time = time.time()
     results = await vf_eval.a_generate(
         inputs=inputs,
         client=client,
