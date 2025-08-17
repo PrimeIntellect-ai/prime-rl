@@ -6,5 +6,5 @@
 
 <!-- Link the GitHub and Linear issue (if external, delete the Linear issue link) -->
 
-**GitHub Issue**: <Issue ID>
-**Linear Issue**: Resolves <Ticket ID>
+**GitHub Issue**: [Issue ID]
+**Linear Issue**: Resolves [Issue ID]
