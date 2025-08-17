@@ -2,6 +2,8 @@
 
 I was too lazy to explain my changes, decreasing my chances of this ever getting merged.
 
+---
+
 <!-- Link the GitHub and Linear issue (if external, delete the Linear issue link) -->
 
 **GitHub Issue**: [Issue ID]
