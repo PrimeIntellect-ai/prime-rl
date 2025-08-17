@@ -1,6 +1,7 @@
 from collections import defaultdict
 from itertools import chain
 from typing import Any, TypeAlias
+import warnings
 
 import pandas as pd
 import torch
@@ -129,24 +130,29 @@ def flexible_all_gather(tensor: Tensor) -> Tensor:
     if dist.get_world_size() == 1:
         return tensor
 
-    # Find the tensor with the most elements
-    local_numel = tensor.numel()
-    local_numel_tensor = torch.tensor(local_numel, device=tensor.device)
-    all_numel_tensors = [torch.tensor(0, device=tensor.device) for _ in range(dist.get_world_size())]
-    dist.all_gather(all_numel_tensors, local_numel_tensor)
-    all_numels = [numel.item() for numel in all_numel_tensors]
-    max_numel = int(max(all_numels))
+    # Suppress torch.distributed warnings during tensor gathering
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
+        warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed")
+        
+        # Find the tensor with the most elements
+        local_numel = tensor.numel()
+        local_numel_tensor = torch.tensor(local_numel, device=tensor.device)
+        all_numel_tensors = [torch.tensor(0, device=tensor.device) for _ in range(dist.get_world_size())]
+        dist.all_gather(all_numel_tensors, local_numel_tensor)
+        all_numels = [numel.item() for numel in all_numel_tensors]
+        max_numel = int(max(all_numels))
 
-    # Pad the tensor with zeros if it has less elements than the maximum
-    if local_numel < max_numel:
-        tensor = torch.cat([tensor, torch.zeros(max_numel - local_numel, dtype=tensor.dtype, device=tensor.device)])
+        # Pad the tensor with zeros if it has less elements than the maximum
+        if local_numel < max_numel:
+            tensor = torch.cat([tensor, torch.zeros(max_numel - local_numel, dtype=tensor.dtype, device=tensor.device)])
 
-    # All-gather the tensors
-    all_tensors = [
-        torch.zeros(max_numel, dtype=tensor.dtype, device=tensor.device) for _ in range(dist.get_world_size())
-    ]
-    dist.all_gather(all_tensors, tensor)
-    all_tensors_unpadded = torch.cat([tensor[:numel] for tensor, numel in zip(all_tensors, all_numels)])
+        # All-gather the tensors
+        all_tensors = [
+            torch.zeros(max_numel, dtype=tensor.dtype, device=tensor.device) for _ in range(dist.get_world_size())
+        ]
+        dist.all_gather(all_tensors, tensor)
+        all_tensors_unpadded = torch.cat([tensor[:numel] for tensor, numel in zip(all_tensors, all_numels)])
 
     return all_tensors_unpadded
 

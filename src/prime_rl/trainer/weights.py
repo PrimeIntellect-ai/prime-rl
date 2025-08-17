@@ -1,6 +1,7 @@
 import shutil
 import threading
 import time
+import warnings
 from pathlib import Path
 
 import torch
@@ -42,21 +43,27 @@ class WeightCheckpointManager:
         start_time = time.time()
         self._logger.debug("Gathering sharded weights")
 
-        cpu_state = {}
-        for key, value in model.state_dict().items():
-            if isinstance(value, DTensor):
-                value = value.to(dtype)
-                # only gather after the downcast to dtype as it will be faster
-                value = value.full_tensor()
+        # Suppress torch.distributed warnings during checkpoint saving
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
+            warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed")
+            
+            cpu_state = {}
+            for key, value in model.state_dict().items():
+                if isinstance(value, DTensor):
+                    value = value.to(dtype)
+                    # only gather after the downcast to dtype as it will be faster
+                    value = value.full_tensor()
 
-            if self._is_master:
-                key = get_fqns(model, key)
-                assert len(key) == 1
-                key = next(iter(key))
-                # TODO(Sami) Blocking to avoid race condition, should make non-blocking long-term tho
-                cpu_state[key] = value.to("cpu", non_blocking=False)
+                if self._is_master:
+                    key = get_fqns(model, key)
+                    assert len(key) == 1
+                    key = next(iter(key))
+                    # TODO(Sami) Blocking to avoid race condition, should make non-blocking long-term tho
+                    cpu_state[key] = value.to("cpu", non_blocking=False)
 
-        torch.distributed.barrier()
+            torch.distributed.barrier()
+        
         self._logger.debug(f"Gathered sharded weights in {time.time() - start_time:.2f} seconds")
 
         return cpu_state
@@ -69,18 +76,23 @@ class WeightCheckpointManager:
         self._logger.debug(f"Saving weight checkpoint to {step_path}")
         start_time = time.time()
 
-        # Save model weights to temporary file to avoid race condition
-        model_path = self._get_model_path(step)
-        tmp_model_path = model_path.with_suffix(".tmp")
-        torch.save(cpu_state, tmp_model_path)
-        # Rename temporary file to indicate checkpoint is complete
-        tmp_model_path.rename(model_path)
+        # Suppress torch.distributed warnings during checkpoint saving
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
+            warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed")
+            
+            # Save model weights to temporary file to avoid race condition
+            model_path = self._get_model_path(step)
+            tmp_model_path = model_path.with_suffix(".tmp")
+            torch.save(cpu_state, tmp_model_path)
+            # Rename temporary file to indicate checkpoint is complete
+            tmp_model_path.rename(model_path)
 
-        # Save model config, generation arguments and tokenizer
-        model.config.save_pretrained(step_path)
-        if model.generation_config:
-            model.generation_config.save_pretrained(step_path)
-        tokenizer.save_pretrained(step_path)
+            # Save model config, generation arguments and tokenizer
+            model.config.save_pretrained(step_path)
+            if model.generation_config:
+                model.generation_config.save_pretrained(step_path)
+            tokenizer.save_pretrained(step_path)
 
         self._logger.debug(f"Saved weight checkpoint to {step_path} in {time.time() - start_time:.2f} seconds")
 
