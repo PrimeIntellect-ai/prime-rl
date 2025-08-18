@@ -46,7 +46,7 @@ class WeightCheckpointManager:
         # Suppress torch.distributed warnings during checkpoint saving
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
-            warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed")
+            warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
             
             cpu_state = {}
             for key, value in model.state_dict().items():
@@ -79,7 +79,7 @@ class WeightCheckpointManager:
         # Suppress torch.distributed warnings during checkpoint saving
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
-            warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed")
+            warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
             
             # Save model weights to temporary file to avoid race condition
             model_path = self._get_model_path(step)
