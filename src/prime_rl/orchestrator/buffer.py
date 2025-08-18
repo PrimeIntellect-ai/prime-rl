@@ -129,7 +129,7 @@ class Buffer(ABC):
         """
         Samples rollouts for `n` problems from the rollout buffer which are
         ready for training. Thus, the length of the list returned is equal to
-        `n` * `rollouts_per_prompt`.  Logs a warning if there are less than `n`
+        `n` * `rollouts_per_example`.  Logs a warning if there are less than `n`
         samples available.
 
         Args:
