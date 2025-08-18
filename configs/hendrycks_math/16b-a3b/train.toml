@@ -4,7 +4,7 @@ recompute_logprobs = false
 [monitor.wandb]
 
 [model]
-name = "Jackmin108/Moonlight-16B-A3B-Instruct-Fast"
+name = "moonshotai/Moonlight-16B-A3B-Instruct"
 trust_remote_code = true
 
 [model.ac]
