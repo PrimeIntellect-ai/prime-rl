@@ -5,8 +5,9 @@ recompute_logprobs = false
 
 [model]
 name = "Jackmin108/Moonlight-16B-A3B-Instruct-Fast"
-ac = true
 trust_remote_code = true
+
+[model.ac]
 
 [optim]
 lr = 1e-6 
