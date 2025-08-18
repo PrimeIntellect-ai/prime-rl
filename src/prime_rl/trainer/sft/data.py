@@ -15,7 +15,6 @@ from prime_rl.utils.logger import get_logger
 
 class Sample(TypedDict):
     epoch: int  # TODO: Argh, can we find a way to export epoch metainformation in a nicer way?
-    epoch: int  # TODO: Argh, can we find a way to export epoch metainformation in a nicer way?
     input_ids: list[int]
     position_ids: list[int]
     loss_mask: list[bool]
