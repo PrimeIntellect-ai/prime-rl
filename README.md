@@ -28,6 +28,7 @@ curl -sSL https://raw.githubusercontent.com/PrimeIntellect-ai/prime-rl/main/scri
 <summary>
 Manual Installation
 </summary>
+<br>
 
 1. Clone the repository
 
@@ -56,6 +57,7 @@ uv sync && uv sync --all-extras
 <summary>
 Validate your environment setup
 </summary>
+<br>
 
 1. Check that environment uses Python 3.12
 
@@ -236,7 +238,7 @@ To check all available configuration options, run `uv run sft --help`.
 
 **Reverse Text**
 
-Finetune `PrimeIntellect/Qwen3-0.6B` (`Qwen/Qwen3-0.6B` but with Qwen-2.5 chat template) to reverse a tiny chunk of text, used as a warmup model train in `vf-reverse-text` environment. We use this run in CI.
+Finetune `PrimeIntellect/Qwen3-0.6B` (`Qwen/Qwen3-0.6B` but with Qwen-2.5 chat template) to reverse a tiny chunk of text, used as a warmup model train in `reverse-text` environment. We use this run in CI.
 
 ```bash
 uv run sft @ configs/reverse_text/sft.toml
@@ -257,7 +259,7 @@ uv run inference --model.name Qwen/Qwen3-0.6B --max-model-len 2048
 ```
 
 ```bash
-uv run eval --model.name Qwen/Qwen3-0.6B --benchmarks math500,aime24,aime25
+uv run eval --model.name Qwen/Qwen3-0.6B --environment-ids math500,aime2024,aime2025
 ```
 
 To check all available configuration options, run `uv run eval --help`.
@@ -346,29 +348,28 @@ tmux kill-session -t prime-rl
 
 ### Environments
 
-`prime-rl` supports Environment modules built with `verifiers` ([repo](https://github.com/willccbb/verifiers)) for training tasks. To create a new Environment module template in the `environments/` folder, do:
+`prime-rl` supports Environment modules built with `verifiers` ([repo](https://github.com/willccbb/verifiers)) for training tasks. All of our current research environments live in a separate [Prime Environments](https://github.com/PrimeIntellect-ai/prime-environments) repository. 
 
-```bash
-uv run vf-init vf-custom-environment
-```
-Then, populate the `load_environment` function in `environments/vf_custom_environment/vf_custom_environment.py` with your instantiation logic, and declare any Environment-level dependencies in `environments/vf_custom_environment/pyproject.toml`.
+To add a new training or evaluation environment, please follow the instructions in the [Prime Environments](https://github.com/PrimeIntellect-ai/prime-environments) repository.
+
+To then use it as part of `prime-rl`, install the newly pushed environment via the Environment Hub. 
 
 To install your Environment module temporarily within `prime-rl`, do:
 ```bash
-uv run vf-install vf-custom-environment
+uv run prime env install custom-environment
 ```
 
 To persist your Environment module installation in the package-wide `pyproject.toml`, do:
 ```bash
-uv add --optional vf "vf-custom-environment @ ./environments/vf_custom_environment"
+uv add --optional vf "custom-environment @ https://hub.primeintellect.ai/your-username/custom-environment/@latest/custom-environment-0.1.3-py2.py3-none-any.whl"
 ```
 
 For quick API-based testing post-installation, do:
 ```bash
-uv run vf-eval vf-custom-environment # -h for config options; defaults to gpt-4.1-mini, 5 prompts, 3 rollouts each
+uv run vf-eval custom-environment # -h for config options; defaults to gpt-4.1-mini, 5 prompts, 3 rollouts each
 ```
 
-For training, create `trainer`/`inference`/`orchestrator` config files following the aforementioned examples, then set `id = vf-custom-environment` in the `[environment]` section of your `orchestrator` config (along with any desired Environment-level args in `[environment.args]`).
+For training, create `trainer`/`inference`/`orchestrator` config files following the aforementioned examples, then set `id = custom-environment` in the `[environment]` section of your `orchestrator` config (along with any desired Environment-level args in `[environment.args]`).
 
 ### W&B
 

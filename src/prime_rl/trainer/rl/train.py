@@ -3,9 +3,7 @@ from copy import deepcopy
 
 # Import environment before any other imports
 # ruff: noqa: I001
-from prime_rl.trainer import envs
 
-import shardcast
 import torch
 from loguru import logger
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
@@ -61,14 +59,6 @@ def train(config: RLTrainerConfig):
     # Set precision and cuda device
     torch.set_float32_matmul_precision("high")
     torch.cuda.set_device(world.rank)
-
-    if world.rank == 0 and envs.SHARDCAST_OUTPUT_DIR is not None:
-        logger.info(f"Initializing shardcast from {envs.SHARDCAST_OUTPUT_DIR}")
-        shardcast.initialize(
-            envs.SHARDCAST_OUTPUT_DIR,
-            # +1 to ensure to not delete current checkpoint when async_level=0
-            max_distribution_folders=config.async_level + 1,
-        )
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model and tokenizer ({config.model})")
@@ -136,7 +126,7 @@ def train(config: RLTrainerConfig):
         save_weights_time = 0
         if progress.step > 0:
             save_weights_start_time = time.time()
-            model_path = weight_ckpt_manager.save(model, tokenizer, step=progress.step)
+            weight_ckpt_manager.save(model, tokenizer, step=progress.step)
             save_weights_time = time.time() - save_weights_start_time
 
         # Save the full checkpoint (if we are at an interval step and not at the first or last step)
@@ -307,10 +297,7 @@ def train(config: RLTrainerConfig):
 
         forward_backward_time = time.time() - forward_backward_start_time
 
-        # Optionally, broadcast the weight checkpoint from master rank
-        if world.rank == 0 and envs.SHARDCAST_OUTPUT_DIR is not None:
-            logger.info(f"Broadcasting weights from {model_path} via shardcast")
-            shardcast.broadcast(model_path.as_posix())  # TODO: Is this blocking?
+        # TODO: Broadcast weight checkpoint via shardcast
 
         # Maybe clean up weight checkpoint
         weight_ckpt_manager.maybe_clean(progress.step)

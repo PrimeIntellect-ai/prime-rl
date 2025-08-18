@@ -249,6 +249,10 @@ def get_rollout_dir(outputs_dir: Path) -> Path:
     return outputs_dir / "rollouts"
 
 
+def get_eval_dir(outputs_dir: Path) -> Path:
+    return outputs_dir / "evals"
+
+
 def get_step_path(path: Path, step: int) -> Path:
     return path / f"step_{step}"
 

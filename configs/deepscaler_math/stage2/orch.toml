@@ -2,7 +2,7 @@ max_steps = 1000
 batch_size = 1024
 micro_batch_size = 1
 seq_len = 16384
-rollouts_per_prompt = 8
+rollouts_per_example = 8
 mask_truncated_completions = false
 
 [sampling]
@@ -14,15 +14,15 @@ name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 [monitor.wandb]
 
 [environment]
-id = "vf-deepscaler-math"
+id = "deepscaler-math"
 
 [monitor.wandb.log_extras]
 interval = 50
 
 [eval]
 interval = 50
-benchmarks = ["math500", "aime24", "aime25"]
-rollouts_per_prompt = [1, 32, 32]
+environment_ids = ["math500", "aime2024", "aime2025"]
+rollouts_per_example = [1, 32, 32]
 
 [ckpt]
 interval = 100

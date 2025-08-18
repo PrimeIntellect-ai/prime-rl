@@ -1,6 +1,6 @@
 batch_size = 128
 micro_batch_size = 16
-rollouts_per_prompt = 16
+rollouts_per_example = 16
 seq_len = 128
 max_steps = 20
 mask_truncated_completions = false
@@ -9,4 +9,4 @@ mask_truncated_completions = false
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 [environment]
-id = "vf-reverse-text"
+id = "reverse-text"
