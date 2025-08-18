@@ -20,7 +20,9 @@ _BENCHMARK_DISPLAY_NAMES: dict[Benchmark, str] = {
 
 
 def get_benchmark_dataset(name: Benchmark) -> Dataset:
-    return load_dataset(_BENCHMARKS_DATASET_NAMES[name], split="train")
+    dataset = load_dataset(_BENCHMARKS_DATASET_NAMES[name], split="train")
+    assert isinstance(dataset, Dataset)
+    return dataset
 
 
 def get_benchmark_display_name(name: Benchmark) -> str:

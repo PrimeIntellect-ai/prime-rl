@@ -29,7 +29,7 @@ class CheckpointManager:
         self.ckpt_dir = get_ckpt_dir(outputs_dir)
         self._logger = get_logger()
         self._world = get_world()
-        self._is_master = self._world.rank == 0
+        self._is_master = self._world.is_master
         self.ckpt_steps: list[int] = []  # Sorted list of steps that have been checkpointed, only used on master rank
 
     def _get_step_path(self, step: int) -> Path:
@@ -146,3 +146,9 @@ class CheckpointManager:
 
         # Update checkpoint steps
         self.ckpt_steps = self.ckpt_steps[-self.config.keep :]
+
+
+def setup_ckpt_manager(outputs_dir: Path, config: CheckpointConfig | None) -> CheckpointManager | None:
+    if config is None:
+        return None
+    return CheckpointManager(outputs_dir, config)

@@ -1,7 +1,7 @@
 ## to run on H100
 batch_size = 512
 micro_batch_size = 2
-rollouts_per_prompt = 16
+rollouts_per_example = 16
 seq_len = 2048
 mask_truncated_completions = false
 
@@ -11,15 +11,15 @@ name = "willcb/DeepSeek-R1-Distill-Qwen-7B"
 [monitor.wandb]
 
 [environment]
-id = "vf-hendrycks-math"
+id = "hendrycks-math"
 
 [monitor.wandb.log_extras]
 interval = 10
 
 [eval]
 interval = 50
-benchmarks = ["math500", "aime24", "aime25"]
-rollouts_per_prompt = [1, 16, 16]
+environment_ids = ["math500", "aime2024", "aime2025"]
+rollouts_per_example = [1, 16, 16]
 
 [ckpt]
 interval = 200 

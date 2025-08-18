@@ -8,6 +8,7 @@ from pydantic_settings import BaseSettings
 from prime_rl.inference.config import InferenceConfig
 from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.trainer.rl.config import RLTrainerConfig
+from prime_rl.trainer.sft.config import SFTTrainerConfig
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.validation import (
     validate_shared_async_level,
@@ -19,13 +20,14 @@ from prime_rl.utils.validation import (
     validate_shared_wandb_config,
 )
 
-ConfigType: TypeAlias = Literal["train", "orch", "infer"]
+ConfigType: TypeAlias = Literal["train", "orch", "infer", "sft"]
 
 # Map config type to its corresponding settings class
 CONFIG_MAP: dict[ConfigType, type[BaseSettings]] = {
     "train": RLTrainerConfig,
     "orch": OrchestratorConfig,
     "infer": InferenceConfig,
+    "sft": SFTTrainerConfig,
 }
 
 
@@ -74,7 +76,7 @@ def test_load_configs(
 
 
 @pytest.mark.parametrize("config_dir", [pytest.param(cfg_dir, id=cfg_dir.as_posix()) for cfg_dir in get_config_dirs()])
-def test_shared_config_validation(config_dir: Path, monkeypatch: pytest.MonkeyPatch):
+def test_rl_configs(config_dir: Path, monkeypatch: pytest.MonkeyPatch):
     # Require that all three files are present in the directory
     required = {"train.toml", "orch.toml", "infer.toml"}
     present = {p.name for p in config_dir.glob("*.toml")}

@@ -2,12 +2,11 @@ from collections import defaultdict
 from typing import Iterator, TypedDict
 
 import torch
-from datasets import Dataset as HFDataset
-from datasets import load_dataset
+from datasets import Dataset, concatenate_datasets, load_dataset
 from jaxtyping import Bool, Int
 from torch import Tensor
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
-from transformers import AutoTokenizer
+from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.sft.config import DataConfig
 from prime_rl.trainer.world import get_world
@@ -15,6 +14,7 @@ from prime_rl.utils.logger import get_logger
 
 
 class Sample(TypedDict):
+    epoch: int  # TODO: Argh, can we find a way to export epoch metainformation in a nicer way?
     epoch: int  # TODO: Argh, can we find a way to export epoch metainformation in a nicer way?
     input_ids: list[int]
     position_ids: list[int]
@@ -33,36 +33,43 @@ class Batch(TypedDict):
 class FakeDataset(IterableDataset):
     """A dataset of fake tokens"""
 
-    def __init__(self, tokenizer: AutoTokenizer, seq_len: int):
-        self.seq_len = seq_len
+    def __init__(self, tokenizer: PreTrainedTokenizer, config: DataConfig):
+        self.config = config
+        assert self.config.fake is not None, "Fake dataset must be specified"
+        self.fake_type = self.config.fake
         self.vocab_size = tokenizer.vocab_size
 
     def __iter__(self) -> Iterator[Sample]:
         while True:
-            rand_seq_len = torch.randint(1, self.seq_len + 1, (1,)).item()
-            # simulate different sequence lengths
-            input_ids = torch.randint(0, self.vocab_size, (rand_seq_len + 1,)).long().tolist()
-            position_ids = torch.arange(len(input_ids)).long()
-            loss_mask = torch.ones(len(input_ids)).bool()
-            loss_mask[-1] = 0
-            yield {
-                "input_ids": input_ids,
+            seq_len = (
+                int(torch.randint(0, self.config.seq_len, (1,)).item())
+                if self.fake_type == "variable"
+                else self.config.seq_len
+            )
+            input_ids = torch.randint(0, self.vocab_size, (seq_len + 1,)).long().tolist()
+            position_ids = list(range(self.config.seq_len))
+            loss_mask = [True] * self.config.seq_len
+            fake_sample = {
+                "input_ids": input_ids[:-1],
+                "target_ids": input_ids[1:],
                 "position_ids": position_ids,
                 "loss_mask": loss_mask,
-                "target_ids": input_ids[1:] + [0],
                 "epoch": 0,
             }
+            yield fake_sample
 
 
 class SFTDataset(IterableDataset):
     """A dataset wrapping a HF SFT dataset with prompt + completion format."""
 
-    def __init__(self, tokenizer: AutoTokenizer, name: str, split: str):
+    def __init__(self, tokenizer: PreTrainedTokenizer, config: DataConfig):
         self.tokenizer = tokenizer
         self._logger = get_logger()
 
         # Load dataset
-        self.dataset: HFDataset = load_dataset(name, split=split)
+        self.dataset: Dataset = concatenate_datasets(
+            [load_dataset(config.name, split=split) for split in config.splits]
+        )
 
         # Assert that the dataset has a 'text' column
         if "prompt" not in self.dataset.column_names or "completion" not in self.dataset.column_names:
@@ -84,7 +91,8 @@ class SFTDataset(IterableDataset):
         counter, epoch = -1, -1
         while True:
             epoch += 1
-            for example in self.dataset:
+            shuffled_dataset = self.dataset.shuffle(seed=epoch)
+            for example in shuffled_dataset:
                 # Increment the counter (0, 1, ...)
                 counter += 1
 
@@ -134,7 +142,7 @@ class SFTDataset(IterableDataset):
 class PackingDataset(IterableDataset):
     """A dataset that packs samples into a single sequence."""
 
-    def __init__(self, dataset: SFTDataset, seq_len: int):
+    def __init__(self, dataset: IterableDataset, seq_len: int):
         self.dataset = dataset
         self.seq_len = seq_len
 
@@ -163,7 +171,7 @@ class PackingDataset(IterableDataset):
 class PaddingDataset(IterableDataset):
     """A dataset that pads samples to a fixed sequence length."""
 
-    def __init__(self, dataset: SFTDataset, seq_len: int, pad_token_id: int):
+    def __init__(self, dataset: IterableDataset, seq_len: int, pad_token_id: int):
         self.dataset = dataset
         self.seq_len = seq_len
         self.pad_token_id = pad_token_id
@@ -173,7 +181,7 @@ class PaddingDataset(IterableDataset):
             if len(sample["input_ids"]) < self.seq_len:  # Pad
                 num_padding_tokens = self.seq_len - len(sample["input_ids"])
                 sample["input_ids"] = sample["input_ids"] + [self.pad_token_id] * num_padding_tokens
-                sample["loss_mask"] = sample["loss_mask"] + [0] * num_padding_tokens
+                sample["loss_mask"] = sample["loss_mask"] + [False] * num_padding_tokens
                 sample["position_ids"] = sample["position_ids"] + [0] * num_padding_tokens
                 sample["target_ids"] = sample["target_ids"] + [self.pad_token_id] * num_padding_tokens
 
@@ -188,21 +196,23 @@ class PaddingDataset(IterableDataset):
 
 def collate(samples: list[Sample]) -> Batch:
     return {
-        "input_ids": torch.stack([torch.tensor(sample["input_ids"]) for sample in samples], dim=0).long(),
-        "position_ids": torch.stack([torch.tensor(sample["position_ids"]) for sample in samples], dim=0).long(),
-        "loss_mask": torch.stack([torch.tensor(sample["loss_mask"]) for sample in samples], dim=0).bool(),
-        "target_ids": torch.stack([torch.tensor(sample["target_ids"]) for sample in samples], dim=0).long(),
+        "input_ids": torch.stack([torch.tensor(sample["input_ids"]) for sample in samples], dim=0).long().to("cuda"),
+        "position_ids": torch.stack([torch.tensor(sample["position_ids"]) for sample in samples], dim=0)
+        .long()
+        .to("cuda"),
+        "loss_mask": torch.stack([torch.tensor(sample["loss_mask"]) for sample in samples], dim=0).bool().to("cuda"),
+        "target_ids": torch.stack([torch.tensor(sample["target_ids"]) for sample in samples], dim=0).long().to("cuda"),
         "epoch": min([sample["epoch"] for sample in samples]),
     }
 
 
-def setup_dataset(tokenizer: AutoTokenizer, config: DataConfig) -> IterableDataset:
+def setup_dataset(tokenizer: PreTrainedTokenizer, config: DataConfig) -> IterableDataset:
     if config.fake:
-        return FakeDataset(tokenizer, config.seq_len)
-    return SFTDataset(tokenizer, name=config.name, split=config.split)
+        return FakeDataset(tokenizer, config)
+    return SFTDataset(tokenizer, config)
 
 
-def setup_dataloader(dataset: IterableDataset, tokenizer: AutoTokenizer, config: DataConfig) -> DataLoader:
+def setup_dataloader(dataset: IterableDataset, tokenizer: PreTrainedTokenizer, config: DataConfig) -> DataLoader:
     seq_len = config.micro_batch_size * config.seq_len if config.collate_mode == "packing" else config.seq_len
     if config.collate_mode == "packing":
         packing_dataset = PackingDataset(dataset, seq_len)

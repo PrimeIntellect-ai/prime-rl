@@ -3,14 +3,12 @@ from copy import deepcopy
 
 # Import environment before any other imports
 # ruff: noqa: I001
-from prime_rl.trainer import envs
 
-import shardcast
 import torch
 from loguru import logger
-from prime_rl.trainer.ckpt import CheckpointManager, Progress
+from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
-from prime_rl.trainer.weights import WeightCheckpointManager
+from prime_rl.trainer.weights import setup_weight_ckpt_manager
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.trainer.logger import setup_logger
@@ -52,7 +50,7 @@ def train(config: RLTrainerConfig):
 
     # Print warning if running in benchmark mode
     if config.bench:
-        logger.warning(f"Running in benchmark mode (max_steps={config.max_steps}, {config.data.fake=})")
+        logger.warning(f"Running in benchmark mode (max_steps={config.max_steps})")
 
     # Setup the monitor
     logger.info(f"Initializing monitor ({config.monitor})")
@@ -61,14 +59,6 @@ def train(config: RLTrainerConfig):
     # Set precision and cuda device
     torch.set_float32_matmul_precision("high")
     torch.cuda.set_device(world.rank)
-
-    if world.rank == 0 and envs.SHARDCAST_OUTPUT_DIR is not None:
-        logger.info(f"Initializing shardcast from {envs.SHARDCAST_OUTPUT_DIR}")
-        shardcast.initialize(
-            envs.SHARDCAST_OUTPUT_DIR,
-            # +1 to ensure to not delete current checkpoint when async_level=0
-            max_distribution_folders=config.async_level + 1,
-        )
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model and tokenizer ({config.model})")
@@ -87,14 +77,14 @@ def train(config: RLTrainerConfig):
 
     # Get checkpoint managers
     logger.info(f"Initializing weight checkpoint manager ({config.weights})")
-    weight_ckpt_manager = WeightCheckpointManager(config.outputs_dir, config.weights, config.ckpt, config.async_level)
-    if config.ckpt:
-        logger.info(f"Initializing checkpoint manager ({config.ckpt})")
-        ckpt_manager = CheckpointManager(config.outputs_dir, config.ckpt)
+    weight_ckpt_manager = setup_weight_ckpt_manager(config.outputs_dir, config.weights, config.ckpt, config.async_level)
+
+    logger.info(f"Initializing checkpoint manager ({config.ckpt})")
+    ckpt_manager = setup_ckpt_manager(config.outputs_dir, config.ckpt)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
-    if config.ckpt and config.ckpt.resume_step:
+    if config.ckpt and ckpt_manager is not None and config.ckpt.resume_step:
         logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
         ckpt_manager.load(model, [optimizer], scheduler, progress, step=config.ckpt.resume_step)
     logger.info(
@@ -102,6 +92,7 @@ def train(config: RLTrainerConfig):
     )
 
     # Optionally, initialize a model to compute logprobs
+    logprob_model, tensor_offloaded_repository = None, {}
     if config.recompute_logprobs:
         # Initialize the logprob model
         tensor_offloaded_repository: dict[int, OffloadedTensor] = {}
@@ -115,7 +106,7 @@ def train(config: RLTrainerConfig):
                 model_name_or_path = (
                     config.model.name
                     if not (config.ckpt and config.ckpt.resume_step)
-                    else weight_ckpt_manager._get_step_path(step)
+                    else weight_ckpt_manager._get_step_path(step).as_posix()
                 )
                 model_config = deepcopy(config.model)
                 model_config.name = model_name_or_path
@@ -135,15 +126,15 @@ def train(config: RLTrainerConfig):
         save_weights_time = 0
         if progress.step > 0:
             save_weights_start_time = time.time()
-            model_path = weight_ckpt_manager.save(model, tokenizer, step=progress.step)
+            weight_ckpt_manager.save(model, tokenizer, step=progress.step)
             save_weights_time = time.time() - save_weights_start_time
 
         # Save the full checkpoint (if we are at an interval step and not at the first or last step)
         is_last_step = config.max_steps is not None and progress.step == config.max_steps - 1
         save_ckpt_time = 0
         if (
-            config.ckpt
-            and config.ckpt.interval
+            ckpt_manager is not None
+            and (config.ckpt and config.ckpt.interval)
             and not (is_first_step or is_last_step)
             and progress.step % config.ckpt.interval == 0
         ):
@@ -163,7 +154,7 @@ def train(config: RLTrainerConfig):
         step_start_time = time.time()
 
         # Offload the current model to CPU for logprob computation
-        if config.recompute_logprobs:
+        if logprob_model is not None:
             logger.debug(f"Offloading model for step {progress.step} to CPU for future logprob calculation")
             reshard_module(logprob_model)
             tensor_offloaded_repository[progress.step] = copy_model_to_cpu(model)
@@ -186,7 +177,7 @@ def train(config: RLTrainerConfig):
         compute_logprobs_time = 0
         num_micro_batches = len(micro_batches)
         recomputed_logprob_errors = [torch.ones_like(mb["logprobs"], device="cuda") for mb in micro_batches]
-        if config.recompute_logprobs:
+        if logprob_model is not None:
             compute_logprobs_start_time = time.time()
             og_infer_step = progress.step - config.async_level
             infer_step = max(og_infer_step, 0)
@@ -306,10 +297,7 @@ def train(config: RLTrainerConfig):
 
         forward_backward_time = time.time() - forward_backward_start_time
 
-        # Optionally, broadcast the weight checkpoint from master rank
-        if world.rank == 0 and envs.SHARDCAST_OUTPUT_DIR is not None:
-            logger.info(f"Broadcasting weights from {model_path} via shardcast")
-            shardcast.broadcast(model_path.as_posix())  # TODO: Is this blocking?
+        # TODO: Broadcast weight checkpoint via shardcast
 
         # Maybe clean up weight checkpoint
         weight_ckpt_manager.maybe_clean(progress.step)
@@ -321,7 +309,7 @@ def train(config: RLTrainerConfig):
             if not profile_path.suffix == ".pickle":
                 profile_path = profile_path.with_suffix(".pickle")
             torch.cuda.memory._dump_snapshot(profile_path.as_posix())
-            torch.cuda.memory._record_memory_history(enabled=False)
+            torch.cuda.memory._record_memory_history(enabled=None)
 
         # Synchronize the tensor metrics across all steps and ranks
         tensor_stats = tensors.compute_stats()
@@ -394,7 +382,7 @@ def train(config: RLTrainerConfig):
         monitor.wandb.log_final_distributions()
 
     # Write final checkpoint
-    if config.ckpt:
+    if ckpt_manager is not None:
         logger.info("Writing final checkpoint")
         ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step)
 

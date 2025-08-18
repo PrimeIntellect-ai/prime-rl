@@ -4,7 +4,7 @@ from typing import Literal, TypedDict
 import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
-from transformers import AutoTokenizer
+from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.orchestrator.buffer import Rollout
 from prime_rl.trainer.rl.data import MicroBatch
@@ -21,7 +21,7 @@ class BatchSample(TypedDict):
 def prepare_sample(
     rollout: Rollout,
     seq_len: int,
-    tokenizer: AutoTokenizer,
+    tokenizer: PreTrainedTokenizer,
     pad: bool,
 ) -> BatchSample:
     """
@@ -86,7 +86,7 @@ def prepare_micro_batch(samples: list[MicroBatch], temperature: float):
 def prepare_batch_padding(
     rollouts: list[Rollout],
     temperature: float,
-    tokenizer: AutoTokenizer,
+    tokenizer: PreTrainedTokenizer,
     batch_size: int,
     micro_batch_size: int,
     seq_len: int,
@@ -172,7 +172,7 @@ def prepare_micro_batch_packing(samples: list[BatchSample], max_seq_len: int, te
 def prepare_batch_packing(
     rollouts: list[Rollout],
     temperature: float,
-    tokenizer: AutoTokenizer,
+    tokenizer: PreTrainedTokenizer,
     batch_size: int,
     micro_batch_size: int,
     seq_len: int,
@@ -228,7 +228,7 @@ def prepare_batch_packing(
 def prepare_batch(
     rollouts: list[Rollout],
     temperature: float,
-    tokenizer: AutoTokenizer,
+    tokenizer: PreTrainedTokenizer,
     batch_size: int,
     micro_batch_size: int,
     seq_len: int,

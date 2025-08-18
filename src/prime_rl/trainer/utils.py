@@ -75,8 +75,9 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
     # Turn metric history into pd.DataFrame
     df = pd.DataFrame(dict(history.items()))
     columns = {
-        "perf/train/throughput": "Throughput",
-        "time/train": "Step Time",
+        "perf/mfu": "MFU",
+        "perf/throughput": "Throughput",
+        "time/step": "Step Time",
     }
     df = df[columns.keys()].rename(columns=columns)
     df = df.iloc[1:]  # Exclude first row
@@ -92,19 +93,21 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
 
     # Add formatted rows
     formatted_df = pd.DataFrame(columns=df.columns)
+    formatted_df["MFU"] = df["MFU"].apply(lambda x: f"{format_num(x, precision=2)}%")
+    formatted_df["Throughput"] = df["Throughput"].apply(lambda x: format_num(x, precision=2))
     formatted_df["Step Time"] = df["Step Time"].apply(format_time)
-    formatted_df["Throughput"] = df["Throughput"].apply(format_num, precision=2)
     for step, row in formatted_df.iterrows():
         table.add_row(*([str(step)] + [str(x) for x in row]))
 
     # Separator
-    table.add_row(*([""] * len(row)))
+    table.add_row(*([""] * len(formatted_df.columns)))
 
     # Add row for formatted, aggregated statistics
     mean_df = df.describe().loc[["mean", "std", "min", "max"], :]
     formatted_mean_df = pd.DataFrame(columns=mean_df.columns)
-    formatted_mean_df["Step Time"] = mean_df["Step Time"].apply(format_time)
+    formatted_mean_df["MFU"] = mean_df["MFU"].apply(lambda x: f"{format_num(x, precision=2)}%")
     formatted_mean_df["Throughput"] = mean_df["Throughput"].apply(format_num, precision=2)
+    formatted_mean_df["Step Time"] = mean_df["Step Time"].apply(format_time)
     mean_row = ["Overall"] + formatted_mean_df.T.apply(
         lambda row: f"{row['mean']} ± {row['std']} [{row['min']}, {row['max']}]", axis=1
     ).tolist()
@@ -126,11 +129,12 @@ def flexible_all_gather(tensor: Tensor) -> Tensor:
         return tensor
 
     # Find the tensor with the most elements
-    local_numel = torch.tensor(tensor.numel(), device=tensor.device)
-    all_numels = [torch.tensor(0, device=tensor.device) for _ in range(dist.get_world_size())]
-    dist.all_gather(all_numels, local_numel)
-    all_numels = [numel.item() for numel in all_numels]
-    max_numel = max(all_numels)
+    local_numel = tensor.numel()
+    local_numel_tensor = torch.tensor(local_numel, device=tensor.device)
+    all_numel_tensors = [torch.tensor(0, device=tensor.device) for _ in range(dist.get_world_size())]
+    dist.all_gather(all_numel_tensors, local_numel_tensor)
+    all_numels = [numel.item() for numel in all_numel_tensors]
+    max_numel = int(max(all_numels))
 
     # Pad the tensor with zeros if it has less elements than the maximum
     if local_numel < max_numel:

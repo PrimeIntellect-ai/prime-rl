@@ -60,7 +60,7 @@ def set_logger(logger: Logger) -> None:
     _LOGGER = logger
 
 
-def get_logger() -> Logger | None:
+def get_logger() -> Logger:
     """
     Get the global logger. This function is shared across submodules such as
     training and inference to accesst the global logger instance. Raises if the
@@ -70,6 +70,8 @@ def get_logger() -> Logger | None:
         The global logger.
     """
     global _LOGGER
+    if _LOGGER is None:
+        raise RuntimeError("Logger not set. Please call `set_logger` first.")
     return _LOGGER
 
 

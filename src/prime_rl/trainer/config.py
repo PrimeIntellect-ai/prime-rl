@@ -7,6 +7,18 @@ from prime_rl.utils.pydantic_config import BaseConfig
 AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2"]
 
 
+class ActivationCheckpointConfig(BaseModel):
+    """Configures activation checkpointing."""
+
+    freq: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Applies activation checkpointing to every `freq` layers. Defaults to 1, which will is full activation checkpointing.",
+        ),
+    ] = 1
+
+
 class ModelConfig(BaseConfig):
     """Configures the model for training."""
 
@@ -27,11 +39,11 @@ class ModelConfig(BaseConfig):
     ] = False
 
     ac: Annotated[
-        bool,
+        ActivationCheckpointConfig | None,
         Field(
-            description="Whether to apply activation checkpointing to the model.",
+            description="Whether to apply activation checkpointing to the model. If None, will not apply activation checkpointing.",
         ),
-    ] = False
+    ] = None
 
     reshard_after_forward: Annotated[
         bool, Field(description="Whether to reshard the model after each forward pass.")
@@ -80,6 +92,8 @@ class CosineSchedulerConfig(BaseModel):
     type: Literal["cosine"] = "cosine"
 
     warmup_steps: Annotated[int, Field(ge=0, description="Number of warmup steps for the learning rate scheduler.")] = 0
+
+    min_lr: Annotated[float, Field(ge=0, description="Minimum learning rate to converge to.")] = 0.0
 
     decay_steps: Annotated[
         int | None,

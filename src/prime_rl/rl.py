@@ -24,7 +24,7 @@ from prime_rl.trainer.config import CheckpointConfig as TrainerCheckpointConfig
 from prime_rl.trainer.rl.config import FakeDataLoaderConfig
 from prime_rl.trainer.rl.config import RLTrainerConfig as TrainerConfig
 from prime_rl.utils.config import WandbMonitorConfig
-from prime_rl.utils.logger import format_message, format_time, get_logger, set_logger, setup_handlers
+from prime_rl.utils.logger import format_message, format_time, set_logger, setup_handlers
 from prime_rl.utils.pydantic_config import BaseSettings, get_temp_toml_file, parse_argv
 from prime_rl.utils.utils import (
     get_ckpt_dir,
@@ -356,9 +356,6 @@ class RLConfig(BaseSettings):
 
 
 def setup_logger(log_config: LogConfig) -> Logger:
-    if get_logger():
-        raise RuntimeError("Logger already setup. Call reset_logger first.")
-
     # Setup the logger handlers
     format = format_time(log_config) + format_message()
     logger = setup_handlers(loguru_logger, format, log_config, rank=0)

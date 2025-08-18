@@ -4,7 +4,8 @@ max_steps = 1000
 
 [model]
 name = "willcb/DeepSeek-R1-Distill-Qwen-7B"
-ac = true
+
+[model.ac]
 
 [optim]
 lr = 1e-6

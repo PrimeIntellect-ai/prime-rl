@@ -5,7 +5,8 @@ project = "wordle"
 
 [model]
 name = "willcb/Qwen3-14B"
-ac = true
+
+[model.ac]
 
 [optim]
 lr = 1e-6

@@ -3,7 +3,6 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
 
-from prime_rl.eval.registry import Benchmark
 from prime_rl.orchestrator.advantage import AdvantageType
 from prime_rl.utils.config import LogConfig, ModelConfig, MultiMonitorConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
@@ -35,7 +34,7 @@ class ClientConfig(BaseConfig):
 
 
 class SamplingConfig(BaseConfig):
-    """Configures how tokens are sampled from the model. Largely follows the vLLM sampling parameters."""
+    """Configures how tokens are sampled from the model for training. Largely follows the vLLM sampling parameters."""
 
     temperature: Annotated[
         float,
@@ -68,29 +67,129 @@ class SamplingConfig(BaseConfig):
     ] = None
 
 
+class EvalSamplingConfig(BaseConfig):
+    """Configures how tokens are sampled from the model for evaluation. Largely follows the vLLM sampling parameters."""
+
+    temperature: Annotated[
+        float | None,
+        Field(
+            ge=0,
+            description="Scales the output probability distribution. Lower values => more deterministic, higher values => more random. If 0, will sample greedily. Defaults to None, which means we fall back to the inference server's default value.",
+        ),
+    ] = None
+
+    top_p: Annotated[
+        float | None,
+        Field(
+            description="Cumulative probability of the top tokens to consider. If 1, all tokens are considered. Defaults to None, which means we fall back to the inference server's default value.",
+        ),
+    ] = None
+
+    top_k: Annotated[
+        int | None,
+        Field(
+            description="Number of top tokens to consider. If -1, all tokens are considered. Defaults to None, which means we fall back to the inference server's default value.",
+        ),
+    ] = None
+
+    min_p: Annotated[
+        float | None,
+        Field(
+            description="Minimum probability for a token to be considered, relative to the probability of the most likely token. If 0, all tokens are considered. Defaults to None, which means we fall back to the inference server's default value.",
+        ),
+    ] = None
+
+    max_tokens: Annotated[
+        int | None,
+        Field(
+            description="Maximum number of output tokens to generate per turn. If None, will generate until maximum context length or EOS token is hit.",
+        ),
+    ] = None
+
+    min_tokens: Annotated[
+        int | None,
+        Field(
+            description="Minimum number of output tokens to generate per sequence. Defaults to None, which means we fall back to the inference server's default value.",
+        ),
+    ] = None
+
+    seed: Annotated[
+        int | None,
+        Field(
+            description="Random seed to use for sampling. If None, no seeding is used. Defaults to None, which means we fall back to the inference server's default value.",
+        ),
+    ] = None
+
+
 class EnvironmentConfig(BaseConfig):
     """Configures the environment to be used for inference."""
 
-    id: Annotated[str, Field(description="ID of the environment to use.")] = "vf-reverse-text"
+    id: Annotated[str, Field(description="ID of the environment to use.")] = "reverse-text"
     args: Annotated[dict, Field(description="Arguments to pass to the environment.")] = {}
 
 
 class EvalConfig(BaseConfig):
-    """Configures evaluation."""
+    """Configures evaluation using verifiers environments."""
 
-    benchmarks: Annotated[
-        list[Benchmark],
+    environment_ids: Annotated[
+        list[str],
         Field(
-            description="Benchmarks to evaluate on. By default, it will evaluate only on the MATH-500 benchmark.",
+            description="List of verifiers environment IDs to evaluate on. Each ID also serves as the metric prefix."
         ),
-    ] = ["math500"]
+    ] = []
 
-    rollouts_per_prompt: Annotated[
+    environment_args: Annotated[
+        dict[str, dict],
+        Field(
+            description="Per-environment overrides keyed by ID; forwarded as kwargs to verifiers.load_environment(id, **args)."
+        ),
+    ] = {}
+
+    num_examples: Annotated[
         list[int],
         Field(
-            description="Number of samples to generate for each benchmark.",
+            description="Number of examples to evaluate per environment. Set all or none; if None, defaults to -1 for every ID."
         ),
-    ] = [1]
+    ] = []
+
+    rollouts_per_example: Annotated[
+        list[int],
+        Field(
+            description="Number of samples to generate per example for each environment (length must match eval.environment_ids)."
+        ),
+    ] = []
+
+    sampling: EvalSamplingConfig = Field(
+        default_factory=EvalSamplingConfig,
+        description="Shared sampling configuration for evals; can differ from training sampling.",
+    )
+
+    save: Annotated[
+        bool,
+        Field(
+            description="Whether to save the evaluation artifacts to the outputs directory.",
+        ),
+    ] = True
+
+    @model_validator(mode="after")
+    def _validate_and_fill_eval_lists(self):
+        # If rollouts_per_example is empty, default to 1 for all ids
+        if len(self.rollouts_per_example) == 0:
+            self.rollouts_per_example = [1 for _ in self.environment_ids]
+        elif len(self.rollouts_per_example) != len(self.environment_ids):
+            raise ValueError("Number of rollouts_per_example entries must match number of ids")
+
+        # num_examples: if empty/unspecified, default to -1 for all; else length must match ids
+        if len(self.num_examples) == 0:
+            self.num_examples = [-1 for _ in self.environment_ids]
+        elif len(self.num_examples) != len(self.environment_ids):
+            raise ValueError("Number of num_examples entries must match number of ids")
+
+        return self
+
+
+class OnlineEvalConfig(EvalConfig):
+    """Configures online evaluation."""
 
     interval: Annotated[
         int,
@@ -106,12 +205,6 @@ class EvalConfig(BaseConfig):
             description="Whether to evaluate the base model we are training on.",
         ),
     ] = True
-
-    @model_validator(mode="after")
-    def validate_rollouts_per_prompt(self):
-        if len(self.rollouts_per_prompt) != len(self.benchmarks):
-            raise ValueError("Number of rollouts per prompt must be the same as the number of benchmarks")
-        return self
 
 
 class CheckpointConfig(BaseConfig):
@@ -237,7 +330,7 @@ class OrchestratorConfig(BaseSettings):
     environment: EnvironmentConfig = EnvironmentConfig()
 
     # The evaluation configuration
-    eval: EvalConfig | None = None
+    eval: OnlineEvalConfig | None = None
 
     # Data buffer configuration
     buffer: Annotated[DataBufferConfigType, Field(discriminator="type")] = SimpleBufferConfig()
@@ -270,11 +363,11 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = 128
 
-    rollouts_per_prompt: Annotated[
+    rollouts_per_example: Annotated[
         int,
         Field(
             ge=1,
-            description="Number of output sequences to return for the given prompt.",
+            description="Number of output sequences to return per example during training.",
         ),
     ] = 1
 
@@ -345,7 +438,7 @@ class OrchestratorConfig(BaseSettings):
 
     @model_validator(mode="after")
     def validate_batch_size(self):
-        if self.batch_size % self.rollouts_per_prompt != 0:
+        if self.batch_size % self.rollouts_per_example != 0:
             raise ValueError("Batch size must be divisible by the number of samples per problem")
         if self.batch_size % self.micro_batch_size != 0:
             raise ValueError("Batch size must be divisible by micro batch size")

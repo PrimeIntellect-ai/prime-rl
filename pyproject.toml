@@ -18,7 +18,6 @@ dependencies = [
     "pydantic-settings>=2.10.1",
     "pylatexenc>=2.10",
     "pynvml>=12.0.0",
-    "shardcast>=0.3.2",
     "tomli>=2.2.1",
     "torch>=2.7.0",
     "transformers>=4.53.0",
@@ -32,7 +31,7 @@ dependencies = [
     "textarena>=0.6.16",
     "nltk>=3.9.1",
     "math-verify>=0.8.0",
-    "muon_fsdp2>=0.3.0"
+    "muon_fsdp2>=0.3.0",
 ]
 
 [project.scripts]
@@ -52,14 +51,19 @@ flash-attn = ["flash-attn>=2.8.0"]
 flash-infer = ["flashinfer-python>=0.2.8rc1"]
 
 vf = [
-    "vf-intellect-math",
-    "vf-reverse-text",
-    "vf-ascii-tree",
-    "vf-pydantic-adherence",
-    "vf-hendrycks-math",
-    "vf-skywork-math",
-    "vf-unscramble",
-    "vf-alphabet-sort",
+    "alphabet-sort",
+    "ascii-tree",
+    "pydantic-adherence",
+    "reverse-text",
+    "unscramble",
+    "skywork-math",
+    "deepscaler-math",
+    "acereason-math",
+    "hendrycks-math",
+    "intellect-math",
+    "aime2024",
+    "aime2025",
+    "math500",
 ]
 
 [tool.uv]
@@ -68,34 +72,27 @@ prerelease = "allow"
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu128" }]
-verifiers = { git = "https://github.com/willccbb/verifiers", rev = "74c604f" }
+verifiers = { git = "https://github.com/willccbb/verifiers", rev = "9cf207a" }
 
-vf-intellect-math = { workspace = true }
 vf-wordle = { git = "https://github.com/willccbb/verifiers.git", subdirectory = "environments/vf_wordle", rev = "main" }
-vf-reverse-text = { workspace = true }
-vf-ascii-tree = { workspace = true }
-vf-pydantic-adherence = { workspace = true }
-vf-hendrycks-math = { workspace = true }
-vf-skywork-math = { workspace = true }
-vf-unscramble = { workspace = true }
-vf-alphabet-sort = { workspace = true }
+reverse-text = { url = "https://hub.primeintellect.ai/primeintellect/reverse-text/@latest/reverse_text-0.1.1-py2.py3-none-any.whl" }
+ascii-tree = { url = "https://hub.primeintellect.ai/primeintellect/ascii-tree/@latest/ascii_tree-0.1.4-py2.py3-none-any.whl" }
+pydantic-adherence = { url = "https://hub.primeintellect.ai/primeintellect/pydantic-adherence/@latest/pydantic_adherence-0.1.1-py2.py3-none-any.whl" }
+unscramble = { url = "https://hub.primeintellect.ai/primeintellect/unscramble/@latest/unscramble-0.1.1-py2.py3-none-any.whl" }
+alphabet-sort = { url = "https://hub.primeintellect.ai/primeintellect/alphabet-sort/@latest/alphabet_sort-0.1.3-py2.py3-none-any.whl" }
+skywork-math = { url = "https://hub.primeintellect.ai/primeintellect/skywork-math/@latest/skywork_math-0.1.2-py2.py3-none-any.whl" }
+deepscaler-math = { url = "https://hub.primeintellect.ai/primeintellect/deepscaler-math/@latest/deepscaler_math-0.1.2-py2.py3-none-any.whl" }
+acereason-math = { url = "https://hub.primeintellect.ai/primeintellect/acereason-math/@latest/acereason_math-0.1.2-py2.py3-none-any.whl" }
+hendrycks-math = { url = "https://hub.primeintellect.ai/primeintellect/hendrycks-math/@latest/hendrycks_math-0.1.2-py2.py3-none-any.whl" }
+intellect-math = { url = "https://hub.primeintellect.ai/primeintellect/intellect-math/@latest/intellect_math-0.1.2-py2.py3-none-any.whl" }
+aime2024 = { url = "https://hub.primeintellect.ai/primeintellect/aime2024/@latest/aime2024-0.1.7-py3-none-any.whl" }
+aime2025 = { url = "https://hub.primeintellect.ai/primeintellect/aime2025/@latest/aime2025-0.1.7-py3-none-any.whl" }
+math500 = { url = "https://hub.primeintellect.ai/primeintellect/math500/@latest/math500-0.1.7-py3-none-any.whl" }
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/test/cu128"
 explicit = true
-
-[tool.uv.workspace]
-members = [
-    "environments/vf_intellect_math",
-    "environments/vf_reverse_text",
-    "environments/vf_ascii_tree",
-    "environments/vf_pydantic_adherence",
-    "environments/vf_hendrycks_math",
-    "environments/vf_skywork_math",
-    "environments/vf_unscramble",
-    "environments/vf_alphabet_sort",
-]
 
 [dependency-groups]
 dev = [

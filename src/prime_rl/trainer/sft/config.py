@@ -22,14 +22,19 @@ class DataConfig(BaseConfig):
     name: Annotated[str, Field(description="Name or path of the HF dataset to use.")] = (
         "PrimeIntellect/Reverse-Text-SFT"
     )
-    split: Annotated[str, Field(description="Split to use from the HF dataset.")] = "train"
+    splits: Annotated[list[str], Field(description="Splits to use from the HF dataset.")] = ["train"]
     collate_mode: Annotated[Literal["padding", "packing"], Field(description="Collate mode to use.")] = "packing"
     micro_batch_size: Annotated[int, Field(ge=1)] = 8
     batch_size: Annotated[int, Field(ge=1)] = 128
     seq_len: Annotated[int, Field(ge=1)] = 128
     shuffle: Annotated[bool, Field(description="Whether to shuffle the dataset at the beginning of each epoch.")] = True
 
-    fake: Annotated[bool, Field(description="Whether to use a fake dataset.")] = False
+    fake: Annotated[
+        Literal["fixed", "variable"] | None,
+        Field(
+            description="How to generate fake data, mostly used for benchmarking. If fixed, each fake sample will be of length `seq_len`. If variable, each fake sample will be of length `seq_len` with uniform distribution from [0,seq_len]. If None, will use the regular dataset."
+        ),
+    ] = None
 
     @model_validator(mode="after")
     def validate_batch_size(self):
@@ -38,6 +43,16 @@ class DataConfig(BaseConfig):
         if self.batch_size < self.micro_batch_size:
             raise ValueError("Batch size must be greater than or equal to micro batch size")
         return self
+
+    def __str__(self):
+        if self.fake:
+            data_str = f"fake={self.fake}"
+        else:
+            data_str = (
+                f"name={self.name}, splits={self.splits}, collate_mode={self.collate_mode}, shuffle={self.shuffle}"
+            )
+
+        return f"{data_str}, micro_batch_size={self.micro_batch_size}, batch_size={self.batch_size}, seq_len={self.seq_len}"
 
 
 class SFTTrainerConfig(BaseSettings):
@@ -92,8 +107,10 @@ class SFTTrainerConfig(BaseSettings):
     def auto_setup_bench(self):
         if self.bench:
             self.max_steps = 4  # 1 Warmup + 3 Benchmark
-            if not self.data.fake:
-                self.data.fake = True
+            if self.monitor.wandb:  # Do not log extras
+                self.monitor.wandb.log_extras = None
+            if self.ckpt:  # Do not checkpoint
+                self.ckpt = None
         return self
 
     @model_validator(mode="after")
@@ -108,7 +125,7 @@ class SFTTrainerConfig(BaseSettings):
 
         # If decay_steps is not specified, use remaining steps after warmup
         if self.scheduler.decay_steps is None:
-            if not (self.warmup_steps <= self.max_steps):
+            if not (self.scheduler.warmup_steps <= self.max_steps):
                 raise ValueError("config.scheduler.warmup_steps must be less than or equal to config.max_steps")
 
             self.scheduler.decay_steps = self.max_steps - self.scheduler.warmup_steps

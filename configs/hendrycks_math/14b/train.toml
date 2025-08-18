@@ -2,7 +2,8 @@
 
 [model]
 name = "willcb/DeepSeek-R1-Distill-Qwen-14B"
-ac = true
+
+[model.ac]
 
 [optim]
 lr = 1e-6

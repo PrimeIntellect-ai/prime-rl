@@ -109,7 +109,9 @@ class APIMonitor(Monitor):
         async def _post_metrics():
             try:
                 async with aiohttp.ClientSession() as session:
-                    async with session.post(self.url, json=payload, headers=headers) as response:
+                    async with session.post(
+                        self.url, json=payload, headers=headers
+                    ) as response:
                         if response is not None:
                             response.raise_for_status()
                     self.logger.debug(f"Logged successfully to server {self.url}")
@@ -125,7 +127,7 @@ class WandbMonitor(Monitor):
     def __init__(
         self,
         config: WandbMonitorConfig,
-        outputs_dir: Path,
+        outputs_dir: Path | None = None,
         tokenizer: PreTrainedTokenizer | None = None,
         task_id: str | None = None,
         run_config: BaseSettings | None = None,
@@ -135,7 +137,9 @@ class WandbMonitor(Monitor):
         self.config = config
         self.is_master = rank == 0
         if not self.is_master:
-            self.logger.warning(f"Skipping WandbMonitor initialization from non-master rank ({rank})")
+            self.logger.warning(
+                f"Skipping WandbMonitor initialization from non-master rank ({rank})"
+            )
             return
         self._maybe_overwrite_wandb_command()
         self.wandb = wandb.init(
@@ -219,8 +223,10 @@ class WandbMonitor(Monitor):
             # Do not log samples if not enabled or not log interval step
             return
         assert self.tokenizer is not None, "Tokenizer is required for sample logging"
-        assert self.last_log_samples_step <= step, "Step must be greater than last logged step"
-
+        assert self.last_log_samples_step <= step, (
+            "Step must be greater than last logged step"
+        )
+        assert self.logger is not None, "Logger is required for sample logging"
         self.logger.info(f"Logging samples to W&B table at step {step}")
         start_time = time.time()
         batch_size = len(input_tokens)
@@ -236,13 +242,18 @@ class WandbMonitor(Monitor):
         assert list(per_problem_tokens.keys()) == list(range(num_problems))
 
         per_problem_seq_len = {
-            problem_id: sum(len(t) for t in tokens) / len(tokens) for problem_id, tokens in per_problem_tokens.items()
+            problem_id: sum(len(t) for t in tokens) / len(tokens)
+            for problem_id, tokens in per_problem_tokens.items()
         }
         self.logger.debug(f"Per-problem seq len: {per_problem_seq_len}")
-        min_len_problem_id = min(per_problem_seq_len, key=per_problem_seq_len.get)
-        max_len_problem_id = max(per_problem_seq_len, key=per_problem_seq_len.get)
+        min_len_problem_id = min(per_problem_seq_len.items(), key=lambda kv: kv[1])[0]
+        max_len_problem_id = max(per_problem_seq_len.items(), key=lambda kv: kv[1])[0]
         random_problem_id = random.choice(list(range(num_problems)))
-        problem_ids = {"min_len": min_len_problem_id, "max_len": max_len_problem_id, "random": random_problem_id}
+        problem_ids = {
+            "min_len": min_len_problem_id,
+            "max_len": max_len_problem_id,
+            "random": random_problem_id,
+        }
         self.logger.debug(f"Logging samples for problems: {problem_ids}")
 
         # Randomly select and log samples
@@ -270,9 +281,13 @@ class WandbMonitor(Monitor):
                 self.samples.append(sample)
         wandb.log({"samples": self.samples_table}, step=step)
         self.last_log_samples_step = step
-        self.logger.debug(f"Logged samples at step {step} to W&B table in {time.time() - start_time:.2f}s")
+        self.logger.debug(
+            f"Logged samples at step {step} to W&B table in {time.time() - start_time:.2f}s"
+        )
 
-    def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:
+    def log_distributions(
+        self, distributions: dict[str, list[float]], step: int
+    ) -> None:
         if not self.is_master:
             return
         if (
@@ -281,8 +296,12 @@ class WandbMonitor(Monitor):
             or step % self.config.log_extras.interval != 0
         ):
             return
-        assert self.last_log_distributions_step <= step, "Step must be greater than last logged step"
-        self.logger.info(f"Logging distributions for keys {list(distributions.keys())} to W&B table at step {step}")
+        assert self.last_log_distributions_step <= step, (
+            "Step must be greater than last logged step"
+        )
+        self.logger.info(
+            f"Logging distributions for keys {list(distributions.keys())} to W&B table at step {step}"
+        )
 
         # Initialize incremental table if not already done
         if self.distributions_table is None:
@@ -297,12 +316,14 @@ class WandbMonitor(Monitor):
 
         # Append to distributions
         start_time = time.time()
-        distributions = {"step": step, **distributions}
-        self.distributions.append(distributions)
-        self.distributions_table.add_data(*distributions.values())
+        row = {"step": step, **distributions}
+        self.distributions.append(row)
+        self.distributions_table.add_data(*row.values())
         wandb.log({"distributions": self.distributions_table}, step=step)
         self.last_log_distributions_step = step
-        self.logger.debug(f"Logged distributions at step {step} to W&B table in {time.time() - start_time:.2f}s")
+        self.logger.debug(
+            f"Logged distributions at step {step} to W&B table in {time.time() - start_time:.2f}s"
+        )
 
     def log_final_samples(self) -> None:
         """Log final samples to W&B table."""
@@ -338,7 +359,7 @@ class MultiMonitor:
     def __init__(
         self,
         config: MultiMonitorConfig,
-        outputs_dir: Path,
+        outputs_dir: Path | None = None,
         task_id: str | None = None,
         tokenizer: PreTrainedTokenizer | None = None,
         run_config: BaseSettings | None = None,
@@ -356,14 +377,18 @@ class MultiMonitor:
         if config.api:
             self.outputs["api"] = APIMonitor(config.api, task_id)
         if config.wandb:
-            self.wandb = WandbMonitor(config.wandb, outputs_dir, tokenizer, task_id, run_config=run_config)
+            self.wandb = WandbMonitor(
+                config.wandb, outputs_dir, tokenizer, task_id, run_config=run_config
+            )
             self.outputs["wandb"] = self.wandb
 
         self.disabled = len(self.outputs) == 0
 
         # Start metrics collection thread, if system_log_frequency is greater than 0
         if config.system_log_frequency > 0:
-            self.logger.info(f"Starting thread to log system metrics every {config.system_log_frequency}s")
+            self.logger.info(
+                f"Starting thread to log system metrics every {config.system_log_frequency}s"
+            )
             self._system_log_frequency = config.system_log_frequency
             self._has_gpu = self._set_has_gpu()
             self._thread = None
@@ -449,13 +474,15 @@ def get_monitor() -> MultiMonitor:
     """Returns the global monitor."""
     global _MONITOR
     if _MONITOR is None:
-        raise RuntimeError("Monitor not initialized. Please call `setup_monitor` first.")
+        raise RuntimeError(
+            "Monitor not initialized. Please call `setup_monitor` first."
+        )
     return _MONITOR
 
 
 def setup_monitor(
     config: MultiMonitorConfig,
-    outputs_dir: Path,
+    outputs_dir: Path | None = None,
     task_id: str | None = None,
     tokenizer: PreTrainedTokenizer | None = None,
     run_config: BaseSettings | None = None,
@@ -463,6 +490,8 @@ def setup_monitor(
     """Sets up a monitor to log metrics to multiple specified outputs."""
     global _MONITOR
     if _MONITOR is not None:
-        raise RuntimeError("Monitor already initialized. Please call `setup_monitor` only once.")
+        raise RuntimeError(
+            "Monitor already initialized. Please call `setup_monitor` only once."
+        )
     _MONITOR = MultiMonitor(config, outputs_dir, task_id, tokenizer, run_config)
     return _MONITOR

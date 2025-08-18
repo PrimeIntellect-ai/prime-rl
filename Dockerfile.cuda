@@ -32,7 +32,6 @@ COPY ./pyproject.toml ./pyproject.toml
 COPY ./uv.lock ./uv.lock
 COPY ./README.md ./README.md
 COPY ./src/ ./src/
-COPY ./environments/ ./environments/
 
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 

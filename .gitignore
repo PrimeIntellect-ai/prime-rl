@@ -9,6 +9,7 @@ configs/endpoints.py
 **/rollouts
 **/logs
 **/wandb
+**/evals
 .pydantic_config
 
 # Byte-compiled / optimized / DLL files
