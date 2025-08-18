@@ -57,13 +57,13 @@ def validate_shared_max_model_len(
         )
 
 
-def validate_shared_outputs_dir(
+def validate_shared_output_dir(
     trainer: RLTrainerConfig,
     orchestrator: OrchestratorConfig,
 ) -> None:
-    if trainer.outputs_dir != orchestrator.outputs_dir:
+    if trainer.output_dir != orchestrator.output_dir:
         raise ValueError(
-            f"Trainer outputs directory ({trainer.outputs_dir}) and orchestrator outputs directory ({orchestrator.outputs_dir}) are not the same. Please specify the same outputs directory for both."
+            f"Trainer outputs directory ({trainer.output_dir}) and orchestrator outputs directory ({orchestrator.output_dir}) are not the same. Please specify the same outputs directory for both."
         )
 
 

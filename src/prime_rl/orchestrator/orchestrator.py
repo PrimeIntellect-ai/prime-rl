@@ -69,7 +69,7 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info(f"Initializing monitor ({config.monitor})")
     monitor = setup_monitor(
         config.monitor,
-        outputs_dir=config.outputs_dir,
+        output_dir=config.output_dir,
         tokenizer=tokenizer,
         run_config=config,
     )
@@ -82,7 +82,7 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Get checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
-    ckpt_manager = setup_ckpt_manager(config.outputs_dir, config.ckpt)
+    ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
 
     # Reset weights to base model if starting from scratch
     progress = Progress()
@@ -91,7 +91,7 @@ async def orchestrate(config: OrchestratorConfig):
         logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
         ckpt_manager.load(progress, step=config.ckpt.resume_step)
         ckpt_step = max(progress.step - config.async_level, 0)
-        await update_weights(client, get_weights_dir(config.outputs_dir), ckpt_step)
+        await update_weights(client, get_weights_dir(config.output_dir), ckpt_step)
     else:
         logger.info("Training from scratch. Resetting weights to base model")
         await reload_weights(client)
@@ -147,14 +147,14 @@ async def orchestrate(config: OrchestratorConfig):
             ckpt_step = progress.step - config.async_level
             logger.info(f"Waiting for weight checkpoint {ckpt_step}")
             wait_for_weight_ckpt_start_time = time.time()
-            wait_for_weight_checkpoint(get_weights_dir(config.outputs_dir), ckpt_step)
+            wait_for_weight_checkpoint(get_weights_dir(config.output_dir), ckpt_step)
             wait_for_weight_ckpt_time = time.time() - wait_for_weight_ckpt_start_time
             logger.debug(f"Waited {wait_for_weight_ckpt_time:.2f}s for weight checkpoint")
 
             # Update the weights
             logger.info(f"Updating weights to weight checkpoint {ckpt_step}")
             update_weights_start_time = time.time()
-            await update_weights(client, get_weights_dir(config.outputs_dir), ckpt_step)
+            await update_weights(client, get_weights_dir(config.output_dir), ckpt_step)
             update_weights_time = time.time() - update_weights_start_time
             logger.debug(f"Updated weights in {update_weights_time:.2f}s")
 
@@ -181,7 +181,7 @@ async def orchestrate(config: OrchestratorConfig):
                         num_examples=num_examples,
                         rollouts_per_example=rollouts_per_example,
                         ckpt_step=ckpt_step,
-                        outputs_dir=config.outputs_dir,
+                        output_dir=config.output_dir,
                         save=config.eval.save,
                         step=progress.step,
                     )
@@ -359,7 +359,7 @@ async def orchestrate(config: OrchestratorConfig):
             collate_mode=config.collate_mode,
         )
 
-        step_path = get_rollout_dir(config.outputs_dir) / f"step_{progress.step}"
+        step_path = get_rollout_dir(config.output_dir) / f"step_{progress.step}"
         step_path.mkdir(parents=True, exist_ok=True)
         for i, batches in enumerate(all_data_ranks_batches):
             batch_path = step_path / f"rank_{i}.pt"

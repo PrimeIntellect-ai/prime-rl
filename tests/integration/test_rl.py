@@ -54,7 +54,7 @@ def wandb_project(username: str) -> str:
 def rl_process(
     vllm_server,  # Can only run with vLLM server
     run_process: Callable[[Command, Environment, int], ProcessResult],
-    outputs_dir: Path,
+    output_dir: Path,
     wandb_project: str,
     branch_name: str,
     commit_hash: str,
@@ -63,7 +63,7 @@ def rl_process(
 
     return run_process(
         RL_CMD
-        + ["--wandb.project", wandb_project, "--wandb.name", wandb_name, "--outputs-dir", outputs_dir.as_posix()],
+        + ["--wandb.project", wandb_project, "--wandb.name", wandb_name, "--outputs-dir", output_dir.as_posix()],
         {},
         TIMEOUT,
     )
@@ -74,7 +74,7 @@ def rl_resume_process(
     vllm_server,  # Can only run with vLLM server
     rl_process,  # Resume training can only start when regular RL process is finished
     run_process: Callable[[Command, Environment, int], ProcessResult],
-    outputs_dir: Path,
+    output_dir: Path,
     wandb_project: str,
     branch_name: str,
     commit_hash: str,
@@ -83,7 +83,7 @@ def rl_resume_process(
 
     return run_process(
         RL_RESUME_CMD
-        + ["--wandb.project", wandb_project, "--wandb.name", wandb_name, "--outputs-dir", outputs_dir.as_posix()],
+        + ["--wandb.project", wandb_project, "--wandb.name", wandb_name, "--outputs-dir", output_dir.as_posix()],
         {},
         TIMEOUT,
     )

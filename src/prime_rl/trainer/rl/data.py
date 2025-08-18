@@ -50,8 +50,8 @@ class FakeDataLoader:
 class DataLoader:
     """Loads serialized data from a data path written by the orchestrator."""
 
-    def __init__(self, outputs_dir: Path, start_step: int):
-        self.rollout_dir = get_rollout_dir(outputs_dir)
+    def __init__(self, output_dir: Path, start_step: int):
+        self.rollout_dir = get_rollout_dir(output_dir)
         self.current_step = start_step
         self.world = get_world()
 

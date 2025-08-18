@@ -41,7 +41,7 @@ def fake_rollout_dir(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> Callable[[list[int], int, int, int], Path]:
     """Create a temporary directory with dummy batches."""
-    outputs_dir = tmp_path_factory.mktemp("outputs")
+    output_dir = tmp_path_factory.mktemp("outputs")
 
     def write_dummy_batches(
         steps: list[int] = [1],
@@ -50,7 +50,7 @@ def fake_rollout_dir(
         seq_len: int = 10,
     ) -> Path:
         for step in steps:
-            step_path = get_rollout_dir(outputs_dir) / f"step_{step}"
+            step_path = get_rollout_dir(output_dir) / f"step_{step}"
             step_path.mkdir(parents=True, exist_ok=True)
             batch_path = step_path / "rank_0.pt"
             tmp_path = batch_path.with_suffix(".tmp")
@@ -62,7 +62,7 @@ def fake_rollout_dir(
             torch.save(batches, tmp_path)
             tmp_path.rename(batch_path)
 
-        return outputs_dir
+        return output_dir
 
     return write_dummy_batches
 
@@ -72,9 +72,9 @@ def train_process(
     run_process: Callable[[Command, Environment], ProcessResult],
     fake_rollout_dir: Callable[[list[int], int, int, int], Path],
 ):
-    outputs_dir = fake_rollout_dir(list(range(5)), 16, 8, 16)
+    output_dir = fake_rollout_dir(list(range(5)), 16, 8, 16)
     return run_process(
-        CMD + ["--outputs-dir", outputs_dir.as_posix(), "--data.fake", "None", "--log.level", "debug"], ENV
+        CMD + ["--outputs-dir", output_dir.as_posix(), "--data.fake", "None", "--log.level", "debug"], ENV
     )
 
 
