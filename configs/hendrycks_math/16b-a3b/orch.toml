@@ -12,12 +12,12 @@ trust_remote_code = true
 [monitor.wandb]
 
 [environment]
-id = "vf-hendrycks-math"
+id = "hendrycks-math"
 
 [monitor.wandb.log_extras]
 interval = 10
 
 [eval]
 interval = 50
-benchmarks = ["math500", "aime24", "aime25"]
-rollouts_per_example = [1, 16, 16] 
+environment_ids = ["math500", "aime2024", "aime2025"]
+rollouts_per_example = [1, 16, 16]

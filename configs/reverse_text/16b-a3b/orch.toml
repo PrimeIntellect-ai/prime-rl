@@ -12,4 +12,4 @@ trust_remote_code = true
 
 
 [environment]
-id = "vf-reverse-text"
+id = "reverse-text"
