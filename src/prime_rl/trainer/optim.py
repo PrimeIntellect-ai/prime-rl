@@ -1,6 +1,6 @@
 from muon_fsdp2 import Muon
-from torch.optim import SGD, AdamW, Optimizer
 from torch import nn
+from torch.optim import SGD, AdamW, Optimizer
 
 from prime_rl.trainer.config import OptimizerConfigType
 

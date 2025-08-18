@@ -13,7 +13,7 @@ from transformers import (
 )
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.trainer.config import ModelConfig
+from prime_rl.trainer.config import ActivationCheckpointConfig, ModelConfig
 
 
 def get_model(config: ModelConfig) -> nn.Module:
@@ -69,7 +69,7 @@ def reshard_module(model: nn.Module):
             module.reshard()
 
 
-def apply_ac(model: Model, ac_config: ActivationCheckpointConfig):
+def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
     for layer_id, (layer_name, transformer_block) in enumerate(model.model.layers.named_children()):
         if layer_id % ac_config.freq == 0:
             transformer_block = checkpoint_wrapper(transformer_block, preserve_rng_state=False)
