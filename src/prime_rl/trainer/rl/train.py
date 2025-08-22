@@ -260,7 +260,7 @@ def train(config: RLTrainerConfig):
                 entropy = compute_entropy(shifted_logits)
 
             # Reduce the loss
-            loss = (loss * loss_mask).sum() / loss_scale
+            loss = (loss * loss_mask).sum() / (loss_scale + 1e-6)
 
             # Delete logits and shifted_logits before backward pass to avoid memory spike
             del logits, shifted_logits
