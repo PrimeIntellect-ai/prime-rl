@@ -1,3 +1,5 @@
+import logging
+
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -14,6 +16,13 @@ from transformers import (
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.config import ActivationCheckpointConfig, ModelConfig
+
+# Add filter to the standard logging module for transformers.modeling_utils to supress the
+# flash attention dtype warnings since FSDP is used to handle mixed precision.
+transformers_modeling_utils_logger = logging.getLogger("transformers.modeling_utils")
+transformers_modeling_utils_logger.addFilter(
+    lambda record: "Flash Attention 2 only supports torch.float16 and torch.bfloat16 dtypes" not in record.getMessage()
+)
 
 
 def is_tt_moe_model(model: nn.Module) -> bool:
