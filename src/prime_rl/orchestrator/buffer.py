@@ -1,4 +1,6 @@
 import random
+import os
+import torch
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -95,6 +97,15 @@ class Buffer(ABC):
         }
         self.rollout_buffer: dict[int, list[Rollout]] = {}
         self.metadata: dict[int, dict] = {problem_id: {} for problem_id in self.problem_ids}
+
+    def save(self, path: str):
+        """Saves the buffer state to a directory."""
+        os.makedirs(path, exist_ok=True)
+
+        torch.save(self.rollout_buffer, os.path.join(path, "rollout_buffer.pt"))
+        torch.save(self.metadata, os.path.join(path, "metadata.pt"))
+
+        self.dataset.save_to_disk(os.path.join(path, "buffer_dataset"))
 
     @abstractmethod
     def sample_problems(self, n: int) -> tuple[list[int], list[dict]]:
@@ -409,6 +420,23 @@ class OnlineDifficultyBuffer(Buffer):
             )
 
         return sampled_rollouts
+
+
+def load_buffer(path: str, buffer_config: DataBufferConfigType) -> Buffer:
+    """Loads the buffer state from a directory."""
+    dataset = Dataset.load_from_disk(os.path.join(path, "buffer_dataset"))
+    
+    buffer = setup_buffer(dataset, buffer_config)
+
+    rollout_buffer_path = os.path.join(path, "rollout_buffer.pt")
+    if os.path.exists(rollout_buffer_path):
+        buffer.rollout_buffer = torch.load(rollout_buffer_path)
+
+    metadata_path = os.path.join(path, "metadata.pt")
+    if os.path.exists(metadata_path):
+        buffer.metadata = torch.load(metadata_path)
+        
+    return buffer
 
 
 def setup_buffer(dataset: Dataset, buffer_config: DataBufferConfigType) -> Buffer:

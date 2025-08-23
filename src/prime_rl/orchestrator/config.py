@@ -220,6 +220,13 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = None
 
+    resume_buffer_from_checkpoint: Annotated[
+        bool,
+        Field(
+            description="Whether to resume the data buffer from the checkpoint.",
+        ),
+    ] = True
+
     keep: Annotated[
         int | None,
         Field(
