@@ -39,6 +39,9 @@ class CheckpointManager:
     def _get_ckpt_path(self, step: int) -> Path:
         return self._get_step_path(step) / "orchestrator.pt"
 
+    def get_ckpt_path(self, step: int) -> Path:
+        return self._get_step_path(step)
+
     def _save_to_path(self, ckpt_path: Path, ckpt_step: int, progress: RLProgress | SFTProgress):
         self._logger.debug(f"Saving orchestrator checkpoint to {ckpt_path}")
         start_time = time.time()
