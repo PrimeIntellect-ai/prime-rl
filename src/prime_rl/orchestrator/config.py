@@ -358,8 +358,6 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = Path("outputs")
 
-    collate_mode: Annotated[Literal["packing", "padding"], Field(description="Collate mode to use.")] = "packing"
-
     batch_size: Annotated[int, Field(ge=1, description="Number of samples to train on per step.")] = 128
 
     micro_batch_size: Annotated[

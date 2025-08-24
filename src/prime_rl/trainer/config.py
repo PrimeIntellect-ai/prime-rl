@@ -180,7 +180,7 @@ class CheckpointConfig(BaseConfig):
             ge=1,
             description="Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints.",
         ),
-    ] = None
+    ] = 1
 
 
 class WeightCheckpointConfig(BaseConfig):

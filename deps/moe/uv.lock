@@ -27,51 +27,36 @@ wheels = [
 [[package]]
 name = "acereason-math"
 version = "0.1.2"
-source = { url = "https://hub.primeintellect.ai/primeintellect/acereason-math/@latest/acereason_math-0.1.2-py2.py3-none-any.whl" }
+source = { registry = "https://hub.primeintellect.ai/primeintellect/simple" }
 dependencies = [
     { name = "verifiers" },
 ]
 wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/acereason-math/@latest/acereason_math-0.1.2-py2.py3-none-any.whl", hash = "sha256:510a73410114cb7d85cea4ac149ccb7cdf33be4b110bf3e94539fbd6493b20f0" },
+    { url = "https://hub.primeintellect.ai/primeintellect/acereason-math/@2ee7457e/acereason_math-0.1.2-py2.py3-none-any.whl", hash = "sha256:510a73410114cb7d85cea4ac149ccb7cdf33be4b110bf3e94539fbd6493b20f0" },
 ]
-
-[package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.1.2" }]
 
 [[package]]
 name = "aime2024"
 version = "0.1.7"
-source = { url = "https://hub.primeintellect.ai/primeintellect/aime2024/@latest/aime2024-0.1.7-py3-none-any.whl" }
+source = { registry = "https://hub.primeintellect.ai/primeintellect/simple" }
 dependencies = [
     { name = "math-verify" },
     { name = "verifiers" },
 ]
 wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/aime2024/@latest/aime2024-0.1.7-py3-none-any.whl", hash = "sha256:82c6a8cca7910b54234b27be90c2cb3caefa4006650edcfb17a92b4451fd6a00" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "math-verify", specifier = ">=0.8.0" },
-    { name = "verifiers", specifier = ">=0.1.2.post0" },
+    { url = "https://hub.primeintellect.ai/primeintellect/aime2024/@48ecca07/aime2024-0.1.7-py3-none-any.whl", hash = "sha256:82c6a8cca7910b54234b27be90c2cb3caefa4006650edcfb17a92b4451fd6a00" },
 ]
 
 [[package]]
 name = "aime2025"
 version = "0.1.7"
-source = { url = "https://hub.primeintellect.ai/primeintellect/aime2025/@latest/aime2025-0.1.7-py3-none-any.whl" }
+source = { registry = "https://hub.primeintellect.ai/primeintellect/simple" }
 dependencies = [
     { name = "math-verify" },
     { name = "verifiers" },
 ]
 wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/aime2025/@latest/aime2025-0.1.7-py3-none-any.whl", hash = "sha256:70d72491a5fe8220d9a5513d6dec3e418afd1ea7d91b351cf0b2ba018de201d5" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "math-verify", specifier = ">=0.8.0" },
-    { name = "verifiers", specifier = ">=0.1.2.post0" },
+    { url = "https://hub.primeintellect.ai/primeintellect/aime2025/@97ebc733/aime2025-0.1.7-py3-none-any.whl", hash = "sha256:70d72491a5fe8220d9a5513d6dec3e418afd1ea7d91b351cf0b2ba018de201d5" },
 ]
 
 [[package]]
@@ -133,16 +118,13 @@ wheels = [
 [[package]]
 name = "alphabet-sort"
 version = "0.1.3"
-source = { url = "https://hub.primeintellect.ai/primeintellect/alphabet-sort/@latest/alphabet_sort-0.1.3-py2.py3-none-any.whl" }
+source = { registry = "https://hub.primeintellect.ai/primeintellect/simple" }
 dependencies = [
     { name = "verifiers" },
 ]
 wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/alphabet-sort/@latest/alphabet_sort-0.1.3-py2.py3-none-any.whl", hash = "sha256:11ee26d5f01c182cc4b5ce04152150e6c3cd81ad39e2afd7ba0ff8115f0eb3bb" },
+    { url = "https://hub.primeintellect.ai/primeintellect/alphabet-sort/@6966cc8a/alphabet_sort-0.1.3-py2.py3-none-any.whl", hash = "sha256:11ee26d5f01c182cc4b5ce04152150e6c3cd81ad39e2afd7ba0ff8115f0eb3bb" },
 ]
-
-[package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.1.2" }]
 
 [[package]]
 name = "annotated-types"
@@ -188,16 +170,13 @@ wheels = [
 [[package]]
 name = "ascii-tree"
 version = "0.1.4"
-source = { url = "https://hub.primeintellect.ai/primeintellect/ascii-tree/@latest/ascii_tree-0.1.4-py2.py3-none-any.whl" }
+source = { registry = "https://hub.primeintellect.ai/primeintellect/simple" }
 dependencies = [
     { name = "verifiers" },
 ]
 wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/ascii-tree/@latest/ascii_tree-0.1.4-py2.py3-none-any.whl", hash = "sha256:338637acd6bbd5c2b3c635dec5ff43a91fd50aefaff80ead2efd877e64af1f41" },
+    { url = "https://hub.primeintellect.ai/primeintellect/ascii-tree/@2566bc59/ascii_tree-0.1.4-py2.py3-none-any.whl", hash = "sha256:338637acd6bbd5c2b3c635dec5ff43a91fd50aefaff80ead2efd877e64af1f41" },
 ]
-
-[package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.1.2" }]
 
 [[package]]
 name = "astor"
@@ -559,16 +538,13 @@ wheels = [
 [[package]]
 name = "deepscaler-math"
 version = "0.1.2"
-source = { url = "https://hub.primeintellect.ai/primeintellect/deepscaler-math/@latest/deepscaler_math-0.1.2-py2.py3-none-any.whl" }
+source = { registry = "https://hub.primeintellect.ai/primeintellect/simple" }
 dependencies = [
     { name = "verifiers" },
 ]
 wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/deepscaler-math/@latest/deepscaler_math-0.1.2-py2.py3-none-any.whl", hash = "sha256:0b745d321472aca9b31265c6695effdfb737b1979b777947436c96a45baf6d27" },
+    { url = "https://hub.primeintellect.ai/primeintellect/deepscaler-math/@6ce8b2f9/deepscaler_math-0.1.2-py2.py3-none-any.whl", hash = "sha256:0b745d321472aca9b31265c6695effdfb737b1979b777947436c96a45baf6d27" },
 ]
-
-[package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.1.2" }]
 
 [[package]]
 name = "depyf"
@@ -1012,19 +988,13 @@ wheels = [
 [[package]]
 name = "hendrycks-math"
 version = "0.1.2"
-source = { url = "https://hub.primeintellect.ai/primeintellect/hendrycks-math/@latest/hendrycks_math-0.1.2-py2.py3-none-any.whl" }
+source = { registry = "https://hub.primeintellect.ai/primeintellect/simple" }
 dependencies = [
     { name = "datasets" },
     { name = "verifiers" },
 ]
 wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/hendrycks-math/@latest/hendrycks_math-0.1.2-py2.py3-none-any.whl", hash = "sha256:6905e287cea5d8e641de5c0a4852c85cd9f8bb9da33f0e744c16e92181a6cf51" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.1.2" },
+    { url = "https://hub.primeintellect.ai/primeintellect/hendrycks-math/@b117e81d/hendrycks_math-0.1.2-py2.py3-none-any.whl", hash = "sha256:6905e287cea5d8e641de5c0a4852c85cd9f8bb9da33f0e744c16e92181a6cf51" },
 ]
 
 [[package]]
@@ -1139,16 +1109,13 @@ wheels = [
 [[package]]
 name = "intellect-math"
 version = "0.1.2"
-source = { url = "https://hub.primeintellect.ai/primeintellect/intellect-math/@latest/intellect_math-0.1.2-py2.py3-none-any.whl" }
+source = { registry = "https://hub.primeintellect.ai/primeintellect/simple" }
 dependencies = [
     { name = "verifiers" },
 ]
 wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/intellect-math/@latest/intellect_math-0.1.2-py2.py3-none-any.whl", hash = "sha256:760a96e69ce69c5efa319864c6a3c1d02ebbbb9fe1745974f9fbce8fd87c829c" },
+    { url = "https://hub.primeintellect.ai/primeintellect/intellect-math/@580abf15/intellect_math-0.1.2-py2.py3-none-any.whl", hash = "sha256:760a96e69ce69c5efa319864c6a3c1d02ebbbb9fe1745974f9fbce8fd87c829c" },
 ]
-
-[package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.1.2" }]
 
 [[package]]
 name = "interegular"
@@ -1582,19 +1549,13 @@ wheels = [
 [[package]]
 name = "math500"
 version = "0.1.7"
-source = { url = "https://hub.primeintellect.ai/primeintellect/math500/@latest/math500-0.1.7-py3-none-any.whl" }
+source = { registry = "https://hub.primeintellect.ai/primeintellect/simple" }
 dependencies = [
     { name = "math-verify" },
     { name = "verifiers" },
 ]
 wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/math500/@latest/math500-0.1.7-py3-none-any.whl", hash = "sha256:5d83c6dfa09187f082aae35066928c547bf4afcb038e0088388a0cd50087f0ab" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "math-verify", specifier = ">=0.8.0" },
-    { name = "verifiers", specifier = ">=0.1.2.post0" },
+    { url = "https://hub.primeintellect.ai/primeintellect/math500/@4692ab65/math500-0.1.7-py3-none-any.whl", hash = "sha256:5d83c6dfa09187f082aae35066928c547bf4afcb038e0088388a0cd50087f0ab" },
 ]
 
 [[package]]
@@ -2289,46 +2250,46 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "acereason-math", marker = "extra == 'vf'", url = "https://hub.primeintellect.ai/primeintellect/acereason-math/@latest/acereason_math-0.1.2-py2.py3-none-any.whl" },
-    { name = "aime2024", marker = "extra == 'vf'", url = "https://hub.primeintellect.ai/primeintellect/aime2024/@latest/aime2024-0.1.7-py3-none-any.whl" },
-    { name = "aime2025", marker = "extra == 'vf'", url = "https://hub.primeintellect.ai/primeintellect/aime2025/@latest/aime2025-0.1.7-py3-none-any.whl" },
-    { name = "alphabet-sort", marker = "extra == 'vf'", url = "https://hub.primeintellect.ai/primeintellect/alphabet-sort/@latest/alphabet_sort-0.1.3-py2.py3-none-any.whl" },
-    { name = "ascii-tree", marker = "extra == 'vf'", url = "https://hub.primeintellect.ai/primeintellect/ascii-tree/@latest/ascii_tree-0.1.4-py2.py3-none-any.whl" },
+    { name = "acereason-math", marker = "extra == 'vf'", specifier = ">=0.1.2", index = "https://hub.primeintellect.ai/primeintellect/simple" },
+    { name = "aime2024", marker = "extra == 'vf'", specifier = ">=0.1.7", index = "https://hub.primeintellect.ai/primeintellect/simple" },
+    { name = "aime2025", marker = "extra == 'vf'", specifier = ">=0.1.7", index = "https://hub.primeintellect.ai/primeintellect/simple" },
+    { name = "alphabet-sort", marker = "extra == 'vf'", specifier = ">=0.1.3", index = "https://hub.primeintellect.ai/primeintellect/simple" },
+    { name = "ascii-tree", marker = "extra == 'vf'", specifier = ">=0.1.4", index = "https://hub.primeintellect.ai/primeintellect/simple" },
     { name = "beartype", specifier = ">=0.21.0" },
     { name = "blobfile", specifier = ">=3.0.0" },
     { name = "cydifflib", specifier = ">=1.2.0" },
     { name = "datasets", specifier = ">=3.6.0" },
-    { name = "deepscaler-math", marker = "extra == 'vf'", url = "https://hub.primeintellect.ai/primeintellect/deepscaler-math/@latest/deepscaler_math-0.1.2-py2.py3-none-any.whl" },
+    { name = "deepscaler-math", marker = "extra == 'vf'", specifier = ">=0.1.2", index = "https://hub.primeintellect.ai/primeintellect/simple" },
     { name = "flash-attn", marker = "extra == 'flash-attn'", specifier = ">=2.8.3" },
     { name = "flashinfer-python", marker = "extra == 'flash-infer'", specifier = ">=0.2.8rc1" },
     { name = "google-cloud-storage", specifier = ">=3.1.1" },
-    { name = "hendrycks-math", marker = "extra == 'vf'", url = "https://hub.primeintellect.ai/primeintellect/hendrycks-math/@latest/hendrycks_math-0.1.2-py2.py3-none-any.whl" },
-    { name = "intellect-math", marker = "extra == 'vf'", url = "https://hub.primeintellect.ai/primeintellect/intellect-math/@latest/intellect_math-0.1.2-py2.py3-none-any.whl" },
+    { name = "hendrycks-math", marker = "extra == 'vf'", specifier = ">=0.1.2", index = "https://hub.primeintellect.ai/primeintellect/simple" },
+    { name = "intellect-math", marker = "extra == 'vf'", specifier = ">=0.1.2", index = "https://hub.primeintellect.ai/primeintellect/simple" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "liger-kernel", specifier = ">=0.5.10" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "lovely-tensors", specifier = ">=0.1.18" },
     { name = "math-verify", specifier = ">=0.8.0" },
-    { name = "math500", marker = "extra == 'vf'", url = "https://hub.primeintellect.ai/primeintellect/math500/@latest/math500-0.1.7-py3-none-any.whl" },
+    { name = "math500", marker = "extra == 'vf'", specifier = ">=0.1.7", index = "https://hub.primeintellect.ai/primeintellect/simple" },
     { name = "muon-fsdp2", specifier = ">=0.3.0" },
     { name = "nltk", specifier = ">=3.9.1" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "openai", specifier = ">=1.90.0" },
     { name = "pydantic", specifier = ">=1.10.13" },
-    { name = "pydantic-adherence", marker = "extra == 'vf'", url = "https://hub.primeintellect.ai/primeintellect/pydantic-adherence/@latest/pydantic_adherence-0.1.1-py2.py3-none-any.whl" },
+    { name = "pydantic-adherence", marker = "extra == 'vf'", specifier = ">=0.1.1", index = "https://hub.primeintellect.ai/primeintellect/simple" },
     { name = "pydantic-settings", specifier = ">=2.10.1" },
     { name = "pylatexenc", specifier = ">=2.10" },
     { name = "pynvml", specifier = ">=12.0.0" },
-    { name = "reverse-text", marker = "extra == 'vf'", url = "https://hub.primeintellect.ai/primeintellect/reverse-text/@latest/reverse_text-0.1.1-py2.py3-none-any.whl" },
+    { name = "reverse-text", marker = "extra == 'vf'", specifier = ">=0.1.1", index = "https://hub.primeintellect.ai/primeintellect/simple" },
     { name = "rich", specifier = ">=14.0.0" },
-    { name = "skywork-math", marker = "extra == 'vf'", url = "https://hub.primeintellect.ai/primeintellect/skywork-math/@latest/skywork_math-0.1.2-py2.py3-none-any.whl" },
+    { name = "skywork-math", marker = "extra == 'vf'", specifier = ">=0.1.3", index = "https://hub.primeintellect.ai/primeintellect/simple" },
     { name = "textarena", specifier = ">=0.6.16" },
     { name = "tomli", specifier = ">=2.2.1" },
     { name = "tomli-w" },
     { name = "torch", specifier = ">=2.8.0", index = "https://download.pytorch.org/whl/test/cu128" },
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e43694bbfeff5d6ad8ac738c067bb90d41" },
     { name = "transformers", specifier = ">=4.53.0" },
-    { name = "unscramble", marker = "extra == 'vf'", url = "https://hub.primeintellect.ai/primeintellect/unscramble/@latest/unscramble-0.1.1-py2.py3-none-any.whl" },
+    { name = "unscramble", marker = "extra == 'vf'", specifier = ">=0.1.1", index = "https://hub.primeintellect.ai/primeintellect/simple" },
     { name = "uvloop", specifier = ">=0.21.0" },
     { name = "verifiers", git = "https://github.com/willccbb/verifiers?rev=9cf207a" },
     { name = "vllm", specifier = "==0.10.0" },
@@ -2597,21 +2558,14 @@ email = [
 [[package]]
 name = "pydantic-adherence"
 version = "0.1.1"
-source = { url = "https://hub.primeintellect.ai/primeintellect/pydantic-adherence/@latest/pydantic_adherence-0.1.1-py2.py3-none-any.whl" }
+source = { registry = "https://hub.primeintellect.ai/primeintellect/simple" }
 dependencies = [
     { name = "datasets" },
     { name = "pydantic" },
     { name = "verifiers" },
 ]
 wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/pydantic-adherence/@latest/pydantic_adherence-0.1.1-py2.py3-none-any.whl", hash = "sha256:a1d3f3e02e7d346b3a7e4e2cc91980c0ef492d9d6ddf845ee7d53f324ead63c5" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "pydantic" },
-    { name = "verifiers", specifier = ">=0.1.2" },
+    { url = "https://hub.primeintellect.ai/primeintellect/pydantic-adherence/@94e41f1b/pydantic_adherence-0.1.1-py2.py3-none-any.whl", hash = "sha256:a1d3f3e02e7d346b3a7e4e2cc91980c0ef492d9d6ddf845ee7d53f324ead63c5" },
 ]
 
 [[package]]
@@ -2901,16 +2855,13 @@ wheels = [
 [[package]]
 name = "reverse-text"
 version = "0.1.1"
-source = { url = "https://hub.primeintellect.ai/primeintellect/reverse-text/@latest/reverse_text-0.1.1-py2.py3-none-any.whl" }
+source = { registry = "https://hub.primeintellect.ai/primeintellect/simple" }
 dependencies = [
     { name = "verifiers" },
 ]
 wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/reverse-text/@latest/reverse_text-0.1.1-py2.py3-none-any.whl", hash = "sha256:fb2861707faa2e6b4fcc74f695c76265edd3391d1417ed1af72aa7d2e374845c" },
+    { url = "https://hub.primeintellect.ai/primeintellect/reverse-text/@f4f1589b/reverse_text-0.1.1-py2.py3-none-any.whl", hash = "sha256:fb2861707faa2e6b4fcc74f695c76265edd3391d1417ed1af72aa7d2e374845c" },
 ]
-
-[package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.1.2" }]
 
 [[package]]
 name = "rich"
@@ -3131,17 +3082,14 @@ wheels = [
 
 [[package]]
 name = "skywork-math"
-version = "0.1.2"
-source = { url = "https://hub.primeintellect.ai/primeintellect/skywork-math/@latest/skywork_math-0.1.2-py2.py3-none-any.whl" }
+version = "0.1.3"
+source = { registry = "https://hub.primeintellect.ai/primeintellect/simple" }
 dependencies = [
     { name = "verifiers" },
 ]
 wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/skywork-math/@latest/skywork_math-0.1.2-py2.py3-none-any.whl", hash = "sha256:80f2bcfcf257d68fc8151b2f3cdaa0029388f4e4bacff03592c69e72ca93533b" },
+    { url = "https://hub.primeintellect.ai/primeintellect/skywork-math/@8263f26a/skywork_math-0.1.3-py2.py3-none-any.whl", hash = "sha256:e8e4c31de57b67f8da70f0ce6a2549e54c434768c401496eed618a3451bad38f" },
 ]
-
-[package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.1.2" }]
 
 [[package]]
 name = "smmap"
@@ -3606,19 +3554,13 @@ wheels = [
 [[package]]
 name = "unscramble"
 version = "0.1.1"
-source = { url = "https://hub.primeintellect.ai/primeintellect/unscramble/@latest/unscramble-0.1.1-py2.py3-none-any.whl" }
+source = { registry = "https://hub.primeintellect.ai/primeintellect/simple" }
 dependencies = [
     { name = "datasets" },
     { name = "verifiers" },
 ]
 wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/unscramble/@latest/unscramble-0.1.1-py2.py3-none-any.whl", hash = "sha256:530627ff9474b985f75ef845b80730ed13c1c36c03d1e80c287fd997275b67d7" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.1.2" },
+    { url = "https://hub.primeintellect.ai/primeintellect/unscramble/@53886153/unscramble-0.1.1-py2.py3-none-any.whl", hash = "sha256:530627ff9474b985f75ef845b80730ed13c1c36c03d1e80c287fd997275b67d7" },
 ]
 
 [[package]]

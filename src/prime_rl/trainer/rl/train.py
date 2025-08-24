@@ -13,10 +13,10 @@ from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.trainer.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
-    compute_loss,
     shift_logits,
     selective_log_softmax,
     compute_entropy,
+    compute_loss,
 )
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
@@ -24,6 +24,8 @@ from prime_rl.trainer.model import (
     setup_tokenizer,
     reshard_module,
     setup_model,
+    is_tt_moe_model,
+    get_load_balance_stats,
 )
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
@@ -33,6 +35,7 @@ from prime_rl.trainer.utils import (
     offload_model_to_cpu,
     wake_up_model_from_cpu,
     print_benchmark,
+    get_response_lengths,
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.monitor import setup_monitor
@@ -224,11 +227,12 @@ def train(config: RLTrainerConfig):
         batch_size = micro_batch_size * num_micro_batches
 
         # Normalize by the local number of unmasked tokens in the batch (per-batch length normalization)
-        loss_scale = torch.tensor(
-            sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches), device="cuda"
-        )
+        if config.loss.norm_type == "token":
+            loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
+        elif config.loss.norm_type == "sequence":
+            loss_scale = batch_size
 
-        logger.info(f"Starting forward and backward pass ({num_micro_batches=}, {loss_scale.item()=})")
+        logger.info(f"Starting forward and backward pass ({num_micro_batches=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
         for micro_step, micro_batch in enumerate(micro_batches):
             input_ids = micro_batch["input_ids"].to("cuda")
@@ -246,19 +250,19 @@ def train(config: RLTrainerConfig):
             logprobs = selective_log_softmax(shifted_logits, input_ids)
 
             # Compute loss
+            response_lengths = get_response_lengths(position_ids)
             loss, loss_tensors = compute_loss(
-                logprobs=logprobs,
-                old_logprobs=old_logprobs,
-                advantages=advantages,
+                logprobs=logprobs.squeeze().split(response_lengths),
+                old_logprobs=old_logprobs.squeeze().split(response_lengths),
+                advantages=advantages.squeeze().split(response_lengths),
+                loss_mask=loss_mask.squeeze().split(response_lengths),
                 loss_config=config.loss,
+                loss_scale=loss_scale,
             )
 
             # Compute entropy
             with torch.no_grad():
                 entropy = compute_entropy(shifted_logits)
-
-            # Reduce the loss
-            loss = (loss * loss_mask).sum() / loss_scale
 
             # Delete logits and shifted_logits before backward pass to avoid memory spike
             del logits, shifted_logits
@@ -273,16 +277,23 @@ def train(config: RLTrainerConfig):
             tensors["recomputed_logprob_error"].append(
                 recomputed_logprob_errors[micro_step][loss_mask].detach().to("cpu")
             )
+            tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
+
+            if is_tt_moe_model(model):
+                load_balance_stats = get_load_balance_stats(model)
+                for k, v in load_balance_stats.items():
+                    tensors[k].append(v)
 
             # Add loss tensors to tensor dict for logging purposes
             for key, loss_tensor in loss_tensors.items():
-                loss_tensor = loss_tensor.detach()[loss_mask].detach().to("cpu")
+                loss_tensor = loss_tensor.detach()[loss_mask.squeeze()].detach().to("cpu")
                 tensors[key].append(loss_tensor)
 
             # Debug log with *local, micro step* stats
-            logger.debug(
-                f"Micro Step {micro_step} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy'][-1].mean().item():.4f} | Importance Ratio: {tensors['importance_ratio'][-1].mean().item():.4f}"
-            )
+            micro_step_message = f"Micro Step {micro_step} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy'][-1].mean().item():.4f} | Importance Ratio: {tensors['importance_ratio'][-1].mean().item():.4f}"
+            if "max_vio" in tensors:
+                micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
+            logger.debug(micro_step_message)
 
         # Optionally, clip the gradients
         logger.debug(f"Clipping gradients to {config.optim.max_norm}")
@@ -329,6 +340,8 @@ def train(config: RLTrainerConfig):
         step_time = time.time() - step_start_time
         current_lr = optimizer.param_groups[0]["lr"]
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Entropy: {tensor_stats['entropy/mean']:.4f} | Importance Ratio: {tensor_stats['importance_ratio/mean']:.4f} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}%"
+        if "max_vio/mean" in tensor_stats:
+            step_message += f" | Max Vio: {tensor_stats['max_vio/mean']:.4f}"
         logger.success(step_message)
 
         # Log performance metrics
@@ -390,7 +403,7 @@ def train(config: RLTrainerConfig):
     logger.success("RL trainer finished!")
 
     # Optionally, print benchmark table
-    if config.bench:
+    if config.bench and world.is_master:
         print_benchmark(to_col_format(monitor.history))
 
 

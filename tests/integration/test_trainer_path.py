@@ -30,7 +30,7 @@ def create_dummy_batch(batch_size: int, seq_len: int) -> MicroBatch:
     micro_batch = {}
     samples = [create_sample(seq_len) for _ in range(batch_size)]
     for key in ["input_ids", "advantages", "loss_mask", "logprobs", "position_ids"]:
-        micro_batch[key] = torch.stack([sample[key] for sample in samples], dim=0)
+        micro_batch[key] = torch.cat([sample[key] for sample in samples]).unsqueeze(0)
     micro_batch["temperature"] = 1.0
     micro_batch["total_tokens"] = batch_size * seq_len
     return micro_batch

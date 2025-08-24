@@ -2,6 +2,7 @@ import time
 
 import torch
 from torch import nn
+from transformers import PretrainedConfig
 
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
@@ -24,8 +25,13 @@ class PerfCounter:
         self._world = get_world()
         self._logger = get_logger()
 
-        self.gpu_peak_flops = self._get_peak_flops(torch.cuda.get_device_name(torch.device("cuda")))
-        self.num_params = self._get_num_params(model, exclude_embedding=True)
+        if torch.cuda.is_available():
+            self.gpu_peak_flops = self._get_peak_flops(torch.cuda.get_device_name(torch.device("cuda")))
+        else:
+            self.gpu_peak_flops = 0
+        # If not tie_word_embeddings, we exclude the embedding parameters from the total number of parameters
+        # If tie_word_embeddings, the embedding parameters are already excluded (shared with the LM head)
+        self.num_params = self._get_num_params(model, exclude_embedding=not model.config.tie_word_embeddings)
         self.num_flop_per_token = self._get_num_flop_per_token(self.num_params, model.config, seq_len=seq_len)
 
     def count_tokens(self, tokens: int):
@@ -71,8 +77,68 @@ class PerfCounter:
             self._logger.warning(f"Peak FLOPS undefined for `{device_name}`. Falling back to A100 (312 TFLOPS)")
             return 312e12
 
-    # TODO: Add config type
-    def _get_num_flop_per_token(self, num_params: int, model_config, seq_len: int) -> int:
+    @staticmethod
+    def get_active_mm_params(config: PretrainedConfig) -> float:
+        """Get number of active parameters per token involved in matmuls"""
+        vocab_size = config.vocab_size
+        hidden_size = config.hidden_size
+        intermediate_size = config.intermediate_size
+        head_dim = config.head_dim
+        num_attention_heads = config.num_attention_heads
+        num_hidden_layers = config.num_hidden_layers
+
+        ## Attention
+        if hasattr(config, "q_lora_rank") and hasattr(config, "kv_lora_rank"):
+            # MLA
+            q_params = num_hidden_layers * (
+                hidden_size * config.q_lora_rank + config.q_lora_rank * num_attention_heads * config.qk_head_dim
+            )
+            kv_params = num_hidden_layers * (
+                hidden_size * (config.kv_lora_rank + config.qk_rope_head_dim)
+                + config.kv_lora_rank * num_attention_heads * (config.qk_nope_head_dim + config.v_head_dim)
+            )
+            o_params = num_hidden_layers * (num_attention_heads * config.v_head_dim * hidden_size)
+        else:
+            # GQA
+            num_key_value_heads = config.num_key_value_heads
+            q_params = num_hidden_layers * hidden_size * num_attention_heads * head_dim
+            kv_params = 2 * num_hidden_layers * hidden_size * num_key_value_heads * head_dim
+            o_params = num_hidden_layers * hidden_size * num_attention_heads * head_dim
+
+        ## MLP
+        if hasattr(config, "first_k_dense_replace"):
+            num_dense_layers = config.first_k_dense_replace
+            num_sparse_layers = config.num_hidden_layers - num_dense_layers
+        elif hasattr(config, "num_experts_per_tok"):
+            num_dense_layers = 0
+            num_sparse_layers = config.num_hidden_layers
+        else:
+            num_dense_layers = config.num_hidden_layers
+            num_sparse_layers = 0
+
+        dense_mlp_params = num_dense_layers * 3 * intermediate_size * hidden_size
+        sparse_mlp_params = 0
+        if hasattr(config, "num_shared_experts"):  # Shared experts
+            sparse_mlp_params += (
+                num_sparse_layers * config.num_shared_experts * 3 * config.moe_intermediate_size * hidden_size
+            )
+        if hasattr(config, "num_experts_per_tok"):  # Routed experts
+            sparse_mlp_params += (
+                num_sparse_layers * config.num_experts_per_tok * 3 * config.moe_intermediate_size * hidden_size
+            )
+        if hasattr(config, "n_routed_experts"):  # DeepSeek Router
+            sparse_mlp_params += num_sparse_layers * config.n_routed_experts * hidden_size
+        elif hasattr(config, "num_experts"):  # Qwen Router
+            sparse_mlp_params += num_sparse_layers * config.num_experts * hidden_size
+        else:
+            sparse_mlp_params = 0
+
+        ## LM Head
+        lm_head_params = vocab_size * hidden_size
+        ## Total
+        return q_params + kv_params + o_params + dense_mlp_params + sparse_mlp_params + lm_head_params
+
+    def _get_num_flop_per_token(self, num_params: int, model_config: PretrainedConfig, seq_len: int) -> int:
         l, h, q, t = (  # noqa: E741
             model_config.num_hidden_layers,
             model_config.num_attention_heads,
@@ -85,7 +151,11 @@ class PerfCounter:
         #    but recomputation should not be counted in calculating MFU           (+0)
         # 3. each matmul performs 1 multiplication and 1 addition                 (*2)
         # 4. we follow the convention and do not account for sparsity in causal attention
-        flop_per_token = 6 * num_params + 12 * l * h * q * t
+        try:
+            flop_per_token = 6 * self.get_active_mm_params(model_config) + 12 * l * h * q * t
+        except Exception as e:
+            self._logger.warning(f"Error calculating flop_per_token using get_active_mm_params: {e}")
+            flop_per_token = 6 * num_params + 12 * l * h * q * t
 
         return flop_per_token
 

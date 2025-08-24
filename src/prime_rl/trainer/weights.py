@@ -105,7 +105,7 @@ class WeightCheckpointManager:
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
             warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
-            
+
             cpu_state = {}
             for key, value in model.state_dict().items():
                 if isinstance(value, DTensor):
@@ -121,7 +121,7 @@ class WeightCheckpointManager:
                     cpu_state[key] = value.to("cpu", non_blocking=False)
 
             torch.distributed.barrier()
-        
+
         self._logger.debug(f"Gathered sharded weights in {time.time() - start_time:.2f} seconds")
 
         return cpu_state
@@ -138,7 +138,7 @@ class WeightCheckpointManager:
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
             warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
-            
+
             # Save model weights to temporary file to avoid race condition
             model_path = self._get_model_path(step)
             tmp_model_path = model_path.with_suffix(".tmp")

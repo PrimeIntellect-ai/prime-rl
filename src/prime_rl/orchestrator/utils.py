@@ -50,11 +50,8 @@ def wait_for_weight_checkpoint(path: Path, step: int, interval: int = 1, log_int
 
 
 def apply_length_bonus(
-    rewards: list[float], 
-    completion_lengths: list[int], 
-    rollouts_per_prompt: int, 
-    length_bonus: float
-    ) -> list[float]:
+    rewards: list[float], completion_lengths: list[int], rollouts_per_prompt: int, length_bonus: float
+) -> list[float]:
     """Return a new reward list where the shortest *correct* rollout(s) in each
     fully correct group receive a bonus."""
 
@@ -73,12 +70,10 @@ def apply_length_bonus(
 
 
 def process_rewards(
-    rewards: list[float], 
-    completion_lengths: list[int], 
-    rollouts_per_prompt: int, 
-    length_bonus: float
-    ) -> list[float]:
+    rewards: list[float], completion_lengths: list[int], rollouts_per_prompt: int, length_bonus: float
+) -> list[float]:
     return apply_length_bonus(rewards, completion_lengths, rollouts_per_prompt, length_bonus)
+
 
 def print_benchmark(history: dict[str, list[Any]]) -> None:
     """

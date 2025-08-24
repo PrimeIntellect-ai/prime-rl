@@ -1,3 +1,5 @@
+import logging
+
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -14,6 +16,36 @@ from transformers import (
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.config import ActivationCheckpointConfig, ModelConfig
+from prime_rl.utils.logger import get_logger
+
+# Add filter to the standard logging module for transformers.modeling_utils to supress the
+# flash attention dtype warnings since FSDP is used to handle mixed precision.
+transformers_modeling_utils_logger = logging.getLogger("transformers.modeling_utils")
+transformers_modeling_utils_logger.addFilter(
+    lambda record: "Flash Attention 2 only supports torch.float16 and torch.bfloat16 dtypes" not in record.getMessage()
+)
+
+
+def is_tt_moe_model(model: nn.Module) -> bool:
+    return hasattr(model.config, "num_experts") or hasattr(model.config, "n_routed_experts")
+
+
+def get_load_balance_stats(model: nn.Module, reset_stats: bool = True) -> dict[str, torch.FloatTensor]:
+    per_layer_max_vio = []
+    for transformer_block in model.model.layers:
+        # This is necessary for models that have mixed dense layers
+        if not hasattr(transformer_block.mlp, "tokens_per_expert"):
+            continue
+        tokens_per_expert = transformer_block.mlp.tokens_per_expert
+        balanced_load = tokens_per_expert.mean()
+        max_vio = (tokens_per_expert.max() - balanced_load) / balanced_load
+        per_layer_max_vio.append(max_vio.item())
+        if reset_stats:
+            tokens_per_expert.zero_()
+    if len(per_layer_max_vio) == 0:
+        get_logger().warning("No load balance stats to report")
+        return {}
+    return {"max_vio": torch.tensor(per_layer_max_vio)}
 
 
 def get_model(config: ModelConfig) -> nn.Module:

@@ -62,12 +62,12 @@ class CheckpointManager:
 
         # Create checkpoint directory if it doesn't exist
         ckpt_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         # Suppress torch.distributed warnings during checkpoint saving
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
             warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
-            
+
             with open(ckpt_path, "wb") as f:
                 torch.save(ckpt_state, f)
 

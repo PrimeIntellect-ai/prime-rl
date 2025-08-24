@@ -16,8 +16,23 @@ from prime_rl.utils.utils import capitalize, get_eval_dir
 
 
 def compute_pass_at_k(rewards: list[int]) -> dict[str, float]:
-    k = len(rewards)
-    return {f"pass@{k}": float(any(reward == 1.0 for reward in rewards))}
+    total_attempts = len(rewards)
+    k = total_attempts // 2
+
+    if k == 0:
+        return {"pass@1": float(any(reward == 1.0 for reward in rewards))}
+
+    num_trials = 100
+    pass_rates = []
+
+    for _ in range(num_trials):
+        sampled_rewards = np.random.choice(rewards, size=k, replace=False)
+        pass_rate = float(any(reward == 1.0 for reward in sampled_rewards))
+        pass_rates.append(pass_rate)
+
+    avg_pass_rate = np.mean(pass_rates)
+
+    return {f"pass@{k}": avg_pass_rate}
 
 
 async def run_eval(
@@ -142,6 +157,20 @@ async def run_eval(
     eval_metrics = {
         f"avg@{k}": float(sample_stats.reward.mean()),
     }
+
+    eval_completion_len_metrics = {
+        "avg": float(avg_completion_len),
+        "max": float(max_avg_completion_len),
+        "min": float(min_avg_completion_len),
+    }
+    eval_completion_len_metrics = {
+        **{f"eval_completion_len/{eval_id}/{k}": v for k, v in eval_completion_len_metrics.items()}
+    }
+    if step is None:
+        step = ckpt_step
+    eval_completion_len_metrics.update({"progress/ckpt_step": ckpt_step, "step": step})
+    monitor.log(eval_completion_len_metrics)
+
     if could_be_binary:
         assert pass_at_k is not None
         eval_metrics.update(pd.Series(pass_at_k.mean()).to_dict())

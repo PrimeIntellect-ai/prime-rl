@@ -1,5 +1,5 @@
 import copy
-from typing import Literal, TypedDict
+from typing import TypedDict
 
 import torch
 from jaxtyping import Bool, Float, Int
@@ -22,11 +22,10 @@ def prepare_sample(
     rollout: Rollout,
     seq_len: int,
     tokenizer: PreTrainedTokenizer,
-    pad: bool,
 ) -> BatchSample:
     """
-    Prepare a problem and pad it for training.
-    Tokenize and
+    Prepare a problem for sequence packing training.
+    Tokenize and prepare tensors.
     """
 
     # Prepare prompt tokens
@@ -51,15 +50,6 @@ def prepare_sample(
             f"Number of tokens {len(input_ids)} is greater than sequence length {seq_len}. This should not happen."
         )
 
-    # Pad the sequence to the sequence length
-    if pad:
-        num_padding_tokens = seq_len - len(input_ids)
-        input_ids = torch.cat([input_ids, torch.full((num_padding_tokens,), tokenizer.pad_token_id)])
-        loss_mask = torch.cat([loss_mask, torch.zeros(num_padding_tokens)]).bool()
-        position_ids = torch.cat([position_ids, torch.zeros(num_padding_tokens)]).long()
-        logprobs = torch.cat([logprobs, torch.zeros(num_padding_tokens)]).float()
-        advantages = torch.cat([advantages, torch.zeros(num_padding_tokens)]).float()
-
     assert len(input_ids) == len(advantages) == len(loss_mask) == len(position_ids) == len(logprobs), (
         f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, logprobs: {len(logprobs)}"
     )
@@ -81,45 +71,6 @@ def prepare_micro_batch(samples: list[MicroBatch], temperature: float):
     micro_batch["temperature"] = temperature
 
     return micro_batch
-
-
-def prepare_batch_padding(
-    rollouts: list[Rollout],
-    temperature: float,
-    tokenizer: PreTrainedTokenizer,
-    batch_size: int,
-    micro_batch_size: int,
-    seq_len: int,
-    num_train_workers: int,
-) -> list[list[MicroBatch]]:
-    """
-    Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
-    Each micro batch is shape [micro_bs, max_seq_len] and contains micro_bs samples that are padded to the max lenght
-    """
-    rollouts = copy.deepcopy(rollouts)
-    batch_size = len(rollouts)
-
-    assert batch_size % (micro_batch_size * num_train_workers) == 0, "Batch size must be divisible by micro batch size"
-    per_gpu_micro_batches = batch_size // (num_train_workers * micro_batch_size)
-
-    batches_per_gpu = []
-    for _ in range(num_train_workers):
-        batches = []
-        for _ in range(per_gpu_micro_batches):
-            micro_batches = []
-            for _ in range(micro_batch_size):
-                sample = prepare_sample(
-                    rollouts.pop(),
-                    seq_len,
-                    tokenizer,
-                    pad=True,
-                )
-                micro_batches.append(sample)
-            batches.append(prepare_micro_batch(micro_batches, temperature))
-
-        batches_per_gpu.append(batches)
-
-    return batches_per_gpu
 
 
 def packed_samples_into_micro_bs(samples: list[BatchSample], max_seq_len: int) -> list[list[BatchSample]]:
@@ -169,7 +120,7 @@ def prepare_micro_batch_packing(samples: list[BatchSample], max_seq_len: int, te
     return micro_batch
 
 
-def prepare_batch_packing(
+def prepare_batch(
     rollouts: list[Rollout],
     temperature: float,
     tokenizer: PreTrainedTokenizer,
@@ -190,7 +141,6 @@ def prepare_batch_packing(
             rollout,
             max_seq_len,
             tokenizer,
-            pad=False,
         )
         for rollout in rollouts
     ]
@@ -223,41 +173,3 @@ def prepare_batch_packing(
         batches_per_gpu.append(batches)
 
     return batches_per_gpu
-
-
-def prepare_batch(
-    rollouts: list[Rollout],
-    temperature: float,
-    tokenizer: PreTrainedTokenizer,
-    batch_size: int,
-    micro_batch_size: int,
-    seq_len: int,
-    num_train_workers: int,
-    collate_mode: Literal["packing", "padding"],
-) -> list[list[MicroBatch]]:
-    """
-    Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
-    """
-    match collate_mode:
-        case "padding":
-            return prepare_batch_padding(
-                rollouts,
-                temperature,
-                tokenizer,
-                batch_size,
-                micro_batch_size,
-                seq_len,
-                num_train_workers,
-            )
-        case "packing":
-            return prepare_batch_packing(
-                rollouts,
-                temperature,
-                tokenizer,
-                batch_size,
-                micro_batch_size,
-                seq_len,
-                num_train_workers,
-            )
-        case _:
-            raise ValueError(f"Invalid collate mode: {collate_mode}")

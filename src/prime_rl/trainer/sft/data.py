@@ -167,32 +167,6 @@ class PackingDataset(IterableDataset):
                 packed_samples, seq_len = defaultdict(list), 0
 
 
-class PaddingDataset(IterableDataset):
-    """A dataset that pads samples to a fixed sequence length."""
-
-    def __init__(self, dataset: IterableDataset, seq_len: int, pad_token_id: int):
-        self.dataset = dataset
-        self.seq_len = seq_len
-        self.pad_token_id = pad_token_id
-
-    def __iter__(self) -> Iterator[Sample]:
-        for sample in self.dataset:
-            if len(sample["input_ids"]) < self.seq_len:  # Pad
-                num_padding_tokens = self.seq_len - len(sample["input_ids"])
-                sample["input_ids"] = sample["input_ids"] + [self.pad_token_id] * num_padding_tokens
-                sample["loss_mask"] = sample["loss_mask"] + [False] * num_padding_tokens
-                sample["position_ids"] = sample["position_ids"] + [0] * num_padding_tokens
-                sample["target_ids"] = sample["target_ids"] + [self.pad_token_id] * num_padding_tokens
-
-            # Truncate if too long
-            sample["input_ids"] = sample["input_ids"][: self.seq_len]
-            sample["loss_mask"] = sample["loss_mask"][: self.seq_len]
-            sample["position_ids"] = sample["position_ids"][: self.seq_len]
-            sample["target_ids"] = sample["target_ids"][: self.seq_len]
-
-            yield sample
-
-
 def collate(samples: list[Sample]) -> Batch:
     return {
         "input_ids": torch.stack([torch.tensor(sample["input_ids"]) for sample in samples], dim=0).long().to("cuda"),
@@ -212,9 +186,6 @@ def setup_dataset(tokenizer: PreTrainedTokenizer, config: DataConfig) -> Iterabl
 
 
 def setup_dataloader(dataset: IterableDataset, tokenizer: PreTrainedTokenizer, config: DataConfig) -> DataLoader:
-    seq_len = config.micro_batch_size * config.seq_len if config.collate_mode == "packing" else config.seq_len
-    if config.collate_mode == "packing":
-        packing_dataset = PackingDataset(dataset, seq_len)
-        return DataLoader(packing_dataset, batch_size=1, collate_fn=collate)
-    padding_dataset = PaddingDataset(dataset, seq_len, tokenizer.pad_token_id)
-    return DataLoader(padding_dataset, batch_size=config.micro_batch_size, collate_fn=collate)
+    seq_len = config.micro_batch_size * config.seq_len
+    packing_dataset = PackingDataset(dataset, seq_len)
+    return DataLoader(packing_dataset, batch_size=1, collate_fn=collate)

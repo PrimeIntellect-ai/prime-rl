@@ -23,7 +23,7 @@ class DataConfig(BaseConfig):
         "PrimeIntellect/Reverse-Text-SFT"
     )
     splits: Annotated[list[str], Field(description="Splits to use from the HF dataset.")] = ["train"]
-    collate_mode: Annotated[Literal["padding", "packing"], Field(description="Collate mode to use.")] = "packing"
+
     micro_batch_size: Annotated[int, Field(ge=1)] = 8
     batch_size: Annotated[int, Field(ge=1)] = 128
     seq_len: Annotated[int, Field(ge=1)] = 128
@@ -48,9 +48,7 @@ class DataConfig(BaseConfig):
         if self.fake:
             data_str = f"fake={self.fake}"
         else:
-            data_str = (
-                f"name={self.name}, splits={self.splits}, collate_mode={self.collate_mode}, shuffle={self.shuffle}"
-            )
+            data_str = f"name={self.name}, splits={self.splits}, shuffle={self.shuffle}"
 
         return f"{data_str}, micro_batch_size={self.micro_batch_size}, batch_size={self.batch_size}, seq_len={self.seq_len}"
 

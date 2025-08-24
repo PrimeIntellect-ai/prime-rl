@@ -13,6 +13,42 @@ from torch.distributed.tensor import DTensor
 from prime_rl.utils.utils import format_num, format_time
 
 
+def get_response_lengths(position_ids: torch.Tensor) -> list[int]:
+    """
+    Compute lengths of concatenated sequences from position_ids.
+
+    Each sequence starts at 0 and increments. When position_ids resets to 0,
+    it indicates the start of a new sequence. Trailing zeros (padding) are
+    counted as part of the last sequence.
+
+    Args:
+        position_ids: Tensor of shape [total_seqlen]
+
+    Returns:
+        List of sequence lengths
+    """
+    position_ids = position_ids.flatten()
+
+    boundaries = [0]  # Start of first sequence
+
+    for i in range(1, len(position_ids)):
+        if position_ids[i] == 0 and position_ids[i - 1] != 0:
+            # This is a potential sequence boundary (0 after non-zero)
+            # But only if the next element is 1 (indicating a new incrementing sequence)
+            # Otherwise, this 0 is padding and belongs to current sequence
+            if i + 1 < len(position_ids) and position_ids[i + 1] == 1:
+                boundaries.append(i)
+
+    # Calculate lengths based on boundaries
+    lengths = []
+    for i in range(len(boundaries)):
+        start = boundaries[i]
+        end = boundaries[i + 1] if i + 1 < len(boundaries) else len(position_ids)
+        lengths.append(end - start)
+
+    return lengths
+
+
 def get_real_tensor(tensor: Tensor | DTensor) -> Tensor:
     if isinstance(tensor, DTensor):
         return tensor.to_local()

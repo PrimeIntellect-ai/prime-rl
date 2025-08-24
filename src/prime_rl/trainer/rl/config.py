@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -16,27 +16,19 @@ from prime_rl.utils.config import LogConfig, MultiMonitorConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
-class BaseLossConfig(BaseModel):
+class LossConfig(BaseModel):
     """Base config for loss."""
 
+    norm_type: Annotated[
+        Literal["token", "sequence"],
+        Field(
+            description="Normalization type for loss scaling. 'token' normalizes by the total number of unmasked tokens in the batch, 'sequence' normalizes by the total tokens within a sequence."
+        ),
+    ] = "token"
 
-class ClippingLossConfig(BaseLossConfig):
-    """Configures the clipping loss."""
+    type: Annotated[Literal["gspo", "grpo"], Field(description="Type of loss to use.")] = "grpo"
 
-    type: Literal["clip"] = "clip"
-    epsilon_low: Annotated[float, Field(ge=0)] = 0.2
-    epsilon_high: Annotated[float, Field(ge=0)] = 0.2
-    clip_ratio: Annotated[float, Field(ge=0)] = 4.0
-
-
-class RatioLossConfig(BaseLossConfig):
-    """Configures the ratio loss."""
-
-    type: Literal["ratio"] = "ratio"
     clip_ratio: Annotated[float, Field(ge=0)] = 8.0
-
-
-LossConfigType: TypeAlias = ClippingLossConfig | RatioLossConfig
 
 
 class FakeDataLoaderConfig(BaseConfig):
@@ -71,7 +63,7 @@ class RLTrainerConfig(BaseSettings):
     data: DataLoaderConfig = DataLoaderConfig()
 
     # The loss configuration
-    loss: Annotated[LossConfigType, Field(discriminator="type")] = RatioLossConfig()
+    loss: LossConfig = LossConfig()
 
     # The optimizer configuration
     optim: Annotated[OptimizerConfigType, Field(discriminator="type")] = AdamWConfig()
