@@ -311,7 +311,13 @@ class OnlineDifficultyBufferConfig(BaseModel):
     ] = 1.0
 
 
-DataBufferConfigType: TypeAlias = SimpleBufferConfig | DifficultyPoolBufferConfig | OnlineDifficultyBufferConfig
+class FilteredRewardBufferConfig(BaseModel):
+    type: Literal["filtered-reward"] = "filtered-reward"
+
+
+DataBufferConfigType: TypeAlias = (
+    SimpleBufferConfig | DifficultyPoolBufferConfig | OnlineDifficultyBufferConfig | FilteredRewardBufferConfig
+)
 
 
 class OrchestratorConfig(BaseSettings):
@@ -333,7 +339,7 @@ class OrchestratorConfig(BaseSettings):
     eval: OnlineEvalConfig | None = None
 
     # Data buffer configuration
-    buffer: Annotated[DataBufferConfigType, Field(discriminator="type")] = SimpleBufferConfig()
+    buffer: Annotated[DataBufferConfigType, Field(discriminator="type")] = FilteredRewardBufferConfig()
 
     # The logging configuration
     log: LogConfig = LogConfig()

@@ -8,6 +8,7 @@ from datasets import Dataset
 from prime_rl.orchestrator.config import (
     DataBufferConfigType,
     DifficultyPoolBufferConfig,
+    FilteredRewardBufferConfig,
     OnlineDifficultyBufferConfig,
     SimpleBufferConfig,
 )
@@ -411,6 +412,78 @@ class OnlineDifficultyBuffer(Buffer):
         return sampled_rollouts
 
 
+class FilteredRewardBuffer(Buffer):
+    """
+    A buffer that removes groups of rollouts where all rewards are either 0 or 1
+    and replaces them with randomly sampled groups from the remaining rollouts
+    that have mixed rewards.
+    """
+
+    def __init__(self, dataset: Dataset, buffer_config: FilteredRewardBufferConfig):
+        super().__init__(dataset)
+        self.config = buffer_config
+
+    def sample_problems(self, n: int) -> tuple[list[int], list[dict]]:
+        # Get indices to sample
+        assert len(self.problem_ids) >= n, (
+            f"There should be at least {n} problems in the buffer, but found only {len(self.problem_ids)}"
+        )
+        sampled_problem_ids = random.sample(self.problem_ids, n)
+        assert len(sampled_problem_ids) == n
+        self.logger.debug(f"Sampled {n} problems ({sampled_problem_ids=})")
+
+        # Get problems from indices
+        sampled_problems = [self.problem_buffer[problem_id] for problem_id in sampled_problem_ids]
+
+        return sampled_problem_ids, sampled_problems
+
+    def update(self, rollouts: list[Rollout]):
+        # Group rollouts by problem_id
+        rollouts_by_problem_id = defaultdict(list)
+        for rollout in rollouts:
+            rollouts_by_problem_id[rollout.problem_id].append(rollout)
+
+        # Add grouped rollouts to the buffer
+        self.rollout_buffer.update(rollouts_by_problem_id)
+
+    def sample_rollouts(self, n: int) -> list[Rollout]:
+        available_problem_ids = list(self.rollout_buffer.keys())
+        assert len(available_problem_ids) == n
+
+        # Separate groups into homogeneous and mixed reward groups
+        mixed_groups = []
+
+        for problem_id in available_problem_ids:
+            rollouts = self.rollout_buffer[problem_id]
+            if len(set([rollout.reward for rollout in rollouts])) != 1:
+                mixed_groups.append(problem_id)
+
+        zero_adv_count = len(available_problem_ids) - len(mixed_groups)
+        # Replace homogeneous groups with mixed groups (allowing duplicates)
+        if mixed_groups:
+            replacement_groups = random.choices(mixed_groups, k=zero_adv_count)
+            sampled_problem_ids = mixed_groups + replacement_groups
+            self.logger.info(f"Replaced {zero_adv_count} homogeneous groups with mixed groups")
+        else:
+            # No mixed groups available, use all available problem IDs
+            sampled_problem_ids = available_problem_ids
+            self.logger.warning(
+                f"No mixed reward groups available, using all {len(available_problem_ids)} homogeneous groups"
+            )
+
+        assert len(sampled_problem_ids) == n
+
+        # Build flattened list of rollouts
+        sampled_rollouts = []
+        rollout_cache = {}
+        for problem_id in sampled_problem_ids:
+            if problem_id not in rollout_cache:
+                rollout_cache[problem_id] = self.rollout_buffer.pop(problem_id)
+            sampled_rollouts.extend(rollout_cache[problem_id])
+
+        return sampled_rollouts
+
+
 def setup_buffer(dataset: Dataset, buffer_config: DataBufferConfigType) -> Buffer:
     if buffer_config.type == "simple":
         return SimpleBuffer(dataset, buffer_config)
@@ -418,3 +491,7 @@ def setup_buffer(dataset: Dataset, buffer_config: DataBufferConfigType) -> Buffe
         return DifficultyPoolBuffer(dataset, buffer_config)
     elif buffer_config.type == "online-difficulty":
         return OnlineDifficultyBuffer(dataset, buffer_config)
+    elif buffer_config.type == "filtered-reward":
+        return FilteredRewardBuffer(dataset, buffer_config)
+    else:
+        raise ValueError(f"Unknown buffer type: {buffer_config.type}")
