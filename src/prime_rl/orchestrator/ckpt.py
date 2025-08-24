@@ -7,6 +7,7 @@ import torch
 from prime_rl.orchestrator.config import CheckpointConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import get_ckpt_dir
+from prime_rl.orchestrator.buffer import Buffer, load_buffer, DataBufferConfigType
 
 
 @dataclass
@@ -80,12 +81,15 @@ class CheckpointManager:
         self,
         progress: RLProgress | SFTProgress,
         step: int,
+        buffer: Buffer,
     ) -> None:
         """Saves the full checkpoint state for a specified step."""
         step_path = self._get_step_path(step)
         step_path.mkdir(parents=True, exist_ok=True)
         ckpt_path = self._get_ckpt_path(step)
         self._save_to_path(ckpt_path, step, progress)
+        buffer_path = step_path / "buffer"
+        buffer.save(buffer_path)
 
     def maybe_clean(self) -> None:
         """Deletes past orchestrator checkpoints beyond the most recent `keep` steps. No-op if `keep` is None."""

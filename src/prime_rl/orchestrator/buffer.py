@@ -1,6 +1,6 @@
 import random
-import os
 import torch
+from pathlib import Path
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -98,14 +98,14 @@ class Buffer(ABC):
         self.rollout_buffer: dict[int, list[Rollout]] = {}
         self.metadata: dict[int, dict] = {problem_id: {} for problem_id in self.problem_ids}
 
-    def save(self, path: str):
+    def save(self, path: Path):
         """Saves the buffer state to a directory."""
-        os.makedirs(path, exist_ok=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
 
-        torch.save(self.rollout_buffer, os.path.join(path, "rollout_buffer.pt"))
-        torch.save(self.metadata, os.path.join(path, "metadata.pt"))
+        torch.save(self.rollout_buffer, path / "rollout_buffer.pt")
+        torch.save(self.metadata, path / "metadata.pt")
 
-        self.dataset.save_to_disk(os.path.join(path, "buffer_dataset"))
+        self.dataset.save_to_disk(path / "buffer_dataset")
 
     @abstractmethod
     def sample_problems(self, n: int) -> tuple[list[int], list[dict]]:
@@ -422,18 +422,17 @@ class OnlineDifficultyBuffer(Buffer):
         return sampled_rollouts
 
 
-def load_buffer(path: str, buffer_config: DataBufferConfigType) -> Buffer:
+def load_buffer(path: Path, buffer_config: DataBufferConfigType) -> Buffer:
     """Loads the buffer state from a directory."""
-    dataset = Dataset.load_from_disk(os.path.join(path, "buffer_dataset"))
-    
+    dataset = Dataset.load_from_disk(path / "buffer_dataset")
     buffer = setup_buffer(dataset, buffer_config)
 
-    rollout_buffer_path = os.path.join(path, "rollout_buffer.pt")
-    if os.path.exists(rollout_buffer_path):
+    rollout_buffer_path = path / "rollout_buffer.pt"
+    if rollout_buffer_path.exists():
         buffer.rollout_buffer = torch.load(rollout_buffer_path)
 
-    metadata_path = os.path.join(path, "metadata.pt")
-    if os.path.exists(metadata_path):
+    metadata_path = path / "metadata.pt"
+    if metadata_path.exists():
         buffer.metadata = torch.load(metadata_path)
         
     return buffer

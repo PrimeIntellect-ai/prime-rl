@@ -108,15 +108,10 @@ async def orchestrate(config: OrchestratorConfig):
     else:
         logger.info("Training from scratch. Resetting weights to base model")
         await reload_weights(client)
-
-    # Load environment and extract dataset
-    logger.info(f"Loading environment {config.environment.id} with args {config.environment.args}")
-    vf_env = load_environment(config.environment.id, **config.environment.args)
-    dataset = vf_env.get_dataset(seed=config.seed)
-
-    # Setup buffer
-    logger.info(f"Setting up buffer ({config.buffer})")
-    buffer = setup_buffer(dataset, config.buffer)
+        
+        # Setup buffer for fresh training
+        logger.info(f"Setting up buffer ({config.buffer})")
+        buffer = setup_buffer(dataset, config.buffer)
 
     # Iterate over dataset in batches
     max_steps = config.max_steps or int(1e9)
@@ -136,11 +131,8 @@ async def orchestrate(config: OrchestratorConfig):
         ):
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.time()
-            ckpt_manager.save(progress, step=progress.step)
-
-            buffer_path = ckpt_manager.get_ckpt_path(progress.step) / "buffer"
-            buffer.save(str(buffer_path))
-
+            
+            ckpt_manager.save(progress, step=progress.step, buffer=buffer)
             save_ckpt_time = time.time() - save_ckpt_start_time
 
             # Maybe clean up old orchestrator checkpoints
@@ -507,10 +499,7 @@ async def orchestrate(config: OrchestratorConfig):
     # Write final checkpoint
     if ckpt_manager is not None:
         logger.info("Writing final checkpoint")
-        ckpt_manager.save(progress, step=progress.step)
-
-        buffer_path = ckpt_manager.get_ckpt_path(progress.step) / "buffer"
-        buffer.save(str(buffer_path))
+        ckpt_manager.save(progress, step=progress.step, buffer=buffer)
 
     logger.success("Orchestrator finished.")
 
