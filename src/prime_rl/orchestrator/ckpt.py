@@ -4,10 +4,10 @@ from pathlib import Path
 
 import torch
 
+from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.config import CheckpointConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import get_ckpt_dir
-from prime_rl.orchestrator.buffer import Buffer, load_buffer, DataBufferConfigType
 
 
 @dataclass

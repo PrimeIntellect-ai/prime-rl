@@ -1,10 +1,10 @@
 import random
-import torch
-from pathlib import Path
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from pathlib import Path
 
+import torch
 from datasets import Dataset
 
 from prime_rl.orchestrator.config import (
