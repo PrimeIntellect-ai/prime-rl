@@ -80,9 +80,9 @@ class WeightCheckpointManager:
     """Utility class to save and cleanup HF-compatible weight checkpoints."""
 
     def __init__(
-        self, outputs_dir: Path, config: WeightCheckpointConfig, ckpt_config: CheckpointConfig | None, async_level: int
+        self, output_dir: Path, config: WeightCheckpointConfig, ckpt_config: CheckpointConfig | None, async_level: int
     ):
-        self.weights_dir = get_weights_dir(outputs_dir)
+        self.weights_dir = get_weights_dir(output_dir)
         self.config = config
         self.ckpt_config = ckpt_config
         self.async_level = async_level
@@ -216,9 +216,9 @@ class WeightCheckpointManager:
 
 
 def setup_weight_ckpt_manager(
-    outputs_dir: Path,
+    output_dir: Path,
     weight_ckpt_config: WeightCheckpointConfig,
     ckpt_config: CheckpointConfig | None,
     async_level: int,
 ) -> WeightCheckpointManager:
-    return WeightCheckpointManager(outputs_dir, weight_ckpt_config, ckpt_config, async_level=async_level)
+    return WeightCheckpointManager(output_dir, weight_ckpt_config, ckpt_config, async_level=async_level)

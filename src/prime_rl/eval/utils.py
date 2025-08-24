@@ -44,7 +44,7 @@ async def run_eval(
     num_examples: int,
     rollouts_per_example: int,
     save: bool,
-    outputs_dir: Path,
+    output_dir: Path,
     ckpt_step: int,
     step: int | None = None,
 ) -> None:
@@ -193,7 +193,7 @@ async def run_eval(
     # If specified, save eval artifacts
     if save:
         # Save samples as dataset
-        eval_dir = get_eval_dir(outputs_dir) / f"step_{ckpt_step}" / eval_id
+        eval_dir = get_eval_dir(output_dir) / f"step_{ckpt_step}" / eval_id
         dataset = vf_eval.make_dataset(results)
         dataset.save_to_disk(eval_dir)
 

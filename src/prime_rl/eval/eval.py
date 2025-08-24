@@ -28,7 +28,7 @@ async def eval(config: OfflineEvalConfig):
     logger.info(f"Initializing monitor ({config.monitor})")
     setup_monitor(
         config=config.monitor,
-        outputs_dir=None,
+        output_dir=None,
         run_config=config,
     )
 
@@ -59,7 +59,7 @@ async def eval(config: OfflineEvalConfig):
                     sampling_config=config.sampling,
                     num_examples=num_examples,
                     rollouts_per_example=rollouts_per_example,
-                    outputs_dir=config.outputs_dir,
+                    output_dir=config.output_dir,
                     save=config.save,
                     ckpt_step=0,
                 )
@@ -90,7 +90,7 @@ async def eval(config: OfflineEvalConfig):
                         sampling_config=config.sampling,
                         num_examples=num_examples,
                         rollouts_per_example=rollouts_per_example,
-                        outputs_dir=config.outputs_dir,
+                        output_dir=config.output_dir,
                         save=config.save,
                         ckpt_step=ckpt_step,
                     )

@@ -40,7 +40,7 @@ from prime_rl.utils.validation import (
     validate_shared_max_model_len,
     validate_shared_max_steps,
     validate_shared_model_name,
-    validate_shared_outputs_dir,
+    validate_shared_output_dir,
     validate_shared_wandb_config,
 )
 
@@ -122,10 +122,10 @@ class RLConfig(BaseSettings):
 
     ### Shared configurations
 
-    outputs_dir: Annotated[
+    output_dir: Annotated[
         Path,
         Field(description="The directory to store the outputs. Should typically be set to an experiment identifier."),
-    ] = Path("outputs")  # NOTE: Must match `OUTPUTS_DIR` in `tmux.sh` to see logs
+    ] = Path("outputs")  # NOTE: Must match `OUTPUT_DIR` in `tmux.sh` to see logs
 
     ckpt: Annotated[
         CheckpointConfig | None,
@@ -330,13 +330,13 @@ class RLConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_outputs_dir(self):
+    def auto_setup_output_dir(self):
         # If specified, use the same outputs directory for trainer and orchestrator
-        if self.outputs_dir:
-            self.trainer.outputs_dir = self.outputs_dir
-            self.orchestrator.outputs_dir = self.outputs_dir
+        if self.output_dir:
+            self.trainer.output_dir = self.output_dir
+            self.orchestrator.output_dir = self.output_dir
 
-        validate_shared_outputs_dir(self.trainer, self.orchestrator)
+        validate_shared_output_dir(self.trainer, self.orchestrator)
 
         return self
 
@@ -404,10 +404,10 @@ def rl(config: RLConfig):
     logger.debug(f"RL start command: {' '.join(start_command)}")
 
     # Prepare paths to communicate with the trainer
-    log_dir = get_log_dir(config.outputs_dir)
-    ckpt_dir = get_ckpt_dir(config.outputs_dir)
-    weights_dir = get_weights_dir(config.outputs_dir)
-    rollout_dir = get_rollout_dir(config.outputs_dir)
+    log_dir = get_log_dir(config.output_dir)
+    ckpt_dir = get_ckpt_dir(config.output_dir)
+    weights_dir = get_weights_dir(config.output_dir)
+    rollout_dir = get_rollout_dir(config.output_dir)
 
     # Clean up directories if specified
     if config.clean:

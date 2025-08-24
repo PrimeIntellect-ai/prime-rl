@@ -57,7 +57,7 @@ def train(config: RLTrainerConfig):
 
     # Setup the monitor
     logger.info(f"Initializing monitor ({config.monitor})")
-    monitor = setup_monitor(config.monitor, outputs_dir=config.outputs_dir, run_config=config)
+    monitor = setup_monitor(config.monitor, output_dir=config.output_dir, run_config=config)
 
     # Set precision and cuda device
     torch.set_float32_matmul_precision("high")
@@ -80,10 +80,10 @@ def train(config: RLTrainerConfig):
 
     # Get checkpoint managers
     logger.info(f"Initializing weight checkpoint manager ({config.weights})")
-    weight_ckpt_manager = setup_weight_ckpt_manager(config.outputs_dir, config.weights, config.ckpt, config.async_level)
+    weight_ckpt_manager = setup_weight_ckpt_manager(config.output_dir, config.weights, config.ckpt, config.async_level)
 
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
-    ckpt_manager = setup_ckpt_manager(config.outputs_dir, config.ckpt)
+    ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -118,7 +118,7 @@ def train(config: RLTrainerConfig):
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
-    dataloader = DataLoader(config.outputs_dir, progress.step)
+    dataloader = DataLoader(config.output_dir, progress.step)
     if config.data.fake:
         dataloader = FakeDataLoader(config.data.fake)
 

@@ -23,6 +23,6 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked
       - name: Run tests
-        run: PYTEST_OUTPUTS_DIR=/tmp/outputs uv run pytest tests -m "not gpu"
-      - name: Cleanup outputs_dir
+        run: PYTEST_OUTPUT_DIR=/tmp/outputs uv run pytest tests -m "not gpu"
+      - name: Cleanup output_dir
         run: rm -rf /tmp/outputs

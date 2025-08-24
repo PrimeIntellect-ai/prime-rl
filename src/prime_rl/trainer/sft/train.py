@@ -45,7 +45,7 @@ def train(config: SFTTrainerConfig):
 
     # Setup the monitor
     logger.info(f"Initializing monitor ({config.monitor})")
-    monitor = setup_monitor(config.monitor, outputs_dir=config.outputs_dir, run_config=config)
+    monitor = setup_monitor(config.monitor, output_dir=config.output_dir, run_config=config)
 
     # Set precision and cuda device
     torch.set_float32_matmul_precision("high")
@@ -66,11 +66,11 @@ def train(config: SFTTrainerConfig):
 
     # Set up the checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
-    ckpt_manager = setup_ckpt_manager(config.outputs_dir, config.ckpt)
+    ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
 
     # Set up the weight checkpoint manager
     logger.info(f"Initializing weight checkpoint manager ({config.weights})")
-    weight_ckpt_manager = setup_weight_ckpt_manager(config.outputs_dir, config.weights, config.ckpt, async_level=0)
+    weight_ckpt_manager = setup_weight_ckpt_manager(config.output_dir, config.weights, config.ckpt, async_level=0)
     assert ckpt_manager is None or (ckpt_manager is not None and weight_ckpt_manager is not None), (
         "If ckpt_manager is set, weight_ckpt_manager must also be set"
     )

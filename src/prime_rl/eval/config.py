@@ -23,7 +23,7 @@ class OfflineEvalConfig(EvalConfig, BaseSettings):
     # The logging configuration
     log: LogConfig = LogConfig()
 
-    outputs_dir: Annotated[
+    output_dir: Annotated[
         Path,
         Field(
             description="Directory to write outputs to. Will be populated with artifacts such as reports and HF datasets as subdirectories. Should be set to a persistent directory with enough disk space."

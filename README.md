@@ -299,7 +299,7 @@ uv run rl \
   --trainer @ configs/reverse_text/train.toml \
   --orchestrator @ configs/reverse_text/orch.toml \
   --inference @ configs/reverse_text/infer.toml \
-  --outputs-dir outputs1
+  --output-dir outputs1
 ```
 
 For the second experiment, start a second tmux session named `exp-2` with outputs directory `outputs2`. In addition, specify a new server port for the inference engine and orchestrator (*will use the first 2 GPUs*)
@@ -316,7 +316,7 @@ CUDA_VISIBLE_DEVICES=2,3 uv run rl \
   --inference @ configs/reverse_text/infer.toml \
   --inference.server.port 8001 \
   --orchestrator.client.port 8001 \
-  --outputs-dir outputs2
+  --output-dir outputs2
 ```
 
 ## SFT

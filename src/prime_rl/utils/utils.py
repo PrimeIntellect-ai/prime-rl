@@ -233,24 +233,24 @@ def get_cuda_visible_devices() -> list[int]:
     return list(sorted([int(device) for device in cuda_visible.split(",")]))
 
 
-def get_log_dir(outputs_dir: Path) -> Path:
-    return outputs_dir / "logs"
+def get_log_dir(output_dir: Path) -> Path:
+    return output_dir / "logs"
 
 
-def get_ckpt_dir(outputs_dir: Path) -> Path:
-    return outputs_dir / "checkpoints"
+def get_ckpt_dir(output_dir: Path) -> Path:
+    return output_dir / "checkpoints"
 
 
-def get_weights_dir(outputs_dir: Path) -> Path:
-    return outputs_dir / "weights"
+def get_weights_dir(output_dir: Path) -> Path:
+    return output_dir / "weights"
 
 
-def get_rollout_dir(outputs_dir: Path) -> Path:
-    return outputs_dir / "rollouts"
+def get_rollout_dir(output_dir: Path) -> Path:
+    return output_dir / "rollouts"
 
 
-def get_eval_dir(outputs_dir: Path) -> Path:
-    return outputs_dir / "evals"
+def get_eval_dir(output_dir: Path) -> Path:
+    return output_dir / "evals"
 
 
 def get_step_path(path: Path, step: int) -> Path:

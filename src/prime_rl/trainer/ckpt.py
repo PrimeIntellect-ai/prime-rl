@@ -25,9 +25,9 @@ class Progress:
 class CheckpointManager:
     """Utility class to save and load training checkpoints to resume training."""
 
-    def __init__(self, outputs_dir: Path, config: CheckpointConfig):
+    def __init__(self, output_dir: Path, config: CheckpointConfig):
         self.config = config
-        self.ckpt_dir = get_ckpt_dir(outputs_dir)
+        self.ckpt_dir = get_ckpt_dir(output_dir)
         self._logger = get_logger()
         self._world = get_world()
         self._is_master = self._world.is_master
@@ -155,7 +155,7 @@ class CheckpointManager:
         self.ckpt_steps = self.ckpt_steps[-self.config.keep :]
 
 
-def setup_ckpt_manager(outputs_dir: Path, config: CheckpointConfig | None) -> CheckpointManager | None:
+def setup_ckpt_manager(output_dir: Path, config: CheckpointConfig | None) -> CheckpointManager | None:
     if config is None:
         return None
-    return CheckpointManager(outputs_dir, config)
+    return CheckpointManager(output_dir, config)
