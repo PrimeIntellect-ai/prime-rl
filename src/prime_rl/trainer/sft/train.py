@@ -75,19 +75,31 @@ def train(config: SFTTrainerConfig):
         "If ckpt_manager is set, weight_ckpt_manager must also be set"
     )
 
-    # Optionally, resume training from a checkpoint
-    progress = Progress()
-    if ckpt_manager is not None and config.ckpt and config.ckpt.resume_step:
-        logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
-        ckpt_manager.load(model, [optimizer], scheduler, progress, step=config.ckpt.resume_step)
-    logger.info(
-        f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
-    )
-
     # Set up the dataset and dataloader (optionaly, use a fake dataset for debugging)
     logger.info(f"Initializing data ({config.data})")
     dataset = setup_dataset(tokenizer, config.data)
-    dataloader = iter(setup_dataloader(dataset, tokenizer, config.data))
+    dataloader_obj = setup_dataloader(dataset, tokenizer, config.data)
+    
+    # Optionally, resume training from a checkpoint
+    progress = Progress()
+    dataloader_state = None
+    if ckpt_manager is not None and config.ckpt and config.ckpt.resume_step:
+        logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
+        dataloader_state = ckpt_manager.load(model, [optimizer], scheduler, progress, step=config.ckpt.resume_step)
+        
+        # Restore dataloader state if available
+        if dataloader_state is not None and hasattr(dataloader_obj, 'set_state'):
+            logger.info("Restoring dataloader state from checkpoint")
+            dataloader_obj.set_state(dataloader_state)
+        else:
+            logger.warning("No dataloader state found in checkpoint, starting from beginning")
+    
+    logger.info(
+        f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
+    )
+    
+    # Create iterator from dataloader (maintain original behavior)
+    dataloader = iter(dataloader_obj)
 
     logger.info(f"Starting training loop ({config.max_steps=})")
     is_first_step = True
@@ -105,7 +117,13 @@ def train(config: SFTTrainerConfig):
         ):
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.time()
-            ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step)
+            
+            # Get dataloader state for checkpointing
+            dataloader_state = None
+            if hasattr(dataloader_obj, 'get_state'):
+                dataloader_state = dataloader_obj.get_state()
+            
+            ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step, dataloader_state=dataloader_state)
             weight_ckpt_manager.save(model, tokenizer, step=progress.step)
             save_ckpt_time = time.time() - save_ckpt_start_time
 
