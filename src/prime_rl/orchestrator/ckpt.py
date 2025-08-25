@@ -4,6 +4,7 @@ from pathlib import Path
 
 import torch
 
+from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.config import CheckpointConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import get_ckpt_dir
@@ -38,7 +39,16 @@ class CheckpointManager:
     def _get_ckpt_path(self, step: int) -> Path:
         return self._get_step_path(step) / "orchestrator.pt"
 
-    def _save_to_path(self, ckpt_path: Path, ckpt_step: int, progress: RLProgress | SFTProgress):
+    def get_ckpt_path(self, step: int) -> Path:
+        return self._get_step_path(step)
+
+    def _save_to_path(
+        self,
+        ckpt_path: Path,
+        ckpt_step: int,
+        buffer: Buffer,
+        progress: RLProgress | SFTProgress,
+    ):
         self._logger.debug(f"Saving orchestrator checkpoint to {ckpt_path}")
         start_time = time.time()
 
@@ -48,6 +58,9 @@ class CheckpointManager:
         # Save checkpoint state
         with open(ckpt_path, "wb") as f:
             torch.save(ckpt_state, f)
+
+        buffer_path = ckpt_path.parent / "buffer"
+        buffer.save(buffer_path)
 
         # Append to list of saved steps
         self.ckpt_steps.append(ckpt_step)
@@ -79,13 +92,14 @@ class CheckpointManager:
     def save(
         self,
         progress: RLProgress | SFTProgress,
+        buffer: Buffer,
         step: int,
     ) -> None:
         """Saves the full checkpoint state for a specified step."""
         step_path = self._get_step_path(step)
         step_path.mkdir(parents=True, exist_ok=True)
         ckpt_path = self._get_ckpt_path(step)
-        self._save_to_path(ckpt_path, step, progress)
+        self._save_to_path(ckpt_path, step, buffer, progress)
 
     def maybe_clean(self) -> None:
         """Deletes past orchestrator checkpoints beyond the most recent `keep` steps. No-op if `keep` is None."""

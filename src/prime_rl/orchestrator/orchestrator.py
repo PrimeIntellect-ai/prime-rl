@@ -101,9 +101,13 @@ async def orchestrate(config: OrchestratorConfig):
     vf_env = load_environment(config.environment.id, **config.environment.args)
     dataset = vf_env.get_dataset(seed=config.seed)
 
-    # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
     buffer = setup_buffer(dataset, config.buffer)
+
+    if config.buffer.resume:
+        logger.info("Resuming buffer from checkpoint")
+        buffer_path = ckpt_manager.get_ckpt_path(config.ckpt.resume_step) / "buffer"
+        buffer.load(buffer_path)
 
     # Iterate over dataset in batches
     max_steps = config.max_steps or int(1e9)
@@ -123,7 +127,7 @@ async def orchestrate(config: OrchestratorConfig):
         ):
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.time()
-            ckpt_manager.save(progress, step=progress.step)
+            ckpt_manager.save(progress, buffer, step=progress.step)
             save_ckpt_time = time.time() - save_ckpt_start_time
 
             # Maybe clean up old orchestrator checkpoints
@@ -489,7 +493,7 @@ async def orchestrate(config: OrchestratorConfig):
     # Write final checkpoint
     if ckpt_manager is not None:
         logger.info("Writing final checkpoint")
-        ckpt_manager.save(progress, step=progress.step)
+        ckpt_manager.save(progress, buffer, step=progress.step)
 
     logger.success("Orchestrator finished.")
 
