@@ -1,10 +1,10 @@
+import json
 import random
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
-import torch
 from datasets import Dataset
 
 from prime_rl.orchestrator.config import (
@@ -99,13 +99,70 @@ class Buffer(ABC):
         self.metadata: dict[int, dict] = {problem_id: {} for problem_id in self.problem_ids}
 
     def save(self, path: Path):
-        """Saves the buffer state to a directory."""
+        """Saves the buffer state to a single HF dataset."""
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        torch.save(self.rollout_buffer, path / "rollout_buffer.pt")
-        torch.save(self.metadata, path / "metadata.pt")
+        # Strip stale columns if present before proceding.
+        dataset = self.dataset.remove_columns(
+            [c for c in ("metadata", "rollouts") if c in self.dataset.column_names]
+        )
 
-        self.dataset.save_to_disk(path / "buffer_dataset")
+        # Serialize metadata and rollouts
+        dataset = dataset.add_column(
+            "metadata", [json.dumps(self.metadata.get(i, {})) for i in range(len(dataset))]
+        )
+        dataset = dataset.add_column(
+            "rollouts",
+            [json.dumps([asdict(r) for r in self.rollout_buffer.get(i, [])]) for i in range(len(dataset))],
+        )
+
+        dataset.save_to_disk(path)
+
+    def load(self, path: Path):
+        """Loads the buffer state from a single HF dataset."""
+        try:
+            dataset = Dataset.load_from_disk(path)
+
+            # Deserialization of metadata and rollouts
+            self.metadata = {}
+            if "metadata" in dataset.column_names:
+                for i, m in enumerate(dataset["metadata"]):
+                    if not m:
+                        self.metadata[i] = {}
+                        continue
+                    try:
+                        self.metadata[i] = json.loads(m)
+                    except json.JSONDecodeError as e:
+                        self.logger.warning(f"Failed to parse metadata row {i}: {e}")
+                        self.metadata[i] = {}
+            else:
+                self.metadata = {i: {} for i in range(len(dataset))}
+
+            self.rollout_buffer = {}
+            if "rollouts" in dataset.column_names:
+                for i, serialized in enumerate(dataset["rollouts"]):
+                    if not serialized:
+                        continue
+                    try:
+                        rollout_dicts = json.loads(serialized)
+                        if rollout_dicts:
+                            self.rollout_buffer[i] = [Rollout(**r) for r in rollout_dicts]
+                    except (json.JSONDecodeError, TypeError) as e:
+                        self.logger.warning(f"Failed to parse rollouts row {i}: {e}")
+
+            self.dataset = dataset.remove_columns(
+                [c for c in ("metadata", "rollouts") if c in dataset.column_names]
+            )
+
+            self.problem_ids = list(range(len(self.dataset)))
+            self.problem_buffer = {
+                problem_id: problem
+                for problem_id, problem in zip(self.problem_ids, self.dataset)
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to load buffer from {path}: {e}")
+            raise
 
     @abstractmethod
     def sample_problems(self, n: int) -> tuple[list[int], list[dict]]:
@@ -420,22 +477,6 @@ class OnlineDifficultyBuffer(Buffer):
             )
 
         return sampled_rollouts
-
-
-def load_buffer(path: Path, buffer_config: DataBufferConfigType) -> Buffer:
-    """Loads the buffer state from a directory."""
-    dataset = Dataset.load_from_disk(path / "buffer_dataset")
-    buffer = setup_buffer(dataset, buffer_config)
-
-    rollout_buffer_path = path / "rollout_buffer.pt"
-    if rollout_buffer_path.exists():
-        buffer.rollout_buffer = torch.load(rollout_buffer_path)
-
-    metadata_path = path / "metadata.pt"
-    if metadata_path.exists():
-        buffer.metadata = torch.load(metadata_path)
-        
-    return buffer
 
 
 def setup_buffer(dataset: Dataset, buffer_config: DataBufferConfigType) -> Buffer:

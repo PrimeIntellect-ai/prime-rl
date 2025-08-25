@@ -220,13 +220,6 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = None
 
-    resume_buffer_from_checkpoint: Annotated[
-        bool,
-        Field(
-            description="Whether to resume the data buffer from the checkpoint.",
-        ),
-    ] = True
-
     keep: Annotated[
         int | None,
         Field(
@@ -238,10 +231,22 @@ class CheckpointConfig(BaseConfig):
 
 class SimpleBufferConfig(BaseModel):
     type: Literal["simple"] = "simple"
+    resume: Annotated[
+        bool,
+        Field(
+            description="Whether to resume the data buffer from the checkpoint.",
+        ),
+    ] = True
 
 
 class DifficultyPoolBufferConfig(BaseModel):
     type: Literal["difficulty-pool"] = "difficulty-pool"
+    resume: Annotated[
+        bool,
+        Field(
+            description="Whether to resume the data buffer from the checkpoint.",
+        ),
+    ] = True
 
     difficulty_field: Annotated[
         str | None,
@@ -290,6 +295,12 @@ class DifficultyPoolBufferConfig(BaseModel):
 
 class OnlineDifficultyBufferConfig(BaseModel):
     type: Literal["online-difficulty"] = "online-difficulty"
+    resume: Annotated[
+        bool,
+        Field(
+            description="Whether to resume the data buffer from the checkpoint.",
+        ),
+    ] = True
 
     min_reward: Annotated[
         float | None,
