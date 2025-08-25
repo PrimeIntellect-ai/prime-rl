@@ -1,11 +1,14 @@
-import threading
+import shutil
 import time
-import warnings
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
-import torch
+import torch.distributed.checkpoint as dcp
 from torch import nn
+from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
+from torch.distributed.checkpoint.stateful import Stateful
+from torch.nn import Module
 from torch.optim.lr_scheduler import LRScheduler
 from torch.optim.optimizer import Optimizer
 
@@ -22,6 +25,39 @@ class Progress:
     total_samples: int = 0
 
 
+class AppState(Stateful):
+    """
+    A wrapper for checkpointing the trainer with sharded weights and optimizer
+    to allow resuming in any world size using torch.distributed.checkpoint
+    utilities.
+
+    https://docs.pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html
+    """
+
+    def __init__(self, model: Module, optimizers: list[Optimizer], scheduler: LRScheduler, progress: Progress):
+        self.model, self.optimizers, self.scheduler, self.progress = model, optimizers, scheduler, progress
+
+    def state_dict(self) -> dict[str, Any]:
+        # Automatically manages FSDP FQN's, as well as sets the default state dict type to FSDP.SHARDED_STATE_DICT
+        model_state_dict, optimizer_state_dict = get_state_dict(self.model, self.optimizers)
+        scheduler_state_dict = self.scheduler.state_dict()
+        progress_state_dict = asdict(self.progress)
+        return {
+            "model": model_state_dict,
+            "optimizers": optimizer_state_dict,
+            "scheduler": scheduler_state_dict,
+            "progress": progress_state_dict,
+        }
+
+    def load_state_dict(self, state_dict: dict[str, Any]):
+        set_state_dict(
+            self.model, self.optimizers, model_state_dict=state_dict["model"], optim_state_dict=state_dict["optimizers"]
+        )
+        self.scheduler.load_state_dict(state_dict["scheduler"])
+        for key, value in state_dict["progress"].items():
+            setattr(self.progress, key, value)
+
+
 class CheckpointManager:
     """Utility class to save and load training checkpoints to resume training."""
 
@@ -33,12 +69,8 @@ class CheckpointManager:
         self._is_master = self._world.is_master
         self.ckpt_steps: list[int] = []  # Sorted list of steps that have been checkpointed, only used on master rank
 
-    def _get_step_path(self, step: int) -> Path:
-        return self.ckpt_dir / f"step_{step}"
-
     def _get_ckpt_path(self, step: int) -> Path:
-        ckpt_name = f"trainer_{self._world.local_rank}.pt" if self._world.world_size > 1 else "trainer.pt"
-        return self._get_step_path(step) / ckpt_name
+        return self.ckpt_dir / f"step_{step}"
 
     def _save_to_path(
         self,
@@ -53,23 +85,10 @@ class CheckpointManager:
         start_time = time.time()
 
         # Create checkpoint state
-        ckpt_state = {
-            "model": model.state_dict(),
-            "optimizers": [optimizer.state_dict() for optimizer in optimizers],
-            "scheduler": scheduler.state_dict(),
-            "progress": progress,
-        }
+        state_dict = {"app": AppState(model, optimizers, scheduler, progress)}
 
-        # Create checkpoint directory if it doesn't exist
-        ckpt_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Suppress torch.distributed warnings during checkpoint saving
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
-            warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
-
-            with open(ckpt_path, "wb") as f:
-                torch.save(ckpt_state, f)
+        # Save sharded state
+        dcp.save(state_dict, checkpoint_id=ckpt_path)
 
         # Append to list of saved steps
         if self._is_master:
@@ -84,19 +103,9 @@ class CheckpointManager:
         self._logger.debug(f"Loading training checkpoint from {ckpt_path}")
         start_time = time.time()
 
-        # Load checkpoint state
-        with open(ckpt_path, "rb") as f:
-            state = torch.load(f, weights_only=False)
-
-        # Load checkpoint state in-place
-        model.load_state_dict(state["model"])
-        for optimizer, optimizer_state in zip(optimizers, state["optimizers"]):
-            optimizer.load_state_dict(optimizer_state)
-        scheduler.load_state_dict(state["scheduler"])
-
-        # Load progress
-        for key, value in asdict(state["progress"]).items():
-            setattr(progress, key, value)
+        # Load sharded state
+        state_dict = {"app": AppState(model, optimizers, scheduler, progress)}
+        dcp.load(state_dict=state_dict, checkpoint_id=ckpt_path)
 
         self._logger.debug(f"Training checkpoint loaded in {time.time() - start_time:.2f} seconds")
 
@@ -118,21 +127,9 @@ class CheckpointManager:
         step: int,
     ) -> None:
         """Saves the full checkpoint state for a specified step."""
-        step_path = self._get_step_path(step)
-        step_path.mkdir(parents=True, exist_ok=True)
         ckpt_path = self._get_ckpt_path(step)
-
-        if self.config.save_async:
-            # Run save in a separate thread
-            thread = threading.Thread(
-                target=self._save_to_path,
-                args=(ckpt_path, step, model, optimizers, scheduler, progress),
-                name=f"ckpt-save-{step}",
-            )
-            thread.start()
-        else:
-            # Run save synchronously
-            self._save_to_path(ckpt_path, step, model, optimizers, scheduler, progress)
+        ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+        self._save_to_path(ckpt_path, step, model, optimizers, scheduler, progress)
 
     def maybe_clean(self) -> None:
         """Deletes past local checkpoints beyond the most recent `config.keep` steps. No-op if `config.keep` is None."""
@@ -141,15 +138,13 @@ class CheckpointManager:
 
         # Get all the checkpoint steps to delete
         assert list(self.ckpt_steps) == sorted(self.ckpt_steps)
-        ckpt_steps_to_keep = self.ckpt_steps[-self.config.keep :]
         ckpt_steps_to_delete = self.ckpt_steps[: -self.config.keep]
         for ckpt_step in ckpt_steps_to_delete:
             ckpt_path = self._get_ckpt_path(ckpt_step)
             if ckpt_path.exists():
-                self._logger.debug(
-                    f"Removing past trainer checkpoint for step {ckpt_step} ({ckpt_path}), because got checkpoints for {ckpt_steps_to_keep} ({len(self.ckpt_steps)} > {self.config.keep})"
-                )
-                ckpt_path.unlink(missing_ok=True)
+                self._logger.debug(f"Removing past trainer checkpoint for step {ckpt_step} ({ckpt_path})")
+                # TODO: Handle this more gracefully, e.g. each rank should only delete its own checkpoint
+                shutil.rmtree(ckpt_path)
 
         # Update checkpoint steps
         self.ckpt_steps = self.ckpt_steps[-self.config.keep :]

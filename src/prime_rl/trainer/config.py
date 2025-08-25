@@ -159,13 +159,6 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = None
 
-    save_async: Annotated[
-        bool,
-        Field(
-            description="Whether to save the checkpoint asynchronously.",
-        ),
-    ] = False
-
     resume_step: Annotated[
         int | None,
         Field(

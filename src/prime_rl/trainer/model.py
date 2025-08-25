@@ -69,7 +69,6 @@ def setup_tokenizer(config: ModelConfig) -> PreTrainedTokenizer:
 
 
 def setup_fsdp(model: nn.Module, config: ModelConfig):
-    dist.init_process_group(device_id=torch.device("cuda", torch.cuda.current_device()))
     assert dist.get_world_size() % config.ep == 0, "World size must be divisible by EP"
     fsdp_dim = dist.get_world_size() // config.ep
     world_mesh = dist.init_device_mesh("cuda", (fsdp_dim, config.ep), mesh_dim_names=("fsdp", "ep"))

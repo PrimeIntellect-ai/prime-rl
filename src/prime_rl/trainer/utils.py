@@ -10,7 +10,13 @@ from rich.table import Table
 from torch import Tensor, nn
 from torch.distributed.tensor import DTensor
 
+from prime_rl.trainer.world import get_world
 from prime_rl.utils.utils import format_num, format_time
+
+
+def setup_torch_distributed():
+    torch.cuda.set_device(get_world().rank)
+    dist.init_process_group(device_id=torch.device("cuda", torch.cuda.current_device()))
 
 
 def get_response_lengths(position_ids: torch.Tensor) -> list[int]:

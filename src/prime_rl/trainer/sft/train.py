@@ -23,6 +23,7 @@ from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import setup_dataloader, setup_dataset
 from prime_rl.trainer.utils import (
     Tensors,
+    setup_torch_distributed,
     print_benchmark,
 )
 from prime_rl.trainer.world import get_world
@@ -47,9 +48,9 @@ def train(config: SFTTrainerConfig):
     logger.info(f"Initializing monitor ({config.monitor})")
     monitor = setup_monitor(config.monitor, output_dir=config.output_dir, run_config=config)
 
-    # Set precision and cuda device
+    # Set precision
+    setup_torch_distributed()
     torch.set_float32_matmul_precision("high")
-    torch.cuda.set_device(world.rank)
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model and tokenizer ({config.model})")
@@ -93,7 +94,7 @@ def train(config: SFTTrainerConfig):
     is_first_step = True
     while True:
         # Save the full checkpoint (if we are at an interval step and not at the first or last step)
-        is_last_step = config.max_steps is not None and progress.step == config.max_steps - 1
+        is_last_step = config.max_steps is not None and progress.step == config.max_steps
         save_ckpt_time = 0
         if (
             ckpt_manager is not None
@@ -273,6 +274,7 @@ def train(config: SFTTrainerConfig):
         logger.info("Writing final checkpoint")
         ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step)
         weight_ckpt_manager.save(model, tokenizer, step=progress.step)
+        ckpt_manager.maybe_clean()
 
     logger.info(f"Peak memory: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB")
     logger.success("SFT trainer finished!")

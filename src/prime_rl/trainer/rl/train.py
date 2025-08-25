@@ -32,6 +32,7 @@ from prime_rl.trainer.utils import (
     OffloadedTensor,
     Tensors,
     copy_model_to_cpu,
+    setup_torch_distributed,
     offload_model_to_cpu,
     wake_up_model_from_cpu,
     print_benchmark,
@@ -59,9 +60,9 @@ def train(config: RLTrainerConfig):
     logger.info(f"Initializing monitor ({config.monitor})")
     monitor = setup_monitor(config.monitor, output_dir=config.output_dir, run_config=config)
 
-    # Set precision and cuda device
+    # Set precision
+    setup_torch_distributed()
     torch.set_float32_matmul_precision("high")
-    torch.cuda.set_device(world.rank)
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model and tokenizer ({config.model})")
@@ -133,7 +134,7 @@ def train(config: RLTrainerConfig):
             save_weights_time = time.time() - save_weights_start_time
 
         # Save the full checkpoint (if we are at an interval step and not at the first or last step)
-        is_last_step = config.max_steps is not None and progress.step == config.max_steps - 1
+        is_last_step = config.max_steps is not None and progress.step == config.max_steps
         save_ckpt_time = 0
         if (
             ckpt_manager is not None
@@ -398,6 +399,7 @@ def train(config: RLTrainerConfig):
     if ckpt_manager is not None:
         logger.info("Writing final checkpoint")
         ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step)
+        ckpt_manager.maybe_clean()
 
     logger.info(f"Peak memory: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB")
     logger.success("RL trainer finished!")
