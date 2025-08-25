@@ -82,18 +82,27 @@ class SFTDataset(IterableDataset):
             num_workers = worker_info.num_workers
         self.data_rank = get_world().rank * num_workers + worker_id
         self.data_world_size = get_world().world_size * num_workers
+        
+        # State for checkpointing
+        self._counter = -1
+        self._epoch = -1
 
     def __iter__(self) -> Iterator[Sample]:
         """
         Apply chat template and tokenize a single example in prompt + completion format (https://github.com/huggingface/trl/blob/de27d612b026526ba39b88eee348994d7636e033/trl/trainer/sft_trainer.py#L661)
         """
-        counter, epoch = -1, -1
+        # Use instance state for checkpointing
+        counter = self._counter
+        epoch = self._epoch
+        
         while True:
             epoch += 1
+            self._epoch = epoch
             shuffled_dataset = self.dataset.shuffle(seed=epoch)
             for example in shuffled_dataset:
                 # Increment the counter (0, 1, ...)
                 counter += 1
+                self._counter = counter
 
                 # Skip samples that don't belong to this data rank
                 if counter % self.data_world_size != self.data_rank:
@@ -136,6 +145,21 @@ class SFTDataset(IterableDataset):
                 }
 
                 yield sample
+    
+    def get_state(self) -> dict:
+        """Get the current state for checkpointing."""
+        return {
+            "counter": self._counter,
+            "epoch": self._epoch,
+            "data_rank": self.data_rank,
+            "data_world_size": self.data_world_size,
+        }
+    
+    def set_state(self, state: dict):
+        """Set the state from checkpoint."""
+        self._counter = state["counter"]
+        self._epoch = state["epoch"]
+        # Note: data_rank and data_world_size are not restored as they depend on world config
 
 
 class PackingDataset(IterableDataset):
@@ -165,6 +189,21 @@ class PackingDataset(IterableDataset):
                         packed_samples[key] = value[: self.seq_len]
                 yield packed_samples
                 packed_samples, seq_len = defaultdict(list), 0
+    
+    def get_state(self) -> dict:
+        """Get the current state for checkpointing."""
+        # PackingDataset doesn't maintain state, but its underlying dataset does
+        if hasattr(self.dataset, 'get_state'):
+            return {
+                "dataset_state": self.dataset.get_state(),
+                "seq_len": self.seq_len,
+            }
+        return {"seq_len": self.seq_len}
+    
+    def set_state(self, state: dict):
+        """Set the state from checkpoint."""
+        if hasattr(self.dataset, 'set_state') and "dataset_state" in state:
+            self.dataset.set_state(state["dataset_state"])
 
 
 def collate(samples: list[Sample]) -> Batch:
