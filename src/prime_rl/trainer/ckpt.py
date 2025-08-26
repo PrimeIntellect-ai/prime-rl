@@ -34,20 +34,24 @@ class AppState(Stateful):
     https://docs.pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html
     """
 
-    def __init__(self, model: Module, optimizers: list[Optimizer], scheduler: LRScheduler, progress: Progress):
+    def __init__(self, model: Module, optimizers: list[Optimizer], scheduler: LRScheduler, progress: Progress, dataloader_state: dict = None):
         self.model, self.optimizers, self.scheduler, self.progress = model, optimizers, scheduler, progress
+        self.dataloader_state = dataloader_state
 
     def state_dict(self) -> dict[str, Any]:
         # Automatically manages FSDP FQN's, as well as sets the default state dict type to FSDP.SHARDED_STATE_DICT
         model_state_dict, optimizer_state_dict = get_state_dict(self.model, self.optimizers)
         scheduler_state_dict = self.scheduler.state_dict()
         progress_state_dict = asdict(self.progress)
-        return {
+        state_dict = {
             "model": model_state_dict,
             "optimizers": optimizer_state_dict,
             "scheduler": scheduler_state_dict,
             "progress": progress_state_dict,
         }
+        if self.dataloader_state is not None:
+            state_dict["dataloader"] = self.dataloader_state
+        return state_dict
 
     def load_state_dict(self, state_dict: dict[str, Any]):
         set_state_dict(
@@ -56,6 +60,8 @@ class AppState(Stateful):
         self.scheduler.load_state_dict(state_dict["scheduler"])
         for key, value in state_dict["progress"].items():
             setattr(self.progress, key, value)
+        if "dataloader" in state_dict:
+            self.dataloader_state = state_dict["dataloader"]
 
 
 class CheckpointManager:
@@ -80,12 +86,13 @@ class CheckpointManager:
         optimizers: list[Optimizer],
         scheduler: LRScheduler,
         progress: Progress,
+        dataloader_state: dict = None,
     ):
         self._logger.debug(f"Saving training checkpoint to {ckpt_path}")
         start_time = time.time()
 
         # Create checkpoint state
-        state_dict = {"app": AppState(model, optimizers, scheduler, progress)}
+        state_dict = {"app": AppState(model, optimizers, scheduler, progress, dataloader_state)}
 
         # Save sharded state
         dcp.save(state_dict, checkpoint_id=ckpt_path)
@@ -97,26 +104,30 @@ class CheckpointManager:
         self._logger.debug(f"Training checkpoint saved in {time.time() - start_time:.2f} seconds")
 
     def _load_from_path(
-        self, ckpt_path: Path, model: nn.Module, optimizers: list[Optimizer], scheduler: LRScheduler, progress: Progress
+        self, ckpt_path: Path, model: nn.Module, optimizers: list[Optimizer], scheduler: LRScheduler, progress: Progress, dataloader_state: dict = None
     ):
         """Loads a checkpoint from a given path in-place."""
         self._logger.debug(f"Loading training checkpoint from {ckpt_path}")
         start_time = time.time()
 
         # Load sharded state
-        state_dict = {"app": AppState(model, optimizers, scheduler, progress)}
+        app_state = AppState(model, optimizers, scheduler, progress, dataloader_state)
+        state_dict = {"app": app_state}
         dcp.load(state_dict=state_dict, checkpoint_id=ckpt_path)
+        
+        # Save the loaded app state for later access
+        self._last_app_state = app_state
 
         self._logger.debug(f"Training checkpoint loaded in {time.time() - start_time:.2f} seconds")
 
     def load(
-        self, model: nn.Module, optimizers: list[Optimizer], scheduler: LRScheduler, progress: Progress, step: int
+        self, model: nn.Module, optimizers: list[Optimizer], scheduler: LRScheduler, progress: Progress, step: int, dataloader_state: dict = None
     ) -> None:
         """Loads a checkpoint from a given path in-place."""
         ckpt_path = self._get_ckpt_path(step)
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
-        self._load_from_path(ckpt_path, model, optimizers, scheduler, progress)
+        self._load_from_path(ckpt_path, model, optimizers, scheduler, progress, dataloader_state)
 
     def save(
         self,
@@ -125,11 +136,12 @@ class CheckpointManager:
         scheduler: LRScheduler,
         progress: Progress,
         step: int,
+        dataloader_state: dict = None,
     ) -> None:
         """Saves the full checkpoint state for a specified step."""
         ckpt_path = self._get_ckpt_path(step)
         ckpt_path.parent.mkdir(parents=True, exist_ok=True)
-        self._save_to_path(ckpt_path, step, model, optimizers, scheduler, progress)
+        self._save_to_path(ckpt_path, step, model, optimizers, scheduler, progress, dataloader_state)
 
     def maybe_clean(self) -> None:
         """Deletes past local checkpoints beyond the most recent `config.keep` steps. No-op if `config.keep` is None."""

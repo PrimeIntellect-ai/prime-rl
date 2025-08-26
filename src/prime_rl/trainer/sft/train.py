@@ -89,6 +89,19 @@ def train(config: SFTTrainerConfig):
     logger.info(f"Initializing data ({config.data})")
     dataset = setup_dataset(tokenizer, config.data)
     dataloader = iter(setup_dataloader(dataset, tokenizer, config.data))
+    
+    # Skip samples if resuming from checkpoint
+    if progress.step > 0:
+        samples_to_skip = progress.step * config.data.batch_size
+        logger.info(f"Skipping {samples_to_skip} samples to reach step {progress.step}")
+        for _ in range(samples_to_skip):
+            try:
+                next(dataloader)
+            except StopIteration:
+                # If we run out of data, restart the dataloader
+                logger.warning("Reached end of dataset while skipping, restarting dataloader")
+                dataloader = iter(setup_dataloader(dataset, tokenizer, config.data))
+                break
 
     logger.info(f"Starting training loop ({config.max_steps=})")
     is_first_step = True
@@ -106,6 +119,7 @@ def train(config: SFTTrainerConfig):
         ):
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.time()
+            # For SFT, we don't need to save dataloader state since we can reconstruct it from progress.step
             ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step)
             weight_ckpt_manager.save(model, tokenizer, step=progress.step)
             save_ckpt_time = time.time() - save_ckpt_start_time
@@ -272,6 +286,7 @@ def train(config: SFTTrainerConfig):
     # Write final checkpoint
     if config.ckpt and ckpt_manager is not None and weight_ckpt_manager is not None:
         logger.info("Writing final checkpoint")
+        # For SFT, we don't need to save dataloader state since we can reconstruct it from progress.step
         ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step)
         weight_ckpt_manager.save(model, tokenizer, step=progress.step)
         ckpt_manager.maybe_clean()
