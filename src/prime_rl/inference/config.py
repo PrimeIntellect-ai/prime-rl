@@ -76,6 +76,21 @@ class ModelConfig(BaseConfig):
         ),
     ] = False
 
+    enable_auto_tool_choice: Annotated[
+        bool,
+        Field(
+            description="Whether to enable auto tool choice. Passed to vLLM as `--enable-auto-tool-choice`",
+        ),
+    ] = False
+
+    tool_call_parser: Annotated[
+
+        str,
+        Field(
+            description="The tool call parser to use. Passed to vLLM as `--tool-call-parser`",
+        ),
+    ] = "hermes"
+
 
 class InferenceConfig(BaseSettings):
     """Configures inference."""
@@ -107,6 +122,8 @@ class InferenceConfig(BaseSettings):
             "model.max_model_len": "max_model_len",
             "model.enforce_eager": "enforce_eager",
             "model.trust_remote_code": "trust_remote_code",
+            "model.enable_auto_tool_choice": "enable_auto_tool_choice",  # requires underscores (unlike on CLI)
+            "model.tool_call_parser": "tool_call_parser",                # requires underscores (unlike on CLI)
             "parallel.tp": "tensor_parallel_size",
             "parallel.dp": "data_parallel_size",
         }
