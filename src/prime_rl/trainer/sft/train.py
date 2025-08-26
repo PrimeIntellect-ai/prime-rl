@@ -78,9 +78,15 @@ def train(config: SFTTrainerConfig):
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
+    dataloader_state = None
     if ckpt_manager is not None and config.ckpt and config.ckpt.resume_step:
         logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
-        ckpt_manager.load(model, [optimizer], scheduler, progress, step=config.ckpt.resume_step)
+        # Load checkpoint with dataloader_state
+        ckpt_manager.load(model, [optimizer], scheduler, progress, step=config.ckpt.resume_step, dataloader_state=dataloader_state)
+        # Get dataloader_state from loaded checkpoint if available
+        if  ckpt_manager._last_app_state.dataloader_state is not None:
+            dataloader_state = ckpt_manager._last_app_state.dataloader_state
+            logger.info(f"Loaded dataloader state from DCP: {dataloader_state}")
     logger.info(
         f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
     )
