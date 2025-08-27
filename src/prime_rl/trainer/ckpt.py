@@ -113,8 +113,10 @@ class CheckpointManager:
         state_dict = {"app": app_state}
         dcp.load(state_dict=state_dict, checkpoint_id=ckpt_path)
         
-        # Save the loaded app state for later access
-        self._last_app_state = app_state
+        # Update dataloader_state in-place if provided and present in checkpoint
+        if dataloader_state is not None and "dataloader" in app_state.state_dict():
+            dataloader_state.clear()
+            dataloader_state.update(app_state.state_dict()["dataloader"])
 
         self._logger.debug(f"Training checkpoint loaded in {time.time() - start_time:.2f} seconds")
 

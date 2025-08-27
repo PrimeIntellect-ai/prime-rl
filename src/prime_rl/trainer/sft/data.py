@@ -82,12 +82,34 @@ class SFTDataset(IterableDataset):
             num_workers = worker_info.num_workers
         self.data_rank = get_world().rank * num_workers + worker_id
         self.data_world_size = get_world().world_size * num_workers
+        
+        # Public state attributes for checkpointing
+        self.counter = -1
+        self.epoch = -1
+        self.shuffle_seed = 0
+
+    def get_state(self) -> dict:
+        """Get the current state of the dataset for checkpointing."""
+        return {
+            "counter": self.counter,
+            "epoch": self.epoch,
+            "shuffle_seed": self.shuffle_seed,
+        }
+
+    def set_state(self, state: dict):
+        """Set the state of the dataset from checkpoint."""
+        self.counter = state.get("counter", -1)
+        self.epoch = state.get("epoch", -1)
+        self.shuffle_seed = state.get("shuffle_seed", 0)
 
     def __iter__(self) -> Iterator[Sample]:
         """
         Apply chat template and tokenize a single example in prompt + completion format (https://github.com/huggingface/trl/blob/de27d612b026526ba39b88eee348994d7636e033/trl/trainer/sft_trainer.py#L661)
         """
-        counter, epoch = -1, -1
+        counter, epoch = self.counter, self.epoch
+        if counter == -1:
+            counter, epoch = -1, -1
+            
         while True:
             epoch += 1
             shuffled_dataset = self.dataset.shuffle(seed=epoch)
@@ -135,6 +157,11 @@ class SFTDataset(IterableDataset):
                     "epoch": epoch,
                 }
 
+                # Update state
+                self.counter = counter
+                self.epoch = epoch
+                self.shuffle_seed = epoch
+
                 yield sample
 
 
@@ -144,9 +171,29 @@ class PackingDataset(IterableDataset):
     def __init__(self, dataset: IterableDataset, seq_len: int):
         self.dataset = dataset
         self.seq_len = seq_len
+        # Public state attributes for checkpointing
+        self.packed_samples = defaultdict(list)
+        self.current_seq_len = 0
+
+    def get_state(self) -> dict:
+        """Get the current state of the packing dataset."""
+        return {
+            "dataset_state": self.dataset.get_state() if hasattr(self.dataset, 'get_state') else {},
+            "packed_samples": dict(self.packed_samples),
+            "current_seq_len": self.current_seq_len,
+        }
+
+    def set_state(self, state: dict):
+        """Set the state of the packing dataset from checkpoint."""
+        if hasattr(self.dataset, 'set_state') and 'dataset_state' in state:
+            self.dataset.set_state(state['dataset_state'])
+        self.packed_samples = defaultdict(list)
+        if 'packed_samples' in state:
+            self.packed_samples.update(state['packed_samples'])
+        self.current_seq_len = state.get('current_seq_len', 0)
 
     def __iter__(self) -> Iterator[Sample]:
-        packed_samples, seq_len = defaultdict(list), 0
+        packed_samples, seq_len = self.packed_samples, self.current_seq_len
         for sample in self.dataset:
             # Add sample to packed samples
             for key, value in sample.items():
