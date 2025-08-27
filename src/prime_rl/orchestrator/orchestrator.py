@@ -12,7 +12,7 @@ from verifiers import load_environment
 from verifiers.types import GenerateOutputs, ProcessedOutputs
 from transformers import AutoTokenizer
 
-from prime_rl.orchestrator.ckpt import RLProgress as Progress, setup_ckpt_manager
+from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.eval.utils import run_eval
 from prime_rl.orchestrator.client import (
     check_has_model,
@@ -74,6 +74,15 @@ async def orchestrate(config: OrchestratorConfig):
         run_config=config,
     )
 
+    # Load environment and extract dataset
+    logger.info(f"Loading environment {config.environment.id} with args {config.environment.args}")
+    vf_env = load_environment(config.environment.id, **config.environment.args)
+    dataset = vf_env.get_dataset(seed=config.seed)
+
+    # Setup buffer
+    logger.info(f"Setting up buffer ({config.buffer})")
+    buffer = setup_buffer(dataset, config.buffer)
+
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")
     await check_health(client)
@@ -89,21 +98,12 @@ async def orchestrate(config: OrchestratorConfig):
     ckpt_step = 0
     if config.ckpt and ckpt_manager and config.ckpt.resume_step:
         logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
-        ckpt_manager.load(progress, step=config.ckpt.resume_step)
+        ckpt_manager.load(progress, buffer, step=config.ckpt.resume_step)
         ckpt_step = max(progress.step - config.async_level, 0)
         await update_weights(client, get_weights_dir(config.output_dir), ckpt_step)
     else:
         logger.info("Training from scratch. Resetting weights to base model")
         await reload_weights(client)
-
-    # Load environment and extract dataset
-    logger.info(f"Loading environment {config.environment.id} with args {config.environment.args}")
-    vf_env = load_environment(config.environment.id, **config.environment.args)
-    dataset = vf_env.get_dataset(seed=config.seed)
-
-    # Setup buffer
-    logger.info(f"Setting up buffer ({config.buffer})")
-    buffer = setup_buffer(dataset, config.buffer)
 
     # Iterate over dataset in batches
     max_steps = config.max_steps or int(1e9)
@@ -123,7 +123,7 @@ async def orchestrate(config: OrchestratorConfig):
         ):
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.time()
-            ckpt_manager.save(progress, step=progress.step)
+            ckpt_manager.save(progress, buffer, step=progress.step)
             save_ckpt_time = time.time() - save_ckpt_start_time
 
             # Maybe clean up old orchestrator checkpoints
@@ -489,7 +489,7 @@ async def orchestrate(config: OrchestratorConfig):
     # Write final checkpoint
     if ckpt_manager is not None:
         logger.info("Writing final checkpoint")
-        ckpt_manager.save(progress, step=progress.step)
+        ckpt_manager.save(progress, buffer, step=progress.step)
 
     logger.success("Orchestrator finished.")
 

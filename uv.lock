@@ -1,6 +1,6 @@
 version = 1
-revision = 2
-requires-python = ">=3.12.0, <3.13"
+revision = 3
+requires-python = "==3.12.*"
 resolution-markers = [
     "sys_platform == 'linux'",
     "sys_platform != 'linux'",
@@ -2187,7 +2187,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.10.1" },
     { name = "pylatexenc", specifier = ">=2.10" },
     { name = "pynvml", specifier = ">=12.0.0" },
-    { name = "reverse-text", marker = "extra == 'vf'", specifier = ">=0.1.1", index = "https://hub.primeintellect.ai/primeintellect/simple" },
+    { name = "reverse-text", marker = "extra == 'vf'", specifier = ">=0.1.2", index = "https://hub.primeintellect.ai/primeintellect/simple" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "skywork-math", marker = "extra == 'vf'", specifier = ">=0.1.3", index = "https://hub.primeintellect.ai/primeintellect/simple" },
     { name = "textarena", specifier = ">=0.6.16" },
@@ -2741,13 +2741,13 @@ wheels = [
 
 [[package]]
 name = "reverse-text"
-version = "0.1.1"
+version = "0.1.2"
 source = { registry = "https://hub.primeintellect.ai/primeintellect/simple" }
 dependencies = [
     { name = "verifiers" },
 ]
 wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/reverse-text/@f4f1589b/reverse_text-0.1.1-py2.py3-none-any.whl", hash = "sha256:fb2861707faa2e6b4fcc74f695c76265edd3391d1417ed1af72aa7d2e374845c" },
+    { url = "https://hub.primeintellect.ai/primeintellect/reverse-text/@d1d0e729/reverse_text-0.1.2-py2.py3-none-any.whl", hash = "sha256:e597acbf0fb87f31f51bc37f32d4a3e45da886c4254d3213f09d3521c39f3b83" },
 ]
 
 [[package]]

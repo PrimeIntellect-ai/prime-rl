@@ -1,9 +1,11 @@
+import json
 import random
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from pathlib import Path
 
-from datasets import Dataset
+from datasets import Dataset, load_from_disk
 
 from prime_rl.orchestrator.config import (
     DataBufferConfigType,
@@ -84,17 +86,78 @@ class Buffer(ABC):
     class defines a strategy for sampling from the dataset and the rollouts.
     """
 
-    def __init__(self, dataset: Dataset):
-        self.dataset = dataset
+    def __init__(self, dataset: Dataset, buffer_config: DataBufferConfigType):
         self.logger = get_logger()
 
-        # Initialize prompt and rollout buffers
+        # Initialize buffer
+        self._init_buffer(dataset, buffer_config.from_scratch)
+
+    def _init_buffer(self, dataset: Dataset, from_scratch: bool) -> None:
+        """Initializes the buffer state from a dataset."""
+        # Store problem IDs
         self.problem_ids = list(range(len(dataset)))
+
+        if from_scratch:
+            self.logger.debug("Initializing metadata and rollouts in buffer from scratch.")
+            self.rollout_buffer: dict[int, list[Rollout]] = {}
+            self.metadata: dict[int, dict] = {problem_id: {} for problem_id in self.problem_ids}
+        else:
+            self.logger.debug("Initializing metadata and rollouts in buffer from dataset columns.")
+            if not all(column in dataset.column_names for column in ("metadata", "rollouts")):
+                raise ValueError(
+                    "The dataset must contain columns `metadata` and `rollouts` to initialize the buffer, because `from_scratch` is False."
+                )
+            self.metadata = {
+                problem_id: json.loads(metadata) for problem_id, metadata in zip(self.problem_ids, dataset["metadata"])
+            }
+            self.rollout_buffer = {}
+            for problem_id, rollouts in zip(self.problem_ids, dataset["rollouts"]):
+                rollouts = json.loads(rollouts)
+                if len(rollouts) > 0:
+                    self.rollout_buffer[problem_id] = [Rollout(**rollout) for rollout in rollouts]
+            dataset = dataset.remove_columns(["metadata", "rollouts"])
+
+        # Store dataset and problem buffer
+        self.dataset = dataset
         self.problem_buffer: dict[int, dict] = {
-            problem_id: problem for problem_id, problem in zip(self.problem_ids, dataset)
+            problem_id: dict(problem) for problem_id, problem in zip(self.problem_ids, dataset)
         }
-        self.rollout_buffer: dict[int, list[Rollout]] = {}
-        self.metadata: dict[int, dict] = {problem_id: {} for problem_id in self.problem_ids}
+
+    def save(self, path: Path) -> None:
+        """Saves the buffer state to a single HF dataset."""
+
+        # Remove stale columns if present before proceding.
+        dataset = self.dataset.remove_columns([c for c in ("metadata", "rollouts") if c in self.dataset.column_names])
+
+        # Put empty list for problems without rollouts
+        rollout_buffer = {problem_id: [] for problem_id in self.problem_ids}
+        for problem_id, rollouts in self.rollout_buffer.items():
+            rollout_buffer[problem_id] = [asdict(rollout) for rollout in rollouts]
+
+        # Serialize metadata and rollouts into columns
+        assert len(dataset) == len(self.metadata) == len(rollout_buffer), (
+            f"The dataset, metadata and rollout buffer must have the same length, but got ({len(dataset)=}, {len(self.metadata)=}, {len(self.rollout_buffer)=})"
+        )
+        assert isinstance(dataset, Dataset)
+        dataset = dataset.add_column(
+            name="metadata", column=list(map(json.dumps, self.metadata.values())), new_fingerprint="metadata-ckpt"
+        )
+        dataset = dataset.add_column(
+            name="rollouts",
+            column=list(map(json.dumps, rollout_buffer.values())),
+            new_fingerprint="rollouts-ckpt",
+        )
+
+        # Write to disk
+        path.parent.mkdir(parents=True, exist_ok=True)
+        dataset.save_to_disk(path)
+
+    def load(self, path: Path) -> None:
+        """Loads the buffer state from a single HF dataset."""
+        # Load dataset from disk
+        self.dataset = load_from_disk(path)
+        assert isinstance(self.dataset, Dataset)
+        self._init_buffer(self.dataset, from_scratch=False)
 
     @abstractmethod
     def sample_problems(self, n: int) -> tuple[list[int], list[dict]]:
@@ -148,7 +211,7 @@ class SimpleBuffer(Buffer):
     """
 
     def __init__(self, dataset: Dataset, buffer_config: SimpleBufferConfig):
-        super().__init__(dataset)
+        super().__init__(dataset, buffer_config)
         self.config = buffer_config
 
     def sample_problems(self, n: int) -> tuple[list[int], list[dict]]:
@@ -203,22 +266,17 @@ class DifficultyPoolBuffer(Buffer):
     """
 
     def __init__(self, dataset: Dataset, buffer_config: DifficultyPoolBufferConfig):
-        super().__init__(dataset)
-
-        # Add difficulty information to metadata
+        super().__init__(dataset, buffer_config)
         self.config = buffer_config
-        if self.config.difficulty_field is not None:
-            assert self.config.difficulty_field in self.dataset.column_names
-            difficulties = self.dataset[self.config.difficulty_field]
-            self.logger.info(f"Found difficulty field {self.config.difficulty_field} in dataset")
-        else:
-            self.logger.warning("No difficulty field specified, initalizing all problems as `normal` difficulty")
-            difficulties = ["normal"] * len(self.problem_ids)
 
-        assert len(difficulties) == len(self.problem_ids)
-        assert all(difficulty in ["easy", "normal", "hard"] for difficulty in difficulties)
-        for problem_id, difficulty in zip(self.problem_ids, difficulties):
-            self.metadata[problem_id].update({"difficulty": difficulty})
+        # If not difficulty field is provided, initialize all problems as `normal` difficulty
+        for problem_id in self.problem_ids:
+            if self.metadata[problem_id].get("difficulty") is None:
+                self.metadata[problem_id].update({"difficulty": "normal"})
+            if self.metadata[problem_id]["difficulty"] not in ["easy", "normal", "hard"]:
+                raise ValueError(
+                    f"Invalid difficulty {self.metadata[problem_id]['difficulty']} for problem {problem_id}. Should be one of `easy`, `normal` or `hard`."
+                )
 
     def sample_problems(self, n: int) -> tuple[list[int], list[dict]]:
         # Compute number of easy, normal and hard problems to sample
@@ -337,7 +395,7 @@ class OnlineDifficultyBuffer(Buffer):
     """
 
     def __init__(self, dataset: Dataset, buffer_config: OnlineDifficultyBufferConfig):
-        super().__init__(dataset)
+        super().__init__(dataset, buffer_config)
         self.config = buffer_config
 
     def sample_problems(self, n: int) -> tuple[list[int], list[dict]]:
