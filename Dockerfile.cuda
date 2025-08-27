@@ -82,4 +82,4 @@ RUN rm /app/.venv/bin/python3.12 && ln -s /usr/local/bin/python /app/.venv/bin/p
 
 # Place executables in the environment at the front of the path
 ENV PATH="/app/.venv/bin:$PATH"
-ENTRYPOINT ["python", "src/prime_rl/infer.py"]
+ENTRYPOINT ["python", "src/prime_rl/inference/server.py"]
