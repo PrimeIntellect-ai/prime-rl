@@ -43,15 +43,13 @@ class AppState(Stateful):
         model_state_dict, optimizer_state_dict = get_state_dict(self.model, self.optimizers)
         scheduler_state_dict = self.scheduler.state_dict()
         progress_state_dict = asdict(self.progress)
-        state_dict = {
+        return {
             "model": model_state_dict,
             "optimizers": optimizer_state_dict,
             "scheduler": scheduler_state_dict,
             "progress": progress_state_dict,
+            "dataloader": self.dataloader_state
         }
-        if self.dataloader_state is not None:
-            state_dict["dataloader"] = self.dataloader_state
-        return state_dict
 
     def load_state_dict(self, state_dict: dict[str, Any]):
         set_state_dict(
