@@ -90,11 +90,11 @@ class ModelConfig(BaseSettings):
     """Configures shared model settings."""
 
     name: Annotated[
-        str | None,
+        str,
         Field(
-            description="The name of the model to use. If None, will fallback to the model names specified on submodule configs."
+            description="The name of the model to use."
         ),
-    ] = None
+    ] = "Qwen/Qwen3-0.6B"
 
 
 class RLConfig(BaseSettings):
@@ -153,11 +153,11 @@ class RLConfig(BaseSettings):
     ] = None
 
     model: Annotated[
-        ModelConfig,
+        ModelConfig | None,
         Field(
             description="Shared model configs. If None, will fallback to the model configs specified on submodule configs."
         ),
-    ] = ModelConfig()
+    ] = None
 
     max_steps: Annotated[
         int | None,
@@ -297,7 +297,7 @@ class RLConfig(BaseSettings):
     @model_validator(mode="after")
     def auto_setup_model(self):
         # Use the same model for trainer, orchestrator and inference
-        if self.model.name:
+        if self.model is not None and self.model.name:
             self.trainer.model.name = self.model.name
             self.orchestrator.model.name = self.model.name
             if self.inference:
