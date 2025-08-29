@@ -133,58 +133,64 @@ class SFTDataset(StatefulIterableDataset):
         """
         Apply chat template and tokenize a single example in prompt + completion format (https://github.com/huggingface/trl/blob/de27d612b026526ba39b88eee348994d7636e033/trl/trainer/sft_trainer.py#L661)
         """
+        dataset = self.dataset.shuffle(seed=self.epoch) if self.config.shuffle else self.dataset
         while True:
-            dataset = self.dataset.shuffle(seed=self.epoch) if self.config.shuffle else self.dataset
-            for example in dataset:
-                # Increment the step counter (0, 1, 2, ...)
-                # This has to be done before yielding the sample for the dataloader to checkpoint correctly
-                self.step += 1
+            # Increment the step counter (0, 1, 2, ...)
+            # This has to be done before yielding the sample for the dataloader to checkpoint correctly
+            self.step += 1
 
-                # Skip samples that don't belong to this data rank
-                if self.step % self.data_world_size != self.data_rank:
-                    continue
+            # Get example from dataset
+            example = dataset[self.step % self.num_examples]
 
-                # Update epoch if num_examples is set
-                assert self.num_examples is not None, "num_examples must be set for real datasets"
-                self.epoch = self.step // self.num_examples
+            # Skip samples that don't belong to this data rank
+            if self.step % self.data_world_size != self.data_rank:
+                continue
 
-                assert "prompt" in example and "completion" in example, (
-                    "Prompt and completion must be present in the example"
+            # Compute current epoch based on step count (total samples seen)
+            epoch = self.step // self.num_examples
+
+            # Update stored epoch if new epoch is reached, optionall shuffle
+            if epoch > self.epoch:
+                dataset = self.dataset.shuffle(seed=self.epoch) if self.config.shuffle else self.dataset
+                self.epoch = epoch
+
+            assert "prompt" in example and "completion" in example, (
+                "Prompt and completion must be present in the example"
+            )
+            assert isinstance(example["prompt"], list) and isinstance(example["completion"], list), (
+                "Prompt and completion must be lists"
+            )
+
+            prompt_ids = self.tokenizer.apply_chat_template(
+                example["prompt"],
+                tools=example.get("tools"),
+                **example.get("chat_template_kwargs", {}),
+            )
+            prompt_completion_ids = self.tokenizer.apply_chat_template(
+                example["prompt"] + example["completion"],
+                tools=example.get("tools"),
+                **example.get("chat_template_kwargs", {}),
+            )
+
+            if not prompt_completion_ids[: len(prompt_ids)] == prompt_ids:
+                self._logger.warning(
+                    "Mismatch between tokenized prompt and the start of tokenized prompt+completion. "
+                    "This may be due to unexpected tokenizer behavior, whitespace issues, or special "
+                    "token handling. Verify that the tokenizer is processing text consistently."
                 )
-                assert isinstance(example["prompt"], list) and isinstance(example["completion"], list), (
-                    "Prompt and completion must be lists"
-                )
 
-                prompt_ids = self.tokenizer.apply_chat_template(
-                    example["prompt"],
-                    tools=example.get("tools"),
-                    **example.get("chat_template_kwargs", {}),
-                )
-                prompt_completion_ids = self.tokenizer.apply_chat_template(
-                    example["prompt"] + example["completion"],
-                    tools=example.get("tools"),
-                    **example.get("chat_template_kwargs", {}),
-                )
+            # Create sample (with one fake target for the last token)
+            sample = {
+                "input_ids": prompt_completion_ids,
+                "position_ids": list(range(len(prompt_completion_ids))),
+                "loss_mask": [False] * len(prompt_ids)
+                + [True] * (len(prompt_completion_ids) - len(prompt_ids) - 1)
+                + [False],
+                "target_ids": prompt_completion_ids[1:] + [0],
+                "epoch": self.epoch,
+            }
 
-                if not prompt_completion_ids[: len(prompt_ids)] == prompt_ids:
-                    self._logger.warning(
-                        "Mismatch between tokenized prompt and the start of tokenized prompt+completion. "
-                        "This may be due to unexpected tokenizer behavior, whitespace issues, or special "
-                        "token handling. Verify that the tokenizer is processing text consistently."
-                    )
-
-                # Create sample (with one fake target for the last token)
-                sample = {
-                    "input_ids": prompt_completion_ids,
-                    "position_ids": list(range(len(prompt_completion_ids))),
-                    "loss_mask": [False] * len(prompt_ids)
-                    + [True] * (len(prompt_completion_ids) - len(prompt_ids) - 1)
-                    + [False],
-                    "target_ids": prompt_completion_ids[1:] + [0],
-                    "epoch": self.epoch,
-                }
-
-                yield sample
+            yield sample
 
 
 class PackingDataset(StatefulIterableDataset):
