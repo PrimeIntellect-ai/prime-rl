@@ -257,4 +257,5 @@ def setup_dataloader(
 ) -> StatefulDataLoader:
     seq_len = config.micro_batch_size * config.seq_len
     packing_dataset = PackingDataset(dataset, seq_len)
-    return StatefulDataLoader(packing_dataset, batch_size=1, collate_fn=collate)
+    num_dataloader_workers = config.num_workers
+    return StatefulDataLoader(packing_dataset, batch_size=1, collate_fn=collate, num_workers=num_dataloader_workers)

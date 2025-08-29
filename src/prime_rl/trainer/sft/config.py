@@ -25,6 +25,12 @@ class BaseDataConfig(BaseModel):
     num_examples: Annotated[
         int | None, Field(description="Number of examples to use from the dataset. If None, will use all examples.")
     ] = None
+    num_workers: Annotated[ int,
+    Field(
+        ge=0,
+        description=("How many subprocesses to use for data loading. 0 means that the data will be loaded in the main process.")
+        ),
+    ] = 0
 
     @model_validator(mode="after")
     def validate_batch_size(self):
