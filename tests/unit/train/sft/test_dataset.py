@@ -1,6 +1,6 @@
 from transformers import AutoTokenizer
 
-from prime_rl.trainer.sft.config import FakeDataConfig, RealDataConfig
+from prime_rl.trainer.sft.config import FakeDataConfig, SFTDataConfig
 from prime_rl.trainer.sft.data import FakeDataset, SFTDataset
 
 
@@ -27,7 +27,7 @@ def test_fake_dataset_state():
 
 def test_init_sft_dataset():
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
-    config = RealDataConfig(num_examples=2)
+    config = SFTDataConfig(num_examples=2)
     dataset = SFTDataset(tokenizer, config)
     assert dataset is not None
 
@@ -46,7 +46,7 @@ Completion {idx}<|im_end|>
 
 def test_sft_dataset_state():
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
-    config = RealDataConfig(name="mikasenghaas/test-sft", num_examples=2)
+    config = SFTDataConfig(name="mikasenghaas/test-sft", num_examples=2)
     dataset = SFTDataset(tokenizer, config)
     dataiter = iter(dataset)
     assert dataset.state_dict() == {"step": 0, "epoch": 0}

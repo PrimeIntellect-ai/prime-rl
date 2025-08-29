@@ -10,7 +10,7 @@ from torch.utils.data import IterableDataset, get_worker_info
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.trainer.sft.config import DataConfigType, FakeDataConfig, RealDataConfig
+from prime_rl.trainer.sft.config import DataConfigType, FakeDataConfig, SFTDataConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
@@ -108,7 +108,7 @@ class FakeDataset(StatefulIterableDataset):
 class SFTDataset(StatefulIterableDataset):
     """A dataset wrapping a HF SFT dataset with prompt + completion format."""
 
-    def __init__(self, tokenizer: PreTrainedTokenizer, config: RealDataConfig):
+    def __init__(self, tokenizer: PreTrainedTokenizer, config: SFTDataConfig):
         super().__init__()
         self.config = config
         self.tokenizer = tokenizer
@@ -246,7 +246,7 @@ def collate(samples: list[Sample]) -> Batch:
 def setup_dataset(tokenizer: PreTrainedTokenizer, config: DataConfigType) -> StatefulIterableDataset:
     if config.type == "fake":
         return FakeDataset(tokenizer, config)
-    elif config.type == "real":
+    elif config.type == "sft":
         return SFTDataset(tokenizer, config)
     else:
         raise ValueError(f"Invalid dataset type: {config.type}")

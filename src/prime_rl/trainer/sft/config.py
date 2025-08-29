@@ -44,10 +44,10 @@ class FakeDataConfig(BaseDataConfig):
     input_ids: Literal["increasing", "random"] = "increasing"
 
 
-class RealDataConfig(BaseDataConfig):
+class SFTDataConfig(BaseDataConfig):
     """Configures the data used for training."""
 
-    type: Literal["real"] = "real"
+    type: Literal["sft"] = "sft"
 
     name: Annotated[str, Field(description="Name or path of the HF dataset to use.")] = (
         "PrimeIntellect/Reverse-Text-SFT"
@@ -56,7 +56,7 @@ class RealDataConfig(BaseDataConfig):
     shuffle: Annotated[bool, Field(description="Whether to shuffle the dataset at the beginning of each epoch.")] = True
 
 
-DataConfigType: TypeAlias = FakeDataConfig | RealDataConfig
+DataConfigType: TypeAlias = FakeDataConfig | SFTDataConfig
 
 
 class SFTTrainerConfig(BaseSettings):
@@ -66,7 +66,7 @@ class SFTTrainerConfig(BaseSettings):
     model: ModelConfig = ModelConfig()
 
     # The data configuration
-    data: Annotated[DataConfigType, Field(discriminator="type")] = RealDataConfig()
+    data: Annotated[DataConfigType, Field(discriminator="type")] = SFTDataConfig()
 
     # The optimizer configuration
     optim: Annotated[OptimizerConfigType, Field(discriminator="type")] = AdamWConfig()

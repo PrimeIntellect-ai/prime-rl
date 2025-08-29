@@ -3,7 +3,7 @@ import os
 import pytest
 from transformers import AutoTokenizer
 
-from prime_rl.trainer.sft.config import FakeDataConfig, RealDataConfig
+from prime_rl.trainer.sft.config import FakeDataConfig, SFTDataConfig
 from prime_rl.trainer.sft.data import setup_dataloader, setup_dataset
 from prime_rl.trainer.world import reset_world
 
@@ -148,7 +148,7 @@ Completion {idx}<|im_end|>
 def test_stateful_dataloader_resume_sft():
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
     num_examples = 8
-    config = RealDataConfig(
+    config = SFTDataConfig(
         name="mikasenghaas/test-sft",
         num_examples=num_examples,
         seq_len=20,
