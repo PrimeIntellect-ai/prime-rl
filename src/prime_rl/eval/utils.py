@@ -38,17 +38,80 @@ def compute_pass_at_k(rewards: list[int]) -> dict[str, float]:
     return {f"pass@{k}": avg_pass_rate}
 
 
-def create_accuracy_dataset(examples: list[dict], rewards: torch.Tensor, rollouts_per_example: int) -> Dataset:
+def extract_rollout_data(states: list, rewards: list[float], rollouts_per_example: int) -> list[dict]:
     """
-    Creates a HuggingFace dataset with average accuracy per question alongside original question and answer.
+    Extract rollout data from states and organize by example.
+    
+    Args:
+        states: List of state objects from generate_outputs
+        rewards: List of rewards for each rollout
+        rollouts_per_example: Number of rollouts per example
+        
+    Returns:
+        List of rollout data dictionaries organized by example
+    """
+    rollouts_by_example = []
+    
+    for example_idx in range(0, len(states), rollouts_per_example):
+        example_rollouts = []
+        
+        for rollout_idx in range(rollouts_per_example):
+            state_idx = example_idx + rollout_idx
+            if state_idx < len(states):
+                state = states[state_idx]
+                reward = rewards[state_idx]
+                
+                # Extract completion from state
+                completion = ""
+                completion_tokens = []
+                is_truncated = False
+                
+                if "responses" in state and state["responses"]:
+                    chat_completion = state["responses"][0]  # First response
+                    if hasattr(chat_completion, 'choices') and chat_completion.choices:
+                        choice = chat_completion.choices[0]
+                        if choice.message and choice.message.content:
+                            completion = choice.message.content
+                        
+                        # Extract completion tokens if available
+                        if choice.logprobs and choice.logprobs.content:
+                            completion_tokens = [int(token.token.split(":")[-1]) for token in choice.logprobs.content]
+                        
+                        # Check if truncated
+                        is_truncated = choice.finish_reason == "length"
+                
+                rollout_data = {
+                    "completion": completion,
+                    "completion_tokens": completion_tokens,
+                    "reward": reward,
+                    "is_truncated": is_truncated,
+                    "completion_length": len(completion_tokens)
+                }
+                example_rollouts.append(rollout_data)
+        
+        rollouts_by_example.append(example_rollouts)
+    
+    return rollouts_by_example
+
+
+def create_accuracy_dataset(
+    examples: list[dict], 
+    rewards: torch.Tensor, 
+    rollouts_per_example: int,
+    states: list = None
+) -> Dataset:
+    """
+    Creates a HuggingFace dataset with average accuracy per question alongside original question and answer,
+    and includes all rollouts for each example.
     
     Args:
         examples: List of original examples (not duplicated by rollouts_per_example)
         rewards: Tensor of shape [num_examples, rollouts_per_example] with rewards for each rollout
         rollouts_per_example: Number of rollouts per example
+        states: Optional list of state objects to extract rollout completions
         
     Returns:
-        Dataset with columns: prompt, answer, task, info, average_accuracy
+        Dataset with columns: prompt, answer, task, info, average_accuracy, rollouts
     """
     num_examples = len(examples)
     assert rewards.shape == (num_examples, rollouts_per_example), (
@@ -58,6 +121,27 @@ def create_accuracy_dataset(examples: list[dict], rewards: torch.Tensor, rollout
     # Calculate average accuracy for each example
     average_accuracies = rewards.mean(dim=1).tolist()
     
+    # Extract rollouts if states provided
+    rollouts_data = []
+    if states is not None:
+        rewards_flat = rewards.flatten().tolist()
+        rollouts_by_example = extract_rollout_data(states, rewards_flat, rollouts_per_example)
+        rollouts_data = rollouts_by_example
+    else:
+        # Fallback: create rollouts with just rewards
+        for example_idx in range(num_examples):
+            example_rollouts = []
+            for rollout_idx in range(rollouts_per_example):
+                rollout_data = {
+                    "completion": "",
+                    "completion_tokens": [],
+                    "reward": rewards[example_idx, rollout_idx].item(),
+                    "is_truncated": False,
+                    "completion_length": 0
+                }
+                example_rollouts.append(rollout_data)
+            rollouts_data.append(example_rollouts)
+    
     # Create dataset dictionary
     dataset_dict = {
         "prompt": [example["prompt"] for example in examples],
@@ -65,6 +149,7 @@ def create_accuracy_dataset(examples: list[dict], rewards: torch.Tensor, rollout
         "task": [example.get("task", "") for example in examples],
         "info": [example.get("info", {}) for example in examples],
         "average_accuracy": average_accuracies,
+        "rollouts": rollouts_data,
     }
     
     return Dataset.from_dict(dataset_dict)
@@ -325,11 +410,16 @@ async def run_eval(
 
         # Save accuracy dataset if requested
         if save_accuracy_dataset:
-            accuracy_dataset = create_accuracy_dataset(original_examples, rewards, rollouts_per_example)
+            accuracy_dataset = create_accuracy_dataset(
+                original_examples, 
+                rewards, 
+                rollouts_per_example, 
+                states=generate_outputs.state
+            )
             accuracy_dir = eval_dir / "accuracy_dataset"
             accuracy_dataset.push_to_hub("Fareso/math_filtered")
             accuracy_dataset.save_to_disk(accuracy_dir)
-            logger.info(f"Saved accuracy dataset to {accuracy_dir}")
+            logger.info(f"Saved accuracy dataset with rollouts to {accuracy_dir}")
 
         # Save "report"
         # TODO: Make this into an actually nice report, for now just JSON-dump eval metrics
