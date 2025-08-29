@@ -110,6 +110,7 @@ class SFTDataset(StatefulIterableDataset):
 
     def __init__(self, tokenizer: PreTrainedTokenizer, config: RealDataConfig):
         super().__init__()
+        self.config = config
         self.tokenizer = tokenizer
 
         # Load dataset
@@ -133,8 +134,8 @@ class SFTDataset(StatefulIterableDataset):
         Apply chat template and tokenize a single example in prompt + completion format (https://github.com/huggingface/trl/blob/de27d612b026526ba39b88eee348994d7636e033/trl/trainer/sft_trainer.py#L661)
         """
         while True:
-            shuffled_dataset = self.dataset.shuffle(seed=self.epoch)
-            for example in shuffled_dataset:
+            dataset = self.dataset.shuffle(seed=self.epoch) if self.config.shuffle else self.dataset
+            for example in dataset:
                 # Increment the step counter (0, 1, 2, ...)
                 # This has to be done before yielding the sample for the dataloader to checkpoint correctly
                 self.step += 1
