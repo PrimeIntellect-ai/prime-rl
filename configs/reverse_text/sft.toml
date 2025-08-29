@@ -5,10 +5,8 @@ name = "PrimeIntellect/Qwen3-0.6B"
 
 [data]
 batch_size = 16
-micro_batch_size = 16
+micro_batch_size = 8
 seq_len = 128
 
 [optim]
 lr = 2e-5
-
-[ckpt]

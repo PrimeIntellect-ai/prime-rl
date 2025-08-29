@@ -236,19 +236,23 @@ class CheckpointConfig(BaseConfig):
     ] = None
 
 
-class SimpleBufferConfig(BaseModel):
+class BufferConfig(BaseModel):
+    """Base config for all buffer types."""
+
+    from_scratch: Annotated[
+        bool,
+        Field(
+            description="Whether to initialize the metadata and rollout buffer from scratch. Defaults to True, which means we will initialize empty metadata and rollout buffers. If False, we expect columns `metadata` and `rollouts` to be present in the environment dataset to initialize the buffer from.",
+        ),
+    ] = True
+
+
+class SimpleBufferConfig(BufferConfig):
     type: Literal["simple"] = "simple"
 
 
-class DifficultyPoolBufferConfig(BaseModel):
+class DifficultyPoolBufferConfig(BufferConfig):
     type: Literal["difficulty-pool"] = "difficulty-pool"
-
-    difficulty_field: Annotated[
-        str | None,
-        Field(
-            description="Field name in the dataset that contains difficulty information. Should only contain `easy`, `normal` and `hard`. If None, all samples are treated as `normal` initially.",
-        ),
-    ] = None
 
     easy_border: Annotated[
         float,
@@ -288,7 +292,7 @@ class DifficultyPoolBufferConfig(BaseModel):
     ] = 0.1
 
 
-class OnlineDifficultyBufferConfig(BaseModel):
+class OnlineDifficultyBufferConfig(BufferConfig):
     type: Literal["online-difficulty"] = "online-difficulty"
 
     min_reward: Annotated[

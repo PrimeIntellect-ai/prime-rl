@@ -31,24 +31,32 @@ def parse_completion_tokens(states: list[State]) -> list[list[int]]:
             assert chat_completion.choices[0].logprobs.content is not None, (
                 "Logprob content should not be None. Make sure to set logprobs=True in the extra body when making the request to /v1/chat/completions"
             )
-            completion_tokens.append([int(token.token.split(":")[-1]) for token in chat_completion.choices[0].logprobs.content])
+            completion_tokens.append(
+                [int(token.token.split(":")[-1]) for token in chat_completion.choices[0].logprobs.content]
+            )
     return completion_tokens
 
 
 def parse_truncated_completions(states: list[State]) -> list[bool]:
-    is_truncated = []
+    """
+    Parses the state and, for each rollout, returns whether any completion
+    was truncated. Uses the finish_reason field to determine if the completion
+    was truncated.
+    """
+    all_is_truncated = []
     for state in states:
         assert "responses" in state, "Responses should be present in the state"
         assert all(isinstance(r, ChatCompletion) for r in state["responses"]), (
             "Responses should be ChatCompletion objects"
         )
-        for chat_completion in state["responses"]:
-            assert len(chat_completion.choices) == 1, "Response should always have one choice"
-            if chat_completion.choices[0].finish_reason == "length":
-                is_truncated.append(True)
-            else:
-                is_truncated.append(False)
-    return is_truncated
+        is_truncated = False
+        for response in state["responses"]:
+            assert len(response.choices) == 1, "Response should always have one choice"
+            choice = response.choices[0]
+            if hasattr(choice, "finish_reason") and choice.finish_reason == "length":
+                is_truncated = True
+        all_is_truncated.append(is_truncated)
+    return all_is_truncated
 
 
 def wait_for_weight_checkpoint(path: Path, step: int, interval: int = 1, log_interval: int = 10) -> None:

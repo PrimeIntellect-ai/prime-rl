@@ -23,7 +23,7 @@ def test_moe_venv():
 
     def apply_moe_changes(pyproject_dict, moe_dict):
         for i in range(len(pyproject_dict["project"]["dependencies"])):
-            if "torch" in pyproject_dict["project"]["dependencies"][i]:
+            if pyproject_dict["project"]["dependencies"][i] == "torch>=2.7.0":
                 pyproject_dict["project"]["dependencies"][i] = "torch>=2.8.0"
         pyproject_dict["project"]["dependencies"].extend(["torchtitan", "blobfile>=3.0.0"])
         pyproject_dict["project"]["optional-dependencies"]["flash-attn"] = moe_dict["project"]["optional-dependencies"][

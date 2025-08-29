@@ -56,9 +56,13 @@ jobs:
         env:
           USERNAME_CI: CI_RUNNER
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+          # Set WANDB_MODE to online only if WANDB_API_KEY is available, otherwise set to offline
+          # This is to allow running tests on forks without WANDB_API_KEY
+          WANDB_MODE: ${{ secrets.WANDB_API_KEY && 'online' || 'offline' }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
           GITHUB_HEAD_REF: ${{ github.head_ref }}
-        run: PYTEST_OUTPUT_DIR=/tmp/outputs uv run pytest tests/integration -m gpu
+          PYTEST_OUTPUT_DIR: /tmp/outputs
+        run: uv run pytest tests/integration -m gpu
       - name: Cleanup output_dir
         run: rm -rf /tmp/outputs

@@ -74,6 +74,12 @@ async def eval(config: OfflineEvalConfig):
         logger.info(f"Evaluating weight checkpoints in {config.weights_dir}")
         ckpt_steps = sorted([int(step_path.name.split("_")[-1]) for step_path in config.weights_dir.glob("step_*")])
         logger.info(f"Found {len(ckpt_steps)} weight checkpoints (steps: {', '.join(map(str, ckpt_steps))})")
+
+        # Filter the steps to evaluate
+        if config.steps is not None:
+            ckpt_steps = [step for step in ckpt_steps if step in config.steps]
+
+        logger.info(f"Evaluating {len(ckpt_steps)} weight checkpoints (steps: {', '.join(map(str, ckpt_steps))})")
         for ckpt_step in ckpt_steps[::-1]:
             # Update the weights
             logger.info(f"Evaluating weight checkpoint {ckpt_step}")

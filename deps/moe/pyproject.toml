@@ -27,11 +27,12 @@ dependencies = [
     "lovely-tensors>=0.1.18",
     "rich>=14.0.0",
     "tomli-w",
-    "verifiers",
+    "verifiers>=0.1.3",
     "textarena>=0.6.16",
     "nltk>=3.9.1",
     "math-verify>=0.8.0",
     "muon_fsdp2>=0.3.0",
+    "torchdata>=0.11.0",
     "torchtitan",
     "blobfile>=3.0.0",
 ]
@@ -53,19 +54,19 @@ flash-attn = ["flash-attn>=2.8.3"]
 flash-infer = ["flashinfer-python>=0.2.8rc1"]
 
 vf = [
-    "alphabet-sort>=0.1.3",
-    "ascii-tree>=0.1.4",
-    "pydantic-adherence>=0.1.1",
-    "reverse-text>=0.1.1",
-    "unscramble>=0.1.1",
-    "skywork-math>=0.1.3",
-    "deepscaler-math>=0.1.2",
-    "acereason-math>=0.1.2",
-    "hendrycks-math>=0.1.2",
-    "intellect-math>=0.1.2",
-    "aime2024>=0.1.7",
-    "aime2025>=0.1.7",
-    "math500>=0.1.7",
+    "alphabet-sort>=0.1.5",
+    "ascii-tree>=0.1.6",
+    "pydantic-adherence>=0.1.3",
+    "reverse-text>=0.1.4",
+    "unscramble>=0.1.3",
+    "skywork-math>=0.1.6",
+    "deepscaler-math>=0.1.4",
+    "acereason-math>=0.1.4",
+    "hendrycks-math>=0.1.4",
+    "intellect-math>=0.1.4",
+    "aime2024>=0.1.9",
+    "aime2025>=0.1.9",
+    "math500>=0.1.9",
 ]
 
 [tool.uv]
@@ -78,10 +79,7 @@ override-dependencies = [
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu128" }]
-verifiers = { git = "https://github.com/willccbb/verifiers", rev = "9cf207a" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e43694bbfeff5d6ad8ac738c067bb90d41" }
-
-vf-wordle = { git = "https://github.com/willccbb/verifiers.git", subdirectory = "environments/vf_wordle", rev = "main" }
 
 alphabet-sort = { index = "primeintellect" }
 ascii-tree = { index = "primeintellect" }

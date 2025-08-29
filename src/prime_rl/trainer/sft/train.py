@@ -81,19 +81,31 @@ def train(config: SFTTrainerConfig):
         "If ckpt_manager is set, weight_ckpt_manager must also be set"
     )
 
+    # Set up the dataset and dataloader
+    logger.info(f"Initializing data ({config.data})")
+    dataset = setup_dataset(tokenizer, config.data, config.model.cp * config.model.tp)
+    dataloader = setup_dataloader(dataset, tokenizer, config.data)
+    dataiter = iter(dataloader)
+
+    # Check that the world size and batch configuration is compatible
+    num_micro_batches = config.data.batch_size // config.data.micro_batch_size
+    if world.world_size > num_micro_batches:
+        raise ValueError(
+            f"There must be at least one micro batch per rank, but only have {num_micro_batches} micro batches for {world.world_size} ranks."
+        )
+    if num_micro_batches % world.world_size != 0:
+        raise ValueError(
+            f"The number of micro batches ({num_micro_batches}) must be divisible by the world size ({world.world_size})."
+        )
+
     # Optionally, resume training from a checkpoint
     progress = Progress()
     if ckpt_manager is not None and config.ckpt and config.ckpt.resume_step:
-        logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
-        ckpt_manager.load(model, [optimizer], scheduler, progress, step=config.ckpt.resume_step)
+        logger.info(f"Resuming training from checkpoint step {config.ckpt.resume_step}")
+        ckpt_manager.load(model, [optimizer], scheduler, progress, step=config.ckpt.resume_step, dataloader=dataloader)
     logger.info(
-        f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
+        f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples}, dataloader_state={dataloader.state_dict()['dataset_state']})"
     )
-
-    # Set up the dataset and dataloader (optionaly, use a fake dataset for debugging)
-    logger.info(f"Initializing data ({config.data})")
-    dataset = setup_dataset(tokenizer, config.data, config.model.cp * config.model.tp)
-    dataloader = iter(setup_dataloader(dataset, tokenizer, config.data))
 
     logger.info(f"Starting training loop ({config.max_steps=})")
     is_first_step = True
@@ -111,7 +123,7 @@ def train(config: SFTTrainerConfig):
         ):
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.time()
-            ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step)
+            ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step, dataloader=dataloader)
             weight_ckpt_manager.save(model, tokenizer, step=progress.step)
             save_ckpt_time = time.time() - save_ckpt_start_time
 
@@ -127,6 +139,7 @@ def train(config: SFTTrainerConfig):
 
         step_start_time = time.time()
         forward_backward_start_time = time.time()
+        epoch = 0
         tensors = Tensors()  # Used to accumulate tensor statistics across grad acc and ranks for logging
         grad_accum_steps = (
             config.data.batch_size
@@ -135,7 +148,7 @@ def train(config: SFTTrainerConfig):
             // (config.data.micro_batch_size * world.world_size)
         )
         for micro_step in range(grad_accum_steps):
-            micro_batch = next(dataloader)
+            micro_batch = next(dataiter)
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             target_ids = micro_batch["target_ids"].to("cuda")
@@ -183,13 +196,12 @@ def train(config: SFTTrainerConfig):
                 loss.backward()
 
             # Debug log with *local, micro step* stats
-            micro_step_message = f"Micro Step {micro_step} | Loss: {tensors['loss'][-1].mean().item():.4f} | Accuracy: {tensors['accuracy'][-1].mean().item():.4f}"
+            micro_step_message = f"Micro Step {micro_step} | Loss: {tensors['loss'][-1].mean().item():.4f} | Accuracy: {tensors['accuracy'][-1].mean().item():.4f} | Dataloader Step: {dataloader.state_dict()['dataset_state']['step']}"
             if "max_vio" in tensors:
                 micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
 
         # Optionally, clip the gradients
-        logger.debug(f"Clipping gradients to {config.optim.max_norm}")
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.optim.max_norm).full_tensor()
 
         # Update the model parameters
@@ -216,7 +228,7 @@ def train(config: SFTTrainerConfig):
         # Compute step metrics
         num_tokens = config.data.batch_size * config.data.seq_len
         progress.total_tokens += num_tokens
-        progress.total_samples += config.data.batch_size
+        progress.total_samples = dataloader.state_dict()["dataset_state"]["step"]
         perf_counter = get_perf_counter(model, config.data.seq_len)
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_tokens_per_second() or 0
@@ -288,7 +300,7 @@ def train(config: SFTTrainerConfig):
     # Write final checkpoint
     if config.ckpt and ckpt_manager is not None and weight_ckpt_manager is not None:
         logger.info("Writing final checkpoint")
-        ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step)
+        ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step, dataloader=dataloader)
         weight_ckpt_manager.save(model, tokenizer, step=progress.step)
         ckpt_manager.maybe_clean()
 

@@ -37,6 +37,13 @@ class OfflineEvalConfig(EvalConfig, BaseSettings):
         ),
     ] = None
 
+    steps: Annotated[
+        list[int] | None,
+        Field(
+            description="Steps to evaluate. If None, will evaluate all steps found in the weights directory. If set, will only evaluate the specified steps. If any of the specified steps are not found in the weights directory, will raise an error.",
+        ),
+    ] = None
+
     eval_base: Annotated[
         bool,
         Field(
@@ -50,6 +57,15 @@ class OfflineEvalConfig(EvalConfig, BaseSettings):
             description="Whether to use tqdm to display progress bars during model generation.",
         ),
     ] = False
+
+    @model_validator(mode="after")
+    def validate_steps(self):
+        if self.steps is not None and self.weights_dir is not None:
+            ckpt_steps = sorted([int(step_path.name.split("_")[-1]) for step_path in self.weights_dir.glob("step_*")])
+            for step in self.steps:
+                if step not in ckpt_steps:
+                    raise ValueError(f"Step {step} not found in weights directory {self.weights_dir}")
+        return self
 
     @model_validator(mode="after")
     def validate_eval_base(self):

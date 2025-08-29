@@ -86,6 +86,17 @@ class CheckpointConfig(BaseSettings):
     ] = None
 
 
+class ModelConfig(BaseSettings):
+    """Configures shared model settings."""
+
+    name: Annotated[
+        str,
+        Field(
+            description="The name of the model to use."
+        ),
+    ] = "Qwen/Qwen3-0.6B"
+
+
 class RLConfig(BaseSettings):
     """Configures an RL training run."""
 
@@ -141,10 +152,10 @@ class RLConfig(BaseSettings):
         ),
     ] = None
 
-    model_name: Annotated[
-        str | None,
+    model: Annotated[
+        ModelConfig | None,
         Field(
-            description="The name of the model to use. If None, will fallback to the model names specified on submodule configs."
+            description="Shared model configs. If None, will fallback to the model configs specified on submodule configs."
         ),
     ] = None
 
@@ -286,11 +297,11 @@ class RLConfig(BaseSettings):
     @model_validator(mode="after")
     def auto_setup_model(self):
         # Use the same model for trainer, orchestrator and inference
-        if self.model_name:
-            self.trainer.model.name = self.model_name
-            self.orchestrator.model.name = self.model_name
+        if self.model is not None and self.model.name:
+            self.trainer.model.name = self.model.name
+            self.orchestrator.model.name = self.model.name
             if self.inference:
-                self.inference.model.name = self.model_name
+                self.inference.model.name = self.model.name
 
         validate_shared_model_name(self.trainer, self.orchestrator, self.inference)
 

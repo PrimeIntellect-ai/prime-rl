@@ -353,10 +353,6 @@ uv run eval --model.name Qwen/Qwen3-0.6B --environment-ids math500,aime2024,aime
 
 To check all available configuration options, run `uv run eval --help`.
 
-## Multi-Node Training
-
-*TBD*
-
 ## Developer
 
 *For now, development is only possible on CUDA-enabled devices.*
