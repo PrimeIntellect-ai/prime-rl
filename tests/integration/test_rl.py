@@ -62,8 +62,7 @@ def rl_process(
     wandb_name = f"{branch_name}-{commit_hash}"
 
     return run_process(
-        RL_CMD
-        + ["--wandb.project", wandb_project, "--wandb.name", wandb_name, "--output-dir", output_dir.as_posix()],
+        RL_CMD + ["--wandb.project", wandb_project, "--wandb.name", wandb_name, "--output-dir", output_dir.as_posix()],
         {},
         TIMEOUT,
     )

@@ -184,6 +184,8 @@ async def orchestrate(config: OrchestratorConfig):
                         output_dir=config.output_dir,
                         save=config.eval.save,
                         step=progress.step,
+                        save_accuracy_dataset=False,
+                        eval_batch_size=config.eval.eval_batch_size,
                     )
                     for eval_id, num_examples, rollouts_per_example in zip(
                         config.eval.environment_ids,

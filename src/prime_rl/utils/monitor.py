@@ -467,8 +467,6 @@ def setup_monitor(
     """Sets up a monitor to log metrics to multiple specified outputs."""
     global _MONITOR
     if _MONITOR is not None:
-        raise RuntimeError(
-            "Monitor already initialized. Please call `setup_monitor` only once."
-        )
+        raise RuntimeError("Monitor already initialized. Please call `setup_monitor` only once.")
     _MONITOR = MultiMonitor(config, output_dir, task_id, tokenizer, run_config)
     return _MONITOR

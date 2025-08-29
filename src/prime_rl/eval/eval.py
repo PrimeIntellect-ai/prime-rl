@@ -62,6 +62,8 @@ async def eval(config: OfflineEvalConfig):
                     output_dir=config.output_dir,
                     save=config.save,
                     ckpt_step=0,
+                    save_accuracy_dataset=config.save_accuracy_dataset,
+                    eval_batch_size=config.eval_batch_size,
                 )
                 for eval_id, num_examples, rollouts_per_example in zip(
                     config.environment_ids, config.num_examples, config.rollouts_per_example
@@ -99,6 +101,8 @@ async def eval(config: OfflineEvalConfig):
                         output_dir=config.output_dir,
                         save=config.save,
                         ckpt_step=ckpt_step,
+                        save_accuracy_dataset=config.save_accuracy_dataset,
+                        eval_batch_size=config.eval_batch_size,
                     )
                     for eval_id, num_examples, rollouts_per_example in zip(
                         config.environment_ids, config.num_examples, config.rollouts_per_example

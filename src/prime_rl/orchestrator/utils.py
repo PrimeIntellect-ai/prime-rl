@@ -31,7 +31,9 @@ def parse_completion_tokens(states: list[State]) -> list[list[int]]:
             assert chat_completion.choices[0].logprobs.content is not None, (
                 "Logprob content should not be None. Make sure to set logprobs=True in the extra body when making the request to /v1/chat/completions"
             )
-            completion_tokens.append([int(token.token.split(":")[-1]) for token in chat_completion.choices[0].logprobs.content])
+            completion_tokens.append(
+                [int(token.token.split(":")[-1]) for token in chat_completion.choices[0].logprobs.content]
+            )
     return completion_tokens
 
 

@@ -178,6 +178,21 @@ class EvalConfig(BaseConfig):
         ),
     ] = True
 
+    save_accuracy_dataset: Annotated[
+        bool,
+        Field(
+            description="Whether to save a HuggingFace dataset with average accuracy per question alongside other evaluation artifacts.",
+        ),
+    ] = True
+
+    eval_batch_size: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Number of examples to process in each evaluation batch. If None, all examples are processed in a single batch.",
+        ),
+    ] = None
+
     @model_validator(mode="after")
     def _validate_and_fill_eval_lists(self):
         # If rollouts_per_example is empty, default to 1 for all ids

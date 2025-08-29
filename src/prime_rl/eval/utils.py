@@ -49,6 +49,7 @@ async def run_eval(
     output_dir: Path,
     ckpt_step: int,
     step: int | None = None,
+    eval_batch_size: int | None = None,
 ) -> None:
     # Get the logger
     logger = get_logger()
@@ -115,19 +116,70 @@ async def run_eval(
 
     # Run async generation and scoring
     run_eval_start_time = time.time()
-    generate_outputs: GenerateOutputs = await vf_eval.a_generate(
-        inputs=inputs,
-        client=client,
-        model=model_config.name,
-        sampling_args=sampling_args,
-        score_rollouts=True,
-    )
+
+    # Process examples in batches if batch_size is specified
+    if eval_batch_size is not None and len(examples) > eval_batch_size:
+        logger.debug(f"Processing {len(examples)} examples in batches of {eval_batch_size}")
+
+        # Initialize lists to collect batch results
+        all_rewards = []
+        all_states = []
+
+        # Process examples in batches
+        for batch_start in range(0, len(examples), eval_batch_size):
+            batch_end = min(batch_start + eval_batch_size, len(examples))
+
+            # Create batch inputs
+            batch_inputs = {
+                "prompt": inputs["prompt"][batch_start:batch_end],
+                "info": inputs["info"][batch_start:batch_end],
+                "task": inputs["task"][batch_start:batch_end],
+                "answer": inputs["answer"][batch_start:batch_end],
+            }
+
+            logger.debug(
+                f"Processing batch {batch_start // eval_batch_size + 1}/{(len(examples) + eval_batch_size - 1) // eval_batch_size}: examples {batch_start}-{batch_end - 1}"
+            )
+
+            # Generate and score batch
+            batch_outputs: GenerateOutputs = await vf_eval.a_generate(
+                inputs=batch_inputs,
+                client=client,
+                model=model_config.name,
+                sampling_args=sampling_args,
+                score_rollouts=True,
+            )
+
+            # Collect batch results
+            all_rewards.extend(batch_outputs.reward)
+            all_states.extend(batch_outputs.state)
+
+        # Reconstruct complete generate_outputs
+        generate_outputs = GenerateOutputs(reward=all_rewards, state=all_states)
+    else:
+        # Process all examples in a single batch (original behavior)
+        generate_outputs: GenerateOutputs = await vf_eval.a_generate(
+            inputs=inputs,
+            client=client,
+            model=model_config.name,
+            sampling_args=sampling_args,
+            score_rollouts=True,
+        )
+
     run_eval_time = time.time() - run_eval_start_time
     logger.debug(f"Generated and scored rollouts in {run_eval_time:.2f}s")
 
     rewards = torch.tensor(generate_outputs.reward).reshape(-1, rollouts_per_example).float()
-    completion_lens = torch.tensor(list(map(len, parse_completion_tokens(states=generate_outputs.state)))).reshape(-1, rollouts_per_example).float()
-    is_truncated = torch.tensor(parse_truncated_completions(states=generate_outputs.state)).reshape(-1, rollouts_per_example).float()
+    completion_lens = (
+        torch.tensor(list(map(len, parse_completion_tokens(states=generate_outputs.state))))
+        .reshape(-1, rollouts_per_example)
+        .float()
+    )
+    is_truncated = (
+        torch.tensor(parse_truncated_completions(states=generate_outputs.state))
+        .reshape(-1, rollouts_per_example)
+        .float()
+    )
 
     k = rollouts_per_example
     sample_stats = pd.DataFrame({"example_id": example_ids, "reward": rewards.flatten().tolist()})
@@ -150,9 +202,7 @@ async def run_eval(
         assert pass_at_k is not None
         for pass_rate, pass_rate_score in pd.Series(pass_at_k.mean()).items():
             message += f", {capitalize(str(pass_rate))}: {pass_rate_score:.4f}"
-    message += (
-        f", Completion Length: {completion_lens.mean():.2f} (±{completion_lens.std():.2f}, ∈[{completion_lens.min():.2f}, {completion_lens.max():.2f}]), Truncated: {is_truncated.mean() * 100:.1f}%)"
-    )
+    message += f", Completion Length: {completion_lens.mean():.2f} (±{completion_lens.std():.2f}, ∈[{completion_lens.min():.2f}, {completion_lens.max():.2f}]), Truncated: {is_truncated.mean() * 100:.1f}%)"
     logger.success(message)
 
     # Log statistics to monitor

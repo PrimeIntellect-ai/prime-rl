@@ -91,9 +91,7 @@ class ModelConfig(BaseSettings):
 
     name: Annotated[
         str,
-        Field(
-            description="The name of the model to use."
-        ),
+        Field(description="The name of the model to use."),
     ] = "Qwen/Qwen3-0.6B"
 
 
