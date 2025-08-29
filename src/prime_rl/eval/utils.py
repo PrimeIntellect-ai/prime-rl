@@ -6,6 +6,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import torch
+from datasets import Dataset
 from openai import AsyncOpenAI
 from verifiers import load_environment
 from verifiers.types import GenerateOutputs
@@ -37,6 +38,45 @@ def compute_pass_at_k(rewards: list[int]) -> dict[str, float]:
     return {f"pass@{k}": avg_pass_rate}
 
 
+def create_accuracy_dataset(examples: list[dict], rewards: torch.Tensor, rollouts_per_example: int) -> Dataset:
+    """
+    Create a HuggingFace dataset with average accuracy per question.
+
+    Args:
+        examples: List of original examples with prompts, answers, etc.
+        rewards: Tensor of shape (num_examples, rollouts_per_example) with rewards
+        rollouts_per_example: Number of rollouts per example
+
+    Returns:
+        HuggingFace Dataset with original data plus average accuracy and fully correct indicator
+    """
+    # Reshape rewards to (num_examples, rollouts_per_example)
+    num_examples = len(examples) // rollouts_per_example
+    reshaped_rewards = rewards.reshape(num_examples, rollouts_per_example)
+
+    # Compute average accuracy per example
+    avg_accuracy = reshaped_rewards.mean(dim=1).tolist()
+
+    # Compute fully correct indicator (all rollouts for this example were correct)
+    fully_correct = (reshaped_rewards.sum(dim=1) == rollouts_per_example).tolist()
+
+    # Extract unique examples (since examples are duplicated for rollouts)
+    unique_examples = examples[::rollouts_per_example]
+
+    # Create dataset
+    dataset_dict = {
+        "prompt": [ex["prompt"] for ex in unique_examples],
+        "answer": [ex.get("answer", "") for ex in unique_examples],
+        "task": [ex.get("task", "") for ex in unique_examples],
+        "info": [ex.get("info", {}) for ex in unique_examples],
+        "average_accuracy": avg_accuracy,
+        "fully_correct": fully_correct,
+        "rollouts_per_example": [rollouts_per_example] * num_examples,
+    }
+
+    return Dataset.from_dict(dataset_dict)
+
+
 async def run_eval(
     client: AsyncOpenAI,
     eval_id: str,
@@ -50,6 +90,7 @@ async def run_eval(
     ckpt_step: int,
     step: int | None = None,
     eval_batch_size: int | None = None,
+    save_accuracy_dataset: bool = True,
 ) -> None:
     # Get the logger
     logger = get_logger()
@@ -148,6 +189,19 @@ async def run_eval(
                 model=model_config.name,
                 sampling_args=sampling_args,
                 score_rollouts=True,
+            )
+
+            # Log batch statistics
+            batch_rewards = torch.tensor(batch_outputs.reward).reshape(-1, rollouts_per_example).float()
+            batch_avg_accuracy = batch_rewards.mean().item()
+            batch_fully_correct = (batch_rewards.sum(dim=1) == rollouts_per_example).sum().item()
+            batch_num_problems = batch_rewards.shape[0]
+
+            logger.info(
+                f"Batch {batch_start // eval_batch_size + 1}: "
+                f"Avg accuracy: {batch_avg_accuracy:.3f}, "
+                f"Fully correct problems: {batch_fully_correct}/{batch_num_problems} "
+                f"({100 * batch_fully_correct / batch_num_problems:.1f}%)"
             )
 
             # Collect batch results
@@ -265,5 +319,12 @@ async def run_eval(
         }
         with open(report_path, "w") as f:
             json.dump(report, f, indent=2)
+
+        # Save accuracy dataset if requested
+        if save_accuracy_dataset:
+            accuracy_dataset = create_accuracy_dataset(examples, rewards, rollouts_per_example)
+            accuracy_dataset_path = eval_dir / "accuracy_dataset"
+            accuracy_dataset.save_to_disk(accuracy_dataset_path)
+            logger.info(f"Saved accuracy dataset to {accuracy_dataset_path}")
 
         logger.info(f"Saved samples and report to {eval_dir}")
