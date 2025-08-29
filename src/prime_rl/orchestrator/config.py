@@ -178,6 +178,20 @@ class EvalConfig(BaseConfig):
         ),
     ] = True
 
+    eval_batch_size: Annotated[
+        int | None,
+        Field(
+            description="Batch size for evaluation. If None, evaluates all examples at once. Setting this enables batched evaluation with per-batch logging.",
+        ),
+    ] = 512
+
+    save_accuracy_dataset: Annotated[
+        bool,
+        Field(
+            description="Whether to save a HuggingFace dataset with average accuracy per question alongside original question and answer.",
+        ),
+    ] = True
+
     @model_validator(mode="after")
     def _validate_and_fill_eval_lists(self):
         # If rollouts_per_example is empty, default to 1 for all ids

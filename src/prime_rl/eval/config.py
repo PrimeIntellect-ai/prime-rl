@@ -58,6 +58,20 @@ class OfflineEvalConfig(EvalConfig, BaseSettings):
         ),
     ] = False
 
+    eval_batch_size: Annotated[
+        int | None,
+        Field(
+            description="Batch size for evaluation. If None, evaluates all examples at once. Setting this enables batched evaluation with per-batch logging.",
+        ),
+    ] = 512
+
+    save_accuracy_dataset: Annotated[
+        bool,
+        Field(
+            description="Whether to save a HuggingFace dataset with average accuracy per question alongside original question and answer.",
+        ),
+    ] = True
+
     @model_validator(mode="after")
     def validate_steps(self):
         if self.steps is not None and self.weights_dir is not None:
