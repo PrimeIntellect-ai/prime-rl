@@ -68,6 +68,13 @@ class ModelConfig(BaseConfig):
         ),
     ] = 1
 
+    liger_kernel: Annotated[
+        bool,
+        Field(
+            description="Whether to use Liger Kernel.",
+        ),
+    ] = False
+
     @model_validator(mode="after")
     def _map_model_name_for_moe(self):
         """Map model name if it exists in MOE_MODEL_MAPS."""

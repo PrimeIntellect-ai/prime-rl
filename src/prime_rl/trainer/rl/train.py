@@ -246,12 +246,14 @@ def train(config: RLTrainerConfig):
 
             # Forward pass
             logits = forward(model, input_ids, position_ids).contiguous()
+            
+            # Compute loss
+            response_lengths = get_response_lengths(position_ids)
+            
             shifted_logits = shift_logits(logits)
             shifted_logits = shifted_logits / temperature
             logprobs = selective_log_softmax(shifted_logits, input_ids)
-
-            # Compute loss
-            response_lengths = get_response_lengths(position_ids)
+            
             loss, loss_tensors = compute_loss(
                 logprobs=logprobs.squeeze().split(response_lengths),
                 old_logprobs=old_logprobs.squeeze().split(response_lengths),
@@ -273,6 +275,7 @@ def train(config: RLTrainerConfig):
 
             # Add relevant tensors to tensor dict for logging purposes
             tensors["probs"].append(torch.exp(logprobs)[loss_mask].detach().to("cpu"))
+            
             tensors["old_probs"].append(torch.exp(old_logprobs)[loss_mask].detach().to("cpu"))
             tensors["entropy"].append(entropy[loss_mask].detach().to("cpu"))
             tensors["recomputed_logprob_error"].append(
@@ -291,7 +294,9 @@ def train(config: RLTrainerConfig):
                 tensors[key].append(loss_tensor)
 
             # Debug log with *local, micro step* stats
-            micro_step_message = f"Micro Step {micro_step} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy'][-1].mean().item():.4f} | Importance Ratio: {tensors['importance_ratio'][-1].mean().item():.4f}"
+            micro_step_message = f"Micro Step {micro_step} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy'][-1].mean().item():.4f}"
+            if "importance_ratio" in tensors:
+                micro_step_message += f" | Importance Ratio: {tensors['importance_ratio'][-1].mean().item():.4f}"
             if "max_vio" in tensors:
                 micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
@@ -339,7 +344,10 @@ def train(config: RLTrainerConfig):
         # Log step metrics
         step_time = time.time() - step_start_time
         current_lr = optimizer.param_groups[0]["lr"]
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Entropy: {tensor_stats['entropy/mean']:.4f} | Importance Ratio: {tensor_stats['importance_ratio/mean']:.4f} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}%"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Entropy: {tensor_stats['entropy/mean']:.4f}"
+        if "importance_ratio/mean" in tensor_stats:
+            step_message += f" | Importance Ratio: {tensor_stats['importance_ratio/mean']:.4f}"
+        step_message += f" | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}%"
         if "max_vio/mean" in tensor_stats:
             step_message += f" | Max Vio: {tensor_stats['max_vio/mean']:.4f}"
         logger.success(step_message)

@@ -5,14 +5,11 @@ import torch.distributed as dist
 import torch.nn as nn
 from beartype import beartype as typechecker
 from jaxtyping import Float, Int, jaxtyped
+from liger_kernel.transformers import AutoLigerKernelForCausalLM
 from torch import Tensor
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, fully_shard
-from transformers import (
-    AutoConfig,
-    AutoModelForCausalLM,
-    AutoTokenizer,
-)
+from transformers import AutoConfig, AutoTokenizer
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.config import ActivationCheckpointConfig, ModelConfig
@@ -53,11 +50,20 @@ def get_model(config: ModelConfig) -> nn.Module:
         config.name, attn_implementation=config.attn, trust_remote_code=config.trust_remote_code
     )
     config_model.use_cache = False
-    model = AutoModelForCausalLM.from_pretrained(
-        pretrained_model_name_or_path=config.name,
-        config=config_model,
-        trust_remote_code=config.trust_remote_code,
-    )
+    
+    if config.liger_kernel:
+        model = AutoLigerKernelForCausalLM.from_pretrained(
+            pretrained_model_name_or_path=config.name,
+            config=config_model,
+            trust_remote_code=config.trust_remote_code,
+        )
+    else:
+        from transformers import AutoModelForCausalLM
+        model = AutoModelForCausalLM.from_pretrained(
+            pretrained_model_name_or_path=config.name,
+            config=config_model,
+            trust_remote_code=config.trust_remote_code,
+        )
 
     return model
 
