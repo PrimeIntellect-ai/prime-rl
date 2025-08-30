@@ -264,14 +264,12 @@ class StackDataset(StatefulIterableDataset):
         for sample in self.dataset:
             # Add sample to packed samples
             len_sample = len(sample["input_ids"])
-            bucket_idx = int(math.log2(len_sample - 1)) + 1
-            # TODO: move it up
-            if bucket_idx >= len(self.buckets):
+            if len_sample > self.max_area:
                 for key, value in sample.items():
                     if key != "epoch":
                         sample[key] = sample[key][: self.max_area]
                 len_sample = self.max_area
-                bucket_idx = len(self.buckets) - 1
+            bucket_idx = int(math.log2(len_sample - 1)) + 1
             self.buckets[bucket_idx].append(sample)
 
             if (2**bucket_idx) * len(self.buckets[bucket_idx]) >= self.max_area:
