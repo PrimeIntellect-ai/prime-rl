@@ -15,6 +15,8 @@ from prime_rl.trainer.sft.config import DataConfigType, FakeDataConfig, SFTDataC
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
+STACKING_DATASET_BUCKET_TIMEOUT = 10
+
 
 class Sample(TypedDict):
     epoch: int  # TODO: Argh, can we find a way to export epoch metainformation in a nicer way?
@@ -254,7 +256,7 @@ class StackDataset(StatefulIterableDataset):
         # TODO: Can we steal step from dataset?
         self.step = 0
         self.bucket_timers = [None] * len(self.buckets)
-        self.bucket_timeout = 100
+        self.bucket_timeout = STACKING_DATASET_BUCKET_TIMEOUT
 
     def state_dict(self) -> dict:
         return self.dataset.state_dict()
@@ -274,10 +276,32 @@ class StackDataset(StatefulIterableDataset):
             bucket_idx = int(math.log2(len_sample - 1)) + 1
             self.buckets[bucket_idx].append(sample)
 
-            if (2**bucket_idx) * len(self.buckets[bucket_idx]) >= self.max_area or self.bucket_timers[
-                bucket_idx
-            ] + self.bucket_timeout < self.step:
-                # TODO: bucket should try to greedily consume buckets above it for the timeout case
+            if self.bucket_timers[bucket_idx] is not None:
+                hit_timeout = self.bucket_timers[bucket_idx] + self.bucket_timeout < self.step
+            else:
+                hit_timeout = False
+            if (2**bucket_idx) * len(self.buckets[bucket_idx]) >= self.max_area or hit_timeout:
+                if hit_timeout:
+                    while bucket_idx < len(self.buckets):
+                        if (
+                            2 ** (bucket_idx + 1) * (len(self.buckets[bucket_idx]) + len(self.buckets[bucket_idx + 1]))
+                            < self.max_area
+                        ):
+                            self.buckets[bucket_idx + 1].extend(self.buckets[bucket_idx])
+                            self.buckets[bucket_idx] = []
+                            self.bucket_timers[bucket_idx] = None
+                            bucket_idx += 1
+                        else:
+                            break
+                    while (2**bucket_idx) * len(self.buckets[bucket_idx]) < self.max_area:
+                        dummy_sample = {}
+                        for key, value in sample.items():
+                            if key == "epoch":
+                                dummy_sample[key] = value
+                            else:
+                                dummy_sample[key] = [0]
+                        self.buckets[bucket_idx].append(dummy_sample)
+
                 packed_samples = defaultdict(list)
                 for bucket_item in self.buckets[bucket_idx]:
                     for key, value in bucket_item.items():
