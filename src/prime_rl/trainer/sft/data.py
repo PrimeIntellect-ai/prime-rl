@@ -1,3 +1,4 @@
+import math
 from collections import defaultdict
 from typing import Iterator, TypedDict
 
@@ -10,7 +11,7 @@ from torch.utils.data import IterableDataset, get_worker_info
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.trainer.sft.config import DataConfigType, FakeDataConfig, SFTDataConfig
+from prime_rl.trainer.sft.config import DataConfigType, FakeDataConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
@@ -108,7 +109,7 @@ class FakeDataset(StatefulIterableDataset):
 class SFTDataset(StatefulIterableDataset):
     """A dataset wrapping a HF SFT dataset with prompt + completion format."""
 
-    def __init__(self, tokenizer: PreTrainedTokenizer, config: DataConfig, non_dp_size: int = 1):
+    def __init__(self, tokenizer: PreTrainedTokenizer, config: DataConfigType, non_dp_size: int = 1):
         super().__init__()
         self.config = config
         self.tokenizer = tokenizer
@@ -203,8 +204,8 @@ class SFTDataset(StatefulIterableDataset):
             yield sample
 
 
-class PackingDataset(StatefulIterableDataset):
-    """A dataset that packs samples into a single sequence."""
+class CatDataset(StatefulIterableDataset):
+    """A dataset that concatenates samples into a single sequence with a fixed length."""
 
     def __init__(self, dataset: StatefulIterableDataset, seq_len: int):
         self.dataset = dataset
@@ -241,7 +242,59 @@ class PackingDataset(StatefulIterableDataset):
                 packed_samples, seq_len = defaultdict(list), 0
 
 
-def collate(samples: list[Sample]) -> Batch:
+class StackDataset(StatefulIterableDataset):
+    """A dataset that stacks samples into batch with a fixed area"""
+
+    def __init__(self, dataset: StatefulIterableDataset, max_area: int):
+        self.dataset = dataset
+        self.max_area = max_area
+        self.current_seq_len = 0
+        assert math.log2(self.max_area).is_integer(), "max_area must be a power of 2"
+        self.buckets = [[] for _ in range(int(math.log2(self.max_area)) + 1)]
+
+    def state_dict(self) -> dict:
+        return self.dataset.state_dict()
+
+    def load_state_dict(self, state_dict: dict):
+        self.dataset.load_state_dict(state_dict)
+
+    def __iter__(self) -> Iterator[Sample]:
+        for sample in self.dataset:
+            # Add sample to packed samples
+            len_sample = len(sample["input_ids"])
+            bucket_idx = int(math.log2(len_sample - 1)) + 1
+            # TODO: move it up
+            if bucket_idx >= len(self.buckets):
+                for key, value in sample.items():
+                    if key != "epoch":
+                        sample[key] = sample[key][: self.max_area]
+                len_sample = self.max_area
+                bucket_idx = len(self.buckets) - 1
+            self.buckets[bucket_idx].append(sample)
+
+            if (2**bucket_idx) * len(self.buckets[bucket_idx]) >= self.max_area:
+                packed_samples = defaultdict(list)
+                for bucket_item in self.buckets[bucket_idx]:
+                    for key, value in bucket_item.items():
+                        if key == "epoch":
+                            packed_samples[key] = min(packed_samples.get(key, float("inf")), value)
+                        else:
+                            packed_samples[key].append(value + [0] * (2**bucket_idx - len(value)))
+                yield packed_samples
+                self.buckets[bucket_idx] = []
+
+
+def stack_collate(samples: list[Sample]) -> Batch:
+    return {
+        "input_ids": torch.tensor(samples[0]["input_ids"], dtype=torch.long, device="cuda"),
+        "position_ids": torch.tensor(samples[0]["position_ids"], dtype=torch.long, device="cuda"),
+        "loss_mask": torch.tensor(samples[0]["loss_mask"], dtype=torch.bool, device="cuda"),
+        "target_ids": torch.tensor(samples[0]["target_ids"], dtype=torch.long, device="cuda"),
+        "epoch": min([sample["epoch"] for sample in samples]),
+    }
+
+
+def cat_collate(samples: list[Sample]) -> Batch:
     return {
         "input_ids": torch.stack([torch.tensor(sample["input_ids"]) for sample in samples], dim=0).long().to("cuda"),
         "position_ids": torch.stack([torch.tensor(sample["position_ids"]) for sample in samples], dim=0)
@@ -253,7 +306,9 @@ def collate(samples: list[Sample]) -> Batch:
     }
 
 
-def setup_dataset(tokenizer: PreTrainedTokenizer, config: DataConfigType, non_dp_size: int = 1) -> StatefulIterableDataset:
+def setup_dataset(
+    tokenizer: PreTrainedTokenizer, config: DataConfigType, non_dp_size: int = 1
+) -> StatefulIterableDataset:
     if config.type == "fake":
         # Shouldnt matter to handle non_dp_size if dataset is random
         return FakeDataset(tokenizer, config)
@@ -267,5 +322,11 @@ def setup_dataloader(
     dataset: StatefulIterableDataset, tokenizer: PreTrainedTokenizer, config: DataConfigType
 ) -> StatefulDataLoader:
     seq_len = config.micro_batch_size * config.seq_len
-    packing_dataset = PackingDataset(dataset, seq_len)
-    return StatefulDataLoader(packing_dataset, batch_size=1, collate_fn=collate)
+    if config.pack_function == "stack":
+        stacking_dataset = StackDataset(dataset, seq_len)
+        return StatefulDataLoader(stacking_dataset, batch_size=1, collate_fn=stack_collate)
+    elif config.pack_function == "cat":
+        packing_dataset = CatDataset(dataset, seq_len)
+        return StatefulDataLoader(packing_dataset, batch_size=1, collate_fn=cat_collate)
+    else:
+        raise ValueError(f"Invalid pack function: {config.pack_function}")
