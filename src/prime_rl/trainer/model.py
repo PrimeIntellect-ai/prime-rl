@@ -71,12 +71,7 @@ def setup_tokenizer(config: ModelConfig) -> PreTrainedTokenizer:
 def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
     # TODO: Support dp_replicate
-    if parallel_dims.world_mesh.mesh_dim_names is not None and "dp_shard_cp" in parallel_dims.world_mesh.mesh_dim_names:
-        hsdp_mesh = parallel_dims.world_mesh["dp_shard_cp"]
-    else:
-        hsdp_mesh = parallel_dims.world_mesh
-        if hsdp_mesh.size() > 1:
-            raise ValueError("there is no dp_shard_cp mesh dim but world_mesh has size > 1")
+    hsdp_mesh = parallel_dims.world_mesh["dp_shard_cp"]
     for layer_id, transformer_block in enumerate(model.model.layers):
         if config.reshard_after_forward:
             layer_reshard_after_forward = layer_id < len(model.model.layers) - 1
