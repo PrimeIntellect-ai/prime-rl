@@ -25,6 +25,7 @@ class BaseDataConfig(BaseModel):
     num_examples: Annotated[
         int | None, Field(description="Number of examples to use from the dataset. If None, will use all examples.")
     ] = None
+    pack_function: Literal["cat", "stack"] = "cat"
 
     @model_validator(mode="after")
     def validate_batch_size(self):
@@ -148,4 +149,10 @@ class SFTTrainerConfig(BaseSettings):
     def disable_logging_wandb_samples(self):
         if self.monitor.wandb and self.monitor.wandb.log_extras:
             self.monitor.wandb.log_extras.samples = False
+        return self
+
+    @model_validator(mode="after")
+    def validate_pack_function(self):
+        if self.model.cp > 1 and self.data.pack_function != "stack":
+            raise ValueError("Packing function must be 'stack' when CP is enabled")
         return self

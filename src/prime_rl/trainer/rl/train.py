@@ -27,6 +27,7 @@ from prime_rl.trainer.model import (
     is_tt_moe_model,
     get_load_balance_stats,
 )
+from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     OffloadedTensor,
@@ -64,9 +65,16 @@ def train(config: RLTrainerConfig):
     setup_torch_distributed()
     torch.set_float32_matmul_precision("high")
 
+    # Initialize parallel dimensions
+    parallel_dims = get_parallel_dims(config.model)
+    if config.model.cp > 1:
+        raise ValueError(
+            "CP is not supported for RL. No reason it shouldn't, we just didn't test it. If you need it, please open an issue."
+        )
+
     # Initialize the model and tokenizer
     logger.info(f"Initializing model and tokenizer ({config.model})")
-    model = setup_model(config.model)
+    model = setup_model(config.model, parallel_dims)
     tokenizer = setup_tokenizer(config.model)
 
     # Set up the optimizer
@@ -101,7 +109,7 @@ def train(config: RLTrainerConfig):
         # Initialize the logprob model
         tensor_offloaded_repository: dict[int, OffloadedTensor] = {}
         logger.info(f"Initializing logprob model ({config.model})")
-        logprob_model = setup_model(config.model)
+        logprob_model = setup_model(config.model, parallel_dims)
 
         # Load async models from weights checkpoint if resuming from checkpoint
         if config.ckpt and config.ckpt.resume_step:
@@ -114,7 +122,7 @@ def train(config: RLTrainerConfig):
                 )
                 model_config = deepcopy(config.model)
                 model_config.name = model_name_or_path
-                logprob_model = setup_model(model_config)
+                logprob_model = setup_model(model_config, parallel_dims)
                 tensor_offloaded_repository[step] = offload_model_to_cpu(logprob_model)
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)

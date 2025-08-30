@@ -1,10 +1,12 @@
 import time
+from contextlib import nullcontext
 
 # Import environment before any other imports
 # ruff: noqa: I001
 
 import torch
 from torch.nn.functional import cross_entropy, softmax
+from torch.distributed.tensor.experimental import context_parallel
 from loguru import logger
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.weights import setup_weight_ckpt_manager
@@ -19,6 +21,7 @@ from prime_rl.trainer.model import (
     is_tt_moe_model,
     get_load_balance_stats,
 )
+from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import setup_dataloader, setup_dataset
 from prime_rl.trainer.utils import (
@@ -52,9 +55,12 @@ def train(config: SFTTrainerConfig):
     setup_torch_distributed()
     torch.set_float32_matmul_precision("high")
 
+    # Initialize parallel dimensions
+    parallel_dims = get_parallel_dims(config.model, config.data.seq_len)
+
     # Initialize the model and tokenizer
     logger.info(f"Initializing model and tokenizer ({config.model})")
-    model = setup_model(config.model)
+    model = setup_model(config.model, parallel_dims)
     tokenizer = setup_tokenizer(config.model)
 
     # Set up the optimizer
@@ -78,7 +84,7 @@ def train(config: SFTTrainerConfig):
 
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
-    dataset = setup_dataset(tokenizer, config.data)
+    dataset = setup_dataset(tokenizer, config.data, config.model.cp * config.model.tp)
     dataloader = setup_dataloader(dataset, tokenizer, config.data)
     dataiter = iter(dataloader)
 
@@ -136,7 +142,12 @@ def train(config: SFTTrainerConfig):
         forward_backward_start_time = time.time()
         epoch = 0
         tensors = Tensors()  # Used to accumulate tensor statistics across grad acc and ranks for logging
-        grad_accum_steps = config.data.batch_size // (config.data.micro_batch_size * world.world_size)
+        grad_accum_steps = (
+            config.data.batch_size
+            * config.model.cp
+            * config.model.tp
+            // (config.data.micro_batch_size * world.world_size)
+        )
         for micro_step in range(grad_accum_steps):
             micro_batch = next(dataiter)
             input_ids = micro_batch["input_ids"].to("cuda")
@@ -146,38 +157,48 @@ def train(config: SFTTrainerConfig):
             epoch = micro_batch["epoch"]
             assert input_ids.shape[0] == position_ids.shape[0]
 
-            # Forward pass
-            logits = forward(model, input_ids, position_ids).contiguous()
-            B, L, V = logits.shape
+            if config.model.cp > 1:
+                maybe_context_parallel = context_parallel(
+                    parallel_dims.world_mesh["cp"],
+                    buffers=tuple([input_ids, position_ids, target_ids, loss_mask]),
+                    buffer_seq_dims=(1, 1, 1, 1),
+                )
+            else:
+                maybe_context_parallel = nullcontext()
 
-            # Compute loss
-            loss = cross_entropy(logits.view(-1, V), target_ids.view(-1), reduction="none").view(B, L)
+            with maybe_context_parallel:
+                # Forward pass
+                logits = forward(model, input_ids, position_ids).contiguous()
+                B, L, V = logits.shape
 
-            # Compute accuracy
-            probs = softmax(logits, dim=-1)
-            pred_ids = probs.argmax(dim=-1)
-            accuracy = torch.eq(pred_ids, target_ids).float()
+                # Compute loss
+                loss = cross_entropy(logits.view(-1, V), target_ids.view(-1), reduction="none").view(B, L)
 
-            if is_tt_moe_model(model):
-                load_balance_stats = get_load_balance_stats(model)
-                for k, v in load_balance_stats.items():
-                    tensors[k].append(v)
+                # Compute accuracy
+                probs = softmax(logits, dim=-1)
+                pred_ids = probs.argmax(dim=-1)
+                accuracy = torch.eq(pred_ids, target_ids).float()
 
-            # Add tensors to tensor dict for logging purposes
-            tensors["loss"].append(loss[loss_mask].detach().to("cpu"))
-            tensors["accuracy"].append(accuracy[loss_mask].detach().to("cpu"))
+                if is_tt_moe_model(model):
+                    load_balance_stats = get_load_balance_stats(model)
+                    for k, v in load_balance_stats.items():
+                        tensors[k].append(v)
 
-            # Mean reduction of unmasked tokens
-            loss = loss[loss_mask].mean()
+                # Add tensors to tensor dict for logging purposes
+                tensors["loss"].append(loss[loss_mask].detach().to("cpu"))
+                tensors["accuracy"].append(accuracy[loss_mask].detach().to("cpu"))
 
-            # Scale loss by number of gradient accumulation steps
-            loss /= grad_accum_steps
+                # Mean reduction of unmasked tokens
+                loss = loss[loss_mask].mean()
 
-            # Delete logits before backward pass to avoid memory spike
-            del logits
+                # Scale loss by number of gradient accumulation steps
+                loss /= grad_accum_steps
 
-            # Backward pass
-            loss.backward()
+                # Delete logits before backward pass to avoid memory spike
+                del logits
+
+                # Backward pass
+                loss.backward()
 
             # Debug log with *local, micro step* stats
             micro_step_message = f"Micro Step {micro_step} | Loss: {tensors['loss'][-1].mean().item():.4f} | Accuracy: {tensors['accuracy'][-1].mean().item():.4f} | Dataloader Step: {dataloader.state_dict()['dataset_state']['step']}"

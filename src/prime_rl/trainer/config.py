@@ -68,6 +68,20 @@ class ModelConfig(BaseConfig):
         ),
     ] = 1
 
+    tp: Annotated[
+        int,
+        Field(
+            description="The tensor parallelism size to use. If 1, then no TP will be used.",
+        ),
+    ] = 1
+
+    cp: Annotated[
+        int,
+        Field(
+            description="The context parallelism size to use. If 1, then no CP will be used.",
+        ),
+    ] = 1
+
     @model_validator(mode="after")
     def _map_model_name_for_moe(self):
         """Map model name if it exists in MOE_MODEL_MAPS."""

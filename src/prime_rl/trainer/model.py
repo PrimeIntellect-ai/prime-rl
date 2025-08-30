@@ -1,7 +1,6 @@
 import logging
 
 import torch
-import torch.distributed as dist
 import torch.nn as nn
 from beartype import beartype as typechecker
 from jaxtyping import Float, Int, jaxtyped
@@ -16,6 +15,7 @@ from transformers import (
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.config import ActivationCheckpointConfig, ModelConfig
+from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
 
 # Add filter to the standard logging module for transformers.modeling_utils to supress the
@@ -68,17 +68,10 @@ def setup_tokenizer(config: ModelConfig) -> PreTrainedTokenizer:
     return tokenizer
 
 
-def setup_fsdp(model: nn.Module, config: ModelConfig):
-    assert dist.get_world_size() % config.ep == 0, "World size must be divisible by EP"
-    fsdp_dim = dist.get_world_size() // config.ep
-    world_mesh = dist.init_device_mesh("cuda", (fsdp_dim, config.ep), mesh_dim_names=("fsdp", "ep"))
+def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
-    # TODO: Lets not support EP for now.
-    # (1) Im not sure how the hsdp mesh is supposed to work with EP.
-    # (2) The EP implementation seems to have changes every week in TT and is unstable at the moment
-    # (3) There doesnt seem to be significant MFU gains from EP in my benchmarks
-    assert config.ep == 1, "EP is not supported for now"
-    hsdp_mesh = world_mesh["fsdp"]
+    # TODO: Support dp_replicate
+    hsdp_mesh = parallel_dims.world_mesh["dp_shard_cp"]
     for layer_id, transformer_block in enumerate(model.model.layers):
         if config.reshard_after_forward:
             layer_reshard_after_forward = layer_id < len(model.model.layers) - 1
@@ -107,9 +100,9 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
         model.model.layers.register_module(layer_name, transformer_block)
 
 
-def setup_model(config: ModelConfig) -> nn.Module:
+def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
     model = get_model(config)
-    setup_fsdp(model, config)
+    setup_fsdp(model, config, parallel_dims)
     if config.ac is not None:
         apply_ac(model, config.ac)
     if config.compile:
