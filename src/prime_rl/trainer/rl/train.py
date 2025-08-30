@@ -67,6 +67,10 @@ def train(config: RLTrainerConfig):
 
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
+    if config.model.cp > 1:
+        raise ValueError(
+            "CP is not supported for RL. No reason it shouldn't, we just didn't test it. If you need it, please open an issue."
+        )
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model and tokenizer ({config.model})")
