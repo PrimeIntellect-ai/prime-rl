@@ -150,7 +150,7 @@ class ParallelDims:
             [self.pp, self.dp_replicate, self.dp_shard, self.cp, self.tp],
             ["pp", "dp_replicate", "dp_shard", "cp", "tp"],
         ):
-            if d > 1:
+            if d > 1 or name == "dp_shard":
                 dims.append(d)
                 names.append(name)
 
@@ -169,10 +169,9 @@ class ParallelDims:
         if self.dp_replicate_enabled:
             dp_mesh_dim_names.append("dp_replicate")
             dp_cp_mesh_dim_names.append("dp_replicate")
-        if self.dp_shard_enabled:
-            dp_mesh_dim_names.append("dp_shard")
-            dp_shard_cp_mesh_dim_names.append("dp_shard")
-            dp_cp_mesh_dim_names.append("dp_shard")
+        dp_mesh_dim_names.append("dp_shard")
+        dp_shard_cp_mesh_dim_names.append("dp_shard")
+        dp_cp_mesh_dim_names.append("dp_shard")
         if self.cp_enabled:
             dp_shard_cp_mesh_dim_names.append("cp")
             dp_cp_mesh_dim_names.append("cp")
