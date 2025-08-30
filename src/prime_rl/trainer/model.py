@@ -71,7 +71,7 @@ def setup_tokenizer(config: ModelConfig) -> PreTrainedTokenizer:
 def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
     # TODO: Support dp_replicate
-    if "dp_shard_cp" in parallel_dims.world_mesh.mesh_dim_names:
+    if parallel_dims.world_mesh.mesh_dim_names is not None and "dp_shard_cp" in parallel_dims.world_mesh.mesh_dim_names:
         hsdp_mesh = parallel_dims.world_mesh["dp_shard_cp"]
     else:
         hsdp_mesh = parallel_dims.world_mesh
