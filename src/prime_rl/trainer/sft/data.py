@@ -251,6 +251,8 @@ class StackDataset(StatefulIterableDataset):
         self.current_seq_len = 0
         assert math.log2(self.max_area).is_integer(), "max_area must be a power of 2"
         self.buckets = [[] for _ in range(int(math.log2(self.max_area)) + 1)]
+        # TODO: Implement bucket timeout (no. of steps after which a bucket is cleared even if it's not full)
+        # bucket should try to greedily consume buckets above it
 
     def state_dict(self) -> dict:
         return self.dataset.state_dict()

@@ -150,3 +150,9 @@ class SFTTrainerConfig(BaseSettings):
         if self.monitor.wandb and self.monitor.wandb.log_extras:
             self.monitor.wandb.log_extras.samples = False
         return self
+
+    @model_validator(mode="after")
+    def validate_pack_function(self):
+        if self.model.cp > 1 and self.data.pack_function != "stack":
+            raise ValueError("Packing function must be 'stack' when CP is enabled")
+        return self
