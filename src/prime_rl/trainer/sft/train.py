@@ -1,4 +1,5 @@
 import time
+from contextlib import nullcontext
 
 # Import environment before any other imports
 # ruff: noqa: I001
@@ -156,12 +157,16 @@ def train(config: SFTTrainerConfig):
             epoch = micro_batch["epoch"]
             assert input_ids.shape[0] == position_ids.shape[0]
 
-            # TODO: Make dummy context when CP is disabled
-            with context_parallel(
-                parallel_dims.world_mesh["cp"],
-                buffers=tuple([input_ids, position_ids, target_ids, loss_mask]),
-                buffer_seq_dims=(1, 1, 1, 1),
-            ):
+            if config.model.cp > 1:
+                maybe_context_parallel = context_parallel(
+                    parallel_dims.world_mesh["cp"],
+                    buffers=tuple([input_ids, position_ids, target_ids, loss_mask]),
+                    buffer_seq_dims=(1, 1, 1, 1),
+                )
+            else:
+                maybe_context_parallel = nullcontext()
+
+            with maybe_context_parallel:
                 # Forward pass
                 logits = forward(model, input_ids, position_ids).contiguous()
                 B, L, V = logits.shape
