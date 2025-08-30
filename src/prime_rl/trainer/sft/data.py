@@ -251,8 +251,10 @@ class StackDataset(StatefulIterableDataset):
         self.current_seq_len = 0
         assert math.log2(self.max_area).is_integer(), "max_area must be a power of 2"
         self.buckets = [[] for _ in range(int(math.log2(self.max_area)) + 1)]
-        # TODO: Implement bucket timeout (no. of steps after which a bucket is cleared even if it's not full)
-        # bucket should try to greedily consume buckets above it
+        # TODO: Can we steal step from dataset?
+        self.step = 0
+        self.bucket_timers = [None] * len(self.buckets)
+        self.bucket_timeout = 100
 
     def state_dict(self) -> dict:
         return self.dataset.state_dict()
@@ -272,7 +274,10 @@ class StackDataset(StatefulIterableDataset):
             bucket_idx = int(math.log2(len_sample - 1)) + 1
             self.buckets[bucket_idx].append(sample)
 
-            if (2**bucket_idx) * len(self.buckets[bucket_idx]) >= self.max_area:
+            if (2**bucket_idx) * len(self.buckets[bucket_idx]) >= self.max_area or self.bucket_timers[
+                bucket_idx
+            ] + self.bucket_timeout < self.step:
+                # TODO: bucket should try to greedily consume buckets above it for the timeout case
                 packed_samples = defaultdict(list)
                 for bucket_item in self.buckets[bucket_idx]:
                     for key, value in bucket_item.items():
@@ -281,7 +286,12 @@ class StackDataset(StatefulIterableDataset):
                         else:
                             packed_samples[key].append(value + [0] * (2**bucket_idx - len(value)))
                 yield packed_samples
+                self.step += 1
                 self.buckets[bucket_idx] = []
+                self.bucket_timers[bucket_idx] = None
+            else:
+                if self.bucket_timers[bucket_idx] is None:
+                    self.bucket_timers[bucket_idx] = self.step
 
 
 def stack_collate(samples: list[Sample]) -> Batch:
