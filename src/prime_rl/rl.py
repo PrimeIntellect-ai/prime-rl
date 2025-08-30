@@ -1,5 +1,6 @@
 import json
 import os
+import pathlib
 import shutil
 import subprocess
 import sys
@@ -530,7 +531,21 @@ def rl(config: RLConfig):
         trainer_file = get_temp_toml_file()
         with open(trainer_file, "wb") as f:
             tomli_w.dump(config.trainer.model_dump(exclude_none=True, mode="json"), f)
-
+        
+        # Check if prime_rl.trainer.rl.train can be imported
+        try:
+            import prime_rl.trainer.rl.train
+            rl_cmd = ['-m', 'prime_rl.trainer.rl.train']
+        except ImportError:
+            # Check if the file path exists
+            train_file_path = pathlib.Path("src/prime_rl/trainer/rl/train.py")
+            if not train_file_path.exists():
+                raise RuntimeError(
+                    "src/prime_rl/trainer/rl/train.py is not reachable from the path you are using to launch rl. "
+                    "Install prime_rl as a package or launch it from the project root"
+                )
+            rl_cmd = ["src/prime_rl/trainer/rl/train.py"]
+        
         trainer_cmd = [
             "uv",
             "run",
@@ -539,7 +554,7 @@ def rl(config: RLConfig):
             f"--rdzv-id={uuid.uuid4().hex}",
             "--nproc-per-node",
             str(config.trainer_gpus),
-            "src/prime_rl/trainer/rl/train.py",
+        ] + rl_cmd + [
             "@",
             trainer_file.as_posix(),
         ]
