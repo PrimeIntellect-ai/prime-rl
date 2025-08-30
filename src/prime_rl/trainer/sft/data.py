@@ -11,7 +11,7 @@ from torch.utils.data import IterableDataset, get_worker_info
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.trainer.sft.config import DataConfigType, FakeDataConfig
+from prime_rl.trainer.sft.config import DataConfigType, FakeDataConfig, SFTDataConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
@@ -109,7 +109,7 @@ class FakeDataset(StatefulIterableDataset):
 class SFTDataset(StatefulIterableDataset):
     """A dataset wrapping a HF SFT dataset with prompt + completion format."""
 
-    def __init__(self, tokenizer: PreTrainedTokenizer, config: DataConfigType, non_dp_size: int = 1):
+    def __init__(self, tokenizer: PreTrainedTokenizer, config: SFTDataConfig, non_dp_size: int = 1):
         super().__init__()
         self.config = config
         self.tokenizer = tokenizer
