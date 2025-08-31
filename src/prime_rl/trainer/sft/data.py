@@ -282,7 +282,7 @@ class StackDataset(StatefulIterableDataset):
                 hit_timeout = False
             if (2**bucket_idx) * len(self.buckets[bucket_idx]) >= self.max_area or hit_timeout:
                 if hit_timeout:
-                    while bucket_idx < len(self.buckets):
+                    while bucket_idx < len(self.buckets) - 1:
                         if (
                             2 ** (bucket_idx + 1) * (len(self.buckets[bucket_idx]) + len(self.buckets[bucket_idx + 1]))
                             < self.max_area
