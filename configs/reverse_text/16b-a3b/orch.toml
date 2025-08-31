@@ -10,6 +10,8 @@ mask_truncated_completions = false
 name = "moonshotai/Moonlight-16B-A3B-Instruct"
 trust_remote_code = true
 
+[sampling]
+max_tokens = 128
 
 [environment]
 id = "reverse-text"

@@ -7,6 +7,7 @@ mask_truncated_completions = false
 
 [sampling]
 temperature = 0.6
+max_tokens = 16384
 
 [model]
 name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"

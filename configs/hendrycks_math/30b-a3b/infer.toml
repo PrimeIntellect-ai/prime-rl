@@ -1,6 +1,5 @@
 [model]
 name = "Qwen/Qwen3-30B-A3B"
-max_model_len = 2048
 
 [parallel]
 dp = 4

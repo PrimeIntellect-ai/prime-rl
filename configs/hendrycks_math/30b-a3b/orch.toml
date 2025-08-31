@@ -8,6 +8,9 @@ mask_truncated_completions = false
 [model]
 name = "Qwen/Qwen3-30B-A3B"
 
+[sampling]
+max_tokens = 2048
+
 [monitor.wandb]
 
 [environment]

@@ -1,6 +1,5 @@
 [model]
 name = "moonshotai/Moonlight-16B-A3B-Instruct"
-max_model_len = 2048
 trust_remote_code = true
 
 [parallel]

@@ -8,5 +8,8 @@ mask_truncated_completions = false
 [model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
+[sampling]
+max_tokens = 128
+
 [environment]
 id = "reverse-text"

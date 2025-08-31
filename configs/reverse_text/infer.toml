@@ -1,3 +1,2 @@
 [model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
-max_model_len = 128
