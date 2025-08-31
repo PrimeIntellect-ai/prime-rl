@@ -1,6 +1,5 @@
 [model]
 name = "willcb/Qwen3-14B"
-max_model_len = 4096
 
 [parallel]
 dp = 6

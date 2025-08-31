@@ -1,6 +1,5 @@
 [model]
 name = "willcb/Qwen3-1.7B-Wordle"
-max_model_len = 4096
 
 [parallel]
 dp = 6
