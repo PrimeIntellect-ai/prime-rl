@@ -12,7 +12,7 @@ name = "willcb/Qwen3-1.7B-Wordle"
 project = "wordle"
 
 [environment]
-id = "vf-wordle"
+id = "wordle"
 
 [environment.args]
 
