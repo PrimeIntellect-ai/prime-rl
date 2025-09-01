@@ -480,6 +480,31 @@ async def orchestrate(config: OrchestratorConfig):
         progress.step += 1
         is_first_step = False
 
+    if config.eval:
+        logger.info("Running final evals")
+        eval_tasks = [
+            asyncio.create_task(
+                run_eval(
+                    client=client,
+                    eval_id=eval_id,
+                    env_args=config.eval.environment_args.get(eval_id, {}),
+                    model_config=config.model,
+                    sampling_config=config.eval.sampling,
+                    num_examples=num_examples,
+                    rollouts_per_example=rollouts_per_example,
+                    ckpt_step=ckpt_step,
+                    output_dir=config.output_dir,
+                    save=config.eval.save,
+                    step=progress.step,
+                )
+            )
+            for eval_id, num_examples, rollouts_per_example in zip(
+                config.eval.environment_ids,
+                config.eval.num_examples,
+                config.eval.rollouts_per_example,
+            )
+        ]
+
     # Log final (immutable) samples and distributions to W&B table
     if monitor.wandb:
         logger.info("Logging final samples and distributions as W&B table")
@@ -490,6 +515,9 @@ async def orchestrate(config: OrchestratorConfig):
     if ckpt_manager is not None:
         logger.info("Writing final checkpoint")
         ckpt_manager.save(progress, buffer, step=progress.step)
+
+    # Await evals
+    await asyncio.gather(*eval_tasks)
 
     logger.success("Orchestrator finished.")
 
