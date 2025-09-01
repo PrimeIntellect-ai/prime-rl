@@ -480,6 +480,7 @@ async def orchestrate(config: OrchestratorConfig):
         progress.step += 1
         is_first_step = False
 
+    eval_tasks = None
     if config.eval:
         logger.info("Running final evals")
         eval_tasks = [
@@ -517,7 +518,8 @@ async def orchestrate(config: OrchestratorConfig):
         ckpt_manager.save(progress, buffer, step=progress.step)
 
     # Await evals
-    await asyncio.gather(*eval_tasks)
+    if eval_tasks is not None:
+        await asyncio.gather(*eval_tasks)
 
     logger.success("Orchestrator finished.")
 
