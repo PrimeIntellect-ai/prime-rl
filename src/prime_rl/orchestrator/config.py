@@ -21,16 +21,9 @@ class ClientConfig(BaseConfig):
     host: Annotated[
         str,
         Field(
-            description="Host to use for the OpenAI API. By default, it is set to a local inference server.",
+            description="Base URL to use for the OpenAI API. By default, it is set to None, which means ",
         ),
-    ] = "localhost"
-
-    port: Annotated[
-        int,
-        Field(
-            description="Port to use for the OpenAI API. By default, it is set to a local inference server.",
-        ),
-    ] = 8000
+    ] = "http://localhost:8000/v1"
 
     api_key: Annotated[
         str,

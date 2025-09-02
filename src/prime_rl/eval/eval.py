@@ -33,7 +33,7 @@ async def eval(config: OfflineEvalConfig):
     )
 
     # Setup client
-    logger.info(f"Initializing OpenAI client ({config.client.host}:{config.client.port})")
+    logger.info(f"Initializing OpenAI client (base_url={config.client.base_url}, api_key={config.client.api_key})")
     client = setup_client(config.client)
 
     # Check health of the client
