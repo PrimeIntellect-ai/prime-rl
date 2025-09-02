@@ -4,11 +4,9 @@ from pathlib import Path
 
 import httpx
 from httpx import Response
-from openai import AsyncOpenAI, BaseModel, NotFoundError
-from openai.types.chat import ChatCompletion
-from vllm.entrypoints.openai.api_server import TokenizeResponse
+from openai import AsyncOpenAI, NotFoundError
 
-from prime_rl.orchestrator.config import ClientConfig, ModelConfig, SamplingConfig
+from prime_rl.orchestrator.config import ClientConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import get_weight_ckpt_model_path
 
@@ -92,37 +90,3 @@ async def reload_weights(client: AsyncOpenAI) -> None:
         )
         return
     await client.post(url, cast_to=Response, body={})
-
-
-async def tokenize(client: AsyncOpenAI, model_config: ModelConfig, messages: list[dict[str, str]]) -> list[int]:
-    url = str(client.base_url)[:-4] + "/tokenize"
-
-    class OAITokenizeResponse(BaseModel, TokenizeResponse):
-        """Make vLLM's TokenizeResponse compatible with OAI client."""
-
-    tokenize_response = await client.post(
-        url, cast_to=OAITokenizeResponse, body={"model": model_config.name, "messages": messages}
-    )
-    return tokenize_response.tokens
-
-
-async def generate_completion(
-    client: AsyncOpenAI,
-    model_config: ModelConfig,
-    sampling_config: SamplingConfig,
-    messages: list[dict[str, str]],
-) -> ChatCompletion:
-    response = await client.chat.completions.create(
-        messages=messages,
-        model=model_config.name,
-        temperature=sampling_config.temperature,
-        max_tokens=sampling_config.max_tokens,
-        seed=sampling_config.seed,
-        logprobs=True,
-        extra_body={
-            "min_tokens": sampling_config.min_tokens,
-            "return_tokens_as_token_ids": True,
-        },
-    )
-    assert len(response.choices) == 1, "Response should always have one choice"
-    return response
