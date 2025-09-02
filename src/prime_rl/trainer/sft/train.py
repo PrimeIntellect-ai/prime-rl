@@ -214,7 +214,13 @@ def train(config: SFTTrainerConfig):
                 loss.backward()
 
             # Debug log with *local, micro step* stats
-            micro_step_message = f"Micro Step {micro_step} | Loss: {tensors['loss'][-1].mean().item():.4f} | Accuracy: {tensors['accuracy'][-1].mean().item():.4f} | Dataloader Step: {dataloader.state_dict()['dataset_state']['step']}"
+            # Safely access dataloader state for debug logging
+            dataloader_debug_state = dataloader.state_dict()
+            if '_snapshot' in dataloader_debug_state:
+                debug_step = "Multi-worker"
+            else:
+                debug_step = dataloader_debug_state.get('dataset_state', {}).get('step', 'N/A')
+            micro_step_message = f"Micro Step {micro_step} | Loss: {tensors['loss'][-1].mean().item():.4f} | Accuracy: {tensors['accuracy'][-1].mean().item():.4f} | Dataloader Step: {debug_step}"
             if "max_vio" in tensors:
                 micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
@@ -246,7 +252,14 @@ def train(config: SFTTrainerConfig):
         # Compute step metrics
         num_tokens = config.data.batch_size * config.data.seq_len
         progress.total_tokens += num_tokens
-        progress.total_samples = dataloader.state_dict()["dataset_state"]["step"]
+        # Safely access dataloader state for progress tracking
+        progress_dataloader_state = dataloader.state_dict()
+        if '_snapshot' in progress_dataloader_state:
+            # Multi-worker mode - estimate progress from step counter
+            progress.total_samples = progress.step
+        else:
+            # Single worker mode
+            progress.total_samples = progress_dataloader_state.get('dataset_state', {}).get('step', progress.step)
         perf_counter = get_perf_counter(model, config.data.seq_len)
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_tokens_per_second() or 0
