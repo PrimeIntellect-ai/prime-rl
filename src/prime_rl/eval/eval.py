@@ -33,7 +33,9 @@ async def eval(config: OfflineEvalConfig):
     )
 
     # Setup client
-    logger.info(f"Initializing OpenAI client ({config.client.host}:{config.client.port})")
+    logger.info(
+        f"Initializing OpenAI client (base_url={config.client.base_url}, api_key={config.client.api_key}, server_type={config.client.server_type})"
+    )
     client = setup_client(config.client)
 
     # Check health of the client
@@ -57,6 +59,7 @@ async def eval(config: OfflineEvalConfig):
                     env_args=config.environment_args.get(eval_id, {}),
                     model_config=config.model,
                     sampling_config=config.sampling,
+                    client_config=config.client,
                     num_examples=num_examples,
                     rollouts_per_example=rollouts_per_example,
                     output_dir=config.output_dir,
@@ -94,6 +97,7 @@ async def eval(config: OfflineEvalConfig):
                         env_args=config.environment_args.get(eval_id, {}),
                         model_config=config.model,
                         sampling_config=config.sampling,
+                        client_config=config.client,
                         num_examples=num_examples,
                         rollouts_per_example=rollouts_per_example,
                         output_dir=config.output_dir,

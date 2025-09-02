@@ -7,6 +7,8 @@ from prime_rl.orchestrator.advantage import AdvantageType
 from prime_rl.utils.config import LogConfig, ModelConfig, MultiMonitorConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
+ServerType = Literal["vllm", "openai"]
+
 
 class ClientConfig(BaseConfig):
     """Configures the client to be used for inference."""
@@ -18,26 +20,32 @@ class ClientConfig(BaseConfig):
         ),
     ] = 1200
 
-    host: Annotated[
+    base_url: Annotated[
         str,
         Field(
-            description="Host to use for the OpenAI API. By default, it is set to a local inference server.",
+            description="Base URL to use for the OpenAI API. By default, it is set to None, which means ",
         ),
-    ] = "localhost"
-
-    port: Annotated[
-        int,
-        Field(
-            description="Port to use for the OpenAI API. By default, it is set to a local inference server.",
-        ),
-    ] = 8000
+    ] = "http://localhost:8000/v1"
 
     api_key: Annotated[
         str,
         Field(
-            description="API key to use for the OpenAI API. An arbitrary string can be passed if the inference server is not protected by an API key.",
+            description="Name of environment varaible containing the API key to use for the OpenAI API. Will parse using `os.getenv(client_config.api_key)`. Can be set to an arbitrary string if the inference server is not protected by an API key .",
         ),
-    ] = "insecure"
+    ] = "OPENAI_API_KEY"
+
+    server_type: Annotated[
+        ServerType,
+        Field(
+            description="Type of inference server that the client is connected to. Can be 'vllm' or 'openai'. Defaults to vLLM, which is our default client for training.",
+        ),
+    ] = "vllm"
+
+    @model_validator(mode="after")
+    def auto_setup_server_type(self):
+        if self.base_url == "https://api.openai.com/v1":
+            self.server_type = "openai"
+        return self
 
 
 class SamplingConfig(BaseConfig):
