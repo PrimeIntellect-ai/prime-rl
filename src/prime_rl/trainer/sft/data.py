@@ -358,9 +358,9 @@ def setup_dataloader(
     seq_len = config.micro_batch_size * config.seq_len
     if config.pack_function == "stack":
         stacking_dataset = StackDataset(dataset, seq_len)
-        return StatefulDataLoader(stacking_dataset, batch_size=1, collate_fn=stack_collate)
+        return StatefulDataLoader(stacking_dataset, batch_size=1, collate_fn=stack_collate, num_workers=config.num_workers)
     elif config.pack_function == "cat":
         packing_dataset = CatDataset(dataset, seq_len)
-        return StatefulDataLoader(packing_dataset, batch_size=1, collate_fn=cat_collate)
+        return StatefulDataLoader(packing_dataset, batch_size=1, collate_fn=cat_collate, num_workers=config.num_workers)
     else:
         raise ValueError(f"Invalid pack function: {config.pack_function}")

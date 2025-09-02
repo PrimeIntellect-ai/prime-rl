@@ -22,6 +22,7 @@ class BaseDataConfig(BaseModel):
     micro_batch_size: Annotated[int, Field(ge=1)] = 8
     batch_size: Annotated[int, Field(ge=1)] = 128
     seq_len: Annotated[int, Field(ge=1)] = 128
+    num_workers: Annotated[int, Field(ge=0, description="Number of worker processes for data loading. 0 means single process.")] = 0
     num_examples: Annotated[
         int | None, Field(description="Number of examples to use from the dataset. If None, will use all examples.")
     ] = None
