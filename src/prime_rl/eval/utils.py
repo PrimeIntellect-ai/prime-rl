@@ -40,7 +40,7 @@ def compute_pass_at_k(rewards: list[int]) -> dict[str, float]:
 def prepare_sampling_args(sampling_config: EvalSamplingConfig, client_config: ClientConfig) -> dict[str, Any]:
     """Prepare sampling args for the client."""
     # Initialize sampling args
-    sampling_args: dict[str, Any] = {"logprobs": True}
+    sampling_args: dict[str, Any] = {}
 
     # Apply sampling arguments, if specified
     if sampling_config.temperature is not None:
