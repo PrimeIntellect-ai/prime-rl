@@ -95,6 +95,7 @@ async def eval(config: OfflineEvalConfig):
                         env_args=config.environment_args.get(eval_id, {}),
                         model_config=config.model,
                         sampling_config=config.sampling,
+                        client_config=config.client,
                         num_examples=num_examples,
                         rollouts_per_example=rollouts_per_example,
                         output_dir=config.output_dir,
