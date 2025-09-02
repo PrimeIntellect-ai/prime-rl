@@ -320,8 +320,8 @@ def train(config: SFTTrainerConfig):
                 step=progress.step,
             )
 
-        progress.step += 1
         is_first_step = False
+        progress.step += 1
 
     # Log final (immutable) distributions to W&B table
     if monitor.wandb:
