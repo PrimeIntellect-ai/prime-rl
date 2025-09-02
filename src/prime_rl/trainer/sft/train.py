@@ -104,8 +104,21 @@ def train(config: SFTTrainerConfig):
     if ckpt_manager is not None and config.ckpt and config.ckpt.resume_step:
         logger.info(f"Resuming training from checkpoint step {config.ckpt.resume_step}")
         ckpt_manager.load(model, [optimizer], scheduler, progress, step=config.ckpt.resume_step, dataloader=dataloader)
+    # Safely access dataloader state for multi-worker compatibility
+    dataloader_state = dataloader.state_dict()
+    if '_snapshot' in dataloader_state:
+        # Multi-worker mode
+        worker_states = dataloader_state['_snapshot']['_worker_snapshots']
+        dataset_states = [worker['dataset_state'] for worker in worker_states.values()]
+        logger.info(f"Multi-worker dataset states: {dataset_states}")
+        dataset_state = str(dataset_states)
+    else:
+        # Single worker mode
+        dataset_state = dataloader_state.get('dataset_state', 'N/A')
+        logger.info(f"Single worker dataset state: {dataset_state}")
+    
     logger.info(
-        f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples}, dataloader_state={dataloader.state_dict()['dataset_state']})"
+        f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples}, dataloader_state={dataset_state})"
     )
 
     logger.info(f"Starting training loop ({config.max_steps=})")
