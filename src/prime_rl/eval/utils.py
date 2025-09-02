@@ -6,7 +6,6 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import torch
-from datasets import DatasetDict, load_from_disk
 from openai import AsyncOpenAI
 from verifiers import load_environment
 from verifiers.types import GenerateOutputs
@@ -81,7 +80,7 @@ async def run_eval(
     output_dir: Path,
     ckpt_step: int,
     step: int | None = None,
-) -> None | Path:
+) -> None:
     # Get the logger
     logger = get_logger()
     monitor = get_monitor()
@@ -220,7 +219,6 @@ async def run_eval(
     monitor.log(time_metrics)
 
     # If specified, save eval artifacts
-    eval_dir = None
     if save:
         # Save samples as dataset
         eval_dir = get_eval_dir(output_dir) / f"step_{ckpt_step}" / eval_id
@@ -245,19 +243,3 @@ async def run_eval(
             json.dump(report, f, indent=2)
 
         logger.info(f"Saved samples and report to {eval_dir}")
-
-    return eval_dir
-
-
-def maybe_save_all_eval_results(eval_dirs: list):
-    assert len(set(map(type, eval_dirs))) == 1, "All eval dirs should have the same type"
-    if eval_dirs[0] is None:
-        return
-    assert all(isinstance(eval_dir, Path) for eval_dir in eval_dirs), "All eval dirs should be Path objects"
-
-    all_eval_dir = eval_dirs[0].parent / "all_evals"
-    splits = {}
-    for eval_dir in eval_dirs:
-        splits[eval_dir.name] = load_from_disk(eval_dir)
-
-    DatasetDict(splits).save_to_disk(all_eval_dir)
