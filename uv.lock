@@ -922,6 +922,18 @@ wheels = [
 ]
 
 [[package]]
+name = "gpqa"
+version = "0.1.0"
+source = { registry = "https://hub.primeintellect.ai/will/simple/" }
+dependencies = [
+    { name = "datasets" },
+    { name = "verifiers" },
+]
+wheels = [
+    { url = "https://hub.primeintellect.ai/will/gpqa/@34b02f9f/gpqa-0.1.0-py3-none-any.whl", hash = "sha256:defc1d24ec2f923b3feeb6e42a221791405dfda84712466cf17e730c980c7ba5" },
+]
+
+[[package]]
 name = "h11"
 version = "0.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2174,6 +2186,7 @@ vf = [
     { name = "alphabet-sort" },
     { name = "ascii-tree" },
     { name = "deepscaler-math" },
+    { name = "gpqa" },
     { name = "hendrycks-math" },
     { name = "intellect-math" },
     { name = "math500" },
@@ -2206,6 +2219,7 @@ requires-dist = [
     { name = "flash-attn", marker = "extra == 'flash-attn'", specifier = ">=2.8.0" },
     { name = "flashinfer-python", marker = "extra == 'flash-infer'", specifier = ">=0.2.8rc1" },
     { name = "google-cloud-storage", specifier = ">=3.1.1" },
+    { name = "gpqa", marker = "extra == 'vf'", specifier = ">=0.1.0" },
     { name = "hendrycks-math", marker = "extra == 'vf'", specifier = ">=0.1.4", index = "https://hub.primeintellect.ai/primeintellect/simple" },
     { name = "intellect-math", marker = "extra == 'vf'", specifier = ">=0.1.4", index = "https://hub.primeintellect.ai/primeintellect/simple" },
     { name = "jaxtyping", specifier = ">=0.3.2" },

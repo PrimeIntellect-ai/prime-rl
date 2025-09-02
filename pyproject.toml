@@ -65,6 +65,7 @@ vf = [
     "aime2024>=0.1.9",
     "aime2025>=0.1.9",
     "math500>=0.1.9",
+    "gpqa>=0.1.0",
 ]
 
 [tool.uv]
@@ -87,6 +88,9 @@ intellect-math = { index = "primeintellect" }
 aime2024 = { index = "primeintellect" }
 aime2025 = { index = "primeintellect" }
 math500 = { index = "primeintellect" }
+
+[[tool.uv.index]]
+url = "https://hub.primeintellect.ai/will/simple/"
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
