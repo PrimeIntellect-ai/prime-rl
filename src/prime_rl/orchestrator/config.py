@@ -18,7 +18,7 @@ class ClientConfig(BaseConfig):
         ),
     ] = 1200
 
-    host: Annotated[
+    base_url: Annotated[
         str,
         Field(
             description="Base URL to use for the OpenAI API. By default, it is set to None, which means ",
@@ -28,9 +28,9 @@ class ClientConfig(BaseConfig):
     api_key: Annotated[
         str,
         Field(
-            description="API key to use for the OpenAI API. An arbitrary string can be passed if the inference server is not protected by an API key.",
+            description="Name of environment varaible containing the API key to use for the OpenAI API. Will parse using `os.getenv(client_config.api_key)`. Can be set to an arbitrary string if the inference server is not protected by an API key .",
         ),
-    ] = "insecure"
+    ] = "OPENAI_API_KEY"
 
 
 class SamplingConfig(BaseConfig):
