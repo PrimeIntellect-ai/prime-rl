@@ -1,7 +1,7 @@
 import asyncio
 
 from prime_rl.eval.config import OfflineEvalConfig
-from prime_rl.eval.utils import run_eval
+from prime_rl.eval.utils import maybe_save_all_eval_results, run_eval
 from prime_rl.orchestrator.client import (
     check_has_model,
     check_health,
@@ -49,7 +49,7 @@ async def eval(config: OfflineEvalConfig):
     # Run benchmarks on base model
     if config.eval_base:
         logger.info(f"Running evals on base model {config.model.name}")
-        await asyncio.gather(
+        eval_dirs = await asyncio.gather(
             *[
                 run_eval(
                     client=client,
@@ -70,6 +70,9 @@ async def eval(config: OfflineEvalConfig):
             ]
         )
 
+        # Maybe, combine all eval results into single dataset with split and save to disk
+        maybe_save_all_eval_results(eval_dirs)
+
     # If specified, evaluate all checkpoints found in the weights directory
     if config.weights_dir is not None:
         logger.info(f"Evaluating weight checkpoints in {config.weights_dir}")
@@ -87,7 +90,7 @@ async def eval(config: OfflineEvalConfig):
             await update_weights(client, config.weights_dir, ckpt_step)
 
             # Run evals on checkpoint
-            await asyncio.gather(
+            eval_dirs = await asyncio.gather(
                 *[
                     run_eval(
                         client=client,
@@ -95,6 +98,7 @@ async def eval(config: OfflineEvalConfig):
                         env_args=config.environment_args.get(eval_id, {}),
                         model_config=config.model,
                         sampling_config=config.sampling,
+                        client_config=config.client,
                         num_examples=num_examples,
                         rollouts_per_example=rollouts_per_example,
                         output_dir=config.output_dir,
@@ -106,6 +110,9 @@ async def eval(config: OfflineEvalConfig):
                     )
                 ]
             )
+
+            # Maybe, combine all eval results into single dataset with split and save to disk
+            maybe_save_all_eval_results(eval_dirs)
 
     logger.info("Evaluation finished!")
 
