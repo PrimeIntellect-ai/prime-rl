@@ -7,6 +7,8 @@ from prime_rl.orchestrator.advantage import AdvantageType
 from prime_rl.utils.config import LogConfig, ModelConfig, MultiMonitorConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
+ServerType = Literal["vllm", "openai"]
+
 
 class ClientConfig(BaseConfig):
     """Configures the client to be used for inference."""
@@ -31,6 +33,19 @@ class ClientConfig(BaseConfig):
             description="Name of environment varaible containing the API key to use for the OpenAI API. Will parse using `os.getenv(client_config.api_key)`. Can be set to an arbitrary string if the inference server is not protected by an API key .",
         ),
     ] = "OPENAI_API_KEY"
+
+    server_type: Annotated[
+        ServerType,
+        Field(
+            description="Type of inference server that the client is connected to. Can be 'vllm' or 'openai'. Defaults to vLLM, which is our default client for training.",
+        ),
+    ] = "vllm"
+
+    @model_validator(mode="after")
+    def auto_setup_server_type(self):
+        if self.base_url == "https://api.openai.com/v1":
+            self.server_type = "openai"
+        return self
 
 
 class SamplingConfig(BaseConfig):

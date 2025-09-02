@@ -10,7 +10,7 @@ from openai import AsyncOpenAI
 from verifiers import load_environment
 from verifiers.types import GenerateOutputs
 
-from prime_rl.orchestrator.config import EvalSamplingConfig, ModelConfig
+from prime_rl.orchestrator.config import ClientConfig, EvalSamplingConfig, ModelConfig
 from prime_rl.orchestrator.utils import parse_completion_tokens, parse_truncated_completions
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor import get_monitor
@@ -37,12 +37,43 @@ def compute_pass_at_k(rewards: list[int]) -> dict[str, float]:
     return {f"pass@{k}": avg_pass_rate}
 
 
+def prepare_sampling_args(sampling_config: EvalSamplingConfig, client_config: ClientConfig) -> dict[str, Any]:
+    """Prepare sampling args for the client."""
+    # Initialize sampling args
+    sampling_args: dict[str, Any] = {"logprobs": True}
+
+    # Apply sampling arguments, if specified
+    if sampling_config.temperature is not None:
+        sampling_args["temperature"] = sampling_config.temperature
+    if sampling_config.max_tokens is not None:
+        sampling_args["max_tokens"] = sampling_config.max_tokens
+    if sampling_config.top_p is not None:
+        sampling_args["top_p"] = sampling_config.top_p
+
+    if client_config.server_type == "vllm":
+        # Always return token IDs from vLLM server
+        extra_body: dict[str, Any] = {"return_tokens_as_token_ids": True}
+
+        # Apply vLLM-specific sampling arguments, if specified
+        if sampling_config.top_k is not None:
+            extra_body["top_k"] = sampling_config.top_k
+        if sampling_config.min_p is not None:
+            extra_body["min_p"] = sampling_config.min_p
+        if sampling_config.min_tokens is not None:
+            extra_body["min_tokens"] = sampling_config.min_tokens
+
+        sampling_args["extra_body"] = extra_body
+
+    return sampling_args
+
+
 async def run_eval(
     client: AsyncOpenAI,
     eval_id: str,
     env_args: dict,
     model_config: ModelConfig,
     sampling_config: EvalSamplingConfig,
+    client_config: ClientConfig,
     num_examples: int,
     rollouts_per_example: int,
     save: bool,
@@ -87,31 +118,12 @@ async def run_eval(
         "answer": [example.get("answer", "") for example in examples],
     }
 
+    # Prepare sampling arguments
+    sampling_args = prepare_sampling_args(sampling_config, client_config)
+
     logger.debug(
         f"Evaluating {eval_id} (num_examples={len(examples)}, rollouts_per_example={rollouts_per_example}) with args {env_args}"
     )
-
-    # Always return logprobs to parser response length
-    sampling_args: dict[str, Any] = {
-        "logprobs": True,
-        "extra_body": {
-            "return_tokens_as_token_ids": True,
-        },
-    }
-
-    # Apply sampling config only if specified
-    if sampling_config.temperature is not None:
-        sampling_args["temperature"] = sampling_config.temperature
-    if sampling_config.max_tokens is not None:
-        sampling_args["max_tokens"] = sampling_config.max_tokens
-    if sampling_config.top_p is not None:
-        sampling_args["top_p"] = sampling_config.top_p
-    if sampling_config.top_k is not None:
-        sampling_args["extra_body"]["top_k"] = sampling_config.top_k
-    if sampling_config.min_p is not None:
-        sampling_args["extra_body"]["min_p"] = sampling_config.min_p
-    if sampling_config.min_tokens is not None:
-        sampling_args["extra_body"]["min_tokens"] = sampling_config.min_tokens
 
     # Run async generation and scoring
     run_eval_start_time = time.time()
@@ -126,8 +138,16 @@ async def run_eval(
     logger.debug(f"Generated and scored rollouts in {run_eval_time:.2f}s")
 
     rewards = torch.tensor(generate_outputs.reward).reshape(-1, rollouts_per_example).float()
-    completion_lens = torch.tensor(list(map(len, parse_completion_tokens(states=generate_outputs.state)))).reshape(-1, rollouts_per_example).float()
-    is_truncated = torch.tensor(parse_truncated_completions(states=generate_outputs.state)).reshape(-1, rollouts_per_example).float()
+    completion_lens = (
+        torch.tensor(list(map(len, parse_completion_tokens(states=generate_outputs.state))))
+        .reshape(-1, rollouts_per_example)
+        .float()
+    )
+    is_truncated = (
+        torch.tensor(parse_truncated_completions(states=generate_outputs.state))
+        .reshape(-1, rollouts_per_example)
+        .float()
+    )
 
     k = rollouts_per_example
     sample_stats = pd.DataFrame({"example_id": example_ids, "reward": rewards.flatten().tolist()})
@@ -150,9 +170,7 @@ async def run_eval(
         assert pass_at_k is not None
         for pass_rate, pass_rate_score in pd.Series(pass_at_k.mean()).items():
             message += f", {capitalize(str(pass_rate))}: {pass_rate_score:.4f}"
-    message += (
-        f", Completion Length: {completion_lens.mean():.2f} (±{completion_lens.std():.2f}, ∈[{completion_lens.min():.2f}, {completion_lens.max():.2f}]), Truncated: {is_truncated.mean() * 100:.1f}%)"
-    )
+    message += f", Completion Length: {completion_lens.mean():.2f} (±{completion_lens.std():.2f}, ∈[{completion_lens.min():.2f}, {completion_lens.max():.2f}]), Truncated: {is_truncated.mean() * 100:.1f}%)"
     logger.success(message)
 
     # Log statistics to monitor
