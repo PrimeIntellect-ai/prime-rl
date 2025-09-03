@@ -18,6 +18,51 @@ from prime_rl.utils.monitor import get_monitor
 from prime_rl.utils.utils import capitalize, get_eval_dir
 
 
+def _strip_user_assistant_wrappers(text: str) -> str:
+    """
+    Remove leading "User: " and trailing "Assistant:" markers from a prompt string.
+    Only strips if they appear at the very start/end (ignoring surrounding whitespace).
+    """
+    if not isinstance(text, str):
+        return text
+    cleaned = text.strip()
+    if cleaned.startswith("User: "):
+        cleaned = cleaned[len("User: ") :]
+    if cleaned.endswith("Assistant:"):
+        cleaned = cleaned[: -len("Assistant:")].rstrip()
+    return cleaned
+
+
+def _extract_completion_content(value: Any) -> str:
+    """Extract plain text from a completion value that might be a string, dict, or list.
+    - If a dict with key "content", returns that value (joining list parts if needed).
+    - If a list, flattens by extracting content/text from each item and concatenating.
+    - Otherwise, converts to string (or empty string if None).
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        content = value.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    # Common structures may have 'text' or nested 'content'
+                    if isinstance(item.get("text"), str):
+                        parts.append(item["text"])
+                    elif isinstance(item.get("content"), str):
+                        parts.append(item["content"])
+            return "".join(parts)
+        return str(content) if content is not None else ""
+    if isinstance(value, list):
+        return "".join(_extract_completion_content(v) for v in value)
+    return str(value) if value is not None else ""
+
+
 def compute_pass_at_k(rewards: list[int]) -> dict[str, float]:
     total_attempts = len(rewards)
     k = total_attempts // 2
@@ -38,22 +83,30 @@ def compute_pass_at_k(rewards: list[int]) -> dict[str, float]:
     return {f"pass@{k}": avg_pass_rate}
 
 
-def extract_rollout_data(states: list, rewards: list[float], rollouts_per_example: int) -> list[dict]:
+def extract_rollout_data(
+    states: list,
+    rewards: list[float],
+    rollouts_per_example: int,
+    examples: list[dict] | None = None,
+    completions: list[str] | None = None,
+) -> list[list[str]]:
     """
-    Extract rollout data from states and organize by example.
+    Extract rollout completions from states and organize by example.
     
     Args:
         states: List of state objects from generate_outputs
-        rewards: List of rewards for each rollout
+        rewards: List of rewards for each rollout (unused here, retained for API stability)
         rollouts_per_example: Number of rollouts per example
+        examples: Original examples (unused here, retained for API stability)
+        completions: Optional flat list of completions aligned with states
         
     Returns:
-        List of rollout data dictionaries organized by example
+        List of lists of completion strings organized by example
     """
     rollouts_by_example = []
     
     for example_idx in range(0, len(states), rollouts_per_example):
-        example_rollouts = []
+        example_rollouts: list[str] = []
         
         for rollout_idx in range(rollouts_per_example):
             state_idx = example_idx + rollout_idx
@@ -61,33 +114,17 @@ def extract_rollout_data(states: list, rewards: list[float], rollouts_per_exampl
                 state = states[state_idx]
                 reward = rewards[state_idx]
                 
-                # Extract completion from state
+                # Prefer provided completions, fallback to parsing state
                 completion = ""
-                completion_tokens = []
-                is_truncated = False
-                
+                if completions is not None and state_idx < len(completions):
+                    completion = _extract_completion_content(completions[state_idx])
                 if "responses" in state and state["responses"]:
                     chat_completion = state["responses"][0]  # First response
                     if hasattr(chat_completion, 'choices') and chat_completion.choices:
                         choice = chat_completion.choices[0]
-                        if choice.message and choice.message.content:
-                            completion = choice.message.content
-                        
-                        # Extract completion tokens if available
-                        if choice.logprobs and choice.logprobs.content:
-                            completion_tokens = [int(token.token.split(":")[-1]) for token in choice.logprobs.content]
-                        
-                        # Check if truncated
-                        is_truncated = choice.finish_reason == "length"
-                
-                rollout_data = {
-                    "completion": completion,
-                    "completion_tokens": completion_tokens,
-                    "reward": reward,
-                    "is_truncated": is_truncated,
-                    "completion_length": len(completion_tokens)
-                }
-                example_rollouts.append(rollout_data)
+                        if not completion and choice.message and choice.message.content:
+                            completion = _extract_completion_content(choice.message.content)
+                example_rollouts.append(completion)
         
         rollouts_by_example.append(example_rollouts)
     
@@ -98,7 +135,8 @@ def create_accuracy_dataset(
     examples: list[dict], 
     rewards: torch.Tensor, 
     rollouts_per_example: int,
-    states: list = None
+    states: list = None,
+    completions: list[str] | None = None,
 ) -> Dataset:
     """
     Creates a HuggingFace dataset with average accuracy per question alongside original question and answer,
@@ -122,34 +160,27 @@ def create_accuracy_dataset(
     average_accuracies = rewards.mean(dim=1).tolist()
     
     # Extract rollouts if states provided
-    rollouts_data = []
+    rollouts_data: list[list[str]] = []
     if states is not None:
         rewards_flat = rewards.flatten().tolist()
-        rollouts_by_example = extract_rollout_data(states, rewards_flat, rollouts_per_example)
+        rollouts_by_example = extract_rollout_data(
+            states, rewards_flat, rollouts_per_example, examples, completions
+        )
+        # Store all completions per example as list[str]
         rollouts_data = rollouts_by_example
     else:
-        # Fallback: create rollouts with just rewards
-        for example_idx in range(num_examples):
-            example_rollouts = []
-            for rollout_idx in range(rollouts_per_example):
-                rollout_data = {
-                    "completion": "",
-                    "completion_tokens": [],
-                    "reward": rewards[example_idx, rollout_idx].item(),
-                    "is_truncated": False,
-                    "completion_length": 0
-                }
-                example_rollouts.append(rollout_data)
-            rollouts_data.append(example_rollouts)
+        # Fallback: store a list of empty strings per example
+        rollouts_data = [["" for _ in range(rollouts_per_example)] for _ in range(num_examples)]
     
     # Create dataset dictionary
     dataset_dict = {
         "prompt": [example["prompt"] for example in examples],
         "answer": [example.get("answer", "") for example in examples],
         "task": [example.get("task", "") for example in examples],
-        "info": [example.get("info", {}) for example in examples],
+        "info": [example.get("info", None) for example in examples],
         "average_accuracy": average_accuracies,
         "rollouts": rollouts_data,
+        "prompt_id": [example.get("prompt_id", None) for example in examples],
     }
     
     return Dataset.from_dict(dataset_dict)
@@ -169,6 +200,7 @@ async def run_eval(
     step: int | None = None,
     eval_batch_size: int | None = None,
     save_accuracy_dataset: bool = True,
+    debug_first_batch: bool = False,
 ) -> None:
     # Get the logger
     logger = get_logger()
@@ -204,7 +236,7 @@ async def run_eval(
 
     # Prepare inputs for all examples (duplicated)
     inputs = {
-        "prompt": [example["prompt"] for example in duplicated_examples],
+        "prompt": [_strip_user_assistant_wrappers(example["prompt"]) for example in duplicated_examples],
         "info": [example.get("info", {}) for example in duplicated_examples],
         "task": [example.get("task", "") for example in duplicated_examples],
         "answer": [example.get("answer", "") for example in duplicated_examples],
@@ -241,6 +273,11 @@ async def run_eval(
     all_completion_lens = []
     all_is_truncated = []
     all_states = []
+    all_prompts = []
+    all_completions = []
+    all_answers = []
+    all_info = []
+    all_task = []
     
     # Cumulative metrics tracking
     cumulative_correct_count = 0
@@ -313,11 +350,26 @@ async def run_eval(
             all_completion_lens.extend(list(map(len, parse_completion_tokens(states=batch_outputs.state))))
             all_is_truncated.extend(parse_truncated_completions(states=batch_outputs.state))
             all_states.extend(batch_outputs.state)
+            all_prompts.extend(batch_outputs.prompt)
+            all_completions.extend(batch_outputs.completion)
+            all_answers.extend(batch_outputs.answer)
+            all_info.extend(batch_outputs.info)
+            all_task.extend(batch_outputs.task)
+
+            # Stop after the first batch for debugging purposes
+            if debug_first_batch:
+                logger.info("Stopping evaluation after the first batch (debug mode)")
+                break
 
         # Create final generate_outputs object
         generate_outputs = GenerateOutputs(
-            reward=all_rewards,
+            prompt=all_prompts,
+            completion=all_completions,
+            answer=all_answers,
             state=all_states,
+            info=all_info,
+            task=all_task,
+            reward=all_rewards,
         )
         
     else:
@@ -339,7 +391,13 @@ async def run_eval(
     is_truncated = torch.tensor(parse_truncated_completions(states=generate_outputs.state)).reshape(-1, rollouts_per_example).float()
 
     k = rollouts_per_example
-    sample_stats = pd.DataFrame({"example_id": duplicated_example_ids, "reward": rewards.flatten().tolist()})
+    # Only include evaluated rollouts (first batch when batching is used) if debugging
+    if eval_batch_size is not None and debug_first_batch:
+        num_rollouts_evaluated = len(generate_outputs.reward)
+        evaluated_example_ids = duplicated_example_ids[:num_rollouts_evaluated]
+        sample_stats = pd.DataFrame({"example_id": evaluated_example_ids, "reward": rewards.flatten().tolist()})
+    else:
+        sample_stats = pd.DataFrame({"example_id": duplicated_example_ids, "reward": rewards.flatten().tolist()})
     unique_rewards = sample_stats.reward.unique()
     could_be_binary = set(unique_rewards).issubset({0.0, 1.0})
     if could_be_binary:
@@ -407,17 +465,25 @@ async def run_eval(
         eval_dir = get_eval_dir(output_dir) / f"step_{ckpt_step}" / eval_id
         dataset = vf_eval.make_dataset(generate_outputs)
         dataset.save_to_disk(eval_dir)
+        dataset.push_to_hub("Fareso/science_filtered_test_qwen")
 
         # Save accuracy dataset if requested
         if save_accuracy_dataset:
+            # Use only evaluated examples (first batch) when creating accuracy dataset (debug)
+            if eval_batch_size is not None and debug_first_batch:
+                num_examples_evaluated = rewards.shape[0]
+                examples_for_dataset = original_examples[:num_examples_evaluated]
+            else:
+                examples_for_dataset = original_examples
             accuracy_dataset = create_accuracy_dataset(
-                original_examples, 
+                examples_for_dataset, 
                 rewards, 
                 rollouts_per_example, 
-                states=generate_outputs.state
+                states=generate_outputs.state,
+                completions=generate_outputs.completion,
             )
             accuracy_dir = eval_dir / "accuracy_dataset"
-            accuracy_dataset.push_to_hub("Fareso/math_filtered")
+            accuracy_dataset.push_to_hub("Fareso/science_filtered_test_qwen")
             accuracy_dataset.save_to_disk(accuracy_dir)
             logger.info(f"Saved accuracy dataset with rollouts to {accuracy_dir}")
 
