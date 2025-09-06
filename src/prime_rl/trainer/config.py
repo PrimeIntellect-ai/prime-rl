@@ -97,7 +97,7 @@ class LoRAConfig(BaseModel):
         r".*\.down_proj$",
     ]
 
-    trainable_modules: Annotated[
+    modules_to_save: Annotated[
         list[str],
         Field(
             description="Regex patterns for modules to keep fully trainable (not freeze).",

@@ -107,7 +107,7 @@ def _find_target_modules(model: nn.Module, target_patterns: List[str]) -> List[s
     return target_modules
 
 
-def _should_keep_trainable(param_name: str, trainable_patterns: List[str]) -> bool:
+def _should_keep_trainable(param_name: str, modules_to_save_patterns: List[str]) -> bool:
     """Check if a parameter should remain fully trainable.
 
     Checks both the full parameter name and the parent module name against patterns.
@@ -115,12 +115,12 @@ def _should_keep_trainable(param_name: str, trainable_patterns: List[str]) -> bo
     - "model.embed_tokens.weight" (full parameter name)
     - "model.embed_tokens" (module name)
     """
-    for pattern in trainable_patterns:
+    for pattern in modules_to_save_patterns:
         if re.match(pattern, param_name):
             return True
 
     module_name = param_name.rsplit(".", 1)[0] if "." in param_name else param_name
-    for pattern in trainable_patterns:
+    for pattern in modules_to_save_patterns:
         if re.match(pattern, module_name):
             return True
 
@@ -133,7 +133,7 @@ def freeze_all_except_lora_and_specified(model: nn.Module, config: LoRAConfig) -
 
     Args:
         model: The model to freeze parameters in
-        config: LoRA configuration with trainable_modules patterns
+        config: LoRA configuration with modules_to_save patterns
     """
     frozen_params = 0
     trainable_params = 0
@@ -145,7 +145,7 @@ def freeze_all_except_lora_and_specified(model: nn.Module, config: LoRAConfig) -
         if any(lora_param in name for lora_param in ["lora_A", "lora_B"]):
             param.requires_grad = True
             trainable_params += 1
-        elif _should_keep_trainable(name, config.trainable_modules):
+        elif _should_keep_trainable(name, config.modules_to_save):
             param.requires_grad = True
             trainable_params += 1
         else:
