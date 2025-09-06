@@ -333,6 +333,7 @@ def train(config: RLTrainerConfig):
         # Synchronize the tensor metrics across all steps and ranks
         tensor_stats = tensors.compute_stats()
 
+
         # Compute step metrics
         num_local_tokens = micro_batch_size * seq_len * num_micro_batches
         num_tokens = world.world_size * num_local_tokens
