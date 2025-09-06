@@ -66,6 +66,7 @@ vf = [
     "aime2025>=0.1.9",
     "math500>=0.1.9",
     "gpqa>=0.1.0",
+    "livecodebench>=0.1.0.post1",
 ]
 
 [tool.uv]
