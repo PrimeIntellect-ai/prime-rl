@@ -212,10 +212,11 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
             lora_adapted_params += module.base_layer.weight.numel()
 
     fully_trainable = trainable_params - lora_adapter_params
+    adapted_or_trainable = lora_adapted_params + fully_trainable
 
     logger.info(f"LoRA enabled: {lora_adapter_params:,} adapter params adapting {lora_adapted_params:,} base params")
     logger.info(f"LoRA: {fully_trainable:,} fully trainable parameters")
-    logger.info(f"LoRA: {trainable_params:,} trainable out of {total_params:,} parameters")
+    logger.info(f"LoRA: {adapted_or_trainable:,} adapted or fully trainable out of {total_params:,} parameters")
 
 
 def merge_lora_weights(model: nn.Module) -> nn.Module:
