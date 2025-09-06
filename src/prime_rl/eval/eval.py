@@ -62,12 +62,16 @@ async def eval(config: OfflineEvalConfig):
                     client_config=config.client,
                     num_examples=num_examples,
                     rollouts_per_example=rollouts_per_example,
+                    max_concurrent=max_concurrent,
                     output_dir=config.output_dir,
                     save=config.save,
                     ckpt_step=0,
                 )
-                for eval_id, num_examples, rollouts_per_example in zip(
-                    config.environment_ids, config.num_examples, config.rollouts_per_example
+                for eval_id, num_examples, rollouts_per_example, max_concurrent in zip(
+                    config.environment_ids,
+                    config.num_examples,
+                    config.rollouts_per_example,
+                    config.max_concurrent,
                 )
             ]
         )
@@ -100,12 +104,13 @@ async def eval(config: OfflineEvalConfig):
                         client_config=config.client,
                         num_examples=num_examples,
                         rollouts_per_example=rollouts_per_example,
+                        max_concurrent=config.max_concurrent,
                         output_dir=config.output_dir,
                         save=config.save,
                         ckpt_step=ckpt_step,
                     )
                     for eval_id, num_examples, rollouts_per_example in zip(
-                        config.environment_ids, config.num_examples, config.rollouts_per_example
+                        config.environment_ids, config.num_examples, config.rollouts_per_example, config.max_concurrent
                     )
                 ]
             )

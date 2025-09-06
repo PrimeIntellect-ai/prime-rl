@@ -76,6 +76,7 @@ async def run_eval(
     client_config: ClientConfig,
     num_examples: int,
     rollouts_per_example: int,
+    max_concurrent: int,
     save: bool,
     output_dir: Path,
     ckpt_step: int,
@@ -133,6 +134,7 @@ async def run_eval(
         model=model_config.name,
         sampling_args=sampling_args,
         score_rollouts=True,
+        max_concurrent=max_concurrent,
     )
     run_eval_time = time.time() - run_eval_start_time
     logger.debug(f"Generated and scored rollouts in {run_eval_time:.2f}s")

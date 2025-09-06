@@ -174,6 +174,13 @@ class EvalConfig(BaseConfig):
         ),
     ] = []
 
+    max_concurrent: Annotated[
+        list[int],
+        Field(
+            description="Maximum number of concurrent rollouts to generate and score. If empty, will default to -1 for all environments.",
+        ),
+    ] = []
+
     sampling: EvalSamplingConfig = Field(
         default_factory=EvalSamplingConfig,
         description="Shared sampling configuration for evals; can differ from training sampling.",
@@ -199,6 +206,12 @@ class EvalConfig(BaseConfig):
             self.num_examples = [-1 for _ in self.environment_ids]
         elif len(self.num_examples) != len(self.environment_ids):
             raise ValueError("Number of num_examples entries must match number of ids")
+
+        # max_concurrent: if empty/unspecified, default to -1 for all; else length must match ids
+        if len(self.max_concurrent) == 0:
+            self.max_concurrent = [-1 for _ in self.environment_ids]
+        elif len(self.max_concurrent) != len(self.environment_ids):
+            raise ValueError("Number of max_concurrent entries must match number of ids")
 
         return self
 
