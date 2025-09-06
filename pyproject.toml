@@ -7,7 +7,7 @@ requires-python = "~=3.12.0"
 dependencies = [
     "beartype>=0.21.0",
     "cydifflib>=1.2.0",
-    "datasets>=3.6.0",
+    "datasets>=4.0.0",
     "google-cloud-storage>=3.1.1", # TODO: Delete after refactor
     "jaxtyping>=0.3.2",
     "liger-kernel>=0.5.10",
@@ -91,16 +91,16 @@ aime2025 = { index = "primeintellect" }
 math500 = { index = "primeintellect" }
 
 [[tool.uv.index]]
+name = "primeintellect"
+url = "https://hub.primeintellect.ai/primeintellect/simple/"
+
+[[tool.uv.index]]
 url = "https://hub.primeintellect.ai/will/simple/"
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/test/cu128"
 explicit = true
-
-[[tool.uv.index]]
-name = "primeintellect"
-url = "https://hub.primeintellect.ai/primeintellect/simple"
 
 [dependency-groups]
 dev = [
