@@ -6,6 +6,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import torch
+from datasets import Dataset
 from openai import AsyncOpenAI
 from verifiers import load_environment
 from verifiers.types import GenerateOutputs
@@ -111,14 +112,6 @@ async def run_eval(
         example_ids = [example_id for example_id in example_ids for _ in range(rollouts_per_example)]
         examples = [example for example in examples for _ in range(rollouts_per_example)]
 
-    # Prepare inputs
-    inputs = {
-        "prompt": [example["prompt"] for example in examples],
-        "info": [example.get("info", {}) for example in examples],
-        "task": [example.get("task", "") for example in examples],
-        "answer": [example.get("answer", "") for example in examples],
-    }
-
     # Prepare sampling arguments
     sampling_args = prepare_sampling_args(sampling_config, client_config)
 
@@ -129,7 +122,7 @@ async def run_eval(
     # Run async generation and scoring
     run_eval_start_time = time.time()
     generate_outputs: GenerateOutputs = await vf_eval.a_generate(
-        inputs=inputs,
+        inputs=Dataset.from_list(examples),
         client=client,
         model=model_config.name,
         sampling_args=sampling_args,
