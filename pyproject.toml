@@ -66,7 +66,7 @@ vf = [
     "aime2025>=0.1.9",
     "math500>=0.1.9",
     "gpqa>=0.1.0",
-    "livecodebench>=0.1.0.post1",
+    "livecodebench>=0.1.1",
 ]
 
 [tool.uv]
@@ -89,6 +89,7 @@ intellect-math = { index = "primeintellect" }
 aime2024 = { index = "primeintellect" }
 aime2025 = { index = "primeintellect" }
 math500 = { index = "primeintellect" }
+livecodebench = { index = "primeintellect" }
 
 [[tool.uv.index]]
 name = "primeintellect"
