@@ -43,10 +43,6 @@ inference = "prime_rl.inference.server:main"
 sft = "prime_rl.trainer.sft.train:main"
 eval = "prime_rl.eval.eval:main"
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
 [project.optional-dependencies]
 flash-attn = ["flash-attn>=2.8.0"]
 flash-infer = ["flashinfer-python>=0.2.8rc1"]
@@ -67,6 +63,8 @@ vf = [
     "math500>=0.1.9",
     "gpqa>=0.1.0",
     "livecodebench>=0.1.1",
+    "tau2 @ git+https://github.com/sierra-research/tau2-bench.git",
+    "tau2_bench>=0.1.2"
 ]
 
 [tool.uv]
@@ -126,3 +124,10 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "gpu: marks tests as gpu (deselect with '-m \"not gpu\"')",
 ]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
