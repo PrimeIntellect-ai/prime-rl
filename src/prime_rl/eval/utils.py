@@ -34,9 +34,7 @@ def compute_pass_at_k(rewards: list[int]) -> dict[str, float]:
         pass_rate = float(any(reward == 1.0 for reward in sampled_rewards))
         pass_rates.append(pass_rate)
 
-    avg_pass_rate = np.mean(pass_rates)
-
-    return {f"pass@{k}": avg_pass_rate}
+    return {f"pass@{k}": float(np.mean(pass_rates))}
 
 
 def prepare_sampling_args(sampling_config: EvalSamplingConfig, client_config: ClientConfig) -> dict[str, Any]:
