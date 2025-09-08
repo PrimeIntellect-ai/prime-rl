@@ -64,7 +64,8 @@ vf = [
     "gpqa>=0.1.0",
     "livecodebench>=0.1.1",
     "tau2 @ git+https://github.com/sierra-research/tau2-bench.git",
-    "tau2_bench>=0.1.2"
+    "tau2_bench>=0.1.2",
+    "simpleqa>=0.1.0",
 ]
 
 [tool.uv]
