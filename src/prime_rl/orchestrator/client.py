@@ -22,7 +22,7 @@ def setup_client(client_config: ClientConfig) -> AsyncOpenAI:
     http_client = httpx.AsyncClient(limits=limits, timeout=timeout)
     return AsyncOpenAI(
         base_url=client_config.base_url,
-        api_key=os.getenv(client_config.api_key, "EMPTY"),
+        api_key=os.getenv(client_config.api_key_var, "EMPTY"),
         max_retries=10,  # OAI default: 2 (does exponential backoff and reasonable timeout in between retries)
         http_client=http_client,
     )
