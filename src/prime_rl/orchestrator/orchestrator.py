@@ -177,21 +177,25 @@ async def orchestrate(config: OrchestratorConfig):
                 *[
                     run_eval(
                         client=client,
-                        eval_id=eval_id,
-                        env_args=config.eval.environment_args.get(eval_id, {}),
+                        env_id=env_id,
+                        env_args=env_args,
                         model_config=config.model,
                         sampling_config=config.eval.sampling,
+                        client_config=config.client,
                         num_examples=num_examples,
                         rollouts_per_example=rollouts_per_example,
+                        max_concurrent=max_concurrent,
                         ckpt_step=ckpt_step,
                         output_dir=config.output_dir,
                         save=config.eval.save,
                         step=progress.step,
                     )
-                    for eval_id, num_examples, rollouts_per_example in zip(
+                    for env_id, env_args, num_examples, rollouts_per_example, max_concurrent in zip(
                         config.eval.environment_ids,
+                        config.eval.environment_args,
                         config.eval.num_examples,
                         config.eval.rollouts_per_example,
+                        config.eval.max_concurrent,
                     )
                 ]
             )

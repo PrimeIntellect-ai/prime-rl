@@ -55,8 +55,8 @@ async def eval(config: OfflineEvalConfig):
             *[
                 run_eval(
                     client=client,
-                    eval_id=eval_id,
-                    env_args=config.environment_args.get(eval_id, {}),
+                    env_id=env_id,
+                    env_args=env_args,
                     model_config=config.model,
                     sampling_config=config.sampling,
                     client_config=config.client,
@@ -67,8 +67,9 @@ async def eval(config: OfflineEvalConfig):
                     save=config.save,
                     ckpt_step=0,
                 )
-                for eval_id, num_examples, rollouts_per_example, max_concurrent in zip(
+                for env_id, env_args, num_examples, rollouts_per_example, max_concurrent in zip(
                     config.environment_ids,
+                    config.environment_args,
                     config.num_examples,
                     config.rollouts_per_example,
                     config.max_concurrent,
