@@ -48,7 +48,7 @@ async def custom_build_async_engine_client(
     engine_args.worker_extension_cls = "prime_rl.inference.vllm.worker.CheckpointWorker"
 
     async with build_async_engine_client_from_engine_args(
-        engine_args, args.disable_frontend_multiprocessing, client_config
+        engine_args, disable_frontend_multiprocessing=args.disable_frontend_multiprocessing, client_config=client_config
     ) as engine:
         yield engine
 
