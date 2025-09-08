@@ -1,21 +1,22 @@
-import json
+import asyncio
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
 import torch
-from datasets import Dataset
+from datasets import Dataset, DatasetDict, load_from_disk
 from openai import AsyncOpenAI
 from verifiers import load_environment
 from verifiers.types import GenerateOutputs
 
-from prime_rl.orchestrator.config import ClientConfig, EvalSamplingConfig, ModelConfig
+from prime_rl.eval.config import OfflineEvalConfig
+from prime_rl.orchestrator.config import ClientConfig, EvalConfig, EvalSamplingConfig, ModelConfig
 from prime_rl.orchestrator.utils import parse_completion_tokens, parse_truncated_completions
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor import get_monitor
-from prime_rl.utils.utils import capitalize, get_eval_dir
+from prime_rl.utils.utils import capitalize, get_eval_dir, get_step_path
 
 
 def compute_pass_at_k(rewards: list[int]) -> dict[str, float]:
@@ -74,15 +75,15 @@ async def run_eval(
     client: AsyncOpenAI,
     eval_id: str,
     env_args: dict,
-    model_config: ModelConfig,
-    sampling_config: EvalSamplingConfig,
-    client_config: ClientConfig,
     num_examples: int,
     rollouts_per_example: int,
     max_concurrent: int,
-    save: bool,
+    save_to_disk: bool,
     output_dir: Path,
     ckpt_step: int,
+    model_config: ModelConfig,
+    sampling_config: EvalSamplingConfig,
+    client_config: ClientConfig,
     step: int | None = None,
 ) -> None:
     # Get the logger
@@ -216,27 +217,56 @@ async def run_eval(
     monitor.log(time_metrics)
 
     # If specified, save eval artifacts
-    if save:
+    if save_to_disk:
         # Save samples as dataset
-        eval_dir = get_eval_dir(output_dir) / f"step_{ckpt_step}" / eval_id
+        eval_dir = get_step_path(get_eval_dir(output_dir), ckpt_step) / eval_id
         dataset = vf_eval.make_dataset(generate_outputs)
         dataset.save_to_disk(eval_dir)
+        logger.info(f"Saved eval results for {eval_id} to disk ({eval_dir})")
 
-        # Save "report"
-        # TODO: Make this into an actually nice report, for now just JSON-dump eval metrics
-        report_path = eval_dir / "report.json"
-        report = {
-            "metrics": eval_metrics,
-            "truncated": {
-                "mean": is_truncated.mean().item(),
-            },
-            "completion_len": {
-                "avg": completion_lens.mean().item(),
-                "max": completion_lens.max().item(),
-                "min": completion_lens.min().item(),
-            },
-        }
-        with open(report_path, "w") as f:
-            json.dump(report, f, indent=2)
 
-        logger.info(f"Saved samples and report to {eval_dir}")
+async def run_evals(
+    client: AsyncOpenAI,
+    eval_config: EvalConfig | OfflineEvalConfig,
+    model_config: ModelConfig,
+    sampling_config: EvalSamplingConfig,
+    client_config: ClientConfig,
+    output_dir: Path,
+    ckpt_step: int,
+    step: int | None = None,
+):
+    logger = get_logger()
+    await asyncio.gather(
+        *[
+            run_eval(
+                client=client,
+                eval_id=eval_id,
+                env_args=eval_config.environment_args.get(eval_id, {}),
+                num_examples=num_examples,
+                rollouts_per_example=rollouts_per_example,
+                max_concurrent=max_concurrent,
+                output_dir=output_dir,
+                save_to_disk=eval_config.save_to_disk,
+                model_config=model_config,
+                sampling_config=sampling_config,
+                client_config=client_config,
+                ckpt_step=ckpt_step,
+                step=step,
+            )
+            for eval_id, num_examples, rollouts_per_example, max_concurrent in zip(
+                eval_config.environment_ids,
+                eval_config.num_examples,
+                eval_config.rollouts_per_example,
+                eval_config.max_concurrent,
+            )
+        ]
+    )
+
+    if eval_config.save_to_hf is not None:
+        logger.info(f"Pushing eval results for {', '.join(eval_config.environment_ids)} to HF Hub")
+        eval_dirs = [
+            get_step_path(get_eval_dir(output_dir), ckpt_step) / eval_id for eval_id in eval_config.environment_ids
+        ]
+        dataset_dict = DatasetDict({path.name: cast(Dataset, load_from_disk(path)) for path in eval_dirs})
+        dataset_dict.push_to_hub(eval_config.save_to_hf)
+        logger.info(f"Pushed eval results to HF Hub (https://huggingface.co/datasets/{eval_config.save_to_hf})")

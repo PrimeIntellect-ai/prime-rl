@@ -193,12 +193,19 @@ class EvalConfig(BaseConfig):
         description="Shared sampling configuration for evals; can differ from training sampling.",
     )
 
-    save: Annotated[
+    save_to_disk: Annotated[
         bool,
         Field(
             description="Whether to save the evaluation artifacts to the outputs directory.",
         ),
     ] = True
+
+    save_to_hf: Annotated[
+        str | None,
+        Field(
+            description="The name of the HF dataset to save the evaluation results to. Defaults to None, which means we do not save to HF Hub. If multiple environments are evaluated, we upload a dataset with one split per environment. If a checkpoint is evaluated, we suffix the HF Hub name with the checkpoint step.",
+        ),
+    ] = None
 
     @model_validator(mode="after")
     def _validate_and_fill_eval_lists(self):
@@ -220,6 +227,12 @@ class EvalConfig(BaseConfig):
         elif len(self.max_concurrent) != len(self.environment_ids):
             raise ValueError("Number of max_concurrent entries must match number of ids")
 
+        return self
+
+    @model_validator(mode="after")
+    def save_to_disk_if_save_to_hf(self):
+        if self.save_to_hf is not None:
+            self.save_to_disk = True
         return self
 
 
