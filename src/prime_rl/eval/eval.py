@@ -88,7 +88,7 @@ async def eval(config: OfflineEvalConfig):
                 ckpt_step=ckpt_step,
             )
 
-    logger.info("Evaluation finished!")
+    logger.success("Eval finished!")
 
 
 def main():
