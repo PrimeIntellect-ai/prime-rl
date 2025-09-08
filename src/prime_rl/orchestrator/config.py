@@ -212,18 +212,27 @@ class EvalConfig(BaseConfig):
         # If rollouts_per_example is empty, default to 1 for all ids
         if len(self.rollouts_per_example) == 0:
             self.rollouts_per_example = [1 for _ in self.environment_ids]
-        elif len(self.rollouts_per_example) != len(self.environment_ids):
+        elif len(self.rollouts_per_example) == 1:
+            self.rollouts_per_example = [self.rollouts_per_example[0] for _ in self.environment_ids]
+
+        if len(self.rollouts_per_example) != len(self.environment_ids):
             raise ValueError("Number of rollouts_per_example entries must match number of ids")
 
         # num_examples: if empty/unspecified, default to -1 for all; else length must match ids
         if len(self.num_examples) == 0:
             self.num_examples = [-1 for _ in self.environment_ids]
-        elif len(self.num_examples) != len(self.environment_ids):
+        elif len(self.num_examples) == 1:
+            self.num_examples = [self.num_examples[0] for _ in self.environment_ids]
+
+        if len(self.num_examples) != len(self.environment_ids):
             raise ValueError("Number of num_examples entries must match number of ids")
 
         # max_concurrent: if empty/unspecified, default to -1 for all; else length must match ids
         if len(self.max_concurrent) == 0:
             self.max_concurrent = [-1 for _ in self.environment_ids]
+        elif len(self.max_concurrent) == 1:
+            self.max_concurrent = [self.max_concurrent[0] for _ in self.environment_ids]
+
         elif len(self.max_concurrent) != len(self.environment_ids):
             raise ValueError("Number of max_concurrent entries must match number of ids")
 
