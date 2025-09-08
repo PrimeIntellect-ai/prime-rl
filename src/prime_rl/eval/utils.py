@@ -9,6 +9,7 @@ import torch
 from datasets import Dataset, DatasetDict, load_from_disk
 from openai import AsyncOpenAI
 from verifiers import load_environment
+from verifiers.envs.environment import sanitize_tool_calls
 from verifiers.types import GenerateOutputs
 
 from prime_rl.eval.config import OfflineEvalConfig
@@ -67,6 +68,23 @@ def prepare_sampling_args(sampling_config: EvalSamplingConfig, client_config: Cl
         sampling_args["extra_body"] = extra_body
 
     return sampling_args
+
+
+# Adapted from https://github.com/willccbb/verifiers/blob/b4d851db42cebbab2358b827fd0ed19773631937/verifiers/envs/environment.py#L523
+def make_dataset(results: GenerateOutputs) -> Dataset:
+    """
+    Make a dataset from the evaluation results.
+    """
+    results_dict = {
+        "prompt": results.prompt,
+        "completion": [sanitize_tool_calls(completion) for completion in results.completion],
+        "answer": results.answer,
+        "task": results.task,
+        "reward": results.reward,
+    }
+    if results.info[0] != {}:
+        results_dict["info"] = results.info
+    return Dataset.from_dict(results_dict)
 
 
 async def run_eval(
@@ -218,7 +236,7 @@ async def run_eval(
     if save_to_disk:
         # Save samples as dataset
         eval_dir = get_step_path(get_eval_dir(output_dir), ckpt_step) / eval_id
-        dataset = vf_eval.make_dataset(generate_outputs)
+        dataset = make_dataset(generate_outputs)
         dataset.save_to_disk(eval_dir)
         logger.info(f"Saved eval results for {eval_id} to disk ({eval_dir})")
 
