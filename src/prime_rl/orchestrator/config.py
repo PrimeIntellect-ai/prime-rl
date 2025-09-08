@@ -128,6 +128,13 @@ class EvalSamplingConfig(BaseConfig):
         ),
     ] = None
 
+    reasoning_effort: Annotated[
+        Literal["minimal", "low", "medium", "high"] | None,
+        Field(
+            description="Constrains effort on reasoning for reasoning models. Currently supported values are minimal, low, medium, and high. Defaults to None, which means we fall back to the inference server's default value.",
+        ),
+    ] = None
+
     seed: Annotated[
         int | None,
         Field(

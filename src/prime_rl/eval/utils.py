@@ -50,6 +50,8 @@ def prepare_sampling_args(sampling_config: EvalSamplingConfig, client_config: Cl
         sampling_args["max_tokens"] = sampling_config.max_tokens
     if sampling_config.top_p is not None:
         sampling_args["top_p"] = sampling_config.top_p
+    if sampling_config.reasoning_effort is not None:
+        sampling_args["reasoning_effort"] = sampling_config.reasoning_effort
 
     if client_config.server_type == "vllm":
         # Always return token IDs from vLLM server
