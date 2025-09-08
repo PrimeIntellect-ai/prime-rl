@@ -75,16 +75,15 @@ def make_dataset(results: GenerateOutputs) -> Dataset:
     """
     Make a dataset from the evaluation results.
     """
-    results_dict = {
-        "prompt": results.prompt,
-        "completion": [sanitize_tool_calls(completion) for completion in results.completion],
-        "answer": results.answer,
-        "task": results.task,
-        "reward": results.reward,
-    }
-    if results.info[0] != {}:
-        results_dict["info"] = results.info
-    return Dataset.from_dict(results_dict)
+    return Dataset.from_dict(
+        {
+            "prompt": results.prompt,
+            "completion": [sanitize_tool_calls(completion) for completion in results.completion],
+            "answer": results.answer,
+            "task": results.task,
+            "reward": results.reward,
+        }
+    )
 
 
 async def run_eval(
