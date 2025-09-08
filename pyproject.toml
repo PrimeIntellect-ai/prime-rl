@@ -67,7 +67,6 @@ vf = [
     "tau2_bench>=0.1.2",
     "simpleqa>=0.1.0",
     "hle>=0.1.0",
-    "browsecomp>=0.1.0",
 ]
 
 [tool.uv]
