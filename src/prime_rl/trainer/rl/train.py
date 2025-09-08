@@ -81,7 +81,7 @@ def train(config: RLTrainerConfig):
     logger.info(f"Initializing optimizer ({config.optim})")
     logger.info(f"Using `{config.loss.type}` loss ({config.loss})")
 
-    optimizer = setup_optimizer(config.optim, model)
+    optimizer = setup_optimizer(config.optim, model, parallel_dims.world_mesh["dp_shard_cp"])
 
     # Set up the learning rate scheduler
     scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps)

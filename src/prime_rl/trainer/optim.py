@@ -1,11 +1,12 @@
-from muon_fsdp2 import Muon
+from dion import Muon
 from torch import nn
+from torch.distributed.device_mesh import DeviceMesh
 from torch.optim import SGD, AdamW, Optimizer
 
 from prime_rl.trainer.config import OptimizerConfigType
 
 
-def setup_optimizer(config: OptimizerConfigType, model: nn.Module) -> Optimizer:
+def setup_optimizer(config: OptimizerConfigType, model: nn.Module, device_mesh: DeviceMesh) -> Optimizer:
     match config.type:
         case "sgd":
             return SGD(
@@ -38,15 +39,19 @@ def setup_optimizer(config: OptimizerConfigType, model: nn.Module) -> Optimizer:
 
             optimizer = Muon(
                 [
-                    dict(params=muon_params, lr=config.lr, weight_decay=config.weight_decay, use_muon=True),
                     dict(
-                        params=adamw_params,
+                        params=muon_params,
+                        algorithm="muon",
                         lr=config.lr,
                         weight_decay=config.weight_decay,
-                        betas=(config.betas1, config.betas2),
-                        use_muon=False,
+                        adjust_lr="rms_norm",
                     ),
-                ]
+                    dict(params=adamw_params, algorithm="adamw", lr=config.lr, weight_decay=config.weight_decay),
+                ],
+                lr=config.lr,
+                weight_decay=config.weight_decay,
+                adjust_lr="rms_norm",
+                distributed_mesh=device_mesh,
             )
 
             return optimizer
