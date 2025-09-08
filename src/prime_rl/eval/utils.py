@@ -72,7 +72,7 @@ def prepare_sampling_args(sampling_config: EvalSamplingConfig, client_config: Cl
 
 async def run_eval(
     client: AsyncOpenAI,
-    env_id: str,
+    eval_id: str,
     env_args: dict,
     model_config: ModelConfig,
     sampling_config: EvalSamplingConfig,
@@ -93,13 +93,13 @@ async def run_eval(
 
     # Load the eval environment
     load_eval_start_time = time.time()
-    vf_eval = load_environment(env_id, **env_args)
+    vf_eval = load_environment(eval_id, **env_args)
     load_eval_time = time.time() - load_eval_start_time
     logger.debug(f"Loaded eval environment in {load_eval_time:.2f}s")
 
     # Build inputs dataset (mirror Environment.evaluate but async)
     if vf_eval.eval_dataset is None:
-        logger.warning(f"Did not find eval dataset for {env_id}, falling back to train dataset")
+        logger.warning(f"Did not find eval dataset for {eval_id}, falling back to train dataset")
         dataset = vf_eval.get_dataset(n=num_examples)
     else:
         dataset = vf_eval.get_eval_dataset(n=num_examples)
@@ -118,7 +118,7 @@ async def run_eval(
     sampling_args = prepare_sampling_args(sampling_config, client_config)
 
     logger.debug(
-        f"Evaluating {env_id} (num_examples={len(examples)}, rollouts_per_example={rollouts_per_example}) with args {env_args}"
+        f"Evaluating {eval_id} (num_examples={len(examples)}, rollouts_per_example={rollouts_per_example}) with args {env_args}"
     )
 
     # Run async generation and scoring
@@ -170,7 +170,7 @@ async def run_eval(
 
     # Log statistics
     eval_time = time.time() - eval_start_time
-    message = f"Evaluated {env_id} in {eval_time:.2f}s (Avg@{k}={sample_stats.reward.mean():.4f}"
+    message = f"Evaluated {eval_id} in {eval_time:.2f}s (Avg@{k}={sample_stats.reward.mean():.4f}"
     if could_be_binary:
         assert pass_at_k is not None
         for pass_rate, pass_rate_score in pd.Series(pass_at_k.mean()).items():
@@ -189,7 +189,7 @@ async def run_eval(
         "min": completion_lens.min().item(),
     }
     eval_completion_len_metrics = {
-        **{f"eval_completion_len/{env_id}/{k}": v for k, v in eval_completion_len_metrics.items()}
+        **{f"eval_completion_len/{eval_id}/{k}": v for k, v in eval_completion_len_metrics.items()}
     }
     if step is None:
         step = ckpt_step
@@ -199,7 +199,7 @@ async def run_eval(
     if could_be_binary:
         assert pass_at_k is not None
         eval_metrics.update(pd.Series(pass_at_k.mean()).to_dict())
-    eval_metrics = {**{f"eval/{env_id}/{k}": v for k, v in eval_metrics.items()}}
+    eval_metrics = {**{f"eval/{eval_id}/{k}": v for k, v in eval_metrics.items()}}
     if step is None:
         step = ckpt_step
     eval_metrics.update({"progress/ckpt_step": ckpt_step, "step": step})
@@ -209,16 +209,16 @@ async def run_eval(
     # Log timing metrics to monitor
     time_metrics = {
         "step": step,
-        f"time/eval/{env_id}": eval_time,
-        f"time/eval/{env_id}/load_environment": load_eval_time,
-        f"time/eval/{env_id}/generate_and_score_rollouts": run_eval_time,
+        f"time/eval/{eval_id}": eval_time,
+        f"time/eval/{eval_id}/load_environment": load_eval_time,
+        f"time/eval/{eval_id}/generate_and_score_rollouts": run_eval_time,
     }
     monitor.log(time_metrics)
 
     # If specified, save eval artifacts
     if save:
         # Save samples as dataset
-        eval_dir = get_eval_dir(output_dir) / f"step_{ckpt_step}" / env_id
+        eval_dir = get_eval_dir(output_dir) / f"step_{ckpt_step}" / eval_id
         dataset = vf_eval.make_dataset(generate_outputs)
         dataset.save_to_disk(eval_dir)
 

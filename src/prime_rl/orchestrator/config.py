@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
@@ -162,11 +161,11 @@ class EvalConfig(BaseConfig):
     ] = []
 
     environment_args: Annotated[
-        str,
+        dict[str, dict],
         Field(
             description="Per-environment overrides keyed by ID; forwarded as kwargs to verifiers.load_environment(id, **args)."
         ),
-    ] = []
+    ] = {}
 
     num_examples: Annotated[
         list[int],
@@ -203,50 +202,21 @@ class EvalConfig(BaseConfig):
 
     @model_validator(mode="after")
     def _validate_and_fill_eval_lists(self):
-        # TODO: Tidy this up
-        # Parse the environment_args as a JSON string
-        self.environment_args = json.loads(self.environment_args) if self.environment_args else []
-
-        if not isinstance(self.environment_args, list):
-            raise ValueError("environment_args must be a JSON string")
-
-        if len(self.environment_args) == 0:
-            self.environment_args = [{} for _ in self.environment_ids]
-        elif len(self.environment_args) == 1:
-            self.environment_args = [self.environment_args[0]] * len(self.environment_ids)
-
-        if len(self.environment_args) != len(self.environment_ids):
-            raise ValueError("Number of environment_args entries must match number of ids")
-
         # If rollouts_per_example is empty, default to 1 for all ids
         if len(self.rollouts_per_example) == 0:
             self.rollouts_per_example = [1 for _ in self.environment_ids]
-        # If rollouts_per_example is a single value, repeat it for all ids
-        elif len(self.rollouts_per_example) == 1:
-            self.rollouts_per_example = [self.rollouts_per_example[0]] * len(self.environment_ids)
-
-        # Check that the number of rollouts_per_example entries matches the number of ids
-        if len(self.rollouts_per_example) != len(self.environment_ids):
+        elif len(self.rollouts_per_example) != len(self.environment_ids):
             raise ValueError("Number of rollouts_per_example entries must match number of ids")
 
-        # If num_examples is empty, default to -1 for all ids
+        # num_examples: if empty/unspecified, default to -1 for all; else length must match ids
         if len(self.num_examples) == 0:
             self.num_examples = [-1 for _ in self.environment_ids]
-        # If num_examples is a single value, repeat it for all ids
-        elif len(self.num_examples) == 1:
-            self.num_examples = [self.num_examples[0]] * len(self.environment_ids)
-
-        # Check that the number of num_examples entries matches the number of ids
-        if len(self.num_examples) != len(self.environment_ids):
+        elif len(self.num_examples) != len(self.environment_ids):
             raise ValueError("Number of num_examples entries must match number of ids")
 
-        # If max_concurrent is empty, default to -1 for all ids
+        # max_concurrent: if empty/unspecified, default to -1 for all; else length must match ids
         if len(self.max_concurrent) == 0:
             self.max_concurrent = [-1 for _ in self.environment_ids]
-        # If max_concurrent is a single value, repeat it for all ids
-        elif len(self.max_concurrent) == 1:
-            self.max_concurrent = [self.max_concurrent[0]] * len(self.environment_ids)
-        # Check that the number of max_concurrent entries matches the number of ids
         elif len(self.max_concurrent) != len(self.environment_ids):
             raise ValueError("Number of max_concurrent entries must match number of ids")
 
