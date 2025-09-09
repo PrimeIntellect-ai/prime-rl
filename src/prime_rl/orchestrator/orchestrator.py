@@ -13,7 +13,7 @@ from verifiers.types import GenerateOutputs, ProcessedOutputs
 from transformers import AutoTokenizer
 
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
-from prime_rl.eval.utils import run_eval, run_evals
+from prime_rl.eval.utils import run_evals
 from prime_rl.orchestrator.client import (
     check_has_model,
     check_health,
