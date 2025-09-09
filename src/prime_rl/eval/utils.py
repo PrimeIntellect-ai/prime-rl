@@ -54,7 +54,8 @@ def prepare_sampling_args(sampling_config: EvalSamplingConfig, client_config: Cl
         sampling_args["reasoning_effort"] = sampling_config.reasoning_effort
 
     if client_config.server_type == "vllm":
-        # Always return token IDs from vLLM server
+        # Always return logprobs and token IDs from vLLM server
+        sampling_args["logprobs"] = True
         extra_body: dict[str, Any] = {"return_tokens_as_token_ids": True}
 
         # Apply vLLM-specific sampling arguments, if specified
