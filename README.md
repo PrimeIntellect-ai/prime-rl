@@ -314,8 +314,8 @@ CUDA_VISIBLE_DEVICES=2,3 uv run rl \
   --trainer @ configs/reverse_text/train.toml \
   --orchestrator @ configs/reverse_text/orch.toml \
   --inference @ configs/reverse_text/infer.toml \
-  --inference.server.port 8001 \
-  --orchestrator.client.port 8001 \
+  --inference.server.port http://localhost:8001 \
+  --orchestrator.client.base-url http://localhost:8001 \
   --output-dir outputs2
 ```
 
