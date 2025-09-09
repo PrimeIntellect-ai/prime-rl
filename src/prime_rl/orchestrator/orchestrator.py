@@ -13,7 +13,7 @@ from verifiers.types import GenerateOutputs, ProcessedOutputs
 from transformers import AutoTokenizer
 
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
-from prime_rl.eval.utils import run_eval
+from prime_rl.eval.utils import run_eval, run_evals
 from prime_rl.orchestrator.client import (
     check_has_model,
     check_health,
@@ -173,27 +173,15 @@ async def orchestrate(config: OrchestratorConfig):
             last_eval_step = ckpt_step
             logger.info(f"Running evals for checkpoint step {ckpt_step}")
             eval_start_time = time.time()
-            await asyncio.gather(
-                *[
-                    run_eval(
-                        client=client,
-                        eval_id=eval_id,
-                        env_args=config.eval.environment_args.get(eval_id, {}),
-                        model_config=config.model,
-                        sampling_config=config.eval.sampling,
-                        num_examples=num_examples,
-                        rollouts_per_example=rollouts_per_example,
-                        ckpt_step=ckpt_step,
-                        output_dir=config.output_dir,
-                        save=config.eval.save,
-                        step=progress.step,
-                    )
-                    for eval_id, num_examples, rollouts_per_example in zip(
-                        config.eval.environment_ids,
-                        config.eval.num_examples,
-                        config.eval.rollouts_per_example,
-                    )
-                ]
+            await run_evals(
+                client=client,
+                eval_config=config.eval,
+                model_config=config.model,
+                sampling_config=config.eval.sampling,
+                client_config=config.client,
+                output_dir=config.output_dir,
+                ckpt_step=ckpt_step,
+                step=progress.step,
             )
             eval_time = time.time() - eval_start_time
             logger.info(f"Evaluated in {eval_time:.2f}s")
@@ -483,31 +471,18 @@ async def orchestrate(config: OrchestratorConfig):
         progress.step += 1
         is_first_step = False
 
-    eval_tasks = None
     if config.eval:
         logger.info("Running final evals")
-        eval_tasks = [
-            asyncio.create_task(
-                run_eval(
-                    client=client,
-                    eval_id=eval_id,
-                    env_args=config.eval.environment_args.get(eval_id, {}),
-                    model_config=config.model,
-                    sampling_config=config.eval.sampling,
-                    num_examples=num_examples,
-                    rollouts_per_example=rollouts_per_example,
-                    ckpt_step=ckpt_step,
-                    output_dir=config.output_dir,
-                    save=config.eval.save,
-                    step=progress.step,
-                )
-            )
-            for eval_id, num_examples, rollouts_per_example in zip(
-                config.eval.environment_ids,
-                config.eval.num_examples,
-                config.eval.rollouts_per_example,
-            )
-        ]
+        await run_evals(
+            client=client,
+            eval_config=config.eval,
+            model_config=config.model,
+            sampling_config=config.eval.sampling,
+            client_config=config.client,
+            output_dir=config.output_dir,
+            ckpt_step=ckpt_step,
+            step=progress.step,
+        )
 
     # Log final (immutable) samples and distributions to W&B table
     if monitor.wandb:
@@ -520,10 +495,6 @@ async def orchestrate(config: OrchestratorConfig):
         logger.info("Writing final checkpoint")
         ckpt_manager.save(progress, buffer, step=progress.step)
 
-    # Await evals
-    if eval_tasks is not None:
-        await asyncio.gather(*eval_tasks)
-
     logger.success("Orchestrator finished.")
 
     # Optionally, print benchmark table
@@ -533,7 +504,6 @@ async def orchestrate(config: OrchestratorConfig):
 
 def main():
     """Main entry-point for orchestrator. Run using `uv run orchestrator`"""
-    import asyncio
 
     asyncio.run(orchestrate(parse_argv(OrchestratorConfig)))
 
