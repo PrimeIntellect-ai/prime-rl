@@ -20,7 +20,7 @@ dependencies = [
     "pynvml>=12.0.0",
     "tomli>=2.2.1",
     "torch>=2.7.0",
-    "transformers>=4.53.0",
+    "transformers>=4.56.0",
     "uvloop>=0.21.0",
     "vllm==0.10.0",
     "wandb>=0.20.1",
@@ -33,6 +33,7 @@ dependencies = [
     "math-verify>=0.8.0",
     "dion @ git+https://github.com/samsja/dion.git",
     "torchdata>=0.11.0",
+    "accelerate>=1.10.1",
 ]
 
 [project.scripts]
@@ -48,7 +49,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project.optional-dependencies]
-flash-attn = ["flash-attn>=2.8.0"]
+flash-attn = ["flash-attn==2.8.2"]
 flash-infer = ["flashinfer-python>=0.2.8rc1"]
 
 vf = [
