@@ -31,7 +31,7 @@ dependencies = [
     "textarena>=0.6.16",
     "nltk>=3.9.1",
     "math-verify>=0.8.0",
-    "muon_fsdp2>=0.3.0",
+    "dion @ git+https://github.com/samsja/dion.git",
     "torchdata>=0.11.0",
     "torchtitan",
     "blobfile>=3.0.0",
@@ -127,3 +127,6 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "gpu: marks tests as gpu (deselect with '-m \"not gpu\"')",
 ]
+
+[tool.hatch.metadata]
+allow-direct-references = true

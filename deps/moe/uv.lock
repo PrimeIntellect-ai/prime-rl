@@ -1,6 +1,6 @@
 version = 1
-revision = 3
-requires-python = "==3.12.*"
+revision = 2
+requires-python = ">=3.12.0, <3.13"
 resolution-markers = [
     "sys_platform == 'linux'",
     "sys_platform != 'linux'",
@@ -568,6 +568,17 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/17/4d/ac7ffa80c69ea1df30a8aa11b3578692a5118e7cd1aa157e3ef73b092d15/dill-0.3.8.tar.gz", hash = "sha256:3ebe3c479ad625c4553aca177444d89b486b1d84982eeacded644afc0cf797ca", size = 184847, upload-time = "2024-01-27T23:42:16.145Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c9/7a/cef76fd8438a42f96db64ddaa85280485a9c395e7df3db8158cfec1eee34/dill-0.3.8-py3-none-any.whl", hash = "sha256:c36ca9ffb54365bdd2f8eb3eff7d2a21237f8452b57ace88b1ac615b7e815bd7", size = 116252, upload-time = "2024-01-27T23:42:14.239Z" },
+]
+
+[[package]]
+name = "dion"
+version = "0.1.0"
+source = { git = "https://github.com/samsja/dion.git#c82de46bc775fd0d8103c2b5f761d5b97a0773b7" }
+dependencies = [
+    { name = "numpy" },
+    { name = "torch" },
+    { name = "triton", version = "3.3.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "triton", version = "3.4.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
 ]
 
 [[package]]
@@ -1794,18 +1805,6 @@ wheels = [
 ]
 
 [[package]]
-name = "muon-fsdp2"
-version = "0.3.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "torch" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/0d/86/ef76622d6a59a4dc48fa79d947464d91f225e07f9feb376a003f4d1d6f82/muon_fsdp2-0.3.0.tar.gz", hash = "sha256:a230d86e9a839c43234cbc3b24fa3e4d5917787af5e670b0ab8dc95846b6efb3", size = 10183, upload-time = "2025-08-08T13:45:52.42Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/0e/44/b4b024332e7dbcbc65469a4ea60f9552172ea51a3ad004858dc79e1ee7f4/muon_fsdp2-0.3.0-py3-none-any.whl", hash = "sha256:55387a0ffbcd90cc204341e570a8be7d546af4c06432b3c962af262dd34170d2", size = 13406, upload-time = "2025-08-08T13:45:51.247Z" },
-]
-
-[[package]]
 name = "nest-asyncio"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2224,13 +2223,13 @@ dependencies = [
     { name = "blobfile" },
     { name = "cydifflib" },
     { name = "datasets" },
+    { name = "dion" },
     { name = "google-cloud-storage" },
     { name = "jaxtyping" },
     { name = "liger-kernel" },
     { name = "loguru" },
     { name = "lovely-tensors" },
     { name = "math-verify" },
-    { name = "muon-fsdp2" },
     { name = "nltk" },
     { name = "numpy" },
     { name = "openai" },
@@ -2296,6 +2295,7 @@ requires-dist = [
     { name = "cydifflib", specifier = ">=1.2.0" },
     { name = "datasets", specifier = ">=3.6.0" },
     { name = "deepscaler-math", marker = "extra == 'vf'", specifier = ">=0.1.4", index = "https://hub.primeintellect.ai/primeintellect/simple" },
+    { name = "dion", git = "https://github.com/samsja/dion.git" },
     { name = "flash-attn", marker = "extra == 'flash-attn'", specifier = ">=2.8.3" },
     { name = "flashinfer-python", marker = "extra == 'flash-infer'", specifier = ">=0.2.8rc1" },
     { name = "google-cloud-storage", specifier = ">=3.1.1" },
@@ -2307,7 +2307,6 @@ requires-dist = [
     { name = "lovely-tensors", specifier = ">=0.1.18" },
     { name = "math-verify", specifier = ">=0.8.0" },
     { name = "math500", marker = "extra == 'vf'", specifier = ">=0.1.9", index = "https://hub.primeintellect.ai/primeintellect/simple" },
-    { name = "muon-fsdp2", specifier = ">=0.3.0" },
     { name = "nltk", specifier = ">=3.9.1" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "openai", specifier = ">=1.90.0" },
