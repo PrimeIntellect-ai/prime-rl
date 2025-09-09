@@ -1570,14 +1570,14 @@ wheels = [
 
 [[package]]
 name = "livecodebench"
-version = "0.1.2"
+version = "0.1.2.post0"
 source = { registry = "https://hub.primeintellect.ai/primeintellect/simple/" }
 dependencies = [
     { name = "prime" },
     { name = "verifiers" },
 ]
 wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/livecodebench/@53396310/livecodebench-0.1.2-py3-none-any.whl", hash = "sha256:ef0061d8de2f20856206a73749bc67b467d85cbbd03cef84e255124d842589be" },
+    { url = "https://hub.primeintellect.ai/primeintellect/livecodebench/@db61e8c2/livecodebench-0.1.2.post0-py3-none-any.whl", hash = "sha256:e10b513258509280d86bba58147124e0905114460a6d03a4db9ea62562f52827" },
 ]
 
 [[package]]
@@ -2673,7 +2673,7 @@ requires-dist = [
     { name = "intellect-math", marker = "extra == 'vf'", specifier = ">=0.1.5", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "liger-kernel", specifier = ">=0.5.10" },
-    { name = "livecodebench", marker = "extra == 'vf'", specifier = ">=0.1.2", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
+    { name = "livecodebench", marker = "extra == 'vf'", specifier = ">=0.1.2.post0", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "lovely-tensors", specifier = ">=0.1.18" },
     { name = "math-verify", specifier = ">=0.8.0" },

@@ -62,7 +62,7 @@ vf = [
     "aime2025>=0.1.10",
     "math500>=0.1.10",
     "gpqa>=0.1.0",
-    "livecodebench>=0.1.2",
+    "livecodebench>=0.1.2.post0",
     "tau2 @ git+https://github.com/sierra-research/tau2-bench.git",
     "tau2_bench>=0.1.2.post0",
     "simpleqa>=0.1.1",
