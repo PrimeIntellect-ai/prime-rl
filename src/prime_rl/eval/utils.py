@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -9,8 +10,7 @@ import torch
 from datasets import Dataset, DatasetDict, load_from_disk
 from openai import AsyncOpenAI
 from verifiers import load_environment
-from verifiers.envs.environment import sanitize_tool_calls
-from verifiers.types import GenerateOutputs
+from verifiers.types import GenerateOutputs, Messages
 
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.orchestrator.config import ClientConfig, EvalConfig, EvalSamplingConfig, ModelConfig
@@ -70,20 +70,58 @@ def prepare_sampling_args(sampling_config: EvalSamplingConfig, client_config: Cl
     return sampling_args
 
 
+def normalize_prompt(messages: Messages):
+    if not isinstance(messages, list):
+        return messages
+    sanitized_messages = []
+    for m in messages:
+        if isinstance(m, str):
+            sanitized_messages.append({"role": m["role"], "content": [{"type": "text", "text": m}]})
+        elif "content" in m and isinstance(m["content"], str):
+            sanitized_messages.append({"role": m["role"], "content": [{"type": "text", "text": m["content"]}]})
+        else:
+            sanitized_messages.append(m)
+    return sanitized_messages
+
+
+def normalize_completion(messages: Messages):
+    if not isinstance(messages, list):
+        return messages
+    sanitized_messages = []
+    for m in messages:
+        tool_calls = [
+            json.dumps(tc.model_dump())  # type: ignore
+            for tc in m.get("tool_calls", [])
+        ]
+        # Ensure tool_calls is always a list of strings, never empty with null inference
+        if not tool_calls:
+            tool_calls = [""]  # Add empty string to maintain list<string> type
+
+        new_m = {
+            "role": m["role"],
+            "content": m.get("content", ""),
+            "tool_calls": tool_calls,
+            "tool_call_id": m.get("tool_call_id", ""),
+        }
+        sanitized_messages.append(new_m)
+    return sanitized_messages
+
+
 # Adapted from https://github.com/willccbb/verifiers/blob/b4d851db42cebbab2358b827fd0ed19773631937/verifiers/envs/environment.py#L523
 def make_dataset(results: GenerateOutputs) -> Dataset:
     """
     Make a dataset from the evaluation results.
     """
-    return Dataset.from_dict(
-        {
-            "prompt": results.prompt,
-            "completion": [sanitize_tool_calls(completion) for completion in results.completion],
-            "answer": results.answer,
-            "task": results.task,
-            "reward": results.reward,
-        }
-    )
+    results_dict = {
+        "prompt": [normalize_prompt(prompt) for prompt in results.prompt],
+        "completion": [normalize_completion(completion) for completion in results.completion],
+        "answer": results.answer,
+        "task": results.task,
+        "reward": results.reward,
+        "info": [json.dumps(info) for info in results.info],
+    }
+
+    return Dataset.from_dict(results_dict)
 
 
 async def run_eval(
@@ -282,6 +320,8 @@ async def run_evals(
         eval_dirs = [
             get_step_path(get_eval_dir(output_dir), ckpt_step) / eval_id for eval_id in eval_config.environment_ids
         ]
-        dataset_dict = DatasetDict({path.name: cast(Dataset, load_from_disk(path)) for path in eval_dirs})
+        dataset_dict = DatasetDict(
+            {path.name.replace("-", "_"): cast(Dataset, load_from_disk(path)) for path in eval_dirs}
+        )
         dataset_dict.push_to_hub(eval_config.save_to_hf)
         logger.info(f"Pushed eval results to HF Hub (https://huggingface.co/datasets/{eval_config.save_to_hf})")
