@@ -9,7 +9,6 @@ import torch
 from openai import AsyncOpenAI
 from verifiers import load_environment
 from verifiers.types import GenerateOutputs
-
 from prime_rl.orchestrator.config import EvalSamplingConfig, ModelConfig
 from prime_rl.orchestrator.utils import parse_completion_tokens, parse_truncated_completions
 from prime_rl.utils.logger import get_logger
@@ -49,6 +48,9 @@ async def run_eval(
     output_dir: Path,
     ckpt_step: int,
     step: int | None = None,
+    push_to_hub: bool = False,
+    hub_name: str | None = None,
+    eval_batch_size: int | None = None,
 ) -> None:
     # Get the logger
     logger = get_logger()
@@ -113,26 +115,59 @@ async def run_eval(
     if sampling_config.min_tokens is not None:
         sampling_args["extra_body"]["min_tokens"] = sampling_config.min_tokens
 
+    # Helper function to generate outputs
+    async def generate_outputs_for_inputs(input_data):
+        return await vf_eval.a_generate(
+            inputs=input_data,
+            client=client,
+            model=model_config.name,
+            sampling_args=sampling_args,
+            score_rollouts=True,
+        )
+    
     # Run async generation and scoring
     run_eval_start_time = time.time()
-    generate_outputs: GenerateOutputs = await vf_eval.a_generate(
-        inputs=inputs,
-        client=client,
-        model=model_config.name,
-        sampling_args=sampling_args,
-        score_rollouts=True,
-    )
+    
+    if eval_batch_size is not None and eval_batch_size < len(examples):
+        logger.debug(f"Running batched evaluation with batch size {eval_batch_size}")
+        
+        # Process examples in batches
+        all_outputs = []
+        total_batches = (len(examples) + eval_batch_size - 1) // eval_batch_size
+        
+        for batch_idx in range(total_batches):
+            batch_start = batch_idx * eval_batch_size
+            batch_end = min(batch_start + eval_batch_size, len(examples))
+            
+            # Create batch inputs
+            batch_inputs = {k: v[batch_start:batch_end] for k, v in inputs.items()}
+            
+            logger.debug(f"Processing batch {batch_idx + 1}/{total_batches}")
+            batch_outputs = await generate_outputs_for_inputs(batch_inputs)
+            all_outputs.append(batch_outputs)
+        
+        # Combine all batch outputs
+        generate_outputs = GenerateOutputs(**{
+            field: [item for batch in all_outputs for item in getattr(batch, field)]
+            for field in ['prompt', 'completion', 'answer', 'state', 'info', 'task', 'reward']
+        })
+    else:
+        # Run all examples at once
+        logger.debug("Running evaluation on all examples at once")
+        generate_outputs = await generate_outputs_for_inputs(inputs)
     run_eval_time = time.time() - run_eval_start_time
     logger.debug(f"Generated and scored rollouts in {run_eval_time:.2f}s")
 
-    rewards = torch.tensor(generate_outputs.reward).reshape(-1, rollouts_per_example).float()
-    completion_lens = torch.tensor(list(map(len, parse_completion_tokens(states=generate_outputs.state)))).reshape(-1, rollouts_per_example).float()
-    is_truncated = torch.tensor(parse_truncated_completions(states=generate_outputs.state)).reshape(-1, rollouts_per_example).float()
+    # Process results into tensors
+    rewards = torch.tensor(generate_outputs.reward, dtype=torch.float32).reshape(-1, rollouts_per_example)
+    completion_lens = torch.tensor([len(tokens) for tokens in parse_completion_tokens(states=generate_outputs.state)], dtype=torch.float32).reshape(-1, rollouts_per_example)
+    is_truncated = torch.tensor(parse_truncated_completions(states=generate_outputs.state), dtype=torch.float32).reshape(-1, rollouts_per_example)
 
-    k = rollouts_per_example
-    sample_stats = pd.DataFrame({"example_id": example_ids, "reward": rewards.flatten().tolist()})
-    unique_rewards = sample_stats.reward.unique()
-    could_be_binary = set(unique_rewards).issubset({0.0, 1.0})
+    num_rollouts = rollouts_per_example
+    reward_list = rewards.flatten().tolist()
+    sample_stats = pd.DataFrame({"example_id": example_ids, "reward": reward_list})
+    unique_rewards = set(reward_list)
+    could_be_binary = unique_rewards.issubset({0.0, 1.0})
     if could_be_binary:
         pass_at_k = (
             sample_stats.groupby("example_id")
@@ -145,7 +180,7 @@ async def run_eval(
 
     # Log statistics
     eval_time = time.time() - eval_start_time
-    message = f"Evaluated {eval_id} in {eval_time:.2f}s (Avg@{k}={sample_stats.reward.mean():.4f}"
+    message = f"Evaluated {eval_id} in {eval_time:.2f}s (Avg@{num_rollouts}={sample_stats.reward.mean():.4f}"
     if could_be_binary:
         assert pass_at_k is not None
         for pass_rate, pass_rate_score in pd.Series(pass_at_k.mean()).items():
@@ -156,31 +191,30 @@ async def run_eval(
     logger.success(message)
 
     # Log statistics to monitor
-    eval_metrics = {
-        f"avg@{k}": rewards.mean().item(),
-    }
-
-    eval_completion_len_metrics = {
+    step = step if step is not None else ckpt_step
+    common_metadata = {"progress/ckpt_step": ckpt_step, "step": step}
+    
+    # Completion length metrics
+    completion_len_stats = {
         "avg": completion_lens.mean().item(),
         "max": completion_lens.max().item(),
         "min": completion_lens.min().item(),
     }
     eval_completion_len_metrics = {
-        **{f"eval_completion_len/{eval_id}/{k}": v for k, v in eval_completion_len_metrics.items()}
+        **{f"eval_completion_len/{eval_id}/{k}": v for k, v in completion_len_stats.items()},
+        **common_metadata
     }
-    if step is None:
-        step = ckpt_step
-    eval_completion_len_metrics.update({"progress/ckpt_step": ckpt_step, "step": step})
     monitor.log(eval_completion_len_metrics)
 
-    if could_be_binary:
-        assert pass_at_k is not None
+    # Evaluation metrics
+    eval_metrics = {f"avg@{num_rollouts}": rewards.mean().item()}
+    if could_be_binary and pass_at_k is not None:
         eval_metrics.update(pd.Series(pass_at_k.mean()).to_dict())
-    eval_metrics = {**{f"eval/{eval_id}/{k}": v for k, v in eval_metrics.items()}}
-    if step is None:
-        step = ckpt_step
-    eval_metrics.update({"progress/ckpt_step": ckpt_step, "step": step})
-
+    
+    eval_metrics = {
+        **{f"eval/{eval_id}/{k}": v for k, v in eval_metrics.items()},
+        **common_metadata
+    }
     monitor.log(eval_metrics)
 
     # Log timing metrics to monitor
@@ -196,7 +230,7 @@ async def run_eval(
     if save:
         # Save samples as dataset
         eval_dir = get_eval_dir(output_dir) / f"step_{ckpt_step}" / eval_id
-        dataset = vf_eval.make_dataset(generate_outputs)
+        dataset = vf_eval.make_dataset(generate_outputs, push_to_hub=push_to_hub, hub_name=hub_name)
         dataset.save_to_disk(eval_dir)
 
         # Save "report"
@@ -204,14 +238,8 @@ async def run_eval(
         report_path = eval_dir / "report.json"
         report = {
             "metrics": eval_metrics,
-            "truncated": {
-                "mean": is_truncated.mean().item(),
-            },
-            "completion_len": {
-                "avg": completion_lens.mean().item(),
-                "max": completion_lens.max().item(),
-                "min": completion_lens.min().item(),
-            },
+            "truncated": {"mean": is_truncated.mean().item()},
+            "completion_len": completion_len_stats,
         }
         with open(report_path, "w") as f:
             json.dump(report, f, indent=2)

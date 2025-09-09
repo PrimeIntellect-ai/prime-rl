@@ -51,6 +51,27 @@ class OfflineEvalConfig(EvalConfig, BaseSettings):
         ),
     ] = True
 
+    eval_batch_size: Annotated[
+        int | None,
+        Field(
+            description="Batch size for evaluation. If None, evaluates all examples at once. Setting this enables batched evaluation with per-batch logging.",
+        ),
+    ] = 512
+
+    push_to_hub: Annotated[
+        bool,
+        Field(
+            description="Whether to push the evaluation results to the HuggingFace hub.",
+        ),
+    ] = False
+    
+    hub_name: Annotated[
+        str | None,
+        Field(
+            description="Name of the HuggingFace dataset to save the evaluation results to. If None, will not save the evaluation results.",
+        ),
+    ] = None
+
     use_tqdm: Annotated[
         bool,
         Field(
