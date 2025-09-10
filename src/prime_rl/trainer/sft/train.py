@@ -259,6 +259,7 @@ def train(config: SFTTrainerConfig):
         # Log performance metrics
         perf_metrics = {
             "perf/throughput": throughput,
+            "perf/throughput_per_gpu": throughput / world.world_size,
             "perf/mfu": mfu,
             "step": progress.step,
         }
