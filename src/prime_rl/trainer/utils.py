@@ -231,9 +231,8 @@ MEMORY_SNAPSHOT_MAX_ENTRIES = 100000
 
 
 class MemoryProfiler:
-    def __init__(self, step_num: int, freq: int, snapshot_path: Path):
+    def __init__(self, step_num: int, snapshot_path: Path):
         torch.cuda.memory._record_memory_history(max_entries=MEMORY_SNAPSHOT_MAX_ENTRIES)
-        self.freq = freq
 
         snapshot_path.mkdir(parents=True, exist_ok=True)
         self.snapshot_path = snapshot_path
@@ -242,10 +241,10 @@ class MemoryProfiler:
         self.step_num = step_num
 
     def step(self):
-        if self.step_num % self.freq != 0:
-            self.logger.info(f"Dumping memory snapshot at step {self.step_num} at {self.snapshot_path}")
-            begin = time.monotonic()
-            file_path = self.snapshot_path / f"step_{self.step_num}_rank{get_world().rank}.pickle"
-            with open(file_path, "wb") as output:
-                pickle.dump(torch.cuda.memory._snapshot(), output)
-            self.logger.info(f"Finished dumping memory snapshot in {time.monotonic() - begin:.2f} seconds")
+        self.step_num + 1
+        self.logger.info(f"Dumping memory snapshot at step {self.step_num} at {self.snapshot_path}")
+        begin = time.monotonic()
+        file_path = self.snapshot_path / f"step_{self.step_num}_rank{get_world().rank}.pickle"
+        with open(file_path, "wb") as output:
+            pickle.dump(torch.cuda.memory._snapshot(), output)
+        self.logger.info(f"Finished dumping memory snapshot in {time.monotonic() - begin:.2f} seconds")

@@ -137,7 +137,7 @@ def train(config: SFTTrainerConfig):
             break
 
         memory_profiler = (
-            MemoryProfiler(progress.step, 1, config.memory_profiler_path) if config.memory_profiler_path else None
+            MemoryProfiler(progress.step, config.memory_profiler_path) if config.memory_profiler_path else None
         )
 
         step_start_time = time.time()

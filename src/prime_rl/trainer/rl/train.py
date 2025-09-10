@@ -230,7 +230,7 @@ def train(config: RLTrainerConfig):
             logger.debug(f"Recomputed logprobs in {compute_logprobs_time:.2f} seconds")
 
         if config.memory_profiler_path:
-            memory_profiler = MemoryProfiler(progress.step, 1, config.memory_profiler_path)
+            memory_profiler = MemoryProfiler(progress.step, config.memory_profiler_path)
 
         forward_backward_start_time = time.time()
         micro_batch_size, seq_len = micro_batches[0]["input_ids"].shape
