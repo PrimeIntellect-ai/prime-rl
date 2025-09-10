@@ -1,3 +1,5 @@
+from pathlib import Path
+import pickle
 import time
 from contextlib import nullcontext
 
@@ -33,6 +35,26 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format
+
+
+MEMORY_SNAPSHOT_MAX_ENTRIES = 100000
+
+
+class MemoryProfiler:
+    def __init__(self, step_num: int, freq: int, snapshot_path: Path):
+        torch.cuda.memory._record_memory_history(max_entries=MEMORY_SNAPSHOT_MAX_ENTRIES)
+        self.freq = freq
+        self.snapshot_path = snapshot_path
+
+        if not self.snapshot_path.suffix == ".pickle":
+            self.snapshot_path = self.snapshot_path.with_suffix(".pickle")
+
+    def step(self):
+        logger.info("Dumping memory snapshot at step")
+        begin = time.monotonic()
+        with open(self.snapshot_path, "wb") as output:
+            pickle.dump(torch.cuda.memory._snapshot(), output)
+        logger.info(f"Finished dumping memory snapshot in {time.monotonic() - begin:.2f} seconds")
 
 
 @clean_exit
@@ -135,8 +157,11 @@ def train(config: SFTTrainerConfig):
         if config.max_steps is not None and progress.step >= config.max_steps:
             break
 
-        if config.profile_path and world.rank == 0:
-            torch.cuda.memory._record_memory_history()
+        memory_profiler = (
+            MemoryProfiler(progress.step, 1, f"{config.profile_path}/rank{world.rank}.pickle")
+            if config.profile_path
+            else None
+        )
 
         step_start_time = time.time()
         forward_backward_start_time = time.time()
@@ -219,13 +244,8 @@ def train(config: SFTTrainerConfig):
         forward_backward_time = time.time() - forward_backward_start_time
 
         # Optionally, dump memory snapshot
-        if config.profile_path and progress.step == 2 and world.rank == 0:
-            logger.debug("Dumping memory snapshot")
-            profile_path = config.profile_path
-            if not profile_path.suffix == ".pickle":
-                profile_path = profile_path.with_suffix(".pickle")
-            torch.cuda.memory._dump_snapshot(profile_path.as_posix())
-            torch.cuda.memory._record_memory_history(enabled=None)
+        if memory_profiler is not None:
+            memory_profiler.step()
 
         # Synchronize the tensor metrics across all steps and ranks
         tensor_stats = tensors.compute_stats()
