@@ -1,9 +1,9 @@
+import json
 import math
 from collections import defaultdict
 from typing import Iterator, TypedDict
 
 import torch
-import json
 from datasets import Dataset, concatenate_datasets, load_dataset
 from jaxtyping import Bool, Int
 from torch import Tensor
