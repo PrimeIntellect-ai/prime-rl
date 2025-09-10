@@ -230,6 +230,7 @@ async def orchestrate(config: OrchestratorConfig):
                 "min_p": 0.0,
             }
             sampling_args["extra_body"]["min_tokens"] = sampling_args.pop("min_tokens")
+            sampling_args["extra_body"]["repetition_penalty"] = sampling_args.pop("repetition_penalty")
 
             # Generate completions + rewards with verifiers
             logger.info(f"Sending {len(problems)} requests to environments")
