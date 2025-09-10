@@ -82,6 +82,20 @@ async def orchestrate(config: OrchestratorConfig):
     vf_env = load_environment(config.environment.id, **config.environment.args)
     dataset = vf_env.get_dataset(seed=config.seed)
 
+    # DEBUG: Log environment structure
+    logger.info(f"Environment type: {type(vf_env)}")
+    logger.info(f"Environment has rubric: {hasattr(vf_env, 'rubric')}")
+    if hasattr(vf_env, 'rubric'):
+        logger.info(f"Rubric type: {type(vf_env.rubric)}")
+        logger.info(f"Rubric has reward_funcs: {hasattr(vf_env.rubric, 'reward_funcs')}")
+        if hasattr(vf_env.rubric, 'reward_funcs'):
+            logger.info(f"Number of reward functions: {len(vf_env.rubric.reward_funcs)}")
+            for i, func in enumerate(vf_env.rubric.reward_funcs):
+                logger.info(f"Reward function {i}: {func.__name__}")
+        logger.info(f"Rubric has reward_weights: {hasattr(vf_env.rubric, 'reward_weights')}")
+        if hasattr(vf_env.rubric, 'reward_weights'):
+            logger.info(f"Weights: {vf_env.rubric.reward_weights}")
+
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
     buffer = setup_buffer(dataset, config.buffer)
@@ -257,6 +271,32 @@ async def orchestrate(config: OrchestratorConfig):
                 mask_truncated_completions=config.mask_truncated_completions,
             )
 
+            # Compute individual reward function outputs
+            individual_reward_outputs = {}
+            if hasattr(vf_env, 'rubric') and hasattr(vf_env.rubric, 'reward_funcs'):
+                logger.info(f"Computing individual rewards for {len(vf_env.rubric.reward_funcs)} functions")
+                
+                for func_idx, func in enumerate(vf_env.rubric.reward_funcs):
+                    func_name = func.__name__.replace('_reward', '').replace('_func', '')
+                    func_rewards = []
+                    
+                    for i in range(len(processed_outputs.prompt_ids)):
+                        try:
+                            # Call individual reward function
+                            reward = func(
+                                prompt=generate_outputs.prompt[i],
+                                completion=generate_outputs.completion[i], 
+                                answer=inputs["answer"][i],
+                                state=generate_outputs.state[i]
+                            )
+                            func_rewards.append(float(reward))
+                        except Exception as e:
+                            logger.warning(f"Error computing individual reward for {func_name}, sample {i}: {e}")
+                            func_rewards.append(0.0)
+                    
+                    individual_reward_outputs[func_name] = torch.tensor(func_rewards)
+                    logger.info(f"Collected {len(func_rewards)} rewards for {func_name}, mean: {torch.tensor(func_rewards).mean().item():.6f}")
+
             rewards = process_rewards(
                 rewards=processed_outputs.rewards,
                 completion_lengths=list(map(len, processed_outputs.completion_ids)),
@@ -431,11 +471,18 @@ async def orchestrate(config: OrchestratorConfig):
         }
         monitor.log(perf_metrics)
 
-        # Log reward metrics to monitor
+        # Log reward metrics to monitor (composite + individual)
         reward_metrics = {
             "reward/mean": rewards.mean().item(),
             "step": progress.step,
         }
+        
+        # Add individual reward function metrics
+        for func_name, func_rewards in individual_reward_outputs.items():
+            reward_metrics[f"reward/{func_name}_mean"] = func_rewards.mean().item()
+            reward_metrics[f"reward/{func_name}_std"] = func_rewards.std().item()
+            logger.info(f"Logging reward/{func_name}_mean: {func_rewards.mean().item():.6f}")
+
         monitor.log(reward_metrics)
 
         # Log rewards metrics to monitor
@@ -469,15 +516,18 @@ async def orchestrate(config: OrchestratorConfig):
                 rollouts_per_problem=config.rollouts_per_example,
                 step=progress.step,
             )
-            monitor.wandb.log_distributions(
-                distributions={
-                    "rewards": rewards.flatten().tolist(),
-                    "advantages": advantages.flatten().tolist(),
-                    "problem_rewards": rewards.mean(-1).tolist(),
-                    "problem_advantages": advantages.mean(-1).tolist(),
-                },
-                step=progress.step,
-            )
+            
+            distributions = {
+                "rewards": rewards.flatten().tolist(),
+                "advantages": advantages.flatten().tolist(),
+                "problem_rewards": rewards.mean(-1).tolist(),
+                "problem_advantages": advantages.mean(-1).tolist(),
+            }
+
+            for func_name, func_rewards in individual_reward_outputs.items():
+                distributions[f"{func_name}_rewards"] = func_rewards.tolist()
+            
+            monitor.wandb.log_distributions(distributions=distributions, step=progress.step)
 
         # Increment progress
         progress.step += 1
