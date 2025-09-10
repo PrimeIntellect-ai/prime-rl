@@ -51,12 +51,21 @@ def get_model(config: ModelConfig) -> nn.Module:
     )
     config_model.use_cache = False
 
-    model_cls = AutoLigerKernelForCausalLM if config.liger_kernel else AutoModelForCausalLM
-    model = model_cls.from_pretrained(
-        pretrained_model_name_or_path=config.name,
-        config=config_model,
-        trust_remote_code=config.trust_remote_code,
-    )
+    match config.model_impl:
+        case "lieger":
+            model = AutoLigerKernelForCausalLM.from_pretrained(
+                pretrained_model_name_or_path=config.name,
+                config=config_model,
+                trust_remote_code=config.trust_remote_code,
+            )
+        case "hf":
+            model = AutoModelForCausalLM.from_pretrained(
+                pretrained_model_name_or_path=config.name,
+                config=config_model,
+                trust_remote_code=config.trust_remote_code,
+            )
+        case "prime_rl":
+            raise ValueError("Prime RL model implementation is not supported yet")
 
     return model
 
