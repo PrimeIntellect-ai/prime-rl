@@ -212,7 +212,7 @@ class SFTDataset(StatefulIterableDataset):
                 **example.get("chat_template_kwargs", {}),
             )
             prompt_completion_ids = self.tokenizer.apply_chat_template(
-                prompt + completion
+                prompt + completion,
                 tools=tools,
                 **example.get("chat_template_kwargs", {}),
             )
