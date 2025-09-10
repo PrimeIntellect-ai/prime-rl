@@ -105,7 +105,7 @@ class RLTrainerConfig(BaseSettings):
         ),
     ] = 2
 
-    profile_path: Annotated[Path | None, Field(description="Path to write memory profile to.")] = None
+    memory_profiler_path: Annotated[Path | None, Field(description="Path to write memory profile to.")] = None
 
     recompute_logprobs: Annotated[
         bool,
