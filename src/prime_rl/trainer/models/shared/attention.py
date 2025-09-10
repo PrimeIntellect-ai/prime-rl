@@ -27,7 +27,7 @@ from torch.nn.attention.flex_attention import (
     flex_attention,
 )
 
-from prime_rl.trainer.models.models.shared.utils import has_cuda_capability
+from prime_rl.trainer.models.shared.utils import has_cuda_capability
 
 # FlexAttention mask type. For each mask type, we initialize it at most once per
 # batch. To record what it is initialized, FLEX_ATTN_MASK_T is used as the key to

@@ -13,10 +13,11 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
+from jaxtyping import Int
 from torch import nn
 
-from prime_rl.trainer.models.models.shared.attention import build_attention
-from prime_rl.trainer.models.models.shared.utils import StateDictAdapter
+from prime_rl.trainer.models.shared.attention import build_attention
+from prime_rl.trainer.models.shared.utils import StateDictAdapter
 
 
 @dataclass
@@ -433,8 +434,8 @@ class Qwen3Model(nn.Module):
 
     def forward(
         self,
-        tokens: torch.Tensor,
-        input_batch: torch.Tensor | None = None,
+        input_ids: Int[torch.Tensor, "batch seq"],
+        position_ids: Int[torch.Tensor, "batch seq"] | None = None,
     ):
         """
         Perform a forward pass through the Transformer model.
@@ -444,17 +445,16 @@ class Qwen3Model(nn.Module):
                 If pipeline parallelism is enabled, this will be the input token indices
                 for the ranks on the first pipeline stage. This will be the activation of the
                 previous pipeline stage if the current rank is not on the first stage.
-            input_batch (torch.Tensor): The input batch read from the dataloader.
-                This will always be the input batch regardless of the pipeline stage.
-                This field is required for non-first PP stages to perform document
-                masking attention (to analyze the boundary of the document).
 
         Returns:
             torch.Tensor: Output logits after applying the Transformer model.
 
         """
         # passthrough for nonexistent layers, allows easy configuration of pipeline parallel stages
-        h = self.tok_embeddings(tokens) if self.tok_embeddings else tokens
+        if position_ids is not None:
+            raise NotImplementedError("Position IDs are not supported for Qwen3")
+
+        h = self.tok_embeddings(input_ids)
 
         for layer in self.layers.values():
             h = layer(h, self.rope_cache)

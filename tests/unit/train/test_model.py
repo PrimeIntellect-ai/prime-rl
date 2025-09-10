@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from prime_rl.trainer.config import AttnImplementation, ModelConfig
-from prime_rl.trainer.models.model import get_model
+from prime_rl.trainer.model import get_model
 
 BS = 1
 SEQ_LEN = 8
