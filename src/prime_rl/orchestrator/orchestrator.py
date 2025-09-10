@@ -262,7 +262,7 @@ async def orchestrate(config: OrchestratorConfig):
             logger.debug(f"Found {len(generate_outputs.metrics)} individual reward functions")
             for func_name, func_rewards in generate_outputs.metrics.items():
                 individual_reward_outputs[func_name] = torch.tensor(func_rewards)
-                logger.debug(f"Collected {len(func_rewards)} rewards for {func_name}, mean: {torch.tensor(func_rewards).mean().item():.6f}")
+                logger.debug(f"Collected {len(func_rewards)} rewards for {func_name}")
 
             rewards = process_rewards(
                 rewards=processed_outputs.rewards,
