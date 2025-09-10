@@ -99,7 +99,7 @@ class SFTTrainerConfig(BaseSettings):
         Field(description="Maximum number of steps to run training for. If None, will run indefinitely."),
     ] = None
 
-    profile_path: Annotated[Path | None, Field(description="Path to write memory profile to.")] = None
+    memory_profiler_path: Annotated[Path | None, Field(description="Path to write memory profile to.")] = None
 
     bench: Annotated[
         bool,

@@ -1,5 +1,8 @@
+import pickle
+import time
 from collections import defaultdict
 from itertools import chain
+from pathlib import Path
 from typing import Any, TypeAlias
 
 import pandas as pd
@@ -11,6 +14,7 @@ from torch import Tensor, nn
 from torch.distributed.tensor import DTensor
 
 from prime_rl.trainer.world import get_world
+from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import format_num, format_time
 
 
@@ -221,3 +225,26 @@ class Tensors(defaultdict):
             self[key].append(tensors.tolist())
 
         return metrics
+
+
+MEMORY_SNAPSHOT_MAX_ENTRIES = 100000
+
+
+class MemoryProfiler:
+    def __init__(self, step_num: int, freq: int, snapshot_path: Path):
+        torch.cuda.memory._record_memory_history(max_entries=MEMORY_SNAPSHOT_MAX_ENTRIES)
+        self.freq = freq
+
+        snapshot_path.mkdir(parents=True, exist_ok=True)
+        self.snapshot_path = snapshot_path
+        self.logger = get_logger()
+
+        self.step_num = step_num
+
+    def step(self):
+        self.logger.info(f"Dumping memory snapshot at step {self.step_num} at {self.snapshot_path}")
+        begin = time.monotonic()
+        file_path = self.snapshot_path / f"step_{self.step_num}_rank{get_world().rank}.pickle"
+        with open(file_path, "wb") as output:
+            pickle.dump(torch.cuda.memory._snapshot(), output)
+        self.logger.info(f"Finished dumping memory snapshot in {time.monotonic() - begin:.2f} seconds")

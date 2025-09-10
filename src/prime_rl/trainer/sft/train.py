@@ -1,5 +1,3 @@
-from pathlib import Path
-import pickle
 import time
 from contextlib import nullcontext
 
@@ -27,6 +25,7 @@ from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import setup_dataloader, setup_dataset
 from prime_rl.trainer.utils import (
+    MemoryProfiler,
     Tensors,
     setup_torch_distributed,
     print_benchmark,
@@ -35,26 +34,6 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format
-
-
-MEMORY_SNAPSHOT_MAX_ENTRIES = 100000
-
-
-class MemoryProfiler:
-    def __init__(self, step_num: int, freq: int, snapshot_path: Path):
-        torch.cuda.memory._record_memory_history(max_entries=MEMORY_SNAPSHOT_MAX_ENTRIES)
-        self.freq = freq
-        self.snapshot_path = snapshot_path
-
-        if not self.snapshot_path.suffix == ".pickle":
-            self.snapshot_path = self.snapshot_path.with_suffix(".pickle")
-
-    def step(self):
-        logger.info("Dumping memory snapshot at step")
-        begin = time.monotonic()
-        with open(self.snapshot_path, "wb") as output:
-            pickle.dump(torch.cuda.memory._snapshot(), output)
-        logger.info(f"Finished dumping memory snapshot in {time.monotonic() - begin:.2f} seconds")
 
 
 @clean_exit
@@ -158,9 +137,7 @@ def train(config: SFTTrainerConfig):
             break
 
         memory_profiler = (
-            MemoryProfiler(progress.step, 1, f"{config.profile_path}/rank{world.rank}.pickle")
-            if config.profile_path
-            else None
+            MemoryProfiler(progress.step, 1, config.memory_profiler_path) if config.memory_profiler_path else None
         )
 
         step_start_time = time.time()
