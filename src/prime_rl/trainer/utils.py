@@ -247,4 +247,6 @@ class MemoryProfiler:
         file_path = self.snapshot_path / f"step_{self.step_num}_rank{get_world().rank}.pickle"
         with open(file_path, "wb") as output:
             pickle.dump(torch.cuda.memory._snapshot(), output)
-        self.logger.info(f"Finished dumping memory snapshot in {time.monotonic() - begin:.2f} seconds")
+        self.logger.info(
+            f"Finished dumping memory snapshot in {time.monotonic() - begin:.2f} seconds, load {file_path} at https://docs.pytorch.org/memory_viz to visualize the memory usage"
+        )
