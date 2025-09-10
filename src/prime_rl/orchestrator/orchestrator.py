@@ -446,7 +446,7 @@ async def orchestrate(config: OrchestratorConfig):
         
         # Add individual reward function metrics
         for func_name, func_rewards in individual_reward_outputs.items():
-            reward_metrics[f"reward/{func_name}_mean"] = func_rewards.mean().item()
+            reward_metrics[f"reward/{func_name}/mean"] = func_rewards.mean().item()
 
         monitor.log(reward_metrics)
 
