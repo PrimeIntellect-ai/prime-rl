@@ -82,9 +82,6 @@ async def orchestrate(config: OrchestratorConfig):
     vf_env = load_environment(config.environment.id, **config.environment.args)
     dataset = vf_env.get_dataset(seed=config.seed)
 
-    logger.info(f"Environment has rubric: {hasattr(vf_env, 'rubric')}")
-    if hasattr(vf_env, 'rubric'):
-        logger.info(f"Rubric type: {type(vf_env.rubric)}")
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
     buffer = setup_buffer(dataset, config.buffer)
