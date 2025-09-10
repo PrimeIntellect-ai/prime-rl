@@ -14,7 +14,7 @@ from prime_rl.trainer.sft.config import SFTTrainerConfig
 from prime_rl.trainer.logger import setup_logger
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
-from prime_rl.trainer.model import (
+from prime_rl.trainer.models.model import (
     forward,
     setup_tokenizer,
     setup_model,

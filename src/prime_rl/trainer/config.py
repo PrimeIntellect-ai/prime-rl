@@ -89,6 +89,13 @@ class ModelConfig(BaseConfig):
         ),
     ] = False
 
+    auto_model: Annotated[
+        bool,
+        Field(
+            description="Whether to auto model for faster training not using .",
+        ),
+    ] = False
+
     @model_validator(mode="after")
     def _map_model_name_for_moe(self):
         """Map model name if it exists in MOE_MODEL_MAPS."""

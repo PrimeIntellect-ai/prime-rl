@@ -19,7 +19,7 @@ from prime_rl.trainer.rl.loss import (
     compute_loss,
 )
 from prime_rl.trainer.scheduler import setup_scheduler
-from prime_rl.trainer.model import (
+from prime_rl.trainer.models.model import (
     forward,
     setup_tokenizer,
     reshard_module,
