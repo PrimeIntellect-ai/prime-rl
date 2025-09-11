@@ -25,9 +25,9 @@ async def eval(config: OfflineEvalConfig):
     logger.info(f"Eval IDs: {config.environment_ids}")
 
     # Initialize the monitor
-    logger.info(f"Initializing monitor ({config.monitor})")
+    logger.info(f"Initializing monitor ({config.wandb})")
     setup_monitor(
-        config=config.monitor,
+        config=config.wandb,
         output_dir=None,
         run_config=config,
     )
