@@ -1,7 +1,7 @@
 max_steps = 5
 
 [model]
-name = "PrimeIntellect/Qwen3-0.6B" 
+name = "Qwen/Qwen3-0.6B" 
 
 [data]
 batch_size = 16

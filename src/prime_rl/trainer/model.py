@@ -12,6 +12,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.config import ActivationCheckpointConfig, ModelConfig
+from prime_rl.trainer.models import from_pretrained
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
 
@@ -51,7 +52,7 @@ def get_model(config: ModelConfig) -> nn.Module:
     )
     config_model.use_cache = False
 
-    match config.model_impl:
+    match config.impl:
         case "lieger":
             model = AutoLigerKernelForCausalLM.from_pretrained(
                 pretrained_model_name_or_path=config.name,
@@ -65,7 +66,7 @@ def get_model(config: ModelConfig) -> nn.Module:
                 trust_remote_code=config.trust_remote_code,
             )
         case "prime_rl":
-            raise ValueError("Prime RL model implementation is not supported yet")
+            model = from_pretrained(pretrained_model_name_or_path=config.name, config=config_model)
 
     return model
 
@@ -80,11 +81,16 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
     # TODO: Support dp_replicate
     hsdp_mesh = parallel_dims.world_mesh["dp_shard_cp"]
-    for layer_id, transformer_block in enumerate(model.model.layers):
+
+    logger = get_logger()
+    logger.info(f"Setting up FSDP for model {model}")
+
+    for i, (layer_id, transformer_block) in enumerate(model.layers.items()):
         if config.reshard_after_forward:
-            layer_reshard_after_forward = layer_id < len(model.model.layers) - 1
+            layer_reshard_after_forward = i < len(model.layers) - 1
         else:
             layer_reshard_after_forward = False
+
         fully_shard(
             transformer_block,
             mesh=hsdp_mesh,

@@ -82,7 +82,7 @@ class ModelConfig(BaseConfig):
         ),
     ] = 1
 
-    model_impl: Annotated[
+    impl: Annotated[
         Literal["hf", "lieger", "prime_rl"],
         Field(
             description="The model implementation to use.",

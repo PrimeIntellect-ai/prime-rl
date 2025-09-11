@@ -538,7 +538,7 @@ class Qwen3StateDictAdapter(StateDictAdapter):
 
 
 qwen3_configs = {
-    "0.6B": Qwen3ModelArgs(
+    "Qwen/Qwen3-0.6B": Qwen3ModelArgs(
         vocab_size=151936,
         max_seq_len=4096,
         head_dim=128,
@@ -551,7 +551,7 @@ qwen3_configs = {
         rope_theta=1000000,
         enable_weight_tying=True,
     ),
-    "1.7B": Qwen3ModelArgs(
+    "Qwen/Qwen3-1.7B": Qwen3ModelArgs(
         vocab_size=151936,
         max_seq_len=4096,
         head_dim=128,
@@ -564,7 +564,7 @@ qwen3_configs = {
         rope_theta=1000000,
         enable_weight_tying=True,
     ),
-    "4B": Qwen3ModelArgs(
+    "Qwen/Qwen3-4B": Qwen3ModelArgs(
         vocab_size=151936,
         max_seq_len=4096,
         head_dim=128,
@@ -577,7 +577,7 @@ qwen3_configs = {
         rope_theta=1000000,
         enable_weight_tying=True,
     ),
-    "8B": Qwen3ModelArgs(
+    "Qwen/Qwen3-8B": Qwen3ModelArgs(
         vocab_size=151936,
         max_seq_len=4096,
         head_dim=128,
@@ -589,7 +589,7 @@ qwen3_configs = {
         hidden_dim=12288,
         rope_theta=1000000,
     ),
-    "14B": Qwen3ModelArgs(
+    "Qwen/Qwen3-14B": Qwen3ModelArgs(
         vocab_size=151936,
         max_seq_len=4096,
         head_dim=128,
@@ -601,7 +601,7 @@ qwen3_configs = {
         hidden_dim=17408,
         rope_theta=1000000,
     ),
-    "32B": Qwen3ModelArgs(
+    "Qwen/Qwen3-32B": Qwen3ModelArgs(
         vocab_size=151936,
         max_seq_len=4096,
         head_dim=128,
