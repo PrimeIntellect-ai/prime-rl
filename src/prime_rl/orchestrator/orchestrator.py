@@ -69,9 +69,9 @@ async def orchestrate(config: OrchestratorConfig):
     tokenizer = AutoTokenizer.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
 
     # Setup monitor
-    logger.info(f"Initializing monitor ({config.monitor})")
+    logger.info(f"Initializing monitor ({config.wandb})")
     monitor = setup_monitor(
-        config.monitor,
+        config.wandb,
         output_dir=config.output_dir,
         tokenizer=tokenizer,
         run_config=config,
@@ -432,7 +432,7 @@ async def orchestrate(config: OrchestratorConfig):
             "reward/mean": rewards.mean().item(),
             "step": progress.step,
         }
-        
+
         # Add individual reward function metrics
         for func_name, func_rewards in individual_reward_outputs.items():
             reward_metrics[f"reward/{func_name}/mean"] = func_rewards.mean().item()
@@ -461,27 +461,26 @@ async def orchestrate(config: OrchestratorConfig):
         monitor.log(time_metrics)
 
         # Log samples and distributions to W&B table if enabled
-        if monitor.wandb:
-            monitor.wandb.log_samples(
-                input_tokens=prompt_tokens,
-                output_tokens=completion_tokens,
-                rewards=rewards.flatten().tolist(),
-                advantages=advantages.flatten().tolist(),
-                rollouts_per_problem=config.rollouts_per_example,
-                step=progress.step,
-            )
-            
-            distributions = {
-                "rewards": rewards.flatten().tolist(),
-                "advantages": advantages.flatten().tolist(),
-                "problem_rewards": rewards.mean(-1).tolist(),
-                "problem_advantages": advantages.mean(-1).tolist(),
-            }
+        monitor.log_samples(
+            input_tokens=prompt_tokens,
+            output_tokens=completion_tokens,
+            rewards=rewards.flatten().tolist(),
+            advantages=advantages.flatten().tolist(),
+            rollouts_per_problem=config.rollouts_per_example,
+            step=progress.step,
+        )
 
-            for func_name, func_rewards in individual_reward_outputs.items():
-                distributions[f"{func_name}_rewards"] = func_rewards.tolist()
-            
-            monitor.wandb.log_distributions(distributions=distributions, step=progress.step)
+        distributions = {
+            "rewards": rewards.flatten().tolist(),
+            "advantages": advantages.flatten().tolist(),
+            "problem_rewards": rewards.mean(-1).tolist(),
+            "problem_advantages": advantages.mean(-1).tolist(),
+        }
+
+        for func_name, func_rewards in individual_reward_outputs.items():
+            distributions[f"{func_name}_rewards"] = func_rewards.tolist()
+
+        monitor.log_distributions(distributions=distributions, step=progress.step)
 
         # Increment progress
         progress.step += 1
@@ -501,10 +500,8 @@ async def orchestrate(config: OrchestratorConfig):
         )
 
     # Log final (immutable) samples and distributions to W&B table
-    if monitor.wandb:
-        logger.info("Logging final samples and distributions as W&B table")
-        monitor.wandb.log_final_samples()
-        monitor.wandb.log_final_distributions()
+    monitor.log_final_samples()
+    monitor.log_final_distributions()
 
     # Write final checkpoint
     if ckpt_manager is not None:

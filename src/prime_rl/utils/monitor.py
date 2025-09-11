@@ -21,18 +21,22 @@ class WandbMonitor:
 
     def __init__(
         self,
-        config: WandbMonitorConfig,
+        config: WandbMonitorConfig | None,
         output_dir: Path | None = None,
         tokenizer: PreTrainedTokenizer | None = None,
         run_config: BaseSettings | None = None,
     ):
         self.config = config
         self.logger = get_logger()
+        self.history: list[dict[str, Any]] = []
+
         rank = int(os.environ.get("LOCAL_RANK", os.environ.get("DP_RANK", "0")))
+        self.enabled = self.config is not None
         self.is_master = rank == 0
-        if not self.is_master:
+        if not self.enabled or not self.is_master:
             self.logger.warning(f"Skipping {self.__class__.__name__} initialization from non-master rank ({rank})")
             return
+        assert config is not None
         self.logger.info(f"Initializing {self.__class__.__name__} ({config})")
         self._maybe_overwrite_wandb_command()
         self.wandb = wandb.init(
@@ -46,7 +50,7 @@ class WandbMonitor:
         )
 
         # Optionally, initialize sample logging attributes
-        if config.log_extras:
+        if config is not None and config.log_extras:
             if config.log_extras.samples:
                 self.last_log_samples_step = -1
                 self.samples_cols = [
@@ -70,7 +74,7 @@ class WandbMonitor:
                 self.tokenizer = tokenizer
                 self.samples = []
 
-            if config.log_extras.distributions:
+            if config is not None and config.log_extras.distributions:
                 self.last_log_distributions_step = -1
                 # Incremental table is initialized dynamically in `log_distributions`
                 self.distributions_table = None
@@ -84,7 +88,10 @@ class WandbMonitor:
             sys.argv = json.loads(wandb_args)
 
     def log(self, metrics: dict[str, Any]) -> None:
+        self.history.append(metrics)
         if not self.is_master:
+            return
+        if not self.enabled:
             return
         wandb.log(metrics, step=metrics.get("step", None))
 
@@ -109,7 +116,8 @@ class WandbMonitor:
         if not self.is_master:
             return
         if (
-            not self.config.log_extras
+            not self.config
+            or not self.config.log_extras
             or not self.config.log_extras.samples
             or step % self.config.log_extras.interval != 0
         ):
@@ -177,7 +185,8 @@ class WandbMonitor:
         if not self.is_master:
             return
         if (
-            not self.config.log_extras
+            not self.config
+            or not self.config.log_extras
             or not self.config.log_extras.distributions
             or step % self.config.log_extras.interval != 0
         ):
@@ -209,9 +218,9 @@ class WandbMonitor:
         """Log final samples to W&B table."""
         if not self.is_master:
             return
-        if not self.config.log_extras or not self.config.log_extras.samples:
+        if not self.config or not self.config.log_extras or not self.config.log_extras.samples:
             return
-        self.logger.debug("Logging final samples to W&B table")
+        self.logger.info("Logging final samples to W&B table")
         df = pd.DataFrame(self.samples)
         table = wandb.Table(dataframe=df)
         wandb.log({"final-samples": table})
@@ -220,9 +229,9 @@ class WandbMonitor:
         """Log final distributions to W&B table."""
         if not self.is_master:
             return
-        if not self.config.log_extras or not self.config.log_extras.distributions:
+        if not self.config or not self.config.log_extras or not self.config.log_extras.distributions:
             return
-        self.logger.debug("Logging final distributions to W&B table")
+        self.logger.info("Logging final distributions to W&B table")
         df = pd.DataFrame(self.distributions)
         table = wandb.Table(dataframe=df)
         wandb.log({"final-distributions": table})
@@ -240,7 +249,7 @@ def get_monitor() -> WandbMonitor:
 
 
 def setup_monitor(
-    config: WandbMonitorConfig,
+    config: WandbMonitorConfig | None,
     output_dir: Path | None = None,
     tokenizer: PreTrainedTokenizer | None = None,
     run_config: BaseSettings | None = None,

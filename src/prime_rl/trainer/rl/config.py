@@ -127,8 +127,8 @@ class RLTrainerConfig(BaseSettings):
             self.max_steps = 4  # 1 Warmup + 3 Benchmark
             if not self.data.fake:
                 self.data.fake = FakeDataLoaderConfig()
-            if self.monitor.wandb:  # Do not log extras
-                self.monitor.wandb.log_extras = None
+            if self.wandb:  # Do not log extras
+                self.wandb.log_extras = None
             if self.ckpt:  # Do not checkpoint
                 self.ckpt = None
         return self
@@ -162,6 +162,6 @@ class RLTrainerConfig(BaseSettings):
 
     @model_validator(mode="after")
     def disable_logging_wandb_samples(self):
-        if self.monitor.wandb and self.monitor.wandb.log_extras:
-            self.monitor.wandb.log_extras.samples = False
+        if self.wandb and self.wandb.log_extras:
+            self.wandb.log_extras.samples = False
         return self

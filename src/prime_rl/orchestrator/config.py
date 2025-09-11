@@ -536,7 +536,7 @@ class OrchestratorConfig(BaseSettings):
 
             # Disable evaluation
             self.eval = None
-            if self.monitor.wandb:
-                self.monitor.wandb.log_extras = None
+            if self.wandb:
+                self.wandb.log_extras = None
 
         return self
