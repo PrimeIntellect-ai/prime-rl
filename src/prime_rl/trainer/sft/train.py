@@ -5,7 +5,7 @@ from contextlib import nullcontext
 # ruff: noqa: I001
 
 import torch
-from torch.nn.functional import cross_entropy
+from torch.nn.functional import cross_entropy, softmax
 from torch.distributed.tensor.experimental import context_parallel
 from loguru import logger
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
@@ -176,6 +176,9 @@ def train(config: SFTTrainerConfig):
                 # Compute loss
                 loss = cross_entropy(logits.view(-1, V), target_ids.view(-1), reduction="none").view(B, L)
 
+                # Compute accuracy
+                accuracy = torch.eq(softmax(logits, dim=-1).argmax(dim=-1), target_ids).float()
+
                 if is_tt_moe_model(model):
                     load_balance_stats = get_load_balance_stats(model)
                     for k, v in load_balance_stats.items():
@@ -183,6 +186,7 @@ def train(config: SFTTrainerConfig):
 
                 # Add tensors to tensor dict for logging purposes
                 tensors["loss"].append(loss[loss_mask].detach().to("cpu"))
+                tensors["accuracy"].append(accuracy[loss_mask].detach().to("cpu"))
 
                 # Mean reduction of unmasked tokens
                 loss = loss[loss_mask].mean()
@@ -197,7 +201,7 @@ def train(config: SFTTrainerConfig):
                 loss.backward()
 
             # Debug log with *local, micro step* stats
-            micro_step_message = f"Micro Step {micro_step} | Loss: {tensors['loss'][-1].mean().item():.4f} | Dataloader Step: {dataloader.state_dict()['dataset_state']['step']}"
+            micro_step_message = f"Micro Step {micro_step} | Loss: {tensors['loss'][-1].mean().item():.4f} | Accuracy: {tensors['accuracy'][-1].mean().item():.4f} | Dataloader Step: {dataloader.state_dict()['dataset_state']['step']}"
             if "max_vio" in tensors:
                 micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
@@ -233,7 +237,7 @@ def train(config: SFTTrainerConfig):
         # Log step metrics
         step_time = time.time() - step_start_time
         current_lr = optimizer.param_groups[0]["lr"]
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}%"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Accuracy: {tensor_stats['accuracy/mean']:.4f} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}%"
         if "max_vio/mean" in tensor_stats:
             step_message += f" | Max Vio: {tensor_stats['max_vio/mean']:.4f}"
         logger.success(step_message)
