@@ -7,7 +7,6 @@ from openai.types.chat.chat_completion import Choice
 from openai.types.completion_usage import CompletionUsage
 from rich.console import Console
 from rich.table import Table
-from verifiers.types import State
 
 from prime_rl.utils.utils import (
     format_num,
@@ -15,28 +14,6 @@ from prime_rl.utils.utils import (
     get_weight_ckpt_model_path,
     wait_for_path,
 )
-
-
-def parse_completion_tokens(states: list[State]) -> list[list[int]]:
-    """Parses the output token ids from a list of chat completions returned by vLLM OAI server."""
-    completion_tokens = []
-    for state in states:
-        assert "responses" in state, "Responses should be present in the state"
-        assert all(isinstance(r, ChatCompletion) for r in state["responses"]), (
-            "Responses should be ChatCompletion objects"
-        )
-        for chat_completion in state["responses"]:
-            assert len(chat_completion.choices) == 1, "Response should always have one choice"
-            assert chat_completion.choices[0].logprobs is not None, (
-                "Logprobs should not be None. Make sure to set logprobs=True in the extra body when making the request to /v1/chat/completions"
-            )
-            assert chat_completion.choices[0].logprobs.content is not None, (
-                "Logprob content should not be None. Make sure to set logprobs=True in the extra body when making the request to /v1/chat/completions"
-            )
-            completion_tokens.append(
-                [int(token.token.split(":")[-1]) for token in chat_completion.choices[0].logprobs.content]
-            )
-    return completion_tokens
 
 
 def parse_num_completion_tokens(responses: list[list[ChatCompletion]]) -> list[int]:
@@ -52,7 +29,7 @@ def parse_num_completion_tokens(responses: list[list[ChatCompletion]]) -> list[i
             num_completion_tokens += usage.completion_tokens
         all_num_completion_tokens.append(num_completion_tokens)
     assert len(all_num_completion_tokens) == len(responses), (
-        "Number of completion tokens should be the same as the number of states"
+        "Number of completion tokens should be the same as the number of responses"
     )
     return all_num_completion_tokens
 
