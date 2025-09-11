@@ -71,10 +71,10 @@ def validate_shared_wandb_config(
     trainer: RLTrainerConfig,
     orchestrator: OrchestratorConfig,
 ) -> None:
-    if trainer.monitor.wandb and orchestrator.monitor.wandb:
-        if trainer.monitor.wandb.project != orchestrator.monitor.wandb.project:
+    if trainer.wandb and orchestrator.wandb:
+        if trainer.wandb.project != orchestrator.wandb.project:
             raise ValueError(
-                f"Trainer W&B project ({trainer.monitor.wandb.project}) and orchestrator W&B project ({orchestrator.monitor.wandb.project}) are not the same. Please specify the same W&B project for both."
+                f"Trainer W&B project ({trainer.wandb.project}) and orchestrator W&B project ({orchestrator.wandb.project}) are not the same. Please specify the same W&B project for both."
             )
 
 
