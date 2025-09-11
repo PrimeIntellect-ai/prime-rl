@@ -21,8 +21,6 @@ def from_pretrained(pretrained_model_name_or_path: str, config: Any | None = Non
             f"Model {pretrained_model_name_or_path} is not implemented with Prime Rl AutoModel, please use --model-impl hf instead"
         )
 
-    # base_model_state_dict = AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path, config=config, trust_remote_code=trust_remote_code).state_dict()
-
     args, model_class, state_dict_adapter = all_configs[pretrained_model_name_or_path]
 
     model = model_class(args)
