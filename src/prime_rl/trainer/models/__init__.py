@@ -15,7 +15,6 @@ all_configs: dict[str, tuple[Qwen3ModelArgs, type[Qwen3Model], type[Qwen3StateDi
 
 # I am sorry but I cannot implement a class that return another class via init. It's simply against my religion
 # sorry hf folks, sorry jackmin but Guido is looking at me
-# @torch.inference_mode()
 def from_pretrained(pretrained_model_name_or_path: str, config: Any | None = None) -> nn.Module:
     if pretrained_model_name_or_path not in qwen3_configs:
         raise NotImplementedError(
