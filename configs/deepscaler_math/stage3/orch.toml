@@ -11,12 +11,12 @@ temperature = 0.6
 [model]
 name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 
-[monitor.wandb]
+[wandb]
 
 [environment]
 id = "deepscaler-math"
 
-[monitor.wandb.log_extras]
+[wandb.log_extras]
 interval = 50
 
 [eval]

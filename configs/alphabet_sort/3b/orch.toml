@@ -8,10 +8,10 @@ mask_truncated_completions = false
 [model]
 name = "Qwen/Qwen2.5-3B-Instruct"
 
-[monitor.wandb]
+[wandb]
 project = "alphabet-sort"
 
-[monitor.wandb.log_extras]
+[wandb.log_extras]
 samples = true
 distributions = true
 interval = 2

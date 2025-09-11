@@ -11,12 +11,12 @@ name = "willcb/DeepSeek-R1-Distill-Qwen-7B"
 [sampling]
 max_tokens = 8192
 
-[monitor.wandb]
+[wandb]
 
 [environment]
 id = "hendrycks-math"
 
-[monitor.wandb.log_extras]
+[wandb.log_extras]
 interval = 10
 
 [eval]

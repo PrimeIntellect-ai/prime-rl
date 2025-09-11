@@ -12,12 +12,12 @@ trust_remote_code = true
 [sampling]
 max_tokens = 2048
 
-[monitor.wandb]
+[wandb]
 
 [environment]
 id = "hendrycks-math"
 
-[monitor.wandb.log_extras]
+[wandb.log_extras]
 interval = 10
 
 [eval]

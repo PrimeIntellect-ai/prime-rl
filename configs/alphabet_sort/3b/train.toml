@@ -1,6 +1,6 @@
 max_steps = 500
 
-[monitor.wandb]
+[wandb]
 project = "alphabet-sort"
 
 [model]

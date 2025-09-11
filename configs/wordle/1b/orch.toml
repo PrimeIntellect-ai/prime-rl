@@ -8,7 +8,7 @@ mask_truncated_completions = false
 [model]
 name = "willcb/Qwen3-1.7B-Wordle"
 
-[monitor.wandb]
+[wandb]
 project = "wordle"
 
 [environment]
@@ -19,7 +19,7 @@ id = "wordle"
 [sampling]
 max_tokens = 1024
 
-[monitor.wandb.log_extras]
+[wandb.log_extras]
 interval = 10
 
 [ckpt]

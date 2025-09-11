@@ -1,6 +1,6 @@
 max_steps = 660
 
-[monitor.wandb]
+[wandb]
 
 [model]
 name = "willcb/DeepSeek-R1-Distill-Qwen-7B"

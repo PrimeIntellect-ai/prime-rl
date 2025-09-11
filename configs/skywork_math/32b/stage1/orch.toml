@@ -11,7 +11,7 @@ name = "willcb/DeepSeek-R1-Distill-Qwen-32B"
 [sampling]
 max_tokens = 16384
 
-[monitor.wandb]
+[wandb]
 
 [environment]
 id = "skywork-math"
@@ -21,7 +21,7 @@ solve_rate_field = "solve_rate_qwen_r1_distill_32b"
 min_solve_rate = 0.000001
 max_solve_rate = 0.999999
 
-[monitor.wandb.log_extras]
+[wandb.log_extras]
 interval = 50
 
 [eval]

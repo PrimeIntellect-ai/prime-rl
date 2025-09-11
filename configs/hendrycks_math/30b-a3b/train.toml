@@ -1,6 +1,6 @@
 recompute_logprobs = false
 
-[monitor.wandb]
+[wandb]
 
 [model]
 name = "Qwen/Qwen3-30B-A3B"

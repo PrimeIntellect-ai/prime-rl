@@ -1,7 +1,7 @@
 ## to run on 8H200
 recompute_logprobs = false
 
-[monitor.wandb]
+[wandb]
 
 [model]
 name = "moonshotai/Moonlight-16B-A3B-Instruct"

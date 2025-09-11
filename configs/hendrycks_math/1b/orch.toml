@@ -8,7 +8,7 @@ mask_truncated_completions = false
 [model]
 name = "willcb/DeepSeek-R1-Distill-Qwen-1.5B"
 
-[monitor.wandb]
+[wandb]
 
 [sampling]
 max_tokens = 2048
@@ -16,7 +16,7 @@ max_tokens = 2048
 [environment]
 id = "hendrycks-math"
 
-[monitor.wandb.log_extras]
+[wandb.log_extras]
 interval = 10
 
 [eval]
