@@ -59,8 +59,8 @@ vf = [
     "acereason-math>=0.1.5",
     "hendrycks-math>=0.1.5",
     "intellect-math>=0.1.5",
-    "aime2024>=0.1.10",
-    "aime2025>=0.1.10",
+    "aime2024>=0.1.11",
+    "aime2025>=0.1.11",
     "math500>=0.1.10",
     "gpqa>=0.1.0",
     "livecodebench>=0.1.2.post0",
@@ -77,27 +77,9 @@ prerelease = "allow"
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu128" }]
 
-alphabet-sort = { index = "primeintellect" }
-ascii-tree = { index = "primeintellect" }
-pydantic-adherence = { index = "primeintellect" }
-reverse-text = { index = "primeintellect" }
-unscramble = { index = "primeintellect" }
-skywork-math = { index = "primeintellect" }
-deepscaler-math = { index = "primeintellect" }
-acereason-math = { index = "primeintellect" }
-hendrycks-math = { index = "primeintellect" }
-intellect-math = { index = "primeintellect" }
-aime2024 = { index = "primeintellect" }
-aime2025 = { index = "primeintellect" }
-math500 = { index = "primeintellect" }
-livecodebench = { index = "primeintellect" }
-
 [[tool.uv.index]]
 name = "primeintellect"
 url = "https://hub.primeintellect.ai/primeintellect/simple/"
-
-[[tool.uv.index]]
-url = "https://hub.primeintellect.ai/will/simple/"
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
