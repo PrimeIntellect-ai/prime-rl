@@ -44,9 +44,9 @@ def sft_process(
     return run_process(
         SFT_CMD
         + [
-            "--monitor.wandb.project",
+            "--wandb.project",
             wandb_project,
-            "--monitor.wandb.name",
+            "--wandb.name",
             wandb_name,
             "--output-dir",
             output_dir.as_posix(),
@@ -70,9 +70,9 @@ def sft_resume_process(
     return run_process(
         SFT_RESUME_CMD
         + [
-            "--monitor.wandb.project",
+            "--wandb.project",
             wandb_project,
-            "--monitor.wandb.name",
+            "--wandb.name",
             wandb_name,
             "--output-dir",
             output_dir.as_posix(),
