@@ -1,4 +1,4 @@
-from typing import Annotated, Literal
+from typing import Annotated
 
 from pydantic import Field
 
@@ -22,7 +22,7 @@ class LogConfig(BaseConfig):
     """Configures the logger."""
 
     level: Annotated[
-        Literal["debug", "info", "sucess"],
+        str,
         Field(description="Logging level for the process. Will determine the logging verbosity and format."),
     ] = "info"
 
