@@ -16,7 +16,6 @@ dependencies = [
     "pydantic>=1.10.13",
     "pydantic-settings>=2.10.1",
     "pylatexenc>=2.10",
-    "nvidia-ml-py>=13.580.65",
     "tomli>=2.2.1",
     "torch>=2.7.0",
     "transformers>=4.56.0",
