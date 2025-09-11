@@ -24,17 +24,17 @@ def from_pretrained(pretrained_model_name_or_path: str, config: Any | None = Non
     args, model_class, state_dict_adapter = all_configs[pretrained_model_name_or_path]
 
     model = model_class(args)
-    sd_adapter = state_dict_adapter(args, pretrained_model_name_or_path)
+    # sd_adapter = state_dict_adapter(args, pretrained_model_name_or_path)
 
-    model_state_dict = get_model_state_dict(model)
+    # model_state_dict = get_model_state_dict(model)
 
-    hf_state_dict = sd_adapter.to_hf(model_state_dict)
-    path_snapshot = snapshot_download(repo_id=pretrained_model_name_or_path, repo_type="model")
+    # hf_state_dict = sd_adapter.to_hf(model_state_dict)
+    # path_snapshot = snapshot_download(repo_id=pretrained_model_name_or_path, repo_type="model")
 
-    # assert HuggingFaceStorageReader require torch nighlty 2.9 to run
-    dcp.load(hf_state_dict, storage_reader=HuggingFaceStorageReader(path=path_snapshot))
+    # # assert HuggingFaceStorageReader require torch nighlty 2.9 to run
+    # dcp.load(hf_state_dict, storage_reader=HuggingFaceStorageReader(path=path_snapshot))
 
-    state_dict = sd_adapter.from_hf(hf_state_dict)
-    model.load_state_dict(state_dict=state_dict)
+    # state_dict = sd_adapter.from_hf(hf_state_dict)
+    # model.load_state_dict(state_dict=state_dict)
 
     return model

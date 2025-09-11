@@ -25,7 +25,9 @@ transformers_modeling_utils_logger.addFilter(
 
 
 def is_tt_moe_model(model: nn.Module) -> bool:
-    return hasattr(model.config, "num_experts") or hasattr(model.config, "n_routed_experts")
+    return False
+    # TODO: Add back later
+    # return hasattr(model.config, "num_experts") or hasattr(model.config, "n_routed_experts")
 
 
 def get_load_balance_stats(model: nn.Module, reset_stats: bool = True) -> dict[str, torch.FloatTensor]:
@@ -82,21 +84,32 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     # TODO: Support dp_replicate
     hsdp_mesh = parallel_dims.world_mesh["dp_shard_cp"]
 
-    logger = get_logger()
-    logger.info(f"Setting up FSDP for model {model}")
+    # if statement is quite ugly here will refactor later to be more native
+    if config.impl == "prime_rl":
+        for i, (layer_id, transformer_block) in enumerate(model.layers.items()):
+            if config.reshard_after_forward:
+                layer_reshard_after_forward = i < len(model.layers) - 1
+            else:
+                layer_reshard_after_forward = False
 
-    for i, (layer_id, transformer_block) in enumerate(model.layers.items()):
-        if config.reshard_after_forward:
-            layer_reshard_after_forward = i < len(model.layers) - 1
-        else:
-            layer_reshard_after_forward = False
-
-        fully_shard(
-            transformer_block,
-            mesh=hsdp_mesh,
-            mp_policy=mp_policy,
-            reshard_after_forward=layer_reshard_after_forward,
-        )
+            fully_shard(
+                transformer_block,
+                mesh=hsdp_mesh,
+                mp_policy=mp_policy,
+                reshard_after_forward=layer_reshard_after_forward,
+            )
+    else:
+        for layer_id, transformer_block in enumerate(model.model.layers):
+            if config.reshard_after_forward:
+                layer_reshard_after_forward = layer_id < len(model.model.layers) - 1
+            else:
+                layer_reshard_after_forward = False
+            fully_shard(
+                transformer_block,
+                mesh=hsdp_mesh,
+                mp_policy=mp_policy,
+                reshard_after_forward=layer_reshard_after_forward,
+            )
 
     fully_shard(model, mesh=hsdp_mesh, mp_policy=mp_policy, reshard_after_forward=config.reshard_after_forward)
 
@@ -129,4 +142,9 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
 def forward(
     model: nn.Module, input_ids: Int[Tensor, "batch seq"], position_ids: Int[Tensor, "batch seq"]
 ) -> Float[Tensor, "batch seq vocab"]:
-    return model(input_ids=input_ids, position_ids=position_ids).logits.float()
+    output = model(input_ids=input_ids, position_ids=position_ids)
+
+    if hasattr(model, "model_args"):
+        return output.float()
+    else:
+        return output.logitsfloat()

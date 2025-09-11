@@ -451,8 +451,8 @@ class Qwen3Model(nn.Module):
 
         """
         # passthrough for nonexistent layers, allows easy configuration of pipeline parallel stages
-        if position_ids is not None:
-            raise NotImplementedError("Position IDs are not supported for Qwen3")
+        # if position_ids is not None:
+        # raise NotImplementedError("Position IDs are not supported for Qwen3")
 
         h = self.tok_embeddings(input_ids)
 

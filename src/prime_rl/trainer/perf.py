@@ -4,6 +4,7 @@ import torch
 from torch import nn
 from transformers import PretrainedConfig
 
+from prime_rl.trainer.models.qwen3 import Qwen3ModelArgs
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
@@ -31,8 +32,15 @@ class PerfCounter:
             self.gpu_peak_flops = 0
         # If not tie_word_embeddings, we exclude the embedding parameters from the total number of parameters
         # If tie_word_embeddings, the embedding parameters are already excluded (shared with the LM head)
-        self.num_params = self._get_num_params(model, exclude_embedding=not model.config.tie_word_embeddings)
-        self.num_flop_per_token = self._get_num_flop_per_token(self.num_params, model.config, seq_len=seq_len)
+        # TODO: fix not onyl true
+        self.num_params = self._get_num_params(model, exclude_embedding=True)
+
+        if hasattr(model, "model_args"):
+            self.num_flop_per_token = self._get_num_flop_per_token_prime_rl(
+                self.num_params, model.model_args, seq_len=seq_len
+            )
+        else:
+            self.num_flop_per_token = self._get_num_flop_per_token(self.num_params, model.config, seq_len=seq_len)
 
     def count_tokens(self, tokens: int):
         self.tokens.append(tokens)
@@ -76,6 +84,56 @@ class PerfCounter:
         else:
             self._logger.warning(f"Peak FLOPS undefined for `{device_name}`. Falling back to A100 (312 TFLOPS)")
             return 312e12
+
+    @staticmethod
+    def get_active_mm_params_prime_rl(config: Qwen3ModelArgs) -> float:
+        """Get number of active parameters per token involved in matmuls"""
+        vocab_size = config.vocab_size
+        hidden_size = config.hidden_dim
+        intermediate_size = config.hidden_dim
+        head_dim = config.head_dim
+        num_attention_heads = config.n_heads
+        num_hidden_layers = config.n_layers
+
+        ## Attention
+
+        num_key_value_heads = config.n_kv_heads
+        q_params = num_hidden_layers * hidden_size * num_attention_heads * head_dim
+        kv_params = 2 * num_hidden_layers * hidden_size * num_key_value_heads * head_dim
+        o_params = num_hidden_layers * hidden_size * num_attention_heads * head_dim
+
+        # ## MLP
+        # if hasattr(config, "first_k_dense_replace"):
+        #     num_dense_layers = config.first_k_dense_replace
+        #     num_sparse_layers = config.num_hidden_layers - num_dense_layers
+        # elif hasattr(config, "num_experts_per_tok"):
+        #     num_dense_layers = 0
+        #     num_sparse_layers = config.num_hidden_layers
+        # else:
+        num_dense_layers = config.n_layers
+        num_sparse_layers = 0
+
+        dense_mlp_params = num_dense_layers * 3 * intermediate_size * hidden_size
+        sparse_mlp_params = 0
+        # if hasattr(config, "num_shared_experts"):  # Shared experts
+        #     sparse_mlp_params += (
+        #         num_sparse_layers * config.num_shared_experts * 3 * config.moe_intermediate_size * hidden_size
+        #     )
+        # if hasattr(config, "num_experts_per_tok"):  # Routed experts
+        #     sparse_mlp_params += (
+        #         num_sparse_layers * config.num_experts_per_tok * 3 * config.moe_intermediate_size * hidden_size
+        #     )
+        # if hasattr(config, "n_routed_experts"):  # DeepSeek Router
+        #     sparse_mlp_params += num_sparse_layers * config.n_routed_experts * hidden_size
+        # elif hasattr(config, "num_experts"):  # Qwen Router
+        #     sparse_mlp_params += num_sparse_layers * config.num_experts * hidden_size
+        # else:
+        sparse_mlp_params = 0
+
+        ## LM Head
+        lm_head_params = vocab_size * hidden_size
+        ## Total
+        return q_params + kv_params + o_params + dense_mlp_params + sparse_mlp_params + lm_head_params
 
     @staticmethod
     def get_active_mm_params(config: PretrainedConfig) -> float:
@@ -159,10 +217,35 @@ class PerfCounter:
 
         return flop_per_token
 
+    def _get_num_flop_per_token_prime_rl(self, num_params: int, model_args: Qwen3ModelArgs, seq_len: int) -> int:
+        l, h, q, t = (  # noqa: E741
+            model_args.n_layers,
+            model_args.n_heads,
+            model_args.dim // model_args.n_heads,
+            seq_len,
+        )
+        # Reasoning behind the factor of 12 for the self-attention part of the formula:
+        # 1. each self-attention has 2 matmul in the forward and 4 in the backward (6)
+        # 2. the flash attention does 1 more matmul recomputation in the backward
+        #    but recomputation should not be counted in calculating MFU           (+0)
+        # 3. each matmul performs 1 multiplication and 1 addition                 (*2)
+        # 4. we follow the convention and do not account for sparsity in causal attention
+        try:
+            flop_per_token = 6 * self.get_active_mm_params_prime_rl(model_args) + 12 * l * h * q * t
+        except Exception as e:
+            self._logger.warning(f"Error calculating flop_per_token using get_active_mm_params: {e}")
+            flop_per_token = 6 * num_params + 12 * l * h * q * t
+
+        return flop_per_token
+
     def _get_num_params(self, model: nn.Module, exclude_embedding: bool = False) -> int:
         num_params = sum(p.numel() for p in model.parameters())
         if exclude_embedding:
-            num_params -= model.lm_head.weight.numel()
+            if hasattr(model, "lm_head"):
+                # todo make this better
+                num_params -= model.lm_head.weight.numel()
+            else:
+                num_params -= model.output.weight.numel()
         return num_params
 
 
