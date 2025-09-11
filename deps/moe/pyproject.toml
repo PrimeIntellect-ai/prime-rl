@@ -61,8 +61,8 @@ vf = [
     "acereason-math>=0.1.5",
     "hendrycks-math>=0.1.5",
     "intellect-math>=0.1.5",
-    "aime2024>=0.1.10",
-    "aime2025>=0.1.10",
+    "aime2024>=0.1.11",
+    "aime2025>=0.1.11",
     "math500>=0.1.10",
     "gpqa>=0.1.0",
     "livecodebench>=0.1.2.post0",
@@ -98,13 +98,13 @@ aime2024 = { index = "primeintellect" }
 aime2025 = { index = "primeintellect" }
 math500 = { index = "primeintellect" }
 livecodebench = { index = "primeintellect" }
+tau2_bench = { index = "primeintellect" }
+simpleqa = { index = "primeintellect" }
+hle = { index = "primeintellect" } 
 
 [[tool.uv.index]]
 name = "primeintellect"
 url = "https://hub.primeintellect.ai/primeintellect/simple/"
-
-[[tool.uv.index]]
-url = "https://hub.primeintellect.ai/will/simple/"
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
