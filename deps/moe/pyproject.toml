@@ -135,14 +135,9 @@ markers = [
     "gpu: marks tests as gpu (deselect with '-m \"not gpu\"')",
 ]
 
-<<<<<<< HEAD
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.metadata]
 allow-direct-references = true
-=======
-[tool.hatch.metadata]
-allow-direct-references = true
->>>>>>> main
