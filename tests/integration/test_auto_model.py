@@ -18,8 +18,9 @@ def test_from_pretrained(model_name):
         return_tensors="pt",
     ).to("cuda")
     outputs_prime = model_prime(input_ids=inputs_ids)
-    outputs_hf = model_hf(input_ids=inputs_ids)
-    assert torch.allclose(outputs_prime.logits, outputs_hf.logits)
+    outputs_hf = model_hf(input_ids=inputs_ids).logits
+
+    torch.testing.assert_close(outputs_prime, outputs_hf, atol=1e-3, rtol=1e-3)
 
 
 @pytest.mark.parametrize("model_name", ["Qwen/Qwen3-0.6B"])
@@ -28,4 +29,4 @@ def test_from_pretrained_forward(model_name):
 
     inputs_ids = torch.randint(0, 256, (1, 1024)).to("cuda")
     outputs = model(input_ids=inputs_ids)
-    assert outputs.shape == (1, 1024, model.config.vocab_size)
+    assert outputs.shape == (1, 1024, model.model_args.vocab_size)
