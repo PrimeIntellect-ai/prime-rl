@@ -229,7 +229,8 @@ def train(config: RLTrainerConfig):
             compute_logprobs_time = time.time() - compute_logprobs_start_time
             logger.debug(f"Recomputed logprobs in {compute_logprobs_time:.2f} seconds")
 
-        if config.memory_profiler_path:
+        memory_profiler = None
+        if config.memory_profiler_path is not None:
             memory_profiler = MemoryProfiler(progress.step, config.memory_profiler_path)
 
         forward_backward_start_time = time.time()
@@ -323,7 +324,7 @@ def train(config: RLTrainerConfig):
         weight_ckpt_manager.maybe_clean(progress.step)
 
         # Optionally, dump memory snapshot
-        if config.memory_profiler_path:
+        if memory_profiler is not None:
             memory_profiler.step()
 
         # Synchronize the tensor metrics across all steps and ranks
