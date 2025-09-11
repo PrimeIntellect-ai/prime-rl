@@ -77,6 +77,24 @@ prerelease = "allow"
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu128" }]
 
+alphabet-sort = { index = "primeintellect" }
+ascii-tree = { index = "primeintellect" }
+pydantic-adherence = { index = "primeintellect" }
+reverse-text = { index = "primeintellect" }
+unscramble = { index = "primeintellect" }
+skywork-math = { index = "primeintellect" }
+deepscaler-math = { index = "primeintellect" }
+acereason-math = { index = "primeintellect" }
+hendrycks-math = { index = "primeintellect" }
+intellect-math = { index = "primeintellect" }
+aime2024 = { index = "primeintellect" }
+aime2025 = { index = "primeintellect" }
+math500 = { index = "primeintellect" }
+livecodebench = { index = "primeintellect" }
+tau2_bench = { index = "primeintellect" }
+simpleqa = { index = "primeintellect" }
+hle = { index = "primeintellect" } 
+
 [[tool.uv.index]]
 name = "primeintellect"
 url = "https://hub.primeintellect.ai/primeintellect/simple/"
