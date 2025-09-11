@@ -12,7 +12,7 @@ from prime_rl.trainer.config import (
     SchedulerConfigType,
     WeightCheckpointConfig,
 )
-from prime_rl.utils.config import LogConfig, MultiMonitorConfig
+from prime_rl.utils.config import LogConfig, WandbMonitorConfig
 from prime_rl.utils.pydantic_config import BaseSettings
 
 
@@ -84,8 +84,8 @@ class SFTTrainerConfig(BaseSettings):
     # The logging configuration
     log: LogConfig = LogConfig()
 
-    # The monitor configuration
-    monitor: MultiMonitorConfig = MultiMonitorConfig()
+    # The wandb configuration
+    wandb: WandbMonitorConfig = WandbMonitorConfig()
 
     output_dir: Annotated[
         Path,

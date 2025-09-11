@@ -4,7 +4,7 @@ from typing import Annotated, Literal, TypeAlias
 from pydantic import BaseModel, Field, model_validator
 
 from prime_rl.orchestrator.advantage import AdvantageType
-from prime_rl.utils.config import LogConfig, ModelConfig, MultiMonitorConfig
+from prime_rl.utils.config import LogConfig, ModelConfig, WandbMonitorConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 ServerType = Literal["vllm", "openai"]
@@ -415,8 +415,8 @@ class OrchestratorConfig(BaseSettings):
     # The logging configuration
     log: LogConfig = LogConfig()
 
-    # The monitor configuration
-    monitor: MultiMonitorConfig = MultiMonitorConfig()
+    # The wandb configuration
+    wandb: WandbMonitorConfig = WandbMonitorConfig()
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None

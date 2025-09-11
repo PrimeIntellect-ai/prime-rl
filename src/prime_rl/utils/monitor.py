@@ -31,7 +31,7 @@ class WandbMonitor:
         rank = int(os.environ.get("LOCAL_RANK", os.environ.get("DP_RANK", "0")))
         self.is_master = rank == 0
         if not self.is_master:
-            self.logger.warning(f"Skipping WandbMonitor initialization from non-master rank ({rank})")
+            self.logger.warning(f"Skipping {self.__class__.__name__} initialization from non-master rank ({rank})")
             return
         self.logger.info(f"Initializing {self.__class__.__name__} ({config})")
         self._maybe_overwrite_wandb_command()
@@ -232,7 +232,7 @@ _MONITOR: WandbMonitor | None = None
 
 
 def get_monitor() -> WandbMonitor:
-    """Returns the global WandbMonitor."""
+    """Returns the global monitor."""
     global _MONITOR
     if _MONITOR is None:
         raise RuntimeError("WandbMonitor not initialized. Please call `setup_monitor` first.")
@@ -245,7 +245,7 @@ def setup_monitor(
     tokenizer: PreTrainedTokenizer | None = None,
     run_config: BaseSettings | None = None,
 ) -> WandbMonitor:
-    """Sets up a WandbMonitor to log metrics to W&B."""
+    """Sets up a monitor to log metrics to W&B."""
     global _MONITOR
     if _MONITOR is not None:
         raise RuntimeError("WandbMonitor already initialized. Please call `setup_monitor` only once.")

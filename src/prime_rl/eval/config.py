@@ -4,7 +4,7 @@ from typing import Annotated
 from pydantic import Field, model_validator
 
 from prime_rl.orchestrator.config import ClientConfig, EvalConfig
-from prime_rl.utils.config import LogConfig, ModelConfig, MultiMonitorConfig
+from prime_rl.utils.config import LogConfig, ModelConfig, WandbMonitorConfig
 from prime_rl.utils.pydantic_config import BaseSettings
 
 
@@ -17,8 +17,8 @@ class OfflineEvalConfig(EvalConfig, BaseSettings):
     # The model configuration
     model: ModelConfig = ModelConfig()
 
-    # The monitor configuration
-    monitor: MultiMonitorConfig = MultiMonitorConfig()
+    # The wandb configuration
+    wandb: WandbMonitorConfig = WandbMonitorConfig()
 
     # The logging configuration
     log: LogConfig = LogConfig()
