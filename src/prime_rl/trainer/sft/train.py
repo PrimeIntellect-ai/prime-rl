@@ -49,8 +49,8 @@ def train(config: SFTTrainerConfig):
         logger.warning(f"Running in benchmark mode (max_steps={config.max_steps})")
 
     # Setup the monitor
-    logger.info(f"Initializing monitor ({config.monitor})")
-    monitor = setup_monitor(config.monitor, output_dir=config.output_dir, run_config=config)
+    logger.info(f"Initializing monitor ({config.wandb})")
+    monitor = setup_monitor(config.wandb, output_dir=config.output_dir, run_config=config)
 
     # Set precision
     setup_torch_distributed()
@@ -278,21 +278,19 @@ def train(config: SFTTrainerConfig):
         monitor.log(time_metrics)
 
         # Log distributions to W&B table if enabled
-        if monitor.wandb:
-            assert all(len(tensors) == 1 for tensors in tensors.values()), "Tensors must be lists of length 1"
-            distributions = {key: tensors[key][0] for key in tensors.keys()}
-            monitor.wandb.log_distributions(
-                distributions=distributions,
-                step=progress.step,
-            )
+        assert all(len(tensors) == 1 for tensors in tensors.values()), "Tensors must be lists of length 1"
+        distributions = {key: tensors[key][0] for key in tensors.keys()}
+        monitor.log_distributions(
+            distributions=distributions,
+            step=progress.step,
+        )
 
         is_first_step = False
         progress.step += 1
 
     # Log final (immutable) distributions to W&B table
-    if monitor.wandb:
-        logger.info("Logging final distributions as W&B table")
-        monitor.wandb.log_final_distributions()
+    logger.info("Logging final distributions as W&B table")
+    monitor.log_final_distributions()
 
     # Write final checkpoint
     if config.ckpt and ckpt_manager is not None and weight_ckpt_manager is not None:
