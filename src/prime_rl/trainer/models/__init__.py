@@ -32,7 +32,6 @@ def from_pretrained(pretrained_model_name_or_path: str, config: Any | None = Non
 
     hf_state_dict = sd_adapter.to_hf(model_state_dict)
     path_snapshot = snapshot_download(repo_id=pretrained_model_name_or_path, repo_type="model")
-    print(path_snapshot)
 
     # assert HuggingFaceStorageReader require torch nighlty 2.9 to run
     dcp.load(hf_state_dict, storage_reader=HuggingFaceStorageReader(path=path_snapshot))
