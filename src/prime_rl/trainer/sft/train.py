@@ -25,6 +25,7 @@ from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import setup_dataloader, setup_dataset
 from prime_rl.trainer.utils import (
+    MemoryProfiler,
     Tensors,
     setup_torch_distributed,
     print_benchmark,
@@ -65,7 +66,7 @@ def train(config: SFTTrainerConfig):
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
-    optimizer = setup_optimizer(config.optim, model)
+    optimizer = setup_optimizer(config.optim, model, parallel_dims.world_mesh["dp_shard_cp"])
 
     # Set up the learning rate scheduler
     scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps)
@@ -135,8 +136,9 @@ def train(config: SFTTrainerConfig):
         if config.max_steps is not None and progress.step >= config.max_steps:
             break
 
-        if config.profile_path and world.rank == 0:
-            torch.cuda.memory._record_memory_history()
+        memory_profiler = (
+            MemoryProfiler(progress.step, config.memory_profiler_path) if config.memory_profiler_path else None
+        )
 
         step_start_time = time.time()
         forward_backward_start_time = time.time()
@@ -219,13 +221,8 @@ def train(config: SFTTrainerConfig):
         forward_backward_time = time.time() - forward_backward_start_time
 
         # Optionally, dump memory snapshot
-        if config.profile_path and progress.step == 2 and world.rank == 0:
-            logger.debug("Dumping memory snapshot")
-            profile_path = config.profile_path
-            if not profile_path.suffix == ".pickle":
-                profile_path = profile_path.with_suffix(".pickle")
-            torch.cuda.memory._dump_snapshot(profile_path.as_posix())
-            torch.cuda.memory._record_memory_history(enabled=None)
+        if memory_profiler is not None:
+            memory_profiler.step()
 
         # Synchronize the tensor metrics across all steps and ranks
         tensor_stats = tensors.compute_stats()
@@ -259,6 +256,7 @@ def train(config: SFTTrainerConfig):
         # Log performance metrics
         perf_metrics = {
             "perf/throughput": throughput,
+            "perf/throughput_per_gpu": throughput / world.world_size,
             "perf/mfu": mfu,
             "step": progress.step,
         }

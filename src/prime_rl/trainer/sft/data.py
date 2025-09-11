@@ -1,3 +1,4 @@
+import json
 import math
 from collections import defaultdict
 from typing import Iterator, TypedDict
@@ -174,14 +175,45 @@ class SFTDataset(StatefulIterableDataset):
                 "Prompt and completion must be lists"
             )
 
+            def deserialize_tool_calls(messages: list[dict]) -> list[dict]:
+                """
+                Deserialize tool calls in messages, if any are present. Iterates
+                over all messages in a message list and tries to find
+                "tool_calls" key. If found, assumes it is a OAI format and has
+                key "function" with "arguments" key which is stringified. It
+                will then deserialize the argument so that chat tmeplates like
+                Qwen3's can be used.
+                """
+                def deserialize_tool_call(tool_call: dict) -> dict:
+                    return {
+                        **tool_call,
+                        "function": {**tool_call["function"], "arguments": json.loads(tool_call["function"]["arguments"])},
+                    }
+                return  [
+                    {
+                        **message,
+                        "tool_calls": [deserialize_tool_call(tool_call) for tool_call in message.get("tool_calls", []) or []],
+                    }
+                    for message in messages
+                ]
+
+            # Deserialize tool call arguments from message list, if present - assumes OAI format
+            # Reference: https://platform.openai.com/docs/guides/function-calling#handling-function-calls
+            prompt = deserialize_tool_calls(example["prompt"])
+            completion = deserialize_tool_calls(example["completion"])
+
+            # Parse available tools, if present - assumes OAI format
+            # Reference: https://platform.openai.com/docs/guides/function-calling#function-tool-example
+            tools = json.loads(example.get("tools", "[]"))
+
             prompt_ids = self.tokenizer.apply_chat_template(
-                example["prompt"],
-                tools=example.get("tools"),
+                prompt,
+                tools=tools,
                 **example.get("chat_template_kwargs", {}),
             )
             prompt_completion_ids = self.tokenizer.apply_chat_template(
-                example["prompt"] + example["completion"],
-                tools=example.get("tools"),
+                prompt + completion,
+                tools=tools,
                 **example.get("chat_template_kwargs", {}),
             )
 

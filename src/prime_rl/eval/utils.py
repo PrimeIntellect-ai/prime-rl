@@ -65,6 +65,8 @@ def prepare_sampling_args(sampling_config: EvalSamplingConfig, client_config: Cl
             extra_body["min_p"] = sampling_config.min_p
         if sampling_config.min_tokens is not None:
             extra_body["min_tokens"] = sampling_config.min_tokens
+        if sampling_config.repetition_penalty is not None:
+            extra_body["repetition_penalty"] = sampling_config.repetition_penalty
 
         sampling_args["extra_body"] = extra_body
 

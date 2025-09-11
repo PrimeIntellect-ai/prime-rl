@@ -59,6 +59,14 @@ class SamplingConfig(BaseConfig):
         ),
     ] = 1.0
 
+    repetition_penalty: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="Penalty for repeating tokens. Values > 1.0 discourage repetition, values < 1.0 encourage repetition, and 1.0 means no penalty.",
+        ),
+    ] = 1.0
+
     max_tokens: Annotated[
         int | None,
         Field(
@@ -90,6 +98,14 @@ class EvalSamplingConfig(BaseConfig):
         Field(
             ge=0,
             description="Scales the output probability distribution. Lower values => more deterministic, higher values => more random. If 0, will sample greedily. Defaults to None, which means we fall back to the inference server's default value.",
+        ),
+    ] = None
+
+    repetition_penalty: Annotated[
+        float | None,
+        Field(
+            ge=0,
+            description="Penalty for repeating tokens. Values > 1.0 discourage repetition, values < 1.0 encourage repetition, and 1.0 means no penalty. Defaults to None, which means we fall back to the inference server's default value.",
         ),
     ] = None
 
