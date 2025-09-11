@@ -416,7 +416,7 @@ class OrchestratorConfig(BaseSettings):
     log: LogConfig = LogConfig()
 
     # The wandb configuration
-    wandb: WandbMonitorConfig = WandbMonitorConfig()
+    wandb: WandbMonitorConfig | None = None
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None

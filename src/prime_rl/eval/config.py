@@ -18,7 +18,7 @@ class OfflineEvalConfig(EvalConfig, BaseSettings):
     model: ModelConfig = ModelConfig()
 
     # The wandb configuration
-    wandb: WandbMonitorConfig = WandbMonitorConfig()
+    wandb: WandbMonitorConfig | None = None
 
     # The logging configuration
     log: LogConfig = LogConfig()

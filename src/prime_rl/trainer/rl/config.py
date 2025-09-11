@@ -81,7 +81,7 @@ class RLTrainerConfig(BaseSettings):
     log: LogConfig = LogConfig()
 
     # The wandb configuration
-    wandb: WandbMonitorConfig = WandbMonitorConfig()
+    wandb: WandbMonitorConfig | None = None
 
     output_dir: Annotated[
         Path,

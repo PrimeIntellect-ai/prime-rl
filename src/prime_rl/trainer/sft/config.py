@@ -85,7 +85,7 @@ class SFTTrainerConfig(BaseSettings):
     log: LogConfig = LogConfig()
 
     # The wandb configuration
-    wandb: WandbMonitorConfig = WandbMonitorConfig()
+    wandb: WandbMonitorConfig | None = None
 
     output_dir: Annotated[
         Path,
@@ -112,8 +112,8 @@ class SFTTrainerConfig(BaseSettings):
     def auto_setup_bench(self):
         if self.bench:
             self.max_steps = 4  # 1 Warmup + 3 Benchmark
-            if self.monitor.wandb:  # Do not log extras
-                self.monitor.wandb.log_extras = None
+            if self.wandb:  # Do not log extras
+                self.wandb.log_extras = None
             if self.ckpt:  # Do not checkpoint
                 self.ckpt = None
         return self
