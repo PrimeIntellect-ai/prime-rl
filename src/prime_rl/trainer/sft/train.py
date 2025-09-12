@@ -180,7 +180,6 @@ def train(config: SFTTrainerConfig):
 
                 if is_tt_moe_model(model):
                     max_vio = get_load_balance_stats(model)["max_vio"] / grad_accum_steps
-                    # TODO(sami): Check with Jackmin if we should do a max or avg here
                     batch_max_vio += max_vio
 
                 loss = loss[loss_mask].mean()
