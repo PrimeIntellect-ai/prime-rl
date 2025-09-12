@@ -27,7 +27,6 @@ def _has_tt_moe_layers(state_dict: dict[str, Tensor]) -> bool:
     return any("mlp.router.gate" in i for i in state_dict.keys())
 
 
-
 def _get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
     return max(int(i.split(".")[2]) for i in state_dict.keys() if "model.layers." in i) + 1
 
@@ -92,8 +91,6 @@ def _convert_tt_moe_to_hf_(state_dict: dict[str, Tensor]):
         del state_dict[f"model.layers.{i}.mlp.experts.w1"]
         del state_dict[f"model.layers.{i}.mlp.experts.w2"]
         del state_dict[f"model.layers.{i}.mlp.experts.w3"]
-
-
 
 
 class WeightCheckpointManager:
