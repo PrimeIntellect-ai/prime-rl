@@ -182,7 +182,7 @@ def train(config: SFTTrainerConfig):
                         tensors[k].append(v)
 
                 # Add tensors to tensor dict for logging purposes
-                tensors["loss"].append(loss[loss_mask].detach().to("cpu"))
+                tensors["loss"].append(loss[loss_mask].detach().to("cpu", non_blocking=True))
 
                 # Mean reduction of unmasked tokens
                 loss = loss[loss_mask].mean()
