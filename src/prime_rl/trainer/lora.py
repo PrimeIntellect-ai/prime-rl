@@ -174,7 +174,6 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
         )
         raise RuntimeError("Cannot apply LoRA to FSDP-wrapped model. Apply LoRA before setup_fsdp().")
 
-
     target_modules = _find_target_modules(model, config.target_modules)
 
     if not target_modules:
@@ -287,8 +286,6 @@ def restore_lora_weights_inplace(model: nn.Module, original_lora_state: Dict[str
             delta_weight = (module.lora_B @ module.lora_A) * module.scaling
             module.base_layer.weight.data.sub_(delta_weight)
             restored_count += 1
-
-
 
 
 def get_lora_state_dict(model: nn.Module) -> Dict[str, torch.Tensor]:
