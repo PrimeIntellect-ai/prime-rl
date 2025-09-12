@@ -1,5 +1,4 @@
 import time
-import asyncio
 from contextlib import nullcontext
 
 # Import environment before any other imports
@@ -34,10 +33,9 @@ from prime_rl.trainer.utils import (
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
-from prime_rl.utils.utils import clean_exit, to_col_format, ensure_event_loop
+from prime_rl.utils.utils import clean_exit, to_col_format
 
 
-@ensure_event_loop
 @clean_exit
 @logger.catch(reraise=True)
 def train(config: SFTTrainerConfig):
@@ -204,13 +202,6 @@ def train(config: SFTTrainerConfig):
                 micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
 
-        # Start asynchronously gathering tensor metrics across all steps and ranks
-        log_distributions = (
-            config.wandb and config.wandb.log_extras and config.wandb.log_extras.distributions
-        ) or False
-        loop = asyncio.get_event_loop()
-        compute_stats_task = loop.create_task(tensors.compute_stats(log_distributions=log_distributions))
-
         # Optionally, clip the gradients
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.optim.max_norm).full_tensor()
 
@@ -227,6 +218,15 @@ def train(config: SFTTrainerConfig):
         if memory_profiler is not None:
             memory_profiler.step()
 
+        # Synchronize the tensor metrics across all steps and ranks
+        log_distributions = (
+            config.wandb and config.wandb.log_extras and config.wandb.log_extras.distributions
+        ) or False
+        tensor_distributions, tensor_metrics = tensors.compute_stats(log_distributions=log_distributions)
+        assert len(tensors) == 0, "Tensors should be empty before the next step"
+        if not log_distributions:
+            assert len(tensor_distributions) == 0, "Tensors should be empty before the next step"
+
         # Compute step metrics
         num_tokens = config.data.batch_size * config.data.seq_len
         progress.total_tokens += num_tokens
@@ -235,12 +235,6 @@ def train(config: SFTTrainerConfig):
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_tokens_per_second() or 0
         mfu = perf_counter.get_mfu() or 0
-
-        # Wait for the compute stats thread to finish
-        tensor_distributions, tensor_metrics = loop.run_until_complete(compute_stats_task)
-        assert len(tensors) == 0, "Tensors should be empty before the next step"
-        if not log_distributions:
-            assert len(tensor_distributions) == 0, "Tensors should be empty before the next step"
 
         # Log step metrics
         step_time = time.time() - step_start_time

@@ -1,4 +1,3 @@
-import asyncio
 import functools
 import os
 import time
@@ -89,27 +88,16 @@ def capitalize(s: str) -> str:
     return s[0].upper() + s[1:]
 
 
-def ensure_event_loop(func):
-    """
-    A decorator that ensures an event loop is created if one is not already running.
-    """
-
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        return func(*args, **kwargs)
-
-    return wrapper
-
-
 def clean_exit(func):
     """
     A decorator that ensures the a torch.distributed process group is properly
     cleaned up after the decorated function runs or raises an exception.
+
+    Args:
+        func: The function to decorate
+
+    Returns:
+        The decorated function
     """
 
     @functools.wraps(func)
