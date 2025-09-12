@@ -328,8 +328,13 @@ def train(config: RLTrainerConfig):
             memory_profiler.step()
 
         # Synchronize the tensor metrics across all steps and ranks
-        tensor_distributions, tensor_metrics = tensors.compute_stats()
+        log_distributions = (
+            config.wandb and config.wandb.log_extras and config.wandb.log_extras.distributions
+        ) or False
+        tensor_distributions, tensor_metrics = tensors.compute_stats(log_distributions=log_distributions)
         assert len(tensors) == 0, "Tensors should be empty before the next step"
+        if not log_distributions:
+            assert len(tensor_distributions) == 0, "Tensors should be empty before the next step"
 
         # Compute step metrics
         num_local_tokens = micro_batch_size * seq_len * num_micro_batches

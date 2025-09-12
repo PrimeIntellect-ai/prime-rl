@@ -203,7 +203,7 @@ class Tensors(defaultdict):
         assert dist.is_initialized(), "Tensors requires a distributed environment"
         super().__init__(list)
 
-    def compute_stats(self) -> tuple[dict[str, list[float | int]], dict[str, float | int]]:
+    def compute_stats(self, log_distributions: bool) -> tuple[dict[str, list[float | int]], dict[str, float | int]]:
         """Synchronize the tensor statistic across all ranks for each key and compute relevant statistics."""
 
         metrics = {}
@@ -223,7 +223,8 @@ class Tensors(defaultdict):
             metrics[f"{key}/max"] = tensors.max().item()
 
             # Add back all-gathered tensors as list to distributions
-            distributions[key] = tensors.tolist()
+            if log_distributions:
+                distributions[key] = tensors.tolist()
 
         return distributions, metrics
 
