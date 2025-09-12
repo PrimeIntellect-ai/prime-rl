@@ -221,8 +221,7 @@ def train(config: SFTTrainerConfig):
         dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)
 
         if is_tt_moe_model(model):
-            # TODO(sami): Check with Jackmin if we should do a max or avg here
-            dist.all_reduce(batch_max_vio, op=dist.ReduceOp.AVG)
+            dist.all_reduce(batch_max_vio, op=dist.ReduceOp.MAX)
 
         # Compute step metrics
         num_tokens = config.data.batch_size * config.data.seq_len
