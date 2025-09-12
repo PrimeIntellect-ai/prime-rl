@@ -180,6 +180,7 @@ def train(config: SFTTrainerConfig):
 
                 if is_tt_moe_model(model):
                     max_vio = get_load_balance_stats(model)["max_vio"] / grad_accum_steps
+                    dist.all_reduce(max_vio, op=dist.ReduceOp.MAX)
                     batch_max_vio += max_vio
 
                 loss = loss[loss_mask].mean()
@@ -218,9 +219,6 @@ def train(config: SFTTrainerConfig):
         # Synchronize the tensor metrics across all steps and ranks
 
         dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)
-
-        if is_tt_moe_model(model):
-            dist.all_reduce(batch_max_vio, op=dist.ReduceOp.MAX)
 
         # Compute step metrics
         num_tokens = config.data.batch_size * config.data.seq_len
