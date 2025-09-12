@@ -56,7 +56,7 @@ async def check_has_model(client: AsyncOpenAI, model_name: str) -> None:
     logger.debug(f"Checking if model {model_name} is in the inference pool")
     models = (await client.models.list()).data
     if not any(model.id == model_name for model in models):
-        raise ValueError(f"Model {model_name} was not found in the inference pool {[model.id for model in models]}")
+        raise ValueError(f"Model {model_name} was not found in the inference pool")
     logger.debug(f"Model {model_name} was found in the inference pool")
 
 
