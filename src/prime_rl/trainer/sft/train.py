@@ -16,6 +16,8 @@ from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
+    get_load_balance_stats,
+    is_tt_moe_model,
     setup_tokenizer,
     setup_model,
 )
@@ -149,6 +151,7 @@ def train(config: SFTTrainerConfig):
         )
 
         batch_loss = torch.tensor(0.0).to("cuda")
+        batch_max_vio = torch.tensor(0.0).to("cuda") if is_tt_moe_model(model) else None
         for micro_step in range(grad_accum_steps):
             micro_batch = next(dataiter)
             input_ids = micro_batch["input_ids"].to("cuda")
@@ -179,10 +182,11 @@ def train(config: SFTTrainerConfig):
                 )
 
                 # todo(sami): bring back tt model load balance stats
-                # if is_tt_moe_model(model):
-                #     load_balance_stats = get_load_balance_stats(model)
-                #     for k, v in load_balance_stats.items():
-                #         tensors[k].append(v)
+                if is_tt_moe_model(model):
+                    load_balance_stats = get_load_balance_stats(model)
+                    batch_max_vio += (
+                        load_balance_stats["max_vio"] / grad_accum_steps
+                    )  # todo(sami): need to check with Jackmin if we should do a max or avg here
 
                 # Scale loss by number of gradient accumulation steps
                 loss /= grad_accum_steps
@@ -223,6 +227,11 @@ def train(config: SFTTrainerConfig):
         # <think> in the one gpu scenerio we have M grad accums steps. In distributed they have N = M / W per gpu. So when we normaliez the loss by / N we are missing the W
         # so we need do to an AVG instead of sum <think/> Answers: Need to use AVG instead of SUM
 
+        dist.all_reduce(
+            batch_max_vio, op=dist.ReduceOp.AVG
+        )  # todo(sami): need to check with Jackmin if we should do a max or avg here
+        # <think> need to ask jackmin <tool/> Ask jackmin :
+
         # Compute step metrics
         num_tokens = config.data.batch_size * config.data.seq_len
         progress.total_tokens += num_tokens
@@ -236,8 +245,8 @@ def train(config: SFTTrainerConfig):
         step_time = time.time() - step_start_time
         current_lr = optimizer.param_groups[0]["lr"]
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {batch_loss.item()} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}%"
-        # if "max_vio/mean" in tensor_stats:
-        #     step_message += f" | Max Vio: {tensor_stats['max_vio/mean']:.4f}"
+        if is_tt_moe_model(model):
+            step_message += f" | Max Vio: {batch_max_vio.item():.4f}"
         logger.success(step_message)
 
         # Log progress metrics
@@ -281,6 +290,13 @@ def train(config: SFTTrainerConfig):
             "step": progress.step,
         }
         monitor.log(time_metrics)
+
+        if is_tt_moe_model(model):
+            max_vio_log_metrics = {
+                "max_vio/mean": batch_max_vio.item(),
+                "step": progress.step,
+            }
+            monitor.log(max_vio_log_metrics)
 
         is_first_step = False
         progress.step += 1
