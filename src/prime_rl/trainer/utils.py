@@ -233,19 +233,15 @@ MEMORY_SNAPSHOT_MAX_ENTRIES = 100000
 class MemoryProfiler:
     def __init__(self, step_num: int, snapshot_path: Path):
         torch.cuda.memory._record_memory_history(max_entries=MEMORY_SNAPSHOT_MAX_ENTRIES)
-
+        self.logger = get_logger()
         snapshot_path.mkdir(parents=True, exist_ok=True)
         self.snapshot_path = snapshot_path
-        self.logger = get_logger()
-
         self.step_num = step_num
 
     def step(self):
-        self.step_num + 1
         self.logger.info(f"Dumping memory snapshot at step {self.step_num} at {self.snapshot_path}")
         begin = time.monotonic()
         step_folder = self.snapshot_path / f"step_{self.step_num}"
-
         step_folder.mkdir(parents=True, exist_ok=True)
         file_path = step_folder / f"rank_{get_world().rank}.pickle"
         with open(file_path, "wb") as output:
@@ -253,3 +249,4 @@ class MemoryProfiler:
         self.logger.info(
             f"Finished dumping memory snapshot in {time.monotonic() - begin:.2f} seconds, load {file_path} at https://docs.pytorch.org/memory_viz to visualize the memory usage"
         )
+        self.step_num += 1
