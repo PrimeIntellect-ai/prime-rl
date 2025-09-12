@@ -1,3 +1,4 @@
+import asyncio
 import pickle
 import time
 from collections import defaultdict
@@ -203,16 +204,35 @@ class Tensors(defaultdict):
         assert dist.is_initialized(), "Tensors requires a distributed environment"
         super().__init__(list)
 
-    def compute_stats(self, log_distributions: bool) -> tuple[dict[str, list[float | int]], dict[str, float | int]]:
+    async def compute_stats(
+        self, log_distributions: bool
+    ) -> tuple[dict[str, list[float | int]], dict[str, float | int]]:
         """Synchronize the tensor statistic across all ranks for each key and compute relevant statistics."""
+
+        # Create tasks for all the all-gather operations
+        loop = asyncio.get_event_loop()
+        gather_tasks = []
 
         metrics = {}
         distributions = {}
         for key in list(self.keys()):
-            # All-gather tensors across steps and ranks (get global distribution)
+            # Prepare tensors for all-gather
             tensors = torch.cat(self.pop(key), dim=0).to("cuda")
             assert tensors.ndim == 1, "Can only aggregate 1D tensors"
-            tensors = flexible_all_gather(tensors)
+
+            # Start all-gather operation asynchronously
+            async def gather_key(k: str, t: torch.Tensor) -> tuple[str, torch.Tensor]:
+                # Run the all-gather in a thread pool executor since it's a blocking operation
+                gathered = await loop.run_in_executor(None, flexible_all_gather, t)
+                return k, gathered
+
+            gather_tasks.append(gather_key(key, tensors))
+
+        # Wait for all all-gather operations to complete
+        gather_results = await asyncio.gather(*gather_tasks)
+
+        # Process the results
+        for key, tensors in gather_results:
             assert tensors.ndim == 1, "Can only aggregate 1D tensors"
 
             # Compute relevant tensor statistics
