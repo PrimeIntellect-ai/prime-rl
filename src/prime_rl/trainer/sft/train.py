@@ -151,7 +151,7 @@ def train(config: SFTTrainerConfig):
         )
 
         batch_loss = torch.tensor(0.0).to("cuda")
-        batch_max_vio = torch.tensor(0.0).to("cuda") if is_tt_moe_model(model) else None
+        batch_max_vio = torch.tensor(0.0).to("cuda")
         for micro_step in range(grad_accum_steps):
             micro_batch = next(dataiter)
             input_ids = micro_batch["input_ids"].to("cuda")
@@ -176,21 +176,17 @@ def train(config: SFTTrainerConfig):
                 B, L, V = logits.shape
 
                 # Compute loss
-                # todo(sami): check that the ignore index doesn't impact the eos prediction it should not as the eos is a target of the last non eos token
-                loss = cross_entropy(
-                    logits.view(-1, V), target_ids.view(-1), reduction="mean", ignore_index=tokenizer.pad_token_id
-                )
+                loss = cross_entropy(logits.view(-1, V), target_ids.view(-1), reduction="none").view(B, L)
 
-                # todo(sami): bring back tt model load balance stats
                 if is_tt_moe_model(model):
                     max_vio = get_load_balance_stats(model)["max_vio"] / grad_accum_steps
+                    # TODO(sami): Check with Jackmin if we should do a max or avg here
                     batch_max_vio += max_vio
-                    # todo(sami): need to check with Jackmin if we should do a max or avg here
+
+                loss = loss[loss_mask].mean()
 
                 # Scale loss by number of gradient accumulation steps
                 loss /= grad_accum_steps
-
-                batch_loss += loss
 
                 # Delete logits before backward pass to avoid memory spike
                 del logits
@@ -222,15 +218,11 @@ def train(config: SFTTrainerConfig):
 
         # Synchronize the tensor metrics across all steps and ranks
 
-        dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)  # todo(sami): I am always confuse but here is my cot
-        # <think> in the one gpu scenerio we have M grad accums steps. In distributed they have N = M / W per gpu. So when we normaliez the loss by / N we are missing the W
-        # so we need do to an AVG instead of sum <think/> Answers: Need to use AVG instead of SUM
+        dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)
 
         if is_tt_moe_model(model):
-            dist.all_reduce(
-                batch_max_vio, op=dist.ReduceOp.AVG
-            )  # todo(sami): need to check with Jackmin if we should do a max or avg here
-            # <think> need to ask jackmin <tool/> Ask jackmin :
+            # TODO(sami): Check with Jackmin if we should do a max or avg here
+            dist.all_reduce(batch_max_vio, op=dist.ReduceOp.AVG)
 
         # Compute step metrics
         num_tokens = config.data.batch_size * config.data.seq_len
