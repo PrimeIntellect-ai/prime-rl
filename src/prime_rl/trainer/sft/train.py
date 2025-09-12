@@ -15,7 +15,6 @@ from prime_rl.trainer.logger import setup_logger
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
-    forward,
     setup_tokenizer,
     setup_model,
     is_tt_moe_model,
@@ -170,7 +169,7 @@ def train(config: SFTTrainerConfig):
 
             with maybe_context_parallel:
                 # Forward pass
-                logits = forward(model, input_ids, position_ids).contiguous()
+                logits = model(input_ids=input_ids, position_ids=position_ids).logits
                 B, L, V = logits.shape
 
                 # Compute loss
