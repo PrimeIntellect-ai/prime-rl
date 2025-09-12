@@ -12,7 +12,6 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.config import CheckpointConfig
 from prime_rl.trainer.lora import (
-    LoRALinear,
     clean_lora_state_dict,
     has_lora_layers,
     merge_lora_weights_inplace,
