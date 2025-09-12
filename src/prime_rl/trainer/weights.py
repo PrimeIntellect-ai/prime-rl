@@ -16,7 +16,7 @@ from prime_rl.trainer.rl.config import WeightCheckpointConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import get_step_path, get_weight_ckpt_model_path, get_weights_dir
-from .quant import quantize_to_q5_0_per_channel, should_quantize_tensor
+from .quant import quantize_to_q8_0_per_channel, should_quantize_tensor
 
 
 def _has_tt_moe_layers(state_dict: dict[str, Tensor]) -> bool:
@@ -166,9 +166,9 @@ class WeightCheckpointManager:
         return get_step_path(self.weights_dir, step)
 
     def _gather_weights(
-        self, model: nn.Module, dtype: torch.dtype = torch.bfloat16, has_lora_layers: bool = False, quantize_q5: bool = True
+        self, model: nn.Module, dtype: torch.dtype = torch.bfloat16, has_lora_layers: bool = False
     ) -> dict[str, Tensor]:
-        """Gather distributed weights for weight checkpoint with non-blocking transfers and optional Q5_0 per-channel quantization."""
+        """Gather distributed weights with non-blocking transfers, no quantization."""
         original_lora_state = None
         if has_lora_layers:
             original_lora_state = _merge_lora_weights_inplace(model)
@@ -179,66 +179,23 @@ class WeightCheckpointManager:
                 warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
 
                 cpu_state = {}
-                quantized_count = 0
                 total_count = 0
-                total_size_before = 0
-                total_size_after = 0
                 has_cuda_transfers = False
                 
                 for key, value in model.state_dict().items():
                     if isinstance(value, DTensor):
-                        # Handle DTensor from FSDP2 - gather first, then quantize
-                        if quantize_q5 and should_quantize_tensor(key, value):
-                            # Convert to dtype and gather
-                            full_tensor = value.to(dtype).full_tensor()
+                        # Handle DTensor from FSDP2 - gather first
+                        full_tensor = value.to(dtype).full_tensor()
+                        
+                        if self._is_master:
+                            fqn_key = get_fqns(model, key)
+                            assert len(fqn_key) == 1, f"Expected single FQN for {key}, got {len(fqn_key)}"
+                            fqn_key = next(iter(fqn_key))
                             
-                            if self._is_master:
-                                try:
-                                    # Quantize the full gathered tensor
-                                    packed_value, scales, original_shape = quantize_to_q5_0_per_channel(full_tensor)
-                                    
-                                    fqn_key = get_fqns(model, key)
-                                    assert len(fqn_key) == 1, f"Expected single FQN for {key}, got {len(fqn_key)}"
-                                    fqn_key = next(iter(fqn_key))
-                                    
-                                    # Store packed weights, scales, and shape with non-blocking transfers
-                                    if packed_value.is_cuda:
-                                        has_cuda_transfers = True
-                                    if scales.is_cuda:
-                                        has_cuda_transfers = True
-                                        
-                                    cpu_state[fqn_key] = packed_value.to("cpu", non_blocking=True)
-                                    cpu_state[f"{fqn_key}_scales"] = scales.to("cpu", non_blocking=True)
-                                    cpu_state[f"{fqn_key}_shape"] = torch.tensor(original_shape, dtype=torch.int64)
-                                    
-                                    # Log compression statistics
-                                    original_size = full_tensor.numel() * 2  # bfloat16 = 2 bytes
-                                    compressed_size = packed_value.numel() * 1 + scales.numel() * 4 + 8 * len(original_shape)  # uint8 + float32 scales + int64 shape
-                                    total_size_before += original_size
-                                    total_size_after += compressed_size
-                                    
-                                    quantized_count += 1
-                                    
-                                except Exception as e:
-                                    self._logger.error(f"Failed to quantize tensor {key}: {e}")
-                                    raise
-                            else:
-                                # Non-master ranks still need to participate in gather but don't process result
-                                pass
-                        else:
-                            # Regular processing without quantization
-                            full_tensor = value.to(dtype).full_tensor()
-                            
-                            if self._is_master:
-                                fqn_key = get_fqns(model, key)
-                                assert len(fqn_key) == 1, f"Expected single FQN for {key}, got {len(fqn_key)}"
-                                fqn_key = next(iter(fqn_key))
-                                
-                                if full_tensor.is_cuda:
-                                    has_cuda_transfers = True
-                                cpu_state[fqn_key] = full_tensor.to("cpu", non_blocking=True)
-                                total_size_before += full_tensor.numel() * 2
-                                total_size_after += full_tensor.numel() * 2
+                            # Transfer to CPU (non-blocking)
+                            if full_tensor.is_cuda:
+                                has_cuda_transfers = True
+                            cpu_state[fqn_key] = full_tensor.to("cpu", non_blocking=True)
                         
                         total_count += 1
                     else:
@@ -248,36 +205,10 @@ class WeightCheckpointManager:
                             assert len(fqn_key) == 1, f"Expected single FQN for {key}, got {len(fqn_key)}"
                             fqn_key = next(iter(fqn_key))
                             
-                            if quantize_q5 and should_quantize_tensor(key, value):
-                                try:
-                                    packed_value, scales, original_shape = quantize_to_q5_0_per_channel(value)
-                                    
-                                    if packed_value.is_cuda:
-                                        has_cuda_transfers = True
-                                    if scales.is_cuda:
-                                        has_cuda_transfers = True
-                                        
-                                    cpu_state[fqn_key] = packed_value.to("cpu", non_blocking=True)
-                                    cpu_state[f"{fqn_key}_scales"] = scales.to("cpu", non_blocking=True)
-                                    cpu_state[f"{fqn_key}_shape"] = torch.tensor(original_shape, dtype=torch.int64)
-                                    
-                                    # Log compression statistics
-                                    original_size = value.numel() * 2  # bfloat16 = 2 bytes
-                                    compressed_size = packed_value.numel() * 1 + scales.numel() * 4 + 8 * len(original_shape)  # uint8 + float32 scales + int64 shape
-                                    total_size_before += original_size
-                                    total_size_after += compressed_size
-                                    
-                                    quantized_count += 1
-                                    
-                                except Exception as e:
-                                    self._logger.error(f"Failed to quantize tensor {key}: {e}")
-                                    raise
-                            else:
-                                if value.is_cuda:
-                                    has_cuda_transfers = True
-                                cpu_state[fqn_key] = value.to("cpu", non_blocking=True)
-                                total_size_before += value.numel() * 2
-                                total_size_after += value.numel() * 2
+                            # Transfer to CPU (non-blocking)
+                            if value.is_cuda:
+                                has_cuda_transfers = True
+                            cpu_state[fqn_key] = value.to("cpu", non_blocking=True)
                             
                             total_count += 1
 
@@ -286,43 +217,90 @@ class WeightCheckpointManager:
                     torch.cuda.synchronize()
 
                 torch.distributed.barrier()
-                
-                if self._is_master and quantize_q5 and quantized_count > 0:
-                    compression_ratio = total_size_before / total_size_after if total_size_after > 0 else 1.0
-                    size_mb_before = total_size_before / (1024 * 1024)
-                    size_mb_after = total_size_after / (1024 * 1024)
-                    self._logger.info(
-                        f"Q5_0 quantization: {quantized_count}/{total_count} tensors, "
-                        f"{size_mb_before:.1f}MB -> {size_mb_after:.1f}MB "
-                        f"(compression ratio: {compression_ratio:.2f}x)"
-                    )
 
         finally:
-            # Always restore original LoRA state, even if gathering fails
             if original_lora_state is not None:
                 _restore_lora_weights_inplace(model, original_lora_state)
 
-        # Always clean up the state dict for HF compatibility
         if any(".base_layer." in key or "lora_A" in key or "lora_B" in key for key in cpu_state.keys()):
             cpu_state = _clean_lora_state_dict(cpu_state)
 
         return cpu_state
 
-    def _save_to_path(self, cpu_state: dict[str, Tensor], model: nn.Module, tokenizer: PreTrainedTokenizer, step: int):
-        """Save weight checkpoint for given step."""
+    def _quantize_and_save(self, raw_state: dict[str, Tensor], model: nn.Module, tokenizer: PreTrainedTokenizer, step: int, quantize_q8: bool):
+        """Quantize raw state and save to disk - runs in background thread."""
         step_path = self._get_step_path(step)
         step_path.mkdir(parents=True, exist_ok=True)
 
-        # Suppress torch.distributed warnings during checkpoint saving
+        self._logger.debug(f"Saving weight checkpoint to {step_path}")
+        start_time = time.time()
+
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
             warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
+
+            # Quantize in background thread if requested
+            if quantize_q8:
+                quantize_start = time.time()
+                final_state = {}
+                quantized_count = 0
+                total_count = 0
+                total_size_before = 0
+                total_size_after = 0
+                
+                for key, value in raw_state.items():
+                    total_count += 1
+                    
+                    if should_quantize_tensor(key, value):
+                        try:
+                            # Quantize this tensor using Q8_0
+                            quantized_value, scales, original_shape = quantize_to_q8_0_per_channel(value)
+                            
+                            # Store quantized weights, scales, and shape
+                            final_state[key] = quantized_value
+                            final_state[f"{key}_scales"] = scales
+                            final_state[f"{key}_shape"] = torch.tensor(original_shape, dtype=torch.int64)
+                            
+                            # Track compression statistics
+                            original_size = value.numel() * 2  # bfloat16 = 2 bytes
+                            compressed_size = quantized_value.numel() * 1 + scales.numel() * 4 + 8 * len(original_shape)  # int8 + float32 scales + shape
+                            total_size_before += original_size
+                            total_size_after += compressed_size
+                            
+                            quantized_count += 1
+                            
+                        except Exception as e:
+                            # If quantization fails, keep original tensor
+                            self._logger.error(f"Failed to quantize tensor {key}: {e}")
+                            final_state[key] = value
+                            total_size_before += value.numel() * 2
+                            total_size_after += value.numel() * 2
+                    else:
+                        # Keep original tensor
+                        final_state[key] = value
+                        total_size_before += value.numel() * 2
+                        total_size_after += value.numel() * 2
+                
+                quantize_time = time.time() - quantize_start
+                
+                if quantized_count > 0:
+                    compression_ratio = total_size_before / total_size_after if total_size_after > 0 else 1.0
+                    size_mb_before = total_size_before / (1024 * 1024)
+                    size_mb_after = total_size_after / (1024 * 1024)
+                    self._logger.info(
+                        f"Background Q8_0 quantization: {quantized_count}/{total_count} tensors, "
+                        f"{size_mb_before:.1f}MB -> {size_mb_after:.1f}MB "
+                        f"(compression ratio: {compression_ratio:.2f}x) in {quantize_time:.2f}s"
+                    )
+                
+                cpu_state = final_state
+            else:
+                cpu_state = raw_state
 
             # Save model weights to temporary file to avoid race condition
             model_path = self._get_model_path(step)
             tmp_model_path = model_path.with_suffix(".tmp")
             torch.save(cpu_state, tmp_model_path)
-            # Rename temporary file to indicate checkpoint is complete
             tmp_model_path.rename(model_path)
 
             # Save model config, generation arguments and tokenizer
@@ -331,41 +309,45 @@ class WeightCheckpointManager:
                 model.generation_config.save_pretrained(step_path)
             tokenizer.save_pretrained(step_path)
 
+        total_time = time.time() - start_time
+        self._logger.debug(f"Saved weight checkpoint to {step_path} in {total_time:.2f} seconds")
+
     def save(
         self,
         model: nn.Module,
         tokenizer: PreTrainedTokenizer,
         step: int,
         dtype: torch.dtype = torch.bfloat16,
-        quantize_q5: bool = True,
+        quantize_q8: bool = True,
     ):
-        """Save a HF-compatible weight-only checkpoint for a given step with optional Q5_0 per-channel quantization."""
+        """Save a HF-compatible weight-only checkpoint for a given step with async Q8_0 quantization."""
         has_lora = _has_lora_layers(model)
 
-        cpu_state = self._gather_weights(model, dtype, has_lora_layers=has_lora, quantize_q5=quantize_q5)
-        if _has_tt_moe_layers(cpu_state):
-            _convert_tt_moe_to_hf_(cpu_state)
+        # Gather raw tensors (with non-blocking transfers), no quantization here
+        raw_state = self._gather_weights(model, dtype, has_lora_layers=has_lora)
+        
+        # Apply TT-MoE conversion to raw state if needed
+        if _has_tt_moe_layers(raw_state):
+            _convert_tt_moe_to_hf_(raw_state)
 
         if self._is_master:
             if self.config.save_async:
                 thread = threading.Thread(
-                    target=self._save_to_path,
-                    args=(cpu_state, model, tokenizer, step),
+                    target=self._quantize_and_save,
+                    args=(raw_state, model, tokenizer, step, quantize_q8),
                     name=f"weight-checkpoint-save-{step}",
                 )
                 thread.start()
             else:
-                self._save_to_path(cpu_state, model, tokenizer, step)
+                self._quantize_and_save(raw_state, model, tokenizer, step, quantize_q8)
 
         return self._get_model_path(step)
 
     def _maybe_clean(self, step: int):
         """Synchronous helper of `clean`."""
-        step = max(step - (self.async_level + 1), 0)  # Consider deleting async_level + 1 steps ago
+        step = max(step - (self.async_level + 1), 0)
         candidate_path_to_delete = self._get_step_path(step)
         keep_for_eval = self.config.interval and step % self.config.interval == 0
-        # For checkpointing step x, we need all weight checkpoints in [x-async_level, x] (for logprob model)
-        # To get [n-k, n] with interval n and buffer k over all natural numbers x, we use the condition (n - (x % n)) % n <= k
         keep_for_ckpt = (
             self.ckpt_config
             and self.ckpt_config.interval
@@ -373,6 +355,9 @@ class WeightCheckpointManager:
             <= self.async_level
         )
         if not (keep_for_eval or keep_for_ckpt):
+            self._logger.debug(
+                f"Removing past weight checkpoint {candidate_path_to_delete} ({keep_for_eval=}, {keep_for_ckpt=})"
+            )
             shutil.rmtree(candidate_path_to_delete, ignore_errors=True)
 
     def maybe_clean(self, step: int):

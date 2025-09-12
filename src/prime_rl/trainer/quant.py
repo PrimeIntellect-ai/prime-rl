@@ -1,8 +1,8 @@
 """
-Symmetric Q6_0 per-channel quantization module with vectorized bit packing.
+Symmetric Q8_0 per-channel quantization module.
 
 Provides functions for quantizing and dequantizing tensors using symmetric 
-int6 quantization with per-channel grouping and vectorized bit operations.
+int8 quantization with per-channel grouping.
 """
 
 import torch
@@ -25,7 +25,7 @@ def compute_group_ranges(out_channels: int, num_channels: int) -> tuple[int, int
 
 
 def quantize_group(group_tensor: torch.Tensor) -> tuple[torch.Tensor, float]:
-    """Quantize a single channel group using symmetric 6-bit quantization."""
+    """Quantize a single channel group using symmetric 8-bit quantization."""
     group_min = group_tensor.min()
     group_max = group_tensor.max()
     
@@ -34,86 +34,25 @@ def quantize_group(group_tensor: torch.Tensor) -> tuple[torch.Tensor, float]:
     abs_max = group_tensor.abs().max()
     assert abs_max > 0, "Group has zero absolute maximum"
     
-    # 6-bit symmetric quantization: range [-31, 31]
-    scale = abs_max / 31.0
-    quantized = (group_tensor / scale).round().clamp(-31, 31)
+    # 8-bit symmetric quantization: range [-127, 127]
+    scale = abs_max / 127.0
+    quantized = (group_tensor / scale).round().clamp(-127, 127)
     
     # Validate output
     actual_min = quantized.min().item()
     actual_max = quantized.max().item()
-    assert -31 <= actual_min <= actual_max <= 31, \
+    assert -127 <= actual_min <= actual_max <= 127, \
         f"Quantized values out of range: [{actual_min}, {actual_max}]"
     
     return quantized.to(torch.int8), scale
 
 
-def pack_5bit_values_vectorized(values: torch.Tensor) -> torch.Tensor:
+def quantize_to_q8_0_per_channel(tensor: torch.Tensor, num_channels: int = 128) -> tuple[torch.Tensor, torch.Tensor, tuple]:
     """
-    Pack 6-bit values into bytes using vectorized operations.
-    4 values (6 bits each) -> 3 bytes (24 bits total)
-    """
-    # Convert to unsigned range [0, 62] for packing
-    unsigned_values = (values + 31).flatten().to(torch.uint8)
-    
-    # Pad to multiple of 4 for packing
-    remainder = len(unsigned_values) % 4
-    if remainder != 0:
-        padding = 4 - remainder
-        unsigned_values = torch.cat([unsigned_values, torch.zeros(padding, dtype=torch.uint8, device=unsigned_values.device)])
-    
-    # Reshape to (N, 4) chunks for vectorized operations
-    chunks = unsigned_values.view(-1, 4)
-    
-    # Vectorized bit packing using tensor operations
-    # Pack 4 6-bit values into 3 bytes (24 bits)
-    byte0 = (chunks[:, 0] << 2) | (chunks[:, 1] >> 4)
-    byte1 = ((chunks[:, 1] & 0xF) << 4) | (chunks[:, 2] >> 2)
-    byte2 = ((chunks[:, 2] & 0x3) << 6) | chunks[:, 3]
-    
-    # Stack and flatten to get final packed bytes
-    packed = torch.stack([byte0, byte1, byte2], dim=1).flatten()
-    
-    return packed
-
-
-def unpack_5bit_values_vectorized(packed_data: torch.Tensor, original_shape: tuple) -> torch.Tensor:
-    """
-    Unpack 6-bit values from packed bytes using vectorized operations.
-    """
-    # Ensure we have complete 3-byte chunks
-    n_complete_chunks = len(packed_data) // 3
-    if n_complete_chunks == 0:
-        # Handle edge case of very small tensors
-        return torch.zeros(original_shape, dtype=torch.int8, device=packed_data.device) - 31
-    
-    # Reshape to (N, 3) chunks for vectorized operations
-    complete_data = packed_data[:n_complete_chunks * 3]
-    chunks = complete_data.view(-1, 3)
-    
-    # Vectorized bit unpacking
-    # Extract 4 6-bit values from 3 bytes
-    val0 = (chunks[:, 0] >> 2) & 0x3F
-    val1 = ((chunks[:, 0] & 0x3) << 4) | ((chunks[:, 1] >> 4) & 0xF)
-    val2 = ((chunks[:, 1] & 0xF) << 2) | ((chunks[:, 2] >> 6) & 0x3)
-    val3 = chunks[:, 2] & 0x3F
-    
-    # Stack and flatten to get unpacked values
-    unpacked = torch.stack([val0, val1, val2, val3], dim=1).flatten()
-    
-    # Convert back to signed range [-31, 31] and trim to original size
-    unpacked = unpacked.to(torch.int8) - 31
-    total_elements = torch.prod(torch.tensor(original_shape)).item()
-    unpacked = unpacked[:total_elements]
-    
-    return unpacked.reshape(original_shape)
-
-
-def quantize_to_q5_0_per_channel(tensor: torch.Tensor, num_channels: int = 128) -> tuple[torch.Tensor, torch.Tensor, tuple]:
-    """
-    Quantize tensor to Q6_0 format using symmetric quantization with per-channel grouping and vectorized bit packing.
+    Quantize tensor to Q8_0 format using symmetric quantization with per-channel grouping.
     
     Mathematical relationship:
-    - quantized = round(tensor / scale).clamp(-31, 31)
+    - quantized = round(tensor / scale).clamp(-127, 127)
     - dequantized = quantized * scale
     
     Args:
@@ -121,7 +60,7 @@ def quantize_to_q5_0_per_channel(tensor: torch.Tensor, num_channels: int = 128) 
         num_channels: Number of channel groups for quantization
         
     Returns:
-        Tuple of (packed_tensor as uint8, scales as float32, original_shape)
+        Tuple of (quantized_tensor as int8, scales as float32, original_shape)
     """
     validate_quantization_input(tensor, num_channels)
     
@@ -144,43 +83,37 @@ def quantize_to_q5_0_per_channel(tensor: torch.Tensor, num_channels: int = 128) 
         scales[group_idx] = scale
         quantized[start_ch:end_ch] = group_quantized
     
-    # Pack the quantized values using vectorized operations
-    packed_data = pack_5bit_values_vectorized(quantized)
-    
-    return packed_data, scales, original_shape
+    return quantized, scales, original_shape
 
 
-def dequantize_from_q5_0_per_channel(
-    packed_tensor: torch.Tensor,
+def dequantize_from_q8_0_per_channel(
+    quantized_tensor: torch.Tensor,
     scales: torch.Tensor,
     original_shape: tuple,
     target_dtype: torch.dtype = torch.bfloat16,
 ) -> torch.Tensor:
     """
-    Dequantize Q6_0 tensor with per-channel scales back to target precision.
+    Dequantize Q8_0 tensor with per-channel scales back to target precision.
     
     Mathematical relationship:
     - dequantized = quantized * scale
     
     Args:
-        packed_tensor: Uint8 packed tensor
+        quantized_tensor: Int8 quantized tensor
         scales: Float32 scales tensor (one per channel group)
-        original_shape: Original tensor shape before packing
+        original_shape: Original tensor shape before quantization
         target_dtype: Target dtype for dequantized tensor
         
     Returns:
         Dequantized tensor in target dtype
     """
-    assert packed_tensor.dtype == torch.uint8, f"Expected uint8 packed tensor, got {packed_tensor.dtype}"
+    assert quantized_tensor.dtype == torch.int8, f"Expected int8 quantized tensor, got {quantized_tensor.dtype}"
     assert scales.dtype == torch.float32, f"Expected float32 scales, got {scales.dtype}"
-    
-    # Unpack the 6-bit values using vectorized operations
-    quantized_tensor = unpack_5bit_values_vectorized(packed_tensor, original_shape)
     
     # Validate quantized tensor range
     quant_min = quantized_tensor.min().item()
     quant_max = quantized_tensor.max().item()
-    assert -31 <= quant_min <= quant_max <= 31, f"Quantized tensor values out of expected range: [{quant_min}, {quant_max}]"
+    assert -127 <= quant_min <= quant_max <= 127, f"Quantized tensor values out of expected range: [{quant_min}, {quant_max}]"
     
     # Convert to float32 for computation
     quantized_f32 = quantized_tensor.to(torch.float32)

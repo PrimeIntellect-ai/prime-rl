@@ -5,41 +5,8 @@ from concurrent.futures import ThreadPoolExecutor
 import threading
 
 
-def _unpack_5bit_values(packed_data: torch.Tensor, original_shape: tuple) -> torch.Tensor:
-    """
-    Unpack 6-bit values from packed bytes using vectorized operations.
-    (Function name kept as 5bit for compatibility, but actually handles 6-bit)
-    """
-    # Ensure we have complete 3-byte chunks
-    n_complete_chunks = len(packed_data) // 3
-    if n_complete_chunks == 0:
-        # Handle edge case of very small tensors
-        return torch.zeros(original_shape, dtype=torch.int8, device=packed_data.device) - 31
-    
-    # Reshape to (N, 3) chunks for vectorized operations
-    complete_data = packed_data[:n_complete_chunks * 3]
-    chunks = complete_data.view(-1, 3)
-    
-    # Vectorized bit unpacking
-    # Extract 4 6-bit values from 3 bytes
-    val0 = (chunks[:, 0] >> 2) & 0x3F
-    val1 = ((chunks[:, 0] & 0x3) << 4) | ((chunks[:, 1] >> 4) & 0xF)
-    val2 = ((chunks[:, 1] & 0xF) << 2) | ((chunks[:, 2] >> 6) & 0x3)
-    val3 = chunks[:, 2] & 0x3F
-    
-    # Stack and flatten to get unpacked values
-    unpacked = torch.stack([val0, val1, val2, val3], dim=1).flatten()
-    
-    # Convert back to signed range [-31, 31] and trim to original size
-    unpacked = unpacked.to(torch.int8) - 31
-    total_elements = torch.prod(torch.tensor(original_shape)).item()
-    unpacked = unpacked[:total_elements]
-    
-    return unpacked.reshape(original_shape)
-
-
-def _dequantize_from_q5_0_per_channel_gpu(
-    packed_tensor: torch.Tensor,
+def _dequantize_from_q8_0_per_channel_gpu(
+    quantized_tensor: torch.Tensor,
     scales: torch.Tensor,
     original_shape: tuple,
     target_dtype: torch.dtype = torch.bfloat16,
@@ -47,20 +14,17 @@ def _dequantize_from_q5_0_per_channel_gpu(
     tensor_name: str = "unknown",
 ) -> torch.Tensor:
     """
-    Dequantize Q6_0 tensor with per-channel scales back to target precision on GPU.
-    Assumes packed_tensor and scales are already on target device.
+    Dequantize Q8_0 tensor with per-channel scales back to target precision on GPU.
+    Assumes quantized_tensor and scales are already on target device.
     """
     # Validation
-    assert packed_tensor.dtype == torch.uint8, f"Expected uint8 packed tensor, got {packed_tensor.dtype}"
+    assert quantized_tensor.dtype == torch.int8, f"Expected int8 quantized tensor, got {quantized_tensor.dtype}"
     assert scales.dtype == torch.float32, f"Expected float32 scales, got {scales.dtype}"
-    
-    # Unpack the 6-bit values (now on GPU)
-    quantized_tensor = _unpack_5bit_values(packed_tensor, original_shape)
     
     # Validate quantized tensor range
     quant_min = quantized_tensor.min().item()
     quant_max = quantized_tensor.max().item()
-    assert -31 <= quant_min <= quant_max <= 31, f"Quantized tensor values out of expected range: [{quant_min}, {quant_max}]"
+    assert -127 <= quant_min <= quant_max <= 127, f"Quantized tensor values out of expected range: [{quant_min}, {quant_max}]"
     
     # Convert to float32 for computation
     quantized_f32 = quantized_tensor.to(torch.float32)
@@ -117,9 +81,9 @@ class ParallelDequantizationBatch:
         self.shapes: Dict[str, tuple] = {}
         self.regular_tensors: Dict[str, torch.Tensor] = {}
         
-    def add_quantized_tensor(self, key: str, packed_tensor: torch.Tensor, scales: torch.Tensor, shape: tuple):
+    def add_quantized_tensor(self, key: str, quantized_tensor: torch.Tensor, scales: torch.Tensor, shape: tuple):
         """Add a quantized tensor to the batch."""
-        self.quantized_tensors[key] = packed_tensor
+        self.quantized_tensors[key] = quantized_tensor
         self.scales[key] = scales
         self.shapes[key] = shape
         
@@ -159,7 +123,7 @@ class ParallelDequantizationBatch:
         # PyTorch will handle the actual GPU parallelism
         def dequantize_single(key: str) -> Tuple[str, torch.Tensor]:
             try:
-                dequantized = _dequantize_from_q5_0_per_channel_gpu(
+                dequantized = _dequantize_from_q8_0_per_channel_gpu(
                     gpu_quantized[key],
                     gpu_scales[key], 
                     self.shapes[key],
@@ -236,8 +200,8 @@ class CheckpointWorker:
                 
                 total_count += 1
                 
-                # Check if this tensor was quantized
-                if key in scales_dict and key in shapes_dict:
+                # Check if this tensor was quantized (Q8_0 tensors are stored as int8)
+                if key in scales_dict and key in shapes_dict and value.dtype == torch.int8:
                     batch.add_quantized_tensor(key, value, scales_dict[key], shapes_dict[key])
                     quantized_count += 1
                 else:
@@ -260,7 +224,7 @@ class CheckpointWorker:
             
             # Log final summary
             if quantized_count > 0:
-                print(f"Successfully dequantized {quantized_count}/{total_count} tensors from Q6_0 to {target_dtype} in parallel on GPU")
+                print(f"Successfully dequantized {quantized_count}/{total_count} tensors from Q8_0 to {target_dtype} in parallel on GPU")
 
         # Clean up state_dict from CPU memory early since we've moved everything to GPU
         self.model_runner.model.load_weights(weights_iterator())
