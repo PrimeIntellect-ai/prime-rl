@@ -219,7 +219,8 @@ def train(config: SFTTrainerConfig):
             memory_profiler.step()
 
         # Synchronize the tensor metrics across all steps and ranks
-        tensor_stats = tensors.compute_stats()
+        tensor_distributions, tensor_metrics = tensors.compute_stats()
+        assert len(tensors) == 0, "Tensors should be empty before the next step"
 
         # Compute step metrics
         num_tokens = config.data.batch_size * config.data.seq_len
@@ -233,9 +234,9 @@ def train(config: SFTTrainerConfig):
         # Log step metrics
         step_time = time.time() - step_start_time
         current_lr = optimizer.param_groups[0]["lr"]
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}%"
-        if "max_vio/mean" in tensor_stats:
-            step_message += f" | Max Vio: {tensor_stats['max_vio/mean']:.4f}"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_metrics['loss/mean']:.4f} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}%"
+        if "max_vio/mean" in tensor_metrics:
+            step_message += f" | Max Vio: {tensor_metrics['max_vio/mean']:.4f}"
         logger.success(step_message)
 
         # Log progress metrics
@@ -265,8 +266,8 @@ def train(config: SFTTrainerConfig):
         monitor.log(optim_metrics)
 
         # Log tensor stats
-        tensor_stats["step"] = progress.step
-        monitor.log(tensor_stats)
+        tensor_metrics["step"] = progress.step
+        monitor.log(tensor_metrics)
 
         # Log time metrics
         time_metrics = {
@@ -278,10 +279,8 @@ def train(config: SFTTrainerConfig):
         monitor.log(time_metrics)
 
         # Log distributions to W&B table if enabled
-        assert all(len(tensors) == 1 for tensors in tensors.values()), "Tensors must be lists of length 1"
-        distributions = {key: tensors[key][0] for key in tensors.keys()}
         monitor.log_distributions(
-            distributions=distributions,
+            distributions=tensor_distributions,
             step=progress.step,
         )
 
