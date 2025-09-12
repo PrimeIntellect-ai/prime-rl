@@ -210,7 +210,7 @@ def train(config: RLTrainerConfig):
                     temperature = micro_batch["temperature"]
 
                     # Compute the logprobs
-                    logits = forward(logprob_model, input_ids, position_ids).contiguous()
+                    logits = forward(logprob_model, input_ids, position_ids).float().contiguous()
                     shifted_logits = shift_logits(logits)
                     shifted_logits = shifted_logits / temperature
                     recomputed_logprobs = selective_log_softmax(shifted_logits, input_ids)
@@ -255,7 +255,7 @@ def train(config: RLTrainerConfig):
             micro_batch_size, seq_len = input_ids.shape
 
             # Forward pass
-            logits = forward(model, input_ids, position_ids).contiguous()
+            logits = forward(model, input_ids, position_ids).float().contiguous()
             shifted_logits = shift_logits(logits)
             shifted_logits = shifted_logits / temperature
             logprobs = selective_log_softmax(shifted_logits, input_ids)
