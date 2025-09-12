@@ -203,10 +203,11 @@ class Tensors(defaultdict):
         assert dist.is_initialized(), "Tensors requires a distributed environment"
         super().__init__(list)
 
-    def compute_stats(self) -> dict[str, float | int]:
+    def compute_stats(self) -> tuple[dict[str, list[float | int]], dict[str, float | int]]:
         """Synchronize the tensor statistic across all ranks for each key and compute relevant statistics."""
 
         metrics = {}
+        distributions = {}
         for key in list(self.keys()):
             # All-gather tensors across steps and ranks (get global distribution)
             tensors = torch.cat(self.pop(key), dim=0).to("cuda")
@@ -221,10 +222,10 @@ class Tensors(defaultdict):
             metrics[f"{key}/min"] = tensors.min().item()
             metrics[f"{key}/max"] = tensors.max().item()
 
-            # Add back all-gathered tensors to self
-            self[key].append(tensors.tolist())
+            # Add back all-gathered tensors as list to distributions
+            distributions[key] = tensors.tolist()
 
-        return metrics
+        return distributions, metrics
 
 
 MEMORY_SNAPSHOT_MAX_ENTRIES = 100000
