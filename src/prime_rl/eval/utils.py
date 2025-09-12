@@ -14,7 +14,7 @@ from verifiers.types import GenerateOutputs, Messages
 
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.orchestrator.config import ClientConfig, EvalConfig, EvalSamplingConfig, ModelConfig
-from prime_rl.orchestrator.utils import parse_completion_tokens, parse_truncated_completions
+from prime_rl.orchestrator.utils import parse_is_truncated_completions, parse_num_completion_tokens
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor import get_monitor
 from prime_rl.utils.utils import capitalize, get_eval_dir, get_step_path
@@ -192,24 +192,9 @@ async def run_eval(
     logger.debug(f"Generated and scored rollouts in {run_eval_time:.2f}s")
 
     rewards = torch.tensor(generate_outputs.reward).reshape(-1, rollouts_per_example).float()
-    if client_config.server_type == "vllm":
-        completion_lens = (
-            torch.tensor(list(map(len, parse_completion_tokens(states=generate_outputs.state))))
-            .reshape(-1, rollouts_per_example)
-            .float()
-        )
-        is_truncated = (
-            torch.tensor(parse_truncated_completions(states=generate_outputs.state))
-            .reshape(-1, rollouts_per_example)
-            .float()
-        )
-    else:
-        # We can probably do a best-effort tokenization to get an approximate token completion length and truncation detection
-        logger.warning(
-            f"Server type {client_config.server_type} not supported for computing completion length and truncated completions."
-        )
-        completion_lens = torch.zeros(len(examples)).reshape(-1, rollouts_per_example).float()
-        is_truncated = torch.zeros(len(examples)).reshape(-1, rollouts_per_example).float()
+    responses = [state["responses"] for state in generate_outputs.state]
+    completion_lens = torch.tensor(parse_num_completion_tokens(responses)).reshape(-1, rollouts_per_example).float()
+    is_truncated = torch.tensor(parse_is_truncated_completions(responses)).reshape(-1, rollouts_per_example).float()
 
     k = rollouts_per_example
     sample_stats = pd.DataFrame({"example_id": example_ids, "reward": rewards.flatten().tolist()})
