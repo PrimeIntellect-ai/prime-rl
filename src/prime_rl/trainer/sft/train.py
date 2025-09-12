@@ -183,10 +183,9 @@ def train(config: SFTTrainerConfig):
 
                 # todo(sami): bring back tt model load balance stats
                 if is_tt_moe_model(model):
-                    load_balance_stats = get_load_balance_stats(model)
-                    batch_max_vio += (
-                        load_balance_stats["max_vio"] / grad_accum_steps
-                    )  # todo(sami): need to check with Jackmin if we should do a max or avg here
+                    max_vio = get_load_balance_stats(model)["max_vio"] / grad_accum_steps
+                    batch_max_vio += max_vio
+                    # todo(sami): need to check with Jackmin if we should do a max or avg here
 
                 # Scale loss by number of gradient accumulation steps
                 loss /= grad_accum_steps
@@ -200,9 +199,9 @@ def train(config: SFTTrainerConfig):
                 loss.backward()
 
             # Debug log with *local, micro step* stats
-            micro_step_message = f"Micro Step {micro_step} | Loss: {batch_loss.item()} | Dataloader Step: {dataloader.state_dict()['dataset_state']['step']}"
-            # if "max_vio" in tensors:
-            #     micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
+            micro_step_message = f"Micro Step {micro_step} | Loss: {loss.item()} | Dataloader Step: {dataloader.state_dict()['dataset_state']['step']}"
+            if is_tt_moe_model(model):
+                micro_step_message += f" | Max Vio: {batch_max_vio.item():.4f}"
             logger.debug(micro_step_message)
 
         # Optionally, clip the gradients
@@ -227,10 +226,11 @@ def train(config: SFTTrainerConfig):
         # <think> in the one gpu scenerio we have M grad accums steps. In distributed they have N = M / W per gpu. So when we normaliez the loss by / N we are missing the W
         # so we need do to an AVG instead of sum <think/> Answers: Need to use AVG instead of SUM
 
-        dist.all_reduce(
-            batch_max_vio, op=dist.ReduceOp.AVG
-        )  # todo(sami): need to check with Jackmin if we should do a max or avg here
-        # <think> need to ask jackmin <tool/> Ask jackmin :
+        if is_tt_moe_model(model):
+            dist.all_reduce(
+                batch_max_vio, op=dist.ReduceOp.AVG
+            )  # todo(sami): need to check with Jackmin if we should do a max or avg here
+            # <think> need to ask jackmin <tool/> Ask jackmin :
 
         # Compute step metrics
         num_tokens = config.data.batch_size * config.data.seq_len
