@@ -174,8 +174,6 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
         )
         raise RuntimeError("Cannot apply LoRA to FSDP-wrapped model. Apply LoRA before setup_fsdp().")
 
-    if not config.enabled:
-        return
 
     target_modules = _find_target_modules(model, config.target_modules)
 
@@ -219,30 +217,78 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
     logger.info(f"LoRA: {adapted_or_trainable:,} adapted or fully trainable out of {total_params:,} parameters")
 
 
-def merge_lora_weights(model: nn.Module) -> nn.Module:
-    """
-    Merge all LoRA weights in the model back into base layers.
+def has_lora_layers(model: nn.Module) -> bool:
+    """Check if model has LoRA layers."""
+    for module in model.modules():
+        if isinstance(module, LoRALinear):
+            return True
+    return False
 
-    Args:
-        model: Model with LoRA layers
+
+def clean_lora_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    """Remove LoRA parameters and fix LoRA base layer key names for HF compatibility."""
+    clean_state_dict = {}
+
+    for key, value in state_dict.items():
+        if "lora_A" in key or "lora_B" in key:
+            continue
+
+        if ".base_layer." in key:
+            new_key = key.replace(".base_layer.", ".")
+            clean_state_dict[new_key] = value
+        else:
+            clean_state_dict[key] = value
+
+    return clean_state_dict
+
+
+def merge_lora_weights_inplace(model: nn.Module) -> Dict[str, Dict[str, torch.Tensor]]:
+    """
+    Merge LoRA weights into base layers in-place and return original LoRA state for restoration.
 
     Returns:
-        Model with LoRA weights merged into base layers
+        Dictionary mapping module names to their original LoRA state
     """
-    logger = get_logger()
+    original_lora_state = {}
     merged_count = 0
 
-    for name, module in list(model.named_modules()):
+    for name, module in model.named_modules():
         if isinstance(module, LoRALinear):
-            merged_layer = module.merge_weights()
+            original_lora_state[name] = {
+                "lora_A": module.lora_A.data.clone(),
+                "lora_B": module.lora_B.data.clone(),
+            }
 
-            _set_module_by_name(model, name, merged_layer)
+            delta_weight = (module.lora_B @ module.lora_A) * module.scaling
+            module.base_layer.weight.data.add_(delta_weight)
+
+            module.lora_A.data.zero_()
+            module.lora_B.data.zero_()
             merged_count += 1
 
-    if merged_count > 0:
-        logger.info(f"Merged {merged_count} LoRA modules back into base model")
+    return original_lora_state
 
-    return model
+
+def restore_lora_weights_inplace(model: nn.Module, original_lora_state: Dict[str, Dict[str, torch.Tensor]]) -> None:
+    """
+    Restore original LoRA weights and subtract merged weights from base layers.
+
+    Args:
+        model: Model with merged LoRA weights
+        original_lora_state: Original LoRA state from merge_lora_weights_inplace
+    """
+    restored_count = 0
+
+    for name, module in model.named_modules():
+        if isinstance(module, LoRALinear) and name in original_lora_state:
+            module.lora_A.data.copy_(original_lora_state[name]["lora_A"])
+            module.lora_B.data.copy_(original_lora_state[name]["lora_B"])
+
+            delta_weight = (module.lora_B @ module.lora_A) * module.scaling
+            module.base_layer.weight.data.sub_(delta_weight)
+            restored_count += 1
+
+
 
 
 def get_lora_state_dict(model: nn.Module) -> Dict[str, torch.Tensor]:
