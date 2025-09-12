@@ -244,7 +244,10 @@ class MemoryProfiler:
         self.step_num + 1
         self.logger.info(f"Dumping memory snapshot at step {self.step_num} at {self.snapshot_path}")
         begin = time.monotonic()
-        file_path = self.snapshot_path / f"step_{self.step_num}" / f"rank_{get_world().rank}.pickle"
+        step_folder = self.snapshot_path / f"step_{self.step_num}"
+
+        step_folder.mkdir(parents=True, exist_ok=True)
+        file_path = step_folder / f"rank_{get_world().rank}.pickle"
         with open(file_path, "wb") as output:
             pickle.dump(torch.cuda.memory._snapshot(), output)
         self.logger.info(
