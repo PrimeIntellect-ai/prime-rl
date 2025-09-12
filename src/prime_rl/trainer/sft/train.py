@@ -186,7 +186,7 @@ def train(config: SFTTrainerConfig):
                 # Scale loss by number of gradient accumulation steps
                 loss /= grad_accum_steps
 
-                batch_loss += loss.sum()
+                batch_loss += loss
 
                 # Delete logits before backward pass to avoid memory spike
                 del logits
