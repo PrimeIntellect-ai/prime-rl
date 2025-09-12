@@ -50,7 +50,7 @@ def get_model(config: ModelConfig) -> nn.Module:
         config.name, attn_implementation=config.attn, trust_remote_code=config.trust_remote_code
     )
     config_model.use_cache = False
-    
+
     model_cls = AutoLigerKernelForCausalLM if config.liger_kernel else AutoModelForCausalLM
     model = model_cls.from_pretrained(
         pretrained_model_name_or_path=config.name,
@@ -114,4 +114,4 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
 def forward(
     model: nn.Module, input_ids: Int[Tensor, "batch seq"], position_ids: Int[Tensor, "batch seq"]
 ) -> Float[Tensor, "batch seq vocab"]:
-    return model(input_ids=input_ids, position_ids=position_ids).logits.float()
+    return model(input_ids=input_ids, position_ids=position_ids).logits
