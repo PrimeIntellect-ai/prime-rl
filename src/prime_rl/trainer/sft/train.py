@@ -17,15 +17,12 @@ from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     setup_tokenizer,
     setup_model,
-    is_tt_moe_model,
-    get_load_balance_stats,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import setup_dataloader, setup_dataset
 from prime_rl.trainer.utils import (
     MemoryProfiler,
-    Tensors,
     setup_torch_distributed,
     print_benchmark,
 )
@@ -33,6 +30,7 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format
+import torch.distributed as dist
 
 
 @clean_exit
@@ -142,13 +140,14 @@ def train(config: SFTTrainerConfig):
         step_start_time = time.time()
         forward_backward_start_time = time.time()
         epoch = 0
-        tensors = Tensors()  # Used to accumulate tensor statistics across grad acc and ranks for logging
         grad_accum_steps = (
             config.data.batch_size
             * config.model.cp
             * config.model.tp
             // (config.data.micro_batch_size * world.world_size)
         )
+
+        batch_loss = torch.tensor(0.0).to("cuda")
         for micro_step in range(grad_accum_steps):
             micro_batch = next(dataiter)
             input_ids = micro_batch["input_ids"].to("cuda")
@@ -173,21 +172,21 @@ def train(config: SFTTrainerConfig):
                 B, L, V = logits.shape
 
                 # Compute loss
-                loss = cross_entropy(logits.view(-1, V), target_ids.view(-1), reduction="none").view(B, L)
+                # todo(sami): check that the ignore index doesn't impact the eos prediction it should not as the eos is a target of the last non eos token
+                loss = cross_entropy(
+                    logits.view(-1, V), target_ids.view(-1), reduction="mean", ignore_index=tokenizer.pad_token_id
+                )
 
-                if is_tt_moe_model(model):
-                    load_balance_stats = get_load_balance_stats(model)
-                    for k, v in load_balance_stats.items():
-                        tensors[k].append(v)
-
-                # Add tensors to tensor dict for logging purposes
-                tensors["loss"].append(loss[loss_mask].detach().to("cpu"))
-
-                # Mean reduction of unmasked tokens
-                loss = loss[loss_mask].mean()
+                # todo(sami): bring back tt model load balance stats
+                # if is_tt_moe_model(model):
+                #     load_balance_stats = get_load_balance_stats(model)
+                #     for k, v in load_balance_stats.items():
+                #         tensors[k].append(v)
 
                 # Scale loss by number of gradient accumulation steps
                 loss /= grad_accum_steps
+
+                batch_loss += loss.sum()
 
                 # Delete logits before backward pass to avoid memory spike
                 del logits
@@ -196,9 +195,9 @@ def train(config: SFTTrainerConfig):
                 loss.backward()
 
             # Debug log with *local, micro step* stats
-            micro_step_message = f"Micro Step {micro_step} | Loss: {tensors['loss'][-1].mean().item():.4f} | Dataloader Step: {dataloader.state_dict()['dataset_state']['step']}"
-            if "max_vio" in tensors:
-                micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
+            micro_step_message = f"Micro Step {micro_step} | Loss: {batch_loss.item()} | Dataloader Step: {dataloader.state_dict()['dataset_state']['step']}"
+            # if "max_vio" in tensors:
+            #     micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
 
         # Optionally, clip the gradients
@@ -218,7 +217,10 @@ def train(config: SFTTrainerConfig):
             memory_profiler.step()
 
         # Synchronize the tensor metrics across all steps and ranks
-        tensor_stats = tensors.compute_stats()
+
+        dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)  # todo(sami): I am always confuse but here is my cot
+        # <think> in the one gpu scenerio we have M grad accums steps. In distributed they have N = M / W per gpu. So when we normaliez the loss by / N we are missing the W
+        # so we need do to an AVG instead of sum <think/> Answers: Need to use AVG instead of SUM
 
         # Compute step metrics
         num_tokens = config.data.batch_size * config.data.seq_len
@@ -232,9 +234,9 @@ def train(config: SFTTrainerConfig):
         # Log step metrics
         step_time = time.time() - step_start_time
         current_lr = optimizer.param_groups[0]["lr"]
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}%"
-        if "max_vio/mean" in tensor_stats:
-            step_message += f" | Max Vio: {tensor_stats['max_vio/mean']:.4f}"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {batch_loss.item()} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}%"
+        # if "max_vio/mean" in tensor_stats:
+        #     step_message += f" | Max Vio: {tensor_stats['max_vio/mean']:.4f}"
         logger.success(step_message)
 
         # Log progress metrics
@@ -263,9 +265,12 @@ def train(config: SFTTrainerConfig):
         }
         monitor.log(optim_metrics)
 
+        loss_log_metrics = {
+            "loss/mean": batch_loss.item(),
+            "step": progress.step,
+        }
         # Log tensor stats
-        tensor_stats["step"] = progress.step
-        monitor.log(tensor_stats)
+        monitor.log(loss_log_metrics)
 
         # Log time metrics
         time_metrics = {
@@ -275,14 +280,6 @@ def train(config: SFTTrainerConfig):
             "step": progress.step,
         }
         monitor.log(time_metrics)
-
-        # Log distributions to W&B table if enabled
-        assert all(len(tensors) == 1 for tensors in tensors.values()), "Tensors must be lists of length 1"
-        distributions = {key: tensors[key][0] for key in tensors.keys()}
-        monitor.log_distributions(
-            distributions=distributions,
-            step=progress.step,
-        )
 
         is_first_step = False
         progress.step += 1
