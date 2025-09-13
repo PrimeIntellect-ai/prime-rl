@@ -12,6 +12,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.config import ActivationCheckpointConfig, ModelConfig
+from prime_rl.trainer.lora import apply_lora_to_model
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
 
@@ -101,6 +102,11 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
 
 def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
     model = get_model(config)
+
+    # Apply LoRA before FSDP setup
+    if config.lora is not None:
+        apply_lora_to_model(model, config.lora)
+
     setup_fsdp(model, config, parallel_dims)
     if config.ac is not None:
         apply_ac(model, config.ac)
