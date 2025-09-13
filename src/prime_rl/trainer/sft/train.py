@@ -220,7 +220,6 @@ def train(config: SFTTrainerConfig):
             memory_profiler.step()
 
         # Synchronize the tensor metrics across all steps and ranks
-
         dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)
 
         if is_tt_moe_model(model):
