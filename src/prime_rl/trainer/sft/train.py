@@ -183,24 +183,22 @@ def train(config: SFTTrainerConfig):
                     dist.all_reduce(max_vio, op=dist.ReduceOp.MAX)
                     batch_max_vio += max_vio / grad_accum_steps
 
+                # Compute average loss over unmasked tokens
                 loss = loss[loss_mask].mean()
 
-                # Scale loss by number of gradient accumulation steps
-                loss /= grad_accum_steps
-
-                # Accumulate loss
-                batch_loss += loss
+                # Accumulate average loss over gradient accumulation steps
+                batch_loss += loss / grad_accum_steps
 
                 # Delete logits before backward pass to avoid memory spike
                 del logits
 
                 # Backward pass
-                loss.backward()
+                (loss / grad_accum_steps).backward()
 
             # Debug log with *local, micro step* stats
             micro_step_message = f"Micro Step {micro_step} | Loss: {loss.item()} | Dataloader Step: {dataloader.state_dict()['dataset_state']['step']}"
             if is_tt_moe_model(model):
-                micro_step_message += f" | Max Vio: {batch_max_vio.item():.4f}"
+                micro_step_message += f" | Max Vio: {max_vio.item():.4f}"
             logger.debug(micro_step_message)
 
         # Optionally, clip the gradients
