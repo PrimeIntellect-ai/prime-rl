@@ -1,5 +1,6 @@
 import time
 from contextlib import nullcontext
+from typing import TYPE_CHECKING
 
 # Import environment before any other imports
 # ruff: noqa: I001
@@ -55,6 +56,7 @@ def train(config: SFTTrainerConfig):
     # Set precision
     setup_torch_distributed()
     torch.set_float32_matmul_precision("high")
+    torch._dynamo.config.capture_scalar_outputs = True  # for torch.compile of the loss
 
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model, config.data.seq_len)
@@ -63,6 +65,12 @@ def train(config: SFTTrainerConfig):
     logger.info(f"Initializing model and tokenizer ({config.model})")
     model = setup_model(config.model, parallel_dims)
     tokenizer = setup_tokenizer(config.model)
+
+    loss_fn = cross_entropy
+    if config.model.compile and not TYPE_CHECKING:
+        # here we use TYPE_CHECKING to keep the signature of the function even if it's compiled
+        logger.info("Compiling cross_entropy")
+        loss_fn = torch.compile(cross_entropy)
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -176,7 +184,7 @@ def train(config: SFTTrainerConfig):
                 B, L, V = logits.shape
 
                 # Compute loss
-                loss = cross_entropy(logits.view(-1, V), target_ids.view(-1), reduction="none").view(B, L)
+                loss = loss_fn(logits.view(-1, V), target_ids.view(-1), reduction="none").view(B, L)
 
                 if is_tt_moe_model(model):
                     max_vio = get_load_balance_stats(model)["max_vio"] / grad_accum_steps
