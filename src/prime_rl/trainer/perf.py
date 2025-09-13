@@ -1,3 +1,4 @@
+import subprocess
 import time
 
 import torch
@@ -56,26 +57,38 @@ class PerfCounter:
         """
         Peak BF16 FLOPs (without sparsity)
 
-        From: https://github.com/pytorch/torchtitan/blob/05e47c38d99fdb1dd39aeba76f080e529a425c5c/torchtitan/tools/utils.py#L69
+        From: https://github.com/pytorch/torchtitan/blob/d240be0cf6793a5f09dc1bf718e56be346f4761a/torchtitan/tools/utils.py#L67
         """
+        try:
+            # Run the lspci command and capture the output
+            result = subprocess.run(["lspci"], stdout=subprocess.PIPE, text=True)
+            # Filter the output for lines containing both "NVIDIA" and "H100"
+            filtered_lines = [line for line in result.stdout.splitlines() if "NVIDIA" in line and "H100" in line]
+            # Join all filtered lines into a single string
+            device_name = " ".join(filtered_lines) or device_name
+        except FileNotFoundError as e:
+            self._logger.warning(f"Error running lspci: {e}, fallback to use device_name")
         if "A100" in device_name:
-            # https://www.nvidia.com/en-us/data-center/a100/
+            # data from https://www.nvidia.com/en-us/data-center/a100/
             return 312e12
-        if "H100" in device_name or "H200" in device_name:
-            # https://www.nvidia.com/en-us/data-center/h100/
-            # https://resources.nvidia.com/en-us-data-center-overview-mc/en-us-data-center-overview/hpc-datasheet-sc23-h200
+        elif "H100" in device_name:
+            # data from https://www.nvidia.com/en-us/data-center/h100/
+            # NOTE: Specifications are one-half lower without sparsity.
             if "NVL" in device_name:
                 return 835e12
             elif "PCIe" in device_name:
                 return 756e12
-            else:  # For H100 SXM and other variants
+            else:  # for H100 SXM and other variants
                 return 989e12
-        if "B200" in device_name:
-            # https://nvdam.widen.net/s/wwnsxrhm2w/blackwell-datasheet-3384703
-            return 2.25e15  # This is half of the FLOPS reported in torchtitan
-        else:
-            self._logger.warning(f"Peak FLOPS undefined for `{device_name}`. Falling back to A100 (312 TFLOPS)")
-            return 312e12
+        elif "H200" in device_name:
+            # data from https://www.nvidia.com/en-us/data-center/h200/
+            return 989e12
+        elif "B200" in device_name:
+            # data from https://nvdam.widen.net/s/wwnsxrhm2w/blackwell-datasheet-3384703
+            return 2.25e15
+        else:  # for other GPU types, assume A100
+            self._logger.warning(f"Peak flops undefined for: {device_name}, fallback to A100")
+        return 312e12
 
     @staticmethod
     def get_active_mm_params(config: PretrainedConfig) -> float:
