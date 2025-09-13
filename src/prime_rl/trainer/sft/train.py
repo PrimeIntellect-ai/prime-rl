@@ -297,7 +297,6 @@ def train(config: SFTTrainerConfig):
         progress.step += 1
 
     # Log final (immutable) distributions to W&B table
-    logger.info("Logging final distributions as W&B table")
     monitor.log_final_distributions()
 
     # Write final checkpoint
