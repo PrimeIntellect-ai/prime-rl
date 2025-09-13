@@ -105,7 +105,11 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
     if config.ac is not None:
         apply_ac(model, config.ac)
     if config.compile:
-        model = torch.compile(model)
+        for layer_id, transformer_block in model.model.layers.named_children():
+            transformer_block = torch.compile(transformer_block, fullgraph=True)
+            transformer_block = torch.compile(transformer_block)
+            # model.model.layers.register_module(layer_id, transformer_block)
+
     # TODO: This should be type-hinted as FSDP version of the model
     return model
 
