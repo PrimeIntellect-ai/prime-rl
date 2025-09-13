@@ -179,9 +179,9 @@ def train(config: SFTTrainerConfig):
                 loss = cross_entropy(logits.view(-1, V), target_ids.view(-1), reduction="none").view(B, L)
 
                 if is_tt_moe_model(model):
-                    max_vio = get_load_balance_stats(model)["max_vio"] / grad_accum_steps
-                    # TODO(sami): Check with Jackmin if we should do a max or avg here
-                    batch_max_vio += max_vio
+                    max_vio = get_load_balance_stats(model)["max_vio"]
+                    dist.all_reduce(max_vio, op=dist.ReduceOp.MAX)
+                    batch_max_vio += max_vio / grad_accum_steps
 
                 loss = loss[loss_mask].mean()
 
@@ -221,10 +221,6 @@ def train(config: SFTTrainerConfig):
 
         # Synchronize the tensor metrics across all steps and ranks
         dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)
-
-        if is_tt_moe_model(model):
-            # TODO(sami): Check with Jackmin if we should do a max or avg here
-            dist.all_reduce(batch_max_vio, op=dist.ReduceOp.AVG)
 
         # Compute step metrics
         num_tokens = config.data.batch_size * config.data.seq_len
