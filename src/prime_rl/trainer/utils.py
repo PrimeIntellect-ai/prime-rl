@@ -20,7 +20,7 @@ from prime_rl.utils.utils import format_num, format_time
 
 def setup_torch_distributed():
     torch.cuda.set_device(get_world().rank)
-    dist.init_process_group(device_id=torch.device("cuda", torch.cuda.current_device()))
+    dist.init_process_group(backend="cpu:gloo,cuda:nccl", device_id=torch.device("cuda", torch.cuda.current_device()))
 
 
 def get_response_lengths(position_ids: torch.Tensor) -> list[int]:

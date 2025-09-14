@@ -179,7 +179,7 @@ def train(config: SFTTrainerConfig):
                 loss = cross_entropy(logits.view(-1, V), target_ids.view(-1), reduction="none").view(B, L)
 
                 if is_tt_moe_model(model):
-                    max_vio = get_load_balance_stats(model)["max_vio"]
+                    max_vio = get_load_balance_stats(model)["max_vio"].mean()
                     dist.all_reduce(max_vio, op=dist.ReduceOp.MAX)
                     batch_max_vio += max_vio / grad_accum_steps
 
