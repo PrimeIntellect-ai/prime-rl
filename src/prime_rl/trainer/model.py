@@ -8,11 +8,6 @@ from jaxtyping import Float, Int, jaxtyped
 from liger_kernel.transformers import AutoLigerKernelForCausalLM
 from torch import Tensor
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
-
-if torch.__version__.startswith("2.7"):
-    from torch.distributed.checkpoint import _HuggingFaceStorageReader as HuggingFaceStorageReader
-else:
-    from torch.distributed.checkpoint import HuggingFaceStorageReader
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, fully_shard
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -94,6 +89,8 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
 
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
+    from torch.distributed.checkpoint import HuggingFaceStorageReader
+
     model.to_empty(device="cuda")
     path = f"hf://{config.name}"
     dcp.load(
@@ -116,9 +113,15 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
 
 
 def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
-    model = get_model(config, device=torch.device("meta"))
-    setup_fsdp(model, config, parallel_dims)
-    load_dcp_from_hf(model, config)
+    if torch.__version__.startswith("2.7"):
+        # TODO: Remove this once we dont support torch 2.7
+        # Torch 2.7 has a HF Reader but it doesnt support small models without model.safetensors.index.json
+        model = get_model(config, device=torch.device("cpu"))
+        setup_fsdp(model, config, parallel_dims)
+    else:
+        model = get_model(config, device=torch.device("meta"))
+        setup_fsdp(model, config, parallel_dims)
+        load_dcp_from_hf(model, config)
     if config.ac is not None:
         apply_ac(model, config.ac)
     if config.compile:
