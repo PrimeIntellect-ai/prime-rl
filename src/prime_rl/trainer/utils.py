@@ -19,7 +19,7 @@ from prime_rl.utils.utils import format_num, format_time
 
 
 def setup_torch_distributed():
-    torch.cuda.set_device(get_world().rank)
+    torch.cuda.set_device(get_world().local_rank)
     dist.init_process_group(backend="cpu:gloo,cuda:nccl", device_id=torch.device("cuda", torch.cuda.current_device()))
 
 
