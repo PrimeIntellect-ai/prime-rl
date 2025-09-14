@@ -187,7 +187,7 @@ def train(config: SFTTrainerConfig):
                 loss = loss[loss_mask].mean()
 
                 # Accumulate average loss over gradient accumulation steps
-                batch_loss += loss / grad_accum_steps
+                batch_loss += loss.detach() / grad_accum_steps
 
                 # Delete logits before backward pass to avoid memory spike
                 del logits
