@@ -1,12 +1,14 @@
 import logging
 
 import torch
+import torch.distributed.checkpoint as dcp
 import torch.nn as nn
 from beartype import beartype as typechecker
 from jaxtyping import Float, Int, jaxtyped
 from liger_kernel.transformers import AutoLigerKernelForCausalLM
 from torch import Tensor
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
+from torch.distributed.checkpoint import HuggingFaceStorageReader
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, fully_shard
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -45,18 +47,19 @@ def get_load_balance_stats(model: nn.Module, reset_stats: bool = True) -> dict[s
     return {"max_vio": torch.tensor(per_layer_max_vio)}
 
 
-def get_model(config: ModelConfig) -> nn.Module:
+def get_model(config: ModelConfig, device: torch.device = torch.device("cpu")) -> nn.Module:
     config_model = AutoConfig.from_pretrained(
         config.name, attn_implementation=config.attn, trust_remote_code=config.trust_remote_code
     )
     config_model.use_cache = False
 
-    model_cls = AutoLigerKernelForCausalLM if config.liger_kernel else AutoModelForCausalLM
-    model = model_cls.from_pretrained(
-        pretrained_model_name_or_path=config.name,
-        config=config_model,
-        trust_remote_code=config.trust_remote_code,
-    )
+    with device:
+        model_cls = AutoLigerKernelForCausalLM if config.liger_kernel else AutoModelForCausalLM
+        model = model_cls.from_pretrained(
+            pretrained_model_name_or_path=config.name,
+            config=config_model,
+            trust_remote_code=config.trust_remote_code,
+        )
 
     return model
 
@@ -86,6 +89,15 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     fully_shard(model, mesh=hsdp_mesh, mp_policy=mp_policy, reshard_after_forward=config.reshard_after_forward)
 
 
+def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
+    model.to_empty(device="cuda")
+    path = f"hf://{config.name}"
+    dcp.load(
+        model.state_dict(),
+        storage_reader=HuggingFaceStorageReader(path=path),
+    )
+
+
 def reshard_module(model: nn.Module):
     for module in model.modules():
         if isinstance(module, FSDPModule):
@@ -100,8 +112,9 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
 
 
 def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
-    model = get_model(config)
+    model = get_model(config, device=torch.device("meta"))
     setup_fsdp(model, config, parallel_dims)
+    load_dcp_from_hf(model, config)
     if config.ac is not None:
         apply_ac(model, config.ac)
     if config.compile:
