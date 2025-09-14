@@ -8,7 +8,11 @@ from jaxtyping import Float, Int, jaxtyped
 from liger_kernel.transformers import AutoLigerKernelForCausalLM
 from torch import Tensor
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
-from torch.distributed.checkpoint import HuggingFaceStorageReader
+
+if torch.__version__.startswith("2.7"):
+    from torch.distributed.checkpoint import _HuggingFaceStorageReader as HuggingFaceStorageReader
+else:
+    from torch.distributed.checkpoint import HuggingFaceStorageReader
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, fully_shard
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from transformers.tokenization_utils import PreTrainedTokenizer
