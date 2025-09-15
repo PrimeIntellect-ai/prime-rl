@@ -87,8 +87,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         )
 
     fully_shard(model, mesh=hsdp_mesh, mp_policy=mp_policy, reshard_after_forward=config.reshard_after_forward)
-    dp = get_world().world_size // parallel_dims.non_data_parallel_size # TODO: We can probably get this in a cleaner way?
-    get_logger().info(f"Set up FSDP (DP={dp}, CP={config.cp}, TP={config.tp}, EP={config.ep})")
 
 
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
