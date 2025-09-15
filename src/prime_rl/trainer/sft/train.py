@@ -91,13 +91,14 @@ def train(config: SFTTrainerConfig):
 
     # Check that the world size and batch configuration is compatible
     num_micro_batches = config.data.batch_size // config.data.micro_batch_size
-    if world.world_size > num_micro_batches:
+    dp_size = world.world_size // parallel_dims.non_data_parallel_size
+    if dp_size > num_micro_batches:
         raise ValueError(
-            f"There must be at least one micro batch per rank, but only have {num_micro_batches} micro batches for {world.world_size} ranks."
+            f"There must be at least one micro batch per rank, but only have {num_micro_batches} micro batches for {dp_size} ranks."
         )
-    if num_micro_batches % world.world_size != 0:
+    if num_micro_batches % dp_size != 0:
         raise ValueError(
-            f"The number of micro batches ({num_micro_batches}) must be divisible by the world size ({world.world_size})."
+            f"The number of micro batches ({num_micro_batches}) must be divisible by the world size ({dp_size})."
         )
 
     # Optionally, resume training from a checkpoint
