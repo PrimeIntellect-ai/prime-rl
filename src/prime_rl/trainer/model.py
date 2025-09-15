@@ -136,4 +136,4 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
 def forward(
     model: nn.Module, input_ids: Int[Tensor, "batch seq"], position_ids: Int[Tensor, "batch seq"]
 ) -> Float[Tensor, "batch seq vocab"]:
-    return model(input_ids=input_ids, position_ids=position_ids).logits.float()
+    return model(input_ids=input_ids, position_ids=position_ids).logits
