@@ -86,6 +86,16 @@ def compute_loss(
     total_clipped_importance_ratio = []
     total_is_clipped = []
 
+    if loss_config.type == "gepo":
+        # https://arxiv.org/abs/2508.17850
+        # Compute the exceptation of Sequence-level old Probability
+        seq_old_probs = torch.stack(
+            [((old_per_token_logprobs[per_token_loss_mask]).sum() / torch.clamp_min(per_token_loss_mask.sum(), 1)).exp() for
+             old_per_token_logprobs,per_token_loss_mask in zip(old_logprobs,loss_mask)])
+        normalize_seq_old_probs = seq_old_probs / seq_old_probs.sum()
+        # $\log \mathbb{E}_{q(\cdot|x)} q(y|x)$
+        log_expectation_old_probs = (seq_old_probs * normalize_seq_old_probs).sum().log()
+
     for logprobs, old_logprobs, advantages, loss_mask in zip(logprobs, old_logprobs, advantages, loss_mask):
         log_importance_ratio = logprobs - old_logprobs
 
@@ -94,6 +104,10 @@ def compute_loss(
             seq_log_importance_ratio = (log_importance_ratio[loss_mask]).sum() / torch.clamp_min(loss_mask.sum(), 1)
             log_importance_ratio = logprobs - logprobs.detach() + seq_log_importance_ratio.detach()
             log_importance_ratio = torch.clamp(log_importance_ratio, max=10.0)
+        elif loss_config.type == "gepo":
+            seq_logprobs =  (logprobs[loss_mask]).sum() / torch.clamp_min(loss_mask.sum(), 1)
+            seq_log_importance_ratio = seq_logprobs - log_expectation_old_probs
+            log_importance_ratio = logprobs - logprobs.detach() +  seq_log_importance_ratio.detach()
 
         importance_ratio = torch.exp(log_importance_ratio)
         clipped_importance_ratio = torch.clamp(importance_ratio, max=loss_config.clip_ratio)
