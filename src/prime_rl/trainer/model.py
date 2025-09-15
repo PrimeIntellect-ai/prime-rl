@@ -54,11 +54,14 @@ def get_model(config: ModelConfig, device: torch.device = torch.device("cpu")) -
 
     with device:
         model_cls = AutoLigerKernelForCausalLM if config.liger_kernel else AutoModelForCausalLM
-        model = model_cls.from_pretrained(
-            pretrained_model_name_or_path=config.name,
-            config=config_model,
-            trust_remote_code=config.trust_remote_code,
-        )
+        if device == torch.device("meta"):
+            model = model_cls.from_config(config_model, trust_remote_code=config.trust_remote_code)
+        else:
+            model = model_cls.from_pretrained(
+                pretrained_model_name_or_path=config.name,
+                config=config_model,
+                trust_remote_code=config.trust_remote_code,
+            )
 
     return model
 
