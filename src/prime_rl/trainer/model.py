@@ -15,6 +15,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from prime_rl.trainer.config import ActivationCheckpointConfig, ModelConfig
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
+from prime_rl.trainer.world import get_world
 
 # Add filter to the standard logging module for transformers.modeling_utils to supress the
 # flash attention dtype warnings since FSDP is used to handle mixed precision.
@@ -86,6 +87,8 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         )
 
     fully_shard(model, mesh=hsdp_mesh, mp_policy=mp_policy, reshard_after_forward=config.reshard_after_forward)
+    dp = get_world().world_size // parallel_dims.non_data_parallel_size # TODO: We can probably get this in a cleaner way?
+    get_logger().info(f"Set up FSDP (DP={dp}, CP={config.cp}, TP={config.tp}, EP={config.ep})")
 
 
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
@@ -106,12 +109,13 @@ def reshard_module(model: nn.Module):
         if isinstance(module, FSDPModule):
             module.reshard()
 
-
+# Adapted from https://github.com/pytorch/torchtitan/blob/d240be0cf6793a5f09dc1bf718e56be346f4761a/torchtitan/distributed/activation_checkpoint.py#L127
 def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
     for layer_id, (layer_name, transformer_block) in enumerate(model.model.layers.named_children()):
         if layer_id % ac_config.freq == 0:
             transformer_block = checkpoint_wrapper(transformer_block, preserve_rng_state=False)
         model.model.layers.register_module(layer_name, transformer_block)
+    get_logger().info(f"Applied activation checkpointing (freq={ac_config.freq})")
 
 
 def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
@@ -119,15 +123,19 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
         # TODO: Remove this once we dont support torch 2.7
         # Torch 2.7 has a HF Reader but it doesnt support small models without model.safetensors.index.json
         model = get_model(config, device=torch.device("cpu"))
+        if config.ac is not None:
+            apply_ac(model, config.ac)
+        if config.compile:
+            model = torch.compile(model)
         setup_fsdp(model, config, parallel_dims)
     else:
         model = get_model(config, device=torch.device("meta"))
+        if config.ac is not None:
+            apply_ac(model, config.ac)
+        if config.compile:
+            model = torch.compile(model)
         setup_fsdp(model, config, parallel_dims)
         load_dcp_from_hf(model, config)
-    if config.ac is not None:
-        apply_ac(model, config.ac)
-    if config.compile:
-        model = torch.compile(model)
     # TODO: This should be type-hinted as FSDP version of the model
     return model
 
