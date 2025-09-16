@@ -76,17 +76,27 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
     # TODO: Support dp_replicate
     hsdp_mesh = parallel_dims.world_mesh["dp_shard_cp"]
-    for layer_id, transformer_block in enumerate(model.model.layers):
-        if config.reshard_after_forward:
-            layer_reshard_after_forward = layer_id < len(model.model.layers) - 1
-        else:
-            layer_reshard_after_forward = False
+
+    fully_shard(
+        model.model.embed_tokens,
+        mesh=hsdp_mesh,
+        mp_policy=mp_policy,
+        reshard_after_forward=config.reshard_after_forward,
+    )
+
+    for transformer_block in model.model.layers:
         fully_shard(
             transformer_block,
             mesh=hsdp_mesh,
             mp_policy=mp_policy,
-            reshard_after_forward=layer_reshard_after_forward,
+            reshard_after_forward=config.reshard_after_forward,
         )
+    fully_shard(
+        [model.lm_head, model.model.norm],
+        mesh=hsdp_mesh,
+        mp_policy=mp_policy,
+        reshard_after_forward=config.reshard_after_forward,
+    )
 
     fully_shard(model, mesh=hsdp_mesh, mp_policy=mp_policy, reshard_after_forward=config.reshard_after_forward)
 
@@ -118,16 +128,23 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
 
 
 def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
-    model = get_model(config, device=torch.device("cpu"))
-    setup_fsdp(model, config, parallel_dims)
-    # TODO: This is used if the model is loaded with meta device to save cpu memory
-    # However, the loading seems to be wrong as the loss and reward curves are different
-    # load_dcp_from_hf(model, config)
+    device = torch.device("cpu")
+    model = get_model(config, device=device)
+
+    # the right order is AC -> Compile -> FSDP
     if config.ac is not None:
         apply_ac(model, config.ac)
     if config.compile:
         model = torch.compile(model)
-    # TODO: This should be type-hinted as FSDP version of the model
+
+    setup_fsdp(model, config, parallel_dims)
+
+    # if device == torch.device("meta"):
+    # TODO: This is used if the model is loaded with meta device to save cpu memory
+    # However, the loading seems to be wrong as the loss and reward curves are different
+    # load_dcp_from_hf(model, config)
+    #     load_dcp_from_hf(model, config)
+
     return model
 
 
