@@ -12,7 +12,7 @@ from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, fully_shard
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.trainer.config import ActivationCheckpointConfig, ModelConfig
+from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, ModelConfig
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
 
@@ -76,17 +76,27 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
     # TODO: Support dp_replicate
     hsdp_mesh = parallel_dims.world_mesh["dp_shard_cp"]
-    for layer_id, transformer_block in enumerate(model.model.layers):
-        if config.reshard_after_forward:
-            layer_reshard_after_forward = layer_id < len(model.model.layers) - 1
-        else:
-            layer_reshard_after_forward = False
+
+    fully_shard(
+        model.model.embed_tokens,
+        mesh=hsdp_mesh,
+        mp_policy=mp_policy,
+        reshard_after_forward=config.reshard_after_forward,
+    )
+
+    for transformer_block in model.model.layers:
         fully_shard(
             transformer_block,
             mesh=hsdp_mesh,
             mp_policy=mp_policy,
-            reshard_after_forward=layer_reshard_after_forward,
+            reshard_after_forward=config.reshard_after_forward,
         )
+    fully_shard(
+        [model.lm_head, model.model.norm],
+        mesh=hsdp_mesh,
+        mp_policy=mp_policy,
+        reshard_after_forward=config.reshard_after_forward,
+    )
 
     fully_shard(model, mesh=hsdp_mesh, mp_policy=mp_policy, reshard_after_forward=config.reshard_after_forward)
 
@@ -117,21 +127,26 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
         model.model.layers.register_module(layer_name, transformer_block)
 
 
+def apply_compile(model: nn.Module, compile_config: CompileConfig):
+    for layer_id, transformer_block in enumerate(model.model.layers):
+        model.model.layers[layer_id] = torch.compile(transformer_block, fullgraph=compile_config.fullgraph)
+
+
 def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
-    if torch.__version__.startswith("2.7"):
-        # TODO: Remove this once we dont support torch 2.7
-        # Torch 2.7 has a HF Reader but it doesnt support small models without model.safetensors.index.json
-        model = get_model(config, device=torch.device("cpu"))
-        setup_fsdp(model, config, parallel_dims)
-    else:
-        model = get_model(config, device=torch.device("meta"))
-        setup_fsdp(model, config, parallel_dims)
-        load_dcp_from_hf(model, config)
+    device = torch.device("cpu") if torch.__version__.startswith("2.7") else torch.device("meta")
+    model = get_model(config, device=device)
+
+    # the right order is AC -> Compile -> FSDP
     if config.ac is not None:
         apply_ac(model, config.ac)
-    if config.compile:
-        model = torch.compile(model)
-    # TODO: This should be type-hinted as FSDP version of the model
+    if config.compile is not None:
+        apply_compile(model, config.compile)
+
+    setup_fsdp(model, config, parallel_dims)
+
+    if device == torch.device("meta"):
+        load_dcp_from_hf(model, config)
+
     return model
 
 

@@ -24,6 +24,15 @@ class ActivationCheckpointConfig(BaseModel):
     ] = 1
 
 
+class CompileConfig(BaseModel):
+    """Configures model compilation."""
+
+    fullgraph: Annotated[
+        bool,
+        Field(description="Whether to compile the transformer blocks with fullgraph."),
+    ] = False
+
+
 class ModelConfig(BaseConfig):
     """Configures the model for training."""
 
@@ -37,11 +46,11 @@ class ModelConfig(BaseConfig):
     attn: Annotated[AttnImplementation, Field(description="The attention implementation to use.")] = "flash_attention_2"
 
     compile: Annotated[
-        bool,
+        CompileConfig | None,
         Field(
             description="Whether to compile the model using `torch.compile`. Currently discouraged because it was found to destabilize training.",
         ),
-    ] = False
+    ] = None
 
     ac: Annotated[
         ActivationCheckpointConfig | None,
