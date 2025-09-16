@@ -117,6 +117,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
         self.rotary_emb = Qwen3RotaryEmbedding(config=config)  # todo sami might need to change this
         self.gradient_checkpointing = False
         self.has_sliding_layers = "sliding_attention" in self.config.layer_types
+        self.post_init()
 
     def forward(self, input_ids, position_ids):
         hidden_states = self.embed_tokens(input_ids)
@@ -144,9 +145,11 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel):
         self.model = Qwen3Model(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.post_init()
 
     def forward(self, input_ids, position_ids):
-        return self.model(
+        x = self.model(
             input_ids=input_ids,
             position_ids=position_ids,
         )
+        return self.lm_head(x)
