@@ -108,7 +108,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     if config.impl == "prime_rl":
         model.to_empty(device="cuda")
 
-        state_dict_hf = model.load_state_dict_hf()
+        state_dict_hf = model.state_dict_hf()
         dcp.load(
             state_dict_hf,
             storage_reader=HuggingFaceStorageReader(path=path_snapshot),
@@ -139,19 +139,24 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
 
 
 def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
-    if torch.__version__.startswith("2.7"):
-        # TODO: Remove this once we dont support torch 2.7
-        # Torch 2.7 has a HF Reader but it doesnt support small models without model.safetensors.index.json
-        model = get_model(config, device=torch.device("cpu"))
-        setup_fsdp(model, config, parallel_dims)
-    else:
-        model = get_model(config, device=torch.device("meta"))
-        setup_fsdp(model, config, parallel_dims)
-        load_dcp_from_hf(model, config)
+    model = get_model(config, device=torch.device("cpu"))
     if config.ac is not None:
         apply_ac(model, config.ac)
     if config.compile:
-        model = torch.compile(model)
+        for layer_id, transformer_block in model.model.layers.named_children():
+            transformer_block = torch.compile(
+                transformer_block,
+            )
+            model.model.layers.register_module(layer_id, transformer_block)
+
+    setup_fsdp(model, config, parallel_dims)
+
+    if config.impl == "prime_rl":
+        model.init_weights()
+        # todo fix this
+    else:
+        load_dcp_from_hf(model, config)
+
     # TODO: This should be type-hinted as FSDP version of the model
     return model
 
