@@ -125,11 +125,13 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
         if layer_id % ac_config.freq == 0:
             transformer_block = checkpoint_wrapper(transformer_block, preserve_rng_state=False)
         model.model.layers.register_module(layer_name, transformer_block)
+    get_logger().info(f"Applied activation checkpointing (freq={ac_config.freq})")
 
 
 def apply_compile(model: nn.Module, compile_config: CompileConfig):
     for layer_id, transformer_block in enumerate(model.model.layers):
         model.model.layers[layer_id] = torch.compile(transformer_block, fullgraph=compile_config.fullgraph)
+    get_logger().info(f"Compiled {len(model.model.layers)} layers (fullgraph={compile_config.fullgraph})")
 
 
 def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
