@@ -105,6 +105,7 @@ def test_model_with_sequence_packing(model, correct_position_ids):
             torch.testing.assert_close(output_packed_right, output_base)
 
 
+@pytest.mark.skipif(torch.cuda.get_device_capability(0)[0] < 9, reason="Requires GPU 0 compute capability >= 9.0")
 def test_moe():
     config = ModelConfig(name="Jackmin108/debug-moe-0.5B", attn="sdpa", trust_remote_code=True)
     model = get_model(config)
