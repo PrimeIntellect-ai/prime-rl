@@ -46,8 +46,21 @@ def get_load_balance_stats(model: nn.Module, reset_stats: bool = True) -> dict[s
 
 
 def get_model(config: ModelConfig, device: torch.device = torch.device("cpu")) -> nn.Module:
+    if config.attn == "sdpa_cudnn":
+        if not torch.backends.cuda.can_use_cudnn_attention():
+            raise ValueError("SDPA CUDNN requires GPU with cuDNN attention support notably compute capability >= 10")
+
+        attn_implementation = "sdpa"
+
+        torch.backends.cuda.enable_flash_sdp(False)
+        torch.backends.cuda.enable_cudnn_sdp(True)
+        get_logger().info("Enabled SDPA CUDNN")
+
+    else:
+        attn_implementation = config.attn
+
     config_model = AutoConfig.from_pretrained(
-        config.name, attn_implementation=config.attn, trust_remote_code=config.trust_remote_code
+        config.name, attn_implementation=attn_implementation, trust_remote_code=config.trust_remote_code
     )
     config_model.use_cache = False
 
