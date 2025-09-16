@@ -135,7 +135,6 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
 def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
     # the right order is AC -> Compile -> FSDP
     model = get_model(config, device=torch.device("cpu"))
-    setup_fsdp(model, config, parallel_dims)
     # TODO: This is used if the model is loaded with meta device to save cpu memory
     # However, the loading seems to be wrong as the loss and reward curves are different
     # load_dcp_from_hf(model, config)
