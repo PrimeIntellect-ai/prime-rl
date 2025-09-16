@@ -31,7 +31,6 @@ class CompileConfig(BaseModel):
         bool,
         Field(description="Whether to compile the transformer blocks with fullgraph."),
     ] = False
-    enable: Annotated[bool, Field(description="Whether to enable model compilation.")] = True
 
 
 class ModelConfig(BaseConfig):
