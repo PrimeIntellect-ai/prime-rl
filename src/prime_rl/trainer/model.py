@@ -117,6 +117,8 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
 def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
     model = get_model(config, device=torch.device("cpu"))
     setup_fsdp(model, config, parallel_dims)
+    # TODO: This is used if the model is loaded with meta device to save cpu memory
+    # However, the loading seems to be wrong as the loss and reward curves are different
     # load_dcp_from_hf(model, config)
     if config.ac is not None:
         apply_ac(model, config.ac)
