@@ -42,7 +42,7 @@ def get_load_balance_stats(model: nn.Module, reset_stats: bool = True) -> dict[s
             tokens_per_expert.zero_()
     if len(per_layer_max_vio) == 0:
         get_logger().warning("No load balance stats to report")
-        return {}
+        return {"max_vio": None}
     return {"max_vio": torch.tensor(per_layer_max_vio)}
 
 
