@@ -44,7 +44,7 @@ eval = "prime_rl.eval.eval:main"
 
 [project.optional-dependencies]
 flash-attn = ["flash-attn==2.8.2"]
-flash-infer = ["flashinfer-python>=0.2.8rc1"]
+flash-infer = ["flashinfer-python @ git+https://github.com/flashinfer-ai/flashinfer.git@main"]
 
 vf = [
     "alphabet-sort>=0.1.5",
