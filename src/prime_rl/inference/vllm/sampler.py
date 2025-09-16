@@ -165,13 +165,16 @@ class Sampler(nn.Module):
         # Apply temperature.
         logits = self.apply_temperature(logits, sampling_metadata.temperature)
 
+        assert self.logprobs_mode == LogprobsMode.PROCESSED_LOGPROBS
+        processed_logprobs = self.compute_logprobs(logits)
+
         # Apply logits processors that only apply to random sampling
         # (argmax invariant)
         for processor in sampling_metadata.logitsprocs.argmax_invariant:
             logits = processor.apply(logits)
 
         # Apply top_k and/or top_p.
-        random_sampled, processed_logprobs = self.topk_topp_sampler(
+        random_sampled, _ = self.topk_topp_sampler(
             logits,
             sampling_metadata.generators,
             sampling_metadata.top_k,
