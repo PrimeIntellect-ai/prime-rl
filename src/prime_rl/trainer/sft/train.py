@@ -236,7 +236,7 @@ def train(config: SFTTrainerConfig):
         # Log step metrics
         step_time = time.time() - step_start_time
         current_lr = optimizer.param_groups[0]["lr"]
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {batch_loss.item()} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Memory: {peak_memory:.1f}/ GB"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {batch_loss.item()} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f} GB"
         if is_tt_moe_model(model):
             step_message += f" | Max Vio: {batch_max_vio.item():.4f}"
         logger.success(step_message)
