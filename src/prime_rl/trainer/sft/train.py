@@ -110,6 +110,7 @@ def train(config: SFTTrainerConfig):
     )
 
     logger.info(f"Starting training loop ({config.max_steps=})")
+    max_memory = torch.cuda.mem_get_info()[1] / 1024**3 # GiB
     is_first_step = True
     while True:
         # Reset peak memory stats
@@ -231,12 +232,12 @@ def train(config: SFTTrainerConfig):
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_tokens_per_second() or 0
         mfu = perf_counter.get_mfu() or 0
-        peak_memory = torch.cuda.max_memory_allocated() / 1e9 # GB
+        peak_memory = torch.cuda.max_memory_allocated() / 1024**3 # GiB
 
         # Log step metrics
         step_time = time.time() - step_start_time
         current_lr = optimizer.param_groups[0]["lr"]
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {batch_loss.item():.4f} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f} GB"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {batch_loss.item():.4f} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory/max_memory*100:.1f}%)"
         if is_tt_moe_model(model):
             step_message += f" | Max Vio: {batch_max_vio.item():.4f}"
         logger.success(step_message)
