@@ -203,7 +203,7 @@ def train(config: SFTTrainerConfig):
 
             # Debug log with *local, micro step* stats
             micro_step_message = f"Micro Step {micro_step} | Loss: {loss.item():.4f} | Dataloader Step: {dataloader.state_dict()['dataset_state']['step']}"
-            if is_tt_moe_model(model):
+            if is_tt_moe_model(model) and max_vio is not None:
                 micro_step_message += f" | Max Vio: {max_vio.item():.4f}"
             logger.debug(micro_step_message)
 
