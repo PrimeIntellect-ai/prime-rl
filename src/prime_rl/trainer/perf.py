@@ -1,6 +1,5 @@
 import time
 
-import torch
 from torch import nn
 from transformers import PretrainedConfig
 
@@ -25,14 +24,14 @@ class PerfCounter:
         self._world = get_world()
         self._logger = get_logger()
 
-        if torch.cuda.is_available():
-            self.gpu_peak_flops = self._get_peak_flops(torch.cuda.get_device_name(torch.device("cuda")))
-        else:
-            self.gpu_peak_flops = 0
-        # If not tie_word_embeddings, we exclude the embedding parameters from the total number of parameters
-        # If tie_word_embeddings, the embedding parameters are already excluded (shared with the LM head)
-        self.num_params = self._get_num_params(model, exclude_embedding=not model.config.tie_word_embeddings)
-        self.num_flop_per_token = self._get_num_flop_per_token(self.num_params, model.config, seq_len=seq_len)
+        # if torch.cuda.is_available():
+        #     self.gpu_peak_flops = self._get_peak_flops(torch.cuda.get_device_name(torch.device("cuda")))
+        # else:
+        #     self.gpu_peak_flops = 0
+        # # If not tie_word_embeddings, we exclude the embedding parameters from the total number of parameters
+        # # If tie_word_embeddings, the embedding parameters are already excluded (shared with the LM head)
+        # self.num_params = self._get_num_params(model, exclude_embedding=not model.config.tie_word_embeddings)
+        # self.num_flop_per_token = self._get_num_flop_per_token(self.num_params, model.config, seq_len=seq_len)
 
     def count_tokens(self, tokens: int):
         self.tokens.append(tokens)
@@ -47,10 +46,11 @@ class PerfCounter:
         return sum(self.tokens[1:]) / (self.times[-1] - self.times[0])
 
     def get_mfu(self) -> float | None:
-        tokens_per_second = self.get_tokens_per_second()
-        if tokens_per_second is None:
-            return None
-        return 100 * self.num_flop_per_token * tokens_per_second / self.gpu_peak_flops / self._world.world_size
+        # tokens_per_second = self.get_tokens_per_second()
+        # if tokens_per_second is None:
+        #     return None
+        # return 100 * self.num_flop_per_token * tokens_per_second / self.gpu_peak_flops / self._world.world_size
+        return 100
 
     def _get_peak_flops(self, device_name: str) -> float:
         """

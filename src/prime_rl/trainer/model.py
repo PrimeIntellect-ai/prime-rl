@@ -13,6 +13,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.config import ActivationCheckpointConfig, ModelConfig
+from prime_rl.trainer.models import init_model
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
 
@@ -25,7 +26,9 @@ transformers_modeling_utils_logger.addFilter(
 
 
 def is_tt_moe_model(model: nn.Module) -> bool:
-    return hasattr(model.config, "num_experts") or hasattr(model.config, "n_routed_experts")
+    return hasattr(model, "config") and (
+        hasattr(model.config, "num_experts") or hasattr(model.config, "n_routed_experts")
+    )
 
 
 def get_load_balance_stats(model: nn.Module, reset_stats: bool = True) -> dict[str, torch.FloatTensor]:
@@ -53,12 +56,21 @@ def get_model(config: ModelConfig, device: torch.device = torch.device("cpu")) -
     config_model.use_cache = False
 
     with device:
-        model_cls = AutoLigerKernelForCausalLM if config.liger_kernel else AutoModelForCausalLM
-        model = model_cls.from_pretrained(
-            pretrained_model_name_or_path=config.name,
-            config=config_model,
-            trust_remote_code=config.trust_remote_code,
-        )
+        match config.impl:
+            case "lieger":
+                model = AutoLigerKernelForCausalLM.from_pretrained(
+                    pretrained_model_name_or_path=config.name,
+                    config=config_model,
+                    trust_remote_code=config.trust_remote_code,
+                )
+            case "hf":
+                model = AutoModelForCausalLM.from_pretrained(
+                    pretrained_model_name_or_path=config.name,
+                    config=config_model,
+                    trust_remote_code=config.trust_remote_code,
+                )
+            case "prime_rl":
+                model = init_model(pretrained_model_name_or_path=config.name)
 
     return model
 
@@ -93,12 +105,24 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     from torch.distributed.checkpoint import DefaultLoadPlanner, HuggingFaceStorageReader
 
     path_snapshot = snapshot_download(repo_id=config.name, repo_type="model")
-    model.to_empty(device="cuda")
-    dcp.load(
-        model.state_dict(),
-        storage_reader=HuggingFaceStorageReader(path=path_snapshot),
-        planner=DefaultLoadPlanner(allow_partial_load=True),
-    )
+    if config.impl == "prime_rl":
+        model.to_empty(device="cuda")
+
+        state_dict_hf = model.load_state_dict_hf()
+        dcp.load(
+            state_dict_hf,
+            storage_reader=HuggingFaceStorageReader(path=path_snapshot),
+            planner=DefaultLoadPlanner(allow_partial_load=True),
+        )
+
+        model.load_state_dict_hf(state_dict=state_dict_hf)
+    else:
+        model.to_empty(device="cuda")
+        dcp.load(
+            model.state_dict(),
+            storage_reader=HuggingFaceStorageReader(path=path_snapshot),
+            planner=DefaultLoadPlanner(allow_partial_load=True),
+        )
 
 
 def reshard_module(model: nn.Module):
@@ -134,6 +158,8 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
 
 @jaxtyped(typechecker=typechecker)
 def forward(
-    model: nn.Module, input_ids: Int[Tensor, "batch seq"], position_ids: Int[Tensor, "batch seq"]
+    model: nn.Module,
+    input_ids: Int[Tensor, "batch seq"],
+    position_ids: Int[Tensor, "batch seq"],
 ) -> Float[Tensor, "batch seq vocab"]:
     return model(input_ids=input_ids, position_ids=position_ids).logits
