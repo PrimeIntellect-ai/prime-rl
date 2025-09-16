@@ -13,6 +13,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, ModelConfig
+from prime_rl.trainer.models import init_model
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
 
@@ -25,7 +26,9 @@ transformers_modeling_utils_logger.addFilter(
 
 
 def is_tt_moe_model(model: nn.Module) -> bool:
-    return hasattr(model.config, "num_experts") or hasattr(model.config, "n_routed_experts")
+    return hasattr(model, "config") and (
+        hasattr(model.config, "num_experts") or hasattr(model.config, "n_routed_experts")
+    )
 
 
 def get_load_balance_stats(model: nn.Module, reset_stats: bool = True) -> dict[str, Tensor | None]:
@@ -52,16 +55,34 @@ def get_model(config: ModelConfig, device: torch.device = torch.device("cpu")) -
     config_model.use_cache = False
 
     with device:
-        model_cls = AutoLigerKernelForCausalLM if config.liger_kernel else AutoModelForCausalLM
         if device == torch.device("meta"):
-            model = model_cls.from_config(config_model, trust_remote_code=config.trust_remote_code)
-        else:
-            model = model_cls.from_pretrained(
-                pretrained_model_name_or_path=config.name,
-                config=config_model,
-                trust_remote_code=config.trust_remote_code,
-            )
+            
+            match config.impl:
+                case "lieger":
+                        model = AutoLigerKernelForCausalLM.from_config(config_model, trust_remote_code=config.trust_remote_code)
+                    
+                case "hf":
+                        model = AutoModelForCausalLM.from_config(config_model, trust_remote_code=config.trust_remote_code)
 
+                case "prime_rl":
+                    model = init_model(pretrained_model_name_or_path=config.name)
+        else:
+            match config.impl:
+                case "lieger":
+                    model = AutoLigerKernelForCausalLM.from_pretrained(
+                        pretrained_model_name_or_path=config.name,
+                        config=config_model,
+                        trust_remote_code=config.trust_remote_code,
+                    )
+                case "hf":
+                    model = AutoModelForCausalLM.from_pretrained(
+                        pretrained_model_name_or_path=config.name,
+                        config=config_model,
+                        trust_remote_code=config.trust_remote_code,
+                    )
+                case "prime_rl":
+                    raise ValueError("Prime Rl model must be initialized on meta device")
+                    
     return model
 
 
@@ -110,21 +131,34 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
 
     path_snapshot = snapshot_download(repo_id=config.name, repo_type="model")
     model.to_empty(device="cuda")
-    dcp.load(
-        model.state_dict(),
-        storage_reader=HuggingFaceStorageReader(path=path_snapshot),
-        # Note: This allow is needed by weight tying but could cause silent issues
-        planner=DefaultLoadPlanner(allow_partial_load=True),
-    )
-    fix_model_post_empty(model)
+    
+    if config.impl == "prime_rl":
+        state_dict_hf = model.state_dict_hf()
+        dcp.load(
+            state_dict_hf,
+            storage_reader=HuggingFaceStorageReader(path=path_snapshot),
+            planner=DefaultLoadPlanner(allow_partial_load=True),
+        )
+
+        model.load_state_dict_hf(state_dict=state_dict_hf)
+    else:
+        dcp.load(
+            model.state_dict(),
+            storage_reader=HuggingFaceStorageReader(path=path_snapshot),
+            # Note: This allow is needed by weight tying but could cause silent issues
+            planner=DefaultLoadPlanner(allow_partial_load=True),
+        )
+        fix_model_post_empty(model)
 
 
-def can_load_dcp_from_hf(model: nn.Module):
+def can_load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     """Whether the model will be loaded correctly by load_dcp_from_hf.
 
     The main issue is with anything that is not in the checkpoint.
     This is usually any non-persistent buffers.
     """
+    if config.impl == "prime_rl":
+        return True
     buffer_names = [name for name, _ in model.named_buffers()]
     # HF standard transformer model
     if len(buffer_names) == 1 and buffer_names[0] == "model.rotary_emb.inv_freq":
@@ -141,7 +175,6 @@ def fix_model_post_empty(model: nn.Module):
         rotary_emb = model.model.rotary_emb
         inv_freq, rotary_emb.attention_scaling = rotary_emb.rope_init_fn(rotary_emb.config, rotary_emb.inv_freq.device)
         rotary_emb.inv_freq.copy_(inv_freq)
-
 
 def reshard_module(model: nn.Module):
     for module in model.modules():
@@ -165,7 +198,7 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
 
 def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
     model = get_model(config, device=torch.device("meta"))
-    if not can_load_dcp_from_hf(model):
+    if not can_load_dcp_from_hf(model, config):
         model = get_model(config, device=torch.device("cpu"))
 
     # the right order is AC -> Compile -> FSDP
@@ -176,7 +209,7 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
 
     setup_fsdp(model, config, parallel_dims)
 
-    if can_load_dcp_from_hf(model):
+    if can_load_dcp_from_hf(model, config):
         load_dcp_from_hf(model, config)
 
     return model
@@ -184,6 +217,8 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
 
 @jaxtyped(typechecker=typechecker)
 def forward(
-    model: nn.Module, input_ids: Int[Tensor, "batch seq"], position_ids: Int[Tensor, "batch seq"]
+    model: nn.Module,
+    input_ids: Int[Tensor, "batch seq"],
+    position_ids: Int[Tensor, "batch seq"],
 ) -> Float[Tensor, "batch seq vocab"]:
     return model(input_ids=input_ids, position_ids=position_ids).logits

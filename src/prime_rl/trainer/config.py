@@ -91,12 +91,12 @@ class ModelConfig(BaseConfig):
         ),
     ] = 1
 
-    liger_kernel: Annotated[
-        bool,
+    impl: Annotated[
+        Literal["hf", "lieger", "prime_rl"],
         Field(
-            description="Whether to use Liger Kernel.",
+            description="The model implementation to use.",
         ),
-    ] = False
+    ] = "hf"
 
     @model_validator(mode="after")
     def _map_model_name_for_moe(self):
