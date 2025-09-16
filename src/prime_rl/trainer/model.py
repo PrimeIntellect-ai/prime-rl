@@ -12,7 +12,7 @@ from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, fully_shard
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.trainer.config import ActivationCheckpointConfig, ModelConfig
+from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, ModelConfig
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
 
@@ -127,6 +127,11 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
         model.model.layers.register_module(layer_name, transformer_block)
 
 
+def apply_compile(model: nn.Module, compile_config: CompileConfig):
+    for layer_id, transformer_block in enumerate(model.model.layers):
+        model.model.layers[layer_id] = torch.compile(transformer_block, fullgraph=compile_config.fullgraph)
+
+
 def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
     device = torch.device("cpu") if torch.__version__.startswith("2.7") else torch.device("meta")
     model = get_model(config, device=device)
@@ -134,9 +139,8 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
     # the right order is AC -> Compile -> FSDP
     if config.ac is not None:
         apply_ac(model, config.ac)
-    if config.compile.enable:
-        for i, transformer_block in enumerate(model.model.layers):
-            model.model.layers[i] = torch.compile(transformer_block, fullgraph=config.compile.fullgraph)
+    if config.compile is not None:
+        apply_compile(model, config.compile)
 
     setup_fsdp(model, config, parallel_dims)
 
