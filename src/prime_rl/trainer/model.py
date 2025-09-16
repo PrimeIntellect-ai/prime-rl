@@ -115,9 +115,9 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
 
 
 def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
-    model = get_model(config, device=torch.device("meta"))
+    model = get_model(config, device=torch.device("cpu"))
     setup_fsdp(model, config, parallel_dims)
-    load_dcp_from_hf(model, config)
+    # load_dcp_from_hf(model, config)
     if config.ac is not None:
         apply_ac(model, config.ac)
     if config.compile:
