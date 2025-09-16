@@ -76,17 +76,27 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
     # TODO: Support dp_replicate
     hsdp_mesh = parallel_dims.world_mesh["dp_shard_cp"]
-    for layer_id, transformer_block in enumerate(model.model.layers):
-        if config.reshard_after_forward:
-            layer_reshard_after_forward = layer_id < len(model.model.layers) - 1
-        else:
-            layer_reshard_after_forward = False
+
+    fully_shard(
+        model.model.embed_tokens,
+        mesh=hsdp_mesh,
+        mp_policy=mp_policy,
+        reshard_after_forward=config.reshard_after_forward,
+    )
+
+    for transformer_block in model.model.layers:
         fully_shard(
             transformer_block,
             mesh=hsdp_mesh,
             mp_policy=mp_policy,
-            reshard_after_forward=layer_reshard_after_forward,
+            reshard_after_forward=config.reshard_after_forward,
         )
+    fully_shard(
+        [model.lm_head, model.model.norm],
+        mesh=hsdp_mesh,
+        mp_policy=mp_policy,
+        reshard_after_forward=config.reshard_after_forward,
+    )
 
     fully_shard(model, mesh=hsdp_mesh, mp_policy=mp_policy, reshard_after_forward=config.reshard_after_forward)
 
