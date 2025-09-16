@@ -358,6 +358,7 @@ def train(config: RLTrainerConfig):
             "perf/throughput": throughput,
             "perf/throughput_per_gpu": throughput / world.world_size,
             "perf/mfu": mfu,
+            "perf/peak_memory": peak_memory,
             "step": progress.step,
         }
         monitor.log(perf_metrics)
