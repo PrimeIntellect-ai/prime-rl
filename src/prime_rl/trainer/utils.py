@@ -123,6 +123,7 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
     columns = {
         "perf/mfu": "MFU",
         "perf/throughput": "Throughput",
+        "perf/peak_memory": "Peak Memory",
         "time/step": "Step Time",
     }
     df = df[columns.keys()].rename(columns=columns)
@@ -141,6 +142,7 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
     formatted_df = pd.DataFrame(columns=df.columns)
     formatted_df["MFU"] = df["MFU"].apply(lambda x: f"{format_num(x, precision=2)}%")
     formatted_df["Throughput"] = df["Throughput"].apply(lambda x: format_num(x, precision=2))
+    formatted_df["Peak Memory"] = df["Peak Memory"].apply(lambda x: f"{format_num(x, precision=2)} GB")
     formatted_df["Step Time"] = df["Step Time"].apply(format_time)
     for step, row in formatted_df.iterrows():
         table.add_row(*([str(step)] + [str(x) for x in row]))
@@ -153,6 +155,7 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
     formatted_mean_df = pd.DataFrame(columns=mean_df.columns)
     formatted_mean_df["MFU"] = mean_df["MFU"].apply(lambda x: f"{format_num(x, precision=2)}%")
     formatted_mean_df["Throughput"] = mean_df["Throughput"].apply(format_num, precision=2)
+    formatted_mean_df["Peak Memory"] = mean_df["Peak Memory"].apply(lambda x: f"{format_num(x, precision=2)} GB")
     formatted_mean_df["Step Time"] = mean_df["Step Time"].apply(format_time)
     mean_row = ["Overall"] + formatted_mean_df.T.apply(
         lambda row: f"{row['mean']} ± {row['std']} [{row['min']}, {row['max']}]", axis=1
