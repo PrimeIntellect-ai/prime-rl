@@ -30,7 +30,7 @@ class WandbMonitor:
         self.logger = get_logger()
         self.history: list[dict[str, Any]] = []
 
-        rank = int(os.environ.get("LOCAL_RANK", os.environ.get("DP_RANK", "0")))
+        rank = int(os.environ.get("RANK", os.environ.get("DP_RANK", "0")))
         self.enabled = self.config is not None
         self.is_master = rank == 0
         if not self.enabled or not self.is_master:
