@@ -134,7 +134,7 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
     # the right order is AC -> Compile -> FSDP
     if config.ac is not None:
         apply_ac(model, config.ac)
-    if config.compile is not None:
+    if config.compile.enable:
         for i, transformer_block in enumerate(model.model.layers):
             model.model.layers[i] = torch.compile(transformer_block, fullgraph=config.compile.fullgraph)
 
