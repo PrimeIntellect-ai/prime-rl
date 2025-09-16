@@ -135,6 +135,9 @@ def train(config: RLTrainerConfig):
     logger.info(f"Starting training loop ({config.max_steps=})")
     is_first_step = True
     while True:
+        # Reset peak memory stats
+        torch.cuda.reset_peak_memory_stats()
+
         # Save the weight checkpoint (if we are not at the first step, because no updates to the model have been made yet)
         save_weights_time = 0
         if progress.step > 0:
@@ -340,11 +343,12 @@ def train(config: RLTrainerConfig):
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_tokens_per_second() or 0
         mfu = perf_counter.get_mfu() or 0
+        peak_memory = torch.cuda.max_memory_allocated() / 1e9 # GB
 
         # Log step metrics
         step_time = time.time() - step_start_time
         current_lr = optimizer.param_groups[0]["lr"]
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Entropy: {tensor_stats['entropy/mean']:.4f} | Importance Ratio: {tensor_stats['importance_ratio/mean']:.4f} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}%"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Entropy: {tensor_stats['entropy/mean']:.4f} | Importance Ratio: {tensor_stats['importance_ratio/mean']:.4f} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f} GB"
         if "max_vio/mean" in tensor_stats:
             step_message += f" | Max Vio: {tensor_stats['max_vio/mean']:.4f}"
         logger.success(step_message)
@@ -354,6 +358,7 @@ def train(config: RLTrainerConfig):
             "perf/throughput": throughput,
             "perf/throughput_per_gpu": throughput / world.world_size,
             "perf/mfu": mfu,
+            "perf/peak_memory": peak_memory,
             "step": progress.step,
         }
         monitor.log(perf_metrics)
@@ -404,7 +409,7 @@ def train(config: RLTrainerConfig):
         ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step)
         ckpt_manager.maybe_clean()
 
-    logger.info(f"Peak memory: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB")
+    logger.info(f"Peak memory: {max(to_col_format(monitor.history)['perf/peak_memory']):.1f} GB")
     logger.success("RL trainer finished!")
 
     # Optionally, print benchmark table
