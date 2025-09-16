@@ -14,6 +14,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.config import ActivationCheckpointConfig, ModelConfig
 from prime_rl.trainer.parallel_dims import ParallelDims
+from prime_rl.trainer.qwen_patched import Qwen3ForCausalLM
 from prime_rl.utils.logger import get_logger
 
 # Add filter to the standard logging module for transformers.modeling_utils to supress the
@@ -53,7 +54,13 @@ def get_model(config: ModelConfig, device: torch.device = torch.device("cpu")) -
     config_model.use_cache = False
 
     with device:
-        model_cls = AutoLigerKernelForCausalLM if config.liger_kernel else AutoModelForCausalLM
+        if "Qwen3" in config.name:
+            model_cls = Qwen3ForCausalLM
+        elif config.liger_kernel:
+            model_cls = AutoLigerKernelForCausalLM
+        else:
+            model_cls = AutoModelForCausalLM
+
         model = model_cls.from_pretrained(
             pretrained_model_name_or_path=config.name,
             config=config_model,
@@ -136,4 +143,4 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
 def forward(
     model: nn.Module, input_ids: Int[Tensor, "batch seq"], position_ids: Int[Tensor, "batch seq"]
 ) -> Float[Tensor, "batch seq vocab"]:
-    return model(input_ids=input_ids, position_ids=position_ids).logits
+    return model(input_ids=input_ids, position_ids=position_ids)

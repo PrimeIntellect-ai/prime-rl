@@ -176,6 +176,7 @@ def train(config: SFTTrainerConfig):
                 B, L, V = logits.shape
 
                 # Compute loss
+                logger.info(f"Logits shape: {logits.shape}")
                 loss = cross_entropy(logits.view(-1, V), target_ids.view(-1), reduction="none").view(B, L)
 
                 if is_tt_moe_model(model):
