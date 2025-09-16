@@ -3,6 +3,14 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
+# Monkeypatch vLLM Sampler before importing any vLLM modules
+# ruff: noqa: I001
+from prime_rl.inference.vllm.sampler import Sampler as CustomSampler
+
+import importlib
+
+setattr(importlib.import_module("vllm.v1.sample.sampler"), "Sampler", CustomSampler)
+
 import uvloop
 import vllm.envs as envs
 from fastapi import Request
