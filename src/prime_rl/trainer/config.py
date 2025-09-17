@@ -98,6 +98,13 @@ class ModelConfig(BaseConfig):
         ),
     ] = False
 
+    log_signature: Annotated[
+        bool,
+        Field(
+            description="Whether to log the model signature after loading the model.",
+        ),
+    ] = False
+
     @model_validator(mode="after")
     def _map_model_name_for_moe(self):
         """Map model name if it exists in MOE_MODEL_MAPS."""

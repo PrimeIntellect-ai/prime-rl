@@ -186,6 +186,9 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
     if can_load_dcp_from_hf(model):
         load_dcp_from_hf(model, config)
 
+    if config.log_signature:
+        from prime_rl.utils.tensor_hashing import get_module_signature
+        get_logger().info(f"model signature: {get_module_signature(model)}")
     return model
 
 
