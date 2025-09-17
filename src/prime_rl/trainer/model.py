@@ -77,13 +77,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     # TODO: Support dp_replicate
     hsdp_mesh = parallel_dims.world_mesh["dp_shard_cp"]
 
-    # fully_shard(
-    #    model.model.embed_tokens,
-    #    mesh=hsdp_mesh,
-    #    mp_policy=mp_policy,
-    #    reshard_after_forward=config.reshard_after_forward,
-    # )
-
     for transformer_block in model.model.layers:
         fully_shard(
             transformer_block,
@@ -91,12 +84,23 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             mp_policy=mp_policy,
             reshard_after_forward=config.reshard_after_forward,
         )
-    # fully_shard(
-    #    [model.lm_head, model.model.norm],
-    #    mesh=hsdp_mesh,
-    #    mp_policy=mp_policy,
-    #    reshard_after_forward=config.reshard_after_forward,
-    # )
+
+    if hasattr(model, "config") and not model.config.tie_word_embeddings:
+        # This optimization breaks weight tying
+        fully_shard(
+            model.model.embed_tokens,
+            mesh=hsdp_mesh,
+            mp_policy=mp_policy,
+            reshard_after_forward=config.reshard_after_forward,
+        )
+        fully_shard(
+            [model.lm_head, model.model.norm],
+            mesh=hsdp_mesh,
+            mp_policy=mp_policy,
+            reshard_after_forward=False,
+        )
+    else:
+        get_logger().warning("Model is tied word embeddings, so not doing the last layer not resharding optimization")
 
     fully_shard(model, mesh=hsdp_mesh, mp_policy=mp_policy, reshard_after_forward=config.reshard_after_forward)
 
@@ -173,14 +177,8 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
 
     setup_fsdp(model, config, parallel_dims)
 
-    from prime_rl.utils.tensor_hashing import get_module_signature
-
-    print(f"Pre load DCP: {get_module_signature(model)}")
-
     if can_load_dcp_from_hf(model):
         load_dcp_from_hf(model, config)
-
-    print(f"Post load DCP: {get_module_signature(model)}")
 
     return model
 
