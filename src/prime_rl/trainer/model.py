@@ -114,7 +114,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
         model.state_dict(),
         storage_reader=HuggingFaceStorageReader(path=path_snapshot),
         # Note: This allow is needed by weight tying but could cause silent issues
-        planner=DefaultLoadPlanner(allow_partial_load=False),
+        planner=DefaultLoadPlanner(allow_partial_load=True),
     )
     fix_model_post_empty(model)
 
