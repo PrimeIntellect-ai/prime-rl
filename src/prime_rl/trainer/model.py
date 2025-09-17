@@ -128,8 +128,14 @@ def can_load_dcp_from_hf(model: nn.Module):
     buffer_names = [name for name, _ in model.named_buffers()]
 
     # TT MoE buffers
-    buffer_names = [name for name in buffer_names if not (name.startswith("model.layers.") and name.endswith("mlp.tokens_per_expert"))]
-    buffer_names = [name for name in buffer_names if not (name.startswith("model.layers.") and name.endswith("mlp.expert_bias"))]
+    buffer_names = [
+        name
+        for name in buffer_names
+        if not (name.startswith("model.layers.") and name.endswith("mlp.tokens_per_expert"))
+    ]
+    buffer_names = [
+        name for name in buffer_names if not (name.startswith("model.layers.") and name.endswith("mlp.expert_bias"))
+    ]
     # HF standard transformer model
     if len(buffer_names) == 1 and buffer_names[0] == "model.rotary_emb.inv_freq":
         return True
@@ -171,8 +177,8 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
 
 
 def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
-    model = get_model(config, device=torch.device("meta"))
-    if not can_load_dcp_from_hf(model):
+    model = get_model(config, device=torch.device("meta" if config.load_using_meta else "cpu"))
+    if config.load_using_meta and not can_load_dcp_from_hf(model):
         model = get_model(config, device=torch.device("cpu"))
 
     # the right order is AC -> Compile -> FSDP
@@ -183,11 +189,12 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
 
     setup_fsdp(model, config, parallel_dims)
 
-    if can_load_dcp_from_hf(model):
+    if config.load_using_meta and can_load_dcp_from_hf(model):
         load_dcp_from_hf(model, config)
 
     if config.log_signature:
         from prime_rl.utils.tensor_hashing import get_module_signature
+
         get_logger().info(f"model signature: {get_module_signature(model)}")
     return model
 
