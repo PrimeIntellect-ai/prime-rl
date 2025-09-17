@@ -117,7 +117,7 @@ class ModelConfig(BaseConfig):
         Field(
             description="The dtype to use for the model optimization.",
         ),
-    ] = "bfloat16"
+    ] = "float32"
 
     @model_validator(mode="after")
     def _map_model_name_for_moe(self):
