@@ -16,6 +16,9 @@ def get_tensor_signature(a: torch.Tensor | torch.nn.Parameter) -> str:
     if isinstance(a, DTensor):
         a = a.to_local()
 
+    if a.device == torch.device("meta"):
+        return f"{a.dtype}{a.shape}<meta>"
+
     if a.numel() < TENSOR_SIG_SAMPLE_SIZE:
         b = a.as_strided(size=(a.numel(),), stride=(1,))
     else:
