@@ -28,7 +28,7 @@ def is_tt_moe_model(model: nn.Module) -> bool:
     return hasattr(model.config, "num_experts") or hasattr(model.config, "n_routed_experts")
 
 
-def get_load_balance_stats(model: nn.Module, reset_stats: bool = True) -> dict[str, torch.FloatTensor]:
+def get_load_balance_stats(model: nn.Module, reset_stats: bool = True) -> dict[str, Tensor | None]:
     per_layer_max_vio = []
     for transformer_block in model.model.layers:
         # This is necessary for models that have mixed dense layers
