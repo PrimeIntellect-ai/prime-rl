@@ -114,7 +114,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
         model.state_dict(),
         storage_reader=HuggingFaceStorageReader(path=path_snapshot),
         # Note: This allow is needed by weight tying but could cause silent issues
-        planner=DefaultLoadPlanner(allow_partial_load=True),
+        planner=DefaultLoadPlanner(allow_partial_load=False),
     )
     fix_model_post_empty(model)
 
@@ -125,6 +125,7 @@ def can_load_dcp_from_hf(model: nn.Module):
     The main issue is with anything that is not in the checkpoint.
     This is usually any non-persistent buffers.
     """
+    return True
     buffer_names = [name for name, _ in model.named_buffers()]
     # HF standard transformer model
     if len(buffer_names) == 1 and buffer_names[0] == "model.rotary_emb.inv_freq":
@@ -137,7 +138,7 @@ def can_load_dcp_from_hf(model: nn.Module):
 def fix_model_post_empty(model: nn.Module):
     buffer_names = [name for name, _ in model.named_buffers()]
     # HF standard transformer model
-    if len(buffer_names) == 1 and buffer_names[0] == "model.rotary_emb.inv_freq":
+    if "model.rotary_emb.inv_freq" in buffer_names:
         rotary_emb = model.model.rotary_emb
         inv_freq, rotary_emb.attention_scaling = rotary_emb.rope_init_fn(rotary_emb.config, rotary_emb.inv_freq.device)
         rotary_emb.inv_freq.copy_(inv_freq)
