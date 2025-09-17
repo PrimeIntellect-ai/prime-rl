@@ -112,6 +112,13 @@ class ModelConfig(BaseConfig):
         ),
     ] = True
 
+    optimization_dtype: Annotated[
+        Literal["bfloat16", "float32"],
+        Field(
+            description="The dtype to use for the model optimization.",
+        ),
+    ] = "bfloat16"
+
     @model_validator(mode="after")
     def _map_model_name_for_moe(self):
         """Map model name if it exists in MOE_MODEL_MAPS."""
