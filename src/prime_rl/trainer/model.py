@@ -125,8 +125,11 @@ def can_load_dcp_from_hf(model: nn.Module):
     The main issue is with anything that is not in the checkpoint.
     This is usually any non-persistent buffers.
     """
-    return True
     buffer_names = [name for name, _ in model.named_buffers()]
+
+    # TT MoE buffers
+    buffer_names = [name for name in buffer_names if not (name.startswith("model.layers.") and name.endswith("mlp.tokens_per_expert"))]
+    buffer_names = [name for name in buffer_names if not (name.startswith("model.layers.") and name.endswith("mlp.expert_bias"))]
     # HF standard transformer model
     if len(buffer_names) == 1 and buffer_names[0] == "model.rotary_emb.inv_freq":
         return True
@@ -142,6 +145,9 @@ def fix_model_post_empty(model: nn.Module):
         rotary_emb = model.model.rotary_emb
         inv_freq, rotary_emb.attention_scaling = rotary_emb.rope_init_fn(rotary_emb.config, rotary_emb.inv_freq.device)
         rotary_emb.inv_freq.copy_(inv_freq)
+
+    # TODO: Init TT MoE buffers
+    # I think .to_empty() on gpu by default fills 0 so we are ok but this might not be guaranteed behavior
 
 
 def reshard_module(model: nn.Module):
