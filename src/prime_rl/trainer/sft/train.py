@@ -155,7 +155,7 @@ def train(config: SFTTrainerConfig):
         )
 
         batch_loss = torch.tensor(0.0).to("cuda")
-        batch_max_vio = torch.tensor(0.0).to("cuda")
+        batch_max_vio, max_vio = torch.tensor(0.0).to("cuda"), None
         for micro_step in range(grad_accum_steps):
             micro_batch = next(dataiter)
             input_ids = micro_batch["input_ids"].to("cuda")
@@ -240,7 +240,7 @@ def train(config: SFTTrainerConfig):
         step_time = time.time() - step_start_time
         current_lr = optimizer.param_groups[0]["lr"]
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {batch_loss.item():.4f} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%)"
-        if is_tt_moe_model(model):
+        if is_tt_moe_model(model) and max_vio is not None:
             step_message += f" | Max Vio: {batch_max_vio.item():.4f}"
         logger.success(step_message)
 
