@@ -47,8 +47,8 @@ def get_load_balance_stats(model: nn.Module, reset_stats: bool = True) -> dict[s
 
 def get_model(config: ModelConfig, device: torch.device = torch.device("cpu")) -> nn.Module:
     if config.attn == "sdpa_cudnn":
-        if torch.cuda.get_device_capability(0)[0] < 10:
-            raise ValueError("SDPA CUDNN requires GPU with compute capability >= 10")
+        # if torch.cuda.get_device_capability(0)[0] < 10:
+        #     raise ValueError("SDPA CUDNN requires GPU with compute capability >= 10")
 
         attn_implementation = "sdpa"
 
