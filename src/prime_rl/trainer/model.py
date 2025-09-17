@@ -61,13 +61,13 @@ def get_model(
     with device:
         model_cls = AutoLigerKernelForCausalLM if config.liger_kernel else AutoModelForCausalLM
         if device == torch.device("meta"):
-            model = model_cls.from_config(config_model, trust_remote_code=config.trust_remote_code, torch_dtype=dtype)
+            model = model_cls.from_config(config_model, trust_remote_code=config.trust_remote_code, dtype=dtype)
         else:
             model = model_cls.from_pretrained(
                 pretrained_model_name_or_path=config.name,
                 config=config_model,
                 trust_remote_code=config.trust_remote_code,
-                torch_dtype=dtype,
+                dtype=dtype,
             )
 
     assert model.lm_head.weight.dtype == dtype, (
