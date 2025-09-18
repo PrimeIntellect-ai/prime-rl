@@ -4,6 +4,7 @@ max_steps = 40
 name = "PrimeIntellect/Qwen3-0.6B"
 
 [data]
+name = "PrimeIntellect/Reverse-Text-SFT"
 batch_size = 16
 micro_batch_size = 8
 seq_len = 128
