@@ -5,14 +5,14 @@ import torch.distributed.checkpoint as dcp
 import torch.nn as nn
 from beartype import beartype as typechecker
 from jaxtyping import Float, Int, jaxtyped
-from liger_kernel.transformers import AutoLigerKernelForCausalLM
 from torch import Tensor
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, fully_shard
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoTokenizer
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, ModelConfig
+from prime_rl.trainer.llama import LlamaForCausalLM
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
 
@@ -59,11 +59,10 @@ def get_model(
     config_model.use_cache = False
 
     with device:
-        model_cls = AutoLigerKernelForCausalLM if config.liger_kernel else AutoModelForCausalLM
         if device == torch.device("meta"):
-            model = model_cls.from_config(config_model, trust_remote_code=config.trust_remote_code, dtype=dtype)
+            model = LlamaForCausalLM._from_config(config_model, trust_remote_code=config.trust_remote_code, dtype=dtype)
         else:
-            model = model_cls.from_pretrained(
+            model = LlamaForCausalLM.from_pretrained(
                 pretrained_model_name_or_path=config.name,
                 config=config_model,
                 trust_remote_code=config.trust_remote_code,
