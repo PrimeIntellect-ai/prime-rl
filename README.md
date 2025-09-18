@@ -92,13 +92,13 @@ uv run python -V
 uv run python -c "import flash_attn"
 ```
 
-3. Check that you can run SFT trainer in debug model (*this requires 1 GPU*)
+3. Check that you can run SFT trainer in debug mode (*this requires 1 GPU*)
 
 ```bash
 uv run sft @ examples/debug/sft.toml
 ```
 
-4. Check that you can run the RL trainer debug mode (*this requires 1 GPU*)
+4. Check that you can run the RL trainer in debug mode (*this requires 1 GPU*)
 
 ```bash
 uv run trainer @ examples/debug/rl/train.toml
