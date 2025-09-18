@@ -14,11 +14,19 @@ PRIME-RL: Decentralized RL Training at Scale
 
 ---
 
-## Installation
+PRIME-RL is a framework for large-scale reinforcement learning. It is designed to be easy-to-use and hackable, yet capable of scaling to 1000+ GPUs. Beyond that, here is why we think you might like it:
 
-> *`prime-rl` is developed and tested on NVIDIA A100, H100, H200, and B200; likely compatible with other Ampere, Hopper and Blackwell-class GPUs. If your installation fails, please create an [issue](https://github.com/PrimeIntellect-ai/prime-rl/issues).*
+1. First-class support for OpenAI-compatible async inference, [`verifiers`](https://github.com/willccbb/verifiers) environments and the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars) to standardize agentic RL training and evaluation
+2. Support for end-to-end post-training, including SFT and multi-turn agentic RL
+3. Rayless multi-node deployment with [FSDP2](https://docs.pytorch.org/tutorials/intermediate/FSDP_tutorial.html) training and [vLLM](https://github.com/vllm-project/vllm) inference backend
+4. Naturally asynchronous training for high-throughput performance in decentralized settings
+5. Modular and extensible by nature, enabling high research velocity
 
-**Quick Installation (Recommended)**
+## Setup
+
+> *We develop and test on NVIDIA A100, H100, H200, and B200; likely compatible with other Ampere, Hopper and Blackwell-class GPUs. If your installation fails, please create an [issue](https://github.com/PrimeIntellect-ai/prime-rl/issues).*
+
+**Quick Setup (Recommended)**
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/PrimeIntellect-ai/prime-rl/main/scripts/install.sh | bash
@@ -26,7 +34,7 @@ curl -sSL https://raw.githubusercontent.com/PrimeIntellect-ai/prime-rl/main/scri
 
 <details>
 <summary>
-Manual Installation
+Manual Setup
 </summary>
 <br>
 
@@ -44,7 +52,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 source $HOME/.local/bin/env
 ```
 
-3. Synchronize the environment
+3. Install dependencies from the lock file
 
 ```bash
 uv sync && uv sync --all-extras
@@ -52,14 +60,13 @@ uv sync && uv sync --all-extras
 
 </details>
 
-
 <details>
 <summary>
 Validate your environment setup
 </summary>
 <br>
 
-1. Check that environment uses Python 3.12
+1. Check that the environment uses Python 3.12
 
 ```bash
 uv run python -V
@@ -71,45 +78,37 @@ uv run python -V
 uv run python -c "import flash_attn"
 ```
 
-3. Check that you can run SFT trainer in debug model (*this requires 1 GPU)
+3. Check that you can run SFT trainer in debug model (*this requires 1 GPU*)
 
 ```bash
-uv run sft @ configs/debug/sft.toml
+uv run sft @ examples/debug/sft.toml
 ```
 
 4. Check that you can run the RL trainer debug mode (*this requires 1 GPU*)
 
 ```bash
-uv run trainer @ configs/debug/train.toml
+uv run trainer @ examples/debug/rl/train.toml
 ```
 
 5. Check that you can run the orchestrator against an inference server (*this requires 1 GPU*)
 
 ```bash
-uv run inference @ configs/debug/infer.toml
+uv run inference @ examples/debug/rl/infer.toml
 ```
 
 ```bash
-uv run orchestrator @ configs/debug/orch.toml
+uv run orchestrator @ examples/debug/rl/orch.toml
 ```
 
-4. Check that you can run a simple SFT warmup (*this requires 1 GPU*)
+6. Check that you can run evals against an inference server (*this requires 1 GPU*)
+
+*Your inference should still be running from step 5. If not, start it again with `uv run inference @ examples/debug/rl/infer.toml`.*
 
 ```bash
-uv run sft @ configs/reverse_text/sft.toml
-```
-
-5. Check that you can run a toy RL run (*this requires 2 GPUs*)
-
-```bash
-uv run rl \
-  --trainer @ configs/reverse_text/train.toml \
-  --orchestrator @ configs/reverse_text/orch.toml \
-  --inference @ configs/reverse_text/infer.toml
+uv run eval @ examples/debug/eval.toml
 ```
 
 </details>
-
 
 ## Additional Setup
 
@@ -127,74 +126,106 @@ uv run huggingface-cli login
 # Or set `export HF_TOKEN=...`
 ```
 
-3. You may want to increase the number of open files to prevent errors like `Too many open files`.
+3. You may want to increase the maximum number of open files to prevent errors like `Too many open files`.
 
 ```bash
 ulimit -n 32000
 ```
 
-4.  We provide a convenient tmux layout script to start a run and view logs. To start the session simply run
+## RL
+
+The main usecase of PRIME-RL is RL training. Three main abstractions facilitate RL training: the **orchestrator**, the **trainer**, and the **inference** service.
+
+![Architecture](assets/architecture.png)
+
+We demonstrate how to setup an RL training in the toy [`reverse-text`](https://app.primeintellect.ai/dashboard/environments/primeintellect/reverse-text) environment. We train a small SFT-warmed up (see [SFT](#sft)) model ([`PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT`](https://huggingface.co/PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT)) to learn to reverse a small chunk of text. Training is extremely quick (~5min on 2x4090) because we allow a maximum context of 128 tokens. We use this run for development and in CI.
+
+To check all available configuration options, run `uv run rl --help`.
+
+### Single-Node Training
+
+First, start a pre-layouted `tmux` session to view the logs from all submodules.
 
 ```bash
 bash scripts/tmux.sh
 ```
 
-The default session name is `prime-rl` and outputs directory is `outputs`. They are configurable, as described in `bash scripts/tmux.sh -h`.
-
-## RL
-
-We provide a convenience endpoint `rl` for single-node RL experiments. It configures and starts the trainer, orchestrator and, optionally, an inference server. It allows setting shared configs conveniently (e.g. the model name or async level should be the same across all modules) and dispatches and monitors subprocesses. To stream the logs from each module we use file logging. By default, only the trainer logs will be displayed on the main process (*use the tmux layout script to conveniently view all logs*).
-
-To check all available configuration options, run `uv run rl --help`.
-
-**Reverse Text**
-
-Train a tiny model (`PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT`) that has undergone SFT warmup (see below) to learn to reverse a small chunk of text. Training is extremely quick because we allow a maximum context of 128 tokens. We use this run in CI.
+Then, start the training with the `rl` entrypoint 
 
 ```bash
+# Run this in the `Trainer` pane
 uv run rl \
-  --trainer @ configs/reverse_text/train.toml \
-  --orchestrator @ configs/reverse_text/orch.toml \
-  --inference @ configs/reverse_text/infer.toml
+  --trainer @ examples/reverse_text/rl/train.toml \
+  --orchestrator @ examples/reverse_text/rl/orch.toml \
+  --inference @ examples/reverse_text/rl/infer.toml
 ```
 
-*With two small GPUs (e.g. RTX 3090/4090), this experiment should finish in less than 5 minutes.*
-
-**Hendrycks Math**
-
-Train a small model (`willcb/DeepSeek-R1-Distill-Qwen-1.5B`) on high-school level math questions. It is recommended to have at least 2xA100-80GB GPUs or more for this experiment.
-
-On eight GPUs, run the following command to run the experiment.
+By default, this command will spin up and tear down the inference server with each invocation. For development purposes it is often useful to start the inference server once and keep it alive across experiments to avoid suffering the vLLM startup time repeatedly.
 
 ```bash
-uv run rl \
-  --trainer @ configs/hendrycks_math/1b/train.toml \
-  --orchestrator @ configs/hendrycks_math/1b/orch.toml \
-  --inference @ configs/hendrycks_math/1b/infer.toml \
-  --trainer-gpus 2 --inference-gpus 6
+# Run this in the `Inference` pane
+uv run inference @ examples/reverse_text/rl/infer.toml
 ```
 
-*NB: This setup requires 8 GPUs - 2 are used for the FSDP trainer, 6 are used for inference.*
-
-**INTELLECT-2 Math**
-
-Train a small model (`willcb/DeepSeek-R1-Distill-Qwen-1.5B`) on complex math questions from the INTELLECT-2 dataset.
+Then, you can repeatedly restart the trainer and orchestrator in the `Trainer` pane.
 
 ```bash
+# Run this in the `Trainer` pane
 uv run rl \
-  --trainer @ configs/intellect_math/1b/train.toml \
-  --orchestrator @ configs/intellect_math/1b/orch.toml \
-  --inference @ configs/intellect_math/1b/infer.toml \
-  --trainer-gpus 2 --inference-gpus 6
+  --trainer @ examples/reverse_text/rl/train.toml \
+  --orchestrator @ examples/reverse_text/rl/orch.toml
 ```
 
-*NB: This setup requires 8 GPUs - 2 are used for the FSDP trainer, 6 are used for inference.*
+You can also choose to start each submodule manually. To do so, use the `inference`, `orchestrator` and `trainer` entrypoints.
+
+```bash
+# Run this in the `Inference` pane
+uv run inference @ examples/reverse_text/rl/infer.toml
+```
+
+```bash
+# Run this in the `Orchestrator` pane
+uv run orchestrator @ examples/reverse_text/rl/orch.toml
+```
+
+```bash
+# Run this in the `Trainer` pane
+uv run trainer @ examples/reverse_text/rl/train.toml
+```
 
 ### Multi-Node Training
 
-The trainer and inference can be decoupled naively as they communicate via HTTP and shared file system. Simply spin up your inference server on one node, and your trainer on another node. Make sure that the orchestrator (colocated with the trainer) points to the public IP address of the node hosting the inference server and that they have access to a shared path used for outputs.
+> PRIME-RL is fully compatible with SLURM job scheduling which is convenient for multi-node deployments. We will soon add docs for this.
 
-If you want to go even bigger, you can run the trainer and/ or inference on multi-node.
+> We currently require shared file system for multi-node RL training.
+
+**Non-Colocated Trainer and Inference**
+
+On all nodes, export the path to the shared file system (`df -h`), the public IP address (`curl ipinfo.io/ip`) and an API key as environment variables.
+
+```bash
+# Export this on all nodes
+export OUTPUT_DIR=... # Absolute path to a shared directory
+export INFERENCE_SERVER_IP=... # Public IP address of the inference server node
+export API_KEY=... # API key for the inference server
+```
+
+```bash
+# Run inference on one node
+uv run inference \
+  @ examples/reverse_text/rl/infer.toml \
+  --api-key $API_KEY
+```
+
+```bash
+# Run this on another node
+uv run rl \
+  --trainer @ examples/reverse_text/rl/train.toml \
+  --orchestrator @ examples/reverse_text/rl/orch.toml \
+  --orchestrator.client.base-url http://$INFERENCE_SERVER_IP:8000 \
+  --orchestrator.client.api-key-var API_KEY \
+  --output-dir $OUTPUT_DIR
+```
 
 **Multi-Node Trainer**
 
@@ -233,8 +264,6 @@ uv run  torchrun \
     --rdzv_endpoint=$RDZV_ENDPOINT \
     src/prime_rl/trainer/rl/train.py
 ```
-
-*It will automatically set up the local and global world information correctly.*
 
 **Multi-Node Inference**
 
@@ -283,14 +312,136 @@ uv run inference \
 
 *We have found that restarting the server might require cleaning the RPC port with `fuser -k 13345/tcp` used for communication between the head node and the headless engine cores.*
 
-### Multiple Experiments per Node
+## SFT
 
-For small models/ quick ablations, it can be more efficient to parallelize experiments within a node (e.g. split your GPUs to run two experiments in parallel). Because the trainer communicates with the orchestrator via a shared file system, and the orchestrator communicates with the inference engine via an OAI-compatible API, the connection points have to be uniquely set. For example, if you have access to 4 GPUs you can run two 2 GPU training runs in parallel as follows:
+We demonstrate how to setup an SFT warmup using the toy [`reverse-text`](https://app.primeintellect.ai/dashboard/environments/primeintellect/reverse-text) environment. We have generated a small dataset ([PrimeIntellect/Reverse-Text-SFT](https://huggingface.co/PrimeIntellect/Reverse-Text-SFT)) of examples where the prompt is a small chunk of text and the completion is the reverse of that chunk. We will fine-tune `PrimeIntellect/Qwen3-0.6B` (`Qwen/Qwen3-0.6B` but with Qwen-2.5 chat template) on this dataset. Again, because of the small context, training should be extremely quick.
 
-Start the first experiment in a tmux session `exp-1` with outputs directory `outputs`. Specify it both in the tmux script, as well as in the start command (*will use the first 2 GPUs*)
+To check all available configuration options, run `uv run sft --help`.
+
+
+### Single-Node Training
+
+On a single GPU, start the training with the `sft` entrypoint
 
 ```bash
-bash scripts/tmux.sh -s exp-1 -o outputs1
+uv run sft @ examples/reverse_text/sft.toml
+```
+
+If you have access to multiple GPUs, use [`torchrun`](https://docs.pytorch.org/docs/stable/elastic/run.html) with `--nproc-per-node` to start the training. 
+
+```bash
+uv run torchrun \
+  --nproc-per-node 8 \
+  src/prime_rl/trainer/sft/train.py @ examples/reverse_text/sft.toml
+```
+
+### Multi-Node Training
+
+On multiple nodes (potentially with multiple GPUs), use [`torchrun`](https://docs.pytorch.org/docs/stable/elastic/run.html) with `--nnodes` and `--nproc-per-node` to start the training. You need to set up the rendezvous endpoint to allow the nodes to find each other. This should be the private IP address of your master node that needs to be reachable from all other nodes. For more details, see the [PyTorch documentation](https://docs.pytorch.org/docs/stable/elastic/run.html).
+
+```bash
+export RDZV_ENDPOINT=...
+```
+
+```bash
+uv run torchrun \
+  --nnodes=2 \
+  --nproc-per-node 8 \
+  --rdzv-endpoint=$RDZV_ENDPOINT \
+  src/prime_rl/trainer/sft/train.py @ examples/reverse_text/sft.toml
+```
+
+## Evals
+
+You can use PRIME-RL to eval [verifiers](https://github.com/willccbb/verifiers) environments hosted on the [Environment Hub](https://hub.primeintellect.ai) against both API models, local models and checkpoints from an SFT or RL training using the `eval` entrypoint.
+
+> You can also use the `vf-eval` entrypoint for evaluating a *single* environment against API models or local models. However, if want to evaluate multiple environments in parallel and/ or evaluate a training checkpoint, the PRIME-RL `eval` entrypoint is likely more convenient.
+
+We demonstrate evals by evaluating two common benchmarks [`gpqa`](https://app.primeintellect.ai/dashboard/environments/primeintellect/gpqa) and [`math500`](https://app.primeintellect.ai/dashboard/environments/primeintellect/math500).
+
+To check all available configuration options, run `uv run eval --help`.
+
+### API Models
+
+To evaluate API models, you need to set the API base URL and API key. We will exemplify this with the OpenAI API, but the same principles apply to other inference providers.
+
+First, set the API key as an environment variable.
+
+```bash
+export OPENAI_API_KEY=...
+```
+
+Then, start evaluation by setting the base URL, the name of the environment variable containing the API key, and the model identifier that is exposed by the API.
+
+```bash
+uv run eval \
+  --client.base-url https://api.openai.com/v1 \
+  --client.api-key-var OPENAI_API_KEY \
+  --model.name gpt-5-nano \
+  --environment-ids math500,aime2025
+```
+
+### Local Models
+
+To evaluate any HF model, start an inference server with the desired model before running the `eval` command. For example, to evaluate `Qwen/Qwen3-0.6B` on the `math500` and `aime2025` environments, run the following commands:
+
+```bash
+uv run inference --model.name Qwen/Qwen3-0.6B
+```
+
+```bash
+uv run eval \
+  --model.name Qwen/Qwen3-0.6B \
+  --environment-ids math500,aime2025
+```
+
+### Checkpoints
+
+To evaluate a SFT or RL checkpoint, start an inference server for your base model and specify the directory containing the checkpoints with `--weights-dir`. 
+
+```bash
+uv run inference --model.name Qwen/Qwen3-0.6B
+```
+
+```bash
+uv run eval \
+  --model.name Qwen/Qwen3-0.6B \
+  --weights-dir outputs/weights
+```
+
+By default, this will evaluate the base model and all step checkpoints found in the weights directory. To skip evaling the base model, set `--no-eval-base` and to evaluate only specific steps, set `--steps` as a comma-separated list of integers representing the steps to evaluate.
+
+## Advanced Usage
+
+### Single-GPU Training
+
+If you only have access to a single GPU, you may still be able to run small experiments. To do so, configure your inference server to use only a fraction of the available memory. By default, the `rl` entrypoint assumes fully disjoint training and inference, so you will have to start your single-GPU memory manually as follows:
+
+```bash
+# Run this in the `Inference` pane
+uv run inference @ examples/reverse_text/rl/infer.toml --gpu-memory-utilization 0.5
+```
+
+*Tune this value such that you have enough GPU memory for the RL trainer*
+
+```bash
+# Run this in the `Orchestrator` pane
+uv run orchestrator @ examples/reverse_text/rl/orch.toml
+```
+
+```bash
+# Run this in the `Trainer` pane
+uv run trainer examples/reverse_text/rl/train.toml
+```
+
+### Parallel Experiments
+
+For quick ablations, it can be more efficient to parallelize experiments within a node (e.g. split your GPUs to run two experiments in parallel). Because the trainer communicates with the orchestrator via shared file system, and the orchestrator communicates with the inference engine via an OAI-compatible API, the connection points have to be uniquely set. For example, if you have access to 4 GPUs you can run two 2 GPU training runs in parallel as follows:
+
+Start the first experiment in a tmux session `exp1` with outputs directory `outputs1`. Specify it both in the tmux script, as well as in the start command (*will use the first 2 GPUs*)
+
+```bash
+bash scripts/tmux.sh -s exp1 -o outputs1
 ```
 
 ```bash
@@ -302,7 +453,7 @@ uv run rl \
   --output-dir outputs1
 ```
 
-For the second experiment, start a second tmux session named `exp-2` with outputs directory `outputs2`. In addition, specify a new server port for the inference engine and orchestrator (*will use the first 2 GPUs*)
+For the second experiment, start a second tmux session named `exp2` with outputs directory `outputs2`. In addition, specify a new server port for the inference engine and orchestrator (*will use the last 2 GPUs*)
 
 ```bash
 bash scripts/tmux.sh -s exp-2 -o outputs2
@@ -319,43 +470,9 @@ CUDA_VISIBLE_DEVICES=2,3 uv run rl \
   --output-dir outputs2
 ```
 
-## SFT
-
-We have built-in support for SFT using the `sft` entrypoint. SFT often proves useful prior to RL training to get the model in-distribution and have higher initial reward that it can hillclimb from. 
-
-To check all available configuration options, run `uv run sft --help`.
-
-**Reverse Text**
-
-Finetune `PrimeIntellect/Qwen3-0.6B` (`Qwen/Qwen3-0.6B` but with Qwen-2.5 chat template) to reverse a tiny chunk of text, used as a warmup model train in `reverse-text` environment. We use this run in CI.
-
-```bash
-uv run sft @ configs/reverse_text/sft.toml
-```
-
-If you want to train on multiple GPUs or nodes, use `torchrun`. For example, to do the same run as above on 4 colocated GPUs.
-
-```bash
-uv run torchrun --nproc-per-node 4 src/prime_rl/trainer/sft/train.py @ configs/reverse_text/sft.toml
-```
-
-## Evals
-
-We provide a convenience endpoint for running a full evaluation suite of common benchmarks such as AIME, MATH-500 or LiveCodeBench against your model using the `eval` entrypoint.
-
-```bash
-uv run inference --model.name Qwen/Qwen3-0.6B --max-model-len 2048
-```
-
-```bash
-uv run eval --model.name Qwen/Qwen3-0.6B --environment-ids math500,aime2024,aime2025
-```
-
-To check all available configuration options, run `uv run eval --help`.
-
 ## Developer
 
-*For now, development is only possible on CUDA-enabled devices.*
+> For now, development is only possible on CUDA-enabled devices.
 
 ### Setup
 
@@ -400,36 +517,6 @@ PRIME_MODEL__NAME=Qwen/Qwen3-4B uv run inference @qwen8b.toml @qwen14b.toml --mo
 ```
 
 In this example, the CLI argument `--model.name Qwen/Qwen3-32B` will take precendence and the script will use `Qwen/Qwen3-32B` as the model name. If the CLI argument wasn't set, then the second config file would take precedence and the script would use `Qwen/Qwen-14B` as the model name. If the second config file wasn't set, then the first config file would take precedence and the script would use `Qwen/Qwen3-8B` as the model name. Finally, if the first config file wasn't set, then the environment variable would take precedence and the script would use `Qwen/Qwen-4B` as the model name. If the environment variable wasn't set, then the default value would be used and the script would use `Qwen/Qwen3-0.6B` as the model name.
-
-### Persistent Inference Server
-
-For development purposes it is useful start the inference server once and keep it alive across experiments to avoid suffering the vLLM startup time repeatedly. The recommended workflow is as follows:
-
-1. Start the preconfigured tmux session using the tmux script
-
-```bash
-bash scripts/tmux.sh
-```
-
-2. Start the inference server in the `Inference` pane.
-
-```bash
-uv run inference @ configs/reverse_text/infer.toml
-```
-
-3. Start the trainer and orchestrator in the `Trainer` pane.
-
-```bash
-uv run rl \
-  --trainer @ configs/reverse_text/train.toml \
-  --orchestrator @ configs/reverse_text/orch.toml
-```
-
-To kill the tmux session when you're done:
-
-```bash
-tmux kill-session -t prime-rl
-```
 
 ### Environments
 
