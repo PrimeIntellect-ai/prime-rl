@@ -126,6 +126,13 @@ class ModelConfig(BaseConfig):
             self.name = MOE_MODEL_MAPS[self.name]
         return self
 
+    @model_validator(mode="after")
+    def compile_doesnt_work_with_meta_loading(self):
+        # TODO: Remove this once this is fixed
+        if self.compile:
+            self.load_using_meta = False
+        return self
+
 
 class ConstantSchedulerConfig(BaseModel):
     """Configuration for constant learning rate scheduler."""
