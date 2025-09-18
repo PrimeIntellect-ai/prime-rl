@@ -39,6 +39,7 @@ class WandbMonitor:
         assert config is not None
         self.logger.info(f"Initializing {self.__class__.__name__} ({config})")
         self._maybe_overwrite_wandb_command()
+        self.output_dir = output_dir
         self.wandb = wandb.init(
             project=config.project,
             name=config.name,
@@ -235,6 +236,16 @@ class WandbMonitor:
         df = pd.DataFrame(self.distributions)
         table = wandb.Table(dataframe=df)
         wandb.log({"final-distributions": table})
+
+    def save_final_summary(self, filename: str = "final_summary.json") -> None:
+        """Save final summary to W&B table."""
+        if not self.is_master:
+            return
+        self.logger.info("Saving final summary to file")
+        dir_path = self.output_dir / f"run-{self.wandb.id}"
+        dir_path.mkdir(parents=True, exist_ok=True)
+        with open(dir_path / filename, "w") as f:
+            json.dump(wandb.summary._as_dict(), f)
 
 
 _MONITOR: WandbMonitor | None = None
