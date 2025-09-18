@@ -239,7 +239,7 @@ class WandbMonitor:
 
     def save_final_summary(self, filename: str = "final_summary.json") -> None:
         """Save final summary to W&B table."""
-        if not self.is_master:
+        if not self.is_master or not self.config:
             return
         self.logger.info("Saving final summary to file")
         dir_path = self.output_dir / f"run-{self.wandb.id}"
