@@ -26,17 +26,19 @@ PRIME-RL: Decentralized RL Training at Scale
   </a>
 </p>
 
+## Overview
+
 PRIME-RL is a framework for large-scale reinforcement learning. It is designed to be easy-to-use and hackable, yet capable of scaling to 1000+ GPUs. Beyond that, here is why we think you might like it:
 
-1. First-class support for OpenAI-compatible async inference, [`verifiers`](https://github.com/willccbb/verifiers) environments and the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars) to standardize agentic RL training and evaluation
-2. Support for end-to-end post-training, including SFT and multi-turn agentic RL
+1. Integrates natively with [`verifiers`](https://github.com/willccbb/verifiers) environments for training and evaluation via the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars)
+2. Supports end-to-end post-training workflows, including SFT and RL
 3. Rayless multi-node deployment with [FSDP2](https://docs.pytorch.org/tutorials/intermediate/FSDP_tutorial.html) training and [vLLM](https://github.com/vllm-project/vllm) inference backend
-4. Naturally asynchronous training for high-throughput performance in decentralized settings
-5. Modular and extensible by nature, enabling high research velocity
+4. Designed for asynchronous training for performance and stability in decentralized settings
+5. Hackable, modular and extensible by nature
 
 ## Setup
 
-> *We develop and test on NVIDIA A100, H100, H200, and B200; likely compatible with other Ampere, Hopper and Blackwell-class GPUs. If your installation fails, please create an [issue](https://github.com/PrimeIntellect-ai/prime-rl/issues).*
+> *We develop and test on NVIDIA A100, H100, H200, and B200; likely compatible with other Ampere, Hopper and Blackwell-class GPUs. If setup fails, please create an [issue](https://github.com/PrimeIntellect-ai/prime-rl/issues).*
 
 **Quick Setup (Recommended)**
 
