@@ -54,13 +54,14 @@ def get_model(
     config: ModelConfig, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.bfloat16
 ) -> nn.Module:
     config_model = AutoConfig.from_pretrained(
-        config.name, attn_implementation=config.attn, trust_remote_code=config.trust_remote_code
+        config.name,
+        attn_implementation=config.attn,
     )
     config_model.use_cache = False
 
     with device:
         if device == torch.device("meta"):
-            model = LlamaForCausalLM._from_config(config_model, trust_remote_code=config.trust_remote_code, dtype=dtype)
+            model = LlamaForCausalLM._from_config(config_model, dtype=dtype)
         else:
             model = LlamaForCausalLM.from_pretrained(
                 pretrained_model_name_or_path=config.name,
