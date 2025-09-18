@@ -34,8 +34,9 @@ class WandbMonitor:
         rank = int(os.environ.get("RANK", os.environ.get("DP_RANK", "0")))
         self.enabled = self.config is not None
         self.is_master = rank == 0
-        if not self.enabled or not self.is_master:
-            self.logger.warning(f"Skipping {self.__class__.__name__} initialization from non-master rank ({rank})")
+        if not self.enabled:
+            if not self.is_master:
+                self.logger.warning(f"Skipping {self.__class__.__name__} initialization from non-master rank ({rank})")
             return
         assert config is not None
         self.logger.info(f"Initializing {self.__class__.__name__} ({config})")
