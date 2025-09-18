@@ -29,6 +29,7 @@ class WandbMonitor:
         self.config = config
         self.logger = get_logger()
         self.history: list[dict[str, Any]] = []
+        self.output_dir = output_dir
 
         rank = int(os.environ.get("RANK", os.environ.get("DP_RANK", "0")))
         self.enabled = self.config is not None
@@ -39,7 +40,6 @@ class WandbMonitor:
         assert config is not None
         self.logger.info(f"Initializing {self.__class__.__name__} ({config})")
         self._maybe_overwrite_wandb_command()
-        self.output_dir = output_dir
         self.wandb = wandb.init(
             project=config.project,
             name=config.name,
