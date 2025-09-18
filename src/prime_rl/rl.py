@@ -398,6 +398,7 @@ def rl(config: RLConfig):
     ckpt_dir = get_ckpt_dir(config.output_dir)
     weights_dir = get_weights_dir(config.output_dir)
     rollout_dir = get_rollout_dir(config.output_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
 
     # Clean up directories if specified
     if config.clean:

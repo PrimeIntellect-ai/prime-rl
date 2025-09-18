@@ -178,7 +178,8 @@ By default, this command will spin up and tear down the inference server with ea
 
 ```bash
 # Run this in the `Inference` pane
-uv run inference @ examples/reverse_text/rl/infer.toml
+uv run rl --inference @ examples/reverse_text/rl/infer.toml
+# Or `uv run inference @ examples/reverse_text/rl/infer.toml`
 ```
 
 Then, you can repeatedly restart the trainer and orchestrator in the `Trainer` pane.
@@ -194,17 +195,17 @@ You can also choose to start each submodule manually. To do so, use the `inferen
 
 ```bash
 # Run this in the `Inference` pane
-uv run inference @ examples/reverse_text/rl/infer.toml
+uv run rl --inference @ examples/reverse_text/rl/infer.toml
 ```
 
 ```bash
 # Run this in the `Orchestrator` pane
-uv run orchestrator @ examples/reverse_text/rl/orch.toml
+uv run rl --orchestrator @ examples/reverse_text/rl/orch.toml
 ```
 
 ```bash
 # Run this in the `Trainer` pane
-uv run trainer @ examples/reverse_text/rl/train.toml
+uv run rl --trainer @ examples/reverse_text/rl/train.toml
 ```
 
 ### Multi-Node Training
@@ -219,16 +220,15 @@ On all nodes, export the path to the shared file system (`df -h`), the public IP
 
 ```bash
 # Export this on all nodes
-export OUTPUT_DIR=... # Absolute path to a shared directory
+export OUTPUT_DIR=... # Absolute path to shared directory (accessible from all nodes)
 export INFERENCE_SERVER_IP=... # Public IP address of the inference server node
-export API_KEY=... # API key for the inference server
+export INFERENCE_SERVER_API_KEY=... # API key for the inference server
 ```
+
 
 ```bash
 # Run inference on one node
-uv run inference \
-  @ examples/reverse_text/rl/infer.toml \
-  --api-key $API_KEY
+uv run inference @ examples/reverse_text/rl/infer.toml --api-key $INFERENCE_SERVER_API_KEY
 ```
 
 ```bash
@@ -236,8 +236,8 @@ uv run inference \
 uv run rl \
   --trainer @ examples/reverse_text/rl/train.toml \
   --orchestrator @ examples/reverse_text/rl/orch.toml \
-  --orchestrator.client.base-url http://$INFERENCE_SERVER_IP:8000 \
-  --orchestrator.client.api-key-var API_KEY \
+  --orchestrator.client.base-url http://$INFERENCE_SERVER_IP:8000/v1 \
+  --orchestrator.client.api-key-var INFERENCE_SERVER_API_KEY \
   --output-dir $OUTPUT_DIR
 ```
 
