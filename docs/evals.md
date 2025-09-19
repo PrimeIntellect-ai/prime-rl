@@ -1,0 +1,59 @@
+# Evals
+
+You can use PRIME-RL to eval [verifiers](https://github.com/willccbb/verifiers) environments hosted on the [Environment Hub](https://hub.primeintellect.ai) against both API models, local models and checkpoints from an SFT or RL training using the `eval` entrypoint.
+
+> You can also use the `vf-eval` entrypoint for evaluating a *single* environment against API models or local models. However, if want to evaluate multiple environments in parallel and/ or evaluate a training checkpoint, the PRIME-RL `eval` entrypoint is likely more convenient.
+
+We demonstrate evals by evaluating two common benchmarks [`gpqa`](https://app.primeintellect.ai/dashboard/environments/primeintellect/gpqa) and [`math500`](https://app.primeintellect.ai/dashboard/environments/primeintellect/math500).
+
+To check all available configuration options, run `uv run eval --help`.
+
+### API Models
+
+To evaluate API models, you need to set the API base URL and API key. We will exemplify this with the OpenAI API, but the same principles apply to other inference providers.
+
+First, set the API key as an environment variable.
+
+```bash
+export OPENAI_API_KEY=...
+```
+
+Then, start evaluation by setting the base URL, the name of the environment variable containing the API key, and the model identifier that is exposed by the API.
+
+```bash
+uv run eval \
+  --client.base-url https://api.openai.com/v1 \
+  --client.api-key-var OPENAI_API_KEY \
+  --model.name gpt-5-nano \
+  --environment-ids math500,aime2025
+```
+
+### Local Models
+
+To evaluate any HF model, start an inference server with the desired model before running the `eval` command. For example, to evaluate `Qwen/Qwen3-0.6B` on the `math500` and `aime2025` environments, run the following commands:
+
+```bash
+uv run inference --model.name Qwen/Qwen3-0.6B
+```
+
+```bash
+uv run eval \
+  --model.name Qwen/Qwen3-0.6B \
+  --environment-ids math500,aime2025
+```
+
+### Checkpoints
+
+To evaluate a SFT or RL checkpoint, start an inference server for your base model and specify the directory containing the checkpoints with `--weights-dir`. 
+
+```bash
+uv run inference --model.name Qwen/Qwen3-0.6B
+```
+
+```bash
+uv run eval \
+  --model.name Qwen/Qwen3-0.6B \
+  --weights-dir outputs/weights
+```
+
+By default, this will evaluate the base model and all step checkpoints found in the weights directory. To skip evaling the base model, set `--no-eval-base` and to evaluate only specific steps, set `--steps` as a comma-separated list of integers representing the steps to evaluate.
