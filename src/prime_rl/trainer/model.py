@@ -59,7 +59,7 @@ def get_model(
     config_model.use_cache = False
 
     if config.num_layers is not None:
-        logger.info(f"Setting num_layers to {config.num_layers}")
+        get_logger().info(f"Setting num_layers to {config.num_layers}")
         config_model.num_hidden_layers = max(config.num_layers, config_model.num_hidden_layers)
 
     with device:
