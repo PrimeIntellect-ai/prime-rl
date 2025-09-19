@@ -120,6 +120,7 @@ def test_moe_custom_impl():
         assert outputs.shape == (BS, SEQ_LEN, model.config.vocab_size)
 
 
+@pytest.mark.skip(reason="need special token for meta stuff in ci")
 @pytest.mark.parametrize("model_name", ["meta-llama/Llama-3.2-1B-Instruct"])
 def test_model_forward_custom_impl(model_name):
     config = ModelConfig(name=model_name, impl="custom", attn="sdpa")
