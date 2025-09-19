@@ -36,6 +36,13 @@ class CompileConfig(BaseModel):
 class ModelConfig(BaseConfig):
     """Configures the model for training."""
 
+    num_layers: Annotated[
+        int | None,
+        Field(
+            description="The number of layers in the model.",
+        ),
+    ] = None
+
     name: Annotated[
         str,
         Field(

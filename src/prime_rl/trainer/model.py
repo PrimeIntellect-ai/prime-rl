@@ -60,6 +60,9 @@ def get_model(
     config_model.use_cache = False
     config_model.use_grouped_mm = config.moe_use_grouped_mm
 
+    if config.num_layers is not None:
+        config_model.num_hidden_layers = max(config.num_layers, len(config_model.num_hidden_layers))
+
     with device:
         match config.impl:
             case "hf":
