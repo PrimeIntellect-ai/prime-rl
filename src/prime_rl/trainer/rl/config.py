@@ -121,6 +121,8 @@ class RLTrainerConfig(BaseSettings):
         ),
     ] = False
 
+    trace_path: Annotated[Path | None, Field(description="Path to write pytorch profiler trace to.")] = None
+
     @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench:
@@ -164,4 +166,13 @@ class RLTrainerConfig(BaseSettings):
     def disable_logging_wandb_samples(self):
         if self.wandb and self.wandb.log_extras:
             self.wandb.log_extras.samples = False
+        return self
+
+    @model_validator(mode="after")
+    def dont_do_massive_traces(self):
+        if self.trace_path:
+            assert self.max_steps is not None, "Must specify max_steps when tracing"
+            assert self.max_steps < 10, (
+                "Tracing more than 10 steps is not recommended as your trace will be massive. Remove this line if you really want to trace more steps."
+            )
         return self

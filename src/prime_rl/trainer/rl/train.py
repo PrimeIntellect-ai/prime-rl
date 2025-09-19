@@ -5,6 +5,7 @@ from copy import deepcopy
 # ruff: noqa: I001
 
 import torch
+from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
@@ -134,6 +135,11 @@ def train(config: RLTrainerConfig):
 
     logger.info(f"Starting training loop ({config.max_steps=})")
     is_first_step = True
+    maybe_record_function = nullcontext
+    if config.trace_path:
+        logger.info(f"Tracing to {config.trace_path}")
+        prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
+        maybe_record_function = record_function
     while True:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
@@ -258,7 +264,8 @@ def train(config: RLTrainerConfig):
             micro_batch_size, seq_len = input_ids.shape
 
             # Forward pass
-            logits = forward(model, input_ids, position_ids).float().contiguous()
+            with maybe_record_function("forward"):
+                logits = forward(model, input_ids, position_ids).float().contiguous()
             shifted_logits = shift_logits(logits)
             shifted_logits = shifted_logits / temperature
             logprobs = selective_log_softmax(shifted_logits, input_ids)
@@ -282,7 +289,8 @@ def train(config: RLTrainerConfig):
             del logits, shifted_logits
 
             # Backward pass
-            loss.backward()
+            with maybe_record_function("backward"):
+                loss.backward()
 
             # Add relevant tensors to tensor dict for logging purposes
             tensors["probs"].append(torch.exp(logprobs)[loss_mask].detach().to("cpu"))
@@ -400,6 +408,13 @@ def train(config: RLTrainerConfig):
         progress.step += 1
         is_first_step = False
 
+    if config.trace_path:
+        prof.__exit__(None, None, None)
+        config.trace_path.mkdir(parents=True, exist_ok=True)
+        trace_file = str(config.trace_path / f"trace_{dist.get_rank()}.json.gz")
+        logger.info(f"Saving trace to {trace_file}")
+        prof.export_chrome_trace(trace_file)
+        logger.info(f"Saved trace to {trace_file}")
     # Log final (immutable) distributions to W&B table
     logger.info("Logging final distributions as W&B table")
     monitor.log_final_distributions()
