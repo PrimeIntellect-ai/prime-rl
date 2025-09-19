@@ -121,7 +121,7 @@ def test_moe():
 
 
 def test_model_forward_custom_impl():
-    config = ModelConfig(name="meta-llama/Llama-3.2-1B-Instruct", impl="custom")
+    config = ModelConfig(name="meta-llama/Llama-3.2-1B-Instruct", impl="custom", attn="sdpa")
     model = get_model(config)
     model = model.to("cuda")
     with torch.autocast("cuda", dtype=torch.bfloat16):

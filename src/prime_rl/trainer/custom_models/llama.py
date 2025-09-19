@@ -419,9 +419,9 @@ class LlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
     def __init__(self, config):
         super().__init__(config)
 
-        if config.attention_implementation != "sdpa":
+        if config._attn_implementation != "sdpa":
             raise NotImplementedError(
-                f"Only sdpa is supported for custom llama for now not {config.attention_implementation}"
+                f"Only sdpa is supported for custom llama for now not {config._attn_implementation}"
             )
 
         self.model = LlamaModel(config)

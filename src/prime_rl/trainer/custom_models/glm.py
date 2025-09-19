@@ -545,9 +545,9 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
-        if config.attention_implementation != "sdpa":
+        if config._attn_implementation != "sdpa":
             raise NotImplementedError(
-                f"Only sdpa is supported for custom llama for now not {config.attention_implementation}"
+                f"Only sdpa is supported for custom llama for now not {config._attn_implementation}"
             )
 
         # Initialize weights and apply final processing
