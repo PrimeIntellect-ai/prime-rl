@@ -59,7 +59,8 @@ def get_model(
     config_model.use_cache = False
 
     if config.num_layers is not None:
-        config_model.num_hidden_layers = max(config.num_layers, len(config_model.num_hidden_layers))
+        logger.info(f"Setting num_layers to {config.num_layers}")
+        config_model.num_hidden_layers = max(config.num_layers, config_model.num_hidden_layers)
 
     with device:
         model_cls = AutoLigerKernelForCausalLM if config.liger_kernel else AutoModelForCausalLM
