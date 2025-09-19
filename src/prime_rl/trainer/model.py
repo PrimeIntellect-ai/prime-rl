@@ -13,7 +13,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, ModelConfig
-from prime_rl.trainer.parallel_dims import ParallelDims
+from prime_rl.trainer.distributed.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
 
 # Add filter to the standard logging module for transformers.modeling_utils to supress the
@@ -57,6 +57,13 @@ def get_model(
         config.name, attn_implementation=config.attn, trust_remote_code=config.trust_remote_code
     )
     config_model.use_cache = False
+
+    model_cls = AutoLigerKernelForCausalLM if config.liger_kernel else AutoModelForCausalLM
+    model = model_cls.from_pretrained(
+        pretrained_model_name_or_path=config.name,
+        config=config_model,
+        trust_remote_code=config.trust_remote_code,
+    )
 
     with device:
         model_cls = AutoLigerKernelForCausalLM if config.liger_kernel else AutoModelForCausalLM

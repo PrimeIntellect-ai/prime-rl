@@ -71,6 +71,9 @@ def get_logger() -> Logger:
     """
     global _LOGGER
     if _LOGGER is None:
+        from loguru import logger
+
+        return logger
         raise RuntimeError("Logger not set. Please call `set_logger` first.")
     return _LOGGER
 
