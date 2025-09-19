@@ -14,6 +14,7 @@ PRIME-RL: Decentralized RL Training at Scale
 
 ---
 
+</br>
 <p align="center">
   <a href="https://github.com/PrimeIntellect-ai/prime-rl/actions/workflows/style.yaml">
     <img src="https://github.com/PrimeIntellect-ai/prime-rl/actions/workflows/style.yaml/badge.svg" alt="Style" />
@@ -30,17 +31,25 @@ PRIME-RL: Decentralized RL Training at Scale
 
 PRIME-RL is a framework for large-scale reinforcement learning. It is designed to be easy-to-use and hackable, yet capable of scaling to 1000+ GPUs. Beyond that, here is why we think you might like it:
 
-1. Integrates natively with [`verifiers`](https://github.com/willccbb/verifiers) environments for training and evaluation via the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars)
-2. Supports end-to-end post-training workflows, including SFT and RL
+1. Integrates natively with [`verifiers`](https://github.com/willccbb/verifiers) environments via the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars)
+2. Supports end-to-end post-training, including [SFT](#sft) and [RL](#rl) training and [Evals](#evals)
 3. Rayless multi-node deployment with [FSDP2](https://docs.pytorch.org/tutorials/intermediate/FSDP_tutorial.html) training and [vLLM](https://github.com/vllm-project/vllm) inference backend
-4. Designed for asynchronous training for performance and stability in decentralized settings
+4. Designed for asynchronous training in decentralized settings
 5. Hackable, modular and extensible by nature
 
 ## Setup
 
 > *We develop and test on NVIDIA A100, H100, H200, and B200; likely compatible with other Ampere, Hopper and Blackwell-class GPUs. If setup fails, please create an [issue](https://github.com/PrimeIntellect-ai/prime-rl/issues).*
 
-**Quick Setup (Recommended)**
+### Prerequisites
+
+> Support for AMD GPUs is on our [roadmap](https://github.com/PrimeIntellect-ai/prime-rl/issues).
+
+Currently, you **need at least one NVIDIA GPU to use PRIME-RL**. If you don't already have access to some, we recommend our [compute platform](https://app.primeintellect.ai) for everything from [renting GPUs with low on-demand rates](https://app.primeintellect.ai) for developing, debugging and small ablations, to [reserving 1000+ GPU clusters](https://app.primeintellect.ai/dashboard/quotes) for large-scale training.
+
+### Quick Setup
+
+Run our auto-installer to setup PRIME-RL in a single command.
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/PrimeIntellect-ai/prime-rl/main/scripts/install.sh | bash
@@ -55,7 +64,7 @@ Manual Setup
 1. Clone the repository
 
 ```bash
-git clone git@github.com:PrimeIntellect-ai/prime-rl.git
+git clone https://github.com/PrimeIntellect-ai/prime-rl.git
 cd prime-rl
 ```
 
@@ -104,19 +113,21 @@ uv run sft @ examples/debug/sft.toml
 uv run trainer @ examples/debug/rl/train.toml
 ```
 
-5. Check that you can run the orchestrator against an inference server (*this requires 1 GPU*)
+5. Check that you can run the inference server (*this requires 1 GPU*)
 
 ```bash
 uv run inference @ examples/debug/rl/infer.toml
 ```
 
+*Keep the inference server running in the background for the next steps.*
+
+5.1. Check that you can run the orchestrator against the inference server
+
 ```bash
 uv run orchestrator @ examples/debug/rl/orch.toml
 ```
 
-6. Check that you can run evals against an inference server (*this requires 1 GPU*)
-
-*Your inference should still be running from step 5. If not, start it again with `uv run inference @ examples/debug/rl/infer.toml`.*
+5.2. Check that you can run evals against an inference server
 
 ```bash
 uv run eval @ examples/debug/eval.toml
@@ -124,7 +135,7 @@ uv run eval @ examples/debug/eval.toml
 
 </details>
 
-## Additional Setup
+### Additional Setup
 
 1. If you want to log your runs to W&B (`wandb`), log in
 
@@ -146,13 +157,19 @@ uv run huggingface-cli login
 ulimit -n 32000
 ```
 
+4. If you want to contribute to PRIME-RL, install [pre-commit](https://pre-commit.com) hooks
+
+```bash
+uv run pre-commit install
+```
+
 ## RL
 
 The main usecase of PRIME-RL is RL training. Three main abstractions facilitate RL training: the **orchestrator**, the **trainer**, and the **inference** service.
 
 ![Architecture](assets/architecture.png)
 
-We demonstrate how to setup an RL training in the toy [`reverse-text`](https://app.primeintellect.ai/dashboard/environments/primeintellect/reverse-text) environment. We train a small SFT-warmed up (see [SFT](#sft)) model ([`PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT`](https://huggingface.co/PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT)) to learn to reverse a small chunk of text. Training is extremely quick (~5min on 2x4090) because we allow a maximum context of 128 tokens. We use this run for development and in CI.
+We demonstrate how to train in the toy [`reverse-text`](https://app.primeintellect.ai/dashboard/environments/primeintellect/reverse-text) environment. We train a small SFT-warmed up (see [SFT](#sft)) model ([`PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT`](https://huggingface.co/PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT)) to learn to reverse a small chunk of text. Training is extremely quick (~5min on 2x4090) because we allow a maximum context of 128 tokens. We use this run for development and in CI.
 
 To check all available configuration options, run `uv run rl --help`.
 
@@ -178,8 +195,7 @@ By default, this command will spin up and tear down the inference server with ea
 
 ```bash
 # Run this in the `Inference` pane
-uv run rl --inference @ examples/reverse_text/rl/infer.toml
-# Or `uv run inference @ examples/reverse_text/rl/infer.toml`
+uv run inference @ examples/reverse_text/rl/infer.toml
 ```
 
 Then, you can repeatedly restart the trainer and orchestrator in the `Trainer` pane.
@@ -195,17 +211,17 @@ You can also choose to start each submodule manually. To do so, use the `inferen
 
 ```bash
 # Run this in the `Inference` pane
-uv run rl --inference @ examples/reverse_text/rl/infer.toml
+uv run inference @ examples/reverse_text/rl/infer.toml
 ```
 
 ```bash
 # Run this in the `Orchestrator` pane
-uv run rl --orchestrator @ examples/reverse_text/rl/orch.toml
+uv run orchestrator @ examples/reverse_text/rl/orch.toml
 ```
 
 ```bash
 # Run this in the `Trainer` pane
-uv run rl --trainer @ examples/reverse_text/rl/train.toml
+uv run trainer @ examples/reverse_text/rl/train.toml
 ```
 
 ### Multi-Node Training
@@ -214,25 +230,24 @@ uv run rl --trainer @ examples/reverse_text/rl/train.toml
 
 > We currently require shared file system for multi-node RL training.
 
-**Non-Colocated Trainer and Inference**
-
-On all nodes, export the path to the shared file system (`df -h`), the public IP address (`curl ipinfo.io/ip`) and an API key as environment variables.
+To faciliate multi-node RL training, ensure that all nodes have access to a shared file system and that the node that will run the inference server is reachable from the orchestrator via a private or public IP address. Then, set the following environment variables on all nodes:
 
 ```bash
 # Export this on all nodes
-export OUTPUT_DIR=... # Absolute path to shared directory (accessible from all nodes)
-export INFERENCE_SERVER_IP=... # Public IP address of the inference server node
+export OUTPUT_DIR=... # Path to directory in shared file system
+export INFERENCE_SERVER_IP=... # Reachable IP address of the inference node
 export INFERENCE_SERVER_API_KEY=... # API key for the inference server
 ```
 
+Then, start the inference server on one node.
 
 ```bash
-# Run inference on one node
 uv run inference @ examples/reverse_text/rl/infer.toml --api-key $INFERENCE_SERVER_API_KEY
 ```
 
+And finally, start the trainer and orchestrator on the remaining nodes.
+
 ```bash
-# Run this on another node
 uv run rl \
   --trainer @ examples/reverse_text/rl/train.toml \
   --orchestrator @ examples/reverse_text/rl/orch.toml \
@@ -490,7 +505,7 @@ CUDA_VISIBLE_DEVICES=2,3 uv run rl \
 
 ### Setup
 
-1. Install [pre-commit](https://pre-commit.com) hooks
+1. Install ) hooks
 
 ```bash
 uv run pre-commit install
