@@ -183,7 +183,7 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
 
 def apply_compile(model: nn.Module, compile_config: CompileConfig):
     for layer_id in range(len(model.model.layers)):
-        # Doing it inplace avoids mangled fqn which can break ckpt loading
+        # Doing it in-place avoids mangled fqn which can break checkpoint loading
         model.model.layers[layer_id].compile(fullgraph=compile_config.fullgraph)
     get_logger().info(f"Compiled {len(model.model.layers)} layers (fullgraph={compile_config.fullgraph})")
 
