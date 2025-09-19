@@ -349,11 +349,11 @@ class StackDataset(StatefulIterableDataset):
         self.dataset = dataset
         self.max_area = max_area
         self.current_seq_len = 0
-        assert math.log2(self.max_area).is_integer(), "max_area must be a power of 2"
         self.buckets = [[] for _ in range(int(math.log2(self.max_area)) + 1)]
         # TODO: Can we steal step from dataset?
         self.step = 0
-        self.bucket_timers = [None] * len(self.buckets)
+        self.bucket_sizes = [2**i for i in range(int(math.log2(self.max_area)))] + [self.max_area]
+        self.bucket_timers: list[int | None] = [None] * len(self.buckets)
         self.bucket_timeout = STACKING_DATASET_BUCKET_TIMEOUT
 
     def state_dict(self) -> dict:
@@ -364,25 +364,34 @@ class StackDataset(StatefulIterableDataset):
 
     def __iter__(self) -> Iterator[Sample]:
         for sample in self.dataset:
-            # Add sample to packed samples
+            # Truncate sample if it's longer than max area
             len_sample = len(sample["input_ids"])
             if len_sample > self.max_area:
                 for key, value in sample.items():
                     if key != "epoch":
                         sample[key] = sample[key][: self.max_area]
                 len_sample = self.max_area
+
+            # Add sample to bucket
             bucket_idx = int(math.log2(len_sample - 1)) + 1
             self.buckets[bucket_idx].append(sample)
 
-            if self.bucket_timers[bucket_idx] is not None:
-                hit_timeout = self.bucket_timers[bucket_idx] + self.bucket_timeout < self.step
+            # Check if bucket has timed out
+            bucket_timer = self.bucket_timers[bucket_idx]
+            if bucket_timer is not None:
+                hit_timeout = bucket_timer + self.bucket_timeout < self.step
             else:
                 hit_timeout = False
-            if (2**bucket_idx) * len(self.buckets[bucket_idx]) >= self.max_area or hit_timeout:
+
+            # Check if bucket is full
+            is_full = self.bucket_sizes[bucket_idx] * len(self.buckets[bucket_idx]) >= self.max_area
+
+            if is_full or hit_timeout:
                 if hit_timeout:
                     while bucket_idx < len(self.buckets) - 1:
                         if (
-                            2 ** (bucket_idx + 1) * (len(self.buckets[bucket_idx]) + len(self.buckets[bucket_idx + 1]))
+                            self.bucket_sizes[bucket_idx + 1]
+                            * (len(self.buckets[bucket_idx]) + len(self.buckets[bucket_idx + 1]))
                             < self.max_area
                         ):
                             self.buckets[bucket_idx + 1].extend(self.buckets[bucket_idx])
@@ -391,7 +400,8 @@ class StackDataset(StatefulIterableDataset):
                             bucket_idx += 1
                         else:
                             break
-                    while (2**bucket_idx) * len(self.buckets[bucket_idx]) < self.max_area:
+
+                    while self.bucket_sizes[bucket_idx] * len(self.buckets[bucket_idx]) < self.max_area:
                         dummy_sample = {}
                         for key, value in sample.items():
                             if key == "epoch":
@@ -406,7 +416,7 @@ class StackDataset(StatefulIterableDataset):
                         if key == "epoch":
                             packed_samples[key] = min(packed_samples.get(key, float("inf")), value)
                         else:
-                            packed_samples[key].append(value + [0] * (2**bucket_idx - len(value)))
+                            packed_samples[key].append(value + [0] * (self.bucket_sizes[bucket_idx] - len(value)))
                 yield packed_samples
                 self.step += 1
                 self.buckets[bucket_idx] = []
