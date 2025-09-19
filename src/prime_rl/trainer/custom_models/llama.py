@@ -17,6 +17,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import warnings
 from typing import Optional, Union
 
 import torch
@@ -465,7 +466,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
         ```"""
 
         if position_ids is not None:
-            raise NotImplementedError("Position IDs are not for custom llama for now")
+            warnings.warn("Position IDs are ignored for custom glm4_moe for now")
 
         outputs: BaseModelOutputWithPast = self.model(
             input_ids=input_ids,

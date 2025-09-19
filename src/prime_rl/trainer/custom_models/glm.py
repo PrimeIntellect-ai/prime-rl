@@ -803,7 +803,7 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
         if position_ids is not None:
-            raise NotImplementedError("Position IDs are not for custom glm4_moe for now")
+            warnings.warn("Position IDs are ignored for custom glm4_moe for now")
 
         outputs: BaseModelOutputWithPast = self.model(
             input_ids=input_ids,
