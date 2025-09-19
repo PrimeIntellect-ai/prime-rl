@@ -239,11 +239,6 @@ class LlamaAttention(nn.Module):
         cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
-        if past_key_values is not None:
-            # sin and cos are specific to RoPE models; cache_position needed for the static cache
-            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-            key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx, cache_kwargs)
-
         # attention_interface: Callable = eager_attention_forward
         # if self.config._attn_implementation != "eager":
         #     attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
@@ -258,8 +253,12 @@ class LlamaAttention(nn.Module):
         #     scaling=self.scaling,
         #     **kwargs,
         # )
+        key_states = repeat_kv(key_states, self.num_key_value_groups)
+        value_states = repeat_kv(value_states, self.num_key_value_groups)
+
         with sdpa_kernel([SDPBackend.FLASH_ATTENTION], set_priority=True):
             attn_output = F.scaled_dot_product_attention(query_states, key_states, value_states, is_causal=True)
+
         attn_weights = None
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
