@@ -91,12 +91,12 @@ class ModelConfig(BaseConfig):
         ),
     ] = 1
 
-    liger_kernel: Annotated[
-        bool,
+    impl: Annotated[
+        Literal["hf", "liger_kernel", "custom"],
         Field(
             description="Whether to use Liger Kernel.",
         ),
-    ] = False
+    ] = "hf"
 
     log_signature: Annotated[
         bool,

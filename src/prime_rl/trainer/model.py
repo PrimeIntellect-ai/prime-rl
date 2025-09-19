@@ -13,6 +13,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, ModelConfig
+from prime_rl.trainer.custom_models import get_model_cls
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
 
@@ -59,7 +60,14 @@ def get_model(
     config_model.use_cache = False
 
     with device:
-        model_cls = AutoLigerKernelForCausalLM if config.liger_kernel else AutoModelForCausalLM
+        match config.impl:
+            case "hf":
+                model_cls = AutoModelForCausalLM
+            case "liger_kernel":
+                model_cls = AutoLigerKernelForCausalLM
+            case "custom":
+                model_cls = get_model_cls(config_model.architectures)
+
         if device == torch.device("meta"):
             model = model_cls.from_config(config_model, trust_remote_code=config.trust_remote_code, dtype=dtype)
         else:

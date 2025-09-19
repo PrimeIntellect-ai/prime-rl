@@ -118,3 +118,14 @@ def test_moe():
         outputs = model(input_ids=inputs_ids).logits
 
         assert outputs.shape == (BS, SEQ_LEN, model.config.vocab_size)
+
+
+def test_model_forward_custom_impl():
+    config = ModelConfig(name="meta-llama/Llama-2-7b-hf", impl="custom")
+    model = get_model(config)
+    model = model.to("cuda")
+    with torch.autocast("cuda", dtype=torch.bfloat16):
+        inputs_ids = torch.randint(0, 100, (BS, SEQ_LEN)).to("cuda")
+        outputs = model(input_ids=inputs_ids).logits
+
+        assert outputs.shape == (BS, SEQ_LEN, model.config.vocab_size)
