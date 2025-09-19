@@ -28,11 +28,11 @@ _CUSTOM_CAUSAL_LM_MAPPING.register(LlamaConfig, LlamaForCausalLM, exist_ok=True)
 _CUSTOM_CAUSAL_LM_MAPPING.register(Glm4MoeConfig, Glm4MoeForCausalLM, exist_ok=True)
 
 
-class AutoModelPrimeRl(_BaseAutoModelClass):
+class AutoModelPrimeRL(_BaseAutoModelClass):
     _model_mapping = _CUSTOM_BASE_MAPPING
 
 
-AutoModelPrimeRl = auto_class_update(AutoModelPrimeRl)
+AutoModelPrimeRL = auto_class_update(AutoModelPrimeRL)
 
 
 class AutoModelForCausalLMPrimeRl(_BaseAutoModelClass):
@@ -47,7 +47,7 @@ def get_model_cls(config):
 
 
 __all__ = [
-    "AutoModelPrimeRl",
+    "AutoModelPrimeRL",
     "AutoModelForCausalLMPrimeRl",
     "get_model_cls",
     "LlamaModel",
