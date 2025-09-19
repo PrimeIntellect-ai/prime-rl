@@ -61,7 +61,7 @@ def get_model(
     config_model.use_grouped_mm = config.moe_use_grouped_mm
 
     if config.num_layers is not None:
-        logger.info(f"Setting num_layers to {config.num_layers}")
+        get_logger().info(f"Setting num_layers to {config.num_layers}")
         config_model.num_hidden_layers = max(config.num_layers, config_model.num_hidden_layers)
 
     with device:
