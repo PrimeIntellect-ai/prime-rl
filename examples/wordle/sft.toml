@@ -1,0 +1,14 @@
+[model]
+name = "willcb/Qwen3-1.7B-Wordle"
+
+[data]
+name = "willcb/V3-wordle"
+seq_len = 1024
+batch_size = 64
+micro-batch-size = 1
+
+[optim]
+lr = 1e-5
+
+[ckpt]
+interval = 10

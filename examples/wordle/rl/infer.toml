@@ -1,0 +1,5 @@
+[model]
+name = "willcb/Qwen3-1.7B-Wordle"
+
+[parallel]
+dp = 3
