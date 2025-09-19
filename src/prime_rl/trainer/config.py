@@ -119,6 +119,13 @@ class ModelConfig(BaseConfig):
         ),
     ] = "float32"
 
+    moe_use_grouped_mm: Annotated[
+        bool,
+        Field(
+            description="Whether to use grouped mm for the MoE layers. Require compute capability >= 9.0",
+        ),
+    ] = True
+
     @model_validator(mode="after")
     def _map_model_name_for_moe(self):
         """Map model name if it exists in MOE_MODEL_MAPS."""

@@ -58,6 +58,7 @@ def get_model(
         config.name, attn_implementation=config.attn, trust_remote_code=config.trust_remote_code
     )
     config_model.use_cache = False
+    config_model.use_grouped_mm = config.moe_use_grouped_mm
 
     with device:
         match config.impl:
