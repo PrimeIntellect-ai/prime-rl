@@ -64,7 +64,7 @@ def hf_api() -> HfApi:
 
 @pytest.fixture(scope="module")
 def username() -> str:
-    return os.environ.get("USERNAME_CI", os.getlogin())
+    return os.environ.get("USERNAME_CI", os.environ.get("USER", "none"))
 
 
 @pytest.fixture(scope="module")
