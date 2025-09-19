@@ -501,16 +501,6 @@ CUDA_VISIBLE_DEVICES=2,3 uv run rl \
 
 ## Developer
 
-> For now, development is only possible on CUDA-enabled devices.
-
-### Setup
-
-1. Install ) hooks
-
-```bash
-uv run pre-commit install
-```
-
 ### Configs
 
 **Sources**
