@@ -34,6 +34,7 @@ from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format
 import torch.distributed as dist
+from torch.profiler import profile, ProfilerActivity, record_function
 
 
 @clean_exit
@@ -112,6 +113,11 @@ def train(config: SFTTrainerConfig):
     logger.info(f"Starting training loop ({config.max_steps=})")
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3  # GiB
     is_first_step = True
+    maybe_record_function = nullcontext
+    if config.trace_path:
+        logger.info(f"Tracing to {config.trace_path}")
+        prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
+        maybe_record_function = record_function
     while True:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
@@ -176,7 +182,8 @@ def train(config: SFTTrainerConfig):
 
             with maybe_context_parallel:
                 # Forward pass
-                logits = forward(model, input_ids, position_ids)
+                with maybe_record_function("forward"):
+                    logits = forward(model, input_ids, position_ids)
                 B, L, V = logits.shape
 
                 # Compute loss
@@ -199,7 +206,8 @@ def train(config: SFTTrainerConfig):
                 del logits
 
                 # Backward pass
-                (loss / grad_accum_steps).backward()
+                with maybe_record_function("backward"):
+                    (loss / grad_accum_steps).backward()
 
             # Debug log with *local, micro step* stats
             micro_step_message = f"Micro Step {micro_step} | Loss: {loss.item():.4f} | Dataloader Step: {dataloader.state_dict()['dataset_state']['step']}"
@@ -297,6 +305,13 @@ def train(config: SFTTrainerConfig):
         is_first_step = False
         progress.step += 1
 
+    if config.trace_path:
+        prof.__exit__(None, None, None)
+        config.trace_path.mkdir(parents=True, exist_ok=True)
+        trace_file = str(config.trace_path / f"trace_{dist.get_rank()}.json.gz")
+        logger.info(f"Saving trace to {trace_file}")
+        prof.export_chrome_trace(trace_file)
+        logger.info(f"Saved trace to {trace_file}")
     # Log final (immutable) distributions to W&B table
     monitor.log_final_distributions()
 

@@ -108,6 +108,8 @@ class SFTTrainerConfig(BaseSettings):
         ),
     ] = False
 
+    trace_path: Annotated[Path | None, Field(description="Path to write pytorch profiler trace to.")] = None
+
     @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench:
