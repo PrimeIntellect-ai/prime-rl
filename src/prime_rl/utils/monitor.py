@@ -34,9 +34,8 @@ class WandbMonitor:
         rank = int(os.environ.get("RANK", os.environ.get("DP_RANK", "0")))
         self.enabled = self.config is not None
         self.is_master = rank == 0
-        if not self.enabled:
-            if not self.is_master:
-                self.logger.warning(f"Skipping {self.__class__.__name__} initialization from non-master rank ({rank})")
+        if not self.enabled or not self.is_master:
+            self.logger.warning(f"Skipping {self.__class__.__name__} initialization from non-master rank ({rank})")
             return
         assert config is not None
         self.logger.info(f"Initializing {self.__class__.__name__} ({config})")
@@ -218,9 +217,9 @@ class WandbMonitor:
 
     def log_final_samples(self) -> None:
         """Log final samples to W&B table."""
-        if not self.is_master or not self.enabled:
+        if not self.is_master:
             return
-        if not (self.config and self.config.log_extras and self.config.log_extras.samples):
+        if not self.config or not self.config.log_extras or not self.config.log_extras.samples:
             return
         self.logger.info("Logging final samples to W&B table")
         df = pd.DataFrame(self.samples)
@@ -229,9 +228,9 @@ class WandbMonitor:
 
     def log_final_distributions(self) -> None:
         """Log final distributions to W&B table."""
-        if not self.is_master or not self.enabled:
+        if not self.is_master:
             return
-        if not (self.config and self.config.log_extras and self.config.log_extras.distributions):
+        if not self.config or not self.config.log_extras or not self.config.log_extras.distributions:
             return
         self.logger.info("Logging final distributions to W&B table")
         df = pd.DataFrame(self.distributions)
@@ -240,9 +239,8 @@ class WandbMonitor:
 
     def save_final_summary(self, filename: str = "final_summary.json") -> None:
         """Save final summary to W&B table."""
-        if not self.is_master or not self.enabled:
+        if not self.is_master or not self.config:
             return
-        assert self.output_dir is not None, "Output directory is required for saving final summary"
         self.logger.info("Saving final summary to file")
         dir_path = self.output_dir / f"run-{self.wandb.id}"
         dir_path.mkdir(parents=True, exist_ok=True)
