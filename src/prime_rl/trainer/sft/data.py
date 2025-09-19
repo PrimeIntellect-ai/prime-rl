@@ -184,15 +184,22 @@ class SFTDataset(StatefulIterableDataset):
                 will then deserialize the argument so that chat tmeplates like
                 Qwen3's can be used.
                 """
+
                 def deserialize_tool_call(tool_call: dict) -> dict:
                     return {
                         **tool_call,
-                        "function": {**tool_call["function"], "arguments": json.loads(tool_call["function"]["arguments"])},
+                        "function": {
+                            **tool_call["function"],
+                            "arguments": json.loads(tool_call["function"]["arguments"]),
+                        },
                     }
-                return  [
+
+                return [
                     {
                         **message,
-                        "tool_calls": [deserialize_tool_call(tool_call) for tool_call in message.get("tool_calls", []) or []],
+                        "tool_calls": [
+                            deserialize_tool_call(tool_call) for tool_call in message.get("tool_calls", []) or []
+                        ],
                     }
                     for message in messages
                 ]
@@ -238,8 +245,8 @@ class SFTDataset(StatefulIterableDataset):
             yield sample
 
 
-class CatDataset(StatefulIterableDataset):
-    """A dataset that concatenates samples into a single sequence with a fixed length."""
+class PackingDataset(StatefulIterableDataset):
+    """A dataset that concatenates samples into a single sequence with a fixed length doing sequence packing"""
 
     def __init__(self, dataset: StatefulIterableDataset, seq_len: int):
         self.dataset = dataset
@@ -276,8 +283,8 @@ class CatDataset(StatefulIterableDataset):
                 packed_samples, seq_len = defaultdict(list), 0
 
 
-class StackDataset(StatefulIterableDataset):
-    """A dataset that stacks samples into batch with a fixed area"""
+class PaddingDataset(StatefulIterableDataset):
+    """A dataset that stacks samples into batch with a fixed area in a smart way to avoid too much padding"""
 
     def __init__(self, dataset: StatefulIterableDataset, max_area: int):
         self.dataset = dataset
@@ -388,11 +395,11 @@ def setup_dataloader(
     dataset: StatefulIterableDataset, tokenizer: PreTrainedTokenizer, config: DataConfigType
 ) -> StatefulDataLoader:
     seq_len = config.micro_batch_size * config.seq_len
-    if config.pack_function == "stack":
-        stacking_dataset = StackDataset(dataset, seq_len)
+    if config.pack_function == "padding":
+        stacking_dataset = PaddingDataset(dataset, seq_len)
         return StatefulDataLoader(stacking_dataset, batch_size=1, collate_fn=stack_collate)
-    elif config.pack_function == "cat":
-        packing_dataset = CatDataset(dataset, seq_len)
+    elif config.pack_function == "packing":
+        packing_dataset = PackingDataset(dataset, seq_len)
         return StatefulDataLoader(packing_dataset, batch_size=1, collate_fn=cat_collate)
     else:
         raise ValueError(f"Invalid pack function: {config.pack_function}")

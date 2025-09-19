@@ -25,7 +25,7 @@ class BaseDataConfig(BaseModel):
     num_examples: Annotated[
         int | None, Field(description="Number of examples to use from the dataset. If None, will use all examples.")
     ] = None
-    pack_function: Literal["cat", "stack"] = "cat"
+    pack_function: Literal["padding", "packing"] = "packing"
 
     @model_validator(mode="after")
     def validate_batch_size(self):
