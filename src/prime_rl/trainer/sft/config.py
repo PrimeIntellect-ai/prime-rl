@@ -162,6 +162,7 @@ class SFTTrainerConfig(BaseSettings):
     @model_validator(mode="after")
     def dont_do_massive_traces(self):
         if self.trace_path:
+            assert self.max_steps is not None, "Must specify max_steps when tracing"
             assert self.max_steps < 10, (
                 "Tracing more than 10 steps is not recommended as your trace will be massive. Remove this line if you really want to trace more steps."
             )

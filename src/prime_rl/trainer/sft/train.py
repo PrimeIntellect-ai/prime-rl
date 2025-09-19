@@ -7,6 +7,7 @@ from contextlib import nullcontext
 import torch
 from torch.nn.functional import cross_entropy
 from torch.distributed.tensor.experimental import context_parallel
+from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.weights import setup_weight_ckpt_manager
@@ -34,7 +35,6 @@ from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format
 import torch.distributed as dist
-from torch.profiler import profile, ProfilerActivity, record_function
 
 
 @clean_exit
@@ -313,6 +313,7 @@ def train(config: SFTTrainerConfig):
         prof.export_chrome_trace(trace_file)
         logger.info(f"Saved trace to {trace_file}")
     # Log final (immutable) distributions to W&B table
+    logger.info("Logging final distributions as W&B table")
     monitor.log_final_distributions()
 
     # Write final checkpoint
