@@ -60,6 +60,10 @@ def get_model(
     config_model.use_cache = False
     config_model.use_grouped_mm = config.moe_use_grouped_mm
 
+    if config.num_layers is not None:
+        get_logger().info(f"Setting num_layers to {config.num_layers}")
+        config_model.num_hidden_layers = min(config.num_layers, config_model.num_hidden_layers)
+
     with device:
         match config.impl:
             case "hf":
@@ -70,7 +74,9 @@ def get_model(
                 model_cls = AutoModelForCausalLMPrimeRL
 
         if device == torch.device("meta"):
+            get_logger().info(f"model num_layers random init: {config_model.num_hidden_layers}")
             model = model_cls.from_config(config_model, trust_remote_code=config.trust_remote_code, dtype=dtype)
+            get_logger().info(f"model num_layers random init: {len(model.model.layers)}")
         else:
             model = model_cls.from_pretrained(
                 pretrained_model_name_or_path=config.name,
@@ -221,6 +227,8 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
         from prime_rl.utils.tensor_hashing import get_module_signature
 
         get_logger().info(f"model signature: {get_module_signature(model, compress=True)}")
+
+    get_logger().info(f"model num_layers: {len(model.model.layers)}")
     return model
 
 
