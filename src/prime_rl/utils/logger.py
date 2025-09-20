@@ -34,14 +34,13 @@ def setup_logger(log_level: str, log_console: bool = True, log_file: Path | None
     # Remove all default handlers
     logger.remove()
 
-    # Install console on the master rank
+    # If specified, install console handler
     if log_console:
         logger.add(sys.stdout, format=format, level=log_level.upper(), colorize=True)
 
-    # If specified, install file handlers on all ranks
+    # If specified, install file handler
     if log_file is not None:
-        # We do not colorize so that the file log is easier to read
-        logger.add(log_file, format=format, level=log_level.upper())
+        logger.add(log_file, format=format, level=log_level.upper(), colorize=True)
 
     # Disable critical logging
     logger.critical = lambda _: None
