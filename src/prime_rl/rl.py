@@ -445,7 +445,7 @@ def rl(config: RLConfig):
             logger.info(f"Starting inference process on GPU(s) {' '.join(map(str, config.inference_gpu_ids))}")
             logger.debug(f"Inference start command: {' '.join(inference_cmd)}")
             # If we don't log stdout, the server hangs
-            with open(log_dir / "inference.log", "w") as log_file:
+            with open(log_dir / "inference.stdout", "w") as log_file:
                 inference_process = Popen(
                     inference_cmd,
                     env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, config.inference_gpu_ids))},
@@ -483,7 +483,7 @@ def rl(config: RLConfig):
         ]
         logger.info("Starting orchestrator process")
         logger.debug(f"Orchestrator start command: {' '.join(orchestrator_cmd)}")
-        with open(log_dir / "orchestrator.log", "w") as log_file:
+        with open(log_dir / "orchestrator.stdout", "w") as log_file:
             orchestrator_process = Popen(
                 orchestrator_cmd,
                 stdout=log_file,
@@ -528,7 +528,7 @@ def rl(config: RLConfig):
         ]
         logger.info(f"Starting trainer process on GPU(s) {' '.join(map(str, config.trainer_gpu_ids))}")
         logger.debug(f"Training start command: {' '.join(trainer_cmd)}")
-        with open(log_dir / "trainer.log", "w") as log_file:
+        with open(log_dir / "trainer.stdout", "w") as log_file:
             trainer_process = Popen(
                 trainer_cmd,
                 env={
@@ -555,7 +555,7 @@ def rl(config: RLConfig):
         # Monitor all processes for failures
         logger.success("Startup complete. Showing trainer logs...")
 
-        tail_process = Popen(["tail", "-F", log_dir / "trainer.log"])
+        tail_process = Popen(["tail", "-F", log_dir / "trainer.stdout"])
         processes.append(tail_process)
 
         # Check for errors from monitor threads

@@ -71,17 +71,17 @@ else
   # Logs: Orchestrator
   tmux send-keys -t "$SESSION_NAME:RL.1" 'while true; do
 echo "Waiting for orchestrator log file..."
-while [ ! -f '"$OUTPUT_DIR"'/logs/orchestrator.log ]; do sleep 1; done
-echo "Following orchestrator.log..."
-tail -F '"$OUTPUT_DIR"'/logs/orchestrator.log
+while [ ! -f '"$OUTPUT_DIR"'/logs/orchestrator.stdout ]; do sleep 1; done
+echo "Following orchestrator.stdout..."
+tail -F '"$OUTPUT_DIR"'/logs/orchestrator.stdout
 done' C-m
 
   # Logs: Inference
   tmux send-keys -t "$SESSION_NAME:RL.2" 'while true; do
 echo "Waiting for inference log file..."
-while [ ! -f '"$OUTPUT_DIR"'/logs/inference.log ]; do sleep 1; done
-echo "Following inference.log..."
-tail -F '"$OUTPUT_DIR"'/logs/inference.log
+while [ ! -f '"$OUTPUT_DIR"'/logs/inference.stdout ]; do sleep 1; done
+echo "Following inference.stdout..."
+tail -F '"$OUTPUT_DIR"'/logs/inference.stdout
 done' C-m
 
   # Window 2: Monitor
