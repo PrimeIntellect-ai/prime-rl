@@ -9,7 +9,7 @@ import pytest
 from huggingface_hub import HfApi
 
 from prime_rl.trainer.world import reset_world
-from prime_rl.utils.logger import get_logger, reset_logger, setup_logger
+from prime_rl.utils.logger import reset_logger, setup_logger
 
 TIMEOUT = 120
 
@@ -153,7 +153,6 @@ def vllm_server() -> Generator[None, None, None]:
 
     # Default vLLM server URL
     base_url = "http://localhost:8000"
-    logger = get_logger()
 
     async def wait_for_server_health(timeout: int = 180, interval: int = 1) -> bool:
         """Wait for the server to be healthy by checking the /health endpoint."""
@@ -182,7 +181,6 @@ def vllm_server() -> Generator[None, None, None]:
         yield
     finally:
         # Shut down the server gracefully
-        logger.info("Shutting down vLLM server")
         process.terminate()
 
         # Wait for the process to terminate (with timeout)
