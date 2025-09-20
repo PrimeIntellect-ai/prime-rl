@@ -312,8 +312,8 @@ def train(config: SFTTrainerConfig):
         logger.info(f"Saving trace to {trace_file}")
         prof.export_chrome_trace(trace_file)
         logger.info(f"Saved trace to {trace_file}")
+
     # Log final (immutable) distributions to W&B table
-    logger.info("Logging final distributions as W&B table")
     monitor.log_final_distributions()
 
     # Write final checkpoint
