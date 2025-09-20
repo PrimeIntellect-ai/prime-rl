@@ -18,7 +18,7 @@ from prime_rl.utils.utils import clean_exit
 @clean_exit
 async def eval(config: OfflineEvalConfig):
     # Initialize the logger
-    logger = setup_logger(config.log)
+    logger = setup_logger(config.log, config.output_dir)
     logger.info("Starting evaluation")
     logger.info(f"Model: {config.model}")
     logger.info(f"Sampling: {config.sampling}")

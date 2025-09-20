@@ -42,7 +42,7 @@ import torch.distributed as dist
 def train(config: SFTTrainerConfig):
     # Setup world and logger
     world = get_world()
-    logger = setup_logger(config.log, world)
+    logger = setup_logger(config.log, world, config.output_dir)
     logger.info(f"Starting SFT trainer in {world}")
 
     # Print warning if running in benchmark mode

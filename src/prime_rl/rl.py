@@ -355,10 +355,10 @@ class RLConfig(BaseSettings):
         return self
 
 
-def setup_logger(log_config: LogConfig) -> Logger:
+def setup_logger(log_config: LogConfig, output_dir: Path) -> Logger:
     # Setup the logger handlers
     format = format_time(log_config) + format_message()
-    logger = setup_handlers(loguru_logger, format, log_config, rank=0)
+    logger = setup_handlers(loguru_logger, format, log_config, rank=0, output_dir=output_dir)
     set_logger(logger)
 
     return logger
@@ -398,7 +398,7 @@ def monitor_process(process: Popen, stop_event: Event, error_queue: list, proces
 
 def rl(config: RLConfig):
     # Setup logger
-    logger = setup_logger(config.log)
+    logger = setup_logger(config.log, config.output_dir)
     start_command = sys.argv
     logger.info("Starting RL run")
     logger.debug(f"RL start command: {' '.join(start_command)}")

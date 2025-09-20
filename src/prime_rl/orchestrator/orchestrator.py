@@ -48,7 +48,7 @@ import numpy as np
 @logger.catch(reraise=True)
 async def orchestrate(config: OrchestratorConfig):
     # Initialize the logger
-    logger = setup_logger(config.log)
+    logger = setup_logger(config.log, config.output_dir)
     logger.info("Starting orchestrator")
 
     # Print warning if running in benchmark mode
