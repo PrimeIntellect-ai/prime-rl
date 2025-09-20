@@ -21,7 +21,6 @@ import torch.nn.functional as F
 from torch import nn
 
 # from prime_rl.trainer.custom_models.layers.moe import MoE, MoEArgs
-from torchtitan.models.moe import MoE, MoEArgs
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.configuration_utils import PretrainedConfig
@@ -38,6 +37,9 @@ from transformers.utils import TransformersKwargs, auto_docstring, can_return_tu
 from transformers.utils.deprecation import deprecate_kwarg
 from transformers.utils.generic import check_model_inputs
 
+from prime_rl.trainer.custom_models.layers.moe import MoE, MoEArgs
+
+# from torchtitan.models.moe import MoE, MoEArgs
 try:
     from flash_attn import flash_attn_varlen_func
 except ImportError:
@@ -594,7 +596,7 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
             route_scale=config.routed_scaling_factor,
             score_before_experts=False,
             top_k=config.num_experts_per_tok,
-            load_balance_coeff=1e-3,
+            load_balance_coeff=None,
             use_grouped_mm=config.use_grouped_mm,
         )
 
