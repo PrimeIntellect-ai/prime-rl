@@ -36,7 +36,6 @@ from prime_rl.utils.utils import (
 from prime_rl.utils.validation import (
     validate_shared_async_level,
     validate_shared_ckpt_config,
-    validate_shared_max_model_len,
     validate_shared_max_steps,
     validate_shared_model_name,
     validate_shared_output_dir,
@@ -316,17 +315,6 @@ class RLConfig(BaseSettings):
             self.orchestrator.max_steps = self.max_steps
 
         validate_shared_max_steps(self.trainer, self.orchestrator)
-
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_max_model_len(self):
-        if self.max_model_len:
-            self.orchestrator.seq_len = self.max_model_len
-            if self.inference:
-                self.inference.model.max_model_len = self.max_model_len
-
-        validate_shared_max_model_len(self.orchestrator, self.inference)
 
         return self
 
