@@ -7,10 +7,9 @@ from typing import Callable, Generator
 
 import pytest
 from huggingface_hub import HfApi
-from loguru import logger
 
 from prime_rl.trainer.world import reset_world
-from prime_rl.utils.logger import reset_logger, set_logger
+from prime_rl.utils.logger import reset_logger, setup_logger
 
 TIMEOUT = 120
 
@@ -20,11 +19,11 @@ Command = list[str]
 
 
 @pytest.fixture(autouse=True)
-def setup_logger():
+def setup_logging():
     """
     Fixture to set and reset the logger after each test.
     """
-    set_logger(logger)  # Use the default loguru.logger
+    setup_logger("info")
     yield
     reset_logger()
 
