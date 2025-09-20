@@ -33,13 +33,6 @@ class LogConfig(BaseConfig):
         ),
     ] = False
 
-    utc: Annotated[
-        bool,
-        Field(
-            description="Whether to use UTC time in the logger. If False, it will default to the local time. If the local time is wrong, you can set it by setting the `TZ` environment variable. For example, `TZ=America/Los_Angeles` will set the local time to SF time."
-        ),
-    ] = False
-
 
 class LogExtrasConfig(BaseConfig):
     """Configures extra logging for W&B tables."""

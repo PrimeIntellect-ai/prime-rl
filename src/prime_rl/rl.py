@@ -48,13 +48,6 @@ class LogConfig(BaseSettings):
 
     file: Annotated[bool | None, Field(description="Whether to log to a file.")] = False
 
-    utc: Annotated[
-        bool | None,
-        Field(
-            description="Whether to use UTC time in the logger. If False, it will default to the local time. If the local time is wrong, you can set it by setting the `TZ` environment variable. For example, `TZ=America/Los_Angeles` will set the local time to SF time."
-        ),
-    ] = False
-
 
 class WandbConfig(BaseSettings):
     """Configures shared W&B configs."""
