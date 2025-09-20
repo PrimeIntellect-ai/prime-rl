@@ -185,7 +185,7 @@ class RLConfig(BaseSettings):
     @model_validator(mode="after")
     def validate_device(self):
         available_gpu_ids = get_cuda_visible_devices()
-        requested_gpu_ids = set(self.trainer_gpu_ids + self.inference_gpu_ids)
+        requested_gpu_ids = sorted(set(self.trainer_gpu_ids + self.inference_gpu_ids))
         if len(requested_gpu_ids) > len(available_gpu_ids):
             raise ValueError(
                 f"The number of requested GPUs ({len(requested_gpu_ids)}) exceeds available GPUs ({len(available_gpu_ids)})"
