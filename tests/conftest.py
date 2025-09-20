@@ -9,7 +9,7 @@ import pytest
 from huggingface_hub import HfApi
 
 from prime_rl.trainer.world import reset_world
-from prime_rl.utils.logger import reset_logger, setup_logger
+from prime_rl.utils.logger import get_logger, reset_logger, setup_logger
 
 TIMEOUT = 120
 
@@ -49,7 +49,7 @@ def setup_world():
 
 
 @pytest.fixture(scope="session")
-def output_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+def output_dir(tmp_path_factory: pytest.TempPathFactory) -> Generator[Path, None, None]:
     output_dir = Path(os.environ.get("PYTEST_OUTPUT_DIR", tmp_path_factory.mktemp("outputs")))
     yield output_dir
     shutil.rmtree(output_dir, ignore_errors=True)
@@ -91,8 +91,8 @@ class ProcessResult:
 
 def run_subprocess(command: Command, env: Environment, timeout: int = TIMEOUT) -> ProcessResult:
     """Run a subprocess with given command and environment with a timeout"""
+    process = subprocess.Popen(command, env={**os.environ, **env})
     try:
-        process = subprocess.Popen(command, env={**os.environ, **env})
         process.wait(timeout=timeout)
         return ProcessResult(process.returncode, process.pid)
     except subprocess.TimeoutExpired:
@@ -153,6 +153,7 @@ def vllm_server() -> Generator[None, None, None]:
 
     # Default vLLM server URL
     base_url = "http://localhost:8000"
+    logger = get_logger()
 
     async def wait_for_server_health(timeout: int = 180, interval: int = 1) -> bool:
         """Wait for the server to be healthy by checking the /health endpoint."""
