@@ -36,11 +36,11 @@ from transformers.utils.deprecation import deprecate_kwarg
 from transformers.utils.generic import check_model_inputs
 
 from prime_rl.trainer.custom_models.layers.moe import MoE, MoEArgs
+
 try:
     from flash_attn import flash_attn_varlen_func
 except ImportError:
     flash_attn_varlen_func = None
-
 
 
 class Glm4MoeConfig(PretrainedConfig):
@@ -405,7 +405,7 @@ class Glm4MoeAttention(nn.Module):
             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
             key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
-        if self.config._attn_implementation != "flash_attention_2":
+        if self.config._attn_implementation == "flash_attention_2":
             # TODO: Can we optimize the rotary applicaiton instead of double transpose?
             query_states = query_states.transpose(1, 2)
             key_states = key_states.transpose(1, 2)
@@ -413,14 +413,14 @@ class Glm4MoeAttention(nn.Module):
             cu_seqlens = torch.tensor([0, query_states.shape[1]], dtype=torch.int32, device=query_states.device)
             max_seqlen = query_states.shape[1]
             out = flash_attn_varlen_func(
-                query_states[0], 
-                key_states[0], 
-                value_states[0], 
-                cu_seqlens, 
-                cu_seqlens, 
-                max_seqlen, 
-                max_seqlen, 
-                causal=True
+                query_states[0],
+                key_states[0],
+                value_states[0],
+                cu_seqlens,
+                cu_seqlens,
+                max_seqlen,
+                max_seqlen,
+                causal=True,
             )
             out = out.contiguous()
             attn_output = out.view(1, out.shape[0], -1)
