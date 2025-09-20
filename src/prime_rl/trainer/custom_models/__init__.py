@@ -35,20 +35,20 @@ class AutoModelPrimeRL(_BaseAutoModelClass):
 AutoModelPrimeRL = auto_class_update(AutoModelPrimeRL)
 
 
-class AutoModelForCausalLMPrimeRl(_BaseAutoModelClass):
+class AutoModelForCausalLMPrimeRL(_BaseAutoModelClass):
     _model_mapping = _CUSTOM_CAUSAL_LM_MAPPING
 
 
-AutoModelForCausalLMPrimeRl = auto_class_update(AutoModelForCausalLMPrimeRl, head_doc="causal language modeling")
+AutoModelForCausalLMPrimeRL = auto_class_update(AutoModelForCausalLMPrimeRL, head_doc="causal language modeling")
 
 
 def get_model_cls(config):
-    return _get_model_class(config, AutoModelForCausalLMPrimeRl._model_mapping)
+    return _get_model_class(config, AutoModelForCausalLMPrimeRL._model_mapping)
 
 
 __all__ = [
     "AutoModelPrimeRL",
-    "AutoModelForCausalLMPrimeRl",
+    "AutoModelForCausalLMPrimeRL",
     "get_model_cls",
     "LlamaModel",
     "LlamaForCausalLM",
