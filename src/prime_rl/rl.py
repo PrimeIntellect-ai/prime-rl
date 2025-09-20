@@ -12,8 +12,6 @@ from threading import Event, Thread
 from typing import Annotated
 
 import tomli_w
-from loguru import logger as loguru_logger
-from loguru._logger import Logger
 from pydantic import Field, model_validator
 
 from prime_rl.inference.config import InferenceConfig
@@ -23,7 +21,7 @@ from prime_rl.trainer.config import CheckpointConfig as TrainerCheckpointConfig
 from prime_rl.trainer.rl.config import FakeDataLoaderConfig
 from prime_rl.trainer.rl.config import RLTrainerConfig as TrainerConfig
 from prime_rl.utils.config import WandbMonitorConfig
-from prime_rl.utils.logger import format_message, format_time, set_logger, setup_handlers
+from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pydantic_config import BaseSettings, get_temp_toml_file, parse_argv
 from prime_rl.utils.utils import (
     get_ckpt_dir,
@@ -47,6 +45,8 @@ class LogConfig(BaseSettings):
     """Configures shared logging."""
 
     level: Annotated[str | None, Field(description="The log level to use.")] = "info"
+
+    file: Annotated[bool | None, Field(description="Whether to log to a file.")] = False
 
     utc: Annotated[
         bool | None,
@@ -209,9 +209,13 @@ class RLConfig(BaseSettings):
     @model_validator(mode="after")
     def auto_setup_logs(self):
         # Copy log level
-        if self.log and self.log.level:
-            self.trainer.log.level = self.log.level
-            self.orchestrator.log.level = self.log.level
+        if self.log:
+            if self.log.level:
+                self.trainer.log.level = self.log.level
+                self.orchestrator.log.level = self.log.level
+            if self.log.file:
+                self.trainer.log.file = self.log.file
+                self.orchestrator.log.file = self.log.file
 
         return self
 
@@ -355,15 +359,6 @@ class RLConfig(BaseSettings):
         return self
 
 
-def setup_logger(log_config: LogConfig, output_dir: Path) -> Logger:
-    # Setup the logger handlers
-    format = format_time(log_config) + format_message()
-    logger = setup_handlers(loguru_logger, format, log_config, rank=0, output_dir=output_dir)
-    set_logger(logger)
-
-    return logger
-
-
 def cleanup_threads(threads: list[Thread]):
     for thread in threads:
         thread.join(timeout=5)
@@ -398,7 +393,9 @@ def monitor_process(process: Popen, stop_event: Event, error_queue: list, proces
 
 def rl(config: RLConfig):
     # Setup logger
-    logger = setup_logger(config.log, config.output_dir)
+    logger = setup_logger(
+        config.log.level or "info", log_file=config.output_dir / "logs" / "rl.log" if config.log.file else None
+    )
     start_command = sys.argv
     logger.info("Starting RL run")
     logger.debug(f"RL start command: {' '.join(start_command)}")
