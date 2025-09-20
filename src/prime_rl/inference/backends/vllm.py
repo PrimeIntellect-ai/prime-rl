@@ -1,8 +1,10 @@
 from argparse import Namespace
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Optional
 
+import httpx
 import uvloop
 import vllm.envs as envs
 from fastapi import Request
@@ -23,6 +25,7 @@ from vllm.entrypoints.openai.tool_parsers import ToolParserManager
 from vllm.logger import init_logger
 from vllm.utils import FlexibleArgumentParser
 
+from prime_rl.inference.backends.base import BaseBackend
 from prime_rl.inference.config import InferenceConfig
 
 logger = init_logger("vllm.entrypoints.openai.api_server")
@@ -132,3 +135,33 @@ def server(config: InferenceConfig, vllm_args: list[str]):
         else:
             # Single API server (this process).
             uvloop.run(custom_run_server(args))
+
+
+class VLLMBackend(BaseBackend):
+    def __init__(self) -> None:
+        self.config: InferenceConfig | None = None
+
+    def startup(self, config: InferenceConfig) -> None:
+        self.config = config
+        server(config, vllm_args=config.get_unknown_args())
+
+    async def _post(self, route: str, body: dict[str, Any]) -> None:
+        if self.config is None:
+            raise RuntimeError("backend not started")
+        host = self.config.server.host or "localhost"
+        port = self.config.server.port
+        url = f"http://{host}:{port}/{route}"
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(url, json=body)
+            if resp.status_code == 404:
+                return
+            resp.raise_for_status()
+
+    async def update_weights(self, path: str) -> None:
+        await self._post("update_weights", {"model_path": Path(path).as_posix()})
+
+    async def reload_weights(self) -> None:
+        await self._post("reload_weights", {})
+
+    async def flush_cache(self) -> None:
+        await self._post("flush_cache", {})

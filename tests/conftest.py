@@ -139,6 +139,17 @@ def run_processes() -> Callable[[list[Command], list[Environment], int], list[Pr
 VLLM_SERVER_ENV = {"CUDA_VISIBLE_DEVICES": "0"}
 VLLM_SERVER_CMD = ["uv", "run", "inference", "@", "configs/reverse_text/infer.toml", "--max-model-len", "2048"]
 
+SGLANG_SERVER_ENV = {"CUDA_VISIBLE_DEVICES": "0"}
+SGLANG_SERVER_CMD = [
+    "uv",
+    "run",
+    "inference",
+    "@",
+    "configs/reverse_text/infer.toml",
+    "--server.server_type",
+    "sglang",
+]
+
 
 @pytest.fixture(scope="session")
 def vllm_server() -> Generator[None, None, None]:
@@ -190,5 +201,44 @@ def vllm_server() -> Generator[None, None, None]:
             process.wait(timeout=10)
         except subprocess.TimeoutExpired:
             # If it doesn't terminate gracefully, kill it
+            process.kill()
+            process.wait()
+
+
+@pytest.fixture(scope="session")
+def sglang_server() -> Generator[None, None, None]:
+    import asyncio
+    import time
+    import urllib.error
+    import urllib.request
+
+    pytest.importorskip("sglang")
+    env = {**os.environ, **SGLANG_SERVER_ENV}
+    process = subprocess.Popen(SGLANG_SERVER_CMD, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    base_url = "http://localhost:8000"
+
+    async def wait(timeout: int = 180, interval: int = 1) -> bool:
+        url = f"{base_url}/health"
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                with urllib.request.urlopen(url, timeout=5) as r:
+                    if r.status == 200:
+                        return True
+            except (urllib.error.URLError, urllib.error.HTTPError):
+                pass
+            await asyncio.sleep(interval)
+        return False
+
+    try:
+        if not asyncio.run(wait()):
+            raise RuntimeError("SGLang server did not become healthy within timeout")
+        yield
+    finally:
+        logger.info("Shutting down SGLang server")
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
             process.kill()
             process.wait()

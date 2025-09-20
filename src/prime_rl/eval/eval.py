@@ -75,7 +75,7 @@ async def eval(config: OfflineEvalConfig):
         for ckpt_step in ckpt_steps[::-1]:
             # Update the weights
             logger.info(f"Evaluating model {config.model.name} at checkpoint {ckpt_step}")
-            await update_weights(client, config.weights_dir, ckpt_step)
+            await update_weights(client, config.weights_dir, ckpt_step, server_type=config.client.server_type)
 
             # Run evals on checkpoint
             await run_evals(

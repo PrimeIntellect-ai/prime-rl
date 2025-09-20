@@ -3,12 +3,13 @@ import os
 from pathlib import Path
 
 import httpx
+import torch
 from httpx import Response
 from openai import AsyncOpenAI, NotFoundError
 
 from prime_rl.orchestrator.config import ClientConfig
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.utils import get_weight_ckpt_model_path
+from prime_rl.utils.utils import get_step_path, get_weight_ckpt_model_path
 
 
 def setup_client(client_config: ClientConfig) -> AsyncOpenAI:
@@ -60,21 +61,39 @@ async def check_has_model(client: AsyncOpenAI, model_name: str) -> None:
     logger.debug(f"Model {model_name} was found in the inference pool")
 
 
-async def update_weights(client: AsyncOpenAI, path: Path, step: int) -> None:
-    """Make a HTTP post request to the vLLM server to update the weights."""
+async def update_weights(client: AsyncOpenAI, path: Path, step: int, server_type: str = "vllm") -> None:
+    """POST to update backend weights.
+
+    - For vLLM, send the path to the weight file (pytorch_model.bin).
+    - For SGLang, send the path to the step directory (contains model files).
+    """
     logger = get_logger()
     url = str(client.base_url)[:-4] + "/update_weights"
     try:
-        model_path = get_weight_ckpt_model_path(path, step).absolute()
-        logger.debug(f"Sending request to {url} to update weights from {model_path}")
-        await client.post(url, cast_to=Response, body={"model_path": model_path.as_posix()})
+        if server_type == "sglang":
+            # SGLang expects a directory or repo id; pass the step directory
+            model_dir = get_step_path(path, step).absolute()
+            if not model_dir.exists():
+                raise FileNotFoundError(f"Weight checkpoint directory not found: {model_dir}")
+            model_bin = model_dir / "pytorch_model.bin"
+            if not model_bin.exists():
+                raise FileNotFoundError(f"Weight checkpoint file missing: {model_bin}")
+            logger.debug(f"Sending request to {url} to update weights from dir {model_dir}")
+            await client.post(url, cast_to=Response, body={"model_path": model_dir.as_posix()})
+        else:
+            # vLLM accepts a file path to the checkpoint
+            model_path = get_weight_ckpt_model_path(path, step).absolute()
+            if not model_path.exists():
+                raise FileNotFoundError(f"Weight checkpoint file not found: {model_path}")
+            logger.debug(f"Sending request to {url} to update weights from file {model_path}")
+            await client.post(url, cast_to=Response, body={"model_path": model_path.as_posix()})
     except NotFoundError:
         logger.warning(f"The route {url} does not exist. Skipping weight update.")
         return
 
 
 async def reload_weights(client: AsyncOpenAI) -> None:
-    """Make a HTTP post request to the vLLM server to reload weights (reset to base model)."""
+    """POST to reset backend weights."""
     logger = get_logger()
     url = str(client.base_url)[:-4] + "/reload_weights"
     try:
@@ -84,3 +103,35 @@ async def reload_weights(client: AsyncOpenAI) -> None:
         logger.warning(f"The route {url} does not exist. Skipping weight reload.")
         return
     await client.post(url, cast_to=Response, body={})
+
+
+async def flush_cache(client: AsyncOpenAI) -> None:
+    """POST to flush backend cache."""
+    logger = get_logger()
+    url = str(client.base_url)[:-4] + "/flush_cache"
+    try:
+        logger.debug(f"Sending request to {url} to flush cache")
+        await client.post(url, cast_to=Response, body={})
+    except NotFoundError:
+        logger.warning(f"The route {url} does not exist. Skipping cache flush.")
+        return
+
+
+def apply_sampling_transforms(logits, temperature=1.0, top_p=1.0):
+    t = torch.tensor(logits, dtype=torch.float32)
+    t = t / max(temperature, 1e-6)
+    if top_p < 1.0:
+        probs = torch.softmax(t, dim=-1)
+        sorted_probs, idx = torch.sort(probs, descending=True)
+        cum = sorted_probs.cumsum(dim=-1)
+        mask = cum > max(top_p, 0.0)
+        # Ensure at least the highest probability token remains in the nucleus
+        mask[..., 0] = False
+        sorted_probs = sorted_probs.masked_fill(mask, 0.0)
+        kept = sorted_probs.sum(dim=-1, keepdim=True)
+        # If everything was masked (e.g., pathological top_p values), fall back to uniform over kept entries
+        kept = torch.where(kept <= 0, torch.ones_like(kept), kept)
+        probs = torch.zeros_like(probs).scatter(-1, idx, sorted_probs)
+        probs = probs / kept
+        return torch.log(probs.clamp_min(1e-12)).tolist()
+    return torch.log_softmax(t, dim=-1).tolist()

@@ -184,15 +184,22 @@ class SFTDataset(StatefulIterableDataset):
                 will then deserialize the argument so that chat tmeplates like
                 Qwen3's can be used.
                 """
+
                 def deserialize_tool_call(tool_call: dict) -> dict:
                     return {
                         **tool_call,
-                        "function": {**tool_call["function"], "arguments": json.loads(tool_call["function"]["arguments"])},
+                        "function": {
+                            **tool_call["function"],
+                            "arguments": json.loads(tool_call["function"]["arguments"]),
+                        },
                     }
-                return  [
+
+                return [
                     {
                         **message,
-                        "tool_calls": [deserialize_tool_call(tool_call) for tool_call in message.get("tool_calls", []) or []],
+                        "tool_calls": [
+                            deserialize_tool_call(tool_call) for tool_call in message.get("tool_calls", []) or []
+                        ],
                     }
                     for message in messages
                 ]

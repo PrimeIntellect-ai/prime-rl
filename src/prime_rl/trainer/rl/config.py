@@ -110,7 +110,7 @@ class RLTrainerConfig(BaseSettings):
     recompute_logprobs: Annotated[
         bool,
         Field(
-            description="Whether to recompute the logprobs. If True, will always recompute logprobs and overwrite those found in the training batch.",
+            description="Whether to recompute the logprobs. If True, recomputes and overwrites batch logprobs. Useful when backend responses omit logprobs (e.g., legacy SGLang versions).",
         ),
     ] = False
 
