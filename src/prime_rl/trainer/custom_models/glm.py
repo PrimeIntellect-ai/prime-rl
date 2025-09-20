@@ -424,12 +424,16 @@ class Glm4MoeAttention(nn.Module):
             )
             out = out.contiguous()
             attn_output = out.view(1, out.shape[0], -1)
-        else:
+        elif self.config._attn_implementation == "sdpa":
             key_states = key_states.repeat_interleave(self.num_key_value_groups, dim=1)
             value_states = value_states.repeat_interleave(self.num_key_value_groups, dim=1)
             out = F.scaled_dot_product_attention(query_states, key_states, value_states, is_causal=True)
             out = out.transpose(1, 2).contiguous()  # .view(out.shape[0], out.shape[1], -1)
             attn_output = out.view(out.shape[0], out.shape[1], -1)
+        else:
+            raise NotImplementedError(
+                f"Only flash_attention_2 and sdpa are supported for custom glm4_moe for now not {self.config._attn_implementation}"
+            )
         attn_weights = None
 
         # attn_output = attn_output.reshape(*input_shape, -1).contiguous()
