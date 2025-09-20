@@ -13,7 +13,7 @@ from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.weights import setup_weight_ckpt_manager
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
-from prime_rl.trainer.logger import setup_logger
+from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
     shift_logits,
     selective_log_softmax,
@@ -53,7 +53,11 @@ from prime_rl.utils.utils import clean_exit, to_col_format
 def train(config: RLTrainerConfig):
     # Setup world and logger
     world = get_world()
-    logger = setup_logger(config.log, world, config.output_dir)
+    logger = setup_logger(
+        config.log.level,
+        log_console=world.is_master,
+        log_file=config.output_dir / "logs" / "trainer" / f"rank_{world.rank}.log" if config.log.file else None,
+    )
     logger.info(f"Starting RL trainer in {world}")
 
     # Print warning if running in benchmark mode

@@ -12,7 +12,7 @@ from loguru import logger
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.weights import setup_weight_ckpt_manager
 from prime_rl.trainer.sft.config import SFTTrainerConfig
-from prime_rl.trainer.logger import setup_logger
+from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
@@ -42,7 +42,11 @@ import torch.distributed as dist
 def train(config: SFTTrainerConfig):
     # Setup world and logger
     world = get_world()
-    logger = setup_logger(config.log, world, config.output_dir)
+    logger = setup_logger(
+        config.log.level,
+        log_console=world.is_master,
+        log_file=config.output_dir / "logs" / "trainer" / f"rank_{world.rank}.log" if config.log.file else None,
+    )
     logger.info(f"Starting SFT trainer in {world}")
 
     # Print warning if running in benchmark mode
