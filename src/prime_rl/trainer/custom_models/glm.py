@@ -19,6 +19,9 @@ from typing import Optional, Union
 import torch
 import torch.nn.functional as F
 from torch import nn
+
+# from prime_rl.trainer.custom_models.layers.moe import MoE, MoEArgs
+from torchtitan.models.moe import MoE, MoEArgs
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.configuration_utils import PretrainedConfig
@@ -34,8 +37,6 @@ from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple
 from transformers.utils.deprecation import deprecate_kwarg
 from transformers.utils.generic import check_model_inputs
-
-from prime_rl.trainer.custom_models.layers.moe import MoE, MoEArgs
 
 try:
     from flash_attn import flash_attn_varlen_func
