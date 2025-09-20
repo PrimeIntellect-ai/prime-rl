@@ -12,7 +12,6 @@ from threading import Event, Thread
 from typing import Annotated
 
 import tomli_w
-import torch
 from loguru import logger as loguru_logger
 from loguru._logger import Logger
 from pydantic import Field, model_validator
@@ -125,9 +124,8 @@ class RLConfig(BaseSettings):
         ),
     ] = True
 
-    trainer_gpus: Annotated[int, Field(description="The number of GPUs to use for trainer.")] = 1
-
-    inference_gpus: Annotated[int, Field(description="The number of GPUs to use for inference.")] = 1
+    inference_gpu_ids: Annotated[list[int], Field(description="The GPU IDs to use for inference.")] = [0]
+    trainer_gpu_ids: Annotated[list[int], Field(description="The GPU IDs to use for trainer.")] = [1]
 
     ### Shared configurations
 
@@ -187,21 +185,26 @@ class RLConfig(BaseSettings):
 
     @model_validator(mode="after")
     def validate_device(self):
-        available_gpus = torch.cuda.device_count()
-        if self.trainer_gpus + self.inference_gpus > available_gpus:
+        available_gpu_ids = get_cuda_visible_devices()
+        requested_gpu_ids = set(self.trainer_gpu_ids + self.inference_gpu_ids)
+        if len(requested_gpu_ids) > len(available_gpu_ids):
             raise ValueError(
-                f"Total number of GPUs ({self.trainer_gpus + self.inference_gpus}) exceeds available GPUs ({available_gpus})"
+                f"The number of requested GPUs ({len(requested_gpu_ids)}) exceeds available GPUs ({len(available_gpu_ids)})"
             )
-        if self.inference and self.inference_gpus != self.inference.parallel.dp * self.inference.parallel.tp:
+        if any(not (gpu_id in available_gpu_ids) for gpu_id in requested_gpu_ids):
             raise ValueError(
-                f"Total number of inference GPUs ({self.inference_gpus}) does not match the local sharding strategy ({self.inference.parallel.dp} DP + {self.inference.parallel.tp} TP)"
+                f"Some requested GPU IDs are not available. Available GPUs: {available_gpu_ids}, Requested GPUs: {requested_gpu_ids}"
+            )
+        if self.inference and len(self.inference_gpu_ids) != self.inference.parallel.dp * self.inference.parallel.tp:
+            raise ValueError(
+                f"Total number of inference GPUs ({len(self.inference_gpu_ids)}) does not match the local sharding strategy (DP={self.inference.parallel.dp}, TP={self.inference.parallel.tp})"
             )
         return self
 
     @model_validator(mode="after")
     def auto_setup_num_train_workers(self):
-        if self.trainer_gpus > 1:
-            self.orchestrator.num_train_workers = self.trainer_gpus
+        if len(self.trainer_gpu_ids) > 1:
+            self.orchestrator.num_train_workers = len(self.trainer_gpu_ids)
         return self
 
     @model_validator(mode="after")
@@ -445,9 +448,6 @@ def rl(config: RLConfig):
     monitor_threads: list[Thread] = []
     error_queue: list[Exception] = []
     stop_events: dict[str, Event] = {}
-    all_devices = get_cuda_visible_devices()
-    devices = all_devices[: config.trainer_gpus + config.inference_gpus]
-    logger.info(f"Available GPUs: {', '.join(map(str, all_devices))} (using: {', '.join(map(str, devices))})")
 
     try:
         # Optionally, start inference process
@@ -457,14 +457,13 @@ def rl(config: RLConfig):
                 tomli_w.dump(config.inference.model_dump(exclude_none=True, mode="json"), f)
 
             inference_cmd = ["uv", "run", "inference", "@", inference_file.as_posix()]
-            inference_gpu_ids = devices[: config.inference_gpus]
-            logger.info(f"Starting inference process on GPU(s) {' '.join(map(str, inference_gpu_ids))}")
+            logger.info(f"Starting inference process on GPU(s) {' '.join(map(str, config.inference_gpu_ids))}")
             logger.debug(f"Inference start command: {' '.join(inference_cmd)}")
             # If we don't log stdout, the server hangs
             with open(log_dir / "inference.log", "w") as log_file:
                 inference_process = Popen(
                     inference_cmd,
-                    env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, inference_gpu_ids))},
+                    env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, config.inference_gpu_ids))},
                     stdout=log_file,
                     stderr=log_file,
                 )
@@ -536,21 +535,20 @@ def rl(config: RLConfig):
             f"--rdzv-endpoint=localhost:{get_free_port()}",
             f"--rdzv-id={uuid.uuid4().hex}",
             "--nproc-per-node",
-            str(config.trainer_gpus),
+            str(len(config.trainer_gpu_ids)),
             "-m",
             "prime_rl.trainer.rl.train",
             "@",
             trainer_file.as_posix(),
         ]
-        train_gpu_ids = devices[config.inference_gpus :]
-        logger.info(f"Starting trainer process on GPU(s) {' '.join(map(str, train_gpu_ids))}")
+        logger.info(f"Starting trainer process on GPU(s) {' '.join(map(str, config.trainer_gpu_ids))}")
         logger.debug(f"Training start command: {' '.join(trainer_cmd)}")
         with open(log_dir / "trainer.log", "w") as log_file:
             trainer_process = Popen(
                 trainer_cmd,
                 env={
                     **os.environ,
-                    "CUDA_VISIBLE_DEVICES": ",".join(map(str, train_gpu_ids)),
+                    "CUDA_VISIBLE_DEVICES": ",".join(map(str, config.trainer_gpu_ids)),
                     "LOGURU_FORCE_COLORS": "1",
                     "WANDB_PROGRAM": "uv run rl",
                     "WANDB_ARGS": json.dumps(start_command),
