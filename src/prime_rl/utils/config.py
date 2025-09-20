@@ -31,7 +31,7 @@ class LogConfig(BaseConfig):
         Field(
             description="Whether to log to a file. If True, will log to a file in the output directory.",
         ),
-    ] = False
+    ] = True
 
 
 class LogExtrasConfig(BaseConfig):
