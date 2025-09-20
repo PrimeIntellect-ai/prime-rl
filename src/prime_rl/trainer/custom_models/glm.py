@@ -19,7 +19,8 @@ from typing import Optional, Union
 import torch
 import torch.nn.functional as F
 from torch import nn
-from torchtitan.models.moe import MoE, MoEArgs
+
+# from prime_rl.trainer.custom_models.layers.moe import MoE, MoEArgs
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.configuration_utils import PretrainedConfig
@@ -35,6 +36,14 @@ from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple
 from transformers.utils.deprecation import deprecate_kwarg
 from transformers.utils.generic import check_model_inputs
+
+from prime_rl.trainer.custom_models.layers.moe import MoE, MoEArgs
+
+# from torchtitan.models.moe import MoE, MoEArgs
+try:
+    from flash_attn import flash_attn_varlen_func
+except ImportError:
+    flash_attn_varlen_func = None
 
 
 class Glm4MoeConfig(PretrainedConfig):
@@ -399,11 +408,35 @@ class Glm4MoeAttention(nn.Module):
             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
             key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
-        key_states = key_states.repeat_interleave(self.num_key_value_groups, dim=1)
-        value_states = value_states.repeat_interleave(self.num_key_value_groups, dim=1)
-        out = F.scaled_dot_product_attention(query_states, key_states, value_states, is_causal=True)
-        out = out.transpose(1, 2).contiguous()  # .view(out.shape[0], out.shape[1], -1)
-        attn_output = out.view(out.shape[0], out.shape[1], -1)
+        if self.config._attn_implementation == "flash_attention_2":
+            # TODO: Can we optimize the rotary applicaiton instead of double transpose?
+            query_states = query_states.transpose(1, 2)
+            key_states = key_states.transpose(1, 2)
+            value_states = value_states.transpose(1, 2)
+            cu_seqlens = torch.tensor([0, query_states.shape[1]], dtype=torch.int32, device=query_states.device)
+            max_seqlen = query_states.shape[1]
+            out = flash_attn_varlen_func(
+                query_states[0],
+                key_states[0],
+                value_states[0],
+                cu_seqlens,
+                cu_seqlens,
+                max_seqlen,
+                max_seqlen,
+                causal=True,
+            )
+            out = out.contiguous()
+            attn_output = out.view(1, out.shape[0], -1)
+        elif self.config._attn_implementation == "sdpa":
+            key_states = key_states.repeat_interleave(self.num_key_value_groups, dim=1)
+            value_states = value_states.repeat_interleave(self.num_key_value_groups, dim=1)
+            out = F.scaled_dot_product_attention(query_states, key_states, value_states, is_causal=True)
+            out = out.transpose(1, 2).contiguous()  # .view(out.shape[0], out.shape[1], -1)
+            attn_output = out.view(out.shape[0], out.shape[1], -1)
+        else:
+            raise NotImplementedError(
+                f"Only flash_attention_2 and sdpa are supported for custom glm4_moe for now not {self.config._attn_implementation}"
+            )
         attn_weights = None
 
         # attn_output = attn_output.reshape(*input_shape, -1).contiguous()
@@ -563,7 +596,7 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
             route_scale=config.routed_scaling_factor,
             score_before_experts=False,
             top_k=config.num_experts_per_tok,
-            load_balance_coeff=1e-3,
+            load_balance_coeff=None,
             use_grouped_mm=config.use_grouped_mm,
         )
 
@@ -761,11 +794,6 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
         self.model = Glm4MoeModel(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
-
-        if config._attn_implementation != "sdpa":
-            raise NotImplementedError(
-                f"Only sdpa is supported for custom llama for now not {config._attn_implementation}"
-            )
 
         # Initialize weights and apply final processing
         self.post_init()
