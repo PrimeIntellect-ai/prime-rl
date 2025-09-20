@@ -11,6 +11,10 @@ RESET = "\033[0m"
 
 
 def setup_logger(log_level: str, log_console: bool = True, log_file: Path | None = None):
+    global _LOGGER
+    if _LOGGER is not None:
+        raise RuntimeError("Logger already set. Please call `setup_logger` only once.")
+
     # Format message
     message = "".join(
         [
@@ -41,6 +45,9 @@ def setup_logger(log_level: str, log_console: bool = True, log_file: Path | None
 
     # Disable critical logging
     logger.critical = lambda _: None
+
+    # Set the global logger instance
+    _LOGGER = logger
 
     return logger
 
