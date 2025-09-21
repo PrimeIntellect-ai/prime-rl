@@ -1,7 +1,12 @@
-max_steps = 100
+max_steps = 200
 
 [model]
 name = "willcb/Qwen3-1.7B-Wordle"
 
 [optim]
 lr = 1e-6
+
+[scheduler]
+type = "cosine"
+min_lr = 1e-8
+warmup_steps = 50
