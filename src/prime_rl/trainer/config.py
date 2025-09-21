@@ -24,6 +24,57 @@ class ActivationCheckpointConfig(BaseModel):
     ] = 1
 
 
+class LoRAConfig(BaseModel):
+    """Configuration for LoRA (Low-Rank Adaptation)."""
+
+    rank: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Rank of the low-rank decomposition matrices.",
+        ),
+    ] = 16
+
+    alpha: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="LoRA scaling parameter.",
+        ),
+    ] = 16.0
+
+    dropout: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            description="LoRA dropout rate.",
+        ),
+    ] = 0.0
+
+    target_modules: Annotated[
+        list[str],
+        Field(
+            description="Regex patterns for modules to apply LoRA to.",
+        ),
+    ] = [
+        r".*\.q_proj$",
+        r".*\.k_proj$",
+        r".*\.v_proj$",
+        r".*\.o_proj$",
+        r".*\.gate_proj$",
+        r".*\.up_proj$",
+        r".*\.down_proj$",
+    ]
+
+    modules_to_save: Annotated[
+        list[str],
+        Field(
+            description="Regex patterns for modules to keep fully trainable (not freeze).",
+        ),
+    ] = [r".*embed_tokens$", r".*norm$", r".*layernorm$", r"lm_head$"]
+
+
 class CompileConfig(BaseModel):
     """Configures model compilation."""
 
@@ -56,6 +107,13 @@ class ModelConfig(BaseConfig):
         ActivationCheckpointConfig | None,
         Field(
             description="Whether to apply activation checkpointing to the model. If None, will not apply activation checkpointing.",
+        ),
+    ] = None
+
+    lora: Annotated[
+        LoRAConfig | None,
+        Field(
+            description="Whether to apply LoRA to the model. If None, will not apply LoRA.",
         ),
     ] = None
 

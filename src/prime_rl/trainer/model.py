@@ -14,6 +14,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, ModelConfig
 from prime_rl.trainer.custom_models import AutoModelForCausalLMPrimeRL
+from prime_rl.trainer.lora import apply_lora_to_model
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
 
@@ -205,6 +206,10 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
     )
     if config.load_using_meta and not can_load_dcp_from_hf(model):
         model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype])
+
+    # Apply LoRA before FSDP setup
+    if config.lora is not None:
+        apply_lora_to_model(model, config.lora)
 
     # the right order is AC -> Compile -> FSDP
     if config.ac is not None:
