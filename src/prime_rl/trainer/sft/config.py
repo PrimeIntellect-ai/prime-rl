@@ -108,6 +108,8 @@ class SFTTrainerConfig(BaseSettings):
         ),
     ] = False
 
+    trace_path: Annotated[Path | None, Field(description="Path to write pytorch profiler trace to.")] = None
+
     @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench:
@@ -155,4 +157,15 @@ class SFTTrainerConfig(BaseSettings):
     def validate_pack_function(self):
         if self.model.cp > 1 and self.data.pack_function != "stack":
             raise ValueError("Packing function must be 'stack' when CP is enabled")
+        return self
+
+    @model_validator(mode="after")
+    def dont_do_massive_traces(self):
+        if self.trace_path:
+            if self.max_steps is None:
+                raise ValueError("Must specify max_steps when tracing")
+            if self.max_steps >= 10:
+                raise ValueError(
+                    "Tracing more than 10 steps is not recommended as your trace will be massive. Remove this line if you really want to trace more steps."
+                )
         return self

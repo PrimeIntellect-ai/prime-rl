@@ -17,10 +17,10 @@ dependencies = [
     "pydantic-settings>=2.10.1",
     "pylatexenc>=2.10",
     "tomli>=2.2.1",
-    "torch>=2.7.0",
+    "torch>=2.8.0",
     "transformers>=4.56.0",
     "uvloop>=0.21.0",
-    "vllm==0.10.1.1",
+    "vllm==0.10.2",
     "wandb>=0.20.1",
     "lovely-tensors>=0.1.18",
     "rich>=14.0.0",
@@ -32,6 +32,8 @@ dependencies = [
     "dion @ git+https://github.com/samsja/dion.git",
     "torchdata>=0.11.0",
     "accelerate>=1.10.1",
+    "torchtitan",
+    "blobfile>=3.0.0",
 ]
 
 [project.scripts]
@@ -43,7 +45,7 @@ sft = "prime_rl.trainer.sft.train:main"
 eval = "prime_rl.eval.eval:main"
 
 [project.optional-dependencies]
-flash-attn = ["flash-attn==2.8.2"]
+flash-attn = ["flash-attn>=2.8.3"]
 flash-infer = ["flashinfer-python>=0.2.8rc1"]
 
 vf = [
@@ -74,6 +76,7 @@ prerelease = "allow"
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu128" }]
+torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e43694bbfeff5d6ad8ac738c067bb90d41" }
 
 alphabet-sort = { index = "primeintellect" }
 ascii-tree = { index = "primeintellect" }

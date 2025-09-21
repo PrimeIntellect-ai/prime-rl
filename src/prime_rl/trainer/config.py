@@ -75,6 +75,15 @@ class LoRAConfig(BaseModel):
     ] = [r".*embed_tokens$", r".*norm$", r".*layernorm$", r"lm_head$"]
 
 
+class CompileConfig(BaseModel):
+    """Configures model compilation."""
+
+    fullgraph: Annotated[
+        bool,
+        Field(description="Whether to compile the transformer blocks with fullgraph."),
+    ] = False
+
+
 class ModelConfig(BaseConfig):
     """Configures the model for training."""
 
@@ -88,11 +97,11 @@ class ModelConfig(BaseConfig):
     attn: Annotated[AttnImplementation, Field(description="The attention implementation to use.")] = "flash_attention_2"
 
     compile: Annotated[
-        bool,
+        CompileConfig | None,
         Field(
             description="Whether to compile the model using `torch.compile`. Currently discouraged because it was found to destabilize training.",
         ),
-    ] = False
+    ] = None
 
     ac: Annotated[
         ActivationCheckpointConfig | None,
@@ -140,12 +149,40 @@ class ModelConfig(BaseConfig):
         ),
     ] = 1
 
-    liger_kernel: Annotated[
-        bool,
+    impl: Annotated[
+        Literal["hf", "liger_kernel", "custom"],
         Field(
             description="Whether to use Liger Kernel.",
         ),
+    ] = "hf"
+
+    log_signature: Annotated[
+        bool,
+        Field(
+            description="Whether to log the model signature after loading the model.",
+        ),
     ] = False
+
+    load_using_meta: Annotated[
+        bool,
+        Field(
+            description="Whether to load the model using meta device then load from HF ckpt.",
+        ),
+    ] = True
+
+    optimization_dtype: Annotated[
+        Literal["bfloat16", "float32"],
+        Field(
+            description="The dtype to use for the model optimization.",
+        ),
+    ] = "float32"
+
+    moe_use_grouped_mm: Annotated[
+        bool,
+        Field(
+            description="Whether to use grouped mm for the MoE layers. Require compute capability >= 9.0",
+        ),
+    ] = True
 
     @model_validator(mode="after")
     def _map_model_name_for_moe(self):

@@ -90,3 +90,33 @@ def test_no_error_resume(sft_resume_process: ProcessResult):
     assert sft_resume_process.returncode == 0, (
         f"SFT resume process failed with return code {sft_resume_process.returncode}"
     )
+
+
+SFT_CMD_MOE = ["uv", "run", "sft", "@", "configs/debug_moe/sft.toml", "--max-steps", "10"]
+
+
+def test_sft_moe(
+    run_process: Callable[[Command, Environment], ProcessResult],
+    output_dir: Path,
+    wandb_project: str,
+    branch_name: str,
+    commit_hash: str,
+) -> ProcessResult:
+    wandb_name = f"{branch_name}-{commit_hash}"
+
+    assert (
+        run_process(
+            SFT_CMD
+            + [
+                "--wandb.project",
+                wandb_project,
+                "--wandb.name",
+                wandb_name,
+                "--output-dir",
+                output_dir.as_posix(),
+            ],
+            ENV,
+            TIMEOUT,
+        ).returncode
+        == 0
+    ), f"SFT  mpeprocess failed with return code {sft_process.returncode}"

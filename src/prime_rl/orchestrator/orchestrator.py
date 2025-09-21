@@ -29,7 +29,7 @@ from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.utils import (
     wait_for_weight_checkpoint,
     print_benchmark,
-    parse_truncated_completions,
+    parse_is_truncated_completions,
     process_rewards,
 )
 from prime_rl.utils.monitor import setup_monitor
@@ -268,7 +268,8 @@ async def orchestrate(config: OrchestratorConfig):
             )
 
             # Parse whether the completions were truncated
-            is_truncated = parse_truncated_completions(states=generate_outputs.state)
+            responses = [state["responses"] for state in generate_outputs.state]
+            is_truncated = parse_is_truncated_completions(responses=responses)
 
             # Update pool
             rollouts = make_rollouts(
@@ -502,6 +503,7 @@ async def orchestrate(config: OrchestratorConfig):
     # Log final (immutable) samples and distributions to W&B table
     monitor.log_final_samples()
     monitor.log_final_distributions()
+    monitor.save_final_summary()
 
     # Write final checkpoint
     if ckpt_manager is not None:

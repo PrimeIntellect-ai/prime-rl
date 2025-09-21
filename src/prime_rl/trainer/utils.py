@@ -19,8 +19,8 @@ from prime_rl.utils.utils import format_num, format_time
 
 
 def setup_torch_distributed():
-    torch.cuda.set_device(get_world().rank)
-    dist.init_process_group(device_id=torch.device("cuda", torch.cuda.current_device()))
+    torch.cuda.set_device(get_world().local_rank)
+    dist.init_process_group(backend="cpu:gloo,cuda:nccl", device_id=torch.device("cuda", torch.cuda.current_device()))
 
 
 def get_response_lengths(position_ids: torch.Tensor) -> list[int]:
@@ -124,6 +124,7 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
         "perf/mfu": "MFU",
         "perf/throughput": "Throughput",
         "time/step": "Step Time",
+        "perf/peak_memory": "Peak Memory",
     }
     df = df[columns.keys()].rename(columns=columns)
     df = df.iloc[1:]  # Exclude first row
@@ -142,6 +143,7 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
     formatted_df["MFU"] = df["MFU"].apply(lambda x: f"{format_num(x, precision=2)}%")
     formatted_df["Throughput"] = df["Throughput"].apply(lambda x: format_num(x, precision=2))
     formatted_df["Step Time"] = df["Step Time"].apply(format_time)
+    formatted_df["Peak Memory"] = df["Peak Memory"].apply(lambda x: f"{format_num(x, precision=1)} GiB")
     for step, row in formatted_df.iterrows():
         table.add_row(*([str(step)] + [str(x) for x in row]))
 
@@ -150,13 +152,13 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
 
     # Add row for formatted, aggregated statistics
     mean_df = df.describe().loc[["mean", "std", "min", "max"], :]
-    formatted_mean_df = pd.DataFrame(columns=mean_df.columns)
+    formatted_mean_df = pd.DataFrame()
     formatted_mean_df["MFU"] = mean_df["MFU"].apply(lambda x: f"{format_num(x, precision=2)}%")
     formatted_mean_df["Throughput"] = mean_df["Throughput"].apply(format_num, precision=2)
     formatted_mean_df["Step Time"] = mean_df["Step Time"].apply(format_time)
     mean_row = ["Overall"] + formatted_mean_df.T.apply(
         lambda row: f"{row['mean']} ± {row['std']} [{row['min']}, {row['max']}]", axis=1
-    ).tolist()
+    ).tolist() + [f"{format_num(mean_df['Peak Memory']["mean"], precision=1)} GiB ({mean_df['Peak Memory']["mean"]/(torch.cuda.mem_get_info()[1]/1024**3)*100:.1f}%)"]
     table.add_row(*mean_row)
 
     # Display table
@@ -233,19 +235,15 @@ MEMORY_SNAPSHOT_MAX_ENTRIES = 100000
 class MemoryProfiler:
     def __init__(self, step_num: int, snapshot_path: Path):
         torch.cuda.memory._record_memory_history(max_entries=MEMORY_SNAPSHOT_MAX_ENTRIES)
-
+        self.logger = get_logger()
         snapshot_path.mkdir(parents=True, exist_ok=True)
         self.snapshot_path = snapshot_path
-        self.logger = get_logger()
-
         self.step_num = step_num
 
     def step(self):
-        self.step_num + 1
         self.logger.info(f"Dumping memory snapshot at step {self.step_num} at {self.snapshot_path}")
         begin = time.monotonic()
         step_folder = self.snapshot_path / f"step_{self.step_num}"
-
         step_folder.mkdir(parents=True, exist_ok=True)
         file_path = step_folder / f"rank_{get_world().rank}.pickle"
         with open(file_path, "wb") as output:
@@ -253,3 +251,4 @@ class MemoryProfiler:
         self.logger.info(
             f"Finished dumping memory snapshot in {time.monotonic() - begin:.2f} seconds, load {file_path} at https://docs.pytorch.org/memory_viz to visualize the memory usage"
         )
+        self.step_num += 1
