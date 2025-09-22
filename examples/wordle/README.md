@@ -45,7 +45,15 @@ print(ds.to_pandas().input_ids.apply(len).describe())
 ```
 
 ```bash
-uv run sft @ examples/wordle/sft.toml --wandb.project ... --wandb.name ...
+bash scripts/tmux.sh -s sft -o sft-outputs
+```
+
+```bash
+uv run sft @ examples/wordle/sft.toml \
+    --log.level debug \
+    --wandb.project ... \
+    --wandb.name ... \
+    --ckpt 
 ```
 
 On 1xH100, this will take ~ .This will write checkpoints for steps 10 and 20 to `outputs/weights`. Let's evaluate these checkpoints.
@@ -103,7 +111,7 @@ uv run inference @ examples/wordle/rl/infer.toml
 ```
 
 ```bash
-bash scripts/tmux.sh -s exp1 -o outputs1
+bash scripts/tmux.sh -s rl -o rl-outputs
 ```
 
 ```bash
@@ -114,34 +122,12 @@ uv run inference @ examples/wordle/rl/infer.toml
 uv run rl \
     --trainer @ examples/wordle/rl/train.toml \
     --orchestrator @ examples/wordle/rl/orch.toml \
+    --model.name ... \
     --trainer-gpus 1 \
     --inference-gpus 3 \
     --log.level debug \
-    --wandb.project mika \
-    --wandb.name wordle-rl-1024 \
-    --output-dir outputs1
-```
-
-We also try with lower batch size
-
-```bash
-bash scripts/tmux.sh -s exp2 -o outputs2
-```
-
-```bash
-uv run inference @ examples/wordle/rl/infer.toml --server.port 8001
-```
-
-```bash
-CUDA_VISIBLE_DEVICES=4,5,6,7 uv run rl \
-    --trainer @ examples/wordle/rl/train.toml \
-    --orchestrator @ examples/wordle/rl/orch.toml \
-    --trainer-gpus 1 \
-    --inference-gpus 3 \
-    --log.level debug \
-    --wandb.project mika \
-    --wandb.name wordle-rl-512 \
-    --orchestrator.batch-size 512 \
-    --orchestrator.client.base-url http://localhost:8001/v1 \
-    --output-dir outputs2
+    --output-dir rl-outputs \
+    --wandb.project ... \
+    --wandb.name ... \
+    --ckpt
 ```
