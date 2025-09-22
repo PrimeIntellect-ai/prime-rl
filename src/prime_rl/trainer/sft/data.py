@@ -274,7 +274,7 @@ class SFTDataset(StatefulIterableDataset):
 
             if sum(loss_mask[: self.config.seq_len]) == 0:
                 self._logger.warning(
-                    f"Skipping example {self.step} because the number no trainable tokens found within the context window of length {self.config.seq_len}. This is to prevent having a micro batch with no trainable tokens causing NaN loss."
+                    f"Skipping example with index {self.step} because no trainable tokens were found within the context window ({self.config.seq_len}). This is to prevent NaN loss."
                 )
                 continue
 
