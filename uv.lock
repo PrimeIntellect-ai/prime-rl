@@ -1,6 +1,6 @@
 version = 1
-revision = 2
-requires-python = ">=3.12.0, <3.13"
+revision = 3
+requires-python = "==3.12.*"
 resolution-markers = [
     "sys_platform == 'linux'",
     "sys_platform != 'linux'",
@@ -2687,7 +2687,7 @@ requires-dist = [
     { name = "transformers", specifier = ">=4.56.0" },
     { name = "unscramble", marker = "extra == 'vf'", specifier = ">=0.1.3", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", specifier = ">=0.1.3" },
+    { name = "verifiers", specifier = ">=0.1.4" },
     { name = "vllm", specifier = "==0.10.2" },
     { name = "wandb", specifier = ">=0.20.1" },
 ]
@@ -4204,20 +4204,22 @@ wheels = [
 
 [[package]]
 name = "verifiers"
-version = "0.1.3.post0"
+version = "0.1.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "datasets" },
     { name = "jinja2" },
+    { name = "nest-asyncio" },
     { name = "openai" },
     { name = "openai-agents" },
     { name = "pydantic" },
+    { name = "requests" },
     { name = "rich" },
     { name = "textual" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d8/c0/dfde2095b3d7230bb83f848554a236008fd541608d8e333513bb5ff4ebfa/verifiers-0.1.3.post0.tar.gz", hash = "sha256:63e14c75892214250f28a96077784c7bb1cff9439460389571a5f3fd8847fd24", size = 107911, upload-time = "2025-09-05T18:42:19.543Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/91/3e/5aa99c90f6f642ca270111003c63c82b7145e6888a145346d2317ee53e0c/verifiers-0.1.4.tar.gz", hash = "sha256:4e843368c34ffa154fc6343bd0d38a51e48962f278fbe97cce4e3532aabac88c", size = 112825, upload-time = "2025-09-22T06:39:56.664Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/df/73/ff0c4d0204f8b39da0db9185155e14c6eb8c598d8d95d64e4b788a8d855e/verifiers-0.1.3.post0-py3-none-any.whl", hash = "sha256:2c4d9d4b4bfdd2158c29e5f3301fb4105b6c893bb0770fc14b7db5377af00809", size = 100020, upload-time = "2025-09-05T18:42:17.621Z" },
+    { url = "https://files.pythonhosted.org/packages/6c/6f/5ce86ea075ce1a8c46ca863c49942c667474512e6e5631bc13a7ce1e3969/verifiers-0.1.4-py3-none-any.whl", hash = "sha256:1d12e9ae93dbe28d8e97ae12980098404f3fa791a8d06ef13bee8fef6e04faae", size = 102773, upload-time = "2025-09-22T06:39:55.508Z" },
 ]
 
 [[package]]
