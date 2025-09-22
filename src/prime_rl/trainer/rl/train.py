@@ -55,7 +55,6 @@ def train(config: RLTrainerConfig):
     world = get_world()
     logger = setup_logger(
         config.log.level,
-        log_console=world.is_master,
         log_file=config.output_dir / "logs" / "trainer" / f"rank_{world.rank}.log" if config.log.file else None,
     )
     logger.info(f"Starting RL trainer in {world}")
