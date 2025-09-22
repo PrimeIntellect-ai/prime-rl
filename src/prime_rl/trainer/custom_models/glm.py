@@ -260,9 +260,6 @@ class Glm4MoeConfig(PretrainedConfig):
         )
 
 
-__all__ = ["Glm4MoeConfig"]
-
-
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     """
     This is the equivalent of torch.repeat_interleave(x, dim=1, repeats=n_rep). The hidden states go from (batch,
@@ -383,6 +380,8 @@ class Glm4MoeAttention(nn.Module):
         attention_mask: Optional[torch.Tensor],
         past_key_values: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        cu_seqlens: Optional[torch.LongTensor] = None,
+        max_seqlen: Optional[int] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         input_shape = hidden_states.shape[:-1]
@@ -413,8 +412,6 @@ class Glm4MoeAttention(nn.Module):
             query_states = query_states.transpose(1, 2)
             key_states = key_states.transpose(1, 2)
             value_states = value_states.transpose(1, 2)
-            cu_seqlens = torch.tensor([0, query_states.shape[1]], dtype=torch.int32, device=query_states.device)
-            max_seqlen = query_states.shape[1]
             out = flash_attn_varlen_func(
                 query_states[0],
                 key_states[0],
@@ -618,6 +615,8 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
+        cu_seqlens: Optional[torch.LongTensor] = None,
+        max_seqlen: Optional[int] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> torch.Tensor:
         residual = hidden_states
@@ -631,6 +630,8 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
             use_cache=use_cache,
             cache_position=cache_position,
             position_embeddings=position_embeddings,
+            cu_seqlens=cu_seqlens,
+            max_seqlen=max_seqlen,
             **kwargs,
         )
         hidden_states = residual + hidden_states
@@ -753,14 +754,28 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
 
-        causal_mask = create_causal_mask(
-            config=self.config,
-            input_embeds=inputs_embeds,
-            attention_mask=attention_mask,
-            cache_position=cache_position,
-            past_key_values=past_key_values,
-            position_ids=position_ids,
-        )
+        if self.config._attn_implementation == "flash_attention_2":
+            flat_position_ids = position_ids.view(-1)
+            seqlens = torch.cat(
+                [
+                    flat_position_ids[0:1],
+                    flat_position_ids[:-1][(flat_position_ids == 0)[1:]] + 1,
+                    flat_position_ids[-1:] + 1,
+                ]
+            )
+            max_seqlen = seqlens.max().item()
+            cu_seqlens = seqlens.cumsum(dim=0, dtype=torch.int32)
+            torch._dynamo.mark_dynamic(cu_seqlens, 0)
+            causal_mask = None
+        else:
+            causal_mask = create_causal_mask(
+                config=self.config,
+                input_embeds=inputs_embeds,
+                attention_mask=attention_mask,
+                cache_position=cache_position,
+                past_key_values=past_key_values,
+                position_ids=position_ids,
+            )
 
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
@@ -773,6 +788,8 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
                 past_key_values=past_key_values,
                 cache_position=cache_position,
                 position_embeddings=position_embeddings,
+                cu_seqlens=cu_seqlens,
+                max_seqlen=max_seqlen,
                 **kwargs,
             )
 
@@ -862,4 +879,4 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
         )
 
 
-__all__ = ["Glm4MoePreTrainedModel", "Glm4MoeModel", "Glm4MoeForCausalLM"]
+__all__ = ["Glm4MoeConfig", "Glm4MoePreTrainedModel", "Glm4MoeModel", "Glm4MoeForCausalLM"]
