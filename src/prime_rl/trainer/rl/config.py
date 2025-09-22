@@ -136,33 +136,6 @@ class RLTrainerConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def validate_scheduler(self):
-        # Constant scheduler does not require any validation/ setup
-        if self.scheduler.type == "constant":
-            return self
-
-        # Must specify max_steps when using a scheduler other than `constant`
-        if self.max_steps is None:
-            raise ValueError("Must specify max_steps when using a scheduler other than `constant`")
-
-        # If decay_steps is not specified, use remaining steps after warmup
-        if self.scheduler.decay_steps is None:
-            if not (self.scheduler.warmup_steps <= self.max_steps):
-                raise ValueError("config.scheduler.warmup_steps must be less than or equal to config.max_steps")
-
-            self.scheduler.decay_steps = self.max_steps - self.scheduler.warmup_steps
-            assert self.scheduler.decay_steps >= 0, "config.scheduler.decay_steps must be positive"
-
-        # If decay_steps is specified, validate it
-        else:
-            if not (self.scheduler.warmup_steps + self.scheduler.decay_steps <= self.max_steps):
-                raise ValueError(
-                    "config.scheduler.warmup_steps + config.scheduler.decay_steps must be less than or equal to config.max_steps"
-                )
-
-        return self
-
-    @model_validator(mode="after")
     def disable_logging_wandb_samples(self):
         if self.wandb and self.wandb.log_extras:
             self.wandb.log_extras.samples = False
