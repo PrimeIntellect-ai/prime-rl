@@ -268,7 +268,9 @@ async def run_eval(
     aggregator = _OutputsAggregator()
     stats = _RunningEvalStats()
 
-    for batch_idx, (start, end, batch_inputs) in enumerate(_iter_dataset_batches(examples, effective_batch_size), start=1):
+    for batch_idx, (start, end, batch_inputs) in enumerate(
+        _iter_dataset_batches(examples, effective_batch_size), start=1
+    ):
         batch_outputs: GenerateOutputs = await vf_eval.a_generate(
             inputs=batch_inputs,
             client=client,

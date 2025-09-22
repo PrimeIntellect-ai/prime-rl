@@ -156,9 +156,15 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
     formatted_mean_df["MFU"] = mean_df["MFU"].apply(lambda x: f"{format_num(x, precision=2)}%")
     formatted_mean_df["Throughput"] = mean_df["Throughput"].apply(format_num, precision=2)
     formatted_mean_df["Step Time"] = mean_df["Step Time"].apply(format_time)
-    mean_row = ["Overall"] + formatted_mean_df.T.apply(
-        lambda row: f"{row['mean']} ± {row['std']} [{row['min']}, {row['max']}]", axis=1
-    ).tolist() + [f"{format_num(mean_df['Peak Memory']["mean"], precision=1)} GiB ({mean_df['Peak Memory']["mean"]/(torch.cuda.mem_get_info()[1]/1024**3)*100:.1f}%)"]
+    mean_row = (
+        ["Overall"]
+        + formatted_mean_df.T.apply(
+            lambda row: f"{row['mean']} ± {row['std']} [{row['min']}, {row['max']}]", axis=1
+        ).tolist()
+        + [
+            f"{format_num(mean_df['Peak Memory']['mean'], precision=1)} GiB ({mean_df['Peak Memory']['mean'] / (torch.cuda.mem_get_info()[1] / 1024**3) * 100:.1f}%)"
+        ]
+    )
     table.add_row(*mean_row)
 
     # Display table

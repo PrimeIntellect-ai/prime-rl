@@ -231,7 +231,7 @@ class EvalConfig(BaseConfig):
             description="The model to use for judging the rollouts. Defaults to None, which means we use the base model.",
         ),
     ] = None
-    
+
     judge_port: Annotated[
         str | None,
         Field(
