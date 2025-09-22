@@ -167,7 +167,7 @@ class WeightCheckpointManager:
         if _has_tt_moe_layers(cpu_state):
             _convert_tt_moe_to_hf_(cpu_state)
 
-        if os.getenv("LOCAL_RANK", "0") == "0":
+        if self._is_master:
             if self.config.save_async:
                 thread = threading.Thread(
                     target=self._save_to_path,
