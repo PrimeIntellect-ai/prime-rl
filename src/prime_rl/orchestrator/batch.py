@@ -28,20 +28,20 @@ def prepare_sample(
     Tokenize and prepare tensors.
     """
 
-    # Prepare prompt tokens
-    prompt_token_ids = torch.tensor(rollout.prompt_tokens).long()
-    prompt_token_mask = torch.tensor(rollout.prompt_mask).long()
+    # Prepare prompt tokens - explicitly create on CPU
+    prompt_token_ids = torch.tensor(rollout.prompt_tokens, device="cpu").long()
+    prompt_token_mask = torch.tensor(rollout.prompt_mask, device="cpu").long()
 
-    # Prepare completion tokens
-    completion_token_ids = torch.tensor(rollout.completion_tokens).long()
-    completion_token_mask = torch.tensor(rollout.completion_mask).long()
+    # Prepare completion tokens - explicitly create on CPU
+    completion_token_ids = torch.tensor(rollout.completion_tokens, device="cpu").long()
+    completion_token_mask = torch.tensor(rollout.completion_mask, device="cpu").long()
 
-    # Prepare input_ids, loss_mask, position_ids, logprobs, and advantages
+    # Prepare input_ids, loss_mask, position_ids, logprobs, and advantages - all on CPU
     input_ids = torch.cat([prompt_token_ids, completion_token_ids]).long()
     loss_mask = torch.cat([prompt_token_mask, completion_token_mask]).bool()
-    logprobs = torch.cat([torch.zeros(len(prompt_token_ids)), torch.tensor(rollout.completion_logprobs)]).float()
-    position_ids = torch.arange(len(input_ids)).long()
-    advantages = torch.tensor(rollout.advantage).repeat(len(input_ids)).float()
+    logprobs = torch.cat([torch.zeros(len(prompt_token_ids), device="cpu"), torch.tensor(rollout.completion_logprobs, device="cpu")]).float()
+    position_ids = torch.arange(len(input_ids), device="cpu").long()
+    advantages = torch.tensor(rollout.advantage, device="cpu").repeat(len(input_ids)).float()
 
     if len(input_ids) > seq_len:
         # We should never truncate as it would create a really bad learning signal. Instead, always set the maximum sequence length
@@ -113,10 +113,11 @@ def prepare_micro_batch_packing(samples: list[BatchSample], max_seq_len: int, te
     )
 
     for key in ["input_ids", "advantages", "loss_mask", "position_ids", "logprobs"]:
-        micro_batch[key] = torch.cat([sample[key] for sample in samples], dim=0).unsqueeze(0)
+        # Ensure all tensors are on CPU before stacking
+        cpu_samples = [sample[key].cpu() if sample[key].is_cuda else sample[key] for sample in samples]
+        micro_batch[key] = torch.stack(cpu_samples, dim=0)
 
     micro_batch["temperature"] = temperature
-
     return micro_batch
 
 
