@@ -264,6 +264,12 @@ class SFTDataset(StatefulIterableDataset):
                 ),
             )
 
+            if len(input_ids) > self.config.seq_len:
+                self._logger.warning(
+                    f"Skipping example {self.step} because the number of input tokens {len(input_ids)} is greater than sequence length {self.config.seq_len}. This is to prevent having a micro batch with no trainable tokens causing NaN loss."
+                )
+                continue
+
             # Build loss_mask
             loss_mask = build_loss_mask(prompt, completion, self.tokenizer, self.config.loss_mask)
 
