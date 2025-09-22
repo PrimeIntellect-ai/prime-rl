@@ -1,13 +1,14 @@
 # Logging
 
-### W&B
+## Loguru
 
-For any serious run we recommend logging to W&B. Since it is disabled by default, you have to set up W&B. First, make sure that you are logged in.
+We log to console and files using `loguru`. We share a single `setup_logger` utility function across all submodules which should be called *exactly once* at the very beginning of each entrypoint to configure the logger as a global instance. It can then be pulled using a `get_logger` utility function into any component that needs to log. For more details on loguru, see the [documentation](https://loguru.readthedocs.io/en/stable/).
 
-```bash
-uv run wandb login
-# Or set `export WANDB_API_KEY=...`
-```
+## W&B
+
+For most runs we recommend logging to W&B (`wandb`). Since it is disabled by default, you have to set up W&B using the `--wandb` config key.
+
+### RL
 
 Both the trainer and orchestrator can log to W&B as separate runs using the `--monitor.wandb` subconfig. You can set the project (`--monitor.wandb.project`, defaults to `prime-rl`), run name (`--monitor.wandb.name`, defaults to `None` which will make W&B generate a name randomly), run ID (`--monitor.wandb.id`, defaults to `None`), the log directory (`--monitor.wandb.dir`, defaults to `logs`) and whether or not to run in offline mode (`--monitor.wandb.offline`, defaults to `False`). 
 
@@ -53,3 +54,5 @@ uv run rl   \
   --orchestrator.monitor.wandb.log-extras.distributions \
   --orchestrator.monitor.wandb.log-extras.interval 10
 ```
+
+### SFT
