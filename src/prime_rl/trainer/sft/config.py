@@ -46,12 +46,12 @@ class FakeDataConfig(BaseDataConfig):
 
 
 class LossMaskConfig(BaseModel):
-    """Configures which message types contribute to the loss. If True, the loss_mask will be True for this message type and the message type will contribute to the loss."""
+    """Configures which message types contribute to the loss. If True, the loss_mask will be True and the message type will contribute to the loss."""
 
-    system: Annotated[bool, Field(description="Whether to mask system messages.")] = False
-    user: Annotated[bool, Field(description="Whether to mask user messages.")] = False
-    assistant: Annotated[bool, Field(description="Whether to mask assistant messages.")] = True
-    tool: Annotated[bool, Field(description="Whether to mask tool messages.")] = False
+    system: Annotated[bool, Field(description="Whether system messages contribute to the loss.")] = False
+    user: Annotated[bool, Field(description="Whether user messages contribute to the loss.")] = False
+    assistant: Annotated[bool, Field(description="Whether assistant messages contribute to the loss.")] = True
+    tool: Annotated[bool, Field(description="Whether tool messages contribute to the loss.")] = False
 
 
 class SFTDataConfig(BaseDataConfig):
