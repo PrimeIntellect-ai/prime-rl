@@ -74,7 +74,7 @@ def train(config: SFTTrainerConfig):
     optimizer = setup_optimizer(config.optim, model, parallel_dims.world_mesh["dp_shard_cp"])
 
     # Set up the learning rate scheduler
-    scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps)
+    scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
     logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
 
     # Set up the checkpoint manager
