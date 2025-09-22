@@ -145,15 +145,19 @@ class LinearSchedulerConfig(BaseModel):
 
     type: Literal["linear"] = "linear"
 
-    warmup_steps: Annotated[int, Field(ge=0, description="Number of warmup steps for the learning rate scheduler.")] = 0
+    warmup_steps: Annotated[int, Field(ge=0, description="Number of warmup steps for the learning rate scheduler.")] = (
+        10
+    )
 
     decay_steps: Annotated[
-        int | None,
+        int,
         Field(
-            ge=1,
-            description="Number of steps to decay the learning rate during the final portion of training. If None, will use remaining steps after warmup.",
+            ge=0,
+            description="Number of steps to decay the learning rate during the final portion of training.",
         ),
-    ] = None
+    ] = 10
+
+    min_lr: Annotated[float, Field(ge=0, description="Minimum learning rate to converge to.")] = 0.0
 
 
 class CosineSchedulerConfig(BaseModel):
@@ -161,17 +165,11 @@ class CosineSchedulerConfig(BaseModel):
 
     type: Literal["cosine"] = "cosine"
 
-    warmup_steps: Annotated[int, Field(ge=0, description="Number of warmup steps for the learning rate scheduler.")] = 0
+    warmup_steps: Annotated[int, Field(ge=0, description="Number of warmup steps for the learning rate scheduler.")] = (
+        10
+    )
 
     min_lr: Annotated[float, Field(ge=0, description="Minimum learning rate to converge to.")] = 0.0
-
-    decay_steps: Annotated[
-        int | None,
-        Field(
-            ge=1,
-            description="Number of steps to decay the learning rate during the final portion of training. If None, will use remaining steps after warmup.",
-        ),
-    ] = None
 
 
 SchedulerConfigType: TypeAlias = ConstantSchedulerConfig | LinearSchedulerConfig | CosineSchedulerConfig
