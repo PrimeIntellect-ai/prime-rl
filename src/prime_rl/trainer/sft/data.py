@@ -229,12 +229,21 @@ class SFTDataset(StatefulIterableDataset):
                 prev_ids, prev_len = [], 0
                 for i, message in enumerate(messages):
                     assert "role" in message, "Message must have a role"
+                    # Support parallel tool call outputs (treat them as one message for loss mask)
+                    if message["role"] == "tool" and i + 1 < len(messages) and messages[i + 1]["role"] == "tool":
+                        continue
                     cur_ids = tokenizer.apply_chat_template(
                         messages[: i + 1],
                         tools=tools,
                         # This is to mask out the generation prompt after user and tool messages
                         # It leads to us not training on <|im_start|>assistant
-                        add_generation_prompt=True if message["role"] in ["user", "tool"] else False,
+                        add_generation_prompt=True
+                        if (
+                            message["role"] in ["user", "tool"]
+                            and i + 1 < len(messages)
+                            and messages[i + 1]["role"] == "assistant"
+                        )
+                        else False,
                         **example.get("chat_template_kwargs", {}),
                     )
                     assert prev_ids == cur_ids[:prev_len], (

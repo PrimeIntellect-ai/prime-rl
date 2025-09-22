@@ -67,7 +67,71 @@ def test_multiturn_loss_mask():
             },
         ]
     )
-    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
+    tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")  # Properly handles multi-turn think
+    config = SFTDataConfig(num_examples=1)
+    dataset = SFTDataset(dataset, tokenizer, config)
+    sample = next(iter(dataset))
+    print_sample(sample["input_ids"], sample["loss_mask"], tokenizer)
+
+
+def test_multiturn_loss_mask_with_tools():
+    tool_example = {
+        "prompt": [
+            {"role": "system", "content": "You are a helpful assistant with access to tools."},
+            {"role": "user", "content": "What's the weather like in San Francisco and New York?"},
+        ],
+        "completion": [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": '{"location": "San Francisco, CA"}'},
+                    },
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": '{"location": "New York, NY"}'},
+                    },
+                ],
+            },
+            {"role": "tool", "content": '{"temperature": 65, "condition": "Sunny"}', "tool_call_id": "call_1"},
+            {"role": "tool", "content": '{"temperature": 45, "condition": "Cloudy"}', "tool_call_id": "call_2"},
+            {
+                "role": "assistant",
+                "content": "Based on the weather data:\n\n**San Francisco, CA**: It's currently 65°F and sunny - perfect weather!\n\n**New York, NY**: It's 45°F and cloudy - you might want to bring a jacket.",
+            },
+            {"role": "user", "content": "Should I pack an umbrella for New York?"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_3",
+                        "type": "function",
+                        "function": {
+                            "name": "get_precipitation_forecast",
+                            "arguments": '{"location": "New York, NY", "days": 3}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "content": '{"forecast": [{"day": 1, "chance_of_rain": 20}, {"day": 2, "chance_of_rain": 60}, {"day": 3, "chance_of_rain": 40}]}',
+                "tool_call_id": "call_3",
+            },
+            {
+                "role": "assistant",
+                "content": "Looking at the 3-day precipitation forecast for New York:\n- Day 1: 20% chance of rain\n- Day 2: 60% chance of rain\n- Day 3: 40% chance of rain\n\nI'd recommend packing an umbrella, especially for day 2 when there's a 60% chance of rain.",
+            },
+        ],
+    }
+
+    dataset = Dataset.from_list([tool_example])
+    tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")  # Properly handles multi-turn think
     config = SFTDataConfig(num_examples=1)
     dataset = SFTDataset(dataset, tokenizer, config)
     sample = next(iter(dataset))
