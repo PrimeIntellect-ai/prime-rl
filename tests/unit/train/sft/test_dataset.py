@@ -146,7 +146,7 @@ Prompt {idx}<|im_end|>
 
 </think>
 
-Completion {idx}<|im_end|>
+Completion {idx}<|im_end|>\
 """
 
 
@@ -160,15 +160,15 @@ def test_sft_dataset_state():
 
     # Step 1
     micro_batch = next(dataiter)
-    assert tokenizer.decode(micro_batch["input_ids"]) == SAMPLE_TEMPLATE.format(idx=0).strip()
+    assert tokenizer.decode(micro_batch["input_ids"]) == SAMPLE_TEMPLATE.format(idx=0)
     assert dataset.state_dict() == {"step": 1, "epoch": 0}
 
     # Step 2
     micro_batch = next(dataiter)
-    assert tokenizer.decode(micro_batch["input_ids"]) == SAMPLE_TEMPLATE.format(idx=1).strip()
+    assert tokenizer.decode(micro_batch["input_ids"]) == SAMPLE_TEMPLATE.format(idx=1)
     assert dataset.state_dict() == {"step": 2, "epoch": 0}
 
     # Step 3 (next epoch)
     micro_batch = next(dataiter)
-    assert tokenizer.decode(micro_batch["input_ids"]) == SAMPLE_TEMPLATE.format(idx=0).strip()
+    assert tokenizer.decode(micro_batch["input_ids"]) == SAMPLE_TEMPLATE.format(idx=0)
     assert dataset.state_dict() == {"step": 3, "epoch": 1}
