@@ -204,6 +204,41 @@ class EvalConfig(BaseConfig):
         ),
     ] = []
 
+    batch_size: Annotated[
+        list[int],
+        Field(
+            description="Number of examples to evaluate per generation call (chunk size). If -1 or 0, processes the entire dataset in one call. Can be specified per environment.",
+        ),
+    ] = [512]
+
+    push_to_hf_hub: Annotated[
+        bool,
+        Field(
+            description="Whether to push the evaluation results to HF Hub.",
+        ),
+    ] = False
+
+    hub_name: Annotated[
+        str | None,
+        Field(
+            description="The name of the HF dataset to save the evaluation results to. Defaults to None, which means we do not save to HF Hub. If multiple environments are evaluated, we upload a dataset with one split per environment. If a checkpoint is evaluated, we suffix the HF Hub name with the checkpoint step.",
+        ),
+    ] = None
+
+    judge_model: Annotated[
+        str | None,
+        Field(
+            description="The model to use for judging the rollouts. Defaults to None, which means we use the base model.",
+        ),
+    ] = None
+    
+    judge_port: Annotated[
+        str | None,
+        Field(
+            description="The port to use for the judge model. Defaults to None, which means we use the base model.",
+        ),
+    ] = None
+
     sampling: EvalSamplingConfig = Field(
         default_factory=EvalSamplingConfig,
         description="Shared sampling configuration for evals; can differ from training sampling.",
@@ -251,6 +286,14 @@ class EvalConfig(BaseConfig):
 
         elif len(self.max_concurrent) != len(self.environment_ids):
             raise ValueError("Number of max_concurrent entries must match number of ids")
+
+        # batch_size: if empty/unspecified, default to -1 for all; else length must match ids
+        if len(self.batch_size) == 0:
+            self.batch_size = [-1 for _ in self.environment_ids]
+        elif len(self.batch_size) == 1:
+            self.batch_size = [self.batch_size[0] for _ in self.environment_ids]
+        elif len(self.batch_size) != len(self.environment_ids):
+            raise ValueError("Number of batch_size entries must match number of ids")
 
         return self
 
