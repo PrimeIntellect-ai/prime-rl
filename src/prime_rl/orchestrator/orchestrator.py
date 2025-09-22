@@ -390,13 +390,6 @@ async def orchestrate(config: OrchestratorConfig):
                 success = await rollout_client.store_rollout(rollout_key, batches)
                 if not success:
                     logger.error(f"Failed to store rollout {rollout_key}")
-            
-            # Clean up old rollouts if enabled
-            if config.zmq.cleanup_old_rollouts and progress.step > config.async_level:
-                cleanup_step = progress.step - config.async_level - 1
-                for i in range(config.num_train_workers):
-                    old_rollout_key = f"step_{cleanup_step}_rank_{i}"
-                    await rollout_client.delete_rollout(old_rollout_key)
         else:
             # Original file system approach
             step_path = get_rollout_dir(config.output_dir) / f"step_{progress.step}"

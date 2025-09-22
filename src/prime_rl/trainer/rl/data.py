@@ -2,6 +2,7 @@ import time
 from pathlib import Path
 from typing import TypedDict
 
+import os
 import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
@@ -65,9 +66,9 @@ class DataLoader:
         self.zmq_client = None
         
         if self.use_zmq:
-            self._logger.info(f"DataLoader using ZeroMQ store at {zmq_config.client_connect_address}:{zmq_config.port}")
+            self._logger.info(f"DataLoader using ZeroMQ store at {zmq_config.server_address}:{zmq_config.port}")
             self.zmq_client = SyncRolloutStoreClient(
-                server_address=zmq_config.client_connect_address,
+                server_address=zmq_config.server_address,
                 server_port=zmq_config.port
             )
         else:
@@ -107,6 +108,14 @@ class DataLoader:
         
         self.current_step += 1
         return batches
+
+    def delete_rollout(self, rollout_key: str):
+        """Delete rollout from ZeroMQ store."""
+        if self.use_zmq and self.zmq_client:
+            self.zmq_client.delete_rollout(rollout_key)
+        else:
+            os.rmtree(self.rollout_dir / f"step_{rollout_key}")
+            
 
     def close(self):
         """Clean up resources."""

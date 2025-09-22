@@ -123,10 +123,3 @@ class ZeroMQConfig(BaseConfig):
             description="Address for clients to connect to. Use 'localhost' for single-node setups.",
         ),
     ] = "localhost"
-    
-    cleanup_old_rollouts: Annotated[
-        bool,
-        Field(
-            description="Whether to automatically cleanup old rollouts after they are no longer needed.",
-        ),
-    ] = True

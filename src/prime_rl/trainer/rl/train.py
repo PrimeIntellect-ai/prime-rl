@@ -187,6 +187,12 @@ def train(config: RLTrainerConfig):
         load_data_time = time.time() - load_data_start_time
         logger.debug(f"Loaded batch in {load_data_time:.2f} seconds")
 
+        if config.cleanup_old_rollouts and progress.step > config.async_level:
+            cleanup_step = progress.step - config.async_level - 1
+            for i in range(config.num_train_workers):
+                old_rollout_key = f"step_{cleanup_step}_rank_{i}"
+                dataloader.delete_rollout(old_rollout_key)
+
         # Optionally, compute the logprobs for the training batch
         compute_logprobs_time = 0
         num_micro_batches = len(micro_batches)

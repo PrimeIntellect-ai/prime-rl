@@ -80,6 +80,8 @@ class RLTrainerConfig(BaseSettings):
     # ZeroMQ configuration
     zmq: ZeroMQConfig = ZeroMQConfig()
 
+    cleanup_old_rollouts: Annotated[bool, Field(description="Whether to cleanup old rollouts.")] = False
+
     # The logging configuration
     log: LogConfig = LogConfig()
 
