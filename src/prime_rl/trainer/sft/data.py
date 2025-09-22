@@ -112,15 +112,11 @@ class FakeDataset(StatefulIterableDataset):
 class SFTDataset(StatefulIterableDataset):
     """A dataset wrapping a HF SFT dataset with prompt + completion format."""
 
-    def __init__(self, tokenizer: PreTrainedTokenizer, config: SFTDataConfig, non_dp_size: int = 1):
+    def __init__(self, dataset: Dataset, tokenizer: PreTrainedTokenizer, config: SFTDataConfig, non_dp_size: int = 1):
         super().__init__()
         self.config = config
         self.tokenizer = tokenizer
-
-        # Load dataset
-        self.dataset: Dataset = concatenate_datasets(
-            [load_dataset(config.name, split=split) for split in config.splits]
-        )
+        self.dataset = dataset
 
         # Assert that the dataset has a 'text' column
         if "prompt" not in self.dataset.column_names or "completion" not in self.dataset.column_names:
@@ -270,6 +266,7 @@ class SFTDataset(StatefulIterableDataset):
             assert self.tokenizer.eos_token_id in input_ids[-3:], (
                 f"Expected EOS token within last 3 tokens, but did not find {self.tokenizer.eos_token_id} in {input_ids[-3:]}"
             )
+            assert sum(loss_mask) > 0, "There are no tokens in this sample that contribute to the loss"
 
             # Create sample (with one fake target for the last token)
             sample = {
