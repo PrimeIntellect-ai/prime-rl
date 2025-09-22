@@ -4,7 +4,7 @@ from collections import defaultdict
 from typing import Iterator, TypedDict, cast
 
 import torch
-from datasets import Dataset
+from datasets import Dataset, concatenate_datasets, load_dataset
 from jaxtyping import Bool, Int
 from torch import Tensor
 from torch.distributed.checkpoint.stateful import Stateful
@@ -421,7 +421,10 @@ def setup_dataset(
         # Shouldnt matter to handle non_dp_size if dataset is random
         return FakeDataset(tokenizer, config)
     elif config.type == "sft":
-        return SFTDataset(tokenizer, config, non_dp_size)
+        dataset = concatenate_datasets(
+            [cast(Dataset, load_dataset(config.name, split=split)) for split in config.splits]
+        )
+        return SFTDataset(dataset, tokenizer, config, non_dp_size)
     else:
         raise ValueError(f"Invalid dataset type: {config.type}")
 
