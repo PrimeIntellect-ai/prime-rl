@@ -46,7 +46,7 @@ class LogConfig(BaseSettings):
 
     level: Annotated[str | None, Field(description="The log level to use.")] = "info"
 
-    file: Annotated[bool | None, Field(description="Whether to log to a file.")] = False
+    file: Annotated[bool | None, Field(description="Whether to log to a file.")] = True
 
 
 class WandbConfig(BaseSettings):
