@@ -12,7 +12,8 @@ from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, fully_shard
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.trainer.config import ActivationCheckpointConfig, ModelConfig
+from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, ModelConfig
+from prime_rl.trainer.custom_models import AutoModelForCausalLMPrimeRL
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
 
@@ -23,12 +24,17 @@ transformers_modeling_utils_logger.addFilter(
     lambda record: "Flash Attention 2 only supports torch.float16 and torch.bfloat16 dtypes" not in record.getMessage()
 )
 
+DTYPE_MAP = {
+    "bfloat16": torch.bfloat16,
+    "float32": torch.float32,
+}
+
 
 def is_tt_moe_model(model: nn.Module) -> bool:
     return hasattr(model.config, "num_experts") or hasattr(model.config, "n_routed_experts")
 
 
-def get_load_balance_stats(model: nn.Module, reset_stats: bool = True) -> dict[str, torch.FloatTensor]:
+def get_load_balance_stats(model: nn.Module, reset_stats: bool = True) -> dict[str, Tensor | None]:
     per_layer_max_vio = []
     for transformer_block in model.model.layers:
         # This is necessary for models that have mixed dense layers
@@ -41,25 +47,41 @@ def get_load_balance_stats(model: nn.Module, reset_stats: bool = True) -> dict[s
         if reset_stats:
             tokens_per_expert.zero_()
     if len(per_layer_max_vio) == 0:
-        get_logger().warning("No load balance stats to report")
-        return {}
+        return {"max_vio": None}
     return {"max_vio": torch.tensor(per_layer_max_vio)}
 
 
-def get_model(config: ModelConfig, device: torch.device = torch.device("cpu")) -> nn.Module:
+def get_model(
+    config: ModelConfig, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.bfloat16
+) -> nn.Module:
     config_model = AutoConfig.from_pretrained(
         config.name, attn_implementation=config.attn, trust_remote_code=config.trust_remote_code
     )
     config_model.use_cache = False
+    config_model.use_grouped_mm = config.moe_use_grouped_mm
 
     with device:
-        model_cls = AutoLigerKernelForCausalLM if config.liger_kernel else AutoModelForCausalLM
-        model = model_cls.from_pretrained(
-            pretrained_model_name_or_path=config.name,
-            config=config_model,
-            trust_remote_code=config.trust_remote_code,
-        )
+        match config.impl:
+            case "hf":
+                model_cls = AutoModelForCausalLM
+            case "liger_kernel":
+                model_cls = AutoLigerKernelForCausalLM
+            case "custom":
+                model_cls = AutoModelForCausalLMPrimeRL
 
+        if device == torch.device("meta"):
+            model = model_cls.from_config(config_model, trust_remote_code=config.trust_remote_code, dtype=dtype)
+        else:
+            model = model_cls.from_pretrained(
+                pretrained_model_name_or_path=config.name,
+                config=config_model,
+                trust_remote_code=config.trust_remote_code,
+                dtype=dtype,
+            )
+
+    assert model.lm_head.weight.dtype == dtype, (
+        f"LM head dtype wasnt loaded correctly {model.lm_head.weight.dtype} != {dtype}"
+    )
     return model
 
 
@@ -73,17 +95,31 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
     # TODO: Support dp_replicate
     hsdp_mesh = parallel_dims.world_mesh["dp_shard_cp"]
-    for layer_id, transformer_block in enumerate(model.model.layers):
-        if config.reshard_after_forward:
-            layer_reshard_after_forward = layer_id < len(model.model.layers) - 1
-        else:
-            layer_reshard_after_forward = False
+
+    for transformer_block in model.model.layers:
         fully_shard(
             transformer_block,
             mesh=hsdp_mesh,
             mp_policy=mp_policy,
-            reshard_after_forward=layer_reshard_after_forward,
+            reshard_after_forward=config.reshard_after_forward,
         )
+
+    if hasattr(model, "config") and not model.config.tie_word_embeddings:
+        # This optimization breaks weight tying
+        fully_shard(
+            model.model.embed_tokens,
+            mesh=hsdp_mesh,
+            mp_policy=mp_policy,
+            reshard_after_forward=config.reshard_after_forward,
+        )
+        fully_shard(
+            [model.lm_head, model.model.norm],
+            mesh=hsdp_mesh,
+            mp_policy=mp_policy,
+            reshard_after_forward=False,
+        )
+    else:
+        get_logger().warning("Model is tied word embeddings, so not doing the last layer not resharding optimization")
 
     fully_shard(model, mesh=hsdp_mesh, mp_policy=mp_policy, reshard_after_forward=config.reshard_after_forward)
 
@@ -97,8 +133,47 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     dcp.load(
         model.state_dict(),
         storage_reader=HuggingFaceStorageReader(path=path_snapshot),
+        # Note: This allow is needed by weight tying but could cause silent issues
         planner=DefaultLoadPlanner(allow_partial_load=True),
     )
+    fix_model_post_empty(model)
+
+
+def can_load_dcp_from_hf(model: nn.Module):
+    """Whether the model will be loaded correctly by load_dcp_from_hf.
+
+    The main issue is with anything that is not in the checkpoint.
+    This is usually any non-persistent buffers.
+    """
+    buffer_names = [name for name, _ in model.named_buffers()]
+
+    # TT MoE buffers
+    buffer_names = [
+        name
+        for name in buffer_names
+        if not (name.startswith("model.layers.") and name.endswith("mlp.tokens_per_expert"))
+    ]
+    buffer_names = [
+        name for name in buffer_names if not (name.startswith("model.layers.") and name.endswith("mlp.expert_bias"))
+    ]
+    # HF standard transformer model
+    if len(buffer_names) == 1 and buffer_names[0] == "model.rotary_emb.inv_freq":
+        return True
+
+    get_logger().warning(f"Model cannot be loaded using meta device because of buffers: {buffer_names}")
+    return False
+
+
+def fix_model_post_empty(model: nn.Module):
+    buffer_names = [name for name, _ in model.named_buffers()]
+    # HF standard transformer model
+    if "model.rotary_emb.inv_freq" in buffer_names:
+        rotary_emb = model.model.rotary_emb
+        inv_freq, rotary_emb.attention_scaling = rotary_emb.rope_init_fn(rotary_emb.config, rotary_emb.inv_freq.device)
+        rotary_emb.inv_freq.copy_(inv_freq)
+
+    # TODO: Init TT MoE buffers
+    # I think .to_empty() on gpu by default fills 0 so we are ok but this might not be guaranteed behavior
 
 
 def reshard_module(model: nn.Module):
@@ -112,23 +187,40 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
         if layer_id % ac_config.freq == 0:
             transformer_block = checkpoint_wrapper(transformer_block, preserve_rng_state=False)
         model.model.layers.register_module(layer_name, transformer_block)
+    get_logger().info(f"Applied activation checkpointing (freq={ac_config.freq})")
+
+
+def apply_compile(model: nn.Module, compile_config: CompileConfig):
+    for layer_id in range(len(model.model.layers)):
+        # Doing it in-place avoids mangled fqn which can break checkpoint loading
+        model.model.layers[layer_id].compile(fullgraph=compile_config.fullgraph)
+    get_logger().info(f"Compiled {len(model.model.layers)} layers (fullgraph={compile_config.fullgraph})")
 
 
 def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
-    if torch.__version__.startswith("2.7"):
-        # TODO: Remove this once we dont support torch 2.7
-        # Torch 2.7 has a HF Reader but it doesnt support small models without model.safetensors.index.json
-        model = get_model(config, device=torch.device("cpu"))
-        setup_fsdp(model, config, parallel_dims)
-    else:
-        model = get_model(config, device=torch.device("meta"))
-        setup_fsdp(model, config, parallel_dims)
-        load_dcp_from_hf(model, config)
+    model = get_model(
+        config,
+        device=torch.device("meta" if config.load_using_meta else "cpu"),
+        dtype=DTYPE_MAP[config.optimization_dtype],
+    )
+    if config.load_using_meta and not can_load_dcp_from_hf(model):
+        model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype])
+
+    # the right order is AC -> Compile -> FSDP
     if config.ac is not None:
         apply_ac(model, config.ac)
-    if config.compile:
-        model = torch.compile(model)
-    # TODO: This should be type-hinted as FSDP version of the model
+    if config.compile is not None:
+        apply_compile(model, config.compile)
+
+    setup_fsdp(model, config, parallel_dims)
+
+    if config.load_using_meta and can_load_dcp_from_hf(model):
+        load_dcp_from_hf(model, config)
+
+    if config.log_signature:
+        from prime_rl.utils.tensor_hashing import get_module_signature
+
+        get_logger().info(f"model signature: {get_module_signature(model, compress=True)}")
     return model
 
 

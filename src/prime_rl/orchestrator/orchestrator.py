@@ -26,7 +26,7 @@ from prime_rl.orchestrator.client import (
 from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.orchestrator.buffer import setup_buffer, make_rollouts, Rollout
 from prime_rl.orchestrator.batch import prepare_batch
-from prime_rl.orchestrator.logger import setup_logger
+from prime_rl.utils.logger import setup_logger
 from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.utils import (
     wait_for_weight_checkpoint,
@@ -53,7 +53,9 @@ node_rank = os.getenv("PET_NODE_RANK", 0)
 @logger.catch(reraise=True)
 async def orchestrate(config: OrchestratorConfig):
     # Initialize the logger
-    logger = setup_logger(config.log)
+    logger = setup_logger(
+        config.log.level, log_file=config.output_dir / "logs" / "orchestrator.log" if config.log.file else None
+    )
     logger.info("Starting orchestrator")
 
     # Print warning if running in benchmark mode
@@ -537,6 +539,7 @@ async def orchestrate(config: OrchestratorConfig):
     # Log final (immutable) samples and distributions to W&B table
     monitor.log_final_samples()
     monitor.log_final_distributions()
+    monitor.save_final_summary()
 
     # Write final checkpoint
     if ckpt_manager is not None:

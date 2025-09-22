@@ -47,16 +47,6 @@ def validate_shared_model_name(
         )
 
 
-def validate_shared_max_model_len(
-    orchestrator: OrchestratorConfig,
-    inference: Optional[InferenceConfig] = None,
-) -> None:
-    if inference and inference.model.max_model_len and orchestrator.seq_len != inference.model.max_model_len:
-        raise ValueError(
-            f"Orchestrator sequence length ({orchestrator.seq_len}) and inference model max model length ({inference.model.max_model_len}) are not the same. Please specify the same max model length for both."
-        )
-
-
 def validate_shared_output_dir(
     trainer: RLTrainerConfig,
     orchestrator: OrchestratorConfig,

@@ -45,6 +45,15 @@ class FakeDataConfig(BaseDataConfig):
     input_ids: Literal["increasing", "random"] = "increasing"
 
 
+class LossMaskConfig(BaseModel):
+    """Configures which message types contribute to the loss. If True, the loss_mask will be True and the message type will contribute to the loss."""
+
+    system: Annotated[bool, Field(description="Whether system messages contribute to the loss.")] = False
+    user: Annotated[bool, Field(description="Whether user messages contribute to the loss.")] = False
+    assistant: Annotated[bool, Field(description="Whether assistant messages contribute to the loss.")] = True
+    tool: Annotated[bool, Field(description="Whether tool messages contribute to the loss.")] = False
+
+
 class SFTDataConfig(BaseDataConfig):
     """Configures the data used for training."""
 
@@ -55,6 +64,9 @@ class SFTDataConfig(BaseDataConfig):
     )
     splits: Annotated[list[str], Field(description="Splits to use from the HF dataset.")] = ["train"]
     shuffle: Annotated[bool, Field(description="Whether to shuffle the dataset at the beginning of each epoch.")] = True
+
+    # Configuring
+    loss_mask: LossMaskConfig = LossMaskConfig()
 
 
 DataConfigType: TypeAlias = FakeDataConfig | SFTDataConfig
@@ -108,6 +120,8 @@ class SFTTrainerConfig(BaseSettings):
         ),
     ] = False
 
+    trace_path: Annotated[Path | None, Field(description="Path to write pytorch profiler trace to.")] = None
+
     @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench:
@@ -155,4 +169,15 @@ class SFTTrainerConfig(BaseSettings):
     def validate_pack_function(self):
         if self.model.cp > 1 and self.data.pack_function != "stack":
             raise ValueError("Packing function must be 'stack' when CP is enabled")
+        return self
+
+    @model_validator(mode="after")
+    def dont_do_massive_traces(self):
+        if self.trace_path:
+            if self.max_steps is None:
+                raise ValueError("Must specify max_steps when tracing")
+            if self.max_steps >= 10:
+                raise ValueError(
+                    "Tracing more than 10 steps is not recommended as your trace will be massive. Remove this line if you really want to trace more steps."
+                )
         return self

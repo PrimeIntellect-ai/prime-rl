@@ -12,9 +12,6 @@ from threading import Event, Thread
 from typing import Annotated
 
 import tomli_w
-import torch
-from loguru import logger as loguru_logger
-from loguru._logger import Logger
 from pydantic import Field, model_validator
 
 from prime_rl.inference.config import InferenceConfig
@@ -24,7 +21,7 @@ from prime_rl.trainer.config import CheckpointConfig as TrainerCheckpointConfig
 from prime_rl.trainer.rl.config import FakeDataLoaderConfig
 from prime_rl.trainer.rl.config import RLTrainerConfig as TrainerConfig
 from prime_rl.utils.config import WandbMonitorConfig
-from prime_rl.utils.logger import format_message, format_time, set_logger, setup_handlers
+from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pydantic_config import BaseSettings, get_temp_toml_file, parse_argv
 from prime_rl.utils.utils import (
     get_ckpt_dir,
@@ -37,7 +34,6 @@ from prime_rl.utils.utils import (
 from prime_rl.utils.validation import (
     validate_shared_async_level,
     validate_shared_ckpt_config,
-    validate_shared_max_model_len,
     validate_shared_max_steps,
     validate_shared_model_name,
     validate_shared_output_dir,
@@ -50,12 +46,7 @@ class LogConfig(BaseSettings):
 
     level: Annotated[str | None, Field(description="The log level to use.")] = "info"
 
-    utc: Annotated[
-        bool | None,
-        Field(
-            description="Whether to use UTC time in the logger. If False, it will default to the local time. If the local time is wrong, you can set it by setting the `TZ` environment variable. For example, `TZ=America/Los_Angeles` will set the local time to SF time."
-        ),
-    ] = False
+    file: Annotated[bool | None, Field(description="Whether to log to a file.")] = True
 
 
 class WandbConfig(BaseSettings):
@@ -125,9 +116,8 @@ class RLConfig(BaseSettings):
         ),
     ] = True
 
-    trainer_gpus: Annotated[int, Field(description="The number of GPUs to use for trainer.")] = 1
-
-    inference_gpus: Annotated[int, Field(description="The number of GPUs to use for inference.")] = 1
+    inference_gpu_ids: Annotated[list[int], Field(description="The GPU IDs to use for inference.")] = [0]
+    trainer_gpu_ids: Annotated[list[int], Field(description="The GPU IDs to use for trainer.")] = [1]
 
     ### Shared configurations
 
@@ -185,41 +175,40 @@ class RLConfig(BaseSettings):
         ),
     ] = False
 
-    rndvz_endpoint: Annotated[str | None, Field(description="The RNDVZ endpoint to use.")] = os.getenv("MASTER_ADDR", "localhost")
-
-    rndvz_endpoint_port: Annotated[int | None, Field(description="The RNDVZ endpoint port to use.")] = os.getenv("MASTER_PORT", get_free_port())
-
-    node_rank: Annotated[int | None, Field(description="The node rank.")] = os.getenv("PET_NODE_RANK", 0)
-
-    number_of_nodes: Annotated[int | None, Field(description="The number of nodes to use.")] = os.getenv("PET_NNODES", 1)
-
-    rndvz_id: Annotated[str | None, Field(description="The RNDVZ ID to use.")] = "training_job"
-
     @model_validator(mode="after")
     def validate_device(self):
-        available_gpus = torch.cuda.device_count()
-        if self.trainer_gpus + self.inference_gpus > available_gpus:
+        available_gpu_ids = get_cuda_visible_devices()
+        requested_gpu_ids = sorted(set(self.trainer_gpu_ids + self.inference_gpu_ids))
+        if len(requested_gpu_ids) > len(available_gpu_ids):
             raise ValueError(
-                f"Total number of GPUs ({self.trainer_gpus + self.inference_gpus}) exceeds available GPUs ({available_gpus})"
+                f"The number of requested GPUs ({len(requested_gpu_ids)}) exceeds available GPUs ({len(available_gpu_ids)})"
             )
-        if self.inference and self.inference_gpus != self.inference.parallel.dp * self.inference.parallel.tp:
+        if any(not (gpu_id in available_gpu_ids) for gpu_id in requested_gpu_ids):
             raise ValueError(
-                f"Total number of inference GPUs ({self.inference_gpus}) does not match the local sharding strategy ({self.inference.parallel.dp} DP + {self.inference.parallel.tp} TP)"
+                f"Some requested GPU IDs are not available. Available GPUs: {available_gpu_ids}, Requested GPUs: {requested_gpu_ids}"
+            )
+        if self.inference and len(self.inference_gpu_ids) != self.inference.parallel.dp * self.inference.parallel.tp:
+            raise ValueError(
+                f"Total number of inference GPUs ({len(self.inference_gpu_ids)}) does not match the local sharding strategy (DP={self.inference.parallel.dp}, TP={self.inference.parallel.tp})"
             )
         return self
 
     @model_validator(mode="after")
     def auto_setup_num_train_workers(self):
-        if self.trainer_gpus > 1:
-            self.orchestrator.num_train_workers = self.trainer_gpus
+        if len(self.trainer_gpu_ids) > 1:
+            self.orchestrator.num_train_workers = len(self.trainer_gpu_ids)
         return self
 
     @model_validator(mode="after")
     def auto_setup_logs(self):
         # Copy log level
-        if self.log and self.log.level:
-            self.trainer.log.level = self.log.level
-            self.orchestrator.log.level = self.log.level
+        if self.log:
+            if self.log.level:
+                self.trainer.log.level = self.log.level
+                self.orchestrator.log.level = self.log.level
+            if self.log.file:
+                self.trainer.log.file = self.log.file
+                self.orchestrator.log.file = self.log.file
 
         return self
 
@@ -327,17 +316,6 @@ class RLConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_max_model_len(self):
-        if self.max_model_len:
-            self.orchestrator.seq_len = self.max_model_len
-            if self.inference:
-                self.inference.model.max_model_len = self.max_model_len
-
-        validate_shared_max_model_len(self.orchestrator, self.inference)
-
-        return self
-
-    @model_validator(mode="after")
     def auto_setup_async_level(self):
         # If specified, use the same async level for trainer and orchestrator
         if self.async_level:
@@ -374,15 +352,6 @@ class RLConfig(BaseSettings):
         return self
 
 
-def setup_logger(log_config: LogConfig) -> Logger:
-    # Setup the logger handlers
-    format = format_time(log_config) + format_message()
-    logger = setup_handlers(loguru_logger, format, log_config, rank=0)
-    set_logger(logger)
-
-    return logger
-
-
 def cleanup_threads(threads: list[Thread]):
     for thread in threads:
         thread.join(timeout=5)
@@ -417,21 +386,15 @@ def monitor_process(process: Popen, stop_event: Event, error_queue: list, proces
 
 def rl(config: RLConfig):
     # Setup logger
-    logger = setup_logger(config.log)
-    logger.info('Running with config:')
-    logger.info(config)
-    logger.info(f'Node rank: {config.node_rank}')
-    logger.info(f'Number of nodes: {config.number_of_nodes}')
-    logger.info(f'RNDVZ endpoint: {config.rndvz_endpoint}')
-    logger.info(f'RNDVZ endpoint port: {config.rndvz_endpoint_port}')
-    logger.info(f'RNDVZ ID: {config.rndvz_id}')
-
+    logger = setup_logger(
+        config.log.level or "info", log_file=config.output_dir / "logs" / "rl.log" if config.log.file else None
+    )
     start_command = sys.argv
     logger.info("Starting RL run")
     logger.debug(f"RL start command: {' '.join(start_command)}")
 
     # Prepare paths to communicate with the trainer
-    log_dir = get_log_dir(config.output_dir) / f'rank-{config.node_rank}'
+    log_dir = get_log_dir(config.output_dir)
     ckpt_dir = get_ckpt_dir(config.output_dir)
     weights_dir = get_weights_dir(config.output_dir)
     rollout_dir = get_rollout_dir(config.output_dir)
@@ -443,7 +406,6 @@ def rl(config: RLConfig):
         # Cleaning logs
         logger.info(f"Cleaning log dir ({log_dir})")
         shutil.rmtree(log_dir, ignore_errors=True)
-        
         log_dir.mkdir(parents=True, exist_ok=True)
 
         # Cleaning checkpoints and weights, unless resuming
@@ -464,9 +426,6 @@ def rl(config: RLConfig):
     monitor_threads: list[Thread] = []
     error_queue: list[Exception] = []
     stop_events: dict[str, Event] = {}
-    all_devices = get_cuda_visible_devices()
-    devices = all_devices[: config.trainer_gpus + config.inference_gpus]
-    logger.info(f"Available GPUs: {', '.join(map(str, all_devices))} (using: {', '.join(map(str, devices))})")
 
     try:
         # Optionally, start inference process
@@ -476,14 +435,13 @@ def rl(config: RLConfig):
                 tomli_w.dump(config.inference.model_dump(exclude_none=True, mode="json"), f)
 
             inference_cmd = ["uv", "run", "inference", "@", inference_file.as_posix()]
-            inference_gpu_ids = devices[config.trainer_gpus:]
-            logger.info(f"Starting inference process on GPU(s) {' '.join(map(str, inference_gpu_ids))}")
+            logger.info(f"Starting inference process on GPU(s) {' '.join(map(str, config.inference_gpu_ids))}")
             logger.debug(f"Inference start command: {' '.join(inference_cmd)}")
             # If we don't log stdout, the server hangs
-            with open(log_dir / "inference.log", "w") as log_file:
+            with open(log_dir / "inference.stdout", "w") as log_file:
                 inference_process = Popen(
                     inference_cmd,
-                    env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, inference_gpu_ids))},
+                    env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, config.inference_gpu_ids))},
                     stdout=log_file,
                     stderr=log_file,
                 )
@@ -518,7 +476,7 @@ def rl(config: RLConfig):
         ]
         logger.info("Starting orchestrator process")
         logger.debug(f"Orchestrator start command: {' '.join(orchestrator_cmd)}")
-        with open(log_dir / "orchestrator.log", "w") as log_file:
+        with open(log_dir / "orchestrator.stdout", "w") as log_file:
             orchestrator_process = Popen(
                 orchestrator_cmd,
                 stdout=log_file,
@@ -552,26 +510,27 @@ def rl(config: RLConfig):
             "uv",
             "run",
             "torchrun",
-            f"--rdzv-endpoint={config.rndvz_endpoint}:{config.rndvz_endpoint_port}",
-            f"--rdzv-id={config.rndvz_id}",
-            f"--node-rank={config.node_rank}",
-            f'--nnodes={config.number_of_nodes}',
-            '--rdzv-backend=c10d',
-            f"--nproc-per-node={config.trainer_gpus}",
+            f"--rdzv-endpoint=localhost:{get_free_port()}",
+            f"--rdzv-id={uuid.uuid4().hex}",
+            # Pipe all logs to file, and only master rank logs to stdout
+            f"--log-dir={config.output_dir / 'torchrun'}",
+            "--local-ranks-filter=0",
+            "--redirects=3",
+            "--tee=3",
+            f"--nproc-per-node={len(config.trainer_gpu_ids)}",
             "-m",
             "prime_rl.trainer.rl.train",
             "@",
             trainer_file.as_posix(),
         ]
-        train_gpu_ids = devices[:config.trainer_gpus]
-        logger.info(f"Starting trainer process on GPU(s) {' '.join(map(str, train_gpu_ids))}")
+        logger.info(f"Starting trainer process on GPU(s) {' '.join(map(str, config.trainer_gpu_ids))}")
         logger.debug(f"Training start command: {' '.join(trainer_cmd)}")
-        with open(log_dir / "trainer.log", "w") as log_file:
+        with open(log_dir / "trainer.stdout", "w") as log_file:
             trainer_process = Popen(
                 trainer_cmd,
                 env={
                     **os.environ,
-                    "CUDA_VISIBLE_DEVICES": ",".join(map(str, train_gpu_ids)),
+                    "CUDA_VISIBLE_DEVICES": ",".join(map(str, config.trainer_gpu_ids)),
                     "LOGURU_FORCE_COLORS": "1",
                     "WANDB_PROGRAM": "uv run rl",
                     "WANDB_ARGS": json.dumps(start_command),
@@ -593,7 +552,7 @@ def rl(config: RLConfig):
         # Monitor all processes for failures
         logger.success("Startup complete. Showing trainer logs...")
 
-        tail_process = Popen(["tail", "-F", log_dir / "trainer.log"])
+        tail_process = Popen(["tail", "-F", log_dir / "trainer.stdout"])
         processes.append(tail_process)
 
         # Check for errors from monitor threads

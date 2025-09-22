@@ -8,10 +8,13 @@ from typing import Any, TypeAlias
 import pandas as pd
 import torch
 import torch.distributed as dist
+from rich import print as rich_print
 from rich.console import Console
 from rich.table import Table
+from rich.text import Text
 from torch import Tensor, nn
 from torch.distributed.tensor import DTensor
+from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
@@ -109,6 +112,17 @@ def wake_up_model_from_cpu(model: nn.Module, tensors: OffloadedTensor):
     torch.cuda.synchronize()
 
 
+def print_sample(input_ids: list[int], loss_mask: list[bool], tokenizer: PreTrainedTokenizer):
+    """
+    Visualize the loss mask of a tokenized sample using rich.
+    Reference: https://huggingface.co/Qwen/Qwen3-8B/discussions/14
+    """
+    text = Text()
+    for token, mask in zip(tokenizer.convert_ids_to_tokens(input_ids), loss_mask):
+        text.append(token.replace("Ġ", " ").replace("Ċ", "\n"), style="cyan" if mask else "white")
+    rich_print(text)
+
+
 def print_benchmark(history: dict[str, list[Any]]) -> None:
     """
     Print benchmark results as rich table. Shows formatted values for the
@@ -154,9 +168,15 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
     formatted_mean_df["MFU"] = mean_df["MFU"].apply(lambda x: f"{format_num(x, precision=2)}%")
     formatted_mean_df["Throughput"] = mean_df["Throughput"].apply(format_num, precision=2)
     formatted_mean_df["Step Time"] = mean_df["Step Time"].apply(format_time)
-    mean_row = ["Overall"] + formatted_mean_df.T.apply(
-        lambda row: f"{row['mean']} ± {row['std']} [{row['min']}, {row['max']}]", axis=1
-    ).tolist()
+    mean_row = (
+        ["Overall"]
+        + formatted_mean_df.T.apply(
+            lambda row: f"{row['mean']} ± {row['std']} [{row['min']}, {row['max']}]", axis=1
+        ).tolist()
+        + [
+            f"{format_num(mean_df['Peak Memory']['mean'], precision=1)} GiB ({mean_df['Peak Memory']['mean'] / (torch.cuda.mem_get_info()[1] / 1024**3) * 100:.1f}%)"
+        ]
+    )
     table.add_row(*mean_row)
 
     # Display table

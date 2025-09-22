@@ -7,11 +7,12 @@ from contextlib import nullcontext
 import torch
 from torch.nn.functional import cross_entropy
 from torch.distributed.tensor.experimental import context_parallel
+from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.weights import setup_weight_ckpt_manager
 from prime_rl.trainer.sft.config import SFTTrainerConfig
-from prime_rl.trainer.logger import setup_logger
+from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
@@ -26,6 +27,7 @@ from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import setup_dataloader, setup_dataset
 from prime_rl.trainer.utils import (
     MemoryProfiler,
+    print_sample,
     setup_torch_distributed,
     print_benchmark,
 )
@@ -41,7 +43,10 @@ import torch.distributed as dist
 def train(config: SFTTrainerConfig):
     # Setup world and logger
     world = get_world()
-    logger = setup_logger(config.log, world)
+    logger = setup_logger(
+        config.log.level,
+        log_file=config.output_dir / "logs" / "trainer" / f"rank_{world.rank}.log" if config.log.file else None,
+    )
     logger.info(f"Starting SFT trainer in {world}")
 
     # Print warning if running in benchmark mode
@@ -110,7 +115,15 @@ def train(config: SFTTrainerConfig):
     )
 
     logger.info(f"Starting training loop ({config.max_steps=})")
+
+    max_memory = torch.cuda.mem_get_info()[1] / 1024**3  # GiB
+
     is_first_step = True
+    maybe_record_function = nullcontext
+    if config.trace_path:
+        logger.info(f"Tracing to {config.trace_path}")
+        prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
+        maybe_record_function = record_function
     while True:
         # Save the full checkpoint (if we are at an interval step and not at the first or last step)
         is_last_step = config.max_steps is not None and progress.step == config.max_steps
@@ -151,7 +164,7 @@ def train(config: SFTTrainerConfig):
         )
 
         batch_loss = torch.tensor(0.0).to("cuda")
-        batch_max_vio = torch.tensor(0.0).to("cuda")
+        batch_max_vio, max_vio = torch.tensor(0.0).to("cuda"), None
         for micro_step in range(grad_accum_steps):
             micro_batch = next(dataiter)
             input_ids = micro_batch["input_ids"].to("cuda")
@@ -159,7 +172,14 @@ def train(config: SFTTrainerConfig):
             target_ids = micro_batch["target_ids"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
             epoch = micro_batch["epoch"]
-            assert input_ids.shape[0] == position_ids.shape[0]
+            assert input_ids.shape == position_ids.shape == target_ids.shape == loss_mask.shape, (
+                f"input_ids.shape: {input_ids.shape}, position_ids.shape: {position_ids.shape}, target_ids.shape: {target_ids.shape}, loss_mask.shape: {loss_mask.shape}"
+            )
+
+            # In debug mode, print the loss mask of the first micro batch
+            if config.log.level.upper() == "DEBUG" and progress.step == 0 and micro_step == 0:
+                logger.debug("Printing samples of the first micro batch")
+                print_sample(input_ids.flatten().tolist(), loss_mask.flatten().tolist(), tokenizer)
 
             if config.model.cp > 1:
                 maybe_context_parallel = context_parallel(
@@ -172,16 +192,19 @@ def train(config: SFTTrainerConfig):
 
             with maybe_context_parallel:
                 # Forward pass
-                logits = forward(model, input_ids, position_ids)
+                with maybe_record_function("forward"):
+                    logits = forward(model, input_ids, position_ids)
                 B, L, V = logits.shape
 
                 # Compute loss
                 loss = cross_entropy(logits.view(-1, V), target_ids.view(-1), reduction="none").view(B, L)
 
                 if is_tt_moe_model(model):
-                    max_vio = get_load_balance_stats(model)["max_vio"].mean()
-                    dist.all_reduce(max_vio, op=dist.ReduceOp.MAX)
-                    batch_max_vio += max_vio / grad_accum_steps
+                    max_vio = get_load_balance_stats(model)["max_vio"]
+                    if max_vio is not None:
+                        max_vio = max_vio.mean()
+                        dist.all_reduce(max_vio, op=dist.ReduceOp.MAX)
+                        batch_max_vio += max_vio / grad_accum_steps
 
                 # Compute average loss over unmasked tokens
                 loss = loss[loss_mask].mean()
@@ -193,11 +216,12 @@ def train(config: SFTTrainerConfig):
                 del logits
 
                 # Backward pass
-                (loss / grad_accum_steps).backward()
+                with maybe_record_function("backward"):
+                    (loss / grad_accum_steps).backward()
 
             # Debug log with *local, micro step* stats
-            micro_step_message = f"Micro Step {micro_step} | Loss: {loss.item()} | Dataloader Step: {dataloader.state_dict()['dataset_state']['step']}"
-            if is_tt_moe_model(model):
+            micro_step_message = f"Micro Step {micro_step} | Loss: {loss.item():.4f} | Dataloader Step: {dataloader.state_dict()['dataset_state']['step']}"
+            if is_tt_moe_model(model) and max_vio is not None:
                 micro_step_message += f" | Max Vio: {max_vio.item():.4f}"
             logger.debug(micro_step_message)
 
@@ -228,12 +252,14 @@ def train(config: SFTTrainerConfig):
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_tokens_per_second() or 0
         mfu = perf_counter.get_mfu() or 0
+        peak_memory = torch.cuda.max_memory_allocated() / 1024**3  # GiB
 
         # Log step metrics
         step_time = time.time() - step_start_time
         current_lr = optimizer.param_groups[0]["lr"]
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {batch_loss.item()} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}%"
-        if is_tt_moe_model(model):
+
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {batch_loss.item():.4f} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%)"
+        if is_tt_moe_model(model) and max_vio is not None:
             step_message += f" | Max Vio: {batch_max_vio.item():.4f}"
         logger.success(step_message)
 
@@ -289,6 +315,14 @@ def train(config: SFTTrainerConfig):
         is_first_step = False
         progress.step += 1
 
+    if config.trace_path:
+        prof.__exit__(None, None, None)
+        config.trace_path.mkdir(parents=True, exist_ok=True)
+        trace_file = str(config.trace_path / f"trace_{dist.get_rank()}.json.gz")
+        logger.info(f"Saving trace to {trace_file}")
+        prof.export_chrome_trace(trace_file)
+        logger.info(f"Saved trace to {trace_file}")
+
     # Log final (immutable) distributions to W&B table
     monitor.log_final_distributions()
 
@@ -299,7 +333,7 @@ def train(config: SFTTrainerConfig):
         weight_ckpt_manager.save(model, tokenizer, step=progress.step)
         ckpt_manager.maybe_clean()
 
-    logger.info(f"Peak memory: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB")
+    logger.info(f"Peak memory: {max(to_col_format(monitor.history)['perf/peak_memory']):.1f} GiB")
     logger.success("SFT trainer finished!")
 
     # Optionally, print benchmark table

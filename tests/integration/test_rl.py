@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import Callable
 
@@ -36,7 +37,7 @@ RL_RESUME_CMD = [
     "--orchestrator.sampling.max-tokens",
     "128",
     "--max-steps",
-    "40",
+    "25",
     "--ckpt.resume-step",
     "20",
 ]
@@ -62,14 +63,13 @@ def rl_process(
     wandb_name = f"{branch_name}-{commit_hash}"
 
     return run_process(
-        RL_CMD
-        + ["--wandb.project", wandb_project, "--wandb.name", wandb_name, "--output-dir", output_dir.as_posix()],
+        RL_CMD + ["--wandb.project", wandb_project, "--wandb.name", wandb_name, "--output-dir", output_dir.as_posix()],
         {},
         TIMEOUT,
     )
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def rl_resume_process(
     vllm_server,  # Can only run with vLLM server
     rl_process,  # Resume training can only start when regular RL process is finished
@@ -97,3 +97,18 @@ def test_no_error_resume(rl_resume_process: ProcessResult):
     assert rl_resume_process.returncode == 0, (
         f"RL resume process failed with return code {rl_resume_process.returncode}"
     )
+
+
+def test_check_reward(output_dir: Path, rl_process: ProcessResult, rl_resume_process: ProcessResult):
+    wandb_paths = [i for i in output_dir.glob("run-*")]
+    wandb_summaries = [json.load(open(i / "final_summary.json")) for i in wandb_paths]
+    assert len(wandb_paths) == 2
+    for wandb_summary in wandb_summaries:
+        assert "reward/mean" in wandb_summary
+        assert "_step" in wandb_summary
+        if wandb_summary["_step"] == 20:
+            assert wandb_summary["reward/mean"] > 0.65
+        elif wandb_summary["_step"] == 25:
+            assert wandb_summary["reward/mean"] > 0.7
+        else:
+            raise ValueError(f"Unexpected step {wandb_summary['_step']}")

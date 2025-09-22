@@ -1,24 +1,21 @@
 import sys
+from pathlib import Path
 
-from loguru._logger import Logger
+from loguru import logger
 
-from prime_rl.utils.config import LogConfig
-
-# Global loguru logger instance
-_LOGGER: Logger | None = None
+# Global logger instance
+_LOGGER = None
 
 NO_BOLD = "\033[22m"
 RESET = "\033[0m"
 
 
-def format_time(config: LogConfig) -> str:
-    time = "<dim>{time:HH:mm:ss}</dim>"
-    if config.utc:
-        time = "<dim>{time:zz HH:mm:ss!UTC}</dim>"
-    return time
+def setup_logger(log_level: str, log_file: Path | None = None):
+    global _LOGGER
+    if _LOGGER is not None:
+        raise RuntimeError("Logger already set. Please call `setup_logger` only once.")
 
-
-def format_message() -> str:
+    # Format message
     message = "".join(
         [
             " <level>{level: >7}</level>",
@@ -27,40 +24,35 @@ def format_message() -> str:
             f"{RESET}</level>",
         ]
     )
-    return message
+    time = "<dim>{time:HH:mm:ss}</dim>"
+    if log_level.upper() != "DEBUG":
+        debug = ""
+    else:
+        debug = "".join([f"<level>{NO_BOLD}", " [{file}::{line}]", f"{RESET}</level>"])
+    format = time + message + debug
 
-
-def format_debug(config: LogConfig) -> str:
-    if config.level.upper() != "DEBUG":
-        return ""
-    return "".join([f"<level>{NO_BOLD}", " [{file}::{line}]", f"{RESET}</level>"])
-
-
-def setup_handlers(logger: Logger, format: str, config: LogConfig, rank: int) -> Logger:
     # Remove all default handlers
     logger.remove()
 
-    # Install new handler on the main rank
-    if rank == 0:
-        logger.add(sys.stdout, format=format, level=config.level.upper(), colorize=True)
+    # Install console handler
+    logger.add(sys.stdout, format=format, level=log_level.upper(), colorize=True)
+
+    # If specified, install file handler
+    if log_file is not None:
+        if log_file.exists():
+            log_file.unlink()
+        logger.add(log_file, format=format, level=log_level.upper(), colorize=True)
 
     # Disable critical logging
     logger.critical = lambda _: None
 
+    # Set the global logger instance
+    _LOGGER = logger
+
     return logger
 
 
-def set_logger(logger: Logger) -> None:
-    """
-    Set the global logger. This function is shared across submodules such as
-    training and inference, and should be called *exactly once* from a
-    module-specific `setup_logger` function with the logger instance.
-    """
-    global _LOGGER
-    _LOGGER = logger
-
-
-def get_logger() -> Logger:
+def get_logger():
     """
     Get the global logger. This function is shared across submodules such as
     training and inference to accesst the global logger instance. Raises if the
@@ -75,7 +67,7 @@ def get_logger() -> Logger:
     return _LOGGER
 
 
-def reset_logger() -> None:
+def reset_logger():
     """Reset the global logger. Useful mainly in test to clear loggers between tests."""
     global _LOGGER
     _LOGGER = None
