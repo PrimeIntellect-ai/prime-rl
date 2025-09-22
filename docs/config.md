@@ -1,12 +1,10 @@
 # Configs
 
-**Sources**
+We use `pydantic-settings` with some custom functionality for configuring runs. We support the following sources, in this order of precedence:
 
-We support the following sources for configuration, in this order of precedence:
+1. **Command-line arguments**: Pass (nested) arguments as `--key.subkey value` to the script. For example, to set the model name, set `--model.name <model-name>`
 
-1. **Command-line arguments**: You can pass (nested) arguments as `--key.subkey value` to the script. For example, to set the model name you can run `--model.name`
-
-2. **Config files**: You can pass `.toml` config files (defined in the `configs` directory) using the `@` prefix. For example, to use the `debug.toml` config file, you can run `uv run inference @ configs/debug/infer.toml`. (*If you leave a space between the `@` and the config file, you will get shell path auto-completions.*)
+2. **Config files**: You can pass TOML config files using the `@` prefix. For example, to set a config, run `uv run inference @ path/to/config.toml`. (*You have to leave a space between the `@` and the config file*)
 
 3. **Environment variables**: You can set environment variables to override the config values. All environment variables must be prefixed with `PRIME_` and use the `__` delimiter to nest the keys. For example, to set the model name you can run `export PRIME_MODEL__NAME=Qwen/Qwen3-0.6B`.
 
@@ -29,7 +27,7 @@ name = "Qwen/Qwen-14B"
 ```
 
 ```bash
-PRIME_MODEL__NAME=Qwen/Qwen3-4B uv run inference @qwen8b.toml @qwen14b.toml --model.name Qwen/Qwen3-32B
+PRIME_MODEL__NAME=Qwen/Qwen3-4B uv run ... @ qwen8b.toml @ qwen14b.toml --model.name Qwen/Qwen3-32B
 ```
 
 In this example, the CLI argument `--model.name Qwen/Qwen3-32B` will take precendence and the script will use `Qwen/Qwen3-32B` as the model name. If the CLI argument wasn't set, then the second config file would take precedence and the script would use `Qwen/Qwen-14B` as the model name. If the second config file wasn't set, then the first config file would take precedence and the script would use `Qwen/Qwen3-8B` as the model name. Finally, if the first config file wasn't set, then the environment variable would take precedence and the script would use `Qwen/Qwen-4B` as the model name. If the environment variable wasn't set, then the default value would be used and the script would use `Qwen/Qwen3-0.6B` as the model name.
