@@ -1,7 +1,7 @@
 max_steps = 5
 
 [model]
-name = "Jackmin108/glm-0.5B" 
+name = "PrimeIntellect/GLM-0.5B" 
 moe_use_grouped_mm = false
 impl = "custom"
 attn = "sdpa"
