@@ -1,7 +1,7 @@
 import json
 import math
 from collections import defaultdict
-from typing import Iterator, TypedDict
+from typing import Iterator, TypedDict, cast
 
 import torch
 from datasets import Dataset, concatenate_datasets, load_dataset
@@ -12,7 +12,7 @@ from torch.utils.data import IterableDataset, get_worker_info
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.trainer.sft.config import DataConfigType, FakeDataConfig, SFTDataConfig
+from prime_rl.trainer.sft.config import DataConfigType, FakeDataConfig, LossMaskConfig, SFTDataConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
@@ -172,7 +172,7 @@ class SFTDataset(StatefulIterableDataset):
                 "Prompt and completion must be present in the example"
             )
             assert isinstance(example["prompt"], list) and isinstance(example["completion"], list), (
-                "Prompt and completion must be lists"
+                "Prompt and completion must be lists."
             )
 
             def deserialize_tool_calls(messages: list[dict]) -> list[dict]:
@@ -184,15 +184,22 @@ class SFTDataset(StatefulIterableDataset):
                 will then deserialize the argument so that chat tmeplates like
                 Qwen3's can be used.
                 """
+
                 def deserialize_tool_call(tool_call: dict) -> dict:
                     return {
                         **tool_call,
-                        "function": {**tool_call["function"], "arguments": json.loads(tool_call["function"]["arguments"])},
+                        "function": {
+                            **tool_call["function"],
+                            "arguments": json.loads(tool_call["function"]["arguments"]),
+                        },
                     }
-                return  [
+
+                return [
                     {
                         **message,
-                        "tool_calls": [deserialize_tool_call(tool_call) for tool_call in message.get("tool_calls", []) or []],
+                        "tool_calls": [
+                            deserialize_tool_call(tool_call) for tool_call in message.get("tool_calls", []) or []
+                        ],
                     }
                     for message in messages
                 ]
@@ -206,32 +213,75 @@ class SFTDataset(StatefulIterableDataset):
             # Reference: https://platform.openai.com/docs/guides/function-calling#function-tool-example
             tools = json.loads(example.get("tools", "[]"))
 
-            prompt_ids = self.tokenizer.apply_chat_template(
-                prompt,
-                tools=tools,
-                **example.get("chat_template_kwargs", {}),
-            )
-            prompt_completion_ids = self.tokenizer.apply_chat_template(
-                prompt + completion,
-                tools=tools,
-                **example.get("chat_template_kwargs", {}),
+            def should_mask(message: dict, loss_mask_config: LossMaskConfig) -> bool:
+                assert "role" in message, "Message must have a role"
+                match message["role"]:
+                    case "user":
+                        return True if loss_mask_config.user else False
+                    case "assistant":
+                        return True if loss_mask_config.assistant else False
+                    case "system":
+                        return True if loss_mask_config.system else False
+                    case "tool":
+                        return True if loss_mask_config.tool else False
+                    case _:
+                        raise ValueError(f"Invalid message role: {message['role']}")
+
+            def build_loss_mask(prompt, completion, tokenizer, loss_mask_config: LossMaskConfig) -> list[bool]:
+                messages = prompt + completion
+                loss_mask: list[bool] = []
+                partial_len = 0
+                for i, message in enumerate(messages):
+                    assert "role" in message, "Message must have a role"
+                    partial_messages = messages[: i + 1]
+                    partial_ids = tokenizer.apply_chat_template(
+                        partial_messages,
+                        tools=tools,
+                        add_generation_prompt=True if message["role"] == "user" else False,
+                        **example.get("chat_template_kwargs", {}),
+                    )
+                    message_len = len(partial_ids) - partial_len
+                    loss_mask.extend([should_mask(message, loss_mask_config)] * message_len)
+                    partial_len = len(partial_ids)
+
+                return loss_mask
+
+            # Build input_ids
+            input_ids = cast(
+                list[int],
+                self.tokenizer.apply_chat_template(
+                    prompt + completion,
+                    tools=tools,
+                    **example.get("chat_template_kwargs", {}),
+                ),
             )
 
-            if not prompt_completion_ids[: len(prompt_ids)] == prompt_ids:
-                self._logger.warning(
-                    "Mismatch between tokenized prompt and the start of tokenized prompt+completion. "
-                    "This may be due to unexpected tokenizer behavior, whitespace issues, or special "
-                    "token handling. Verify that the tokenizer is processing text consistently."
-                )
+            self._logger.debug(f"Input IDs: {input_ids}")
+            self._logger.debug(
+                f"Loss Mask: {self.tokenizer.apply_chat_template(prompt + completion, tools=tools, **example.get('chat_template_kwargs', {}), tokenize=False)}"
+            )
+
+            # Build loss_mask
+            loss_mask = build_loss_mask(prompt, completion, self.tokenizer, self.config.loss_mask)
+
+            # Prepare inputs
+            target_ids = input_ids.copy()[1:]
+            input_ids = input_ids[:-1]
+            loss_mask = loss_mask[:-1]
+
+            assert len(input_ids) == len(loss_mask) == len(target_ids), (
+                f"input_ids, loss_mask and target_ids must have the same length, but got {len(input_ids)=}, {len(loss_mask)=}, {len(target_ids)=}"
+            )
+            assert self.tokenizer.eos_token_id in input_ids[-3:], (
+                f"Expected EOS token within last 3 tokens, but did not find {self.tokenizer.eos_token_id} in {input_ids[-3:]}"
+            )
 
             # Create sample (with one fake target for the last token)
             sample = {
-                "input_ids": prompt_completion_ids,
-                "position_ids": list(range(len(prompt_completion_ids))),
-                "loss_mask": [False] * len(prompt_ids)
-                + [True] * (len(prompt_completion_ids) - len(prompt_ids) - 1)
-                + [False],
-                "target_ids": prompt_completion_ids[1:] + [0],
+                "input_ids": input_ids,
+                "target_ids": target_ids,
+                "loss_mask": loss_mask,
+                "position_ids": list(range(len(input_ids))),
                 "epoch": self.epoch,
             }
 
