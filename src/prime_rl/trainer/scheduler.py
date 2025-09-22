@@ -48,11 +48,13 @@ def setup_linear_scheduler(
 
 
 def setup_cosine_scheduler(
-    optimizer: Optimizer, max_steps: int | None, warmup_steps: int, decay_steps: int, lr: float, min_lr: float
+    optimizer: Optimizer, max_steps: int | None, warmup_steps: int, lr: float, min_lr: float
 ) -> LRScheduler:
     """Create a cosine learning rate scheduler."""
     # Create schedulers for each phase
     schedulers, milestones = [], []
+
+    assert max_steps is not None, "max_steps must be specified when specifying decay_steps"
 
     # Add warmup (if any)
     if warmup_steps > 0:
@@ -61,11 +63,9 @@ def setup_cosine_scheduler(
         schedulers.append(warmup_scheduler)
         milestones.append(warmup_steps)
 
-    if decay_steps > 0:
-        assert max_steps is not None, "max_steps must be specified when specifying decay_steps"
-        decay_steps = max_steps - warmup_steps
-        cosine_scheduler = CosineAnnealingLR(optimizer, T_max=decay_steps, eta_min=min_lr)
-        schedulers.append(cosine_scheduler)
+    decay_steps = max_steps - warmup_steps
+    cosine_scheduler = CosineAnnealingLR(optimizer, T_max=decay_steps, eta_min=min_lr)
+    schedulers.append(cosine_scheduler)
 
     # Return single scheduler if only one phase, otherwise combine with SequentialLR
     if len(schedulers) == 1:
@@ -98,7 +98,6 @@ def setup_scheduler(
                 optimizer,
                 max_steps=max_steps,
                 warmup_steps=scheduler_config.warmup_steps,
-                decay_steps=scheduler_config.decay_steps,
                 lr=lr,
                 min_lr=scheduler_config.min_lr,
             )
