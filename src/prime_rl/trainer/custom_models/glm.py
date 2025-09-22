@@ -767,6 +767,8 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
             causal_mask = None
         else:
+            max_seqlen = None
+            cu_seqlens = None
             causal_mask = create_causal_mask(
                 config=self.config,
                 input_embeds=inputs_embeds,
@@ -848,7 +850,6 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
         ```"""
         if position_ids is not None:
             warnings.warn("Position IDs are ignored for custom glm4_moe for now")
-
         outputs: BaseModelOutputWithPast = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
