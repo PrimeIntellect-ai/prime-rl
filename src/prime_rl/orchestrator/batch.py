@@ -113,9 +113,11 @@ def prepare_micro_batch_packing(samples: list[BatchSample], max_seq_len: int, te
     )
 
     for key in ["input_ids", "advantages", "loss_mask", "position_ids", "logprobs"]:
-        # Ensure all tensors are on CPU before stacking
+        # Ensure all tensors are on CPU before concatenating
         cpu_samples = [sample[key].cpu() if sample[key].is_cuda else sample[key] for sample in samples]
-        micro_batch[key] = torch.stack(cpu_samples, dim=0)
+        # Concatenate sequences for packing mode (this was the original implementation)
+        concatenated = torch.cat(cpu_samples, dim=0)
+        micro_batch[key] = concatenated
 
     micro_batch["temperature"] = temperature
     return micro_batch
