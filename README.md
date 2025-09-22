@@ -9,7 +9,7 @@
 ---
 
 <h3 align="center">
-PRIME-RL: Decentralized RL Training at Scale
+PRIME-RL: Decentralized Async RL Training at Scale
 </h3>
 
 ---
@@ -29,10 +29,10 @@ PRIME-RL: Decentralized RL Training at Scale
 
 ## Overview
 
-PRIME-RL is a framework for large-scale reinforcement learning. It is designed to be easy-to-use and hackable, yet capable of scaling to 1000+ GPUs. Beyond that, here is why we think you might like it:
+PRIME-RL is a framework for large-scale asynchronous reinforcement learning. It is designed to be easy-to-use and hackable, yet capable of scaling to 1000+ GPUs. Beyond that, here is why we think you might like it:
 
 1. Integrates natively with [`verifiers`](https://github.com/willccbb/verifiers) environments via the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars)
-2. Supports end-to-end post-training, including [SFT](#sft) and [RL](#rl) training and [Evals](#evals)
+2. Supports end-to-end post-training, including [SFT](docs/sft.md) and [RL](docs/rl.md) training and [Evals](docs/evals.md)
 3. Rayless multi-node deployment with [FSDP2](https://docs.pytorch.org/tutorials/intermediate/FSDP_tutorial.html) training and [vLLM](https://github.com/vllm-project/vllm) inference backend
 4. Designed for asynchronous training in decentralized settings
 5. Hackable, modular and extensible by nature
@@ -43,9 +43,7 @@ PRIME-RL is a framework for large-scale reinforcement learning. It is designed t
 
 ### Prerequisites
 
-> Support for AMD GPUs is on our [roadmap](https://github.com/PrimeIntellect-ai/prime-rl/issues).
-
-Currently, you **need at least one NVIDIA GPU to use PRIME-RL**. If you don't already have access, we recommend our [compute platform](https://app.primeintellect.ai) for everything from renting GPUs with low on-demand rates for developing, debugging and small ablations, to [reserving 1000+ GPU clusters](https://app.primeintellect.ai/dashboard/quotes) for large-scale training.
+Currently, you **need at least one NVIDIA GPU to use PRIME-RL**. If you don't already have access to one, we recommend our [compute platform](https://app.primeintellect.ai) for everything from renting on-demand single GPUs for developing, debugging and small ablations, to [reserving 1000+ GPU clusters](https://app.primeintellect.ai/dashboard/quotes) for production-scale training.
 
 ### Quick Setup
 
@@ -101,13 +99,13 @@ uv run python -V
 uv run python -c "import flash_attn"
 ```
 
-3. Check that you can run SFT trainer in debug mode (*this requires 1 GPU*)
+3. Check that you can run SFT trainer (*this requires 1 GPU*)
 
 ```bash
 uv run sft @ examples/debug/sft.toml
 ```
 
-4. Check that you can run the RL trainer in debug mode (*this requires 1 GPU*)
+4. Check that you can run the RL trainer (*this requires 1 GPU*)
 
 ```bash
 uv run trainer @ examples/debug/rl/train.toml
@@ -151,28 +149,18 @@ uv run huggingface-cli login
 # Or set `export HF_TOKEN=...`
 ```
 
-## End-to-End Example
+## Training Examples
 
-We provide end-to-end training examples in the [`examples`](examples) directory. We want to highlight one here:
+We provide end-to-end training examples in the [`examples`](examples) directory to highlight features of the framework and guide you through the process of training your own models.
 
-TBD.
+1. [**Reverse Text**](examples/reverse_text/README.md): Train `Qwen3-0.6B` to reverse a small chunk of text. Demonstrates tiny-scale single-turn SFT and RL training. Can be trained on a single consumer GPU in a few minutes, and is ideal for getting started.
+2. [**Wordle**](examples/wordle/README.md): Train `Qwen3-1.7B` to play Wordle. A fun example of multi-turn SFT and RL training. Can be trained on a 2-4 H100 GPUs in a few hours. Ideal for exploring the multi-turn training capabilities of the framework.
+3. *More to come...*
+
 
 ## Docs
 
-Check out these docs to learn more about how to use PRIME-RL.
-
-- [SFT](docs/sft.md)
-- [RL](docs/rl.md)
-- [Evals](docs/evals.md)
-- And more, such as 
-
-## Troubleshooting
-
-- Especially for large training workloads with large batch sizes, you may find yourself getting API timeout errors because your OS limits the number of open files. If this is the case, you can increase the maximum number of open files with
-
-  ```bash
-  ulimit -n 32000
-  ```
+Check out the [docs](docs) directory for in-depth guides on how to use PRIME-RL.
 
 ## Contributing
 
