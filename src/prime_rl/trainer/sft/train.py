@@ -27,6 +27,7 @@ from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import setup_dataloader, setup_dataset
 from prime_rl.trainer.utils import (
     MemoryProfiler,
+    print_sample,
     setup_torch_distributed,
     print_benchmark,
 )
@@ -169,7 +170,14 @@ def train(config: SFTTrainerConfig):
             target_ids = micro_batch["target_ids"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
             epoch = micro_batch["epoch"]
-            assert input_ids.shape[0] == position_ids.shape[0]
+            assert input_ids.shape == position_ids.shape == target_ids.shape == loss_mask.shape, (
+                f"input_ids.shape: {input_ids.shape}, position_ids.shape: {position_ids.shape}, target_ids.shape: {target_ids.shape}, loss_mask.shape: {loss_mask.shape}"
+            )
+
+            # In debug mode, print the loss mask of the first micro batch
+            if config.log.level.upper() == "DEBUG" and progress.step == 0 and micro_step == 0:
+                logger.debug("Printing samples of the first micro batch")
+                print_sample(input_ids.flatten().tolist(), loss_mask.flatten().tolist(), tokenizer)
 
             if config.model.cp > 1:
                 maybe_context_parallel = context_parallel(
