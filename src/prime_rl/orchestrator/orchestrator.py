@@ -30,7 +30,6 @@ from prime_rl.orchestrator.utils import (
     wait_for_weight_checkpoint,
     print_benchmark,
     parse_is_truncated_completions,
-    process_rewards,
 )
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
@@ -255,15 +254,9 @@ async def orchestrate(config: OrchestratorConfig):
                 individual_reward_outputs[func_name] = torch.tensor(func_rewards)
                 logger.debug(f"Collected {len(func_rewards)} rewards for {func_name}")
 
-            rewards = process_rewards(
-                rewards=processed_outputs.rewards,
-                completion_lengths=list(map(len, processed_outputs.completion_ids)),
-                rollouts_per_prompt=config.rollouts_per_example,
-                length_bonus=config.length_bonus,
-            )
             # Compute advantages
             advantages = compute_advantages(
-                rewards=rewards,
+                rewards=processed_outputs.rewards,
                 completion_lengths=list(map(len, processed_outputs.completion_ids)),
                 samples_per_problem=config.rollouts_per_example,
                 advantage_type=config.advantage_type,
