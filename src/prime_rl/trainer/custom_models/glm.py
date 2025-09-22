@@ -39,7 +39,6 @@ from transformers.utils.generic import check_model_inputs
 
 from prime_rl.trainer.custom_models.layers.moe import MoE, MoEArgs
 
-# from torchtitan.models.moe import MoE, MoEArgs
 try:
     from flash_attn import flash_attn_varlen_func
 except ImportError:
