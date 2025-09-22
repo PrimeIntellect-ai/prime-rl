@@ -1,68 +1,57 @@
 # Checkpointing
 
-Our codebase supports checkpointing. Because of the trainer/ orchestrator design, as well as the natural asynchrony checkpointing is non-standard.
+Checkpointing is non-standard due to trainer/orchestrator separation and natural asynchrony.
 
-- Trainer (`src/prime_rl/trainer/ckpt.py`): Checkpoints FSDP model shard, optimizer state and progress (training step, total samples, total tokens)
-- Orchestrator (`src/prime_rl/orchestrator/ckpt.py`): Checkpoints orchestrator progress
+- SFT+RL Trainer: Checkpoints FSDP model shard (using DCP), optimizer and scheduler state, and progress (training step, total samples, total tokens)
+- Orchestrator: Checkpoints orchestrator progress (training step, total tokens, total samples, total problems)
+- Inference: Inference is stateless. Upon restart, the orchestrator will reload the correct weights into the inference engine. No checkpointing is required.
 
-*NB: Each run with asynchrony level `async_level` and some checkpoint step `x`, requires weight checkpoints in the step range `[x-async_level, x]`. Currently we do not duplicate weight checkpoints into the `checkpoints` directory but simply keep them around in `weights`, by keeping the trainer from cleaning up weight checkpoints that are required for resuming training. This way, the orchestrator only needs to checkpoint its progress (read: step) to load the correct weights into the inference engine upon resuming.*
+The default checkpoint directory is `checkpoints` and each checkpoint step will live in a step subdirectory, i.e. `checkpoints/step_{step}`.
 
-The default checkpoint directory is `checkpoints` and each checkpoint step will live in a subdirectory enumerated by the step, i.e. `checkpoints/step_{step}`. The trainer checkpoint is called `trainer.pt` for single GPU workloads, else `trainer_{local_rank}.pt`. The orchestrator checkpoint is called `orchestrator.pt`. Thus, this is a typical directory structure:
+Checkpointing is configured with the config key `--ckpt`. One can specify the interval (`--ckpt.interval`), whether to save checkpoints asynchronoously  (`--ckpt.save-async`), and how many recent step checkpoints to keep on disk (`--ckpt.keep`). By default, we do not checkpoint to save disk space. 
 
-```bash
-checkpoints
-├── step_10
-│   ├── orchestrator.pt
-│   └── trainer.pt
-├── step_25
-│   ├── orchestrator.pt
-│   └── trainer.pt
-└── step_30
-    ├── orchestrator.pt
-    └── trainer.pt
-```
+## SFT
 
-Checkpointing is configured by the `CheckpointConfig`, with the config key `--ckpt`. One can specify the interval (`--ckpt.interval`, defaults to `50`), whether to save checkpoints asynchronoously  (`--ckpt.save-async`, defaults to `False`), and how many recent step checkpoints to keep on disk (`--ckpt.keep`, defaults to `None` which means no cleanup).
+Let's split the reverse text training SFT example, which does 40 steps by default, into two runs of 20 steps each. 
 
-By default, runs do no write checkpoints to save disk space. To checkpoint every 10 steps on our debug RL run, run the following command
+First, run the first 20 steps and append  `--ckpt` flag will enable the default checkpoint configuration which will only write the final checkpoint to disk, but no intermediate checkpoints.
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 uv run trainer @ configs/reverse_text/train.toml --ckpt.interval 10 
+uv run sft @ examples/reverse_text/sft.toml --max-steps 20 --ckpt
 ```
 
-To resume a run use the `--ckpt.resume-step` flag. To resume from the checkpoint step 10 from the previous command, run the following command
+Then, to resume the training from step 20, run the following command
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 uv run trainer @ configs/reverse_text/train.toml --ckpt.resume-step 10
+uv run sft @ examples/reverse_text/sft.toml --max-steps 40 --ckpt.resume-step 20
 ```
 
-Because we save progress information, resuming from a checkpoint is fully W&B compatible. By default, resuming from a checkpoint, will simply create a new run. To resume the same W&B run, you'd have to pass the same W&B run ID for both the trainer and the orchestrator, e.g.
+## RL
+
+Similarly, let's split the reverse text training RL example, which does 20 steps by default, into two runs of 10 steps each. 
+
+First, start the inference server. It can stay running across restarts as the orchestrator will automatically send the right checkpoint to the inference server when resuming.
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 uv run trainer @ configs/reverse_text/train.toml \
-  --monitor.wandb.project <project> \
-  --ckpt.resume-step 10 \
-  --monitor.wandb.id <trainer-run-id> \
+uv run inference @ examples/reverse_text/rl/infer.toml
 ```
 
-You also need to restart the orchestrator from a checkpoint, the api is the same as the trainer, e.g.
-
-```bash
-uv run orchestrator @ configs/reverse_text/orch.toml \
-  --monitor.wandb.project <project> \
-  --ckpt.resume-step 10 \
-  --monitor.wandb.id <orchestrator-run-id>
-```
-
-If you started your run using `rl.py`, you can resume the same run by passing the same W&B run ID for both the trainer and the orchestrator, e.g.
+Then, run the first 20 steps and write the final checkpoint to disk
 
 ```bash
 uv run rl \
-  --trainer @ configs/reverse_text/train.toml \
-  --orchestrator @ configs/reverse_text/orch.toml \
-  --ckpt.resume-step 10 \
-  --trainer.monitor.wandb.id <trainer-run-id> \
-  --orchestrator.monitor.wandb.id <orchestrator-run-id> 
+  --trainer @ examples/reverse_text/rl/train.toml \
+  --orchestrator @ examples/reverse_text/rl/orch.toml \
+  --max-steps 10 \
+  --ckpt
 ```
 
-You don't need to restart the inference server if started manually, the orchestrator will automatically send the right checkpoint to the inference server when resuming.
+And finally, resume the training to do the remaining 10 steps
+
+```bash
+uv run rl \
+  --trainer @ examples/reverse_text/rl/train.toml \
+  --orchestrator @ examples/reverse_text/rl/orch.toml \
+  --max-steps 20 \
+  --ckpt.resume-step 10
+```
