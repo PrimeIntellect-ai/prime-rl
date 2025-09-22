@@ -1,45 +1,79 @@
 # Benchmarking
 
-We provide a convenient way to benchmark the performance of the inference engine and trainer using the `--bench` flag. It will run each module in isolation for a few steps and log performance statistics to the console and, optionally, W&B.
+We provide a convenient way to benchmark the performance, mainly measured in throughput and MFU, of the inference engine and trainer using the `--bench` flag. It will run each module in isolation for a few steps and log performance benchmark results in a rich table to the console.
 
-**Inference**
+## SFT
 
-To benchmark inference, first spin up the inference server with an experiment configuration
-
-```bash
-uv run inference @ configs/reverse_text/infer.toml
-```
-
-Then, start the orchestrator with the matching configuration file in benchmark mode
+Benchmark `Qwen3-0.6B` on the default fake data configuration
 
 ```bash
-uv run orchestrator @ configs/reverse_text/orch.toml --bench
+uv run sft --model.name PrimeIntellect/Qwen3-0.6B --data.type fake --bench
 ```
 
-**Trainer**
-
-To benchmark the RL trainer, simply run the trainer against a fake data loader with batch certain specifications.
+Benchmark with variable-length, instead of fixed-length, fake data to more closely simulate real data.
 
 ```bash
-uv run trainer @ configs/reverse_text/train.toml --bench --data.fake.micro_batch_size 8 --data.fake.batch_size 128 --data.fake.seq_len 128
+uv run sft --model.name PrimeIntellect/Qwen3-0.6B --data.type fake --data.length variable --bench
 ```
 
-**RL**
+Benchmark different batch configurations, i.e. the (micro) batch size and sequence length
 
-You can benchmark both the RL trainer and inference at the same time with the `rl.py` entrypoint. Note, that the benchmarking is still decoupled.
+```bash
+uv run sft --model.name PrimeIntellect/Qwen3-0.6B --data.type fake --data.seq-len 4096 --data.batch-size 64 --data.micro-batch-size 2 --bench
+```
+
+Benchmark against a real dataset
+
+```bash
+uv run sft --model.name PrimeIntellect/Qwen3-0.6B --data.name PrimeIntellect/Reverse-Text-SFT --bench
+```
+
+Benchmark against your configuration file
+
+```bash
+uv run sft @ examples/reverse_text/sft.toml --bench
+```
+
+## RL
+
+### Trainer
+
+Benchmark `Qwen3-0.6B` on a fake data loader
+
+```bash
+uv run trainer --model.name PrimeIntellect/Qwen3-0.6B --data.fake --bench
+```
+
+Benchmark different batch configurations, i.e. the (micro) batch size and sequence length
+
+```bash
+uv run trainer --model.name PrimeIntellect/Qwen3-0.6B --data.fake.seq-len 4096 --data.fake.batch-size 64 --data.fake.micro-batch-size 2 --bench
+```
+
+*Note, that it is not yet possible to benchmark the RL trainer against real data when benchmarking the RL trainer in isolation.*
+
+### Inference
+
+To benchmark the inference engine in isolation, start the inference server with the correct configuration file and run the orchestrator with the `--bench` flag.
+
+```bash
+uv run inference @ examples/reverse_text/rl/infer.toml
+```
+
+```bash
+uv run orchestrator @ examples/reverse_text/rl/orch.toml --bench
+```
+
+*Note, that it is not yet possible to benchmark the inference engine against fake data.*
+
+## Trainer + Inference
+
+To benchmark the full RL training, you can add the `--bench` flag to your RL entrypoint. This will benchmark the RL trainer against fake data and the inference engine against real data from the orchestrator.
 
 ```bash
 uv run rl   \
-  --trainer @ configs/reverse_text/train.toml  \
-  --orchestrator @ configs/reverse_text/orch.toml \
-  --inference @ configs/reverse_text/infer.toml \
+  --trainer @ examples/debug/rl/train.toml  \
+  --orchestrator @ examples/debug/rl/orch.toml \
+  --inference @ examples/debug/rl/infer.toml \
   --bench
-```
-
-**SFT**
-
-Benchmark the SFT trainer against `fixed` or `variable` length fake data by specifyin `--data.fake.type`
-
-```bash
-uv run sft --bench --data.fake.type fixed --data.micro-batch-size 8 --data.batch-size 8 --data.seq-len 128
 ```
