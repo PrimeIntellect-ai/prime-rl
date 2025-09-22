@@ -40,6 +40,8 @@ def setup_logger(log_level: str, log_console: bool = True, log_file: Path | None
 
     # If specified, install file handler
     if log_file is not None:
+        if log_file.exists():
+            log_file.unlink()
         logger.add(log_file, format=format, level=log_level.upper(), colorize=True)
 
     # Disable critical logging
