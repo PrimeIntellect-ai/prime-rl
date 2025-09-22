@@ -44,6 +44,7 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format
+from prime_rl.utils.zmq_store import RolloutStoreServer, RolloutStoreClient, SyncRolloutStoreClient, wait_for_rollout_sync
 
 
 @clean_exit
@@ -128,7 +129,7 @@ def train(config: RLTrainerConfig):
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
-    dataloader = DataLoader(config.output_dir, progress.step)
+    dataloader = DataLoader(config.output_dir, progress.step, zmq_config=config.zmq)
     if config.data.fake:
         dataloader = FakeDataLoader(config.data.fake)
 
@@ -410,6 +411,9 @@ def train(config: RLTrainerConfig):
     # Optionally, print benchmark table
     if config.bench and world.is_master:
         print_benchmark(to_col_format(monitor.history))
+
+    # Clean up resources
+    dataloader.close()
 
 
 def main():

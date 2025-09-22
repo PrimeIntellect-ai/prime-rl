@@ -4,7 +4,7 @@ from typing import Annotated, Literal, TypeAlias
 from pydantic import BaseModel, Field, model_validator
 
 from prime_rl.orchestrator.advantage import AdvantageType
-from prime_rl.utils.config import LogConfig, ModelConfig, WandbMonitorConfig
+from prime_rl.utils.config import LogConfig, ModelConfig, WandbMonitorConfig, ZeroMQConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 ServerType = Literal["vllm", "openai"]
@@ -420,6 +420,9 @@ class OrchestratorConfig(BaseSettings):
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
+    
+    # ZeroMQ configuration
+    zmq: ZeroMQConfig = ZeroMQConfig()
 
     output_dir: Annotated[
         Path,

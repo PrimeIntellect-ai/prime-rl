@@ -12,7 +12,7 @@ from prime_rl.trainer.config import (
     SchedulerConfigType,
     WeightCheckpointConfig,
 )
-from prime_rl.utils.config import LogConfig, WandbMonitorConfig
+from prime_rl.utils.config import LogConfig, WandbMonitorConfig, ZeroMQConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
@@ -76,6 +76,9 @@ class RLTrainerConfig(BaseSettings):
 
     # The weight checkpoint configuration
     weights: WeightCheckpointConfig = WeightCheckpointConfig()
+
+    # ZeroMQ configuration
+    zmq: ZeroMQConfig = ZeroMQConfig()
 
     # The logging configuration
     log: LogConfig = LogConfig()

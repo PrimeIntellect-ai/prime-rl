@@ -89,3 +89,44 @@ class WandbMonitorConfig(BaseConfig):
             description="Configuration for logging extras to W&B tables. If None, no extras are logged.",
         ),
     ] = LogExtrasConfig()
+
+
+class ZeroMQConfig(BaseConfig):
+    """Configuration for ZeroMQ rollout store."""
+    
+    enabled: Annotated[
+        bool,
+        Field(
+            description="Whether to use ZeroMQ for rollout communication instead of file system.",
+        ),
+    ] = False
+    
+    port: Annotated[
+        int,
+        Field(
+            ge=1024,
+            le=65535,
+            description="Port for the ZeroMQ rollout store server.",
+        ),
+    ] = 5555
+    
+    server_bind_address: Annotated[
+        str,
+        Field(
+            description="Address for the server to bind to. Use '0.0.0.0' to accept connections from any address.",
+        ),
+    ] = "0.0.0.0"
+    
+    client_connect_address: Annotated[
+        str,
+        Field(
+            description="Address for clients to connect to. Use 'localhost' for single-node setups.",
+        ),
+    ] = "localhost"
+    
+    cleanup_old_rollouts: Annotated[
+        bool,
+        Field(
+            description="Whether to automatically cleanup old rollouts after they are no longer needed.",
+        ),
+    ] = True

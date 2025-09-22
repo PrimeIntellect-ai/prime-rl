@@ -43,6 +43,7 @@ from prime_rl.utils.utils import (
     get_weights_dir,
     to_col_format,
 )
+from prime_rl.utils.zmq_store import RolloutStoreServer, RolloutStoreClient
 import numpy as np
 
 
@@ -60,6 +61,25 @@ async def orchestrate(config: OrchestratorConfig):
         logger.warning(
             f"Running in benchmark mode (max_steps={config.max_steps}, async_level={format_num(config.async_level, precision=0)})"
         )
+    
+    # Setup ZeroMQ rollout store server if enabled
+    rollout_server = None
+    rollout_client = None
+    if config.zmq.enabled:
+        logger.info(f"Starting ZeroMQ rollout store server on {config.zmq.server_bind_address}:{config.zmq.port}")
+        rollout_server = RolloutStoreServer(port=config.zmq.port)
+        # Start server in background task
+        server_task = asyncio.create_task(rollout_server.start())
+        
+        # Give server time to start up
+        await asyncio.sleep(1.0)
+        
+        # Create client for cleanup operations
+        rollout_client = RolloutStoreClient(
+            server_address=config.zmq.client_connect_address, 
+            server_port=config.zmq.port
+        )
+        logger.info("ZeroMQ rollout store initialized")
 
     # Setup client
     assert config.client.server_type == "vllm", "Orchestrator only supports vLLM server type."
@@ -351,7 +371,7 @@ async def orchestrate(config: OrchestratorConfig):
         solve_none = rewards.sum(-1).eq(0).float().mean().item()
         effective_batch_size = 1 - solve_none - solve_all
 
-        # Write serialized batch to disk for trainer workers to consume
+        # Write serialized batch - either to ZeroMQ or disk
         all_data_ranks_batches = prepare_batch(
             rollouts=rollouts,
             temperature=config.sampling.temperature,
@@ -362,14 +382,31 @@ async def orchestrate(config: OrchestratorConfig):
             seq_len=config.seq_len,
         )
 
-        step_path = get_rollout_dir(config.output_dir) / f"step_{progress.step}"
-        step_path.mkdir(parents=True, exist_ok=True)
-        for i, batches in enumerate(all_data_ranks_batches):
-            batch_path = step_path / f"rank_{int(i) + int(config.num_train_workers) * int(node_rank)}.pt"
-            tmp_path = batch_path.with_suffix(".tmp")
-            logger.debug(f"Saving rollouts for step {progress.step} for rank {i} to {batch_path}")
-            torch.save(batches, tmp_path)
-            tmp_path.rename(batch_path)
+        if config.zmq.enabled and rollout_client:
+            # Store rollouts in ZeroMQ instead of file system
+            logger.debug(f"Storing rollouts for step {progress.step} in ZeroMQ store")
+            for i, batches in enumerate(all_data_ranks_batches):
+                rollout_key = f"step_{progress.step}_rank_{i}"
+                success = await rollout_client.store_rollout(rollout_key, batches)
+                if not success:
+                    logger.error(f"Failed to store rollout {rollout_key}")
+            
+            # Clean up old rollouts if enabled
+            if config.zmq.cleanup_old_rollouts and progress.step > config.async_level:
+                cleanup_step = progress.step - config.async_level - 1
+                for i in range(config.num_train_workers):
+                    old_rollout_key = f"step_{cleanup_step}_rank_{i}"
+                    await rollout_client.delete_rollout(old_rollout_key)
+        else:
+            # Original file system approach
+            step_path = get_rollout_dir(config.output_dir) / f"step_{progress.step}"
+            step_path.mkdir(parents=True, exist_ok=True)
+            for i, batches in enumerate(all_data_ranks_batches):
+                batch_path = step_path / f"rank_{int(i)}.pt"
+                tmp_path = batch_path.with_suffix(".tmp")
+                logger.debug(f"Saving rollouts for step {progress.step} for rank {i} to {batch_path}")
+                torch.save(batches, tmp_path)
+                tmp_path.rename(batch_path)
 
         # Log step metrics
         step_time = time.time() - step_start_time
@@ -514,6 +551,12 @@ async def orchestrate(config: OrchestratorConfig):
         ckpt_manager.save(progress, buffer, step=progress.step)
 
     logger.success("Orchestrator finished.")
+    
+    # Clean up ZeroMQ resources
+    if rollout_client:
+        await rollout_client.close()
+    if rollout_server:
+        await rollout_server.stop()
 
     # Optionally, print benchmark table
     if config.bench:
