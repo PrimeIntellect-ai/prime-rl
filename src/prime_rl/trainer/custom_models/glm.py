@@ -596,7 +596,7 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
             route_scale=config.routed_scaling_factor,
             score_before_experts=False,
             top_k=config.num_experts_per_tok,
-            load_balance_coeff=None,
+            load_balance_coeff=1e-3,
             use_grouped_mm=config.use_grouped_mm,
         )
 

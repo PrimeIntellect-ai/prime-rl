@@ -189,13 +189,6 @@ def train(config: SFTTrainerConfig):
                 # Compute loss
                 loss = cross_entropy(logits.view(-1, V), target_ids.view(-1), reduction="none").view(B, L)
 
-                if is_tt_moe_model(model):
-                    max_vio = get_load_balance_stats(model)["max_vio"]
-                    if max_vio is not None:
-                        max_vio = max_vio.mean()
-                        dist.all_reduce(max_vio, op=dist.ReduceOp.MAX)
-                        batch_max_vio += max_vio / grad_accum_steps
-
                 # Compute average loss over unmasked tokens
                 loss = loss[loss_mask].mean()
 
@@ -208,6 +201,13 @@ def train(config: SFTTrainerConfig):
                 # Backward pass
                 with maybe_record_function("backward"):
                     (loss / grad_accum_steps).backward()
+
+                if is_tt_moe_model(model):
+                    max_vio = get_load_balance_stats(model)["max_vio"]
+                    if max_vio is not None:
+                        max_vio = max_vio.mean()
+                        dist.all_reduce(max_vio, op=dist.ReduceOp.MAX)
+                        batch_max_vio += max_vio / grad_accum_steps
 
             # Debug log with *local, micro step* stats
             micro_step_message = f"Micro Step {micro_step} | Loss: {loss.item():.4f} | Dataloader Step: {dataloader.state_dict()['dataset_state']['step']}"
