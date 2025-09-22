@@ -1,5 +1,6 @@
 import shutil
 import time
+import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -107,6 +108,7 @@ class CheckpointManager:
                 self._logger.debug(
                     f"Removing past orchestrator checkpoint for step {ckpt_step} ({ckpt_path}), because got checkpoints for {ckpt_steps_to_keep} ({len(self.ckpt_steps)} > {self.config.keep})"
                 )
+
                 if ckpt_path.is_dir():
                     shutil.rmtree(ckpt_path)
                 else:

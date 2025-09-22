@@ -3,10 +3,17 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
+# Monkeypatch vLLM Sampler before importing any vLLM modules
+# ruff: noqa: I001
+from prime_rl.inference.vllm.sampler import Sampler as CustomSampler
+
+import importlib
+
+setattr(importlib.import_module("vllm.v1.sample.sampler"), "Sampler", CustomSampler)
+
 import uvloop
 import vllm.envs as envs
 from fastapi import Request
-from vllm.config import LogprobsMode
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server
@@ -39,7 +46,6 @@ async def custom_build_async_engine_client(
     # Ensures everything is shutdown and cleaned up on error/exit
     engine_args = AsyncEngineArgs.from_cli_args(args)
     engine_args.worker_extension_cls = "prime_rl.inference.vllm.worker.CheckpointWorker"
-    engine_args.logprobs_mode = LogprobsMode.PROCESSED_LOGPROBS
 
     async with build_async_engine_client_from_engine_args(
         engine_args, disable_frontend_multiprocessing=args.disable_frontend_multiprocessing, client_config=client_config

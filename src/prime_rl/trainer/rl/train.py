@@ -46,6 +46,7 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format
+from prime_rl.utils.zmq_store import RolloutStoreServer, RolloutStoreClient, SyncRolloutStoreClient, wait_for_rollout_sync
 
 
 @clean_exit
@@ -133,7 +134,7 @@ def train(config: RLTrainerConfig):
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
-    dataloader = DataLoader(config.output_dir, progress.step)
+    dataloader = DataLoader(config.output_dir, progress.step, zmq_config=config.zmq)
     if config.data.fake:
         dataloader = FakeDataLoader(config.data.fake)
 
@@ -145,9 +146,6 @@ def train(config: RLTrainerConfig):
         prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
         maybe_record_function = record_function
     while True:
-        # Reset peak memory stats
-        torch.cuda.reset_peak_memory_stats()
-
         # Save the weight checkpoint (if we are not at the first step, because no updates to the model have been made yet)
         save_weights_time = 0
         if progress.step > 0:
@@ -198,6 +196,12 @@ def train(config: RLTrainerConfig):
         micro_batches = dataloader.get_batch()
         load_data_time = time.time() - load_data_start_time
         logger.debug(f"Loaded batch in {load_data_time:.2f} seconds")
+
+        if config.cleanup_old_rollouts and progress.step > config.async_level:
+            cleanup_step = progress.step - config.async_level - 1
+            for i in range(config.num_train_workers):
+                old_rollout_key = f"step_{cleanup_step}_rank_{i}"
+                dataloader.delete_rollout(old_rollout_key)
 
         # Optionally, compute the logprobs for the training batch
         compute_logprobs_time = 0
@@ -362,6 +366,7 @@ def train(config: RLTrainerConfig):
         step_time = time.time() - step_start_time
         current_lr = optimizer.param_groups[0]["lr"]
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Entropy: {tensor_stats['entropy/mean']:.4f} | Importance Ratio: {tensor_stats['importance_ratio/mean']:.4f} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f} GiB"
+
         if "max_vio/mean" in tensor_stats:
             step_message += f" | Max Vio: {tensor_stats['max_vio/mean']:.4f}"
         logger.success(step_message)
@@ -371,7 +376,6 @@ def train(config: RLTrainerConfig):
             "perf/throughput": throughput,
             "perf/throughput_per_gpu": throughput / world.world_size,
             "perf/mfu": mfu,
-            "perf/peak_memory": peak_memory,
             "step": progress.step,
         }
         monitor.log(perf_metrics)
@@ -430,11 +434,15 @@ def train(config: RLTrainerConfig):
         ckpt_manager.maybe_clean()
 
     logger.info(f"Peak memory: {max(to_col_format(monitor.history)['perf/peak_memory']):.1f} GiB")
+
     logger.success("RL trainer finished!")
 
     # Optionally, print benchmark table
     if config.bench and world.is_master:
         print_benchmark(to_col_format(monitor.history))
+
+    # Clean up resources
+    dataloader.close()
 
 
 def main():
