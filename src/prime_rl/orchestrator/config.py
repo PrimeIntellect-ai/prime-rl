@@ -205,11 +205,11 @@ class EvalConfig(BaseConfig):
     ] = []
 
     batch_size: Annotated[
-        list[int],
+        int,
         Field(
-            description="Number of examples to evaluate per generation call (chunk size). If -1 or 0, processes the entire dataset in one call. Can be specified per environment.",
+            description="Number of examples to evaluate per generation call (chunk size). If -1 or 0, processes the entire dataset in one call. Applies to all environments.",
         ),
-    ] = [512]
+    ] = 512
 
     push_to_hf_hub: Annotated[
         bool,
@@ -287,13 +287,7 @@ class EvalConfig(BaseConfig):
         elif len(self.max_concurrent) != len(self.environment_ids):
             raise ValueError("Number of max_concurrent entries must match number of ids")
 
-        # batch_size: if empty/unspecified, default to -1 for all; else length must match ids
-        if len(self.batch_size) == 0:
-            self.batch_size = [-1 for _ in self.environment_ids]
-        elif len(self.batch_size) == 1:
-            self.batch_size = [self.batch_size[0] for _ in self.environment_ids]
-        elif len(self.batch_size) != len(self.environment_ids):
-            raise ValueError("Number of batch_size entries must match number of ids")
+        # batch_size is a global setting; nothing to validate here beyond type
 
         return self
 

@@ -355,7 +355,7 @@ async def run_eval(
     if save_to_disk:
         # Save samples as dataset
         eval_dir = get_step_path(get_eval_dir(output_dir), ckpt_step) / eval_id
-        dataset = make_dataset(generate_outputs, push_to_hf_hub=config.push_to_hf_hub, hub_name=config.hub_name)
+        dataset = make_dataset(generate_outputs)
         dataset.save_to_disk(eval_dir)
         logger.info(f"Saved eval results for {eval_id} to disk ({eval_dir})")
 
@@ -380,7 +380,7 @@ async def run_evals(
                 num_examples=num_examples,
                 rollouts_per_example=rollouts_per_example,
                 max_concurrent=max_concurrent,
-                batch_size=batch_size,
+                batch_size=eval_config.batch_size,
                 output_dir=output_dir,
                 save_to_disk=eval_config.save_to_disk,
                 model_config=model_config,
@@ -389,12 +389,11 @@ async def run_evals(
                 ckpt_step=ckpt_step,
                 step=step,
             )
-            for eval_id, num_examples, rollouts_per_example, max_concurrent, batch_size in zip(
+            for eval_id, num_examples, rollouts_per_example, max_concurrent in zip(
                 eval_config.environment_ids,
                 eval_config.num_examples,
                 eval_config.rollouts_per_example,
                 eval_config.max_concurrent,
-                eval_config.batch_size,
             )
         ]
     )
