@@ -256,11 +256,6 @@ class SFTDataset(StatefulIterableDataset):
                 ),
             )
 
-            self._logger.debug(f"Input IDs: {input_ids}")
-            self._logger.debug(
-                f"Loss Mask: {self.tokenizer.apply_chat_template(prompt + completion, tools=tools, **example.get('chat_template_kwargs', {}), tokenize=False)}"
-            )
-
             # Build loss_mask
             loss_mask = build_loss_mask(prompt, completion, self.tokenizer, self.config.loss_mask)
 
