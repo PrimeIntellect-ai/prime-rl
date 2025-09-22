@@ -4,7 +4,7 @@ from collections import defaultdict
 from typing import Iterator, TypedDict, cast
 
 import torch
-from datasets import Dataset, concatenate_datasets, load_dataset
+from datasets import Dataset
 from jaxtyping import Bool, Int
 from torch import Tensor
 from torch.distributed.checkpoint.stateful import Stateful
