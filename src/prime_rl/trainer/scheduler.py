@@ -16,9 +16,14 @@ def setup_linear_scheduler(
     # Create schedulers for each phase
     schedulers, milestones = [], []
 
+    assert warmup_steps > 0 or decay_steps > 0, (
+        "Either warmup steps or decay steps must be specified for a linear scheduler"
+    )
+
     # Add warmup (if any)
+    min_lr_factor = min_lr / lr if min_lr > 0 else 1e-8
     if warmup_steps > 0:
-        warmup_scheduler = LinearLR(optimizer, start_factor=min_lr / lr, end_factor=1.0, total_iters=warmup_steps)
+        warmup_scheduler = LinearLR(optimizer, start_factor=min_lr_factor, end_factor=1.0, total_iters=warmup_steps)
         schedulers.append(warmup_scheduler)
         milestones.append(warmup_steps)
 
@@ -30,7 +35,7 @@ def setup_linear_scheduler(
         constant_steps = decay_start_step - warmup_steps
         assert constant_steps >= 0
         constant_scheduler = LinearLR(optimizer, start_factor=1.0, end_factor=1.0, total_iters=constant_steps)
-        decay_scheduler = LinearLR(optimizer, start_factor=1.0, end_factor=min_lr / lr, total_iters=decay_steps)
+        decay_scheduler = LinearLR(optimizer, start_factor=1.0, end_factor=min_lr_factor, total_iters=decay_steps - 1)
         schedulers.append(constant_scheduler)
         schedulers.append(decay_scheduler)
         milestones.append(decay_start_step)
@@ -51,16 +56,16 @@ def setup_cosine_scheduler(
 
     # Add warmup (if any)
     if warmup_steps > 0:
-        warmup_scheduler = LinearLR(optimizer, start_factor=min_lr / lr, end_factor=1.0, total_iters=warmup_steps)
+        min_lr_factor = min_lr / lr if min_lr > 0 else 1e-8
+        warmup_scheduler = LinearLR(optimizer, start_factor=min_lr_factor, end_factor=1.0, total_iters=warmup_steps)
         schedulers.append(warmup_scheduler)
         milestones.append(warmup_steps)
 
-    assert max_steps is not None, "max_steps must be specified when specifying decay_steps"
-    decay_start_step = max_steps - decay_steps
-    assert decay_start_step >= warmup_steps
-    cosine_scheduler = CosineAnnealingLR(optimizer, T_max=decay_steps, eta_min=min_lr)
-    schedulers.append(cosine_scheduler)
-    milestones.append(decay_start_step)
+    if decay_steps > 0:
+        assert max_steps is not None, "max_steps must be specified when specifying decay_steps"
+        decay_steps = max_steps - warmup_steps
+        cosine_scheduler = CosineAnnealingLR(optimizer, T_max=decay_steps, eta_min=min_lr)
+        schedulers.append(cosine_scheduler)
 
     # Return single scheduler if only one phase, otherwise combine with SequentialLR
     if len(schedulers) == 1:
