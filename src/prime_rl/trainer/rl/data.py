@@ -66,9 +66,9 @@ class DataLoader:
         self.zmq_client = None
         
         if self.use_zmq:
-            self._logger.info(f"DataLoader using ZeroMQ store at {zmq_config.server_address}:{zmq_config.port}")
+            self._logger.info(f"DataLoader using ZeroMQ store at {zmq_config.client_connect_address}:{zmq_config.port}")
             self.zmq_client = SyncRolloutStoreClient(
-                server_address=zmq_config.server_address,
+                server_address=zmq_config.client_connect_address,
                 server_port=zmq_config.port
             )
         else:
