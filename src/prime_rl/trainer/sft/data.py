@@ -261,8 +261,8 @@ class SFTDataset(StatefulIterableDataset):
 
             # Prepare inputs
             target_ids = input_ids.copy()[1:]
+            loss_mask = loss_mask[1:]
             input_ids = input_ids[:-1]
-            loss_mask = loss_mask[:-1]
 
             assert len(input_ids) == len(loss_mask) == len(target_ids), (
                 f"input_ids, loss_mask and target_ids must have the same length, but got {len(input_ids)=}, {len(loss_mask)=}, {len(target_ids)=}"
