@@ -17,13 +17,13 @@ Let's split the reverse text training SFT example, which does 40 steps by defaul
 First, run the first 20 steps and append  `--ckpt` flag will enable the default checkpoint configuration which will only write the final checkpoint to disk, but no intermediate checkpoints.
 
 ```bash
-uv run sft @ examples/reverse_text/sft.toml --max-steps 20 --ckpt
+uv run sft ... --max-steps 20 --ckpt
 ```
 
 Then, to resume the training from step 20, run the following command
 
 ```bash
-uv run sft @ examples/reverse_text/sft.toml --max-steps 40 --ckpt.resume-step 20
+uv run sft ... --max-steps 40 --ckpt.resume-step 20
 ```
 
 ## RL
@@ -33,15 +33,15 @@ Similarly, let's split the reverse text training RL example, which does 20 steps
 First, start the inference server. It can stay running across restarts as the orchestrator will automatically send the right checkpoint to the inference server when resuming.
 
 ```bash
-uv run inference @ examples/reverse_text/rl/infer.toml
+uv run inference ...
 ```
 
 Then, run the first 20 steps and write the final checkpoint to disk
 
 ```bash
 uv run rl \
-  --trainer @ examples/reverse_text/rl/train.toml \
-  --orchestrator @ examples/reverse_text/rl/orch.toml \
+  --trainer @ path/to/train.toml \
+  --orchestrator @ path/to/orch.toml \
   --max-steps 10 \
   --ckpt
 ```
@@ -50,8 +50,8 @@ And finally, resume the training to do the remaining 10 steps
 
 ```bash
 uv run rl \
-  --trainer @ examples/reverse_text/rl/train.toml \
-  --orchestrator @ examples/reverse_text/rl/orch.toml \
+  --trainer @ path/to/train.toml \
+  --orchestrator @ path/to/orch.toml \
   --max-steps 20 \
   --ckpt.resume-step 10
 ```

@@ -10,15 +10,15 @@ To check all available configuration options, run `uv run eval --help`.
 
 ### Local Models
 
-To evaluate any HF model, start an inference server with the desired model before running the `eval` command. For example, to evaluate `Qwen/Qwen3-0.6B` on the `math500` and `aime2025` environments, run the following commands:
+To evaluate any HF model, start an inference server with the desired model before running the `eval` command. For example, to evaluate against the `math500` and `aime2025` environments, run the following commands:
 
 ```bash
-uv run inference --model.name Qwen/Qwen3-0.6B
+uv run inference --model.name <model-name>
 ```
 
 ```bash
 uv run eval \
-  --model.name Qwen/Qwen3-0.6B \
+  --model.name <model-name> \
   --environment-ids math500,aime2025
 ```
 
@@ -27,12 +27,12 @@ uv run eval \
 To evaluate a SFT or RL checkpoint, start an inference server with the model being the base model that you started training from and specify the directory containing the weight checkpoints with `--weights-dir`. 
 
 ```bash
-uv run inference --model.name Qwen/Qwen3-0.6B
+uv run inference --model.name <model-name>
 ```
 
 ```bash
 uv run eval \
-  --model.name Qwen/Qwen3-0.6B \
+  --model.name <model-name> \
   --environment-ids math500,aime2025 \
   --weights-dir outputs/weights
 ```
@@ -41,7 +41,7 @@ By default, this will evaluate the base model and all step checkpoints found in 
 
 ```bash
 uv run eval \
-  --model.name Qwen/Qwen3-0.6B \
+  --model.name <model-name> \
   --environment-ids math500,aime2025 \
   --weights-dir outputs/weights \
   --steps 10,20,30,40,50 \
@@ -65,6 +65,6 @@ Then, start evaluation by setting the base URL, the name of the environment vari
 uv run eval \
   --client.base-url https://api.openai.com/v1 \
   --client.api-key-var OPENAI_API_KEY \
-  --model.name gpt-5-nano \
+  --model.name <model-name> \
   --environment-ids math500,aime2025
 ```
