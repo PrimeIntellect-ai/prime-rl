@@ -2,7 +2,6 @@
 
 We demonstrate how to train `Qwen3-0.6B` to reverse a small chunk of text. This will require a small SFT warmup to get some initial reward and then some RL in [`reverse-text`](https://app.primeintellect.ai/dashboard/environments/primeintellect/reverse-text) environment.
 
-
 ## Setup
 
 Before starting, make sure that you have access to one or more GPUs with at least 48GB unified memory. These docs were written running on a 2x4090. If you run on a different setup, you may need to adjust the commands to suit your setup.
@@ -75,10 +74,40 @@ First, start a pre-layouted `tmux` session to view the logs from all submodules.
 bash scripts/tmux.sh
 ```
 
+Then, start the RL training. It will do 40 steps at 8x16 rollotus, for a total batch size of 128 and sequence length 128. Because of the small context, training should be extremely quick.
+
 ```bash
 # Run this in the `Trainer` pane
 uv run rl \
   --trainer @ examples/reverse_text/rl/train.toml \
   --orchestrator @ examples/reverse_text/rl/orch.toml \
-  --inference @ examples/reverse_text/rl/infer.toml
+  --inference @ examples/reverse_text/rl/infer.toml \
+  --model.name ... \
+  --wandb.project ... \
+  --wandb.name ... \
+  --ckpt
 ```
+
+*If you do not specify `--model.name`, it will default to `PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT` which is the artifact we uploaded to HF in the previous step. Feel free to use that one or use your own one.*
+
+**Pro Tip**: You can also start the inference server once and keep it alive across experiments to avoid suffering the vLLM startup time repeatedly.
+
+```bash
+# Run this in the `Inference` pane
+uv run inference @ examples/reverse_text/rl/infer.toml
+```
+
+Then, you can repeatedly restart the trainer and orchestrator in the `Trainer` pane.
+
+```bash
+# Run this in the `Trainer` pane
+uv run rl \
+  --trainer @ examples/reverse_text/rl/train.toml \
+  --orchestrator @ examples/reverse_text/rl/orch.toml \
+  --model.name ... \
+  --wandb.project ... \
+  --wandb.name ... \
+  --ckpt
+```
+
+By default, the `rl` entrypoint will take care of clearing out the output directory to ensure no interference between runs.
