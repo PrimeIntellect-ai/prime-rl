@@ -180,7 +180,7 @@ def train(config: SFTTrainerConfig):
             # In debug mode, print the loss mask of the first micro batch
             if config.log.level.upper() == "DEBUG" and progress.step == 0 and micro_step == 0:
                 logger.debug("Printing samples of the first micro batch")
-                print_sample(input_ids.flatten().tolist(), loss_mask.flatten().tolist(), tokenizer)
+                # print_sample(input_ids.flatten().tolist(), loss_mask.flatten().tolist(), tokenizer)
 
             if config.model.cp > 1:
                 maybe_context_parallel = context_parallel(
