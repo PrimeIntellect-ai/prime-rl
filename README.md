@@ -99,10 +99,16 @@ uv run python -V
 uv run python -c "import flash_attn"
 ```
 
-3. Check that you can run SFT trainer (*this requires 1 GPU*)
+3. Check that you can run SFT trainer on a dense model (*this requires 1 GPU*)
 
 ```bash
 uv run sft @ examples/debug/sft.toml
+```
+
+4. Check that you can run the SFT trainer on a MoE model (*this requires 1 GPU*)
+
+```bash
+uv run sft @ examples/debug/moe/sft.toml
 ```
 
 4. Check that you can run the RL trainer (*this requires 1 GPU*)
