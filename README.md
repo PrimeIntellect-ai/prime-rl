@@ -173,13 +173,18 @@ Check out the [docs](docs) directory for in-depth guides on how to use PRIME-RL.
 We warmly welcome community contributions! We use [issues](https://github.com/PrimeIntellect-ai/prime-rl/issues) to track bugs, feature requests, and share our internal roadmap. If you encounter bugs, have pain points during development, or have ideas for new features, please open an issue.
 
 Contributions are welcome via PR. Please follow these guidelines:
-1. Install the [pre-commit](https://pre-commit.com) hooks to ensure your code is formatted correctly.
-  ```bash
-  uv run pre-commit install
-  ```
+1. Install the [pre-commit hooks](#pre-commit-hooks) to ensure your code is formatted correctly.
 2. Please keep your PR in "Draft" until it is ready for review.
 3. If your PR resolves an issue, please link the issue in the PR description
-4. If you can, try running the test suite locally to ensure your changes are working as expected.
+4. If you can, try running the [test suite](#tests) locally to ensure your changes are working as expected.
+
+### Pre-Commit Hooks
+
+Please install the [pre-commit](https://pre-commit.com) hooks to ensure your code is formatted correctly.
+
+```bash
+uv run pre-commit install
+```
 
 ### Tests
 
