@@ -163,7 +163,6 @@ We provide end-to-end training examples in the [`examples`](examples) directory 
 2. [**Wordle**](examples/wordle/README.md): Train `Qwen3-1.7B` to play Wordle. A fun example of multi-turn SFT and RL training. Can be trained on a 2-4 H100 GPUs in a few hours. Ideal for exploring the multi-turn training capabilities of the framework.
 3. *More to come...*
 
-
 ## Docs
 
 Check out the [docs](docs) directory for in-depth guides on how to use PRIME-RL.
