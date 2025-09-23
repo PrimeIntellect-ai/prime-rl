@@ -31,8 +31,8 @@ PRIME-RL: Decentralized Async RL Training at Scale
 
 PRIME-RL is a framework for large-scale asynchronous reinforcement learning. It is designed to be easy-to-use and hackable, yet capable of scaling to 1000+ GPUs. Beyond that, here is why we think you might like it:
 
-1. Integrates natively with [`verifiers`](https://github.com/willccbb/verifiers) environments via the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars)
-2. Supports end-to-end post-training, including [SFT](docs/sft.md) and [RL](docs/rl.md) training and [Evals](docs/evals.md)
+1. Integrates natively with [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) environments via the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars)
+2. Supports end-to-end post-training, including SFT and RL training and evals
 3. Rayless multi-node deployment with [FSDP2](https://docs.pytorch.org/tutorials/intermediate/FSDP_tutorial.html) training and [vLLM](https://github.com/vllm-project/vllm) inference backend
 4. Designed for asynchronous training in decentralized settings
 5. Hackable, modular and extensible by nature
