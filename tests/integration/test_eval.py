@@ -6,7 +6,15 @@ from tests import Command, Environment, ProcessResult
 
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
 
-CMD = ["uv", "run", "eval", "--model.name", "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT", "--sampling.tokens", "16"]
+CMD = [
+    "uv",
+    "run",
+    "eval",
+    "@",
+    "configs/debug/eval.toml",
+    "--model.name",
+    "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT",
+]
 ENV = {"CUDA_VISIBLE_DEVICES": "1"}
 
 

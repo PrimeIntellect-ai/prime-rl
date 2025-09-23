@@ -1,4 +1,4 @@
-max_steps = 40
+max_steps = 20
 
 [model]
 name = "PrimeIntellect/Qwen3-0.6B"

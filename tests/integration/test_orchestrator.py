@@ -12,7 +12,7 @@ CMD = [
     "run",
     "orchestrator",
     "@",
-    "experiments/debug/orch.toml",
+    "configs/debug/orch.toml",
     "--model.name",
     "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT",
 ]

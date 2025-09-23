@@ -12,7 +12,7 @@ from tests import Command, Environment, ProcessResult
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
 
 ENV = {"CUDA_VISIBLE_DEVICES": "1"}
-CMD = ["uv", "run", "trainer", "@", "configs/debug/train.toml"]
+CMD = ["uv", "run", "trainer", "@", "configs/debug/rl/train.toml"]
 
 
 def create_sample(seq_len: int) -> BatchSample:
