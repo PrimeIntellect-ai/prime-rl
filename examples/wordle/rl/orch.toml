@@ -1,11 +1,11 @@
-max_steps = 200
+max_steps = 100
 seq_len = 4096
 batch_size = 1024
-micro_batch_size = 2
+micro_batch_size = 1
 rollouts_per_example = 16
 
 [model]
-name = "willcb/Qwen3-1.7B-Wordle"
+name = "PrimeIntellect/Qwen3-1.7B-Wordle-SFT"
 
 [environment]
 id = "wordle"

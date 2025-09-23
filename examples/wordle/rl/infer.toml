@@ -1,5 +1,2 @@
 [model]
-name = "willcb/Qwen3-1.7B-Wordle"
-
-[parallel]
-dp = 3
+name = "PrimeIntellect/Qwen3-1.7B-Wordle-SFT"

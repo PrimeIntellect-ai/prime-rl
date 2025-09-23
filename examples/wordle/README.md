@@ -1,133 +1,114 @@
+# Wordle
 
-```bash
-prime env info will/wordle
-```
+We demonstrate how to train `Qwen3-1.7B` to play Wordle. This will require a SFT warmup to learn format of the environment and then RL training in the multi-turn [`wordle`](https://app.primeintellect.ai/dashboard/environments/primeintellect/wordle) environment.
+
+We have developed this example on 2xH200 GPUs. If you run on a different setup, you may need to adjust the commands to suit your setup.
+
+## Setup
+
+First, let's install the environment using the `prime` CLI.
 
 ```bash
 prime env install will/wordle
 ```
 
+Verify your installation by trying to import the environment.
+
 ```bash
 uv run python -c "import wordle"
 ```
 
+Let's check how well `Qwen3-1.7B` does out-of-the-box on the `wordle` environment. First, let's start a `tmux` session which we will use throughout the experiment.
+
 ```bash
-uv run inference --model.name willcb/Qwen3-4B
+bash scripts/tmux.sh
+```
+
+Then, start the inference server
+
+```bash
+# Run this in the `Inference` pane
+uv run inference --model.name Qwen/Qwen3-1.7B
 ```
 
 ```bash
-uv run eval \
-    --model.name willcb/Qwen3-4B \
-    --environment-ids wordle \
-    --sampling.max-tokens 4096
+# Run this in the `Trainer` pane
+uv run vf-eval wordle -m Qwen/Qwen3-1.7B -b http://localhost:8000/v1 -n 20 --max-tokens 1024
 ```
+
+This is of course full-fledged evaluation, but can give a good first impression of how the model performs on this task. In this case, we got an **average reward of ~0.209** across the 20x3 rollouts, but most of the reward is coming from format and partial rewards. In this batch of eval samples, it has not guessed correctly within a game. Upon inspection of the samples using `vf-tui`, we can see that the model is repeatedly submitting guesses in the wrong format. Let's do some SFT warmup to get the model to learn the format of the environment.
+
+## SFT
+
+We have generated a prompt-completion SFT dataset ([willcb/V3-wordle](https://huggingface.co/willcb/V3-wordle)) of examples of Wordle games.
+
+We will fine-tune `PrimeIntellect/Qwen3-1.7B`, which is a clone of `Qwen/Qwen3-1.7B` with an adapted chat template. 
+
+On a single GPU, run
 
 ```bash
-uv run vf-eval wordle -m willcb/Qwen3-4B -b http://localhost:8000/v1 -n 5 -r 3
-```
-
-We do not get any reward with the models out of the box and it seems like this is because it's not following the formatting of the environment. We do a light-weight SFT to warmup the model to ensure it gets some initial reward.
-
-```python
-from datasets import load_dataset
-from transformers import AutoTokenizer
-
-ds = load_dataset("willcb/V3-wordle", split="train")
-tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-4B")
-
-
-def tokenize(example):
-    return {"input_ids": tokenizer.apply_chat_template(example["prompt"] + example["completion"], tokenize=True)}
-
-
-ds = ds.map(tokenize, desc="Tokenizing dataset")
-print(ds.to_pandas().input_ids.apply(len).describe())
-```
-
-```bash
-bash scripts/tmux.sh -s sft -o sft-outputs
-```
-
-```bash
+# In the `Trainer` pane
 uv run sft @ examples/wordle/sft.toml \
-    --log.level debug \
-    --wandb.project ... \
-    --wandb.name ... \
-    --ckpt 
+  --wandb.project ... \
+  --wandb.name ... \
+  --weights
 ```
 
-On 1xH100, this will take ~ .This will write checkpoints for steps 10 and 20 to `outputs/weights`. Let's evaluate these checkpoints.
-
-We can try evaling all of these checkpoints again
+On multiple GPUs, run
 
 ```bash
-uv run eval \
-    --model.name willcb/Qwen3-4B \
-    --environment-ids wordle \
-    --sampling.max-tokens 4096 \
-    --weights-dir outputs/weights \
-    --no-eval-base
+uv run torchrun \
+  --nproc-per-node ... \
+  src/prime_rl/trainer/sft/train.py @ examples/wordle/sft.toml \
+  --wandb.project ... \
+  --wandb.name ... \
+  --weights
 ```
 
-Base: Evaluated wordle in 18.82s (Avg@1=0.2200, Completion Length: 1050.15 (±445.21, ∈[590.00, 2732.00]), Truncated: 0.0%) 
-Step 10: Evaluated wordle in 61.37s (Avg@1=0.7346, Completion Length: 2471.05 (±2361.75, ∈[633.00, 8834.00]), Truncated: 15.0%)
-Step 20: Evaluated wordle in 66.37s (Avg@1=1.2530, Completion Length: 3002.50 (±2396.19, ∈[407.00, 9462.00]), Truncated: 20.0%)
-
-The final checkpoint seems best, let's it to the HF hub and eval using `verifiers` to understand the subrewards.
+This should write a weight checkpoint in `outputs/weights/step_20`. Upload it to HF to be able to use it as the base model for RL.
 
 ```bash
-export HF_TOKEN=...
-hf upload Qwen3-4B-SFT-Wordle outputs/weights/step_20
+uv run hf upload <user>/Qwen3-1.7B-Wordle-SFT outputs/weights/step_20
 ```
 
-```bash
-uv run vf-eval wordle -m mikasenghaas/Qwen3-4B-SFT-Wordle -b http://localhost:8000/v1 -n 5 -r 3
-```
+We have run the same commands as above. Check out the run in [W&B](https://wandb.ai/primeintellect/examples?nw=h8yesgpmst). Find our final artifact on HF [`PrimeIntellect/Qwen3-1.7B-Wordle-SFT`](https://huggingface.co/PrimeIntellect/Qwen3-1.7B-Wordle-SFT).
 
-Nice, we are getting way better rewards after the SFT! Let's try to RL in it now.
+## RL
 
-Before starting the RL training, we will benchmark the trainer and inference to decide on a good hardware setup.
+We will do 100 RL training steps with 64x16 rollouts, for a total batch size of 1024, at a context length of 4096.
 
 ```bash
-uv run inference @ examples/wordle/rl/infer.toml
-```
-
-```bash
-uv run orchestrator @ examples/wordle/rl/orch.toml --bench
-```
-
-```bash
-uv run trainer @ examples/wordle/rl/train.toml \
-    --data.fake.batch-size 64 \
-    --data.fake.seq-len 4096 \
-    --data.fake.micro-batch-size 2 \
-    --bench
-```
-
-We will go with a 1:3 split for trainer and inference GPUs.
-
-```bash
-uv run inference @ examples/wordle/rl/infer.toml
-```
-
-```bash
-bash scripts/tmux.sh -s rl -o rl-outputs
-```
-
-```bash
-uv run inference @ examples/wordle/rl/infer.toml
-```
-
-```bash
+# Run this in the `Trainer` pane
 uv run rl \
-    --trainer @ examples/wordle/rl/train.toml \
-    --orchestrator @ examples/wordle/rl/orch.toml \
-    --model.name ... \
-    --trainer-gpus 1 \
-    --inference-gpus 3 \
-    --log.level debug \
-    --output-dir rl-outputs \
-    --wandb.project ... \
-    --wandb.name ... \
-    --ckpt
+  --trainer @ examples/wordle/rl/train.toml \
+  --orchestrator @ examples/wordle/rl/orch.toml \
+  --inference @ examples/wordle/rl/infer.toml \
+  --no-trainer.model.load-using-meta \
+  --model.name ... \
+  --wandb.project ... \
+  --wandb.name ...
 ```
+
+This will write a weight checkpoint in `outputs/weights/step_100`. As before, let's upload it to HF.
+
+```bash
+uv run hf upload <user>/Qwen3-1.7B-Wordle-RL outputs/weights/step_100
+```
+
+We have run the same commands as above. Check out the run in [W&B](). Find our final artifact on HF [`PrimeIntellect/Qwen3-1.7B-Wordle-RL`](https://huggingface.co/PrimeIntellect/Qwen3-1.7B-Wordle-RL).
+
+## Evals
+
+Let's see how our final RL checkpoints perform on the `wordle` environment.
+
+```bash
+# Run this in the `Inference` pane
+uv run inference --model.name PrimeIntellect/Qwen3-1.7B-Wordle-RL
+```
+
+```bash
+# Run this in the `Trainer` pane
+uv run vf-eval wordle -m PrimeIntellect/Qwen3-1.7B-Wordle-RL -b http://localhost:8000/v1 -n 20 --max-tokens 1024
+```
+
+Way better! Now we get an **average reward of ~XXX**.
