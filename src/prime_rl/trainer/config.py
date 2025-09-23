@@ -51,13 +51,6 @@ class DebugModelConfig(BaseModel):
 class ModelConfig(BaseConfig):
     """Configures the model for training."""
 
-    num_layers: Annotated[
-        int | None,
-        Field(
-            description="The number of layers in the model.",
-        ),
-    ] = None
-
     name: Annotated[
         str,
         Field(
@@ -156,11 +149,11 @@ class ModelConfig(BaseConfig):
     ] = True
     
     debug: Annotated[
-        DebugModelConfig | None,
+        DebugModelConfig,
         Field(
             description="Debugging feature around model and distributed training.",
         ),
-    ] = None
+    ] = DebugModelConfig()
     
     @model_validator(mode="after")
     def _map_model_name_for_moe(self):
@@ -181,7 +174,7 @@ class ModelConfig(BaseConfig):
     @model_validator(mode="after")
     def random_init_only_with_meta(self):
         """Random initialize is only supported with the custom implementation."""
-        if self.debug is not None and self.debug.random_init:
+        if self.debug.random_init:
             if self.impl != "custom":
                 raise ValueError("Random initialize is only supported with the custom implementation.")
         return self

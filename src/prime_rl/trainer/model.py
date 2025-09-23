@@ -60,9 +60,11 @@ def get_model(
     config_model.use_cache = False
     config_model.use_grouped_mm = config.moe_use_grouped_mm
 
-    if config.num_layers is not None:
-        get_logger().info(f"Setting num_layers to {config.num_layers}")
-        config_model.num_hidden_layers = min(config.num_layers, config_model.num_hidden_layers)
+    if config.debug.num_layers is not None:
+        get_logger().info(f"Setting num_layers to {config.debug.num_layers}")
+        num_hidden_layers = min(config.debug.num_layers, config_model.num_hidden_layers)
+        get_logger().info(f"removed {config_model.num_hidden_layers - num_hidden_layers} layers")
+        config_model.num_hidden_layers = num_hidden_layers
 
     with device:
         match config.impl:
@@ -135,7 +137,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     from torch.distributed.checkpoint import DefaultLoadPlanner, HuggingFaceStorageReader
     model.to_empty(device="cuda")
 
-    if config.random_init:
+    if config.debug.random_init:
         get_logger().warning("Random initializing model. skipping HF checkpoint loading.")
         return 
     
