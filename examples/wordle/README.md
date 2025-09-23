@@ -95,7 +95,7 @@ This will write a weight checkpoint in `outputs/weights/step_100`. As before, le
 uv run hf upload <user>/Qwen3-1.7B-Wordle-RL outputs/weights/step_100
 ```
 
-We have run the same commands as above. Check out the run in [W&B](). Find our final artifact on HF [`PrimeIntellect/Qwen3-1.7B-Wordle-RL`](https://huggingface.co/PrimeIntellect/Qwen3-1.7B-Wordle-RL).
+We have run the same commands as above. Check out the run in [W&B](https://wandb.ai/primeintellect/examples?nw=2isof8knxo5). Find our final artifact on HF [`PrimeIntellect/Qwen3-1.7B-Wordle-RL`](https://huggingface.co/PrimeIntellect/Qwen3-1.7B-Wordle-RL).
 
 ## Evals
 
