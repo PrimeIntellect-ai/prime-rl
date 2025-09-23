@@ -356,10 +356,11 @@ class StackDataset(StatefulIterableDataset):
         self.dataset = dataset
         self.max_area = max_area
         self.current_seq_len = 0
-        self.buckets = [[] for _ in range(int(math.log2(self.max_area)) + 1)]
         # TODO: Can we steal step from dataset?
         self.step = 0
-        self.bucket_sizes = [2**i for i in range(int(math.log2(self.max_area)))] + [self.max_area]
+        assert self.max_area % 256 == 0
+        self.bucket_sizes = [max_area // 4, max_area // 2, max_area]
+        self.buckets = [[] for _ in range(len(self.bucket_sizes))]
         self.bucket_timers: list[int | None] = [None] * len(self.buckets)
         self.bucket_timeout = STACKING_DATASET_BUCKET_TIMEOUT
 
@@ -380,7 +381,7 @@ class StackDataset(StatefulIterableDataset):
                 len_sample = self.max_area
 
             # Add sample to bucket
-            bucket_idx = int(math.log2(len_sample - 1)) + 1
+            bucket_idx = 0 if len_sample <= self.bucket_sizes[0] else 1 if len_sample <= self.bucket_sizes[1] else 2
             self.buckets[bucket_idx].append(sample)
 
             # Check if bucket has timed out
