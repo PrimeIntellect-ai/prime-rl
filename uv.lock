@@ -1,6 +1,6 @@
 version = 1
-revision = 3
-requires-python = "==3.12.*"
+revision = 2
+requires-python = ">=3.12.0, <3.13"
 resolution-markers = [
     "sys_platform == 'linux'",
     "sys_platform != 'linux'",
@@ -2547,7 +2547,7 @@ wheels = [
 
 [[package]]
 name = "prime"
-version = "0.3.26"
+version = "0.3.34"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "build" },
@@ -2559,9 +2559,9 @@ dependencies = [
     { name = "typer" },
     { name = "verifiers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/32/1b/ba25e49bd99bc48670410fa0d07868a4da0cb0b0f0c357965b86ea389cc0/prime-0.3.26.tar.gz", hash = "sha256:bc0baa544f8830036109d95daa4e1001a76752295e0c36b5d2f313230c11ad12", size = 120909, upload-time = "2025-09-05T23:31:05.722Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/08/8a/01470ea8744fd8744ebbd345938f34556cff8bc325ad0a61a88cd5afd559/prime-0.3.34.tar.gz", hash = "sha256:d12c6e669940ff37904a2c8b4477898e3cd8b6d6bd7c517a9698ac5705fbcb08", size = 126023, upload-time = "2025-09-22T17:10:41.801Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e0/bb/462734d2576790ef2b8f5d8618d1202d3317c1f647c85e60e6ac5b9834ee/prime-0.3.26-py3-none-any.whl", hash = "sha256:f10a3821c74af1e96de9dc10369e58158c70056b862328915847a4f5cb79e4a3", size = 51966, upload-time = "2025-09-05T23:31:04.497Z" },
+    { url = "https://files.pythonhosted.org/packages/93/76/9ea72e7dcb514247bdb5d8fbecf25231e6cbf01abffbd79b2313803451a7/prime-0.3.34-py3-none-any.whl", hash = "sha256:0e6731fa861111ce50602c57066aa53edd7a647b6f2d8afeae7f6d70feba2823", size = 56073, upload-time = "2025-09-22T17:10:40.648Z" },
 ]
 
 [[package]]
@@ -2583,6 +2583,7 @@ dependencies = [
     { name = "nltk" },
     { name = "numpy" },
     { name = "openai" },
+    { name = "prime" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pylatexenc" },
@@ -2668,6 +2669,7 @@ requires-dist = [
     { name = "nltk", specifier = ">=3.9.1" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "openai", specifier = ">=1.106.1" },
+    { name = "prime", specifier = ">=0.3.34" },
     { name = "pydantic", specifier = ">=1.10.13" },
     { name = "pydantic-adherence", marker = "extra == 'vf'", specifier = ">=0.1.3", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "pydantic-settings", specifier = ">=2.10.1" },
