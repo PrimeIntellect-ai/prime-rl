@@ -9,7 +9,7 @@
 ---
 
 <h3 align="center">
-PRIME-RL: Decentralized Async RL Training at Scale
+PRIME-RL: Async RL Training at Scale
 </h3>
 
 ---
