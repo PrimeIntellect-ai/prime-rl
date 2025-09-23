@@ -1,12 +1,12 @@
 # Reverse Text
 
-We demonstrate how to train `Qwen3-0.6B` to reverse a small chunk of text. This will require a small SFT warmup to get some initial reward and then some RL in [`reverse-text`](https://app.primeintellect.ai/dashboard/environments/primeintellect/reverse-text) environment.
+We demonstrate how to train `Qwen3-0.6B` to reverse a small chunk of text. This will require a SFT warmup to learn text reversal and then a quick RL in [`reverse-text`](https://app.primeintellect.ai/dashboard/environments/primeintellect/reverse-text) environment. We use a similar setup in our CI at the moment.
+
+To run this example, you need access to one or more GPUs with at least 48GB unified memory. If you run on a different setup, you may need to adjust the commands to suit your setup.
 
 ## Setup
 
-Before starting, make sure that you have access to one or more GPUs with at least 48GB unified memory. These docs were written running on a 2x4090. If you run on a different setup, you may need to adjust the commands to suit your setup.
-
-First, ensure that the environment is installed.
+Ensure that the environment is installed (should be included in `pyproject.toml`)
 
 ```bash
 uv run python -c "import reverse_text"
@@ -30,21 +30,22 @@ uv run inference --model.name Qwen/Qwen3-0.6B
 uv run vf-eval reverse-text -m Qwen/Qwen3-0.6B -b http://localhost:8000/v1 -n 20 --max-tokens 1024
 ```
 
-This is of course just a quick vibe check and no full-fledged evaluation, but we can see that the model *struggles a lot*. In this specific instance, we got an **average reward of ~0.05** across the 20x3 rollouts. Let's do some training!
+This is of course just a quick vibe check and no full-fledged evaluation, but we can see that the model struggles with this task. In this specific instance, we got an **average reward of ~0.05** across the 20x3 rollouts. Let's do some training!
 
 ## SFT
 
-We have generated a dataset ([willcb/R1-reverse-wikipedia-paragraphs-v1-1000](https://huggingface.co/willcb/R1-reverse-wikipedia-paragraphs-v1-1000)) of 1000 examples with small paragraphs to reverse the prompt is a small chunk of text and the completion is the reverse of that chunk. 
+We have generated a prompt-completion SFT dataset ([willcb/R1-reverse-wikipedia-paragraphs-v1-1000](https://huggingface.co/willcb/R1-reverse-wikipedia-paragraphs-v1-1000)) of 1000 examples of text reversal.
 
-We will fine-tune `PrimeIntellect/Qwen3-0.6B`, which is a clone of `Qwen/Qwen3-0.6B` but with an adapted chat template. We do 100 steps at batch size 16 and sequence length 4096 and save the final checkpoint to disk.
+We will fine-tune `PrimeIntellect/Qwen3-0.6B`, which is a clone of `Qwen/Qwen3-0.6B` with an adapted chat template. 
 
 On a single GPU, run
 
 ```bash
+# In the `Trainer` pane
 uv run sft @ examples/reverse_text/sft.toml \
   --wandb.project ... \
   --wandb.name ... \
-  --ckpt
+  --weights
 ```
 
 On multiple GPUs, run
@@ -52,29 +53,23 @@ On multiple GPUs, run
 ```bash
 uv run torchrun \
   --nproc-per-node ... \
-  src/prime_rl/trainer/sft/train.py @ examples/reverse_text/sft.toml
+  src/prime_rl/trainer/sft/train.py @ examples/reverse_text/sft.toml \
   --wandb.project ... \
   --wandb.name ... \
-  --ckpt
+  --weights
 ```
 
-This should write a weight checkpoint in `outputs/weights/step_100`. Upload it to HF for the next step.
+This should write a weight checkpoint in `outputs/weights/step_100`. Upload it to HF to be able to use it as the base model for RL.
 
 ```bash
-uv run hf upload <user>/<name> outputs/weights/step_100
+uv run hf upload <user>/Qwen3-0.6B-Reverse-Text-SFT outputs/weights/step_100
 ```
 
-We did the same and uploaded it to `PrimeIntellect/Qwen3-0.6B-SFT-Reverse-Text`.
+We have run the same commands as above. Check out the run in [W&B](https://wandb.ai/primeintellect/examples?nw=s3p14m48jod). Find our final artifact on HF [`PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT`](https://huggingface.co/PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT).
 
 ## RL
 
-First, start a pre-layouted `tmux` session to view the logs from all submodules.
-
-```bash
-bash scripts/tmux.sh
-```
-
-Then, start the RL training. It will do 40 steps at 8x16 rollotus, for a total batch size of 128 and sequence length 128. Because of the small context, training should be extremely quick.
+For the RL we will only do 20 steps at 8x16 rollouts, for a total batch size of 128 and sequence length 128. Because of the small context, training should be extremely quick.
 
 ```bash
 # Run this in the `Trainer` pane
@@ -82,32 +77,32 @@ uv run rl \
   --trainer @ examples/reverse_text/rl/train.toml \
   --orchestrator @ examples/reverse_text/rl/orch.toml \
   --inference @ examples/reverse_text/rl/infer.toml \
+  --no-trainer.model.load-using-meta \
   --model.name ... \
   --wandb.project ... \
-  --wandb.name ... \
-  --ckpt
+  --wandb.name ...
 ```
 
-*If you do not specify `--model.name`, it will default to `PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT` which is the artifact we uploaded to HF in the previous step. Feel free to use that one or use your own one.*
+This will write a weight checkpoint in `outputs/weights/step_20`. As before, let's upload it to HF.
 
-**Pro Tip**: You can also start the inference server once and keep it alive across experiments to avoid suffering the vLLM startup time repeatedly.
+```bash
+uv run hf upload <user>/Qwen3-0.6B-Reverse-Text-RL outputs/weights/step_20
+```
+
+We have run the same commands as above. Check out the run in [W&B](https://wandb.ai/primeintellect/examples?nw=yxjwjc556do). Find our final artifact on HF [`PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL`](https://huggingface.co/PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL).
+
+## Evals
+
+Let's see how our final RL checkpoints perform on the `reverse-text` environment.
 
 ```bash
 # Run this in the `Inference` pane
-uv run inference @ examples/reverse_text/rl/infer.toml
+uv run inference --model.name PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL
 ```
-
-Then, you can repeatedly restart the trainer and orchestrator in the `Trainer` pane.
 
 ```bash
 # Run this in the `Trainer` pane
-uv run rl \
-  --trainer @ examples/reverse_text/rl/train.toml \
-  --orchestrator @ examples/reverse_text/rl/orch.toml \
-  --model.name ... \
-  --wandb.project ... \
-  --wandb.name ... \
-  --ckpt
+uv run vf-eval reverse-text -m PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL -b http://localhost:8000/v1 -n 20 --max-tokens 1024
 ```
 
-By default, the `rl` entrypoint will take care of clearing out the output directory to ensure no interference between runs.
+Way better! Now we get an **average reward of ~0.8**.
