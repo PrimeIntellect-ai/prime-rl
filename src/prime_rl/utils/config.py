@@ -32,6 +32,13 @@ class LogConfig(BaseConfig):
             description="Whether to log to a file. If True, will log to a file in the output directory.",
         ),
     ] = True
+    
+    log_data: Annotated[
+        bool,
+        Field(
+            description="Whether to log the first data sample to the logger.",
+        ),
+    ] = False
 
 
 class LogExtrasConfig(BaseConfig):

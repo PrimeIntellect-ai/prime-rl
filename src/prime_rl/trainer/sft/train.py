@@ -177,8 +177,7 @@ def train(config: SFTTrainerConfig):
                 f"input_ids.shape: {input_ids.shape}, position_ids.shape: {position_ids.shape}, target_ids.shape: {target_ids.shape}, loss_mask.shape: {loss_mask.shape}"
             )
 
-            # In debug mode, print the loss mask of the first micro batch
-            if config.log.level.upper() == "DEBUG" and progress.step == 0 and micro_step == 0:
+            if config.log.log_data:
                 logger.debug("Printing samples of the first micro batch")
                 print_sample(input_ids.flatten().tolist(), loss_mask.flatten().tolist(), tokenizer)
 
