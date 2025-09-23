@@ -1,5 +1,0 @@
-[model]
-name = "willcb/Qwen3-14B"
-
-[parallel]
-dp = 6
