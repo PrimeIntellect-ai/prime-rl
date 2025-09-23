@@ -118,7 +118,7 @@ class ModelConfig(BaseConfig):
             description="The dtype to use for the model optimization.",
         ),
     ] = "float32"
-    
+
     reduce_dtype: Annotated[
         Literal["bfloat16", "float32"],
         Field(
@@ -218,7 +218,7 @@ class CheckpointConfig(BaseConfig):
         int | None,
         Field(
             ge=1,
-            description="Interval at which to save the checkpoint. If None, will only checkpoint at the end of training.",
+            description="Interval at which to save the training checkpoint. If None, will only checkpoint at the end of training.",
         ),
     ] = None
 
@@ -246,13 +246,13 @@ class WeightCheckpointConfig(BaseConfig):
         int | None,
         Field(
             ge=1,
-            description="Interval at which to save the weights. If None, will only keep necessary weight checkpoints for resuming training.",
+            description="Interval at which to save weight checkpoint. If None, will save all necessary weight checkpoints on RL trainer and only final weight checkpoint on SFT trainer.",
         ),
     ] = None
 
     save_async: Annotated[
         bool,
         Field(
-            description="Whether to save the weights asynchronously.",
+            description="Whether to save the weight checkpoint asynchronously.",
         ),
     ] = True
