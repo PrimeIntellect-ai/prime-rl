@@ -145,6 +145,13 @@ class SFTTrainerConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def validate_seq_len(self):
+        if self.data.pack_function == "stack":
+            if self.data.seq_len % 256 != 0:
+                raise ValueError("The sequence length must be divisible by 256 when using pack function stack")
+        return self
+
+    @model_validator(mode="after")
     def dont_do_massive_traces(self):
         if self.trace_path:
             if self.max_steps is None:

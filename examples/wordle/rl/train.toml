@@ -1,0 +1,7 @@
+max_steps = 100
+
+[model]
+name = "PrimeIntellect/Qwen3-1.7B-Wordle-SFT"
+
+[optim]
+lr = 1e-6

@@ -34,8 +34,8 @@ class LossConfig(BaseModel):
 class FakeDataLoaderConfig(BaseConfig):
     """Configures a fake data loader sampling random micro batches for debugging."""
 
-    micro_batch_size: Annotated[int, Field(ge=1)] = 8
-    batch_size: Annotated[int, Field(ge=1)] = 8
+    micro_batch_size: Annotated[int, Field(ge=1)] = 1
+    batch_size: Annotated[int, Field(ge=1)] = 2
     seq_len: Annotated[int, Field(ge=1)] = 128
 
     @model_validator(mode="after")

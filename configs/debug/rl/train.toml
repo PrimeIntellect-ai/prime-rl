@@ -5,4 +5,3 @@ async_level = 5
 batch_size = 16
 micro_batch_size = 1
 seq_len = 128
-

@@ -1,0 +1,13 @@
+max_steps = 20
+
+[model]
+name = "PrimeIntellect/Qwen3-1.7B"
+
+[data]
+name = "willcb/V3-wordle"
+seq_len = 1024
+batch_size = 64
+micro-batch-size = 1
+
+[optim]
+lr = 1e-5

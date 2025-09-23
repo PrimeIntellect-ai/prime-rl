@@ -9,13 +9,13 @@ pytestmark = [pytest.mark.slow, pytest.mark.gpu]
 
 TIMEOUT = 300  # 5 minutes
 ENV = {"CUDA_VISIBLE_DEVICES": "1"}
-SFT_CMD = ["uv", "run", "sft", "@", "configs/reverse_text/sft.toml", "--max-steps", "10", "--ckpt"]
+SFT_CMD = ["uv", "run", "sft", "@", "configs/reverse_text/sft/train.toml", "--max-steps", "10", "--ckpt"]
 SFT_RESUME_CMD = [
     "uv",
     "run",
     "sft",
     "@",
-    "configs/reverse_text/sft.toml",
+    "configs/reverse_text/sft/train.toml",
     "--max-steps",
     "20",
     "--ckpt.resume-step",
@@ -92,7 +92,7 @@ def test_no_error_resume(sft_resume_process: ProcessResult):
     )
 
 
-SFT_CMD_MOE = ["uv", "run", "sft", "@", "configs/debug/sft_moe.toml"]
+SFT_CMD_MOE = ["uv", "run", "sft", "@", "configs/debug/moe/sft/train.toml"]
 
 
 def test_sft_moe(

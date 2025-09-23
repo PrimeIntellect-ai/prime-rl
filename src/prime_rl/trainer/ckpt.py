@@ -88,7 +88,7 @@ class CheckpointManager:
         self.ckpt_steps: list[int] = []  # Sorted list of steps that have been checkpointed, only used on master rank
 
     def _get_ckpt_path(self, step: int) -> Path:
-        return self.ckpt_dir / f"step_{step}"
+        return self.ckpt_dir / f"step_{step}" / "trainer"
 
     def _save_to_path(
         self,
