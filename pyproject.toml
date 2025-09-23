@@ -34,6 +34,8 @@ dependencies = [
     "accelerate>=1.10.1",
     "torchtitan",
     "blobfile>=3.0.0",
+    "sglang==0.5.2",
+    "sgl-kernel==0.3.10",
 ]
 
 [project.scripts]
@@ -63,6 +65,7 @@ vf = [
     "aime2025>=0.1.11",
     "math500>=0.1.10",
     "gpqa>=0.1.0",
+    "torch>=2.8.0",
     "livecodebench>=0.1.2.post0",
     "tau2 @ git+https://github.com/sierra-research/tau2-bench.git",
     "tau2_bench>=0.1.2.post0",

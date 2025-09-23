@@ -50,6 +50,7 @@ source $HOME/.local/bin/env
 uv sync && uv sync --all-extras
 ```
 
+
 </details>
 
 
@@ -158,6 +159,17 @@ uv run rl \
   --inference @ configs/reverse_text/infer.toml
 ```
 
+Using the SGLang backend instead of vLLM:
+
+```bash
+uv run rl \
+  --trainer @ configs/reverse_text/train.toml \
+  --orchestrator @ configs/reverse_text/orch.toml \
+  --inference @ configs/reverse_text/infer.toml \
+  --inference.server.type sglang \
+  --orchestrator.client.server_type sglang \
+```
+
 *With two small GPUs (e.g. RTX 3090/4090), this experiment should finish in less than 5 minutes.*
 
 **Hendrycks Math**
@@ -239,6 +251,7 @@ uv run  torchrun \
 **Multi-Node Inference**
 
 We rely on vLLM's internal load balancing for data parallel deployment ([docs](https://docs.vllm.ai/en/v0.10.0/serving/data_parallel_deployment.html)).
+SGLang backend (`--server.type sglang`) lacks this balancer.
 
 First, ensure that your nodes are in the same private network and can reach each other. If not, a simple solution is to set up a VPN using [Tailscale](https://tailscale.com). Follow their documentation to setup a VPN on each node. Then, configure the GLOO and NCCL network interface
 
@@ -415,6 +428,10 @@ bash scripts/tmux.sh
 
 ```bash
 uv run inference @ configs/reverse_text/infer.toml
+```
+To run SGLang instead:
+```bash
+uv run inference @ configs/reverse_text/infer.toml --server.type sglang
 ```
 
 3. Start the trainer and orchestrator in the `Trainer` pane.

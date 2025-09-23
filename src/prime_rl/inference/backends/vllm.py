@@ -132,3 +132,9 @@ def server(config: InferenceConfig, vllm_args: list[str]):
         else:
             # Single API server (this process).
             uvloop.run(custom_run_server(args))
+
+
+def startup(config: InferenceConfig) -> None:
+    """Boot the vLLM HTTP server with our custom worker extension."""
+
+    server(config, vllm_args=config.get_unknown_args())

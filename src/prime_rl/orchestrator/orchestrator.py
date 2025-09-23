@@ -19,6 +19,7 @@ from prime_rl.orchestrator.client import (
     check_health,
     reload_weights,
     update_weights,
+    flush_cache,
     setup_client,
 )
 from prime_rl.orchestrator.config import OrchestratorConfig
@@ -41,6 +42,7 @@ from prime_rl.utils.utils import (
     to_col_format,
 )
 import numpy as np
+from prime_rl.orchestrator.vf_adapters import apply_verifiers_adapters
 
 
 @clean_exit
@@ -59,7 +61,6 @@ async def orchestrate(config: OrchestratorConfig):
         )
 
     # Setup client
-    assert config.client.server_type == "vllm", "Orchestrator only supports vLLM server type."
     logger.info(
         f"Initializing OpenAI client (base_url={config.client.base_url}, api_key_var={config.client.api_key_var}, server_type={config.client.server_type})"
     )
@@ -68,6 +69,12 @@ async def orchestrate(config: OrchestratorConfig):
     # Load tokenizer
     logger.info(f"Initializing tokenizer for {config.model.name}")
     tokenizer = AutoTokenizer.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
+
+    # Apply Verifiers adapters for non-vLLM backends (e.g., SGLang)
+    try:
+        apply_verifiers_adapters(config.client.server_type)
+    except Exception as e:
+        logger.warning(f"Failed to apply verifiers adapters: {e}")
 
     # Setup monitor
     logger.info(f"Initializing monitor ({config.wandb})")
@@ -104,7 +111,14 @@ async def orchestrate(config: OrchestratorConfig):
         logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
         ckpt_manager.load(progress, buffer, step=config.ckpt.resume_step)
         ckpt_step = max(progress.step - config.async_level, 0)
-        await update_weights(client, get_weights_dir(config.output_dir), ckpt_step)
+        await update_weights(
+            client,
+            get_weights_dir(config.output_dir),
+            ckpt_step,
+            server_type=config.client.server_type,
+        )
+        if config.client.server_type == "sglang":
+            await flush_cache(client)
     else:
         logger.info("Training from scratch. Resetting weights to base model")
         await reload_weights(client)
@@ -158,7 +172,14 @@ async def orchestrate(config: OrchestratorConfig):
             # Update the weights
             logger.info(f"Updating weights to weight checkpoint {ckpt_step}")
             update_weights_start_time = time.time()
-            await update_weights(client, get_weights_dir(config.output_dir), ckpt_step)
+            await update_weights(
+                client,
+                get_weights_dir(config.output_dir),
+                ckpt_step,
+                server_type=config.client.server_type,
+            )
+            if config.client.server_type == "sglang":
+                await flush_cache(client)
             update_weights_time = time.time() - update_weights_start_time
             logger.debug(f"Updated weights in {update_weights_time:.2f}s")
 

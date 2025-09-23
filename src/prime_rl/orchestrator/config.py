@@ -7,7 +7,7 @@ from prime_rl.orchestrator.advantage import AdvantageType
 from prime_rl.utils.config import LogConfig, ModelConfig, WandbMonitorConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
-ServerType = Literal["vllm", "openai"]
+ServerType = Literal["vllm", "sglang", "openai"]
 
 
 class ClientConfig(BaseConfig):
@@ -37,7 +37,7 @@ class ClientConfig(BaseConfig):
     server_type: Annotated[
         ServerType,
         Field(
-            description="Type of inference server that the client is connected to. Can be 'vllm' or 'openai'. Defaults to vLLM, which is our default client for training.",
+            description="Type of inference server. 'vllm', 'sglang', or 'openai'. Defaults to vLLM, our training default.",
         ),
     ] = "vllm"
 

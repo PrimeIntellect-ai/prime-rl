@@ -6,7 +6,7 @@ from pydantic import Field
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings, get_all_fields
 from prime_rl.utils.utils import rgetattr, rsetattr
 
-# TODO: Set thinking/ solution budget
+ServerType = Literal["vllm", "sglang"]
 
 
 class ServerConfig(BaseConfig):
@@ -14,10 +14,11 @@ class ServerConfig(BaseConfig):
 
     host: Annotated[str | None, Field(description="The host to bind to.")] = None
     port: Annotated[int, Field(description="The port to bind to.")] = 8000
+    type: Annotated[ServerType, Field(description="Backend type.")] = "vllm"
 
 
 class ParallelConfig(BaseConfig):
-    """Configures multi-node and multi-GPU setups through different types of parallelism (TP, DP, PP)."""
+    """Configures multi-node and multi-GPU setups through different types of parallelism (TP, DP)."""
 
     tp: Annotated[
         int,
@@ -39,7 +40,7 @@ class ParallelConfig(BaseConfig):
 
 
 class ModelConfig(BaseConfig):
-    """Configures the inference model. Most arguments are passed directly to the vLLM LLM class (https://docs.vllm.ai/en/latest/api/vllm.LLM.html)."""
+    """Configures the inference model. Most arguments are passed directly to the vLLM LLM class."""
 
     name: Annotated[
         str,
@@ -51,21 +52,21 @@ class ModelConfig(BaseConfig):
     dtype: Annotated[
         Literal["auto", "float16", "bfloat16", "float32"],
         Field(
-            description="Data type for model weights and activations. If 'auto' will use FP16 precision for FP32 and FP16 models, and BF16 precision for BF16 models. Passed to vLLM as `--dtype`",
+            description="Data type for model weights and activations. Passed to vLLM as `--dtype`",
         ),
     ] = "auto"
 
     max_model_len: Annotated[
         int | None,
         Field(
-            description="Maximum model context length. If None, will use the maximum context length from model config. Passed to vLLM as `--max-model-len`",
+            description="Maximum model context length. If None, will use the maximum context length from the model config.",
         ),
     ] = None
 
     enforce_eager: Annotated[
         bool,
         Field(
-            description="Whether to enforce eager mode. If False, will use PyTorch eager and cuda graphs in hybrid for maximal performance. Passed to vLLM as `--enforce-eager`",
+            description="Whether to enforce eager mode. Passed to vLLM as `--enforce-eager`",
         ),
     ] = False
 
@@ -86,7 +87,7 @@ class ModelConfig(BaseConfig):
     tool_call_parser: Annotated[
         str,
         Field(
-            description="The tool call parser to use. Passed to vLLM as `--tool-call-parser`",
+            description="The tool call parser to use. Passed to vLLM as `--tool-call-parser`.",
         ),
     ] = "hermes"
 
@@ -94,13 +95,8 @@ class ModelConfig(BaseConfig):
 class InferenceConfig(BaseSettings):
     """Configures inference."""
 
-    # The server configuration
     server: ServerConfig = ServerConfig()
-
-    # The model configuration
     model: ModelConfig = ModelConfig()
-
-    # The parallel configuration
     parallel: ParallelConfig = ParallelConfig()
 
     gpu_memory_utilization: Annotated[
@@ -139,7 +135,34 @@ class InferenceConfig(BaseSettings):
             value = rgetattr(self, key.replace("-", "_"))
             rsetattr(namespace, to_vllm.get(key, key), value)
 
-        # Set `logprobs_mode` to `processed_logprobs` by default
+        # Ensure processed logprobs so the orchestrator sees transformed logprobs by default.
         rsetattr(namespace, "logprobs_mode", "processed_logprobs")
 
         return namespace
+
+    def to_sglang(self) -> list[str]:
+        args: list[str] = ["--model-path", self.model.name, "--port", str(self.server.port)]
+        if self.server.host:
+            args += ["--host", self.server.host]
+        if self.model.dtype:
+            args += ["--dtype", self.model.dtype]
+        if self.model.max_model_len is not None:
+            args += ["--context-length", str(self.model.max_model_len)]
+        if self.model.trust_remote_code:
+            args.append("--trust-remote-code")
+        args += [
+            "--tp-size",
+            str(self.parallel.tp),
+            "--dp-size",
+            str(self.parallel.dp),
+            "--pp-size",
+            "1",
+        ]
+        parser = self.model.tool_call_parser
+        if parser == "hermes":
+            parser = None
+        if parser:
+            args += ["--tool-call-parser", parser]
+        if self.seed is not None:
+            args += ["--random-seed", str(self.seed)]
+        return args
