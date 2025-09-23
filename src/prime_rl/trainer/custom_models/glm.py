@@ -211,7 +211,7 @@ class Glm4MoeConfig(PretrainedConfig):
         first_k_dense_replace=1,
         norm_topk_prob=True,
         use_qk_norm=False,
-        use_grouped_mm=False,
+        use_grouped_mm=True,
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -848,8 +848,7 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
-        if position_ids is not None:
-            warnings.warn("Position IDs are ignored for custom glm4_moe for now")
+
         outputs: BaseModelOutputWithPast = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
