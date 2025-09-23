@@ -91,7 +91,7 @@ class SFTTrainerConfig(BaseSettings):
     ckpt: CheckpointConfig | None = None
 
     # The weight checkpoint configuration
-    weights: WeightCheckpointConfig = WeightCheckpointConfig()
+    weights: WeightCheckpointConfig | None = None
 
     # The logging configuration
     log: LogConfig = LogConfig()
@@ -152,5 +152,25 @@ class SFTTrainerConfig(BaseSettings):
             if self.max_steps >= 10:
                 raise ValueError(
                     "Tracing more than 10 steps is not recommended as your trace will be massive. Remove this line if you really want to trace more steps."
+                )
+        return self
+
+    @model_validator(mode="after")
+    def validate_ckpt_managers(self):
+        # Ensures that we save a weight checkpoint with every full checkpoint as well
+        if self.ckpt is not None:
+            if self.weights is None:
+                self.weights = WeightCheckpointConfig()
+            # If not interval is specified, use the same interval as the full checkpoint
+            if self.ckpt.interval is not None and self.weights.interval is None:
+                self.weights.interval = self.ckpt.interval
+            # If an interval is specified, ensure that the weight checkpoint interval is a multiple of the full checkpoint interval
+            if (
+                self.ckpt.interval is not None
+                and self.weights.interval is not None
+                and self.ckpt.interval % self.weights.interval != 0
+            ):
+                raise ValueError(
+                    "Use a weight checkpoint interval that ensures that a weight checkpoint is saved with every full checkpoint"
                 )
         return self
