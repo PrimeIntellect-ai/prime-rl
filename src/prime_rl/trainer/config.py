@@ -118,6 +118,13 @@ class ModelConfig(BaseConfig):
             description="The dtype to use for the model optimization.",
         ),
     ] = "float32"
+    
+    reduce_dtype: Annotated[
+        Literal["bfloat16", "float32"],
+        Field(
+            description="The dtype to use for the model reduce.",
+        ),
+    ] = "float32"
 
     moe_use_grouped_mm: Annotated[
         bool,
