@@ -160,7 +160,7 @@ class ModelConfig(BaseConfig):
     def random_init_only_with_hf(self):
         """Random initialize is only supported with the custom implementation."""
         if self.random_init:
-            if self.impl == "custom":
+            if self.impl != "custom":
                 raise ValueError("Random initialize is only supported with the custom implementation.")
         return self
 
