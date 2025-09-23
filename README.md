@@ -179,7 +179,33 @@ Contributions are welcome via PR. Please follow these guidelines:
   ```
 2. Please keep your PR in "Draft" until it is ready for review.
 3. If your PR resolves an issue, please link the issue in the PR description
+4. If you can, try running the test suite locally to ensure your changes are working as expected.
 
+### Tests
+
+Run the full test suite 
+
+```bash
+uv run pytest -v
+```
+
+To run unit tests, run
+
+```bash
+uv run pytest tests/unit -v
+```
+
+To run integration tests, run
+
+```bash
+uv run pytest tests/integration -v
+```
+
+To run CPU-only tests, use the inverse of the `gpu` marker:
+
+```bash
+uv run pytest -v -m "not gpu"
+```
 
 ## License
 
