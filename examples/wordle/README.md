@@ -48,7 +48,7 @@ On a single GPU, run
 
 ```bash
 # In the `Trainer` pane
-uv run sft @ examples/wordle/sft.toml \
+uv run sft @ examples/wordle/sft/train.toml \
   --wandb.project ... \
   --wandb.name ... \
   --weights
@@ -59,7 +59,7 @@ On multiple GPUs, run
 ```bash
 uv run torchrun \
   --nproc-per-node ... \
-  src/prime_rl/trainer/sft/train.py @ examples/wordle/sft.toml \
+  src/prime_rl/trainer/sft/train.py @ examples/wordle/sft/train.toml \
   --wandb.project ... \
   --wandb.name ... \
   --weights

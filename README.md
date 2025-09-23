@@ -99,28 +99,22 @@ uv run python -V
 uv run python -c "import flash_attn"
 ```
 
-3. Check that you can run SFT trainer on a dense model (*this requires 1 GPU*)
+3. Check that you can run SFT trainer  (*this requires 1 GPU*)
 
 ```bash
-uv run sft @ examples/debug/sft.toml
-```
-
-4. Check that you can run the SFT trainer on a MoE model (*this requires 1 GPU*)
-
-```bash
-uv run sft @ examples/debug/moe/sft.toml
+uv run sft @ configs/debug/sft/train.toml
 ```
 
 4. Check that you can run the RL trainer (*this requires 1 GPU*)
 
 ```bash
-uv run trainer @ examples/debug/rl/train.toml
+uv run trainer @ configs/debug/rl/train.toml
 ```
 
 5. Check that you can run the inference server (*this requires 1 GPU*)
 
 ```bash
-uv run inference @ examples/debug/rl/infer.toml
+uv run inference @ configs/debug/infer.toml
 ```
 
 *Keep the inference server running in the background for the next steps.*
@@ -128,13 +122,13 @@ uv run inference @ examples/debug/rl/infer.toml
 5.1. Check that you can run the orchestrator against the inference server
 
 ```bash
-uv run orchestrator @ examples/debug/rl/orch.toml
+uv run orchestrator @ configs/debug/orch.toml
 ```
 
 5.2. Check that you can run evals against the inference server
 
 ```bash
-uv run eval @ examples/debug/eval.toml
+uv run eval @ configs/debug/eval.toml
 ```
 
 </details>
