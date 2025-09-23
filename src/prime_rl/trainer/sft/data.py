@@ -377,7 +377,7 @@ class StackDataset(StatefulIterableDataset):
             len_sample = len(sample["input_ids"])
             if len_sample > self.max_area:
                 for key, value in sample.items():
-                    if key != "epoch":
+                    if isinstance(value, list):
                         sample[key] = sample[key][: self.max_area]
                 len_sample = self.max_area
 
