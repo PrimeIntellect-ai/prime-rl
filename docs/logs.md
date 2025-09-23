@@ -2,57 +2,84 @@
 
 ## Loguru
 
-We log to console and files using `loguru`. We share a single `setup_logger` utility function across all submodules which should be called *exactly once* at the very beginning of each entrypoint to configure the logger as a global instance. It can then be pulled using a `get_logger` utility function into any component that needs to log. For more details on loguru, see the [documentation](https://loguru.readthedocs.io/en/stable/).
+We log to console and files using `loguru` using a global logger instance. Each entrypoint should call `setup_logger` *exactly once* at the beginning of execution. Afterwards, all components can log using the global logger instance. For more details on loguru, see the [documentation](https://loguru.readthedocs.io/en/stable/). All logs are written into `{output_dir}/logs` and for RL training we recommend viewing logs by streaming the file logs into tmux panes, as set up by the `tmux.sh` script.
+
+## Torchrun
+
+For multi-node training, we use `torchrun` to set up distributed training. Because `torchrun` is SPMD, all ranks are logging to console and file at the same time. To only view the logs from the master rank, you can use the `--local-ranks-filter` flag.
+
+For example, to only view the logs from the master rank when training on a full node
+
+```bash
+uv run torchrun \
+  --local-ranks-filter 0 \
+  --nproc-per-node 8 \
+  ...
+```
+
+In addition to the loguru file logs you can also use the `--log-dir` and `--redirects` and `--tee` flags to redirect the console logs to files.
+
+```bash
+uv run torchrun \
+  --local-ranks-filter 0 \
+  --nproc-per-node 8 \
+  --log-dir outputs/torchrun \
+  --redirects 3 \
+  --tee 3 \
+  ...
+```
+
+This will redirect the console logs to `outputs/torchrun/{rdzv_id}/attempt_0/{rank}/{stdout,stderr}.log`.
 
 ## W&B
 
-For most runs we recommend logging to W&B (`wandb`). Since it is disabled by default, you have to set up W&B using the `--wandb` config key.
-
-### RL
-
-Both the trainer and orchestrator can log to W&B as separate runs using the `--monitor.wandb` subconfig. You can set the project (`--monitor.wandb.project`, defaults to `prime-rl`), run name (`--monitor.wandb.name`, defaults to `None` which will make W&B generate a name randomly), run ID (`--monitor.wandb.id`, defaults to `None`), the log directory (`--monitor.wandb.dir`, defaults to `logs`) and whether or not to run in offline mode (`--monitor.wandb.offline`, defaults to `False`). 
-
-First, start your inference server
+For most runs we recommend logging to [W&B](https://wandb.ai). Before enabling W&B, make sure that you have an account and are logged in.
 
 ```bash
-uv run inference @ configs/reverse_text/infer.toml
-```
-
-Then, start the trainer and orchestrator with logging enabled.
-
-```bash
-CUDA_VISIBLE_DEVICES=1 uv run trainer @ configs/reverse_text/train.toml --monitor.wandb.project example-project --monitor.wandb.name trainer
-```
-
-```bash
-uv run orchestrator @ configs/reverse_text/orch.toml --monitor.wandb.project example-project --monitor.wandb.name orchestrator
-```
-
-Usually it will be more convenient to use the `rl` entrypoint. To setup W&B concisely, you can specify shared configs using the `--wandb` subconfig, e.g. the project (`--wandb.project`), run name (`--wandb.name`), directory (`--wandb.dir`) and offline mode (`--wandb.offline`). It will automatically share these configs to the trainer and orchestrator. For the run name, it will automatically suffix the specified name with `-trainer` and `-orchestrator` to clearly distinguish those runs.
-
-```bash
-uv run rl   \
-  --trainer @ configs/reverse_text/train.toml  \
-  --orchestrator @ configs/reverse_text/orch.toml \
-  --inference @ configs/reverse_text/infer.toml \
-  --wandb.project example-project \
-  --wandb.name example-run
-```
-
-We support logging samples (e.g. prompt, completion, reward, advantage for selected rollouts) and distributions (e.g. reward, advantage, entropy distributions) as W&B tables using the `monitor.wandb.log-extras` subconfig. On the orchestrator you can log activate logging samples (`--monitor.wandb.log-extras.samples`) and distributions (`--monitor.wandb.log-extras.samples`). On the trainer you can only log distributions (`--monitor.wandb.log-extras.distributions`). On both, you can specify the logging step interval using `--monitor.wandb.log-extras.interval`. To log all extras on trainer and orchestrator every 10 steps, 
-
-```bash
-uv run rl   \
-  --trainer @ configs/reverse_text/train.toml  \
-  --orchestrator @ configs/reverse_text/orch.toml \
-  --inference @ configs/reverse_text/infer.toml \
-  --wandb.project example-project \
-  --wandb.name example-run \
-  --trainer.monitor.wandb.log-extras.distributions \
-  --trainer.monitor.wandb.log-extras.interval 10 \
-  --orchestrator.monitor.wandb.log-extras.samples \
-  --orchestrator.monitor.wandb.log-extras.distributions \
-  --orchestrator.monitor.wandb.log-extras.interval 10
+uv run wandb login
+# Or set `export WANDB_API_KEY=...`
 ```
 
 ### SFT
+
+Logging to W&B is disabled by default. Enable the default configuration with `--wandb`
+
+```bash
+uv run sft ... --wandb
+```
+
+This will log to the `prime-rl` project with a random run name. You can specify which project and name to log to 
+
+```bash
+uv run sft ... --wandb.project my-project --wandb.name my-run
+```
+
+The same settings also work for multi-node training with `torchrun`. Note, that we only log global metrics from the master rank (e.g. the all-reduced loss)
+
+```bash
+uv run torchrun --nproc-per-node 8 ...  --wandb
+```
+
+### RL
+
+For RL training, both the trainer and orchestrator log to W&B as separate runs. Again, logging to W&B is disabled by default. Enable the default configuration with `--wandb`
+
+```bash
+uv run rl ... --wandb
+```
+
+This will log to the `prime-rl` project with a random run name. The trainer run is suffixed with `-trainer` and the orchestrator run is suffixed with `-orchestrator`. You can specify which project and name to log to using the same flags as for SFT.
+
+```bash
+uv run rl ... --wandb.project my-project --wandb.name my-run
+```
+
+For the RL trainer, we support logging samples (e.g. prompt, completion, reward, advantage for selected rollouts) and distributions (e.g. reward, advantage, entropy distributions) as W&B tables using the `wandb.log-extras` subconfig. If W&B is setup, this is enabled by default and will log for the RL trainer and orchestrator every 10 steps.
+
+You can configure this on the trainer and orchestrator separately. For example, to only log samples on the orchestrator every 50 steps, but not distribution on either
+
+```bash
+uv run rl  ... \
+  --no-trainer.wandb.log-extras.distributions \
+  --orchestrator.wandb.log-extras.interval 50
+```
