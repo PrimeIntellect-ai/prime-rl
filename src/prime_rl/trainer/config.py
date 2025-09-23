@@ -33,6 +33,21 @@ class CompileConfig(BaseModel):
     ] = False
 
 
+class DebugModelConfig(BaseModel):
+    """Debugging feature around model and distributed training."""
+
+    num_layers: Annotated[
+        int | None,
+        Field(description="The number of layers in the model."),
+    ] = None
+    
+    random_init: Annotated[
+        bool,
+        Field(
+            description="Whether to random initialize the model.",
+        ),
+    ] = False
+
 class ModelConfig(BaseConfig):
     """Configures the model for training."""
 
@@ -118,13 +133,6 @@ class ModelConfig(BaseConfig):
             description="Whether to load the model using meta device then load from HF ckpt.",
         ),
     ] = True
-    
-    random_init: Annotated[
-        bool,
-        Field(
-            description="Whether to random initialize the model.",
-        ),
-    ] = False
 
     optimization_dtype: Annotated[
         Literal["bfloat16", "float32"],
@@ -147,6 +155,13 @@ class ModelConfig(BaseConfig):
         ),
     ] = True
     
+    debug: Annotated[
+        DebugModelConfig | None,
+        Field(
+            description="Debugging feature around model and distributed training.",
+        ),
+    ] = None
+    
     @model_validator(mode="after")
     def _map_model_name_for_moe(self):
         """Map model name if it exists in MOE_MODEL_MAPS."""
@@ -166,7 +181,7 @@ class ModelConfig(BaseConfig):
     @model_validator(mode="after")
     def random_init_only_with_hf(self):
         """Random initialize is only supported with the custom implementation."""
-        if self.random_init:
+        if self.debug is not None and self.debug.random_init:
             if self.impl != "custom":
                 raise ValueError("Random initialize is only supported with the custom implementation.")
         return self
