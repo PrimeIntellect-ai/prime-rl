@@ -179,7 +179,7 @@ class ModelConfig(BaseConfig):
         return self
     
     @model_validator(mode="after")
-    def random_init_only_with_hf(self):
+    def random_init_only_with_meta(self):
         """Random initialize is only supported with the custom implementation."""
         if self.debug is not None and self.debug.random_init:
             if self.impl != "custom":
