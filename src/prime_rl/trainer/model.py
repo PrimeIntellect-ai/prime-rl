@@ -127,9 +127,13 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     from huggingface_hub import snapshot_download
     from torch.distributed.checkpoint import DefaultLoadPlanner, HuggingFaceStorageReader
-
-    path_snapshot = snapshot_download(repo_id=config.name, repo_type="model")
     model.to_empty(device="cuda")
+
+    if config.random_init:
+        get_logger().warning("Random initializing model. skipping HF checkpoint loading.")
+        return 
+    
+    path_snapshot = snapshot_download(repo_id=config.name, repo_type="model")
     dcp.load(
         model.state_dict(),
         storage_reader=HuggingFaceStorageReader(path=path_snapshot),
