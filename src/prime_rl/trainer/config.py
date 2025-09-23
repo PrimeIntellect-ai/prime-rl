@@ -139,7 +139,15 @@ class ModelConfig(BaseConfig):
         if self.name in MOE_MODEL_MAPS:
             self.name = MOE_MODEL_MAPS[self.name]
         return self
+    
 
+    @model_validator(mode="after")
+    def trust_remote_code_only_with_hf(self):
+        """Trust remote code only if the model is from HF."""
+        if self.trust_remote_code:
+            if self.impl != "hf":
+                raise ValueError("Trust remote code is only supported with the HF implementation.")
+        return self
 
 class ConstantSchedulerConfig(BaseModel):
     """Configuration for constant learning rate scheduler."""
