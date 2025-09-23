@@ -45,6 +45,15 @@ class FakeDataConfig(BaseDataConfig):
     input_ids: Literal["increasing", "random"] = "increasing"
 
 
+class LossMaskConfig(BaseModel):
+    """Configures which message types contribute to the loss. If True, the loss_mask will be True and the message type will contribute to the loss."""
+
+    system: Annotated[bool, Field(description="Whether system messages contribute to the loss.")] = False
+    user: Annotated[bool, Field(description="Whether user messages contribute to the loss.")] = False
+    assistant: Annotated[bool, Field(description="Whether assistant messages contribute to the loss.")] = True
+    tool: Annotated[bool, Field(description="Whether tool messages contribute to the loss.")] = False
+
+
 class SFTDataConfig(BaseDataConfig):
     """Configures the data used for training."""
 
@@ -55,6 +64,9 @@ class SFTDataConfig(BaseDataConfig):
     )
     splits: Annotated[list[str], Field(description="Splits to use from the HF dataset.")] = ["train"]
     shuffle: Annotated[bool, Field(description="Whether to shuffle the dataset at the beginning of each epoch.")] = True
+
+    # Configuring
+    loss_mask: LossMaskConfig = LossMaskConfig()
 
 
 DataConfigType: TypeAlias = FakeDataConfig | SFTDataConfig
@@ -118,33 +130,6 @@ class SFTTrainerConfig(BaseSettings):
                 self.wandb.log_extras = None
             if self.ckpt:  # Do not checkpoint
                 self.ckpt = None
-        return self
-
-    @model_validator(mode="after")
-    def validate_scheduler(self):
-        # Constant scheduler does not require any validation/ setup
-        if self.scheduler.type == "constant":
-            return self
-
-        # Must specify max_steps when using a scheduler other than `constant`
-        if self.max_steps is None:
-            raise ValueError("Must specify max_steps when using a scheduler other than `constant`")
-
-        # If decay_steps is not specified, use remaining steps after warmup
-        if self.scheduler.decay_steps is None:
-            if not (self.scheduler.warmup_steps <= self.max_steps):
-                raise ValueError("config.scheduler.warmup_steps must be less than or equal to config.max_steps")
-
-            self.scheduler.decay_steps = self.max_steps - self.scheduler.warmup_steps
-            assert self.scheduler.decay_steps >= 0, "config.scheduler.decay_steps must be positive"
-
-        # If decay_steps is specified, validate it
-        else:
-            if not (self.scheduler.warmup_steps + self.scheduler.decay_steps <= self.max_steps):
-                raise ValueError(
-                    "config.scheduler.warmup_steps + config.scheduler.decay_steps must be less than or equal to config.max_steps"
-                )
-
         return self
 
     @model_validator(mode="after")

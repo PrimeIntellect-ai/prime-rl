@@ -106,7 +106,7 @@ def test_model_with_sequence_packing(model, correct_position_ids):
 
 
 def test_moe_custom_impl():
-    config = ModelConfig(name="Jackmin108/glm-0.5B", attn="sdpa", impl="custom", moe_use_grouped_mm=False)
+    config = ModelConfig(name="PrimeIntellect/GLM-0.5B", attn="sdpa", impl="custom", moe_use_grouped_mm=False)
     model = get_model(config)
     model = model.to("cuda")
     with torch.autocast("cuda", dtype=torch.bfloat16):

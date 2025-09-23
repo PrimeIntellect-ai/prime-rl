@@ -92,7 +92,7 @@ def test_no_error_resume(sft_resume_process: ProcessResult):
     )
 
 
-SFT_CMD_MOE = ["uv", "run", "sft", "@", "configs/debug_moe/sft.toml", "--max-steps", "10"]
+SFT_CMD_MOE = ["uv", "run", "sft", "@", "configs/debug/sft_moe.toml"]
 
 
 def test_sft_moe(
@@ -106,7 +106,7 @@ def test_sft_moe(
 
     assert (
         run_process(
-            SFT_CMD
+            SFT_CMD_MOE
             + [
                 "--wandb.project",
                 wandb_project,

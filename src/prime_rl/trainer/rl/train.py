@@ -13,7 +13,7 @@ from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.weights import setup_weight_ckpt_manager
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
-from prime_rl.trainer.logger import setup_logger
+from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
     shift_logits,
     selective_log_softmax,
@@ -53,7 +53,10 @@ from prime_rl.utils.utils import clean_exit, to_col_format
 def train(config: RLTrainerConfig):
     # Setup world and logger
     world = get_world()
-    logger = setup_logger(config.log, world)
+    logger = setup_logger(
+        config.log.level,
+        log_file=config.output_dir / "logs" / "trainer" / f"rank_{world.rank}.log" if config.log.file else None,
+    )
     logger.info(f"Starting RL trainer in {world}")
 
     # Print warning if running in benchmark mode
@@ -87,7 +90,7 @@ def train(config: RLTrainerConfig):
     optimizer = setup_optimizer(config.optim, model, parallel_dims.world_mesh["dp_shard_cp"])
 
     # Set up the learning rate scheduler
-    scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps)
+    scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
     logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
 
     # Get checkpoint managers
@@ -327,6 +330,7 @@ def train(config: RLTrainerConfig):
         optimizer.zero_grad()
 
         # Update learning rate scheduler
+        current_lr = optimizer.param_groups[0]["lr"]
         scheduler.step()
 
         forward_backward_time = time.time() - forward_backward_start_time
@@ -357,7 +361,6 @@ def train(config: RLTrainerConfig):
 
         # Log step metrics
         step_time = time.time() - step_start_time
-        current_lr = optimizer.param_groups[0]["lr"]
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Entropy: {tensor_stats['entropy/mean']:.4f} | Importance Ratio: {tensor_stats['importance_ratio/mean']:.4f} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f} GiB"
         if "max_vio/mean" in tensor_stats:
             step_message += f" | Max Vio: {tensor_stats['max_vio/mean']:.4f}"
@@ -416,8 +419,8 @@ def train(config: RLTrainerConfig):
         logger.info(f"Saving trace to {trace_file}")
         prof.export_chrome_trace(trace_file)
         logger.info(f"Saved trace to {trace_file}")
+
     # Log final (immutable) distributions to W&B table
-    logger.info("Logging final distributions as W&B table")
     monitor.log_final_distributions()
 
     # Write final checkpoint

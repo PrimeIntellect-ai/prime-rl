@@ -84,7 +84,6 @@ class ModelConfig(BaseConfig):
     ] = False
 
     tool_call_parser: Annotated[
-
         str,
         Field(
             description="The tool call parser to use. Passed to vLLM as `--tool-call-parser`",
@@ -104,6 +103,13 @@ class InferenceConfig(BaseSettings):
     # The parallel configuration
     parallel: ParallelConfig = ParallelConfig()
 
+    gpu_memory_utilization: Annotated[
+        float,
+        Field(
+            description="The GPU memory utilization to use. Passed to vLLM as `--gpu-memory-utilization`",
+        ),
+    ] = 0.9
+
     seed: Annotated[
         int | None,
         Field(
@@ -122,10 +128,11 @@ class InferenceConfig(BaseSettings):
             "model.max_model_len": "max_model_len",
             "model.enforce_eager": "enforce_eager",
             "model.trust_remote_code": "trust_remote_code",
-            "model.enable_auto_tool_choice": "enable_auto_tool_choice",  # requires underscores (unlike on CLI)
-            "model.tool_call_parser": "tool_call_parser",                # requires underscores (unlike on CLI)
+            "model.enable_auto_tool_choice": "enable_auto_tool_choice",
+            "model.tool_call_parser": "tool_call_parser",
             "parallel.tp": "tensor_parallel_size",
             "parallel.dp": "data_parallel_size",
+            "gpu_memory_utilization": "gpu_memory_utilization",
         }
 
         for key in get_all_fields(self):

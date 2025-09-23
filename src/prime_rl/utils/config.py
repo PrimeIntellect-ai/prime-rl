@@ -26,12 +26,12 @@ class LogConfig(BaseConfig):
         Field(description="Logging level for the process. Will determine the logging verbosity and format."),
     ] = "info"
 
-    utc: Annotated[
+    file: Annotated[
         bool,
         Field(
-            description="Whether to use UTC time in the logger. If False, it will default to the local time. If the local time is wrong, you can set it by setting the `TZ` environment variable. For example, `TZ=America/Los_Angeles` will set the local time to SF time."
+            description="Whether to log to a file. If True, will log to a file in the output directory.",
         ),
-    ] = False
+    ] = True
 
 
 class LogExtrasConfig(BaseConfig):
