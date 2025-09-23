@@ -118,6 +118,13 @@ class ModelConfig(BaseConfig):
             description="Whether to load the model using meta device then load from HF ckpt.",
         ),
     ] = True
+    
+    random_init: Annotated[
+        bool,
+        Field(
+            description="Whether to random initialize the model.",
+        ),
+    ] = False
 
     optimization_dtype: Annotated[
         Literal["bfloat16", "float32"],
@@ -139,7 +146,7 @@ class ModelConfig(BaseConfig):
             description="Whether to use grouped mm for the MoE layers. Require compute capability >= 9.0",
         ),
     ] = True
-
+    
     @model_validator(mode="after")
     def _map_model_name_for_moe(self):
         """Map model name if it exists in MOE_MODEL_MAPS."""
@@ -154,6 +161,14 @@ class ModelConfig(BaseConfig):
         if self.trust_remote_code:
             if self.impl != "hf":
                 raise ValueError("Trust remote code is only supported with the HF implementation.")
+        return self
+    
+    @model_validator(mode="after")
+    def random_init_only_with_hf(self):
+        """Random initialize is only supported with the custom implementation."""
+        if self.random_init:
+            if self.impl == "custom":
+                raise ValueError("Random initialize is only supported with the custom implementation.")
         return self
 
 class ConstantSchedulerConfig(BaseModel):
