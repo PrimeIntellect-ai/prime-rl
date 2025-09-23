@@ -1,5 +1,4 @@
 import json
-import math
 from collections import defaultdict
 from typing import Iterator, TypedDict, cast
 
@@ -41,7 +40,6 @@ class StatefulIterableDataset(Stateful, IterableDataset):
     def __init__(self):
         self.step, self.epoch = -1, 0
         self._setup_world_info()
-        self._logger = get_logger()
 
     def state_dict(self) -> dict:
         # +1 because the stateful dataloader expects uses 1-based counting while we start at 0
@@ -73,7 +71,7 @@ class FakeDataset(StatefulIterableDataset):
         self.vocab_size = tokenizer.vocab_size
         self.num_examples = config.num_examples
 
-    def __iter__(self) -> Iterator[Sample]:
+    def __iter__(self):
         while True:
             # Increment the step counter (0, 1, 2, ...)
             # This has to be done before yielding the sample for the dataloader to checkpoint correctly
@@ -100,6 +98,7 @@ class FakeDataset(StatefulIterableDataset):
             position_ids = list(range(seq_len))
             loss_mask = [True] * seq_len
             fake_sample = {
+                "index": self.step,
                 "input_ids": input_ids[:-1],
                 "target_ids": input_ids[1:],
                 "position_ids": position_ids,
@@ -116,7 +115,9 @@ class SFTDataset(StatefulIterableDataset):
         super().__init__()
         self.config = config
         self.tokenizer = tokenizer
-        self.dataset = dataset
+
+        # Add dataset index
+        self.dataset = dataset.map(lambda _, index: {"index": index}, with_indices=True)
 
         # Assert that the dataset has a 'text' column
         if "prompt" not in self.dataset.column_names or "completion" not in self.dataset.column_names:
@@ -139,7 +140,7 @@ class SFTDataset(StatefulIterableDataset):
         # Store the number of examples in the dataset
         self.num_examples = len(self.dataset)
 
-    def __iter__(self) -> Iterator[Sample]:
+    def __iter__(self):
         """
         Apply chat template and tokenize a single example in prompt + completion format (https://github.com/huggingface/trl/blob/de27d612b026526ba39b88eee348994d7636e033/trl/trainer/sft_trainer.py#L661)
         """
@@ -294,6 +295,7 @@ class SFTDataset(StatefulIterableDataset):
 
             # Create sample (with one fake target for the last token)
             sample = {
+                "index": example["index"],
                 "input_ids": input_ids,
                 "target_ids": target_ids,
                 "loss_mask": loss_mask,
@@ -308,6 +310,7 @@ class CatDataset(StatefulIterableDataset):
     """A dataset that concatenates samples into a single sequence with a fixed length."""
 
     def __init__(self, dataset: StatefulIterableDataset, seq_len: int):
+        self.logger = get_logger()
         self.dataset = dataset
         self.seq_len = seq_len
         # Public state attributes for checkpointing
@@ -321,12 +324,14 @@ class CatDataset(StatefulIterableDataset):
         self.dataset.load_state_dict(state_dict)
 
     def __iter__(self) -> Iterator[Sample]:
-        packed_samples, seq_len = self.packed_samples, self.current_seq_len
+        packed_samples, seq_len, indices = self.packed_samples, self.current_seq_len, []
         for sample in self.dataset:
             # Add sample to packed samples
             for key, value in sample.items():
                 if key == "epoch":
                     packed_samples[key] = min(packed_samples.get(key, float("inf")), value)
+                elif key == "index":
+                    indices.append(value)
                 else:
                     packed_samples[key].extend(value)
 
@@ -338,14 +343,16 @@ class CatDataset(StatefulIterableDataset):
                 for key, value in packed_samples.items():
                     if isinstance(value, list):
                         packed_samples[key] = value[: self.seq_len]
+                self.logger.debug(f"Yield batch with dataset indices={indices}")
                 yield packed_samples
-                packed_samples, seq_len = defaultdict(list), 0
+                packed_samples, seq_len, indices = defaultdict(list), 0, []
 
 
 class StackDataset(StatefulIterableDataset):
     """A dataset that stacks samples into batch with a fixed area"""
 
     def __init__(self, dataset: StatefulIterableDataset, max_area: int):
+        self.logger = get_logger()
         self.dataset = dataset
         self.max_area = max_area
         self.current_seq_len = 0
@@ -411,12 +418,16 @@ class StackDataset(StatefulIterableDataset):
                         self.buckets[bucket_idx].append(dummy_sample)
 
                 packed_samples = defaultdict(list)
+                indices = []
                 for bucket_item in self.buckets[bucket_idx]:
                     for key, value in bucket_item.items():
                         if key == "epoch":
                             packed_samples[key] = min(packed_samples.get(key, float("inf")), value)
+                        elif key == "index":
+                            indices.append(value)
                         else:
                             packed_samples[key].append(value + [0] * (self.bucket_sizes[bucket_idx] - len(value)))
+                self.logger.debug(f"Yield batch with dataset indices={indices}")
                 yield packed_samples
                 self.step += 1
                 self.buckets[bucket_idx] = []
