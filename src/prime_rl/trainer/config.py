@@ -40,13 +40,14 @@ class DebugModelConfig(BaseModel):
         int | None,
         Field(description="The number of layers in the model."),
     ] = None
-    
+
     random_init: Annotated[
         bool,
         Field(
             description="Whether to random initialize the model.",
         ),
     ] = False
+
 
 class ModelConfig(BaseConfig):
     """Configures the model for training."""
@@ -125,7 +126,7 @@ class ModelConfig(BaseConfig):
         Field(
             description="Whether to load the model using meta device then load from HF ckpt.",
         ),
-    ] = True
+    ] = False
 
     optimization_dtype: Annotated[
         Literal["bfloat16", "float32"],
@@ -147,21 +148,20 @@ class ModelConfig(BaseConfig):
             description="Whether to use grouped mm for the MoE layers. Require compute capability >= 9.0",
         ),
     ] = True
-    
+
     debug: Annotated[
         DebugModelConfig,
         Field(
             description="Debugging feature around model and distributed training.",
         ),
     ] = DebugModelConfig()
-    
+
     @model_validator(mode="after")
     def _map_model_name_for_moe(self):
         """Map model name if it exists in MOE_MODEL_MAPS."""
         if self.name in MOE_MODEL_MAPS:
             self.name = MOE_MODEL_MAPS[self.name]
         return self
-    
 
     @model_validator(mode="after")
     def trust_remote_code_only_with_hf(self):
@@ -170,13 +170,14 @@ class ModelConfig(BaseConfig):
             if self.impl != "hf":
                 raise ValueError("Trust remote code is only supported with the HF implementation.")
         return self
-    
+
     @model_validator(mode="after")
     def random_init_only_with_meta(self):
         """Random initialize is only supported with the custom implementation."""
         if self.debug.random_init and not self.load_using_meta:
-                raise ValueError("Random initialize is only supported when loading with meta.")
+            raise ValueError("Random initialize is only supported when loading with meta.")
         return self
+
 
 class ConstantSchedulerConfig(BaseModel):
     """Configuration for constant learning rate scheduler."""
