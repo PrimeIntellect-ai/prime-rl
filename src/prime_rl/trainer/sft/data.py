@@ -1,4 +1,5 @@
 import json
+import math
 from collections import defaultdict
 from typing import Iterator, TypedDict, cast
 
@@ -40,6 +41,7 @@ class StatefulIterableDataset(Stateful, IterableDataset):
     def __init__(self):
         self.step, self.epoch = -1, 0
         self._setup_world_info()
+        self._logger = get_logger()
 
     def state_dict(self) -> dict:
         # +1 because the stateful dataloader expects uses 1-based counting while we start at 0
@@ -71,7 +73,7 @@ class FakeDataset(StatefulIterableDataset):
         self.vocab_size = tokenizer.vocab_size
         self.num_examples = config.num_examples
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[Sample]:
         while True:
             # Increment the step counter (0, 1, 2, ...)
             # This has to be done before yielding the sample for the dataloader to checkpoint correctly
@@ -98,7 +100,6 @@ class FakeDataset(StatefulIterableDataset):
             position_ids = list(range(seq_len))
             loss_mask = [True] * seq_len
             fake_sample = {
-                "index": self.step,
                 "input_ids": input_ids[:-1],
                 "target_ids": input_ids[1:],
                 "position_ids": position_ids,
@@ -113,12 +114,9 @@ class SFTDataset(StatefulIterableDataset):
 
     def __init__(self, dataset: Dataset, tokenizer: PreTrainedTokenizer, config: SFTDataConfig, non_dp_size: int = 1):
         super().__init__()
-        self.logger = get_logger()
         self.config = config
         self.tokenizer = tokenizer
-
-        # Add dataset index
-        self.dataset = dataset.map(lambda _, index: {"index": index}, with_indices=True)
+        self.dataset = dataset
 
         # Assert that the dataset has a 'text' column
         if "prompt" not in self.dataset.column_names or "completion" not in self.dataset.column_names:
@@ -141,7 +139,7 @@ class SFTDataset(StatefulIterableDataset):
         # Store the number of examples in the dataset
         self.num_examples = len(self.dataset)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[Sample]:
         """
         Apply chat template and tokenize a single example in prompt + completion format (https://github.com/huggingface/trl/blob/de27d612b026526ba39b88eee348994d7636e033/trl/trainer/sft_trainer.py#L661)
         """
@@ -271,7 +269,7 @@ class SFTDataset(StatefulIterableDataset):
 
             # If EOS token is not found, manually append it
             if not self.tokenizer.eos_token_id in input_ids:
-                self.logger.warning(
+                self._logger.warning(
                     f"Did not find EOS token ID {self.tokenizer.eos_token_id} in input_ids. Is something wrong with the chat template? Manually appending EOS token..."
                 )
                 input_ids.append(cast(int, self.tokenizer.eos_token_id))
@@ -283,7 +281,7 @@ class SFTDataset(StatefulIterableDataset):
             input_ids = input_ids[:-1]
 
             if sum(loss_mask[: self.config.seq_len]) == 0:
-                self.logger.warning(
+                self._logger.warning(
                     f"Skipping example with index {self.step} because no trainable tokens were found within the context window ({self.config.seq_len}). This is to prevent NaN loss."
                 )
                 continue
@@ -296,7 +294,6 @@ class SFTDataset(StatefulIterableDataset):
 
             # Create sample (with one fake target for the last token)
             sample = {
-                "index": example["index"],
                 "input_ids": input_ids,
                 "target_ids": target_ids,
                 "loss_mask": loss_mask,
@@ -311,7 +308,6 @@ class CatDataset(StatefulIterableDataset):
     """A dataset that concatenates samples into a single sequence with a fixed length."""
 
     def __init__(self, dataset: StatefulIterableDataset, seq_len: int):
-        self.logger = get_logger()
         self.dataset = dataset
         self.seq_len = seq_len
         # Public state attributes for checkpointing
@@ -325,14 +321,12 @@ class CatDataset(StatefulIterableDataset):
         self.dataset.load_state_dict(state_dict)
 
     def __iter__(self) -> Iterator[Sample]:
-        packed_samples, seq_len, indices = self.packed_samples, self.current_seq_len, []
+        packed_samples, seq_len = self.packed_samples, self.current_seq_len
         for sample in self.dataset:
             # Add sample to packed samples
             for key, value in sample.items():
                 if key == "epoch":
                     packed_samples[key] = min(packed_samples.get(key, float("inf")), value)
-                elif key == "index":
-                    indices.append(value)
                 else:
                     packed_samples[key].extend(value)
 
@@ -344,25 +338,22 @@ class CatDataset(StatefulIterableDataset):
                 for key, value in packed_samples.items():
                     if isinstance(value, list):
                         packed_samples[key] = value[: self.seq_len]
-                self.logger.debug(f"Yield batch with dataset indices={indices}")
                 yield packed_samples
-                packed_samples, seq_len, indices = defaultdict(list), 0, []
+                packed_samples, seq_len = defaultdict(list), 0
 
 
 class StackDataset(StatefulIterableDataset):
     """A dataset that stacks samples into batch with a fixed area"""
 
     def __init__(self, dataset: StatefulIterableDataset, max_area: int):
-        self.logger = get_logger()
         self.dataset = dataset
         self.max_area = max_area
         self.current_seq_len = 0
+        assert math.log2(self.max_area).is_integer(), "max_area must be a power of 2"
+        self.buckets = [[] for _ in range(int(math.log2(self.max_area)) + 1)]
         # TODO: Can we steal step from dataset?
         self.step = 0
-        assert self.max_area % 256 == 0
-        self.bucket_sizes = [max_area // 4, max_area // 2, max_area]
-        self.buckets = [[] for _ in range(len(self.bucket_sizes))]
-        self.bucket_timers: list[int | None] = [None] * len(self.buckets)
+        self.bucket_timers = [None] * len(self.buckets)
         self.bucket_timeout = STACKING_DATASET_BUCKET_TIMEOUT
 
     def state_dict(self) -> dict:
@@ -373,34 +364,25 @@ class StackDataset(StatefulIterableDataset):
 
     def __iter__(self) -> Iterator[Sample]:
         for sample in self.dataset:
-            # Truncate sample if it's longer than max area
+            # Add sample to packed samples
             len_sample = len(sample["input_ids"])
             if len_sample > self.max_area:
                 for key, value in sample.items():
-                    if isinstance(value, list):
+                    if key != "epoch":
                         sample[key] = sample[key][: self.max_area]
                 len_sample = self.max_area
-
-            # Add sample to bucket
-            bucket_idx = 0 if len_sample <= self.bucket_sizes[0] else 1 if len_sample <= self.bucket_sizes[1] else 2
+            bucket_idx = int(math.log2(len_sample - 1)) + 1
             self.buckets[bucket_idx].append(sample)
 
-            # Check if bucket has timed out
-            bucket_timer = self.bucket_timers[bucket_idx]
-            if bucket_timer is not None:
-                hit_timeout = bucket_timer + self.bucket_timeout < self.step
+            if self.bucket_timers[bucket_idx] is not None:
+                hit_timeout = self.bucket_timers[bucket_idx] + self.bucket_timeout < self.step
             else:
                 hit_timeout = False
-
-            # Check if bucket is full
-            is_full = self.bucket_sizes[bucket_idx] * len(self.buckets[bucket_idx]) >= self.max_area
-
-            if is_full or hit_timeout:
+            if (2**bucket_idx) * len(self.buckets[bucket_idx]) >= self.max_area or hit_timeout:
                 if hit_timeout:
                     while bucket_idx < len(self.buckets) - 1:
                         if (
-                            self.bucket_sizes[bucket_idx + 1]
-                            * (len(self.buckets[bucket_idx]) + len(self.buckets[bucket_idx + 1]))
+                            2 ** (bucket_idx + 1) * (len(self.buckets[bucket_idx]) + len(self.buckets[bucket_idx + 1]))
                             < self.max_area
                         ):
                             self.buckets[bucket_idx + 1].extend(self.buckets[bucket_idx])
@@ -409,8 +391,7 @@ class StackDataset(StatefulIterableDataset):
                             bucket_idx += 1
                         else:
                             break
-
-                    while self.bucket_sizes[bucket_idx] * len(self.buckets[bucket_idx]) < self.max_area:
+                    while (2**bucket_idx) * len(self.buckets[bucket_idx]) < self.max_area:
                         dummy_sample = {}
                         for key, value in sample.items():
                             if key == "epoch":
@@ -420,16 +401,12 @@ class StackDataset(StatefulIterableDataset):
                         self.buckets[bucket_idx].append(dummy_sample)
 
                 packed_samples = defaultdict(list)
-                indices = []
                 for bucket_item in self.buckets[bucket_idx]:
                     for key, value in bucket_item.items():
                         if key == "epoch":
                             packed_samples[key] = min(packed_samples.get(key, float("inf")), value)
-                        elif key == "index":
-                            indices.append(value)
                         else:
-                            packed_samples[key].append(value + [0] * (self.bucket_sizes[bucket_idx] - len(value)))
-                self.logger.debug(f"Yield batch with dataset indices={indices}")
+                            packed_samples[key].append(value + [0] * (2**bucket_idx - len(value)))
                 yield packed_samples
                 self.step += 1
                 self.buckets[bucket_idx] = []
