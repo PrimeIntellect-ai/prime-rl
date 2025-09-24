@@ -78,7 +78,6 @@ def get_model(
         if device == torch.device("meta"):
             get_logger().info(f"model num_layers random init: {config_model.num_hidden_layers}")
             model = model_cls.from_config(config_model, trust_remote_code=config.trust_remote_code, dtype=dtype)
-            get_logger().info(f"model num_layers random init: {len(model.model.layers)}")
         else:
             model = model_cls.from_pretrained(
                 pretrained_model_name_or_path=config.name,
@@ -138,7 +137,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     model.to_empty(device="cuda")
 
     if config.debug.random_init:
-        get_logger().warning("Random initializing model. skipping HF checkpoint loading.")
+        get_logger().warning("Zero initialization model. skipping HF checkpoint loading.")
         return 
     
     path_snapshot = snapshot_download(repo_id=config.name, repo_type="model")

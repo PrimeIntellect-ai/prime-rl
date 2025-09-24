@@ -174,9 +174,8 @@ class ModelConfig(BaseConfig):
     @model_validator(mode="after")
     def random_init_only_with_meta(self):
         """Random initialize is only supported with the custom implementation."""
-        if self.debug.random_init:
-            if self.impl != "custom":
-                raise ValueError("Random initialize is only supported with the custom implementation.")
+        if self.debug.random_init and not self.load_using_meta:
+                raise ValueError("Random initialize is only supported when loading with meta.")
         return self
 
 class ConstantSchedulerConfig(BaseModel):
