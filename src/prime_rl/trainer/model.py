@@ -48,7 +48,7 @@ def get_load_balance_stats(model: nn.Module, reset_stats: bool = True) -> dict[s
             tokens_per_expert.zero_()
     if len(per_layer_max_vio) == 0:
         return {"max_vio": None}
-    return {"max_vio": torch.tensor(per_layer_max_vio)}
+    return {"max_vio": torch.tensor(per_layer_max_vio, device=torch.device("cuda"))}
 
 
 def get_model(
