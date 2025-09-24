@@ -91,7 +91,7 @@ intellect-math = { index = "primeintellect" }
 aime2024 = { index = "primeintellect" }
 aime2025 = { index = "primeintellect" }
 math500 = { index = "primeintellect" }
-livecodebench = { index = "primeintellect" }
+livecodebench = { path = "../prime-environments/environments/livecodebench", develop = true }
 tau2_bench = { index = "primeintellect" }
 simpleqa = { index = "primeintellect" }
 hle = { index = "primeintellect" } 
