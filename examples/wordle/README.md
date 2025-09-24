@@ -1,6 +1,6 @@
 # Wordle
 
-In this example, we demonstrate how to train `Qwen3-1.7B` to play Wordle. This will require a SFT warmup to learn the format of the environment and, finally, multi-turn RL against the [`wordle`](https://app.primeintellect.ai/dashboard/environments/primeintellect/wordle) environment to improve performance.
+In this example, we demonstrate how to train `Qwen3-1.7B` to play Wordle. This will require a SFT warmup to learn the format of the environment and, finally, multi-turn RL against the [`wordle`](https://app.primeintellect.ai/dashboard/environments/will/wordle) environment to improve performance.
 
 > The commands in this example were designed to be run on 2 GPUs (one trainer and one inference GPU). It is possible to run on less or more GPUs using different deployment strategies. If you run on a different setup, you may need to adjust the start commands.
 
