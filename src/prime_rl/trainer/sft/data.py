@@ -1,4 +1,5 @@
 import json
+import uuid
 from collections import defaultdict
 from typing import Iterator, TypedDict, cast
 
@@ -118,7 +119,7 @@ class SFTDataset(StatefulIterableDataset):
         self.tokenizer = tokenizer
 
         # Add dataset index
-        self.dataset = dataset.map(lambda _, index: {"index": index}, with_indices=True)
+        self.dataset = dataset.add_column("index", list(range(len(dataset))), new_fingerprint=str(uuid.uuid4()))
 
         # Assert that the dataset has a 'text' column
         if "prompt" not in self.dataset.column_names or "completion" not in self.dataset.column_names:
