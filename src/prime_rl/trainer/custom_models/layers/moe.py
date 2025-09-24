@@ -61,6 +61,26 @@ class FeedForward(nn.Module):
         for linear in (self.w2, self.w3):
             nn.init.trunc_normal_(linear.weight, mean=0.0, std=init_std)
 
+class BCFeedForward(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        hidden_dim: int,
+    ):
+        super().__init__()
+        self.w1 = nn.Parameter(torch.empty(hidden_dim, dim))
+        self.w2 = nn.Parameter(torch.empty(dim, hidden_dim))
+        self.w3 = nn.Parameter(torch.empty(hidden_dim, dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        #return torch.matmul(self.w2, F.silu(torch.matmul(self.w1, x.T)) * torch.matmul(self.w3, x.T))
+        return torch.matmul(F.silu(torch.matmul(x, self.w1.T)) * torch.matmul(x, self.w3.T), self.w2.T)
+
+    def init_weights(self, init_std: float):
+        nn.init.trunc_normal_(self.w1, mean=0.0, std=0.02)
+        nn.init.trunc_normal_(self.w2, mean=0.0, std=init_std)
+        nn.init.trunc_normal_(self.w3, mean=0.0, std=init_std)
+
 
 # TODO: keeping this for-loop implementation for comparison
 #       and readability, may remove later
@@ -316,8 +336,9 @@ class MoE(nn.Module):
             route_scale=moe_args.route_scale,
         )
         self.reorderer = TokenReorderer(num_experts=num_experts, top_k=moe_args.top_k)
-        self.shared_experts = (
-            FeedForward(dim=dim, hidden_dim=hidden_dim * moe_args.num_shared_experts)
+        # TODO: Add the s back and use FF when the weights support it
+        self.shared_expert = (
+            BCFeedForward(dim=dim, hidden_dim=hidden_dim * moe_args.num_shared_experts)
             if moe_args.num_shared_experts > 0
             else None
         )
@@ -401,8 +422,8 @@ class MoE(nn.Module):
             routed_output = (routed_output.to(torch.float32) * top_scores_experts_sorted.reshape(-1, 1)).to(x.dtype)
 
         # shared expert
-        if self.shared_experts is not None:
-            out = self.shared_experts(x)
+        if self.shared_expert is not None:
+            out = self.shared_expert(x)
         else:
             out = torch.zeros_like(x)
 
@@ -417,8 +438,8 @@ class MoE(nn.Module):
     ):
         self.experts.init_weights(init_std)
         self.router.init_weights(init_std)
-        if self.shared_experts is not None:
-            self.shared_experts.init_weights(init_std)
+        if self.shared_expert is not None:
+            self.shared_expert.init_weights(init_std)
 
         with torch.device(buffer_device):
             self.tokens_per_expert = torch.zeros(self.experts.num_experts, dtype=torch.float32)
