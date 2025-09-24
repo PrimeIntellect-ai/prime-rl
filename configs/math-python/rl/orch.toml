@@ -1,0 +1,14 @@
+max_steps = 500
+seq_len = 8192
+batch_size = 1024
+micro_batch_size = 1
+rollouts_per_example = 16
+
+[model]
+name = "PrimeIntellect/Qwen3-8B"
+
+[environment]
+id = "math-python"
+
+[sampling]
+max_tokens = 8192

@@ -1,0 +1,9 @@
+max_steps = 500
+
+[model]
+name = "PrimeIntellect/Qwen3-8B"
+
+[model.ac]
+
+[optim]
+lr = 1e-6
