@@ -7,6 +7,7 @@ impl = "custom"
 attn = "sdpa"
 
 [data]
+type = "fake"
 batch_size = 16
 micro_batch_size = 8
 seq_len = 128
