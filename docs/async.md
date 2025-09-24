@@ -2,7 +2,7 @@
 
 PRIME-RL implements asynchronous off-policy training, instead of the traditional synchronous on-policy training. This means that we allow inference to generate rollouts from a stale policy up to $k$ (in the code we call this `async_level`) steps ahead of the trainer. With `k=1` and trainer and inference step timings being equal, this allows to run without any idle time on either the trainer or inference. By default, we set `k=2` to allow overlap with a weight broadcast over the Internet, which is needed for decentralized training.
 
-![Two-Step Off-Policy Training](/assets/two-step-off-policy.png)
+![Two-Step Off-Policy Training](assets/two-step-off-policy.png)
 
 ## Loss Objective
 
