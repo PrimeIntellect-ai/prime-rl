@@ -1,8 +1,8 @@
 # Reverse Text
 
-We demonstrate how to train `Qwen3-0.6B` to reverse a small chunk of text. This will require a SFT warmup to learn text reversal and then a quick RL in [`reverse-text`](https://app.primeintellect.ai/dashboard/environments/primeintellect/reverse-text) environment. We use a similar setup in our CI at the moment.
+We demonstrate how to train `Qwen3-0.6B` to reverse a small chunk of text. We will use a SFT warmup to learn the skill of text reversal on longer documents and then a quick RL run to reverse smaller chunks of text in the [`reverse-text`](https://app.primeintellect.ai/dashboard/environments/primeintellect/reverse-text) environment. We use a similar setup in our CI at the moment and for development.
 
-To run this example, you need access to one or more GPUs with at least 48GB unified memory. If you run on a different setup, you may need to adjust the commands to suit your setup.
+> The commands in this example were designed to be run on 2 GPUs (one trainer and one inference GPU). It is possible to run on less or more GPUs using different deployment strategies. If you run on a different setup, you may need to adjust the start commands.
 
 ## Setup
 
@@ -12,13 +12,13 @@ Ensure that the environment is installed (should be included in `pyproject.toml`
 uv run python -c "import reverse_text"
 ```
 
-Let's check how well `Qwen3-0.6B` does out-of-the-box on the `reverse-text` environment. First, let's start a `tmux` session which we will use throughout the experiment.
+First, let's start a `tmux` session which we will use throughout the experiment.
 
 ```bash
 bash scripts/tmux.sh
 ```
 
-Then, start the inference server
+Let's check how well `Qwen3-0.6B` does out-of-the-box on the `reverse-text` environment. 
 
 ```bash
 # Run this in the `Inference` pane
@@ -34,11 +34,12 @@ This is of course just a quick vibe check and no full-fledged evaluation, but we
 
 ## SFT
 
-We have generated a prompt-completion SFT dataset ([willcb/R1-reverse-wikipedia-paragraphs-v1-1000](https://huggingface.co/willcb/R1-reverse-wikipedia-paragraphs-v1-1000)) of 1000 examples of text reversal.
+We will fine-tune `PrimeIntellect/Qwen3-0.6B` ([HF](https://huggingface.co/PrimeIntellect/Qwen3-0.6B)), which is a clone of `Qwen/Qwen3-0.6B` ([HF](https://huggingface.co/Qwen/Qwen3-0.6B)) with a chat template suitable for multi-turn RL, on `willcb/R1-reverse-wikipedia-paragraphs-v1-1000` ([HF](https://huggingface.co/datasets/willcb/R1-reverse-wikipedia-paragraphs-v1-1000)) which contains 1K examples of reversals of small paragraphs.
 
-We will fine-tune `PrimeIntellect/Qwen3-0.6B`, which is a clone of `Qwen/Qwen3-0.6B` with an adapted chat template. 
+![SFT](sft/wandb.png)
+*Check out the logs of the SFT run on [W&B](https://wandb.ai/primeintellect/examples?nw=s3p14m48jod).*
 
-On a single GPU, run
+To train on a single GPU, run
 
 ```bash
 # In the `Trainer` pane
@@ -48,9 +49,10 @@ uv run sft @ examples/reverse_text/sft/train.toml \
   --weights
 ```
 
-On multiple GPUs, run
+To train on multiple GPUs, run
 
 ```bash
+# In the `Trainer` pane
 uv run torchrun \
   --nproc-per-node ... \
   src/prime_rl/trainer/sft/train.py @ examples/reverse_text/sft/train.toml \
@@ -65,11 +67,14 @@ This should write a weight checkpoint in `outputs/weights/step_100`. Upload it t
 uv run hf upload <user>/Qwen3-0.6B-Reverse-Text-SFT outputs/weights/step_100
 ```
 
-We have run the same commands as above. Check out the run in [W&B](https://wandb.ai/primeintellect/examples?nw=s3p14m48jod). Find our final artifact on HF [`PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT`](https://huggingface.co/PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT).
+We have uploaded the final model as [`PrimeIntellect/Qwen3-0.6B-Wordle-SFT`](https://huggingface.co/PrimeIntellect/Qwen3-0.6B-Wordle-SFT).
 
 ## RL
 
 For the RL we will only do 20 steps at 8x16 rollouts, for a total batch size of 128 and sequence length 128. Because of the small context, training should be extremely quick.
+
+![RL](rl/wandb.png)
+*Check out the logs of the RL run on [W&B](https://wandb.ai/primeintellect/examples?nw=yxjwjc556do).*
 
 ```bash
 # Run this in the `Trainer` pane
@@ -89,7 +94,7 @@ This will write a weight checkpoint in `outputs/weights/step_20`. As before, let
 uv run hf upload <user>/Qwen3-0.6B-Reverse-Text-RL outputs/weights/step_20
 ```
 
-We have run the same commands as above. Check out the run in [W&B](https://wandb.ai/primeintellect/examples?nw=yxjwjc556do). Find our final artifact on HF [`PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL`](https://huggingface.co/PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL).
+We have uploaded the final model as [`PrimeIntellect/Qwen3-0.6B-Wordle-RL`](https://huggingface.co/PrimeIntellect/Qwen3-0.6B-Wordle-RL).
 
 ## Evals
 
