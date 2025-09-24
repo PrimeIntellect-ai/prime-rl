@@ -82,7 +82,6 @@ uv run rl \
   --trainer @ examples/reverse_text/rl/train.toml \
   --orchestrator @ examples/reverse_text/rl/orch.toml \
   --inference @ examples/reverse_text/rl/infer.toml \
-  --no-trainer.model.load-using-meta \
   --model.name ... \
   --wandb.project ... \
   --wandb.name ...

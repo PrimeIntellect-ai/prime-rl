@@ -91,7 +91,6 @@ uv run rl \
   --trainer @ examples/wordle/rl/train.toml \
   --orchestrator @ examples/wordle/rl/orch.toml \
   --inference @ examples/wordle/rl/infer.toml \
-  --no-trainer.model.load-using-meta \
   --model.name ... \
   --wandb.project ... \
   --wandb.name ...
