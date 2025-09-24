@@ -33,7 +33,7 @@ def wandb_project(username: str) -> str:
 
 @pytest.fixture(scope="module")
 def sft_process(
-    run_process: Callable[[Command, Environment], ProcessResult],
+    run_process: Callable[[Command, Environment, int], ProcessResult],
     output_dir: Path,
     wandb_project: str,
     branch_name: str,
@@ -85,6 +85,7 @@ def sft_resume_process(
 SFT_CMD_MOE = ["uv", "run", "sft", "@", "configs/debug/moe/sft/train.toml"]
 
 
+@pytest.fixture
 def sft_moe_process(
     run_process: Callable[[Command, Environment, int], ProcessResult],
     output_dir: Path,
