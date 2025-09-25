@@ -19,6 +19,7 @@ confirm_cleanup() {
     echo "  - **/rollouts"
     echo "  - **/wandb"
     echo "  - **/evals"
+    echo "  - **/evals"
     echo "  - .pydantic_config"
     while true; do
         read -r -p "Proceed? [y/N]: " response
@@ -32,5 +33,5 @@ confirm_cleanup() {
 
 # Remove logs, checkpoints, weights, rollouts, wandb
 confirm_cleanup
-rm -rf **/logs **/checkpoints **/weights **/rollouts **/wandb .pydantic_config
+rm -rf **/logs **/checkpoints **/weights **/rollouts **/wandb **/evals **/torchrun *.pydantic_config
 log_info "Cleaned up!"
