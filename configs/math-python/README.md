@@ -66,6 +66,51 @@ uv run rl \
   --log.level debug
 ```
 
+On 4xH100
+
+```bash
+bash scripts/tmux.sh -s exp1 -o outputs1
+```
+
+```bash
+uv run inference @ configs/math-python/rl/infer.toml --parallel.dp 2
+```
+
+```bash
+# Hardware configuration for 4xH200
+uv run rl \
+  --trainer @ configs/math-python/rl/train.toml \
+  --orchestrator @ configs/math-python/rl/orch.toml \
+  --wandb.project math-python \
+  --wandb.name debug \
+  --trainer-gpu-ids 2,3 \
+  --output-dir outputs1 \
+  --log.level debug
+```
+
+On 4xH100
+
+```bash
+bash scripts/tmux.sh -s exp2 -o outputs2
+```
+
+```bash
+CUDA_VISIBLE_DEVICES=4,5 uv run inference @ configs/math-python/rl/infer.toml --server.port 8001 --parallel.tp 2
+```
+
+```bash
+# Hardware configuration for 4xH200
+uv run rl \
+  --trainer @ configs/math-python/rl/train.toml \
+  --orchestrator @ configs/math-python/rl/orch.toml \
+  --orchestrator.client.base-url http://localhost:8001/v1 \
+  --wandb.project math-python \
+  --wandb.name debug \
+  --trainer-gpu-ids 6,7 \
+  --output-dir outputs2 \
+  --log.level debug
+```
+
 ## Evals
 
 TBD.
