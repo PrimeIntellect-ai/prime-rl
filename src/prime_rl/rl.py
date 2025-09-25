@@ -515,8 +515,6 @@ def rl(config: RLConfig):
             # Pipe all logs to file, and only master rank logs to stdout
             f"--log-dir={config.output_dir / 'torchrun'}",
             "--local-ranks-filter=0",
-            "--redirects=3",
-            "--tee=3",
             f"--nproc-per-node={len(config.trainer_gpu_ids)}",
             "-m",
             "prime_rl.trainer.rl.train",
