@@ -237,10 +237,10 @@ def train(config: SFTTrainerConfig):
                 micro_step_message += f" | Max Vio: {max_vio.item():.4f}"
             logger.debug(micro_step_message)
 
-        # Optionally, clip the gradients
+        logger.debug(f"Clipping gradients with max norm {config.optim.max_norm}")
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.optim.max_norm).full_tensor()
 
-        # Update the model parameters
+        logger.debug("Optimizer step")
         optimizer.step()
         optimizer.zero_grad()
 
@@ -255,6 +255,7 @@ def train(config: SFTTrainerConfig):
             memory_profiler.step()
 
         # Synchronize the tensor metrics across all steps and ranks
+        logger.debug("Synchronizing tensor metrics across all steps and ranks")
         dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)
 
         # Compute step metrics
