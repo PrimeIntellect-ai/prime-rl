@@ -659,7 +659,7 @@ wheels = [
 [[package]]
 name = "dion"
 version = "0.1.0"
-source = { git = "https://github.com/samsja/dion.git?rev=disable-compile#13141023276eb8e3e7f118400867874c4f7dc0c0" }
+source = { git = "https://github.com/samsja/dion.git?rev=main#3c4bce5a60f3d1590761b881e253da5400355403" }
 dependencies = [
     { name = "numpy" },
     { name = "torch" },
@@ -2651,7 +2651,7 @@ requires-dist = [
     { name = "cydifflib", specifier = ">=1.2.0" },
     { name = "datasets", specifier = ">=4.0.0" },
     { name = "deepscaler-math", marker = "extra == 'vf'", specifier = ">=0.1.5", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
-    { name = "dion", git = "https://github.com/samsja/dion.git?rev=disable-compile" },
+    { name = "dion", git = "https://github.com/samsja/dion.git?rev=main" },
     { name = "flash-attn", marker = "extra == 'flash-attn'", specifier = ">=2.8.3" },
     { name = "flashinfer-python", marker = "extra == 'flash-infer'", specifier = ">=0.2.8rc1" },
     { name = "gpqa", marker = "extra == 'vf'", specifier = ">=0.1.0" },
