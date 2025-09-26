@@ -29,7 +29,7 @@ dependencies = [
     "textarena>=0.6.16",
     "nltk>=3.9.1",
     "math-verify>=0.8.0",
-    "dion @ git+https://github.com/samsja/dion.git@main",
+    "dion @ git+https://github.com/samsja/dion.git@sami/maybe-disable-compile-dion",
     "torchdata>=0.11.0",
     "accelerate>=1.10.1",
     "torchtitan",
