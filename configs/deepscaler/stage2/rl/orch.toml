@@ -3,7 +3,6 @@ batch_size = 1024
 micro_batch_size = 1
 seq_len = 16384
 rollouts_per_example = 8
-mask_truncated_completions = false
 
 [sampling]
 temperature = 0.6
@@ -12,18 +11,8 @@ max_tokens = 16384
 [model]
 name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 
-[wandb]
-
 [environment]
-id = "deepscaler-math"
-
-[wandb.log_extras]
-interval = 50
-
-[eval]
-interval = 50
-environment_ids = ["math500", "aime2024", "aime2025"]
-rollouts_per_example = [1, 32, 32]
+id = "deepscaler"
 
 [ckpt]
 interval = 100

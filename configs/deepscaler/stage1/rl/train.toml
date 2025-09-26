@@ -1,6 +1,10 @@
+max_steps = 500
+
 [model]
 name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
-max_model_len = 24576
 
-[parallel]
-dp = 6
+[optim]
+lr = 1e-6
+
+[ckpt]
+interval = 100
