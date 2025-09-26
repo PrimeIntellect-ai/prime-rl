@@ -49,68 +49,94 @@ Reward: 0.646, Correct: 0.660, #Turns: 2.284, #Tool calls: 1.288, Errors: 0.144
 
 ## RL
 
-WIP start commands for 1xH200.
-
 ```bash
-uv run inference @ configs/math-python/rl/infer.toml  --gpu-memory-utilization 0.5
+# Run this in the `Inference` pane
+uv run inference @ configs/math-python/rl/infer.toml \
+  --parallel.tp ... \
+  --parallel.dp ...
 ```
 
 ```bash
-# Hardware configuration for 1xH200
+# Run this in the `Trainer` pane
 uv run rl \
   --trainer @ configs/math-python/rl/train.toml \
   --orchestrator @ configs/math-python/rl/orch.toml \
-  --wandb.project math-python \
-  --wandb.name debug \
-  --trainer-gpu-ids 0 \
-  --log.level debug
-```
-
-On 4xH100
-
-```bash
-bash scripts/tmux.sh -s exp1 -o outputs1
-```
-
-```bash
-uv run inference @ configs/math-python/rl/infer.toml --parallel.dp 2
-```
-
-```bash
-# Hardware configuration for 4xH200
-uv run rl \
-  --trainer @ configs/math-python/rl/train.toml \
-  --orchestrator @ configs/math-python/rl/orch.toml \
-  --wandb.project math-python \
-  --wandb.name debug \
-  --trainer-gpu-ids 2,3 \
-  --output-dir outputs1 \
-  --log.level debug
-```
-
-On 4xH100
-
-```bash
-bash scripts/tmux.sh -s exp2 -o outputs2
-```
-
-```bash
-CUDA_VISIBLE_DEVICES=4,5 uv run inference @ configs/math-python/rl/infer.toml --server.port 8001 --parallel.tp 2
-```
-
-```bash
-# Hardware configuration for 4xH200
-uv run rl \
-  --trainer @ configs/math-python/rl/train.toml \
-  --orchestrator @ configs/math-python/rl/orch.toml \
-  --orchestrator.client.base-url http://localhost:8001/v1 \
-  --wandb.project math-python \
-  --wandb.name debug \
-  --trainer-gpu-ids 6,7 \
-  --output-dir outputs2 \
-  --log.level debug
+  --trainer-gpu-ids ... \
+  --wandb.project ... \
+  --wandb.name ...
 ```
 
 ## Evals
 
-TBD.
+### Qwen3-8B
+
+Start the inference server
+
+```bash
+uv run inference \
+  --model.name Qwen/Qwen3-8B \
+  --enable-auto-tool-choice \
+  --tool-call-parser hermes \
+  --parallel.dp ... \
+  --parallel.tp ...
+```
+
+Run evals against the training environment and common math benchmarks with and without tool use.
+
+```bash
+uv run eval \
+  --model.name Qwen/Qwen3-8B \
+  --environment-ids math-python \
+  --num-examples 500 \
+  --rollouts-per-example 1
+```
+
+Run evals against the training environment and common math benchmarks with and without tool use.
+
+```bash
+uv run eval \
+  --model.name Qwen/Qwen3-8B \
+  --environment-ids math500,aime2024,aime2025 \
+  --rollouts-per-example 2,32,32
+```
+
+### Qwen3-8B-Math-Python-RL
+
+Start the inference server
+
+```bash
+uv run inference \
+  --model.name mikasenghaas/Qwen3-8B-Math-Python-RL \
+  --enable-auto-tool-choice \
+  --tool-call-parser qwen3_coder \
+  --parallel.dp ... \
+  --parallel.tp ...
+```
+
+Run evals against the training environment and common math benchmarks with and without tool use.
+
+```bash
+# Training environment
+uv run eval \
+  --model.name mikasenghaas/Qwen3-8B-Math-Python-RL \
+  --environment-ids math-python \
+  --num-examples 500 \
+  --rollouts-per-example 1
+```
+
+```bash
+# Math benchmarks (w/o tool use)
+uv run eval \
+  --model.name mikasenghaas/Qwen3-8B-Math-Python-RL \
+  --environment-ids math500,aime2024,aime2025 \
+  --rollouts-per-example 2,32,32
+```
+
+```bash
+# Math benchmarks (w/ tool use)
+# TBD.
+```
+
+```txt
+Evaluated math-python in 390.11s (Avg@1=0.8728, Completion Length: 2278.98 (±6523.75, ∈[238.00, 48567.00]), Truncated: 2.0%)
+```
