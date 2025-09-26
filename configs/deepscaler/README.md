@@ -7,7 +7,14 @@ This is a reproduction of the [DeepScaleR](https://pretty-radio-b75.notion.site/
 Install the environment using the `prime` CLI.
 
 ```bash
-prime env install primeintellect/deepscaler-math
+# TODO: Change to `prime env install ...` later
+uv pip install -e ~/prime-environments/environments/deepscaler
+```
+
+Verify that the environment is installed correctly.
+
+```bash
+uv run python -c "import deepscaler"
 ```
 
 ## Evals
