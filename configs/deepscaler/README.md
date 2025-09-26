@@ -49,14 +49,19 @@ bash scripts/tmux.sh -s stage1 -o outputs/stage1
 ```
 
 ```bash
+# Run this in the `Inference` pane
+uv run inference @ configs/deepscaler/stage1/rl/infer.toml --parallel.tp 2 --parallel.dp 3 --max-model-len 16384
+```
+
+```bash
 # Run this in the `Trainer` pane
 uv run rl \
   --trainer @ configs/deepscaler/stage1/rl/train.toml \
   --orchestrator @ configs/deepscaler/stage1/rl/orch.toml \
-  --inference @ configs/deepscaler/stage1/rl/infer.toml \
+  --trainer-gpu-ids 6,7 \
   --output-dir outputs/stage1 \
-  --wandb.project ... \
-  --wandb.name ... \
+  --wandb.project deepscaler \
+  --wandb.name stage1-debug \
   --log.level debug
 ```
 
