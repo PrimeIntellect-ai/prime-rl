@@ -27,15 +27,16 @@ bash scripts/tmux.sh
 
 ```bash
 # Run this in the `Inference` pane
-uv run inference --model.name deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B
+uv run inference --model.name deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B --max-model-len 32768
 ```
 
 ```bash
-uv run eval \
-  --model.name deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B \
-  --environment-ids math500,aime2024 \
-  --rollouts-per-example 4,64
+uv run eval @ configs/deepscaler/eval.toml --rollouts-per-example 2,32
 ```
+
+We get the following results:
+- Evaluated math500 in 2184.55s (Avg@2=0.8280, Pass@1: 0.8269, Completion Length: 5473.66 (±7174.64, ∈[310.00, 32729.00]), Truncated: 3.1%)
+- Evaluated aime2024 in 2388.36s (Avg@32=0.2750, Pass@16: 0.6800, Completion Length: 17216.25 (±10389.03, ∈[1166.00, 32701.00]), Truncated: 18.8%)
 
 ## Training
 
