@@ -7,3 +7,6 @@ name = "PrimeIntellect/Qwen3-8B"
 
 [optim]
 lr = 1e-6
+
+[weights]
+interval = 50
