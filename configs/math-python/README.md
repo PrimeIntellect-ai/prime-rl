@@ -77,6 +77,7 @@ uv run inference \
   --model.name Qwen/Qwen3-8B \
   --enable-auto-tool-choice \
   --tool-call-parser hermes \
+  --max-model-len 32768 \
   --parallel.dp ... \
   --parallel.tp ...
 ```
@@ -97,8 +98,16 @@ Run evals against the training environment and common math benchmarks with and w
 uv run eval \
   --model.name Qwen/Qwen3-8B \
   --environment-ids math500,aime2024,aime2025 \
-  --rollouts-per-example 2,32,32
+  --environment-args '{"math500": {"use_think": true}, "aime2024": {"use_think": true}, "aime2025": {"use_think": true}}' \
+  --rollouts-per-example 1,16,16
 ```
+
+```txt
+Evaluated math500 in 1390.31s (Avg@1=0.9500, Pass@1: 0.9500, Completion Length: 5470.91 (±5107.79, ∈[952.00, 32694.00]), Truncated: 0.4%)
+Evaluated aime2024 in 1615.29s (Avg@16=0.7354, Pass@8: 0.8257, Completion Length: 15019.11 (±8507.26, ∈[3465.00, 32678.00]), Truncated: 4.8%)
+Evaluated aime2025 in 2268.85s (Avg@16=0.6687, Pass@8: 0.7837, Completion Length: 17807.96 (±9208.05, ∈[3377.00, 32663.00]), Truncated: 12.1%)
+```
+
 
 ### Qwen3-8B-Math-Python-RL
 
@@ -109,6 +118,7 @@ uv run inference \
   --model.name mikasenghaas/Qwen3-8B-Math-Python-RL \
   --enable-auto-tool-choice \
   --tool-call-parser qwen3_coder \
+  --max-model-len 32768 \
   --parallel.dp ... \
   --parallel.tp ...
 ```
@@ -120,8 +130,7 @@ Run evals against the training environment and common math benchmarks with and w
 uv run eval \
   --model.name mikasenghaas/Qwen3-8B-Math-Python-RL \
   --environment-ids math-python \
-  --num-examples 500 \
-  --rollouts-per-example 1
+  --num-examples 500
 ```
 
 ```bash
@@ -129,7 +138,8 @@ uv run eval \
 uv run eval \
   --model.name mikasenghaas/Qwen3-8B-Math-Python-RL \
   --environment-ids math500,aime2024,aime2025 \
-  --rollouts-per-example 2,32,32
+  --environment-args '{"math500": {"use_think": true}, "aime2024": {"use_think": true}, "aime2025": {"use_think": true}}' \
+  --rollouts-per-example 1,16,16
 ```
 
 ```bash
@@ -139,4 +149,5 @@ uv run eval \
 
 ```txt
 Evaluated math-python in 390.11s (Avg@1=0.8728, Completion Length: 2278.98 (±6523.75, ∈[238.00, 48567.00]), Truncated: 2.0%)
+Evaluated aime2024 in 5302.62s (Avg@32=0.6885, Pass@16: 0.8660, Completion Length: 20740.15 (±15352.81, ∈[1727.00, 40883.00]), Truncated: 28.2%)
 ```
