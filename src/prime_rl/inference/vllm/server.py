@@ -5,7 +5,7 @@ from typing import Any, Optional
 
 import uvloop
 import vllm.envs as envs
-from fastapi import Request
+from pydantic import BaseModel, Field
 from vllm.config import LogprobsMode
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.protocol import EngineClient
@@ -47,6 +47,12 @@ async def custom_build_async_engine_client(
         yield engine
 
 
+class UpdateWeightsRequest(BaseModel):
+    model_path: str = Field(
+        ..., description="Local path or HF repo id of the weights to load", examples=["/models/foo/ckpt"]
+    )
+
+
 # Copied from vllm/entrypoints/openai/api_server.py
 # Only difference is that we inject custom routes and build async engine client differently
 async def custom_run_server_worker(listen_address, sock, args, client_config=None, **uvicorn_kwargs) -> None:
@@ -65,14 +71,12 @@ async def custom_run_server_worker(listen_address, sock, args, client_config=Non
 
         ### CUSTOM ENDPOINTS ###
         @app.post("/update_weights")
-        async def _update_weights(request: Request):
-            data = await request.json()
-            model_path = data.get("model_path")
-            await engine_client.collective_rpc("update_weights", args=(model_path,))
+        async def _update_weights(request: UpdateWeightsRequest):
+            await engine_client.collective_rpc("update_weights", args=(request.model_path,))
             return {"status": "ok"}
 
         @app.post("/reload_weights")
-        async def _reload_weights(request: Request):
+        async def _reload_weights():
             await engine_client.collective_rpc("reload_weights")
             return {"status": "ok"}
 
