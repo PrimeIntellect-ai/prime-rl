@@ -37,7 +37,6 @@ from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple, logging
 from transformers.utils.deprecation import deprecate_kwarg
-from transformers.utils.generic import check_model_inputs
 
 from prime_rl.trainer.custom_models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.custom_models.layers.rms_norm import RMSNorm, RMSNormConfig
@@ -155,7 +154,6 @@ class LlamaModel(LlamaPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @check_model_inputs
     @auto_docstring
     def forward(
         self,
@@ -256,11 +254,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
         outputs: BaseModelOutputWithPast = self.model(
             input_ids=input_ids,
             position_ids=position_ids,
-            past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
-            use_cache=use_cache,
-            cache_position=cache_position,
-            **kwargs,
         )
 
         hidden_states = outputs.last_hidden_state
