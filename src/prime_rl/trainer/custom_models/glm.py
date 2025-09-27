@@ -172,7 +172,7 @@ class Glm4MoeConfig(PretrainedConfig):
     }
     base_model_pp_plan = {
         "embed_tokens": (["input_ids"], ["inputs_embeds"]),
-        "layers": (["hidden_states", "attention_mask"], ["hidden_states"]),
+        "layers": (["hidden_states"], ["hidden_states"]),
         "norm": (["hidden_states"], ["hidden_states"]),
     }
 
@@ -310,7 +310,6 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[Cache] = None,
         use_cache: Optional[bool] = False,
@@ -325,15 +324,9 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
         # Self Attention
         hidden_states, _ = self.self_attn(
             hidden_states=hidden_states,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            use_cache=use_cache,
-            cache_position=cache_position,
             position_embeddings=position_embeddings,
             cu_seqlens=cu_seqlens,
             max_seqlen=max_seqlen,
-            **kwargs,
         )
         hidden_states = residual + hidden_states
 
@@ -426,7 +419,6 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[Cache] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
@@ -464,18 +456,9 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
             max_seqlen = seqlens.max().item()
             cu_seqlens = seqlens.cumsum(dim=0, dtype=torch.int32)
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
-            causal_mask = None
         else:
             max_seqlen = None
             cu_seqlens = None
-            causal_mask = create_causal_mask(
-                config=self.config,
-                input_embeds=inputs_embeds,
-                attention_mask=attention_mask,
-                cache_position=cache_position,
-                past_key_values=past_key_values,
-                position_ids=position_ids,
-            )
 
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
@@ -483,7 +466,6 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
         for decoder_layer in self.layers[: self.config.num_hidden_layers]:
             hidden_states = decoder_layer(
                 hidden_states,
-                attention_mask=causal_mask,
                 position_ids=position_ids,
                 past_key_values=past_key_values,
                 cache_position=cache_position,
@@ -520,7 +502,6 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[Cache] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
@@ -550,7 +531,6 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
 
         outputs: BaseModelOutputWithPast = self.model(
             input_ids=input_ids,
-            attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
