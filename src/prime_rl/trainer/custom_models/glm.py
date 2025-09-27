@@ -18,13 +18,10 @@ from typing import Optional, Union
 
 import torch
 from torch import nn
-
-# from prime_rl.trainer.custom_models.layers.moe import MoE, MoEArgs
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.configuration_utils import PretrainedConfig
 from transformers.generation import GenerationMixin
-from transformers.masking_utils import create_causal_mask
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update, rope_config_validation
