@@ -29,6 +29,11 @@ from prime_rl.trainer.model import (
     is_tt_moe_model,
     get_load_balance_stats,
 )
+from prime_rl.trainer.custom_models.layers.moe import (
+    RoutingReplay,
+    enable_routing_replay,
+    set_routing_replay_stage,
+)
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
@@ -82,6 +87,13 @@ def train(config: RLTrainerConfig):
     logger.info(f"Initializing model and tokenizer ({config.model})")
     model = setup_model(config.model, parallel_dims)
     tokenizer = setup_tokenizer(config.model)
+
+    use_routing_replay = config.use_routing_replay and is_tt_moe_model(model)
+    if config.use_routing_replay:
+        assert config.loss.type == "grpo"
+        assert config.recompute_logprobs
+        assert is_tt_moe_model(model)
+        enable_routing_replay(True)
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -216,6 +228,8 @@ def train(config: RLTrainerConfig):
             if og_infer_step == infer_step:
                 del tensor_offloaded_repository[infer_step]
 
+            if use_routing_replay:
+                set_routing_replay_stage("record")
             with torch.no_grad():
                 for micro_step, micro_batch in enumerate(micro_batches):
                     input_ids = micro_batch["input_ids"].to("cuda")
@@ -235,6 +249,9 @@ def train(config: RLTrainerConfig):
 
                     micro_batch["logprobs"] = recomputed_logprobs.cpu()
                     recomputed_logprob_errors[micro_step] = recomputed_logprob_error
+
+            if use_routing_replay:
+                set_routing_replay_stage(None)
 
             # here we sepcifically don't save the tensor offloaded, they are alreay consumed and we will never use it again.
             # this avoid having to make sure we don't keep too much tensor offloaded in cpu memory
@@ -270,6 +287,8 @@ def train(config: RLTrainerConfig):
             micro_batch_size, seq_len = input_ids.shape
 
             # Forward pass
+            if use_routing_replay:
+                set_routing_replay_stage("replay_forward")
             with maybe_record_function("forward"):
                 logits = forward(model, input_ids, position_ids).float().contiguous()
             shifted_logits = shift_logits(logits)
@@ -295,8 +314,12 @@ def train(config: RLTrainerConfig):
             del logits, shifted_logits
 
             # Backward pass
+            if use_routing_replay:
+                set_routing_replay_stage("replay_backward")
             with maybe_record_function("backward"):
                 loss.backward()
+            if use_routing_replay:
+                set_routing_replay_stage(None)
 
             # Add relevant tensors to tensor dict for logging purposes
             tensors["probs"].append(torch.exp(logprobs)[loss_mask].detach().to("cpu"))
@@ -402,6 +425,10 @@ def train(config: RLTrainerConfig):
             "step": progress.step,
         }
         monitor.log(time_metrics)
+
+        if use_routing_replay:
+            RoutingReplay.clear_all()
+            set_routing_replay_stage(None)
 
         # Log distributions to W&B table if enabled
         assert all(len(tensors) == 1 for tensors in tensors.values()), "Tensors must be lists of length 1"

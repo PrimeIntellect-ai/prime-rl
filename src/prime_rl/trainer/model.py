@@ -14,6 +14,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, ModelConfig
 from prime_rl.trainer.custom_models import AutoModelForCausalLMPrimeRL
+from prime_rl.trainer.custom_models.layers.moe import register_routing_replay_keys
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
 
@@ -234,6 +235,7 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
 
         get_logger().info(f"model signature: {get_module_signature(model, compress=True)}")
 
+    register_routing_replay_keys(model)
     get_logger().info(f"model num_layers: {len(model.model.layers)}")
     return model
 
