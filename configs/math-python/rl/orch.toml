@@ -1,5 +1,5 @@
 max_steps = 300
-seq_len = 12288
+seq_len = 8192
 batch_size = 1024
 micro_batch_size = 1
 rollouts_per_example = 16
@@ -12,7 +12,7 @@ id = "math-python"
 
 [environment.args]
 use_think = true
-max_turns = 10
+max_turns = -1
 
 [sampling]
-max_tokens = 12288
+max_tokens = 8192
