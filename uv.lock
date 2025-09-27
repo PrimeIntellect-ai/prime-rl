@@ -2595,7 +2595,6 @@ dependencies = [
     { name = "torchtitan" },
     { name = "transformers" },
     { name = "uvloop" },
-    { name = "verifiers" },
     { name = "vllm" },
     { name = "wandb" },
 ]
@@ -2687,7 +2686,6 @@ requires-dist = [
     { name = "transformers", specifier = ">=4.56.0" },
     { name = "unscramble", marker = "extra == 'vf'", specifier = ">=0.1.3", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", specifier = ">=0.1.4" },
     { name = "vllm", specifier = "==0.10.2" },
     { name = "wandb", specifier = ">=0.20.1" },
 ]
