@@ -17,7 +17,6 @@ import warnings
 from typing import Optional, Union
 
 import torch
-import torch.nn.functional as F
 from torch import nn
 
 # from prime_rl.trainer.custom_models.layers.moe import MoE, MoEArgs
@@ -25,9 +24,7 @@ from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.configuration_utils import PretrainedConfig
 from transformers.generation import GenerationMixin
-from transformers.integrations import use_kernel_forward_from_hub
 from transformers.masking_utils import create_causal_mask
-from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update, rope_config_validation
@@ -37,12 +34,9 @@ from transformers.utils import TransformersKwargs, auto_docstring, can_return_tu
 from transformers.utils.deprecation import deprecate_kwarg
 from transformers.utils.generic import check_model_inputs
 
+from prime_rl.trainer.custom_models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.custom_models.layers.moe import MoE, MoEArgs
-
-try:
-    from flash_attn import flash_attn_varlen_func
-except ImportError:
-    flash_attn_varlen_func = None
+from prime_rl.trainer.custom_models.layers.rms_norm import RMSNorm, RMSNormConfig
 
 
 class Glm4MoeConfig(PretrainedConfig):
@@ -259,187 +253,6 @@ class Glm4MoeConfig(PretrainedConfig):
         )
 
 
-def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
-    """
-    This is the equivalent of torch.repeat_interleave(x, dim=1, repeats=n_rep). The hidden states go from (batch,
-    num_key_value_heads, seqlen, head_dim) to (batch, num_attention_heads, seqlen, head_dim)
-    """
-    batch, num_key_value_heads, slen, head_dim = hidden_states.shape
-    if n_rep == 1:
-        return hidden_states
-    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
-    return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
-
-
-def eager_attention_forward(
-    module: nn.Module,
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
-    attention_mask: Optional[torch.Tensor],
-    scaling: float,
-    dropout: float = 0.0,
-    **kwargs: Unpack[TransformersKwargs],
-):
-    key_states = repeat_kv(key, module.num_key_value_groups)
-    value_states = repeat_kv(value, module.num_key_value_groups)
-
-    attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
-    if attention_mask is not None:
-        causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
-        attn_weights = attn_weights + causal_mask
-
-    attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
-    attn_weights = nn.functional.dropout(attn_weights, p=dropout, training=module.training)
-    attn_output = torch.matmul(attn_weights, value_states)
-    attn_output = attn_output.transpose(1, 2).contiguous()
-
-    return attn_output, attn_weights
-
-
-def rotate_half(x):
-    """Rotates half the hidden dims of the input."""
-    x1 = x[..., : x.shape[-1] // 2]
-    x2 = x[..., x.shape[-1] // 2 :]
-    return torch.cat((-x2, x1), dim=-1)
-
-
-def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
-    """Applies Rotary Position Embedding to the query and key tensors.
-
-    Args:
-        q (`torch.Tensor`): The query tensor.
-        k (`torch.Tensor`): The key tensor.
-        cos (`torch.Tensor`): The cosine part of the rotary embedding.
-        sin (`torch.Tensor`): The sine part of the rotary embedding.
-        position_ids (`torch.Tensor`, *optional*):
-            Deprecated and unused.
-        unsqueeze_dim (`int`, *optional*, defaults to 1):
-            The 'unsqueeze_dim' argument specifies the dimension along which to unsqueeze cos[position_ids] and
-            sin[position_ids] so that they can be properly broadcasted to the dimensions of q and k. For example, note
-            that cos[position_ids] and sin[position_ids] have the shape [batch_size, seq_len, head_dim]. Then, if q and
-            k have the shape [batch_size, heads, seq_len, head_dim], then setting unsqueeze_dim=1 makes
-            cos[position_ids] and sin[position_ids] broadcastable to the shapes of q and k. Similarly, if q and k have
-            the shape [batch_size, seq_len, heads, head_dim], then set unsqueeze_dim=2.
-    Returns:
-        `tuple(torch.Tensor)` comprising of the query and key tensors rotated using the Rotary Position Embedding.
-    """
-    cos = cos.unsqueeze(unsqueeze_dim)
-    sin = sin.unsqueeze(unsqueeze_dim)
-
-    # Keep half or full tensor for later concatenation
-    rotary_dim = cos.shape[-1]
-    q_rot, q_pass = q[..., :rotary_dim], q[..., rotary_dim:]
-    k_rot, k_pass = k[..., :rotary_dim], k[..., rotary_dim:]
-
-    # Apply rotary embeddings on the first half or full tensor
-    q_embed = (q_rot * cos) + (rotate_half(q_rot) * sin)
-    k_embed = (k_rot * cos) + (rotate_half(k_rot) * sin)
-
-    # Concatenate back to full shape
-    q_embed = torch.cat([q_embed, q_pass], dim=-1)
-    k_embed = torch.cat([k_embed, k_pass], dim=-1)
-    return q_embed, k_embed
-
-
-class Glm4MoeAttention(nn.Module):
-    """Multi-headed attention from 'Attention Is All You Need' paper"""
-
-    def __init__(self, config: Glm4MoeConfig, layer_idx: Optional[int] = None):
-        super().__init__()
-        self.config = config
-        self.layer_idx = layer_idx
-        self.head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
-        self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
-        self.scaling = self.head_dim**-0.5
-        self.rope_scaling = config.rope_scaling
-        self.attention_dropout = config.attention_dropout
-        self.is_causal = True
-
-        self.q_proj = nn.Linear(
-            config.hidden_size, config.num_attention_heads * self.head_dim, bias=config.attention_bias
-        )
-        self.k_proj = nn.Linear(
-            config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
-        )
-        self.v_proj = nn.Linear(
-            config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
-        )
-        self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=False)
-        self.use_qk_norm = config.use_qk_norm
-        if self.use_qk_norm:
-            self.q_norm = Glm4MoeRMSNorm(self.head_dim, eps=config.rms_norm_eps)
-            self.k_norm = Glm4MoeRMSNorm(self.head_dim, eps=config.rms_norm_eps)
-
-    @deprecate_kwarg("past_key_value", new_name="past_key_values", version="4.58")
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        attention_mask: Optional[torch.Tensor],
-        past_key_values: Optional[Cache] = None,
-        cache_position: Optional[torch.LongTensor] = None,
-        cu_seqlens: Optional[torch.LongTensor] = None,
-        max_seqlen: Optional[int] = None,
-        **kwargs: Unpack[FlashAttentionKwargs],
-    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
-        input_shape = hidden_states.shape[:-1]
-        hidden_shape = (*input_shape, -1, self.head_dim)
-
-        query_states = self.q_proj(hidden_states).view(hidden_shape)
-        key_states = self.k_proj(hidden_states).view(hidden_shape)
-        value_states = self.v_proj(hidden_states).view(hidden_shape)
-
-        if self.use_qk_norm:  # main diff from Llama
-            query_states = self.q_norm(query_states)
-            key_states = self.k_norm(key_states)
-
-        query_states = query_states.transpose(1, 2)
-        key_states = key_states.transpose(1, 2)
-        value_states = value_states.transpose(1, 2)
-
-        cos, sin = position_embeddings
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
-
-        if past_key_values is not None:
-            # sin and cos are specific to RoPE models; position_ids needed for the static cache
-            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-            key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx, cache_kwargs)
-
-        if self.config._attn_implementation == "flash_attention_2":
-            # TODO: Can we optimize the rotary applicaiton instead of double transpose?
-            query_states = query_states.transpose(1, 2)
-            key_states = key_states.transpose(1, 2)
-            value_states = value_states.transpose(1, 2)
-            out = flash_attn_varlen_func(
-                query_states[0],
-                key_states[0],
-                value_states[0],
-                cu_seqlens,
-                cu_seqlens,
-                max_seqlen,
-                max_seqlen,
-                causal=True,
-            )
-            out = out.contiguous()
-            attn_output = out.view(1, out.shape[0], -1)
-        elif self.config._attn_implementation == "sdpa":
-            key_states = key_states.repeat_interleave(self.num_key_value_groups, dim=1)
-            value_states = value_states.repeat_interleave(self.num_key_value_groups, dim=1)
-            out = F.scaled_dot_product_attention(query_states, key_states, value_states, is_causal=True)
-            out = out.transpose(1, 2).contiguous()  # .view(out.shape[0], out.shape[1], -1)
-            attn_output = out.view(out.shape[0], out.shape[1], -1)
-        else:
-            raise NotImplementedError(
-                f"Only flash_attention_2 and sdpa are supported for custom glm4_moe for now not {self.config._attn_implementation}"
-            )
-        attn_weights = None
-
-        # attn_output = attn_output.reshape(*input_shape, -1).contiguous()
-        attn_output = self.o_proj(attn_output)
-        return attn_output, attn_weights
-
-
 class Glm4MoeMLP(nn.Module):
     def __init__(self, config, hidden_size=None, intermediate_size=None):
         super().__init__()
@@ -457,132 +270,21 @@ class Glm4MoeMLP(nn.Module):
         return down_proj
 
 
-class Glm4MoeTopkRouter(nn.Module):
-    def __init__(self, config: Glm4MoeConfig):
-        super().__init__()
-        self.config = config
-        self.top_k = config.num_experts_per_tok
-        self.n_routed_experts = config.n_routed_experts
-        self.routed_scaling_factor = config.routed_scaling_factor
-        self.n_group = config.n_group
-        self.topk_group = config.topk_group
-        self.norm_topk_prob = config.norm_topk_prob
-
-        self.weight = nn.Parameter(torch.empty((self.n_routed_experts, config.hidden_size)))
-        self.register_buffer("e_score_correction_bias", torch.zeros((self.n_routed_experts), dtype=torch.float32))
-
-    @torch.no_grad()
-    def get_topk_indices(self, scores):
-        scores_for_choice = scores.view(-1, self.n_routed_experts) + self.e_score_correction_bias.unsqueeze(0)
-        group_scores = (
-            scores_for_choice.view(-1, self.n_group, self.n_routed_experts // self.n_group)
-            .topk(2, dim=-1)[0]
-            .sum(dim=-1)
-        )
-        group_idx = torch.topk(group_scores, k=self.topk_group, dim=-1, sorted=False)[1]
-        group_mask = torch.zeros_like(group_scores)
-        group_mask.scatter_(1, group_idx, 1)
-        score_mask = (
-            group_mask.unsqueeze(-1)
-            .expand(-1, self.n_group, self.n_routed_experts // self.n_group)
-            .reshape(-1, self.n_routed_experts)
-        )
-        scores_for_choice = scores_for_choice.masked_fill(~score_mask.bool(), 0.0)
-        topk_indices = torch.topk(scores_for_choice, k=self.top_k, dim=-1, sorted=False)[1]
-        return topk_indices
-
-    def forward(self, hidden_states):
-        hidden_states = hidden_states.view(-1, self.config.hidden_size)
-        router_logits = F.linear(hidden_states.type(torch.float32), self.weight.type(torch.float32))
-        scores = router_logits.sigmoid()
-        topk_indices = self.get_topk_indices(scores)
-        topk_weights = scores.gather(1, topk_indices)
-        if self.norm_topk_prob:
-            denominator = topk_weights.sum(dim=-1, keepdim=True) + 1e-20
-            topk_weights /= denominator
-        topk_weights = topk_weights * self.routed_scaling_factor
-        return topk_indices, topk_weights
-
-
-@use_kernel_forward_from_hub("RMSNorm")
-class Glm4MoeRMSNorm(nn.Module):
-    def __init__(self, hidden_size, eps=1e-6):
-        """
-        Glm4MoeRMSNorm is equivalent to T5LayerNorm
-        """
-        super().__init__()
-        self.weight = nn.Parameter(torch.ones(hidden_size))
-        self.variance_epsilon = eps
-
-    def forward(self, hidden_states):
-        input_dtype = hidden_states.dtype
-        hidden_states = hidden_states.to(torch.float32)
-        variance = hidden_states.pow(2).mean(-1, keepdim=True)
-        hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
-        return self.weight * hidden_states.to(input_dtype)
-
-    def extra_repr(self):
-        return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}"
-
-
-class Glm4MoeMoE(nn.Module):
-    """
-    A mixed expert module containing shared experts.
-    """
-
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        self.experts = nn.ModuleList(
-            [Glm4MoeMLP(config, intermediate_size=config.moe_intermediate_size) for _ in range(config.n_routed_experts)]
-        )
-        self.gate = Glm4MoeTopkRouter(config)
-        self.shared_experts = Glm4MoeMLP(
-            config=config, intermediate_size=config.moe_intermediate_size * config.n_shared_experts
-        )
-
-    def moe(self, hidden_states: torch.Tensor, topk_indices: torch.Tensor, topk_weights: torch.Tensor):
-        r"""
-        CALL FOR CONTRIBUTION! I don't have time to optimise this right now, but expert weights need to be fused
-        to not have to do a loop here (deepseek has 256 experts soooo yeah).
-        """
-        final_hidden_states = torch.zeros_like(hidden_states, dtype=topk_weights.dtype)
-        expert_mask = torch.nn.functional.one_hot(topk_indices, num_classes=len(self.experts))
-        expert_mask = expert_mask.permute(2, 0, 1)
-
-        for expert_idx in range(len(self.experts)):
-            expert = self.experts[expert_idx]
-            mask = expert_mask[expert_idx]
-            token_indices, weight_indices = torch.where(mask)
-
-            if token_indices.numel() > 0:
-                expert_weights = topk_weights[token_indices, weight_indices]
-                expert_input = hidden_states[token_indices]
-                expert_output = expert(expert_input)
-                weighted_output = expert_output * expert_weights.unsqueeze(-1)
-                final_hidden_states.index_add_(0, token_indices, weighted_output)
-
-        # in original deepseek, the output of the experts are gathered once we leave this module
-        # thus the moe module is itelsf an IsolatedParallel module
-        # and all expert are "local" meaning we shard but we don't gather
-        return final_hidden_states.type(hidden_states.dtype)
-
-    def forward(self, hidden_states):
-        residuals = hidden_states
-        orig_shape = hidden_states.shape
-        topk_indices, topk_weights = self.gate(hidden_states)
-        hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
-        hidden_states = self.moe(hidden_states, topk_indices, topk_weights).view(*orig_shape)
-        hidden_states = hidden_states + self.shared_experts(residuals)
-        return hidden_states
-
-
 class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
     def __init__(self, config: Glm4MoeConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
-
-        self.self_attn = Glm4MoeAttention(config=config, layer_idx=layer_idx)
+        attn_config = AttentionConfig(
+            hidden_size=config.hidden_size,
+            head_dim=config.hidden_size // config.num_attention_heads,
+            num_attention_heads=config.num_attention_heads,
+            num_key_value_heads=config.num_key_value_heads,
+            is_causal=True,
+            attention_bias=config.attention_bias,
+            use_qk_norm=config.use_qk_norm,
+            rms_norm_eps=config.rms_norm_eps,
+        )
+        self.self_attn = ATTN_IMPL2CLASS[config._attn_implementation](attn_config)
 
         moe_args = MoEArgs(
             num_experts=config.n_routed_experts,
@@ -601,8 +303,8 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
         else:
             self.mlp = Glm4MoeMLP(config)
 
-        self.input_layernorm = Glm4MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = Glm4MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
+        self.post_attention_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
 
     @deprecate_kwarg("past_key_value", new_name="past_key_values", version="4.58")
     def forward(
@@ -657,13 +359,10 @@ class Glm4MoePreTrainedModel(PreTrainedModel):
     _supports_attention_backend = True
     _can_record_outputs = {
         "hidden_states": Glm4MoeDecoderLayer,
-        "attentions": Glm4MoeAttention,
     }
 
     def _init_weights(self, module):
         super()._init_weights(module)
-        if isinstance(module, Glm4MoeTopkRouter):
-            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
 
 
 class Glm4MoeRotaryEmbedding(nn.Module):
@@ -715,7 +414,7 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
         self.layers = nn.ModuleList(
             [Glm4MoeDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
-        self.norm = Glm4MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
         self.rotary_emb = Glm4MoeRotaryEmbedding(config=config)
         self.gradient_checkpointing = False
 
