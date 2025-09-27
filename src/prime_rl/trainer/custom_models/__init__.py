@@ -9,6 +9,7 @@ from transformers.models.llama.configuration_llama import LlamaConfig
 
 from prime_rl.trainer.custom_models.glm import Glm4MoeConfig, Glm4MoeForCausalLM
 from prime_rl.trainer.custom_models.llama import LlamaForCausalLM
+from prime_rl.trainer.custom_models.qwen import Qwen3MoeConfig, Qwen3MoeForCausalLM
 
 # Make custom config discoverable by AutoConfig
 AutoConfig.register("glm4_moe", Glm4MoeConfig, exist_ok=True)
@@ -16,6 +17,7 @@ AutoConfig.register("glm4_moe", Glm4MoeConfig, exist_ok=True)
 _CUSTOM_CAUSAL_LM_MAPPING = _LazyAutoMapping(CONFIG_MAPPING_NAMES, OrderedDict())
 _CUSTOM_CAUSAL_LM_MAPPING.register(LlamaConfig, LlamaForCausalLM, exist_ok=True)
 _CUSTOM_CAUSAL_LM_MAPPING.register(Glm4MoeConfig, Glm4MoeForCausalLM, exist_ok=True)
+_CUSTOM_CAUSAL_LM_MAPPING.register(Qwen3MoeConfig, Qwen3MoeForCausalLM, exist_ok=True)
 
 
 class AutoModelForCausalLMPrimeRL(_BaseAutoModelClass):
