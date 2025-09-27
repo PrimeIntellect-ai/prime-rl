@@ -1,4 +1,4 @@
-max_steps = 500
+max_steps = 300
 
 [model]
 name = "PrimeIntellect/Qwen3-8B"
@@ -9,4 +9,4 @@ name = "PrimeIntellect/Qwen3-8B"
 lr = 1e-6
 
 [weights]
-interval = 50
+interval = 100
