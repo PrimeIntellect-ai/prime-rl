@@ -10,5 +10,8 @@ name = "PrimeIntellect/Qwen3-8B"
 [environment]
 id = "math-python"
 
+[environment.args]
+max_turns = 10
+
 [sampling]
 max_tokens = 16384
