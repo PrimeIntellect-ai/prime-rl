@@ -13,3 +13,6 @@ id = "math-python"
 [environment.args]
 use_think = true
 max_turns = 10
+
+[sampling]
+max_tokens = 12288
