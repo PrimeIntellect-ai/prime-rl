@@ -85,6 +85,8 @@ def compute_loss(
     total_importance_ratio = []
     total_masked_importance_ratio = []
     total_is_masked = []
+    total_is_masked_low = []
+    total_is_masked_high = []
 
     for logprobs, old_logprobs, advantages, loss_mask in zip(logprobs, old_logprobs, advantages, loss_mask):
         log_importance_ratio = logprobs - old_logprobs
@@ -101,6 +103,8 @@ def compute_loss(
         )
         masked_importance_ratio = importance_ratio * keep_mask.float()
         loss = -masked_importance_ratio * advantages
+        is_masked_low = (importance_ratio < loss_config.mask_ratio_low).float()
+        is_masked_high = (importance_ratio > loss_config.mask_ratio_high).float()
         is_masked = (~keep_mask).float()
 
         # Apply loss mask and sum
@@ -116,6 +120,8 @@ def compute_loss(
         total_importance_ratio.append(importance_ratio)
         total_masked_importance_ratio.append(masked_importance_ratio)
         total_is_masked.append(is_masked)
+        total_is_masked_low.append(is_masked_low)
+        total_is_masked_high.append(is_masked_high)
 
     # Apply loss scaling
     scaled_loss = total_loss / max(loss_scale, 1)
@@ -124,4 +130,6 @@ def compute_loss(
         "importance_ratio": torch.cat(total_importance_ratio),
         "masked_importance_ratio": torch.cat(total_masked_importance_ratio),
         "is_masked": torch.cat(total_is_masked),
+        "is_masked_low": torch.cat(total_is_masked_low),
+        "is_masked_high": torch.cat(total_is_masked_high),
     }
