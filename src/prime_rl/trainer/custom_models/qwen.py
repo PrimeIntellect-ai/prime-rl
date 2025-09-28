@@ -20,7 +20,6 @@ from torch import nn
 from transformers.cache_utils import Cache
 from transformers.configuration_utils import PretrainedConfig
 from transformers.generation import GenerationMixin
-from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.modeling_layers import (
     GradientCheckpointingLayer,
 )
@@ -29,7 +28,6 @@ from transformers.modeling_rope_utils import rope_config_validation
 from transformers.modeling_utils import PreTrainedModel
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple, logging
-from transformers.utils.generic import check_model_inputs
 
 from prime_rl.trainer.custom_models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.custom_models.layers.mlp import MLP, MLPConfig
@@ -256,7 +254,7 @@ class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
 
         attn_config = AttentionConfig(
             hidden_size=config.hidden_size,
-            head_dim=config.hidden_size // config.num_attention_heads,
+            head_dim=getattr(config, "head_dim", config.hidden_size // config.num_attention_heads),
             num_attention_heads=config.num_attention_heads,
             num_key_value_heads=config.num_key_value_heads,
             is_causal=True,
@@ -265,6 +263,7 @@ class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
             rms_norm_eps=config.rms_norm_eps,
         )
         # TODO: Sliding window support
+        print(attn_config)
         self.self_attn = ATTN_IMPL2CLASS[config._attn_implementation](attn_config)
 
         moe_args = MoEArgs(
@@ -299,49 +298,17 @@ class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
         self,
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_value: Optional[tuple[torch.Tensor]] = None,
-        cache_position: Optional[torch.LongTensor] = None,
-        **kwargs: Unpack[FlashAttentionKwargs],
+        cu_seqlens: torch.LongTensor | None = None,
+        max_seqlen: int | None = None,
     ) -> torch.FloatTensor:
-        """
-        Args:
-            hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
-            attention_mask (`torch.FloatTensor`, *optional*): attention mask of size
-                `(batch, sequence_length)` where padding elements are indicated by 0.
-            output_attentions (`bool`, *optional*):
-                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
-                returned tensors for more detail.
-            output_router_logits (`bool`, *optional*):
-                Whether or not to return the logits of all the routers. They are useful for computing the router loss,
-                and should not be returned during inference.
-            use_cache (`bool`, *optional*):
-                If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding
-                (see `past_key_values`).
-            past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
-            cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
-                Indices depicting the position of the input sequence tokens in the sequence.
-            position_embeddings (`tuple[torch.FloatTensor, torch.FloatTensor]`, *optional*):
-                Tuple containing the cosine and sine positional embeddings of shape `(batch_size, seq_len, head_dim)`,
-                with `head_dim` being the embedding dimension of each attention head.
-            kwargs (`dict`, *optional*):
-                Arbitrary kwargs to be ignored, used for FSDP and other methods that injects code
-                into the model
-        """
         residual = hidden_states
-
         hidden_states = self.input_layernorm(hidden_states)
-
         # Self Attention
         hidden_states, _ = self.self_attn(
             hidden_states=hidden_states,
             position_embeddings=position_embeddings,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_value=past_key_value,
-            cache_position=cache_position,
-            **kwargs,
+            cu_seqlens=cu_seqlens,
+            max_seqlen=max_seqlen,
         )
         hidden_states = residual + hidden_states
 
@@ -349,11 +316,7 @@ class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
-        # For the MoE layers, we need to unpack
-        if isinstance(hidden_states, tuple):
-            hidden_states, _ = hidden_states
         hidden_states = residual + hidden_states
-
         return hidden_states
 
 
@@ -402,7 +365,6 @@ class Qwen3MoeModel(Qwen3MoePreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @check_model_inputs
     @auto_docstring
     def forward(
         self,
@@ -439,7 +401,6 @@ class Qwen3MoeModel(Qwen3MoePreTrainedModel):
             hidden_states = decoder_layer(
                 hidden_states,
                 position_embeddings=position_embeddings,
-                position_ids=position_ids,
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
             )
@@ -601,14 +562,8 @@ class Qwen3MoeForCausalLM(Qwen3MoePreTrainedModel, GenerationMixin):
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs: MoeModelOutputWithPast = self.model(
             input_ids=input_ids,
-            attention_mask=attention_mask,
             position_ids=position_ids,
-            past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
-            use_cache=use_cache,
-            output_router_logits=output_router_logits,
-            cache_position=cache_position,
-            **kwargs,
         )
 
         hidden_states = outputs.last_hidden_state

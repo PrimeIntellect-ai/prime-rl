@@ -13,6 +13,7 @@ from prime_rl.trainer.custom_models.qwen import Qwen3MoeConfig, Qwen3MoeForCausa
 
 # Make custom config discoverable by AutoConfig
 AutoConfig.register("glm4_moe", Glm4MoeConfig, exist_ok=True)
+AutoConfig.register("qwen3_moe", Qwen3MoeConfig, exist_ok=True)
 
 _CUSTOM_CAUSAL_LM_MAPPING = _LazyAutoMapping(CONFIG_MAPPING_NAMES, OrderedDict())
 _CUSTOM_CAUSAL_LM_MAPPING.register(LlamaConfig, LlamaForCausalLM, exist_ok=True)
