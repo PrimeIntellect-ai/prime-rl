@@ -37,10 +37,10 @@ from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple, logging
 from transformers.utils.deprecation import deprecate_kwarg
 
-from prime_rl.trainer.custom_models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
-from prime_rl.trainer.custom_models.layers.mlp import MLP, MLPConfig
-from prime_rl.trainer.custom_models.layers.rms_norm import RMSNorm, RMSNormConfig
-from prime_rl.trainer.custom_models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
+from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
+from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
+from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
+from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 
 logger = logging.get_logger(__name__)
 

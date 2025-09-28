@@ -7,9 +7,9 @@ from transformers.models.auto.auto_factory import _BaseAutoModelClass, _LazyAuto
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
 from transformers.models.llama.configuration_llama import LlamaConfig
 
-from prime_rl.trainer.custom_models.glm import Glm4MoeConfig, Glm4MoeForCausalLM
-from prime_rl.trainer.custom_models.llama import LlamaForCausalLM
-from prime_rl.trainer.custom_models.qwen import Qwen3MoeConfig, Qwen3MoeForCausalLM
+from prime_rl.trainer.models.glm import Glm4MoeConfig, Glm4MoeForCausalLM
+from prime_rl.trainer.models.llama import LlamaForCausalLM
+from prime_rl.trainer.models.qwen import Qwen3MoeConfig, Qwen3MoeForCausalLM
 
 # Make custom config discoverable by AutoConfig
 AutoConfig.register("glm4_moe", Glm4MoeConfig, exist_ok=True)

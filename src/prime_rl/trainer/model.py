@@ -13,7 +13,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, ModelConfig
-from prime_rl.trainer.custom_models import AutoModelForCausalLMPrimeRL
+from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
 
@@ -134,12 +134,13 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     from huggingface_hub import snapshot_download
     from torch.distributed.checkpoint import DefaultLoadPlanner, HuggingFaceStorageReader
+
     model.to_empty(device="cuda")
 
     if config.debug.random_init:
         get_logger().warning("Zero initialization model. skipping HF checkpoint loading.")
-        return 
-    
+        return
+
     path_snapshot = snapshot_download(repo_id=config.name, repo_type="model")
     dcp.load(
         model.state_dict(),
