@@ -9,6 +9,7 @@ import pandas as pd
 import torch
 from datasets import Dataset, DatasetDict, load_from_disk
 from openai import AsyncOpenAI
+from transformers import PreTrainedTokenizerBase
 from verifiers import load_environment
 from verifiers.types import GenerateOutputs, Messages
 
@@ -129,6 +130,7 @@ def make_dataset(results: GenerateOutputs) -> Dataset:
 
 async def run_eval(
     client: AsyncOpenAI,
+    tokenizer: PreTrainedTokenizerBase | None,
     eval_id: str,
     env_args: dict,
     num_examples: int,
@@ -150,7 +152,7 @@ async def run_eval(
 
     # Load the eval environment
     load_eval_start_time = time.time()
-    vf_eval = load_environment(eval_id, **env_args)
+    vf_eval = load_environment(eval_id, tokenizer=tokenizer, **env_args)
     load_eval_time = time.time() - load_eval_start_time
     logger.debug(f"Loaded eval environment in {load_eval_time:.2f}s")
 
@@ -268,6 +270,7 @@ async def run_eval(
 
 async def run_evals(
     client: AsyncOpenAI,
+    tokenizer: PreTrainedTokenizerBase | None,
     eval_config: EvalConfig | OfflineEvalConfig,
     model_config: ModelConfig,
     sampling_config: EvalSamplingConfig,
@@ -281,6 +284,7 @@ async def run_evals(
         *[
             run_eval(
                 client=client,
+                tokenizer=tokenizer,
                 eval_id=eval_id,
                 env_args=eval_config.environment_args.get(eval_id, {}),
                 num_examples=num_examples,

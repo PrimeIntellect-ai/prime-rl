@@ -1,5 +1,7 @@
 import asyncio
 
+from transformers import AutoTokenizer
+
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.eval.utils import run_evals
 from prime_rl.orchestrator.client import (
@@ -40,6 +42,14 @@ async def eval(config: OfflineEvalConfig):
     )
     client = setup_client(config.client)
 
+    # Load tokenizer
+    logger.info(f"Initializing tokenizer for {config.model.name}")
+    tokenizer = (
+        AutoTokenizer.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
+        if config.client.server_type == "vllm"
+        else None
+    )
+
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")
     await check_health(client)
@@ -55,6 +65,7 @@ async def eval(config: OfflineEvalConfig):
         logger.info(f"Evaluating model {config.model.name}")
         await run_evals(
             client=client,
+            tokenizer=tokenizer,
             eval_config=config,
             model_config=config.model,
             sampling_config=config.sampling,
@@ -82,6 +93,7 @@ async def eval(config: OfflineEvalConfig):
             # Run evals on checkpoint
             await run_evals(
                 client=client,
+                tokenizer=tokenizer,
                 eval_config=config,
                 model_config=config.model,
                 sampling_config=config.sampling,
