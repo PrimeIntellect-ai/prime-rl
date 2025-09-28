@@ -163,7 +163,7 @@ From commit `0r23ugcd`. Train at 8K context with `max_turns=3. Check out the [W&
 | Model | MATH 500 | AIME 2024 | AIME 2025 | MATH 500 (w/ tools) | AIME 2024 (w/ tools) | AIME 2025 (w/ tools) |
 |-------|-----------|----------|----------|-----------------|---------------------|---------------------|
 | Qwen/Qwen3-8B | 95.0% (5470±5107) | 73.5% (15019±8507) | - | 82.6% (3431±4176) | 58.8% (11710±7330) | 52.5% (14104±8421) |
-| PrimeIntellect/Qwen3-8B |  |  |  | Err. | Err. | Err. |
+| PrimeIntellect/Qwen3-8B | 96.8% (5352±4879) | 73.7% (14696±8426) | 68.1% (17723±9243) | Err. | Err. | Err. |
 | mikasenghaas/Qwen3-8B-Math-Python-v1-100 | 96.4% (4084±3903) | 73.3% (12494±7709) | 65.0% (15171±8457) | 91.6% (2901±5865) | 75.0% (8724±6630) | 61.6% (11006±6559) |
 | mikasenghaas/Qwen3-8B-Math-Python-v1-200 | 95.8% (3498±3551) | 72.3% (11275±7183) | 62.1% (13529±8257) | 95.0% (3498±3551) | 66.6% (8446±6128) | 55.0% (10359±6871) |
 
@@ -171,8 +171,8 @@ From commit `0r23ugcd`. Train at 8K context with `max_turns=3. Check out the [W&
 <summary>Raw results (without tools)</summary>
 <pre><code>
 Base:
-Evaluated math500 in 2117.75s (Avg@1=0.9680, Pass@1: 0.9680, Completion Length: 5320.54 (±4752.65, ∈[1027.00, 32711.00]), Truncated: 0.4%)
-Evaluated aime2024 in 2169.68s (Avg@16=0.7604, Pass@8: 0.8670, Completion Length: 14531.11 (±8087.02, ∈[3890.00, 32678.00]), Truncated: 4.0%)
+Evaluated math500 in 7465.86s (Avg@1=0.9680, Pass@1: 0.9680, Completion Length: 5352.14 (±4879.94, ∈[1019.00, 32724.00]), Truncated: 0.6%)
+Evaluated aime2024 in 6169.60s (Avg@16=0.7375, Pass@8: 0.8643, Completion Length: 14696.34 (±8426.39, ∈[3635.00, 32670.00]), Truncated: 5.8%)
 Evaluated aime2025 in 2072.47s (Avg@16=0.6813, Pass@8: 0.8097, Completion Length: 17723.54 (±9243.42, ∈[3583.00, 32678.00]), Truncated: 12.3%)
 
 Step 100:
@@ -212,7 +212,7 @@ From commit 9tchdk0w. Train at 8K context with no turn limit. Check out the [W&B
 | Model | MATH 500 | AIME 2024 | AIME 2025 | MATH 500 (w/ tools) | AIME 2024 (w/ tools) | AIME 2025 (w/ tools) |
 |-------|-----------|----------|----------|-----------------|---------------------|---------------------|
 | Qwen/Qwen3-8B | 95.0% (5470±5107) | 73.5% (15019±8507) | - | 82.6% (3431±4176) | 58.8% (11710±7330) | 52.5% (14104±8421) |
-| PrimeIntellect/Qwen3-8B | - | - | - | Err. | Err. | Err. |
+| PrimeIntellect/Qwen3-8B | 96.8% (5352±4879) | 73.7% (14696±8426) | 68.1% (17723±9243) | Err. | Err. | Err. |
 | mikasenghaas/Qwen3-8B-Math-Python-v2-100 | 94.4% (3918±3897) | 73.5% (11800±7627) | 60.6% (14122±8764) | - | - | - |
 | mikasenghaas/Qwen3-8B-Math-Python-v2-200 | - | - | - | - | - | - |
 
