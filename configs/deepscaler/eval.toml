@@ -1,5 +1,5 @@
 environment_ids = ["math500", "aime2024"]
-rollouts_per_example = [4, 64]
+rollouts_per_example = [1, 16]
 
 [environment_args.math500]
 use_think = true
