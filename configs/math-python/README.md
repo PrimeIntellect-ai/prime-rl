@@ -214,7 +214,8 @@ From commit 9tchdk0w. Train at 8K context with no turn limit. Check out the [W&B
 | Qwen/Qwen3-8B | 95.0% (5470±5107) | 73.5% (15019±8507) | - | 82.6% (3431±4176) | 58.8% (11710±7330) | 52.5% (14104±8421) |
 | PrimeIntellect/Qwen3-8B | 96.8% (5352±4879) | 73.7% (14696±8426) | 68.1% (17723±9243) | Err. | Err. | Err. |
 | mikasenghaas/Qwen3-8B-Math-Python-v2-100 | 94.4% (3918±3897) | 73.5% (11800±7627) | 60.6% (14122±8764) | - | - | - |
-| mikasenghaas/Qwen3-8B-Math-Python-v2-200 | - | - | - | - | - | - |
+| mikasenghaas/Qwen3-8B-Math-Python-v2-200 | 96.4% (3188±3068) | 71.2% (9734±6597) | 58.3% (11526±7719) | - | - | - |
+| mikasenghaas/Qwen3-8B-Math-Python-v2-300 | 97.2% (2760±2705) | 69.8% (10533±7462) | 58.2% (11859±8006) | - | - | - |
 
 <details>
 <summary>Raw results (without tools)</summary>
@@ -225,5 +226,27 @@ Evaluated aime2024 in 3827.36s (Avg@16=0.7354, Pass@8: 0.8793, Completion Length
 Evaluated aime2025 in 6583.08s (Avg@16=0.6062, Pass@8: 0.7807, Completion Length: 14122.16 (±8764.12, ∈[2022.00, 32678.00]), Truncated: 4.4%)
 
 Step 200:
+Evaluated math500 in 892.10s (Avg@1=0.9640, Pass@1: 0.9640, Completion Length: 3187.97 (±3067.53, ∈[801.00, 20316.00]), Truncated: 0.0%)
+Evaluated aime2024 in 1128.08s (Avg@16=0.7125, Pass@8: 0.8587, Completion Length: 9733.84 (±6597.46, ∈[2033.00, 32670.00]), Truncated: 0.8%)
+Evaluated aime2025 in 1207.35s (Avg@16=0.5833, Pass@8: 0.7950, Completion Length: 11526.33 (±7719.06, ∈[1897.00, 32640.00]), Truncated: 2.5%)
+
+Step 300:
+Evaluated math500 in 1282.99s (Avg@1=0.9720, Pass@1: 0.9720, Completion Length: 3299.46 (±3625.81, ∈[768.00, 32392.00]), Truncated: 0.2%)
+Evaluated aime2024 in 1179.44s (Avg@16=0.6979, Pass@8: 0.8360, Completion Length: 10533.84 (±7462.03, ∈[2328.00, 32688.00]), Truncated: 0.8%)
+Evaluated aime2025 in 1276.39s (Avg@16=0.5813, Pass@8: 0.7907, Completion Length: 11859.55 (±8006.89, ∈[1732.00, 32640.00]), Truncated: 3.3%)
+</code></pre>
+</details>
+
+<details>
+<summary>Raw results (with tools)</summary>
+<pre><code>
+Step 100:
+TBD.
+
+Step 200:
+TBD.
+
+Step 300:
+Running.
 </code></pre>
 </details>
