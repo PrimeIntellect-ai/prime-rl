@@ -318,36 +318,39 @@ class CatDataset(StatefulIterableDataset):
         # Public state attributes for checkpointing
         self.packed_samples = defaultdict(list)
         self.current_seq_len = 0
+        self.indices = []
 
     def state_dict(self) -> dict:
-        return self.dataset.state_dict()
+        return {"dataset": self.dataset.state_dict(), "packed_samples": self.packed_samples, "current_seq_len": self.current_seq_len, "indices": self.indices}
 
     def load_state_dict(self, state_dict: dict):
-        self.dataset.load_state_dict(state_dict)
+        self.dataset.load_state_dict(state_dict["dataset"])
+        self.packed_samples = state_dict["packed_samples"]
+        self.current_seq_len = state_dict["current_seq_len"]
+        self.indices = state_dict["indices"]
 
     def __iter__(self) -> Iterator[Sample]:
-        packed_samples, seq_len, indices = self.packed_samples, self.current_seq_len, []
         for sample in self.dataset:
             # Add sample to packed samples
             for key, value in sample.items():
                 if key == "epoch":
-                    packed_samples[key] = min(packed_samples.get(key, float("inf")), value)
+                    self.packed_samples[key] = min(self.packed_samples.get(key, float("inf")), value)
                 elif key == "index":
-                    indices.append(value)
+                    self.indices.append(value)
                 else:
-                    packed_samples[key].extend(value)
+                    self.packed_samples[key].extend(value)
 
             # Update sequence length
-            seq_len += len(sample["input_ids"])
+            self.current_seq_len += len(sample["input_ids"])
 
             # If batch is full, truncate and yield it
-            if seq_len >= self.seq_len:
-                for key, value in packed_samples.items():
+            if self.current_seq_len >= self.seq_len:
+                for key, value in self.packed_samples.items():
                     if isinstance(value, list):
-                        packed_samples[key] = value[: self.seq_len]
-                self.logger.debug(f"Yield batch with dataset indices={indices}")
-                yield packed_samples
-                packed_samples, seq_len, indices = defaultdict(list), 0, []
+                        self.packed_samples[key] = value[: self.seq_len]
+                self.logger.debug(f"Yield batch with dataset indices={self.indices}")
+                yield self.packed_samples
+                self.packed_samples, self.current_seq_len, self.indices = defaultdict(list), 0, []
 
 
 class StackDataset(StatefulIterableDataset):
