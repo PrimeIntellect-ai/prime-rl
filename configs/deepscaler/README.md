@@ -67,7 +67,36 @@ uv run rl \
 
 ### Stage 2
 
-TBD.
+```bash
+bash scripts/tmux.sh -s stage2 -o outputs/stage2
+```
+
+```bash
+mkdir -p outputs/stage2/checkpoints
+cp -r outputs/stage1/checkpoints/step_400 outputs/stage2/checkpoints/step_400
+mkdir -p outputs/stage2/weights
+cp -r outputs/stage1/weights/step_398 outputs/stage2/weights/step_398
+cp -r outputs/stage1/weights/step_399 outputs/stage2/weights/step_399
+cp -r outputs/stage1/weights/step_400 outputs/stage2/weights/step_400
+```
+
+```bash
+# Run this in the `Inference` pane
+uv run inference @ configs/deepscaler/stage2/rl/infer.toml --parallel.tp 2 --parallel.dp 3 --max-model-len 32768
+```
+
+```bash
+# Run this in the `Trainer` pane
+uv run rl \
+  --trainer @ configs/deepscaler/stage2/rl/train.toml \
+  --orchestrator @ configs/deepscaler/stage2/rl/orch.toml \
+  --trainer-gpu-ids 6,7 \
+  --output-dir outputs/stage2 \
+  --wandb.project deepscaler \
+  --wandb.name stage2-debug \
+  --ckpt.resume-step 400 \
+  --log.level debug
+```
 
 ### Stage 3
 
