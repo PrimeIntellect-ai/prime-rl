@@ -241,12 +241,14 @@ Evaluated aime2025 in 1276.39s (Avg@16=0.5813, Pass@8: 0.7907, Completion Length
 <summary>Raw results (with tools)</summary>
 <pre><code>
 Step 100:
-TBD.
+Evaluated math500 in 1017.74s (Avg@1=0.9600, Pass@1: 0.9600, Completion Length: 2059.42 (±2659.82, ∈[228.00, 22534.00]), Truncated: 0.0%)
+Evaluated aime2024 in 1034.07s (Avg@16=0.7229, Pass@8: 0.8333, Completion Length: 8076.24 (±5934.43, ∈[701.00, 32247.00]), Truncated: 0.4%)
+Evaluated aime2025 in 1068.33s (Avg@16=0.5687, Pass@8: 0.7303, Completion Length: 10256.70 (±6870.71, ∈[1174.00, 32195.00]), Truncated: 0.2%)
 
 Step 200:
 TBD.
 
 Step 300:
-Running.
+TBD.
 </code></pre>
 </details>
