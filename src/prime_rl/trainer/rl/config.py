@@ -28,7 +28,8 @@ class LossConfig(BaseModel):
 
     type: Annotated[Literal["gspo", "grpo"], Field(description="Type of loss to use.")] = "grpo"
 
-    mask_ratio: Annotated[float, Field(ge=0)] = 8.0
+    mask_ratio_high: Annotated[float, Field(ge=0)] = 8.0
+    mask_ratio_low: Annotated[float, Field(ge=0)] = 0.0
 
 
 class FakeDataLoaderConfig(BaseConfig):
