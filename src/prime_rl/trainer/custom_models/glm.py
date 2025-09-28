@@ -18,7 +18,6 @@ from typing import Optional, Union
 
 import torch
 from torch import nn
-from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache
 from transformers.configuration_utils import PretrainedConfig
 from transformers.generation import GenerationMixin
@@ -31,6 +30,7 @@ from transformers.utils import TransformersKwargs, auto_docstring
 from transformers.utils.deprecation import deprecate_kwarg
 
 from prime_rl.trainer.custom_models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
+from prime_rl.trainer.custom_models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.custom_models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.custom_models.layers.rms_norm import RMSNorm, RMSNormConfig
 from prime_rl.trainer.custom_models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
@@ -250,23 +250,6 @@ class Glm4MoeConfig(PretrainedConfig):
         )
 
 
-class Glm4MoeMLP(nn.Module):
-    def __init__(self, config, hidden_size=None, intermediate_size=None):
-        super().__init__()
-        self.config = config
-        self.hidden_size = config.hidden_size if hidden_size is None else hidden_size
-        self.intermediate_size = config.intermediate_size if intermediate_size is None else intermediate_size
-
-        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
-        self.act_fn = ACT2FN[config.hidden_act]
-
-    def forward(self, x):
-        down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
-        return down_proj
-
-
 class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
     def __init__(self, config: Glm4MoeConfig, layer_idx: int):
         super().__init__()
@@ -294,11 +277,17 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
             load_balance_coeff=1e-3,
             use_grouped_mm=config.use_grouped_mm,
         )
+        mlp_config = MLPConfig(
+            hidden_size=config.hidden_size,
+            intermediate_size=config.intermediate_size,
+            gate_act=config.hidden_act,
+            bias=False,
+        )
 
         if layer_idx >= config.first_k_dense_replace:
             self.mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
         else:
-            self.mlp = Glm4MoeMLP(config)
+            self.mlp = MLP(mlp_config)
 
         self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
         self.post_attention_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))

@@ -17,7 +17,6 @@ from typing import Optional, Union
 
 import torch
 from torch import nn
-from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache
 from transformers.configuration_utils import PretrainedConfig
 from transformers.generation import GenerationMixin
@@ -33,6 +32,7 @@ from transformers.utils import TransformersKwargs, auto_docstring, can_return_tu
 from transformers.utils.generic import check_model_inputs
 
 from prime_rl.trainer.custom_models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
+from prime_rl.trainer.custom_models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.custom_models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.custom_models.layers.rms_norm import RMSNorm, RMSNormConfig
 from prime_rl.trainer.custom_models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
@@ -249,22 +249,6 @@ class Qwen3MoeConfig(PretrainedConfig):
         )
 
 
-class Qwen3MoeMLP(nn.Module):
-    def __init__(self, config, intermediate_size=None):
-        super().__init__()
-        self.config = config
-        self.hidden_size = config.hidden_size
-        self.intermediate_size = intermediate_size if intermediate_size is not None else config.intermediate_size
-        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
-        self.act_fn = ACT2FN[config.hidden_act]
-
-    def forward(self, x):
-        down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
-        return down_proj
-
-
 class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
     def __init__(self, config: Qwen3MoeConfig, layer_idx: int):
         super().__init__()
@@ -294,13 +278,19 @@ class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
             use_grouped_mm=True,
             load_balance_coeff=config.load_balance_coeff,
         )
+        mlp_config = MLPConfig(
+            hidden_size=config.hidden_size,
+            intermediate_size=config.intermediate_size,
+            gate_act=config.hidden_act,
+            bias=False,
+        )
 
         if (layer_idx not in config.mlp_only_layers) and (
             config.num_experts > 0 and (layer_idx + 1) % config.decoder_sparse_step == 0
         ):
             self.mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
         else:
-            self.mlp = Qwen3MoeMLP(config, intermediate_size=config.intermediate_size)
+            self.mlp = MLP(mlp_config)
 
         self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
         self.post_attention_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
