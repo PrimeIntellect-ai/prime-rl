@@ -1,7 +1,13 @@
 max_steps = 20
+use_routing_replay = true
+recompute_logprobs = true
 
 [model]
-name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+name = "Jackmin108/debug-moe-0.5B"
+trust_remote_code = true
+moe_use_grouped_mm = true
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
 
 [optim]
 lr = 3e-6
