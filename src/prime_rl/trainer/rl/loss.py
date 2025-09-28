@@ -96,9 +96,12 @@ def compute_loss(
             log_importance_ratio = torch.clamp(log_importance_ratio, max=10.0)
 
         importance_ratio = torch.exp(log_importance_ratio)
-        masked_importance_ratio = importance_ratio * (importance_ratio <= loss_config.mask_ratio).float()
+        keep_mask = (importance_ratio >= loss_config.mask_ratio_low) & (
+            importance_ratio <= loss_config.mask_ratio_high
+        )
+        masked_importance_ratio = importance_ratio * keep_mask.float()
         loss = -masked_importance_ratio * advantages
-        is_masked = (importance_ratio > loss_config.mask_ratio).float()
+        is_masked = (~keep_mask).float()
 
         # Apply loss mask and sum
         loss = (loss[loss_mask]).sum()
