@@ -370,10 +370,12 @@ class StackDataset(StatefulIterableDataset):
         self.bucket_timeout = STACKING_DATASET_BUCKET_TIMEOUT
 
     def state_dict(self) -> dict:
-        return self.dataset.state_dict()
+        return {"dataset": self.dataset.state_dict(), "buckets": self.buckets, "bucket_timers": self.bucket_timers}
 
     def load_state_dict(self, state_dict: dict):
-        self.dataset.load_state_dict(state_dict)
+        self.dataset.load_state_dict(state_dict["dataset"])
+        self.buckets = state_dict["buckets"]
+        self.bucket_timers = state_dict["bucket_timers"]
 
     def __iter__(self) -> Iterator[Sample]:
         for sample in self.dataset:
