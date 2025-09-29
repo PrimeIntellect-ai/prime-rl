@@ -64,6 +64,7 @@ class SFTDataConfig(BaseDataConfig):
     )
     splits: Annotated[list[str], Field(description="Splits to use from the HF dataset.")] = ["train"]
     shuffle: Annotated[bool, Field(description="Whether to shuffle the dataset at the beginning of each epoch.")] = True
+    seed: Annotated[int, Field(description="Random seed to use for shuffling the dataset. We also shuffle at the end of each epoch by adding epoch count to the seed.")] = 0
 
     # Configuring
     loss_mask: LossMaskConfig = LossMaskConfig()
@@ -121,6 +122,13 @@ class SFTTrainerConfig(BaseSettings):
     ] = False
 
     trace_path: Annotated[Path | None, Field(description="Path to write pytorch profiler trace to.")] = None
+
+    dist_timeout_seconds: Annotated[
+        int,
+        Field(
+            description="Timeout in seconds for torch distributed ops. Defaults to 600 seconds.",
+        ),
+    ] = 600
 
     @model_validator(mode="after")
     def auto_setup_bench(self):
