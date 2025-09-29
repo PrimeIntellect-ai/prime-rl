@@ -309,18 +309,15 @@ class CatDataset(StatefulIterableDataset):
         self.logger = get_logger()
         self.dataset = dataset
         self.seq_len = seq_len
-        # Public state attributes for checkpointing
-        self.packed_samples = defaultdict(list)
-        self.current_seq_len = 0
 
     def state_dict(self) -> dict:
-        return self.dataset.state_dict()
+        return {"dataset": self.dataset.state_dict()}
 
     def load_state_dict(self, state_dict: dict):
-        self.dataset.load_state_dict(state_dict)
+        self.dataset.load_state_dict(state_dict["dataset"])
 
     def __iter__(self) -> Iterator[Sample]:
-        packed_samples, seq_len, indices = self.packed_samples, self.current_seq_len, []
+        packed_samples, seq_len, indices = defaultdict(list), 0, []
         for sample in self.dataset:
             # Add sample to packed samples
             for key, value in sample.items():
@@ -351,20 +348,26 @@ class StackDataset(StatefulIterableDataset):
         self.logger = get_logger()
         self.dataset = dataset
         self.max_area = max_area
-        self.current_seq_len = 0
-        # TODO: Can we steal step from dataset?
-        self.step = 0
         assert self.max_area % 256 == 0
         self.bucket_sizes = [max_area // 4, max_area // 2, max_area]
+        # Checkpoint state
+        self.step = 0
         self.buckets = [[] for _ in range(len(self.bucket_sizes))]
         self.bucket_timers: list[int | None] = [None] * len(self.buckets)
-        self.bucket_timeout = STACKING_DATASET_BUCKET_TIMEOUT
 
     def state_dict(self) -> dict:
-        return self.dataset.state_dict()
+        return {
+            "dataset": self.dataset.state_dict(),
+            "step": self.step,
+            "buckets": self.buckets,
+            "bucket_timers": self.bucket_timers,
+        }
 
     def load_state_dict(self, state_dict: dict):
-        self.dataset.load_state_dict(state_dict)
+        self.dataset.load_state_dict(state_dict["dataset"])
+        self.step = state_dict["step"]
+        self.buckets = state_dict["buckets"]
+        self.bucket_timers = state_dict["bucket_timers"]
 
     def __iter__(self) -> Iterator[Sample]:
         for sample in self.dataset:
@@ -383,7 +386,7 @@ class StackDataset(StatefulIterableDataset):
             # Check if bucket has timed out
             bucket_timer = self.bucket_timers[bucket_idx]
             if bucket_timer is not None:
-                hit_timeout = bucket_timer + self.bucket_timeout < self.step
+                hit_timeout = bucket_timer + STACKING_DATASET_BUCKET_TIMEOUT < self.step
             else:
                 hit_timeout = False
 
