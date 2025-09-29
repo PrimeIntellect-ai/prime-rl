@@ -114,6 +114,11 @@ class RLTrainerConfig(BaseSettings):
         ),
     ] = False
 
+    use_routing_replay: Annotated[
+        bool,
+        Field(description="Reuse MoE routing from the recorded policy when computing GRPO updates."),
+    ] = False
+
     bench: Annotated[
         bool,
         Field(

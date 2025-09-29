@@ -1,12 +1,17 @@
 max_steps = 100
 
 [model]
-name = "PrimeIntellect/Qwen3-0.6B"
+name = "Jackmin108/debug-moe-0.5B"
+trust_remote_code = true
+# grouped MM requires H100+; override with --no-model.moe-use-grouped-mm on older GPUs
+moe_use_grouped_mm = true
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
 
 [data]
 name = "willcb/R1-reverse-wikipedia-paragraphs-v1-1000"
-seq_len = 4096
-batch_size = 32 
+seq_len = 2048
+batch_size = 16
 micro_batch_size = 1
 
 [optim]

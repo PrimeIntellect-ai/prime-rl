@@ -6,7 +6,8 @@ max_steps = 20
 mask_truncated_completions = false
 
 [model]
-name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+name = "microsoft/Phi-tiny-MoE-instruct"
+trust_remote_code = true
 
 [sampling]
 max_tokens = 128
