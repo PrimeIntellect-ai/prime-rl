@@ -553,10 +553,17 @@ class Qwen3MoeForCausalLM(Qwen3MoePreTrainedModel, GenerationMixin):
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
-
         output_router_logits = (
             output_router_logits if output_router_logits is not None else self.config.output_router_logits
         )
+        assert use_cache is None, "use_cache is not supported for custom glm4_moe for now"
+        assert past_key_values is None, "past_key_values is not supported for custom glm4_moe for now"
+
+        if position_ids is None:
+            if inputs_embeds is not None:
+                position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
+            else:
+                position_ids = torch.arange(input_ids.shape[1], device=input_ids.device).unsqueeze(0)
 
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs: MoeModelOutputWithPast = self.model(
