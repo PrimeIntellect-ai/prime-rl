@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+import torch
 import torch.distributed.checkpoint as dcp
 from torch import nn
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
@@ -41,13 +42,11 @@ class AppState(Stateful):
         optimizers: list[Optimizer],
         scheduler: LRScheduler,
         progress: Progress,
-        dataloader: StatefulDataLoader | None = None,
     ):
         self.model = model
         self.optimizers = optimizers
         self.scheduler = scheduler
         self.progress = progress
-        self.dataloader = dataloader
 
     def state_dict(self) -> dict[str, Any]:
         # Automatically manages FSDP FQN's, as well as sets the default state dict type to FSDP.SHARDED_STATE_DICT
@@ -60,8 +59,6 @@ class AppState(Stateful):
             "scheduler": scheduler_state_dict,
             "progress": progress_state_dict,
         }
-        if self.dataloader is not None:
-            state_dict["dataloader"] = self.dataloader.state_dict()
         return state_dict
 
     def load_state_dict(self, state_dict: dict[str, Any]):
@@ -71,9 +68,6 @@ class AppState(Stateful):
         self.scheduler.load_state_dict(state_dict["scheduler"])
         for key, value in state_dict["progress"].items():
             setattr(self.progress, key, value)
-        if self.dataloader is not None:
-            assert "dataloader" in state_dict
-            self.dataloader.load_state_dict(state_dict["dataloader"])
 
 
 class CheckpointManager:
@@ -104,7 +98,13 @@ class CheckpointManager:
         start_time = time.time()
 
         # Create checkpoint state
-        state_dict = {"app": AppState(model, optimizers, scheduler, progress, dataloader)}
+        state_dict = {"app": AppState(model, optimizers, scheduler, progress)}
+
+        # Checkpoint the local dataloader
+        if dataloader is not None:
+            dataloader_dir = ckpt_path / "dataloader"
+            dataloader_dir.mkdir(parents=True, exist_ok=True)
+            torch.save(dataloader.state_dict(), dataloader_dir / f"rank_{self._world.rank}.pt")
 
         # Save sharded state
         dcp.save(state_dict, checkpoint_id=ckpt_path)
@@ -129,9 +129,19 @@ class CheckpointManager:
         start_time = time.time()
 
         # Load sharded state
-        app_state = AppState(model, optimizers, scheduler, progress, dataloader)
+        app_state = AppState(model, optimizers, scheduler, progress)
         state_dict = {"app": app_state}
         dcp.load(state_dict=state_dict, checkpoint_id=ckpt_path)
+
+        # Load the dataloader
+        # TODO: Is there a way we can make this so one can restart in any world
+        if dataloader is not None:
+            dataloader_path = ckpt_path / "dataloader" / f"rank_{self._world.rank}.pt"
+            if not dataloader_path.exists():
+                raise RuntimeError(
+                    f"Did not find local dataloader checkpoint at path {dataloader_path}. This might be because you tried restarting the trainer with a different world size. This is currently not supported."
+                )
+            dataloader.load_state_dict(torch.load(dataloader_path))
 
         self._logger.debug(f"Training checkpoint loaded in {time.time() - start_time:.2f} seconds")
 

@@ -43,13 +43,11 @@ class StatefulIterableDataset(Stateful, IterableDataset):
         self._setup_world_info()
 
     def state_dict(self) -> dict:
-        # +1 because the stateful dataloader expects uses 1-based counting while we start at 0
-        return {"step": self.step + 1, "epoch": self.epoch}
+        return {"step": self.step, "epoch": self.epoch}
 
     def load_state_dict(self, state_dict: dict):
         assert "step" in state_dict and "epoch" in state_dict
-        # -1 because the stateful dataloader expects uses 1-based counting while we start at 0
-        self.step = state_dict["step"] - 1
+        self.step = state_dict["step"]
         self.epoch = state_dict["epoch"]
 
     def _setup_world_info(self):
@@ -74,8 +72,6 @@ class FakeDataset(StatefulIterableDataset):
 
     def __iter__(self):
         while True:
-            # Increment the step counter (0, 1, 2, ...)
-            # This has to be done before yielding the sample for the dataloader to checkpoint correctly
             self.step += 1
 
             # Skip samples that don't belong to this data rank
@@ -148,8 +144,6 @@ class SFTDataset(StatefulIterableDataset):
         """
         dataset = self.dataset.shuffle(seed=self.epoch) if self.config.shuffle else self.dataset
         while True:
-            # Increment the step counter (0, 1, 2, ...)
-            # This has to be done before yielding the sample for the dataloader to checkpoint correctly
             self.step += 1
 
             # Get example from dataset
