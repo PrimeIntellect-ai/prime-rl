@@ -86,6 +86,13 @@ class ModelConfig(BaseConfig):
         ),
     ] = False
 
+    dp_replicate: Annotated[
+        int,
+        Field(
+            description="The data parallel dim where model weights are replicated.",
+        ),
+    ] = 1
+
     ep: Annotated[
         int,
         Field(

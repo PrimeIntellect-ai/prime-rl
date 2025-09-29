@@ -101,7 +101,10 @@ def setup_tokenizer(config: ModelConfig) -> PreTrainedTokenizer:
 def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=DTYPE_MAP[config.reduce_dtype])
     # TODO: Support dp_replicate
-    hsdp_mesh = parallel_dims.world_mesh["dp_shard_cp"]
+    if config.dp_replicate > 1:
+        hsdp_mesh = parallel_dims.world_mesh["dp_replicate", "dp_shard_cp"]
+    else:
+        hsdp_mesh = parallel_dims.world_mesh["dp_shard_cp"]
 
     for transformer_block in model.model.layers:
         fully_shard(
@@ -134,12 +137,13 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     from huggingface_hub import snapshot_download
     from torch.distributed.checkpoint import DefaultLoadPlanner, HuggingFaceStorageReader
+
     model.to_empty(device="cuda")
 
     if config.debug.random_init:
         get_logger().warning("Zero initialization model. skipping HF checkpoint loading.")
-        return 
-    
+        return
+
     path_snapshot = snapshot_download(repo_id=config.name, repo_type="model")
     dcp.load(
         model.state_dict(),
