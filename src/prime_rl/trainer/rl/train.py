@@ -261,6 +261,10 @@ def train(config: RLTrainerConfig):
         logger.info(f"Starting forward and backward pass ({num_micro_batches=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
         for micro_step, micro_batch in enumerate(micro_batches):
+            
+            # we only all reduce at the last grad acc step
+            model.set_requires_all_reduce(micro_step == len(micro_batches) - 1)
+            
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
