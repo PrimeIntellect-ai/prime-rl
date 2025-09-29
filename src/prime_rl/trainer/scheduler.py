@@ -96,7 +96,7 @@ def setup_scheduler(
         case "cosine":
             return setup_cosine_scheduler(
                 optimizer,
-                max_steps=max_steps,
+                max_steps=scheduler_config.decay_steps or max_steps,
                 warmup_steps=scheduler_config.warmup_steps,
                 lr=lr,
                 min_lr=scheduler_config.min_lr,

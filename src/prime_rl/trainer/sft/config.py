@@ -11,6 +11,7 @@ from prime_rl.trainer.config import (
     OptimizerConfigType,
     SchedulerConfigType,
     WeightCheckpointConfig,
+    ContextWiseEvalConfig,
 )
 from prime_rl.utils.config import LogConfig, WandbMonitorConfig
 from prime_rl.utils.pydantic_config import BaseSettings
@@ -26,6 +27,10 @@ class BaseDataConfig(BaseModel):
         int | None, Field(description="Number of examples to use from the dataset. If None, will use all examples.")
     ] = None
     pack_function: Literal["cat", "stack"] = "cat"
+    num_workers: Annotated[int, Field(description="Number of workers to use for the dataset.")] = 0
+    pin_memory: Annotated[bool, Field(description="Whether to pin memory for the dataset.")] = True
+    device: Annotated[str, Field(description="Device to load batches into.")] = "cpu"
+    prefetch_factor: Annotated[int | None, Field(description="Number of batches to prefetch.")] = None
 
     @model_validator(mode="after")
     def validate_batch_size(self):
@@ -70,7 +75,25 @@ class SFTDataConfig(BaseDataConfig):
     loss_mask: LossMaskConfig = LossMaskConfig()
 
 
-DataConfigType: TypeAlias = FakeDataConfig | SFTDataConfig
+class FastSFTDataConfig(BaseDataConfig):
+    """Configures the data used for training."""
+
+    type: Literal["fast_sft"] = "fast_sft"
+    path: Annotated[Path, Field(description="Path to the tokenized dataset.")] = Path("data")
+    shuffle: Annotated[bool, Field(description="Whether to shuffle the dataset at the beginning of each epoch.")] = True
+
+
+class CompositeSFTDataConfig(BaseDataConfig):
+    """Configures the data used for training."""
+
+    type: Literal["composite_sft"] = "composite_sft"
+    paths: Annotated[list[Path], Field(description="Paths to the tokenized datasets.")] = []
+    probabilities: Annotated[list[float], Field(description="Probabilities to use for each dataset.")] = []
+    seed: Annotated[int, Field(description="Seed to use for interleaving datasets.")] = 42
+    shuffle: Annotated[bool, Field(description="Whether to shuffle the dataset at the beginning of each epoch.")] = True
+
+
+DataConfigType: TypeAlias = FakeDataConfig | SFTDataConfig | FastSFTDataConfig | CompositeSFTDataConfig
 
 
 class SFTTrainerConfig(BaseSettings):
@@ -78,6 +101,9 @@ class SFTTrainerConfig(BaseSettings):
 
     # The model configuration
     model: ModelConfig = ModelConfig()
+
+    # Run name
+    run_name: Annotated[str, Field(description="Name of the run.")] = "sft_trainer"
 
     # The data configuration
     data: Annotated[DataConfigType, Field(discriminator="type")] = SFTDataConfig()
@@ -93,6 +119,9 @@ class SFTTrainerConfig(BaseSettings):
 
     # The weight checkpoint configuration
     weights: WeightCheckpointConfig | None = None
+
+    # The context-wise evaluation configuration
+    context_wise_eval: ContextWiseEvalConfig | None = ContextWiseEvalConfig()
 
     # The logging configuration
     log: LogConfig = LogConfig()

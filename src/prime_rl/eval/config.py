@@ -17,6 +17,9 @@ class OfflineEvalConfig(EvalConfig, BaseSettings):
     # The model configuration
     model: ModelConfig = ModelConfig()
 
+    # Run name
+    run_name: Annotated[str, Field(description="Name of the run to use for logging to log cabin.")] = "eval"
+
     # The wandb configuration
     wandb: WandbMonitorConfig | None = None
 

@@ -1,10 +1,12 @@
 import sys
 from pathlib import Path
 
+import numpy as np
 from loguru import logger
 
 # Global logger instance
 _LOGGER = None
+_LOG_CABIN = None
 
 NO_BOLD = "\033[22m"
 RESET = "\033[0m"
@@ -71,3 +73,42 @@ def reset_logger():
     """Reset the global logger. Useful mainly in test to clear loggers between tests."""
     global _LOGGER
     _LOGGER = None
+
+
+def setup_logcabin(config, world = None):
+    from log_cabin_v2 import Dispatcher as LogCabinDispatcher
+    import os
+    import json
+    if world is None or world.is_master:
+        logcabin = LogCabinDispatcher(
+            local_path=os.path.expanduser("~/.logs"),
+            server_url="http://log-cabin-v2/ingestion",
+            username=os.getenv("LOG_CABIN_USER", os.getenv("USER", None)),
+        )
+        config_dict = json.loads(config.model_dump_json())
+        logcabin.init(run_name=config.run_name, info=config_dict)
+    else:
+        logcabin = None
+
+    class LogCabinWrapper:
+        def __init__(self, log_cabin_client):
+            self.log_cabin_client = log_cabin_client
+
+        def log(self, entry_name, data):
+            """clean up slashes in data keys"""
+            if data is None:
+                return
+            data = {k: v for k, v in data.items() if v is not None}
+            data = {k.replace("/", "_"): np.array(v) if isinstance(v, list) else v for k, v in data.items()}
+            self.log_cabin_client.log(entry_name, data)
+        
+    global _LOG_CABIN
+    _LOG_CABIN = LogCabinWrapper(logcabin) if logcabin is not None else None
+    return _LOG_CABIN
+
+
+def get_logcabin():
+    global _LOG_CABIN
+    if _LOG_CABIN is None:
+        raise RuntimeError("Log cabin not set. Please call `setup_logcabin` first.")
+    return _LOG_CABIN

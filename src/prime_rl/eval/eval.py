@@ -9,7 +9,7 @@ from prime_rl.orchestrator.client import (
     setup_client,
     update_weights,
 )
-from prime_rl.utils.logger import setup_logger
+from prime_rl.utils.logger import setup_logger, setup_logcabin
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit
@@ -21,6 +21,7 @@ async def eval(config: OfflineEvalConfig):
     logger = setup_logger(
         config.log.level, log_file=config.output_dir / "logs" / "eval.log" if config.log.file else None
     )
+    logcabin = setup_logcabin(config)
     logger.info("Starting evaluation")
     logger.info(f"Model: {config.model}")
     logger.info(f"Sampling: {config.sampling}")
