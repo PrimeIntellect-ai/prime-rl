@@ -146,7 +146,7 @@ class SFTDataset(StatefulIterableDataset):
         """
         Apply chat template and tokenize a single example in prompt + completion format (https://github.com/huggingface/trl/blob/de27d612b026526ba39b88eee348994d7636e033/trl/trainer/sft_trainer.py#L661)
         """
-        dataset = self.dataset.shuffle(seed=self.epoch) if self.config.shuffle else self.dataset
+        dataset = self.dataset.shuffle(seed=self.epoch + self.config.seed) if self.config.shuffle else self.dataset
         while True:
             # Increment the step counter (0, 1, 2, ...)
             # This has to be done before yielding the sample for the dataloader to checkpoint correctly
@@ -164,7 +164,7 @@ class SFTDataset(StatefulIterableDataset):
 
             # Update stored epoch if new epoch is reached, optionall shuffle
             if epoch > self.epoch:
-                dataset = self.dataset.shuffle(seed=self.epoch) if self.config.shuffle else self.dataset
+                dataset = self.dataset.shuffle(seed=self.epoch + self.config.seed) if self.config.shuffle else self.dataset
                 self.epoch = epoch
 
             assert "prompt" in example and "completion" in example, (
