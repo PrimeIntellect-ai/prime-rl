@@ -89,11 +89,12 @@ def compute_loss(
     for logprobs, old_logprobs, advantages, loss_mask in zip(logprobs, old_logprobs, advantages, loss_mask):
         log_importance_ratio = logprobs - old_logprobs
 
-        if loss_config.type == "gspo":
-            # https://arxiv.org/abs/2507.18071
-            seq_log_importance_ratio = (log_importance_ratio[loss_mask]).sum() / torch.clamp_min(loss_mask.sum(), 1)
-            log_importance_ratio = logprobs - logprobs.detach() + seq_log_importance_ratio.detach()
-            log_importance_ratio = torch.clamp(log_importance_ratio, max=10.0)
+        if loss_config.type == "gspo" or loss_config.type == "deepseek_grpo":
+            if loss_config.type == "gspo":
+                seq_log_importance_ratio = (log_importance_ratio[loss_mask]).sum() / torch.clamp_min(loss_mask.sum(), 1)
+            else:
+                seq_log_importance_ratio = (log_importance_ratio[loss_mask]).sum()
+            log_importance_ratio = torch.clamp(seq_log_importance_ratio.unsqueeze(0), max=10.0)
 
         importance_ratio = torch.exp(log_importance_ratio)
         clipped_importance_ratio = torch.clamp(importance_ratio, max=loss_config.clip_ratio)

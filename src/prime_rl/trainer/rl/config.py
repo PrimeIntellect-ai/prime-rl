@@ -26,7 +26,7 @@ class LossConfig(BaseModel):
         ),
     ] = "token"
 
-    type: Annotated[Literal["gspo", "grpo"], Field(description="Type of loss to use.")] = "grpo"
+    type: Annotated[Literal["gspo", "grpo", "deepseek_grpo"], Field(description="Type of loss to use.")] = "grpo"
 
     clip_ratio: Annotated[float, Field(ge=0)] = 8.0
 
