@@ -7,6 +7,8 @@ from prime_rl.trainer.sft.config import FakeDataConfig, SFTDataConfig
 from prime_rl.trainer.sft.data import setup_dataloader, setup_dataset
 from prime_rl.trainer.world import reset_world
 
+pytestmark = [pytest.mark.gpu]
+
 
 def test_stateful_dataloader_single_rank():
     # Setup stateful dataloader
