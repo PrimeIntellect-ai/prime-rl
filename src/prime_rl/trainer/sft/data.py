@@ -158,7 +158,7 @@ class SFTDataset(StatefulIterableDataset):
 
             # Update stored epoch if new epoch is reached, optionall shuffle
             if epoch > self.epoch:
-                dataset = self.dataset.shuffle(seed=self.epoch) if self.config.shuffle else self.dataset
+                dataset = self.dataset.shuffle(seed=epoch) if self.config.shuffle else self.dataset
                 self.epoch = epoch
 
             assert "prompt" in example and "completion" in example, (
