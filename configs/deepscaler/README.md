@@ -90,16 +90,16 @@ bash scripts/tmux.sh -s stage3 -o outputs/stage3
 
 ```bash
 mkdir -p outputs/stage3/checkpoints
-cp -r outputs/stage3/checkpoints/step_700 outputs/stage3/checkpoints/step_700
+cp -r outputs/stage2/checkpoints/step_850 outputs/stage3/checkpoints/step_850
 mkdir -p outputs/stage3/weights
-cp -r outputs/stage3/weights/step_698 outputs/stage3/weights/step_698
-cp -r outputs/stage3/weights/step_699 outputs/stage3/weights/step_699
-cp -r outputs/stage3/weights/step_700 outputs/stage3/weights/step_700
+cp -r outputs/stage2/weights/step_848 outputs/stage3/weights/step_848
+cp -r outputs/stage2/weights/step_849 outputs/stage3/weights/step_849
+cp -r outputs/stage2/weights/step_850 outputs/stage3/weights/step_850
 ```
 
 ```bash
 # Run this in the `Inference` pane
-uv run inference @ configs/deepscaler/stage3/rl/infer.toml --parallel.tp 2 --parallel.dp 3 --max-model-len 32768
+uv run inference @ configs/deepscaler/stage3/rl/infer.toml --parallel.tp 2 --parallel.dp 2 --max-model-len 32768
 ```
 
 ```bash
@@ -107,11 +107,11 @@ uv run inference @ configs/deepscaler/stage3/rl/infer.toml --parallel.tp 2 --par
 uv run rl \
   --trainer @ configs/deepscaler/stage3/rl/train.toml \
   --orchestrator @ configs/deepscaler/stage3/rl/orch.toml \
-  --trainer-gpu-ids 6,7 \
+  --trainer-gpu-ids 4,5,6,7 \
   --output-dir outputs/stage3 \
   --wandb.project deepscaler \
   --wandb.name stage3-debug \
-  --ckpt.resume-step 700 \
+  --ckpt.resume-step 850 \
   --log.level debug
 ```
 
