@@ -73,6 +73,7 @@ def compute_advantages(
     completion_lengths: list[int],
     samples_per_problem: int,
     advantage_type: AdvantageType,
+    global_std_norm: bool = False,
 ) -> list[float]:
     """
     Computes advantages and statistics for logging from a flattened list of rewards for a given advantage type.
@@ -82,7 +83,7 @@ def compute_advantages(
         samples_per_problem: Number of samples (and thus, rewards) per problem
         advantage_type: Type of advantage computation to use
         completion_lengths: List of completion lengths for each reward. Required for OPO advantage computation.
-
+        global_std_norm: Whether to normalize the advantages by the global standard deviation of the rewards.
     Returns:
         Tuple of (advantages, advantage_stats)
     """
@@ -92,11 +93,14 @@ def compute_advantages(
     all_group_lengths = [
         completion_lengths[i : i + samples_per_problem] for i in range(0, len(completion_lengths), samples_per_problem)
     ]
+    global_std = torch.tensor(rewards).std()
     compute_advantage = REGISTRY[advantage_type]
     for group_rewards, group_lengths in zip(all_group_rewards, all_group_lengths):
         group_rewards_tensor = torch.tensor(group_rewards)
         group_lengths_tensor = torch.tensor(group_lengths)
         group_advantages_tensor = compute_advantage(group_rewards_tensor, group_lengths_tensor)
+        if global_std_norm:
+            group_advantages_tensor = group_advantages_tensor / global_std
         assert len(group_advantages_tensor) == len(group_rewards_tensor)
         advantages.extend(group_advantages_tensor.tolist())
     assert len(rewards) == len(advantages)

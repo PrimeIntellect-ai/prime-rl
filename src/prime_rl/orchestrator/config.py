@@ -453,6 +453,13 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = "drgrpo"
 
+    global_std_norm: Annotated[
+        bool,
+        Field(
+            description="Whether to normalize the advantages by the global standard deviation of the rewards.",
+        ),
+    ] = False
+
     seq_len: Annotated[
         int,
         Field(
