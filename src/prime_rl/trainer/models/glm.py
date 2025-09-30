@@ -256,7 +256,7 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
         self.hidden_size = config.hidden_size
         attn_config = AttentionConfig(
             hidden_size=config.hidden_size,
-            head_dim=config.hidden_size // config.num_attention_heads,
+            head_dim=getattr(config, "head_dim", config.hidden_size // config.num_attention_heads),
             num_attention_heads=config.num_attention_heads,
             num_key_value_heads=config.num_key_value_heads,
             is_causal=True,
