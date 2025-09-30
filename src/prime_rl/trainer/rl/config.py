@@ -26,7 +26,7 @@ class LossConfig(BaseModel):
         ),
     ] = "token"
 
-    ratio_type: Annotated[Literal["sequence", "token"], Field(description="Type of ratio to use.")] = "token"
+    ratio_type: Annotated[Literal["token", "sequence"], Field(description="Type of ratio to use.")] = "token"
     ratio_length_norm: Annotated[bool, Field(description="Whether to normalize the ratio by the length of the sequence.")] = False
 
     clip_ratio: Annotated[float, Field(ge=0)] = 8.0

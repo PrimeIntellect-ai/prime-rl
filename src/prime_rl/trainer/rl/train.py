@@ -85,7 +85,7 @@ def train(config: RLTrainerConfig):
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
-    logger.info(f"Using `{config.loss.type}` loss ({config.loss})")
+    logger.info(f"Using `{config.loss.ratio_type}` importance ratio ({config.loss})")
 
     optimizer = setup_optimizer(config.optim, model, parallel_dims.world_mesh["dp_shard_cp"])
 
