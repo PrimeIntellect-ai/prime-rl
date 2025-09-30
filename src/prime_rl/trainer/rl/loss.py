@@ -89,7 +89,7 @@ def compute_loss(
     for logprobs, old_logprobs, advantages, loss_mask in zip(logprobs, old_logprobs, advantages, loss_mask):
         log_importance_ratio = logprobs - old_logprobs
 
-        if loss_config.ratio_type == "sequence"
+        if loss_config.ratio_type == "sequence":
             if loss_config.ratio_length_norm:
                 seq_log_importance_ratio = (log_importance_ratio[loss_mask]).sum() / torch.clamp_min(loss_mask.sum(), 1)
             else:
