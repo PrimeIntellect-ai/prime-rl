@@ -1,8 +1,7 @@
 import torch
 from jaxtyping import Float
-from prime_rl.utils.pydantic_config import BaseConfig
 from torch import Tensor
-
+from prime_rl.utils.pydantic_config import BaseConfig
 
 class AdvantageConfig(BaseConfig):
     global_std_norm: bool = False
