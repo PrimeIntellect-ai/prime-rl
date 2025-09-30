@@ -1,11 +1,11 @@
-max_steps = 300
+max_steps = 1000
 seq_len = 8192
 batch_size = 1024
 micro_batch_size = 1
 rollouts_per_example = 16
 
 [model]
-name = "PrimeIntellect/Qwen3-8B"
+name = "PrimeIntellect/Qwen3-4B"
 
 [environment]
 id = "math-python"
@@ -13,6 +13,3 @@ id = "math-python"
 [environment.args]
 use_think = true
 max_turns = -1
-
-[sampling]
-max_tokens = 8192

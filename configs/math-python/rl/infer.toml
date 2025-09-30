@@ -1,5 +1,5 @@
 
 [model]
-name = "PrimeIntellect/Qwen3-8B"
+name = "PrimeIntellect/Qwen3-4B"
 enable_auto_tool_choice = true
 tool_call_parser = "qwen3_coder"

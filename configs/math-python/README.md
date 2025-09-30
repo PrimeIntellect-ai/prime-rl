@@ -71,8 +71,8 @@ uv run rl \
 | Model | MATH 500 | AIME 2024 | AIME 2025 | MATH 500 (w/ tools) | AIME 2024 (w/ tools) | AIME 2025 (w/ tools) |
 |-------|-----------|----------|----------|-----------------|---------------------|---------------------|
 | Qwen3-8B | 95.0% (5470±5107) | 73.5% (15019±8507) | - | 95.8% (3628±4370) | 70.4% (11952±7358) | 58.1% (14544±8240) |
-| Qwen3-8B-Math-Python-... | - | - | - | - | - | - |
-| Qwen3-8B-Math-Python | - | - | - | - | - | - |
+| ... | - | - | - | - | - | - |
+| ... | - | - | - | - | - | - |
 
 ### Qwen3-8B
 
@@ -156,7 +156,7 @@ uv run eval \
 
 ## Ablations
 
-### Ablations 1
+### Ablation 1
 
 From commit `0r23ugcd`. Train at 8K context with `max_turns=3. Check out the [W&B project](https://wandb.ai/primeintellect/math-python?nw=lpxt5c3z2nr).
 
@@ -205,7 +205,7 @@ Evaluated aime2025 in 246.84s (Avg@2=0.5500, Pass@1: 0.5427, Completion Length: 
 </code></pre>
 </details>
 
-### Ablations 2
+### Ablation 2
 
 From commit 9tchdk0w. Train at 8K context with no turn limit. Check out the [W&B project](https://wandb.ai/primeintellect/math-python/workspace?nw=71j0m1uason).
 
@@ -256,3 +256,35 @@ Evaluated aime2024 in 854.85s (Avg@16=0.6917, Pass@8: 0.8423, Completion Length:
 Evaluated aime2025 in 873.04s (Avg@16=0.5625, Pass@8: 0.7737, Completion Length: 9132.66 (±6949.97, ∈[837.00, 32218.00]), Truncated: 0.8%)
 </code></pre>
 </details>
+
+### Ablation 3
+
+From commit 9tchdk0w. Train at 8K context with no turn limit. Check out the [W&B project](https://wandb.ai/primeintellect/math-python/workspace?nw=71j0m1uason).
+
+```bash
+bash scripts/tmux.sh -s exp3 -o outputs3
+```
+
+Install this temporary `math-python` environment.
+
+```bash
+prime env install mikasenghaas/math-python
+```
+
+Make sure that verifiers is installed from commit `21c9979`. Then, run
+
+```bash
+# Run this in the `Inference` pane
+uv run inference @ configs/math-python/rl/infer.toml --parallel.dp 2 --max-model-len 8192
+```
+
+```bash
+# Run this in the `Trainer` pane
+uv run rl \
+  --trainer @ configs/math-python/rl/train.toml \
+  --orchestrator @ configs/math-python/rl/orch.toml \
+  --output-dir outputs3 \
+  --trainer-gpu-ids 2,3 \
+  --wandb.project math-python \
+  --wandb.name 4b-8k-no-turn
+```
