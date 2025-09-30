@@ -58,30 +58,6 @@ wheels = [
 ]
 
 [[package]]
-name = "aime2024"
-version = "0.1.11"
-source = { registry = "https://hub.primeintellect.ai/primeintellect/simple/" }
-dependencies = [
-    { name = "math-verify" },
-    { name = "verifiers" },
-]
-wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/aime2024/@bbccb649/aime2024-0.1.11-py3-none-any.whl", hash = "sha256:d24d364635c766e71e2f83a72093dfbea30a049a5f66130911cf5eed75b26894" },
-]
-
-[[package]]
-name = "aime2025"
-version = "0.1.11"
-source = { registry = "https://hub.primeintellect.ai/primeintellect/simple/" }
-dependencies = [
-    { name = "math-verify" },
-    { name = "verifiers" },
-]
-wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/aime2025/@019d1b61/aime2025-0.1.11-py3-none-any.whl", hash = "sha256:ff40d870d1ad1ed79845416e5ebf7ef33babb6d6d7dde6eb63acfe7117b399fe" },
-]
-
-[[package]]
 name = "aiohappyeyeballs"
 version = "2.6.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1732,18 +1708,6 @@ wheels = [
 ]
 
 [[package]]
-name = "math500"
-version = "0.1.10"
-source = { registry = "https://hub.primeintellect.ai/primeintellect/simple/" }
-dependencies = [
-    { name = "math-verify" },
-    { name = "verifiers" },
-]
-wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/math500/@bb32007b/math500-0.1.10-py3-none-any.whl", hash = "sha256:40720edcbed61ad8624add2b0b7cbcd488f62573c63b6604b511bece24ce21ab" },
-]
-
-[[package]]
 name = "matplotlib"
 version = "3.10.6"
 source = { registry = "https://pypi.org/simple" }
@@ -2595,6 +2559,7 @@ dependencies = [
     { name = "torchtitan" },
     { name = "transformers" },
     { name = "uvloop" },
+    { name = "verifier" },
     { name = "vllm" },
     { name = "wandb" },
 ]
@@ -2608,8 +2573,6 @@ flash-infer = [
 ]
 vf = [
     { name = "acereason-math" },
-    { name = "aime2024" },
-    { name = "aime2025" },
     { name = "alphabet-sort" },
     { name = "ascii-tree" },
     { name = "deepscaler-math" },
@@ -2618,7 +2581,6 @@ vf = [
     { name = "hle" },
     { name = "intellect-math" },
     { name = "livecodebench" },
-    { name = "math500" },
     { name = "pydantic-adherence" },
     { name = "reverse-text" },
     { name = "simpleqa" },
@@ -2641,8 +2603,6 @@ dev = [
 requires-dist = [
     { name = "accelerate", specifier = ">=1.10.1" },
     { name = "acereason-math", marker = "extra == 'vf'", specifier = ">=0.1.5", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
-    { name = "aime2024", marker = "extra == 'vf'", specifier = ">=0.1.11", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
-    { name = "aime2025", marker = "extra == 'vf'", specifier = ">=0.1.11", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "alphabet-sort", marker = "extra == 'vf'", specifier = ">=0.1.5", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "ascii-tree", marker = "extra == 'vf'", specifier = ">=0.1.6", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "beartype", specifier = ">=0.21.0" },
@@ -2663,7 +2623,6 @@ requires-dist = [
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "lovely-tensors", specifier = ">=0.1.18" },
     { name = "math-verify", specifier = ">=0.8.0" },
-    { name = "math500", marker = "extra == 'vf'", specifier = ">=0.1.10", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "nltk", specifier = ">=3.9.1" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "openai", specifier = ">=1.106.1" },
@@ -2686,6 +2645,7 @@ requires-dist = [
     { name = "transformers", specifier = ">=4.56.0" },
     { name = "unscramble", marker = "extra == 'vf'", specifier = ">=0.1.3", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "uvloop", specifier = ">=0.21.0" },
+    { name = "verifier", specifier = ">=0.1.5.dev1" },
     { name = "vllm", specifier = "==0.10.2" },
     { name = "wandb", specifier = ">=0.20.1" },
 ]
@@ -4198,6 +4158,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/06/a7/b4e6a19925c900be9f98bec0a75e6e8f79bb53bdeb891916609ab3958967/uvloop-0.21.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:86975dca1c773a2c9864f4c52c5a55631038e387b47eaf56210f873887b6c8dc", size = 4693770, upload-time = "2024-10-14T23:37:54.122Z" },
     { url = "https://files.pythonhosted.org/packages/ce/0c/f07435a18a4b94ce6bd0677d8319cd3de61f3a9eeb1e5f8ab4e8b5edfcb3/uvloop-0.21.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:461d9ae6660fbbafedd07559c6a2e57cd553b34b0065b6550685f6653a98c1cb", size = 4451321, upload-time = "2024-10-14T23:37:55.766Z" },
     { url = "https://files.pythonhosted.org/packages/8f/eb/f7032be105877bcf924709c97b1bf3b90255b4ec251f9340cef912559f28/uvloop-0.21.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:183aef7c8730e54c9a3ee3227464daed66e37ba13040bb3f350bc2ddc040f22f", size = 4659022, upload-time = "2024-10-14T23:37:58.195Z" },
+]
+
+[[package]]
+name = "verifier"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fc/5b/dd27d685666dba902f70893d66f7d280a2bbeab81eed805dd683ee299459/verifier-1.0.0.tar.gz", hash = "sha256:268e0b6c1744d95601421fa93da4be4112b208f182236f2c66350b5c4dfc972f", size = 1585, upload-time = "2019-02-12T13:38:28.492Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/64/5e/cf1b2cd9010ba5575cfb376a6f86f6bb2afdd23cfc57aa818bf22b4f61ec/verifier-1.0.0-py3-none-any.whl", hash = "sha256:fd456f5e4b1f1ea3a0ab028e5e75c72bdfc4be5bd8d06490309ae6c383d08fd9", size = 2834, upload-time = "2019-02-12T13:38:26.162Z" },
 ]
 
 [[package]]
