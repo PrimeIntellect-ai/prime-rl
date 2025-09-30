@@ -25,7 +25,7 @@ dependencies = [
     "lovely-tensors>=0.1.18",
     "rich>=14.0.0",
     "tomli-w",
-    "verifiers>=0.1.5.dev1",
+    "verifiers @ git+https://github.com/PrimeIntellect-ai/verifiers.git@21c9979",
     "textarena>=0.6.16",
     "nltk>=3.9.1",
     "math-verify>=0.8.0",
