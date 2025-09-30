@@ -1,5 +1,5 @@
 import torch
-from jaxtyping import Float
+from jaxtyping import Float, Int
 from torch import Tensor
 
 from prime_rl.utils.pydantic_config import BaseConfig
@@ -14,7 +14,7 @@ class AdvantageConfig(BaseConfig):
 
 def compute_advantage(
     rewards: Float[Tensor, "group"],
-    lengths: Float[Tensor, "group"],
+    lengths: Int[Tensor, "group"],
     global_std: float,
     advantage_config: AdvantageConfig,
 ) -> Float[Tensor, "group"]:
@@ -63,7 +63,7 @@ def compute_advantages(
     global_std = torch.tensor(rewards).std().item()
     for group_rewards, group_lengths in zip(all_group_rewards, all_group_lengths):
         group_rewards_tensor = torch.tensor(group_rewards)
-        group_lengths_tensor = torch.tensor(group_lengths, dtype=group_rewards_tensor.dtype)
+        group_lengths_tensor = torch.tensor(group_lengths)
         group_advantages_tensor = compute_advantage(
             group_rewards_tensor, group_lengths_tensor, global_std, advantage_config
         )
