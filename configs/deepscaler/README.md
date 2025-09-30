@@ -176,6 +176,10 @@ Evaluated aime2024 in 375.57s (Avg@16=0.3250, Pass@8: 0.6550, Completion Length:
 Step 800 (Stage 2)
 Evaluated math500 in 400.01s (Avg@1=0.8540, Pass@1: 0.8540, Completion Length: 3835.00 (±3727.86, ∈[563.00, 23701.00]), Truncated: 0.0%)
 Evaluated aime2024 in 398.19s (Avg@16=0.3375, Pass@8: 0.6860, Completion Length: 10666.42 (±6032.30, ∈[1898.00, 32686.00]), Truncated: 1.0%)
+
+Step 850 (Stage 2)
+Evaluated math500 in 445.40s (Avg@1=0.8640, Pass@1: 0.8640, Completion Length: 4216.45 (±4022.84, ∈[611.00, 23277.00]), Truncated: 0.0%)
+Evaluated aime2024 in 446.29s (Avg@16=0.3250, Pass@8: 0.6350, Completion Length: 11313.77 (±5997.51, ∈[1695.00, 32686.00]), Truncated: 1.9%)
 </code>
 </pre>
 </details>
