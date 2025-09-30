@@ -1,6 +1,5 @@
 import time
 from contextlib import nullcontext
-from datetime import timedelta
 
 # Import environment before any other imports
 # ruff: noqa: I001
@@ -59,7 +58,7 @@ def train(config: SFTTrainerConfig):
     monitor = setup_monitor(config.wandb, output_dir=config.output_dir, run_config=config)
 
     # Set precision
-    setup_torch_distributed(timeout=timedelta(seconds=config.dist_timeout_seconds))
+    setup_torch_distributed()
     torch.set_float32_matmul_precision("high")
 
     # Initialize parallel dimensions
