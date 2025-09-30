@@ -136,10 +136,10 @@ class CheckpointManager:
 
         # Load the dataloader
         # TODO: Is there a way we can make this so one can restart in any world
-        
+
         if self.config.skip_dataloader:
             get_logger().warning("Skipping dataloader checkpointing")
-        
+
         if dataloader is not None and not self.config.skip_dataloader:
             dataloader_path = ckpt_path / "dataloader" / f"rank_{self._world.rank}.pt"
             if not dataloader_path.exists():

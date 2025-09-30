@@ -282,7 +282,7 @@ class CheckpointConfig(BaseConfig):
             description="Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints.",
         ),
     ] = None
-    
+
     skip_dataloader: Annotated[
         bool,
         Field(

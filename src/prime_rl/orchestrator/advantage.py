@@ -1,14 +1,15 @@
 import torch
-from beartype import beartype as typechecker
+from jaxtyping import Float
 from prime_rl.utils.pydantic_config import BaseConfig
-from jaxtyping import Float, Int, jaxtyped
 from torch import Tensor
+
 
 class AdvantageConfig(BaseConfig):
     global_std_norm: bool = False
     length_weighted_mean: bool = False
     leave_one_out: bool = False
     neg_clipped: bool = False
+
 
 def compute_advantage(
     rewards: Float[Tensor, "group"],
@@ -32,6 +33,7 @@ def compute_advantage(
     if advantage_config.global_std_norm:
         advantages = advantages / global_std
     return advantages
+
 
 def compute_advantages(
     rewards: list[float],
@@ -61,7 +63,9 @@ def compute_advantages(
     for group_rewards, group_lengths in zip(all_group_rewards, all_group_lengths):
         group_rewards_tensor = torch.tensor(group_rewards)
         group_lengths_tensor = torch.tensor(group_lengths, dtype=group_rewards_tensor.dtype)
-        group_advantages_tensor = compute_advantage(group_rewards_tensor, group_lengths_tensor, global_std, advantage_config)
+        group_advantages_tensor = compute_advantage(
+            group_rewards_tensor, group_lengths_tensor, global_std, advantage_config
+        )
         assert len(group_advantages_tensor) == len(group_rewards_tensor)
         advantages.extend(group_advantages_tensor.tolist())
     assert len(rewards) == len(advantages)
