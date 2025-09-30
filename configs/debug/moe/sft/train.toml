@@ -9,6 +9,7 @@ load_using_meta = true
 compile = true
 
 [data]
+type = "fake"
 batch_size = 16
 micro_batch_size = 8
 seq_len = 128
