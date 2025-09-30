@@ -89,8 +89,8 @@ def compute_loss(
     for logprobs, old_logprobs, advantages, loss_mask in zip(logprobs, old_logprobs, advantages, loss_mask):
         log_importance_ratio = logprobs - old_logprobs
 
-        if loss_config.type == "gspo" or loss_config.type == "deepseek_grpo":
-            if loss_config.type == "gspo":
+        if loss_config.ratio_type == "sequence"
+            if loss_config.ratio_length_norm:
                 seq_log_importance_ratio = (log_importance_ratio[loss_mask]).sum() / torch.clamp_min(loss_mask.sum(), 1)
             else:
                 seq_log_importance_ratio = (log_importance_ratio[loss_mask]).sum()
@@ -105,7 +105,7 @@ def compute_loss(
         loss = (loss[loss_mask]).sum()
 
         # Apply sequence-level normalization if configured
-        if loss_config.norm_type == "sequence":
+        if loss_config.norm_type == "sequence" and loss_config.ratio_type == "sequence":
             loss = loss / torch.clamp_min(loss_mask.sum(), 1)
 
         total_loss = total_loss + loss
