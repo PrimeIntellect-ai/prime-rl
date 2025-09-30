@@ -214,7 +214,7 @@ From commit 9tchdk0w. Train at 8K context with no turn limit. Check out the [W&B
 | Qwen/Qwen3-8B | 95.0% (5470±5107) | 73.5% (15019±8507) | - | 82.6% (3431±4176) | 58.8% (11710±7330) | 52.5% (14104±8421) |
 | PrimeIntellect/Qwen3-8B | 96.8% (5352±4879) | 73.7% (14696±8426) | 68.1% (17723±9243) | Err. | Err. | Err. |
 | mikasenghaas/Qwen3-8B-Math-Python-v2-100 | 94.4% (3918±3897) | 73.5% (11800±7627) | 60.6% (14122±8764) | 96.0% (2059±2659) | 72.3% (8076±5934) | 56.8% (10256±6870) |
-| mikasenghaas/Qwen3-8B-Math-Python-v2-200 | 96.4% (3188±3068) | 71.2% (9734±6597) | 58.3% (11526±7719) | - | - | - |
+| mikasenghaas/Qwen3-8B-Math-Python-v2-200 | 96.4% (3188±3068) | 71.2% (9734±6597) | 58.3% (11526±7719) | 95.8% (1689±2392) | 68.1% (6684±5149) | 53.3% (8430±5951) |
 | mikasenghaas/Qwen3-8B-Math-Python-v2-300 | 97.2% (2760±2705) | 69.8% (10533±7462) | 58.1% (11859±8006) | 95.4% (1812±2977) | 69.1% (7580±5943) | 56.2% (9132±6949) |
 
 <details>
@@ -246,7 +246,9 @@ Evaluated aime2024 in 1034.07s (Avg@16=0.7229, Pass@8: 0.8333, Completion Length
 Evaluated aime2025 in 1068.33s (Avg@16=0.5687, Pass@8: 0.7303, Completion Length: 10256.70 (±6870.71, ∈[1174.00, 32195.00]), Truncated: 0.2%)
 
 Step 200:
-
+Evaluated math500 in 715.45s (Avg@1=0.9580, Pass@1: 0.9580, Completion Length: 1689.16 (±2392.51, ∈[186.00, 24556.00]), Truncated: 0.0%)
+Evaluated aime2024 in 776.39s (Avg@16=0.6813, Pass@8: 0.8497, Completion Length: 6684.39 (±5149.20, ∈[685.00, 32253.00]), Truncated: 0.2%)
+Evaluated aime2025 in 730.50s (Avg@16=0.5333, Pass@8: 0.7570, Completion Length: 8430.57 (±5951.46, ∈[899.00, 26604.00]), Truncated: 0.0%)
 
 Step 300:
 Evaluated math500 in 857.99s (Avg@1=0.9540, Pass@1: 0.9540, Completion Length: 1812.69 (±2977.05, ∈[138.00, 32255.00]), Truncated: 0.2%)
