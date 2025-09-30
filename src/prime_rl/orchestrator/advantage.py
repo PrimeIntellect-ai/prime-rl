@@ -28,7 +28,10 @@ def compute_advantage(
         baseline = rewards.mean()
     advantages = rewards - baseline
     if advantage_config.leave_one_out:
-        advantages = advantages * group_size / (group_size - 1)
+        if advantage_config.length_weighted_mean:
+            advantages = advantages * lengths.sum() / (lengths.sum() - lengths)
+        else:
+            advantages = advantages * group_size / (group_size - 1)
     if advantage_config.neg_clipped:
         advantages = torch.maximum(advantages, torch.zeros_like(advantages))
     if advantage_config.global_std_norm:
