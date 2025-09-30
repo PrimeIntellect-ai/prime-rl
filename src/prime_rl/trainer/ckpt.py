@@ -85,6 +85,9 @@ class CheckpointManager:
     def _get_ckpt_path(self, step: int) -> Path:
         return self.ckpt_dir / f"step_{step}" / "trainer"
 
+    def _get_latest_step(self) -> int:
+        return int(self.ckpt_dir.glob("step_*").__next__().name.split("_")[-1])
+
     def _save_to_path(
         self,
         ckpt_path: Path,
@@ -150,6 +153,7 @@ class CheckpointManager:
 
         self._logger.debug(f"Training checkpoint loaded in {time.time() - start_time:.2f} seconds")
 
+        
     def load(
         self,
         model: nn.Module,
@@ -160,6 +164,10 @@ class CheckpointManager:
         dataloader: StatefulDataLoader | None = None,
     ) -> None:
         """Loads a checkpoint from a given path in-place."""
+        if step == -1:
+            step = self._get_latest_step()
+            self._logger.info(f"Restarting from latest checkpoint at step {step}")
+            
         ckpt_path = self._get_ckpt_path(step)
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")

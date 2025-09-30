@@ -270,8 +270,8 @@ class CheckpointConfig(BaseConfig):
     resume_step: Annotated[
         int | None,
         Field(
-            ge=1,
-            description="Step to resume training from. If None, will start from scratch.",
+            ge=-1,
+            description="Step to resume training from. If None, will start from scratch. if -1, will restart from latest checkpoint available.",
         ),
     ] = None
 
