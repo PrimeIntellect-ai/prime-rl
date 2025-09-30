@@ -1,0 +1,6 @@
+gpu_memory_utilization = 0.2
+
+[model]
+name = "rewardhacker00/granite-reverse-text-sft"
+trust_remote_code = true
+dtype = "float32"

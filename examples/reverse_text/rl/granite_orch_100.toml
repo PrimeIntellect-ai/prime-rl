@@ -1,0 +1,16 @@
+batch_size = 16
+micro_batch_size = 2
+rollouts_per_example = 4
+seq_len = 128
+max_steps = 20
+mask_truncated_completions = false
+
+[model]
+name = "rewardhacker00/granite-reverse-text-sft-100"
+trust_remote_code = true
+
+[sampling]
+max_tokens = 64
+
+[environment]
+id = "reverse-text"

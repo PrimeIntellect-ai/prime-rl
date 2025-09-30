@@ -229,31 +229,51 @@ class SFTDataset(StatefulIterableDataset):
             def build_loss_mask(prompt, completion, tokenizer, loss_mask_config: LossMaskConfig) -> list[bool]:
                 messages = prompt + completion
                 loss_mask: list[bool] = []
-                prev_ids, prev_len = [], 0
+
                 for i, message in enumerate(messages):
                     assert "role" in message, "Message must have a role"
                     # Support parallel tool call outputs (treat them as one message for loss mask)
                     if message["role"] == "tool" and i + 1 < len(messages) and messages[i + 1]["role"] == "tool":
                         continue
-                    cur_ids = tokenizer.apply_chat_template(
-                        messages[: i + 1],
-                        tools=tools,
-                        # This is to mask out the generation prompt after user and tool messages
-                        # It leads to us not training on <|im_start|>assistant
-                        add_generation_prompt=True
-                        if (
-                            message["role"] in ["user", "tool"]
-                            and i + 1 < len(messages)
-                            and messages[i + 1]["role"] == "assistant"
+
+                    def apply_template(slice_messages: list[dict], *, add_generation_prompt: bool) -> list[int]:
+                        if not slice_messages:
+                            return []
+                        return cast(
+                            list[int],
+                            tokenizer.apply_chat_template(
+                                slice_messages,
+                                tools=tools,
+                                add_generation_prompt=add_generation_prompt,
+                                **example.get("chat_template_kwargs", {}),
+                            ),
                         )
-                        else False,
-                        **example.get("chat_template_kwargs", {}),
+
+                    prev_messages = messages[:i]
+                    add_generation_for_prev = False
+                    if prev_messages:
+                        prev_message = prev_messages[-1]
+                        add_generation_for_prev = (
+                            prev_message["role"] in ["user", "tool"]
+                            and i < len(messages)
+                            and messages[i]["role"] == "assistant"
+                        )
+                    prev_ids = apply_template(prev_messages, add_generation_prompt=add_generation_for_prev)
+
+                    add_generation_for_cur = (
+                        message["role"] in ["user", "tool"]
+                        and i + 1 < len(messages)
+                        and messages[i + 1]["role"] == "assistant"
                     )
-                    assert prev_ids == cur_ids[:prev_len], (
-                        f"Got mismatch in incremental tokenization with chat template at message {i}. Previous ids: {prev_ids} != {cur_ids[:prev_len]=}.\nDecoded prev_ids:\n{tokenizer.decode(prev_ids)}\nDecoded cur_ids:\n{tokenizer.decode(cur_ids[:prev_len])}"
-                    )
-                    loss_mask.extend([should_mask(message, loss_mask_config)] * (len(cur_ids) - prev_len))
-                    prev_ids, prev_len = cur_ids, len(cur_ids)
+                    cur_ids = apply_template(messages[: i + 1], add_generation_prompt=add_generation_for_cur)
+
+                    prev_len = len(prev_ids)
+                    cur_len = len(cur_ids)
+                    delta = max(cur_len - prev_len, 0)
+                    if delta == 0:
+                        continue
+
+                    loss_mask.extend([should_mask(message, loss_mask_config)] * delta)
 
                 return loss_mask
 

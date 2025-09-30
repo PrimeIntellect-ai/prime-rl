@@ -1,0 +1,16 @@
+max_steps = 100
+
+[model]
+name = "ibm-granite/granite-3.0-1b-a400m-instruct"
+trust_remote_code = true
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+
+[data]
+name = "willcb/R1-reverse-wikipedia-paragraphs-v1-1000"
+seq_len = 2048
+batch_size = 16
+micro_batch_size = 1
+
+[optim]
+lr = 2e-5

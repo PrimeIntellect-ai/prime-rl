@@ -1,0 +1,6 @@
+gpu_memory_utilization = 0.9
+
+[model]
+name = "rewardhacker00/Phi-mini-MoE-Reverse-Text-SFT"
+trust_remote_code = true
+dtype = "float32"

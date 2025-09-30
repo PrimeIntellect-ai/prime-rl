@@ -1,0 +1,13 @@
+max_steps = 20
+use_routing_replay = false
+recompute_logprobs = false
+
+[model]
+name = "rewardhacker00/granite-reverse-text-sft-100"
+trust_remote_code = true
+moe_use_grouped_mm = false
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+
+[optim]
+lr = 3e-6

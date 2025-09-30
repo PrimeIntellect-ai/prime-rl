@@ -1,0 +1,16 @@
+batch_size = 8
+micro_batch_size = 2
+rollouts_per_example = 2
+seq_len = 64
+max_steps = 5
+mask_truncated_completions = false
+
+[model]
+name = "Jackmin108/debug-moe-0.5B"
+trust_remote_code = true
+
+[sampling]
+max_tokens = 64
+
+[environment]
+id = "reverse-text"

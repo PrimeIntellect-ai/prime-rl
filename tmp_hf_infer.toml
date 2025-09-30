@@ -1,0 +1,14 @@
+gpu_memory_utilization = 0.2
+
+[server]
+host = "127.0.0.1"
+port = 8100
+
+[model]
+name = "rewardhacker00/Debug-MoE-Reverse-Text-SFT"
+trust_remote_code = true
+dtype = "float32"
+
+[parallel]
+tp = 1
+dp = 1

@@ -217,11 +217,16 @@ def get_free_port() -> int:
     """Find and return a free port"""
     import socket
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))  # Bind to any available port
-        s.listen(1)
-        port = s.getsockname()[1]
-    return port
+    fallback_port = int(os.environ.get("PRIME_RL_FALLBACK_PORT", 29500))
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("", 0))  # Bind to any available port
+            s.listen(1)
+            port = s.getsockname()[1]
+        return port
+    except PermissionError:
+        # In sandboxed environments socket creation can be denied; fall back to a static port.
+        return fallback_port
 
 
 def get_cuda_visible_devices() -> list[int]:

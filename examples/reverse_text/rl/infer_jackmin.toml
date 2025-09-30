@@ -1,0 +1,4 @@
+[model]
+name = "Jackmin108/debug-moe-0.5B"
+trust_remote_code = true
+dtype = "float32"

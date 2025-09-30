@@ -69,13 +69,11 @@ uv run torchrun \
   --weights
 ```
 
-This should write a weight checkpoint in `outputs/weights/step_100`. Upload it to HF to be able to use it as the base model for RL.
+This should write a weight checkpoint in `outputs/weights/step_100`. Upload it to HF to be able to use it as the base model for RL. For example, we pushed the debug run in this repo to [`rewardhacker00/Debug-MoE-Reverse-Text-SFT`](https://huggingface.co/rewardhacker00/Debug-MoE-Reverse-Text-SFT) and the RL config references it by default. Swap the repo ID for your own upload if you produce a different warmup checkpoint:
 
 ```bash
-uv run hf upload <user>/Debug-MoE-Reverse-Text-SFT outputs/weights/step_100
+HF_TOKEN=... uv run huggingface-cli upload <user>/Debug-MoE-Reverse-Text-SFT outputs/weights/step_100 .
 ```
-
-We have not published a pre-trained SFT checkpoint for this run; upload the weights under your namespace (e.g. `<user>/Debug-MoE-Reverse-Text-SFT`) and use that path in the RL stage.
 
 ## RL
 
@@ -90,7 +88,7 @@ uv run rl \
   --trainer @ examples/reverse_text/rl/train.toml \
   --orchestrator @ examples/reverse_text/rl/orch.toml \
   --inference @ examples/reverse_text/rl/infer.toml \
-  --model.name <user>/Debug-MoE-Reverse-Text-SFT \
+  --model.name rewardhacker00/Debug-MoE-Reverse-Text-SFT \
   --trainer.use-routing-replay \
   --trainer.recompute-logprobs \
   --wandb.project ... \
@@ -120,3 +118,52 @@ uv run vf-eval reverse-text -m <user>/Debug-MoE-Reverse-Text-RL -b http://localh
 ```
 
 Way better! In our dry runs with router replay enabled, we observed average rewards in the 0.7–0.8 range; your numbers may vary slightly depending on rollout variance and checkpoint selection.
+
+## Granite 1B Quickstart
+
+Use the Granite 3.0 1B MoE checkpoint for a fast end-to-end smoke test. Adjust `max_steps` inside `examples/reverse_text/sft/granite_train.toml` if you need a longer warmup.
+
+```bash
+uv run sft @ examples/reverse_text/sft/granite_train.toml \
+  --output-dir outputs/granite_reverse_text_sft \
+  --weights
+```
+
+Upload the warmup weights to your Hugging Face namespace (replace `<user>` with your handle).
+
+```bash
+HF_TOKEN=... uv run huggingface-cli upload <user>/granite-reverse-text-sft outputs/granite_reverse_text_sft/weights/step_5 .
+```
+
+Kick off RL with routing replay enabled via the Granite configs.
+
+```bash
+uv run rl \
+  --trainer @ examples/reverse_text/rl/granite_train.toml \
+  --orchestrator @ examples/reverse_text/rl/granite_orch.toml \
+  --inference @ examples/reverse_text/rl/granite_infer.toml
+```
+
+When training finishes, push the final policy checkpoint.
+
+```bash
+HF_TOKEN=... uv run huggingface-cli upload <user>/granite-reverse-text-rl outputs/weights/step_20 .
+```
+
+### Disable Routing Replay
+
+If you want to compare against a pure GRPO baseline without routing replay/logprob recompute, switch to the `_no_replay` configs:
+
+```bash
+uv run rl \
+  --trainer @ examples/reverse_text/rl/granite_train_no_replay.toml \
+  --orchestrator @ examples/reverse_text/rl/granite_orch_no_replay.toml \
+  --inference @ examples/reverse_text/rl/granite_infer.toml
+```
+
+When it finishes, upload the resulting checkpoint (by default `outputs/weights/step_20`).
+
+```bash
+HF_TOKEN=... uv run huggingface-cli upload <user>/granite-reverse-text-rl-noreplay outputs/weights/step_20 .
+```
+
