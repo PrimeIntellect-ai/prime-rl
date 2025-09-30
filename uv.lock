@@ -2200,7 +2200,7 @@ wheels = [
 
 [[package]]
 name = "openai"
-version = "1.107.1"
+version = "1.109.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -2212,9 +2212,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f3/e0/a62daa7ff769df969cc1b782852cace79615039630b297005356f5fb46fb/openai-1.107.1.tar.gz", hash = "sha256:7c51b6b8adadfcf5cada08a613423575258b180af5ad4bc2954b36ebc0d3ad48", size = 563671, upload-time = "2025-09-10T15:04:40.288Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c6/a1/a303104dc55fc546a3f6914c842d3da471c64eec92043aef8f652eb6c524/openai-1.109.1.tar.gz", hash = "sha256:d173ed8dbca665892a6db099b4a2dfac624f94d20a93f46eb0b56aae940ed869", size = 564133, upload-time = "2025-09-24T13:00:53.075Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d4/12/32c19999a58eec4a695e8ce334442b6135df949f0bb61b2ceaa4fa60d3a9/openai-1.107.1-py3-none-any.whl", hash = "sha256:168f9885b1b70d13ada0868a0d0adfd538c16a02f7fd9fe063851a2c9a025e72", size = 945177, upload-time = "2025-09-10T15:04:37.782Z" },
+    { url = "https://files.pythonhosted.org/packages/1d/2a/7dd3d207ec669cacc1f186fd856a0f61dbc255d24f6fdc1a6715d6051b0f/openai-1.109.1-py3-none-any.whl", hash = "sha256:6bcaf57086cf59159b8e27447e4e7dd019db5d29a438072fbd49c290c7e65315", size = 948627, upload-time = "2025-09-24T13:00:50.754Z" },
 ]
 
 [[package]]
@@ -2559,7 +2559,7 @@ dependencies = [
     { name = "torchtitan" },
     { name = "transformers" },
     { name = "uvloop" },
-    { name = "verifier" },
+    { name = "verifiers" },
     { name = "vllm" },
     { name = "wandb" },
 ]
@@ -2645,7 +2645,7 @@ requires-dist = [
     { name = "transformers", specifier = ">=4.56.0" },
     { name = "unscramble", marker = "extra == 'vf'", specifier = ">=0.1.3", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifier", specifier = ">=0.1.5.dev1" },
+    { name = "verifiers", specifier = ">=0.1.5.dev1" },
     { name = "vllm", specifier = "==0.10.2" },
     { name = "wandb", specifier = ">=0.20.1" },
 ]
@@ -4161,17 +4161,8 @@ wheels = [
 ]
 
 [[package]]
-name = "verifier"
-version = "1.0.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/fc/5b/dd27d685666dba902f70893d66f7d280a2bbeab81eed805dd683ee299459/verifier-1.0.0.tar.gz", hash = "sha256:268e0b6c1744d95601421fa93da4be4112b208f182236f2c66350b5c4dfc972f", size = 1585, upload-time = "2019-02-12T13:38:28.492Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/64/5e/cf1b2cd9010ba5575cfb376a6f86f6bb2afdd23cfc57aa818bf22b4f61ec/verifier-1.0.0-py3-none-any.whl", hash = "sha256:fd456f5e4b1f1ea3a0ab028e5e75c72bdfc4be5bd8d06490309ae6c383d08fd9", size = 2834, upload-time = "2019-02-12T13:38:26.162Z" },
-]
-
-[[package]]
 name = "verifiers"
-version = "0.1.4"
+version = "0.1.5.dev1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "datasets" },
@@ -4184,9 +4175,9 @@ dependencies = [
     { name = "rich" },
     { name = "textual" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/91/3e/5aa99c90f6f642ca270111003c63c82b7145e6888a145346d2317ee53e0c/verifiers-0.1.4.tar.gz", hash = "sha256:4e843368c34ffa154fc6343bd0d38a51e48962f278fbe97cce4e3532aabac88c", size = 112825, upload-time = "2025-09-22T06:39:56.664Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/80/42/08ac5de0ff50fdd3e55be40b4164fecf201fe727da781e5330588c7270b9/verifiers-0.1.5.dev1.tar.gz", hash = "sha256:54dc12c16894266b4d0267ef74d705443bb13c322d2eb80b22737bd8a6cb69e5", size = 120594, upload-time = "2025-09-30T09:04:47.653Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6c/6f/5ce86ea075ce1a8c46ca863c49942c667474512e6e5631bc13a7ce1e3969/verifiers-0.1.4-py3-none-any.whl", hash = "sha256:1d12e9ae93dbe28d8e97ae12980098404f3fa791a8d06ef13bee8fef6e04faae", size = 102773, upload-time = "2025-09-22T06:39:55.508Z" },
+    { url = "https://files.pythonhosted.org/packages/af/86/39c2aa2438cd83e1a01e3f68faed09590a9a654c8e707166191bba6ba61e/verifiers-0.1.5.dev1-py3-none-any.whl", hash = "sha256:2b80841ec375a69fccbd8ab03964fbba0ec3adf98c8f9a6f01adc1c922b5950c", size = 110447, upload-time = "2025-09-30T09:04:46.567Z" },
 ]
 
 [[package]]
