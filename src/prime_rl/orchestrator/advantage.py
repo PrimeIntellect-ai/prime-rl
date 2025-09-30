@@ -1,6 +1,7 @@
-import torch
 from jaxtyping import Float
+import torch
 from torch import Tensor
+
 from prime_rl.utils.pydantic_config import BaseConfig
 
 class AdvantageConfig(BaseConfig):
