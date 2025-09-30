@@ -6,7 +6,8 @@ moe_use_grouped_mm = false
 impl = "custom"
 attn = "sdpa"
 load_using_meta = true
-compile = true
+
+[model.compile]
 
 [data]
 type = "fake"
