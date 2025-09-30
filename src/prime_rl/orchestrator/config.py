@@ -3,7 +3,7 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
 
-from prime_rl.orchestrator.advantage import AdvantageType
+from prime_rl.orchestrator.advantage import AdvantageConfig
 from prime_rl.utils.config import LogConfig, ModelConfig, WandbMonitorConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
@@ -412,6 +412,9 @@ class OrchestratorConfig(BaseSettings):
     # Data buffer configuration
     buffer: Annotated[DataBufferConfigType, Field(discriminator="type")] = SimpleBufferConfig()
 
+    # The advantage configuration
+    advantage: AdvantageConfig = AdvantageConfig()
+
     # The logging configuration
     log: LogConfig = LogConfig()
 
@@ -445,20 +448,6 @@ class OrchestratorConfig(BaseSettings):
             description="Number of output sequences to return per example during training.",
         ),
     ] = 1
-
-    advantage_type: Annotated[
-        AdvantageType,
-        Field(
-            description="Type of advantage computation to use. For details on the variants please refer directly to their docstrings."
-        ),
-    ] = "drgrpo"
-
-    global_std_norm: Annotated[
-        bool,
-        Field(
-            description="Whether to normalize the advantages by the global standard deviation of the rewards.",
-        ),
-    ] = False
 
     seq_len: Annotated[
         int,

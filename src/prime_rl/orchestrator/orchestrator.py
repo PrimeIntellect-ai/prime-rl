@@ -259,8 +259,7 @@ async def orchestrate(config: OrchestratorConfig):
                 rewards=processed_outputs.rewards,
                 completion_lengths=list(map(len, processed_outputs.completion_ids)),
                 samples_per_problem=config.rollouts_per_example,
-                advantage_type=config.advantage_type,
-                global_std_norm=config.global_std_norm,
+                advantage_config=config.advantage,
             )
 
             # Parse whether the completions were truncated
@@ -329,7 +328,7 @@ async def orchestrate(config: OrchestratorConfig):
         assert is_truncated.numel() == config.batch_size
 
         logger.debug(f"Got rewards: {lt.lovely(rewards)}")
-        logger.debug(f"Got advantages ({config.advantage_type}): {lt.lovely(advantages)}")
+        logger.debug(f"Got advantages: {lt.lovely(advantages)}")
 
         # Compute progress metrics and throughput
         num_tokens = int(seq_lens.sum().item())
