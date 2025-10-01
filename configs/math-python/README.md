@@ -262,7 +262,7 @@ Evaluated aime2025 in 873.04s (Avg@16=0.5625, Pass@8: 0.7737, Completion Length:
 From commit 9tchdk0w. Train at 8K context with no turn limit. Check out the [W&B project](https://wandb.ai/primeintellect/math-python/workspace?nw=71j0m1uason).
 
 ```bash
-bash scripts/tmux.sh -s math-python-v3 -o math-python-v3
+bash scripts/tmux.sh -s math-python-v3-icepop -o math-python-v3-icepop
 ```
 
 Install the `math-python` environment.
@@ -273,7 +273,7 @@ prime env install primeintellect/math-python
 
 ```bash
 # Run this in the `Inference` pane
-uv run inference @ configs/math-python/rl/infer.toml --parallel.dp 2 --max-model-len 8192
+CUDA_VISIBLE_DEVICES=4,5 uv run inference @ configs/math-python/rl/infer.toml --parallel.dp 2 --max-model-len 8192 --server.port 8001
 ```
 
 ```bash
@@ -281,8 +281,9 @@ uv run inference @ configs/math-python/rl/infer.toml --parallel.dp 2 --max-model
 uv run rl \
   --trainer @ configs/math-python/rl/train.toml \
   --orchestrator @ configs/math-python/rl/orch.toml \
-  --output-dir math-python-v3 \
-  --trainer-gpu-ids 2,3 \
+  --orchestrator.client.base-url http://localhost:8001/v1 \
+  --output-dir math-python-v3-icepop \
+  --trainer-gpu-ids 6,7 \
   --wandb.project math-python \
-  --wandb.name 4b-8k-no-turn
+  --wandb.name 4b-8k-no-turn-icepop
 ```
