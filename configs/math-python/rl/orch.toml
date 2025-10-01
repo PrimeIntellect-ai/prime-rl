@@ -9,7 +9,7 @@ name = "PrimeIntellect/Qwen3-4B"
 
 [environment]
 id = "math-python"
-max_concurrent = 10
+max_concurrent = 32
 
 [environment.args]
 use_think = true
