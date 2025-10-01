@@ -3,10 +3,6 @@
 *.jsonl
 configs/endpoints.py
 
-# Dev mode
-dev/
-.gitmodules
-
 # Artifacts
 **/weights
 **/checkpoints
