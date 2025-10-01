@@ -259,7 +259,7 @@ Evaluated aime2025 in 873.04s (Avg@16=0.5625, Pass@8: 0.7737, Completion Length:
 
 ### Ablation 3
 
-Train at 8K context with no turn limit in new `math-python` environment using sandboxes. Check out the [W&B project](https://wandb.ai/primeintellect/math-python/workspace?nw=71j0m1uason).
+Train at 8K context with no turn limit in new `math-python` environment using sandboxes. Check out the [W&B project](https://wandb.ai/primeintellect/math-python/workspace?nw=ts2h563p628).
 
 ```bash
 bash scripts/tmux.sh -s math-python-v3 -o math-python-v3
