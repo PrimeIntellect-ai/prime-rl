@@ -10,3 +10,7 @@ lr = 1e-6
 
 [weights]
 interval = 100
+
+[loss]
+mask_ratio_high = 8
+mask_ratio_low = 0.125
