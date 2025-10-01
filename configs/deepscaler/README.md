@@ -132,6 +132,7 @@ They evaluate on a series of math benchmarks, including Math500, AIME24, AMC23, 
 | DeepScaleR-600 | 32.7% (9726±6222) | 86.6% (3205±3167) |
 | DeepScaleR-700 | 32.5% (10162±5887) | 87.8% (3569±3953) |
 | DeepScaleR-800 | 33.8% (10666±6032) | 85.4% (3835±3727) |
+| DeepScaleR-900 | 28.3% (13375±6546) | 80.8% (5480±5887) |
 | O1-Preview | 40.0% (N/A) | 81.4% (N/A) |
 
 <details>
@@ -180,6 +181,14 @@ Evaluated aime2024 in 398.19s (Avg@16=0.3375, Pass@8: 0.6860, Completion Length:
 Step 850 (Stage 2)
 Evaluated math500 in 445.40s (Avg@1=0.8640, Pass@1: 0.8640, Completion Length: 4216.45 (±4022.84, ∈[611.00, 23277.00]), Truncated: 0.0%)
 Evaluated aime2024 in 446.29s (Avg@16=0.3250, Pass@8: 0.6350, Completion Length: 11313.77 (±5997.51, ∈[1695.00, 32686.00]), Truncated: 1.9%)
+
+Step 900 (Stage 2)
+Evaluated math500 in 564.56s (Avg@1=0.8080, Pass@1: 0.8080, Completion Length: 5480.47 (±5887.06, ∈[662.00, 32729.00]), Truncated: 1.8%)
+SUCCESS Evaluated aime2024 in 562.67s (Avg@16=0.2833, Pass@8: 0.6003, Completion Length: 13375.38 (±6546.80, ∈[1706.00, 32687.00]), Truncated: 4.0%)
+
+Step 950 (Stage 3)
+Evaluated math500 in 755.59s (Avg@1=0.7200, Pass@1: 0.7200, Completion Length: 8146.41 (±7986.20, ∈[748.00, 32736.00]), Truncated: 4.6%)
+Evaluated aime2024 in 751.49s (Avg@16=0.1833, Pass@8: 0.4207, Completion Length: 16031.10 (±6904.70, ∈[2366.00, 32699.00]), Truncated: 4.8%)
 </code>
 </pre>
 </details>
