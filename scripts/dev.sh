@@ -19,16 +19,17 @@ if [ "$1" == "off" ]; then
 fi
 
 # Turn on dev mode
-log_info "Adding verifiers as submodule..."
-if [ ! -d "dev/verifiers" ]; then
-    git lfs install
-    git clone git@github.com:primeintellect-ai/verifiers.git dev/verifiers
-    uv pip install -e dev/verifiers
+if [ ! -d ~/verifiers ]; then
+    log_info "Setting up verifiers locally..."
+    cd ~ && git clone https://github.com/PrimeIntellect-ai/verifiers.git && cd verifiers && uv sync --extra dev && cd -
 fi
 
-log_info "Adding prime-environments as submodule..."
-if [ ! -d "dev/prime-environments" ]; then
-    git clone git@github.com:primeintellect-ai/prime-environments.git dev/prime-environments
+if [ ! -d ~/prime-environments ]; then
+    log_info "Setting up prime-environments locally..."
+    cd ~ && curl -sSL https://raw.githubusercontent.com/PrimeIntellect-ai/prime-environments/main/scripts/install.sh | bash && cd -
 fi
+
+log_info "Installing verifiers locally..."
+uv pip install -e ~/verifiers
 
 log_info "Turned on dev mode! To turn it off, run \`bash scripts/dev.sh off\`"
