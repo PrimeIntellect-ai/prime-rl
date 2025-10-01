@@ -21,6 +21,7 @@ fi
 # Turn on dev mode
 log_info "Adding verifiers as submodule..."
 if [ ! -d "dev/verifiers" ]; then
+    git lfs install
     git clone git@github.com:primeintellect-ai/verifiers.git dev/verifiers
     uv pip install -e dev/verifiers
 fi
