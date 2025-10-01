@@ -225,7 +225,11 @@ async def orchestrate(config: OrchestratorConfig):
             logger.info(f"Sending {len(problems)} requests to environments")
             generate_completions_start_time = time.time()
             generate_outputs: GenerateOutputs = await vf_env.a_generate(
-                inputs=inputs, client=client, model=config.model.name, sampling_args=sampling_args, max_concurrent=10
+                inputs=inputs,
+                client=client,
+                model=config.model.name,
+                sampling_args=sampling_args,
+                max_concurrent=config.environment.max_concurrent or -1,
             )
             generate_completions_time = time.time() - generate_completions_start_time
             problem_requests += problems_to_sample
