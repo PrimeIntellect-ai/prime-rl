@@ -8,7 +8,7 @@ from prime_rl.orchestrator import envs
 
 import lovely_tensors as lt
 import torch
-from verifiers import load_environment
+from verifiers import load_environment, setup_logging
 from verifiers.types import GenerateOutputs, ProcessedOutputs
 from transformers import AutoTokenizer
 
@@ -50,6 +50,8 @@ async def orchestrate(config: OrchestratorConfig):
     logger = setup_logger(
         config.log.level, log_file=config.output_dir / "logs" / "orchestrator.log" if config.log.file else None
     )
+    if config.environment.log_level is not None:
+        setup_logging(config.environment.log_level.upper())
     logger.info("Starting orchestrator")
 
     # Print warning if running in benchmark mode
