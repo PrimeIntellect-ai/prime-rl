@@ -251,7 +251,7 @@ class ParallelDims:
 def get_parallel_dims(config: ModelConfig, seq_len: int | None = None) -> ParallelDims:
     # Initialize parallel dimensions
     parallel_dims = ParallelDims(
-        dp_replicate=1,
+        dp_replicate=config.dp_replicate,
         dp_shard=-1,
         cp=config.cp,
         tp=config.tp,

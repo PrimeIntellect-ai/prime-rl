@@ -47,7 +47,7 @@ class FeedForward(nn.Module):
         self,
         dim: int,
         hidden_dim: int,
-    ):
+    ) -> None:
         super().__init__()
         self.w1 = nn.Linear(dim, hidden_dim, bias=False)
         self.w2 = nn.Linear(hidden_dim, dim, bias=False)
@@ -61,19 +61,20 @@ class FeedForward(nn.Module):
         for linear in (self.w2, self.w3):
             nn.init.trunc_normal_(linear.weight, mean=0.0, std=init_std)
 
+
 class BCFeedForward(nn.Module):
     def __init__(
         self,
         dim: int,
         hidden_dim: int,
-    ):
+    ) -> None:
         super().__init__()
         self.w1 = nn.Parameter(torch.empty(hidden_dim, dim))
         self.w2 = nn.Parameter(torch.empty(dim, hidden_dim))
         self.w3 = nn.Parameter(torch.empty(hidden_dim, dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        #return torch.matmul(self.w2, F.silu(torch.matmul(self.w1, x.T)) * torch.matmul(self.w3, x.T))
+        # return torch.matmul(self.w2, F.silu(torch.matmul(self.w1, x.T)) * torch.matmul(self.w3, x.T))
         return torch.matmul(F.silu(torch.matmul(x, self.w1.T)) * torch.matmul(x, self.w3.T), self.w2.T)
 
     def init_weights(self, init_std: float):

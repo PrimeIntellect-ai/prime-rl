@@ -123,6 +123,13 @@ class RLTrainerConfig(BaseSettings):
 
     trace_path: Annotated[Path | None, Field(description="Path to write pytorch profiler trace to.")] = None
 
+    dist_timeout_seconds: Annotated[
+        int,
+        Field(
+            description="Timeout in seconds for torch distributed ops. Defaults to 600 seconds.",
+        ),
+    ] = 600
+
     @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench:

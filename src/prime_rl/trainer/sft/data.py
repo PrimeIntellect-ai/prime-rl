@@ -43,13 +43,11 @@ class StatefulIterableDataset(Stateful, IterableDataset):
         self._setup_world_info()
 
     def state_dict(self) -> dict:
-        # +1 because the stateful dataloader expects uses 1-based counting while we start at 0
-        return {"step": self.step + 1, "epoch": self.epoch}
+        return {"step": self.step, "epoch": self.epoch}
 
     def load_state_dict(self, state_dict: dict):
         assert "step" in state_dict and "epoch" in state_dict
-        # -1 because the stateful dataloader expects uses 1-based counting while we start at 0
-        self.step = state_dict["step"] - 1
+        self.step = state_dict["step"]
         self.epoch = state_dict["epoch"]
 
     def _setup_world_info(self):
@@ -74,8 +72,6 @@ class FakeDataset(StatefulIterableDataset):
 
     def __iter__(self):
         while True:
-            # Increment the step counter (0, 1, 2, ...)
-            # This has to be done before yielding the sample for the dataloader to checkpoint correctly
             self.step += 1
 
             # Skip samples that don't belong to this data rank
@@ -146,10 +142,8 @@ class SFTDataset(StatefulIterableDataset):
         """
         Apply chat template and tokenize a single example in prompt + completion format (https://github.com/huggingface/trl/blob/de27d612b026526ba39b88eee348994d7636e033/trl/trainer/sft_trainer.py#L661)
         """
-        dataset = self.dataset.shuffle(seed=self.epoch) if self.config.shuffle else self.dataset
+        dataset = self.dataset.shuffle(seed=self.epoch + self.config.seed) if self.config.shuffle else self.dataset
         while True:
-            # Increment the step counter (0, 1, 2, ...)
-            # This has to be done before yielding the sample for the dataloader to checkpoint correctly
             self.step += 1
 
             # Get example from dataset
@@ -164,7 +158,7 @@ class SFTDataset(StatefulIterableDataset):
 
             # Update stored epoch if new epoch is reached, optionall shuffle
             if epoch > self.epoch:
-                dataset = self.dataset.shuffle(seed=self.epoch) if self.config.shuffle else self.dataset
+                dataset = self.dataset.shuffle(seed=epoch + self.config.seed) if self.config.shuffle else self.dataset
                 self.epoch = epoch
 
             assert "prompt" in example and "completion" in example, (
@@ -315,18 +309,15 @@ class CatDataset(StatefulIterableDataset):
         self.logger = get_logger()
         self.dataset = dataset
         self.seq_len = seq_len
-        # Public state attributes for checkpointing
-        self.packed_samples = defaultdict(list)
-        self.current_seq_len = 0
 
     def state_dict(self) -> dict:
-        return self.dataset.state_dict()
+        return {"dataset": self.dataset.state_dict()}
 
     def load_state_dict(self, state_dict: dict):
-        self.dataset.load_state_dict(state_dict)
+        self.dataset.load_state_dict(state_dict["dataset"])
 
     def __iter__(self) -> Iterator[Sample]:
-        packed_samples, seq_len, indices = self.packed_samples, self.current_seq_len, []
+        packed_samples, seq_len, indices = defaultdict(list), 0, []
         for sample in self.dataset:
             # Add sample to packed samples
             for key, value in sample.items():
@@ -357,20 +348,26 @@ class StackDataset(StatefulIterableDataset):
         self.logger = get_logger()
         self.dataset = dataset
         self.max_area = max_area
-        self.current_seq_len = 0
-        # TODO: Can we steal step from dataset?
-        self.step = 0
         assert self.max_area % 256 == 0
         self.bucket_sizes = [max_area // 4, max_area // 2, max_area]
+        # Checkpoint state
+        self.step = 0
         self.buckets = [[] for _ in range(len(self.bucket_sizes))]
         self.bucket_timers: list[int | None] = [None] * len(self.buckets)
-        self.bucket_timeout = STACKING_DATASET_BUCKET_TIMEOUT
 
     def state_dict(self) -> dict:
-        return self.dataset.state_dict()
+        return {
+            "dataset": self.dataset.state_dict(),
+            "step": self.step,
+            "buckets": self.buckets,
+            "bucket_timers": self.bucket_timers,
+        }
 
     def load_state_dict(self, state_dict: dict):
-        self.dataset.load_state_dict(state_dict)
+        self.dataset.load_state_dict(state_dict["dataset"])
+        self.step = state_dict["step"]
+        self.buckets = state_dict["buckets"]
+        self.bucket_timers = state_dict["bucket_timers"]
 
     def __iter__(self) -> Iterator[Sample]:
         for sample in self.dataset:
@@ -389,7 +386,7 @@ class StackDataset(StatefulIterableDataset):
             # Check if bucket has timed out
             bucket_timer = self.bucket_timers[bucket_idx]
             if bucket_timer is not None:
-                hit_timeout = bucket_timer + self.bucket_timeout < self.step
+                hit_timeout = bucket_timer + STACKING_DATASET_BUCKET_TIMEOUT < self.step
             else:
                 hit_timeout = False
 

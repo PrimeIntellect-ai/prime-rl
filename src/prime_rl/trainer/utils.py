@@ -1,6 +1,7 @@
 import pickle
 import time
 from collections import defaultdict
+from datetime import timedelta
 from itertools import chain
 from pathlib import Path
 from typing import Any, TypeAlias
@@ -20,10 +21,16 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import format_num, format_time
 
+DEFAULT_TIMEOUT = timedelta(seconds=600)
 
-def setup_torch_distributed():
+
+def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT):
     torch.cuda.set_device(get_world().local_rank)
-    dist.init_process_group(backend="nccl", device_id=torch.device("cuda", torch.cuda.current_device()))
+    dist.init_process_group(
+        backend="nccl",
+        device_id=torch.device("cuda", torch.cuda.current_device()),
+        timeout=timeout,
+    )
 
 
 def get_response_lengths(position_ids: torch.Tensor) -> list[int]:

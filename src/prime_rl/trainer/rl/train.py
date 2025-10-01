@@ -1,6 +1,7 @@
 from contextlib import nullcontext
 import time
 from copy import deepcopy
+from datetime import timedelta
 
 # Import environment before any other imports
 # ruff: noqa: I001
@@ -68,7 +69,7 @@ def train(config: RLTrainerConfig):
     monitor = setup_monitor(config.wandb, output_dir=config.output_dir, run_config=config)
 
     # Set precision
-    setup_torch_distributed()
+    setup_torch_distributed(timeout=timedelta(seconds=config.dist_timeout_seconds))
     torch.set_float32_matmul_precision("high")
 
     # Initialize parallel dimensions
@@ -261,6 +262,9 @@ def train(config: RLTrainerConfig):
         logger.info(f"Starting forward and backward pass ({num_micro_batches=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
         for micro_step, micro_batch in enumerate(micro_batches):
+            # we only all reduce at the last grad acc step
+            model.set_requires_all_reduce(micro_step == len(micro_batches) - 1)
+
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
@@ -319,7 +323,7 @@ def train(config: RLTrainerConfig):
                 tensors[key].append(loss_tensor)
 
             # Debug log with *local, micro step* stats
-            micro_step_message = f"Micro Step {micro_step} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy'][-1].mean().item():.4f} | Importance Ratio: {tensors['importance_ratio'][-1].mean().item():.4f}"
+            micro_step_message = f"Micro Step {micro_step}/{len(micro_batches)} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy'][-1].mean().item():.4f} | Importance Ratio: {tensors['importance_ratio'][-1].mean().item():.4f}"
             if "max_vio" in tensors:
                 micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)

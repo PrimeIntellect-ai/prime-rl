@@ -509,12 +509,16 @@ def rl(config: RLConfig):
         trainer_cmd = [
             "uv",
             "run",
+            "env",
+            "PYTHONUNBUFFERED=1",
             "torchrun",
             f"--rdzv-endpoint=localhost:{get_free_port()}",
             f"--rdzv-id={uuid.uuid4().hex}",
             # Pipe all logs to file, and only master rank logs to stdout
             f"--log-dir={config.output_dir / 'torchrun'}",
             "--local-ranks-filter=0",
+            "--redirect=3",
+            "--tee=3",
             f"--nproc-per-node={len(config.trainer_gpu_ids)}",
             "-m",
             "prime_rl.trainer.rl.train",

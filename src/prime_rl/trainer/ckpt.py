@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+import torch
 import torch.distributed.checkpoint as dcp
 from torch import nn
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
@@ -16,6 +17,7 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 from prime_rl.trainer.config import CheckpointConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.tensor_hashing import get_module_signature, get_optimizer_signature
 from prime_rl.utils.utils import get_ckpt_dir
 
 
@@ -41,13 +43,11 @@ class AppState(Stateful):
         optimizers: list[Optimizer],
         scheduler: LRScheduler,
         progress: Progress,
-        dataloader: StatefulDataLoader | None = None,
     ):
         self.model = model
         self.optimizers = optimizers
         self.scheduler = scheduler
         self.progress = progress
-        self.dataloader = dataloader
 
     def state_dict(self) -> dict[str, Any]:
         # Automatically manages FSDP FQN's, as well as sets the default state dict type to FSDP.SHARDED_STATE_DICT
@@ -60,8 +60,6 @@ class AppState(Stateful):
             "scheduler": scheduler_state_dict,
             "progress": progress_state_dict,
         }
-        if self.dataloader is not None:
-            state_dict["dataloader"] = self.dataloader.state_dict()
         return state_dict
 
     def load_state_dict(self, state_dict: dict[str, Any]):
@@ -71,9 +69,6 @@ class AppState(Stateful):
         self.scheduler.load_state_dict(state_dict["scheduler"])
         for key, value in state_dict["progress"].items():
             setattr(self.progress, key, value)
-        if self.dataloader is not None:
-            assert "dataloader" in state_dict
-            self.dataloader.load_state_dict(state_dict["dataloader"])
 
 
 class CheckpointManager:
@@ -90,6 +85,9 @@ class CheckpointManager:
     def _get_ckpt_path(self, step: int) -> Path:
         return self.ckpt_dir / f"step_{step}" / "trainer"
 
+    def _get_latest_step(self) -> int:
+        return int(self.ckpt_dir.glob("step_*").__next__().name.split("_")[-1])
+
     def _save_to_path(
         self,
         ckpt_path: Path,
@@ -104,7 +102,13 @@ class CheckpointManager:
         start_time = time.time()
 
         # Create checkpoint state
-        state_dict = {"app": AppState(model, optimizers, scheduler, progress, dataloader)}
+        state_dict = {"app": AppState(model, optimizers, scheduler, progress)}
+
+        # Checkpoint the local dataloader
+        if dataloader is not None:
+            dataloader_dir = ckpt_path / "dataloader"
+            dataloader_dir.mkdir(parents=True, exist_ok=True)
+            torch.save(dataloader.state_dict(), dataloader_dir / f"rank_{self._world.rank}.pt")
 
         # Save sharded state
         dcp.save(state_dict, checkpoint_id=ckpt_path)
@@ -129,12 +133,27 @@ class CheckpointManager:
         start_time = time.time()
 
         # Load sharded state
-        app_state = AppState(model, optimizers, scheduler, progress, dataloader)
+        app_state = AppState(model, optimizers, scheduler, progress)
         state_dict = {"app": app_state}
         dcp.load(state_dict=state_dict, checkpoint_id=ckpt_path)
 
+        # Load the dataloader
+        # TODO: Is there a way we can make this so one can restart in any world
+        
+        if self.config.skip_dataloader:
+            get_logger().warning("Skipping dataloader checkpointing")
+        
+        if dataloader is not None and not self.config.skip_dataloader:
+            dataloader_path = ckpt_path / "dataloader" / f"rank_{self._world.rank}.pt"
+            if not dataloader_path.exists():
+                raise RuntimeError(
+                    f"Did not find local dataloader checkpoint at path {dataloader_path}. This might be because you tried restarting the trainer with a different world size. This is currently not supported."
+                )
+            dataloader.load_state_dict(torch.load(dataloader_path))
+
         self._logger.debug(f"Training checkpoint loaded in {time.time() - start_time:.2f} seconds")
 
+        
     def load(
         self,
         model: nn.Module,
@@ -145,10 +164,17 @@ class CheckpointManager:
         dataloader: StatefulDataLoader | None = None,
     ) -> None:
         """Loads a checkpoint from a given path in-place."""
+        if step == -1:
+            step = self._get_latest_step()
+            self._logger.info(f"Restarting from latest checkpoint at step {step}")
+            
         ckpt_path = self._get_ckpt_path(step)
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
         self._load_from_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
+        self._logger.debug(
+            f"Signatures after loading training checkpoint: model={get_module_signature(model, compress=True)}, optimizers={', '.join(get_optimizer_signature(optimizer, compress=True) for optimizer in optimizers)}"
+        )
 
     def save(
         self,
@@ -162,6 +188,9 @@ class CheckpointManager:
         """Saves the full checkpoint state for a specified step."""
         ckpt_path = self._get_ckpt_path(step)
         ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+        self._logger.debug(
+            f"Signatures before saving training checkpoint: model={get_module_signature(model, compress=True)}, optimizers={', '.join(get_optimizer_signature(optimizer, compress=True) for optimizer in optimizers)}"
+        )
         self._save_to_path(ckpt_path, step, model, optimizers, scheduler, progress, dataloader)
 
     def maybe_clean(self) -> None:

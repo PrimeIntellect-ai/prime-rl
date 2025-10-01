@@ -86,6 +86,13 @@ class ModelConfig(BaseConfig):
         ),
     ] = False
 
+    dp_replicate: Annotated[
+        int,
+        Field(
+            description="The data parallel dim where model weights are replicated.",
+        ),
+    ] = 1
+
     ep: Annotated[
         int,
         Field(
@@ -263,8 +270,8 @@ class CheckpointConfig(BaseConfig):
     resume_step: Annotated[
         int | None,
         Field(
-            ge=1,
-            description="Step to resume training from. If None, will start from scratch.",
+            ge=-1,
+            description="Step to resume training from. If None, will start from scratch. if -1, will restart from latest checkpoint available.",
         ),
     ] = None
 
@@ -274,7 +281,14 @@ class CheckpointConfig(BaseConfig):
             ge=1,
             description="Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints.",
         ),
-    ] = 1
+    ] = None
+    
+    skip_dataloader: Annotated[
+        bool,
+        Field(
+            description="Whether to skip checkpointing the dataloader. If True, will not checkpoint the dataloader.",
+        ),
+    ] = False
 
 
 class WeightCheckpointConfig(BaseConfig):
