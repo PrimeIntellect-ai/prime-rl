@@ -285,5 +285,5 @@ uv run rl \
   --output-dir math-python-v3-icepop \
   --trainer-gpu-ids 6,7 \
   --wandb.project math-python \
-  --wandb.name 4b-8k-no-turn-icepop
+  --wandb.name 4b-8k-no-turn-double-sided-icepop
 ```
