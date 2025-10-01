@@ -125,7 +125,7 @@ async def orchestrate(config: OrchestratorConfig):
     task_to_problem_id: dict[asyncio.Task, int] = {}
 
     def generate_call():
-        problem_ids, problems = buffer.sample_problems(1)
+        problem_ids, problems = buffer.sample_problem()
 
         # Duplicate problems `rollouts_per_example` times
         problem_ids = [problem_id for problem_id in problem_ids for _ in range(config.rollouts_per_example)]

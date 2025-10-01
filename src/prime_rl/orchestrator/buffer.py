@@ -228,6 +228,16 @@ class SimpleBuffer(Buffer):
 
         return sampled_problem_ids, sampled_problems
 
+    def sample_problem(self) -> tuple[list[int], list[dict]]:
+        sampled_problem_id = random.sample(self.problem_ids, 1)
+        while sampled_problem_id not in self.rollout_buffer:
+            with open("rollout_buffer.txt", "a") as f:
+                f.write("disaster averted\n")
+            sampled_problem_id = random.sample(self.problem_ids, 1)
+        sampled_problem = self.problem_buffer[sampled_problem_id]
+
+        return [sampled_problem_id], [sampled_problem]
+
     def update(self, rollouts: list[Rollout]):
         # Group rollouts by problem_id
         rollouts_by_problem_id = defaultdict(list)
@@ -240,8 +250,12 @@ class SimpleBuffer(Buffer):
     def sample_rollouts(self, n: int) -> list[Rollout]:
         # Take the first n problems from the rollout buffer
         available_problem_ids = list(self.rollout_buffer.keys())
+        with open("rollout_buffer.txt", "a") as f:
+            _print_dict = {k: len(v) for k, v in self.rollout_buffer.items()}
+            f.write(json.dumps(_print_dict) + "\n")
         assert len(available_problem_ids) == n, (
             "The number of available problems should always be equal to the requested number of problems"
+            f"{len(available_problem_ids)=}, {n=}"
         )
         sampled_problem_ids = available_problem_ids[:n]
         assert len(sampled_problem_ids) == n, (
