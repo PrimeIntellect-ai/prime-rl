@@ -259,13 +259,13 @@ Evaluated aime2025 in 873.04s (Avg@16=0.5625, Pass@8: 0.7737, Completion Length:
 
 ### Ablation 3
 
-From commit 9tchdk0w. Train at 8K context with no turn limit. Check out the [W&B project](https://wandb.ai/primeintellect/math-python/workspace?nw=71j0m1uason).
+Train at 8K context with no turn limit in new `math-python` environment using sandboxes. Check out the [W&B project](https://wandb.ai/primeintellect/math-python/workspace?nw=71j0m1uason).
 
 ```bash
 bash scripts/tmux.sh -s math-python-v3 -o math-python-v3
 ```
 
-Install the `math-python` environment.
+Install the latest `math-python` environment.
 
 ```bash
 prime env install primeintellect/math-python
@@ -273,7 +273,7 @@ prime env install primeintellect/math-python
 
 ```bash
 # Run this in the `Inference` pane
-uv run inference @ configs/math-python/rl/infer.toml --parallel.dp 2 --max-model-len 8192
+uv run inference @ configs/math-python/rl/infer.toml --parallel.tp 2 --max-model-len 8192
 ```
 
 ```bash
