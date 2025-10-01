@@ -7,8 +7,8 @@ This is a reproduction of the [DeepScaleR](https://pretty-radio-b75.notion.site/
 Install the environment using the `prime` CLI.
 
 ```bash
-# TODO: Change to `prime env install ...` later
-uv pip install -e ~/prime-environments/environments/deepscaler
+# TODO: Change to `primeintellect/...` later
+prime env install mikasenghaas/deepscaler
 ```
 
 Verify that the environment is installed correctly.
