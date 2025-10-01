@@ -262,16 +262,14 @@ Evaluated aime2025 in 873.04s (Avg@16=0.5625, Pass@8: 0.7737, Completion Length:
 From commit 9tchdk0w. Train at 8K context with no turn limit. Check out the [W&B project](https://wandb.ai/primeintellect/math-python/workspace?nw=71j0m1uason).
 
 ```bash
-bash scripts/tmux.sh -s exp3 -o outputs3
+bash scripts/tmux.sh -s math-python-v3 -o math-python-v3
 ```
 
-Install this temporary `math-python` environment.
+Install the `math-python` environment.
 
 ```bash
-prime env install mikasenghaas/math-python
+prime env install primeintellect/math-python
 ```
-
-Make sure that verifiers is installed from commit `21c9979`. Then, run
 
 ```bash
 # Run this in the `Inference` pane
@@ -283,7 +281,7 @@ uv run inference @ configs/math-python/rl/infer.toml --parallel.dp 2 --max-model
 uv run rl \
   --trainer @ configs/math-python/rl/train.toml \
   --orchestrator @ configs/math-python/rl/orch.toml \
-  --output-dir outputs3 \
+  --output-dir math-python-v3 \
   --trainer-gpu-ids 2,3 \
   --wandb.project math-python \
   --wandb.name 4b-8k-no-turn
