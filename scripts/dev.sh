@@ -21,15 +21,13 @@ fi
 # Turn on dev mode
 log_info "Adding verifiers as submodule..."
 if [ ! -d "dev/verifiers" ]; then
-    git submodule add git@github.com:primeintellect-ai/verifiers.git dev/verifiers
-    git submodule update --init --recursive
+    git clone git@github.com:primeintellect-ai/verifiers.git dev/verifiers
     uv pip install -e dev/verifiers
 fi
 
 log_info "Adding prime-environments as submodule..."
 if [ ! -d "dev/prime-environments" ]; then
-    git submodule add git@github.com:primeintellect-ai/prime-environments.git dev/prime-environments
-    git submodule update --init --recursive
+    git clone git@github.com:primeintellect-ai/prime-environments.git dev/prime-environments
 fi
 
 log_info "Turned on dev mode! To turn it off, run \`bash scripts/dev.sh off\`"

@@ -1,6 +1,0 @@
-[submodule "dev/verifiers"]
-	path = dev/verifiers
-	url = git@github.com:primeintellect-ai/verifiers.git
-[submodule "dev/prime-environments"]
-	path = dev/prime-environments
-	url = git@github.com:primeintellect-ai/prime-environments.git
