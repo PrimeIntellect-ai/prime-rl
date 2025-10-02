@@ -218,7 +218,7 @@ class WeightCheckpointManager:
         else:
             self._logger.debug(f"Saving unsharded weights to {weights_name}")
 
-        # Save weights (Ref: https://github.com/huggingface/transformers/blob/cd74917ffc3e8f84e4a886052c5ab32b7ac623cc/src/transformers/modeling_utils.py#L4252)
+        # Save weights (https://github.com/huggingface/transformers/blob/cd74917ffc3e8f84e4a886052c5ab32b7ac623cc/src/transformers/modeling_utils.py#L4252)
         filename_to_tensors = state_dict_split.filename_to_tensors.items()
         for shard_file, tensors in filename_to_tensors:
             shard = {}
@@ -233,8 +233,7 @@ class WeightCheckpointManager:
                 torch.save(shard, save_dir / shard_file)
         del state_dict
 
-        # Save index
-        # Ref: https://github.com/huggingface/transformers/blob/cd74917ffc3e8f84e4a886052c5ab32b7ac623cc/src/transformers/modeling_utils.py#L4301
+        # Save index (https://github.com/huggingface/transformers/blob/cd74917ffc3e8f84e4a886052c5ab32b7ac623cc/src/transformers/modeling_utils.py#L4301)
         if state_dict_split.is_sharded:
             index = {
                 "metadata": {**state_dict_split.metadata},
