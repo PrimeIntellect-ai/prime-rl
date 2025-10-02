@@ -67,8 +67,7 @@ async def custom_run_server_worker(listen_address, sock, args, client_config=Non
         @app.post("/update_weights")
         async def _update_weights(request: Request):
             data = await request.json()
-            model_path = data.get("model_path")
-            await engine_client.collective_rpc("update_weights", args=(model_path,))
+            await engine_client.collective_rpc("update_weights", args=(data.get("weight_dir"),))
             return {"status": "ok"}
 
         @app.post("/reload_weights")

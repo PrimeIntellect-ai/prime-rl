@@ -37,8 +37,10 @@ from prime_rl.utils.utils import (
     clean_exit,
     format_num,
     get_rollout_dir,
+    get_step_path,
     get_weights_dir,
     to_col_format,
+    wait_for_path,
 )
 import numpy as np
 
@@ -151,14 +153,14 @@ async def orchestrate(config: OrchestratorConfig):
             ckpt_step = progress.step - config.async_level
             logger.info(f"Waiting for weight checkpoint {ckpt_step}")
             wait_for_weight_ckpt_start_time = time.time()
-            wait_for_weight_checkpoint(get_weights_dir(config.output_dir), ckpt_step)
+            wait_for_path(get_step_path(get_weights_dir(config.output_dir), ckpt_step) / "STABLE")
             wait_for_weight_ckpt_time = time.time() - wait_for_weight_ckpt_start_time
             logger.debug(f"Waited {wait_for_weight_ckpt_time:.2f}s for weight checkpoint")
 
             # Update the weights
             logger.info(f"Updating weights to weight checkpoint {ckpt_step}")
             update_weights_start_time = time.time()
-            await update_weights(client, get_weights_dir(config.output_dir), ckpt_step)
+            await update_weights(client, get_step_path(get_weights_dir(config.output_dir), ckpt_step))
             update_weights_time = time.time() - update_weights_start_time
             logger.debug(f"Updated weights in {update_weights_time:.2f}s")
 
