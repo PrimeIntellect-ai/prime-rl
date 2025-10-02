@@ -26,6 +26,7 @@ from safetensors.torch import save_file
 
 from prime_rl.trainer.weights import _convert_tt_moe_to_hf_, _has_tt_moe_layers
 
+TARGET_SHARD_SIZE = 3 * 2**30
 DTYPE_MAP = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
 
 
@@ -55,9 +56,21 @@ def main(ckpt_dir: Path, output_dir: Path, utils_repo_id: str, dtype: torch.dtyp
         logger.info("Converting TT-MoE layers to HF format")
         _convert_tt_moe_to_hf_(state_dict["app"]["model"])
 
+    shard_keys = [[]]
+    cur_size = 0
+    for key in state_dict["app"]["model"].keys():
+        shard_keys[-1].append(key)
+        cur_size += state_dict["app"]["model"][key].numel() * dtype.itemsize
+        if cur_size >= TARGET_SHARD_SIZE:
+            shard_keys.append([])
+            cur_size = 0
+
     output_dir.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Saving model.safetensors to {output_dir}")
-    save_file(state_dict["app"]["model"], output_dir / "model.safetensors")
+    logger.info(f"Saving {len(shard_keys)} shards to {output_dir}")
+    for i, _shard_keys in enumerate(shard_keys, start=1):
+        shard_state_dict = {k: state_dict["app"]["model"][k] for k in _shard_keys}
+        save_file(shard_state_dict, output_dir / f"model-{i:05d}-of-{len(shard_keys):05d}.safetensors")
+
     utils_paths = [p for p in Path(path_snapshot).glob("*") if "safetensors" not in str(p)]
     logger.info(f"Saving utils to {output_dir}")
     for path in utils_paths:
