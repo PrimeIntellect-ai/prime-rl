@@ -19,7 +19,6 @@ confirm_cleanup() {
     echo "  - **/rollouts"
     echo "  - **/wandb"
     echo "  - **/evals"
-    echo "  - **/evals"
     echo "  - .pydantic_config"
     while true; do
         read -r -p "Proceed? [y/N]: " response
