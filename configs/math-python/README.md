@@ -265,6 +265,12 @@ Train at 8K context with no turn limit in new `math-python` environment using sa
 bash scripts/tmux.sh -s math-python-v3 -o math-python-v3
 ```
 
+Install verifiers locally
+
+```bash
+source scripts/dev.sh
+```
+
 Install the latest `math-python` environment.
 
 ```bash
@@ -284,5 +290,5 @@ uv run rl \
   --output-dir math-python-v3 \
   --trainer-gpu-ids 2,3 \
   --wandb.project math-python \
-  --wandb.name 4b-8k-no-turn
+  --wandb.name 0.6b-8k-no-turn
 ```

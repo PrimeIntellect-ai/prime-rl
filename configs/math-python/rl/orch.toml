@@ -5,12 +5,12 @@ micro_batch_size = 1
 rollouts_per_example = 16
 
 [model]
-name = "PrimeIntellect/Qwen3-4B"
+name = "PrimeIntellect/Qwen3-0.6B"
 
 [environment]
 id = "math-python"
-max_concurrent = 64
 
 [environment.args]
+max_concurrent_sandboxes = 64
 use_think = true
 max_turns = -1
