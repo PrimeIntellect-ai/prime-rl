@@ -7,8 +7,7 @@ This is a reproduction of the [DeepScaleR](https://pretty-radio-b75.notion.site/
 Install the environment using the `prime` CLI.
 
 ```bash
-# TODO: Change to `primeintellect/...` later
-prime env install mikasenghaas/deepscaler
+prime env install primeintellect/deepscaler
 ```
 
 Verify that the environment is installed correctly.
@@ -16,11 +15,6 @@ Verify that the environment is installed correctly.
 ```bash
 uv run python -c "import deepscaler"
 ```
-
-## Evals
-
-
-We get the following results:
 
 ## Training
 
@@ -45,8 +39,7 @@ uv run rl \
   --trainer-gpu-ids 6,7 \
   --output-dir outputs/stage1 \
   --wandb.project deepscaler \
-  --wandb.name stage1-debug \
-  --log.level debug
+  --wandb.name stage1
 ```
 
 ### Stage 2
@@ -77,9 +70,8 @@ uv run rl \
   --trainer-gpu-ids 6,7 \
   --output-dir outputs/stage2 \
   --wandb.project deepscaler \
-  --wandb.name stage2-debug \
-  --ckpt.resume-step 400 \
-  --log.level debug
+  --wandb.name stage2 \
+  --ckpt.resume-step 400
 ```
 
 ### Stage 3
@@ -110,9 +102,8 @@ uv run rl \
   --trainer-gpu-ids 4,5,6,7 \
   --output-dir outputs/stage3 \
   --wandb.project deepscaler \
-  --wandb.name stage3-debug \
-  --ckpt.resume-step 850 \
-  --log.level debug
+  --wandb.name stage3 \
+  --ckpt.resume-step 850
 ```
 
 ## Evals
@@ -134,6 +125,23 @@ They evaluate on a series of math benchmarks, including Math500, AIME24, AMC23, 
 | DeepScaleR-800 | 33.8% (10666±6032) | 85.4% (3835±3727) |
 | DeepScaleR-900 | 28.3% (13375±6546) | 80.8% (5480±5887) |
 | O1-Preview | 40.0% (N/A) | 81.4% (N/A) |
+
+Start the inference server
+
+```bash
+bash scripts/tmux.sh
+```
+
+```bash
+# Run this in the `Inference` pane
+uv run inference --model.name ... --max-model-len 32768
+```
+
+*Note: The model checkpoints are uploaded to `mikasenghaas/DeepSeek-R1-Distill-Qwen-1.5B-DeepScaleR-XXX`.*
+
+```bash
+uv run eval @ configs/deepscaler/eval.toml  --model.name ...
+```
 
 <details>
 <summary>Raw results</summary>
@@ -193,20 +201,3 @@ Evaluated aime2024 in 751.49s (Avg@16=0.1833, Pass@8: 0.4207, Completion Length:
 </pre>
 </details>
 <br/>
-
-Start the inference server
-
-```bash
-bash scripts/tmux.sh
-```
-
-```bash
-# Run this in the `Inference` pane
-uv run inference --model.name ... --max-model-len 32768
-```
-
-*Note: The model checkpoints are uploaded to `mikasenghaas/DeepSeek-R1-Distill-Qwen-1.5B-DeepScaleR-XXX`.*
-
-```bash
-uv run eval @ configs/deepscaler/eval.toml  --model.name ...
-```
