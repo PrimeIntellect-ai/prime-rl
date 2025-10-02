@@ -15,7 +15,7 @@ from verifiers.types import GenerateOutputs, Messages
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.orchestrator.config import ClientConfig, EvalConfig, EvalSamplingConfig, ModelConfig
 from prime_rl.orchestrator.utils import parse_is_truncated_completions, parse_num_completion_tokens
-from prime_rl.utils.logger import get_logger
+from prime_rl.utils.logger import get_logger, get_logcabin
 from prime_rl.utils.monitor import get_monitor
 from prime_rl.utils.utils import capitalize, get_eval_dir, get_step_path
 
@@ -144,6 +144,7 @@ async def run_eval(
 ) -> None:
     # Get the logger
     logger = get_logger()
+    logcabin = get_logcabin()
     monitor = get_monitor()
     assert logger is not None
     eval_start_time = time.time()
@@ -256,6 +257,8 @@ async def run_eval(
         f"time/eval/{eval_id}/generate_and_score_rollouts": run_eval_time,
     }
     monitor.log(time_metrics)
+
+    logcabin.log("eval", {**eval_metrics, **eval_completion_len_metrics, **time_metrics})
 
     # If specified, save eval artifacts
     if save_to_disk:

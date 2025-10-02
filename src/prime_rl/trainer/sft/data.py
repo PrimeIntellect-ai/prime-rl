@@ -4,7 +4,7 @@ from collections import defaultdict
 from typing import Iterator, TypedDict, cast
 
 import torch
-from datasets import Dataset, concatenate_datasets, load_dataset
+from datasets import Dataset, concatenate_datasets, load_dataset, interleave_datasets, load_from_disk
 from jaxtyping import Bool, Int
 from torch import Tensor
 from torch.distributed.checkpoint.stateful import Stateful
@@ -142,7 +142,7 @@ class SFTDataset(StatefulIterableDataset):
         """
         Apply chat template and tokenize a single example in prompt + completion format (https://github.com/huggingface/trl/blob/de27d612b026526ba39b88eee348994d7636e033/trl/trainer/sft_trainer.py#L661)
         """
-        dataset = self.dataset.shuffle(seed=self.epoch + self.config.seed) if self.config.shuffle else self.dataset
+        dataset = self.dataset.shuffle(seed=self.epoch) if self.config.shuffle else self.dataset
         while True:
             self.step += 1
 
@@ -158,7 +158,7 @@ class SFTDataset(StatefulIterableDataset):
 
             # Update stored epoch if new epoch is reached, optionall shuffle
             if epoch > self.epoch:
-                dataset = self.dataset.shuffle(seed=epoch + self.config.seed) if self.config.shuffle else self.dataset
+                dataset = self.dataset.shuffle(seed=epoch) if self.config.shuffle else self.dataset
                 self.epoch = epoch
 
             assert "prompt" in example and "completion" in example, (
@@ -301,6 +301,56 @@ class SFTDataset(StatefulIterableDataset):
 
             yield sample
 
+class FastSFTDataset(StatefulIterableDataset):
+    """A dataset warpping HF SFT dataset with various column formats, already tokenized"""
+
+    def __init__(self, dataset: Dataset, tokenizer: PreTrainedTokenizer, config: SFTDataConfig, non_dp_size: int = 1):
+        super().__init__()
+        self.dataset = dataset
+        self.logger = get_logger()
+        self.config = config
+        self.tokenizer = tokenizer
+
+        # Get the data rank and world size
+        worker_info = get_worker_info()
+        worker_id, num_workers = 0, 1
+        if worker_info is not None:
+            worker_id = worker_info.id
+            num_workers = worker_info.num_workers
+        assert get_world().world_size % non_dp_size == 0, "world_size must be divisible by non_dp_size"
+        self.data_rank = get_world().rank // non_dp_size * num_workers + worker_id
+        self.data_world_size = get_world().world_size // non_dp_size * num_workers
+
+        # If specified, select a subset of the dataset
+        if config.num_examples is not None:
+            self.dataset = self.dataset.select(range(config.num_examples))
+
+        # Store the number of examples in the dataset
+        self.num_examples = len(self.dataset)
+    
+    def __iter__(self):
+        dataset = self.dataset.shuffle(seed=self.epoch) if self.config.shuffle else self.dataset
+        while True:
+            # Increment the step counter (0, 1, 2, ...)
+            # This has to be done before yielding the sample for the dataloader to checkpoint correctly
+            self.step += 1
+
+            # Get example from dataset
+            example = dataset[self.step % self.num_examples]
+
+            # Skip samples that don't belong to this data rank
+            if self.step % self.data_world_size != self.data_rank:
+                continue
+
+            # Compute current epoch based on step count (total samples seen)
+            epoch = self.step // self.num_examples
+
+            # Update stored epoch if new epoch is reached, optionall shuffle
+            if epoch > self.epoch:
+                dataset = self.dataset.shuffle(seed=self.epoch) if self.config.shuffle else self.dataset
+                self.epoch = epoch
+
+            yield example
 
 class CatDataset(StatefulIterableDataset):
     """A dataset that concatenates samples into a single sequence with a fixed length."""
@@ -437,24 +487,24 @@ class StackDataset(StatefulIterableDataset):
                     self.bucket_timers[bucket_idx] = self.step
 
 
-def stack_collate(samples: list[Sample]) -> Batch:
+def stack_collate(samples: list[Sample], config: DataConfigType) -> Batch:
     return {
-        "input_ids": torch.tensor(samples[0]["input_ids"], dtype=torch.long, device="cuda"),
-        "position_ids": torch.tensor(samples[0]["position_ids"], dtype=torch.long, device="cuda"),
-        "loss_mask": torch.tensor(samples[0]["loss_mask"], dtype=torch.bool, device="cuda"),
-        "target_ids": torch.tensor(samples[0]["target_ids"], dtype=torch.long, device="cuda"),
+        "input_ids": torch.tensor(samples[0]["input_ids"], dtype=torch.long, device=config.device),
+        "position_ids": torch.tensor(samples[0]["position_ids"], dtype=torch.long, device=config.device),
+        "loss_mask": torch.tensor(samples[0]["loss_mask"], dtype=torch.bool, device=config.device),
+        "target_ids": torch.tensor(samples[0]["target_ids"], dtype=torch.long, device=config.device),
         "epoch": min([sample["epoch"] for sample in samples]),
     }
 
 
-def cat_collate(samples: list[Sample]) -> Batch:
+def cat_collate(samples: list[Sample], config: DataConfigType) -> Batch:
     return {
-        "input_ids": torch.stack([torch.tensor(sample["input_ids"]) for sample in samples], dim=0).long().to("cuda"),
+        "input_ids": torch.stack([torch.tensor(sample["input_ids"]) for sample in samples], dim=0).long().to(config.device),
         "position_ids": torch.stack([torch.tensor(sample["position_ids"]) for sample in samples], dim=0)
         .long()
-        .to("cuda"),
-        "loss_mask": torch.stack([torch.tensor(sample["loss_mask"]) for sample in samples], dim=0).bool().to("cuda"),
-        "target_ids": torch.stack([torch.tensor(sample["target_ids"]) for sample in samples], dim=0).long().to("cuda"),
+        .to(config.device),
+        "loss_mask": torch.stack([torch.tensor(sample["loss_mask"]) for sample in samples], dim=0).bool().to(config.device),
+        "target_ids": torch.stack([torch.tensor(sample["target_ids"]) for sample in samples], dim=0).long().to(config.device),
         "epoch": min([sample["epoch"] for sample in samples]),
     }
 
@@ -470,6 +520,14 @@ def setup_dataset(
             [cast(Dataset, load_dataset(config.name, split=split)) for split in config.splits]
         )
         return SFTDataset(dataset, tokenizer, config, non_dp_size)
+    elif config.type == "fast_sft":
+        dataset = load_from_disk(config.path)
+        return FastSFTDataset(dataset, tokenizer, config, non_dp_size)
+    elif config.type == "composite_sft":
+        datasets = [load_from_disk(path) for path in config.paths]
+        dataset = interleave_datasets(datasets, probabilities=config.probabilities, seed=config.seed, stopping_strategy="all_exhausted")
+        dataset = FastSFTDataset(dataset, tokenizer, config, non_dp_size)
+        return dataset
     else:
         raise ValueError(f"Invalid dataset type: {config.type}")
 
@@ -480,9 +538,16 @@ def setup_dataloader(
     seq_len = config.micro_batch_size * config.seq_len
     if config.pack_function == "stack":
         stacking_dataset = StackDataset(dataset, seq_len)
-        return StatefulDataLoader(stacking_dataset, batch_size=1, collate_fn=stack_collate)
+        return StatefulDataLoader(stacking_dataset, batch_size=1, collate_fn=lambda x: stack_collate(x, config), num_workers=config.num_workers, pin_memory=config.pin_memory and config.device == "cpu", prefetch_factor=config.prefetch_factor)
     elif config.pack_function == "cat":
         packing_dataset = CatDataset(dataset, seq_len)
-        return StatefulDataLoader(packing_dataset, batch_size=1, collate_fn=cat_collate)
+        return StatefulDataLoader(packing_dataset, batch_size=1, collate_fn=lambda x: cat_collate(x, config), num_workers=config.num_workers, pin_memory=config.pin_memory and config.device == "cpu", prefetch_factor=config.prefetch_factor)
     else:
         raise ValueError(f"Invalid pack function: {config.pack_function}")
+
+
+def get_dataset_state(dataloader: StatefulDataLoader) -> dict:
+    if dataloader.num_workers == 0:
+        return dataloader.state_dict()["dataset_state"]['dataset']
+    else:
+        return dataloader.state_dict()["_snapshot"]["_worker_snapshots"][f"worker_0"]["dataset_state"]["dataset"]

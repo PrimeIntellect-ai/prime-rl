@@ -13,7 +13,7 @@ from loguru import logger
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.weights import setup_weight_ckpt_manager
 from prime_rl.trainer.sft.config import SFTTrainerConfig
-from prime_rl.utils.logger import setup_logger
+from prime_rl.utils.logger import setup_logger, setup_logcabin
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
@@ -25,19 +25,19 @@ from prime_rl.trainer.model import (
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
-from prime_rl.trainer.sft.data import setup_dataloader, setup_dataset
+from prime_rl.trainer.sft.data import setup_dataloader, setup_dataset, get_dataset_state
 from prime_rl.trainer.utils import (
     MemoryProfiler,
     print_sample,
     setup_torch_distributed,
     print_benchmark,
 )
+from prime_rl.trainer.ctx_eval import setup_context_wise_eval
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format
 import torch.distributed as dist
-
 
 @clean_exit
 @logger.catch(reraise=True)
@@ -49,6 +49,7 @@ def train(config: SFTTrainerConfig):
         log_file=config.output_dir / "logs" / "trainer" / f"rank_{world.rank}.log" if config.log.file else None,
     )
     logger.info(f"Starting SFT trainer in {world}")
+    logcabin = setup_logcabin(config, world)
 
     # Print warning if running in benchmark mode
     if config.bench:
@@ -59,7 +60,7 @@ def train(config: SFTTrainerConfig):
     monitor = setup_monitor(config.wandb, output_dir=config.output_dir, run_config=config)
 
     # Set precision
-    setup_torch_distributed(timeout=timedelta(seconds=config.dist_timeout_seconds))
+    setup_torch_distributed()
     torch.set_float32_matmul_precision("high")
 
     # Initialize parallel dimensions
@@ -112,7 +113,7 @@ def train(config: SFTTrainerConfig):
         logger.info(f"Resuming training from checkpoint step {config.ckpt.resume_step}")
         ckpt_manager.load(model, [optimizer], scheduler, progress, step=config.ckpt.resume_step, dataloader=dataloader)
     logger.info(
-        f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples}, dataloader_state={dataloader.state_dict()['dataset_state']})"
+        f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples}, dataloader_state={get_dataset_state(dataloader)})"
     )
 
     logger.info(f"Starting training loop ({config.max_steps=})")
@@ -133,7 +134,7 @@ def train(config: SFTTrainerConfig):
         if (
             weight_ckpt_manager is not None
             and (config.weights and config.weights.interval)
-            and not (is_first_step or is_last_step)
+            and not ((is_first_step and not config.weights.save_first) or is_last_step)
             and progress.step % config.weights.interval == 0
         ):
             logger.info(f"Saving weight checkpoint at step {progress.step}")
@@ -148,7 +149,7 @@ def train(config: SFTTrainerConfig):
             and weight_ckpt_manager is not None
             and config.ckpt
             and config.ckpt.interval
-            and not (is_first_step or is_last_step)
+            and not ((is_first_step and not config.ckpt.save_first) or is_last_step)
             and progress.step % config.ckpt.interval == 0
         ):
             logger.info(f"Saving checkpoint at step {progress.step}")
@@ -176,15 +177,16 @@ def train(config: SFTTrainerConfig):
             * config.model.tp
             // (config.data.micro_batch_size * world.world_size)
         )
+        context_wise_eval = setup_context_wise_eval(config.context_wise_eval, grad_accum_steps)
 
         batch_loss = torch.tensor(0.0).to("cuda")
         batch_max_vio, max_vio = torch.tensor(0.0).to("cuda"), None
         for micro_step in range(grad_accum_steps):
             micro_batch = next(dataiter)
-            input_ids = micro_batch["input_ids"].to("cuda")
-            position_ids = micro_batch["position_ids"].to("cuda")
-            target_ids = micro_batch["target_ids"].to("cuda")
-            loss_mask = micro_batch["loss_mask"].to("cuda")
+            input_ids = micro_batch["input_ids"].to("cuda", non_blocking=True)
+            position_ids = micro_batch["position_ids"].to("cuda", non_blocking=True)
+            target_ids = micro_batch["target_ids"].to("cuda", non_blocking=True)
+            loss_mask = micro_batch["loss_mask"].to("cuda", non_blocking=True)
             epoch = micro_batch["epoch"]
             assert input_ids.shape == position_ids.shape == target_ids.shape == loss_mask.shape, (
                 f"input_ids.shape: {input_ids.shape}, position_ids.shape: {position_ids.shape}, target_ids.shape: {target_ids.shape}, loss_mask.shape: {loss_mask.shape}"
@@ -206,11 +208,17 @@ def train(config: SFTTrainerConfig):
             with maybe_context_parallel:
                 # Forward pass
                 with maybe_record_function("forward"):
-                    logits = forward(model, input_ids, position_ids)
+                    if config.model.use_retention:
+                        logits = model(input_ids=input_ids, position_ids=position_ids, chunk_size=config.model.chunk_size, switch_over_seq_len=config.model.switch_over_seq_len).logits
+                    else:
+                        logits = forward(model, input_ids, position_ids)
                 B, L, V = logits.shape
 
                 # Compute loss
                 loss = cross_entropy(logits.view(-1, V), target_ids.view(-1), reduction="none").view(B, L)
+
+                # Context-wise evaluation
+                context_wise_loss_metrics = context_wise_eval(loss, progress.step, micro_step)
 
                 # Compute average loss over unmasked tokens
                 loss = loss[loss_mask].mean()
@@ -233,7 +241,7 @@ def train(config: SFTTrainerConfig):
                         batch_max_vio += max_vio / grad_accum_steps
 
             # Debug log with *local, micro step* stats
-            micro_step_message = f"Micro Step {micro_step}/{grad_accum_steps} | Loss: {loss.item():.4f} | Dataloader Step: {dataloader.state_dict()['dataset_state']['dataset']['step']}"
+            micro_step_message = f"Micro Step {micro_step}/{grad_accum_steps} | Loss: {loss.item():.4f} | Dataloader Step: {get_dataset_state(dataloader)['step']}"
             if is_tt_moe_model(model) and max_vio is not None:
                 micro_step_message += f" | Max Vio: {max_vio.item():.4f}"
             logger.debug(micro_step_message)
@@ -262,7 +270,7 @@ def train(config: SFTTrainerConfig):
         # Compute step metrics
         num_tokens = config.data.batch_size * config.data.seq_len
         progress.total_tokens += num_tokens
-        progress.total_samples = dataloader.state_dict()["dataset_state"]["dataset"]["step"]
+        progress.total_samples = get_dataset_state(dataloader)["step"]
         perf_counter = get_perf_counter(model, config.data.seq_len)
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_tokens_per_second() or 0
@@ -326,6 +334,14 @@ def train(config: SFTTrainerConfig):
                 "step": progress.step,
             }
             monitor.log(max_vio_log_metrics)
+        else:
+            max_vio_log_metrics = {}
+
+        all_metrics = {**progress_metrics, **perf_metrics, **optim_metrics, **loss_log_metrics, **time_metrics, **max_vio_log_metrics}
+
+        if world.is_master and logcabin is not None:
+            logcabin.log("train", all_metrics)
+            logcabin.log("eval", context_wise_loss_metrics)
 
         is_first_step = False
         progress.step += 1

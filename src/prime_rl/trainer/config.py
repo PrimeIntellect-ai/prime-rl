@@ -61,6 +61,29 @@ class ModelConfig(BaseConfig):
 
     attn: Annotated[AttnImplementation, Field(description="The attention implementation to use.")] = "flash_attention_2"
 
+    use_retention: Annotated[
+        bool,
+        Field(
+            description="Whether to use power retention.",
+        ),
+    ] = False
+
+    chunk_size: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="The chunk size to use for the model.",
+        ),
+    ] = None
+
+    switch_over_seq_len: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="The switch over sequence length to use for the model.",
+        ),
+    ] = None
+
     compile: Annotated[
         CompileConfig | None,
         Field(
@@ -163,6 +186,13 @@ class ModelConfig(BaseConfig):
         ),
     ] = DebugModelConfig()
 
+    amp_type: Annotated[
+        Literal["bf16", "fp16", "fp32"] | None,
+        Field(
+            description="The type of AMP to use.",
+        ),
+    ] = None
+
     @model_validator(mode="after")
     def _map_model_name_for_moe(self):
         """Map model name if it exists in MOE_MODEL_MAPS."""
@@ -185,6 +215,17 @@ class ModelConfig(BaseConfig):
             raise ValueError("Random initialize is only supported when loading with meta.")
         return self
 
+
+class GenerateConfig(BaseModel):
+    """General configuration for the trainer."""
+
+    interval: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Interval at which to do generation testing during training. None means no generation testing.",
+        ),
+    ] = None
 
 class ConstantSchedulerConfig(BaseModel):
     """Configuration for constant learning rate scheduler."""
@@ -220,6 +261,8 @@ class CosineSchedulerConfig(BaseModel):
     warmup_steps: Annotated[int, Field(ge=0, description="Number of warmup steps for the learning rate scheduler.")] = (
         10
     )
+
+    decay_steps: Annotated[int | None, Field(ge=0, description="Number of steps to decay the learning rate during the final portion of training.")] = None
 
     min_lr: Annotated[float, Field(ge=0, description="Minimum learning rate to converge to.")] = 0.0
 
@@ -281,12 +324,12 @@ class CheckpointConfig(BaseConfig):
             ge=1,
             description="Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints.",
         ),
-    ] = None
-    
-    skip_dataloader: Annotated[
+    ] = 1
+
+    save_first: Annotated[
         bool,
         Field(
-            description="Whether to skip checkpointing the dataloader. If True, will not checkpoint the dataloader.",
+            description="Whether to save the first checkpoint.",
         ),
     ] = False
 
@@ -308,3 +351,19 @@ class WeightCheckpointConfig(BaseConfig):
             description="Whether to save the weight checkpoint asynchronously.",
         ),
     ] = True
+
+    save_first: Annotated[
+        bool,
+        Field(
+            description="Whether to save the first weight checkpoint.",
+        ),
+    ] = False
+
+
+class ContextWiseEvalConfig(BaseModel):
+    """Configures the context-wise evaluation."""
+
+    interval: Annotated[int, Field(description="Number of steps between context-wise evaluations. 0 or -1 to disable.")] = -1
+    eval_steps: Annotated[int, Field(description="Number of steps to evaluate the context-wise loss.")] = 1
+    bins: Annotated[int, Field(description="Number of bins to use for the context-wise evaluation. -1 to use all bins.")] = 64
+    log_bins: Annotated[bool, Field(description="Whether to log the bins.")] = True
