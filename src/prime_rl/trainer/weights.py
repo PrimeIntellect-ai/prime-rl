@@ -12,6 +12,7 @@ from torch import Tensor, nn
 from torch.distributed.checkpoint.state_dict import _get_fqns as get_fqns
 from torch.distributed.tensor import DTensor
 from transformers.tokenization_utils import PreTrainedTokenizer
+from transformers.utils import SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME, WEIGHTS_INDEX_NAME, WEIGHTS_NAME
 
 from prime_rl.trainer.config import CheckpointConfig, LoRAConfig
 from prime_rl.trainer.lora import (
@@ -205,20 +206,21 @@ class WeightCheckpointManager:
 
     def _save_weights(self, state_dict: dict[str, Tensor], save_dir: Path, safe_serialization: bool):
         """Utility function to save sharded weights to a directory. Inspired by `save_pretrained` from transformers."""
-        weights_name = "model.safetensors" if safe_serialization else "pytorch_model.bin"
-        filename_pattern = weights_name.replace(".safetensors", "{suffix}.safetensors")
-        self._logger.debug("Split into shards")
+        weights_name = SAFE_WEIGHTS_NAME if safe_serialization else WEIGHTS_NAME
+        filename_pattern = weights_name.replace(".bin", "{suffix}.bin").replace(".safetensors", "{suffix}.safetensors")
         state_dict_split = split_torch_state_dict_into_shards(
             state_dict,
             filename_pattern=filename_pattern,
         )
-        print(state_dict_split)
+        if state_dict_split.is_sharded:
+            filenames = state_dict_split.filename_to_tensors.keys()
+            self._logger.debug(f"Saving sharded weights to {len(filenames)} files: ({', '.join(filenames)})")
+        else:
+            self._logger.debug(f"Saving unsharded weights to {weights_name}")
 
         # Save weights (Ref: https://github.com/huggingface/transformers/blob/cd74917ffc3e8f84e4a886052c5ab32b7ac623cc/src/transformers/modeling_utils.py#L4252)
-        self._logger.debug("Save shards")
         filename_to_tensors = state_dict_split.filename_to_tensors.items()
         for shard_file, tensors in filename_to_tensors:
-            print(shard_file, tensors)
             shard = {}
             for tensor in tensors:
                 assert isinstance(state_dict[tensor], Tensor)
@@ -238,7 +240,7 @@ class WeightCheckpointManager:
                 "metadata": {**state_dict_split.metadata},
                 "weight_map": state_dict_split.tensor_to_filename,
             }
-            save_index_file = "model.safetensors.index.json" if safe_serialization else "pytorch_model.bin.index.json"
+            save_index_file = SAFE_WEIGHTS_INDEX_NAME if safe_serialization else WEIGHTS_INDEX_NAME
             save_index_file = save_dir / save_index_file
             # Save the index as well
             with open(save_index_file, "w", encoding="utf-8") as f:
