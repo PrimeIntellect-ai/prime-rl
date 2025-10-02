@@ -44,13 +44,24 @@ def _convert_tt_moe_to_hf_(state_dict: dict[str, Tensor]):
         if f"model.layers.{i}.mlp.shared_expert.w1" in state_dict:
             state_dict[f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"] = state_dict[
                 f"model.layers.{i}.mlp.shared_expert.w1"
-            ][0]
+            ]
             state_dict[f"model.layers.{i}.mlp.shared_experts.down_proj.weight"] = state_dict[
                 f"model.layers.{i}.mlp.shared_expert.w2"
-            ][0]
+            ]
             state_dict[f"model.layers.{i}.mlp.shared_experts.up_proj.weight"] = state_dict[
                 f"model.layers.{i}.mlp.shared_expert.w3"
-            ][0]
+            ]
+
+            if state_dict[f"model.layers.{i}.mlp.shared_experts.up_proj.weight"].shape[0] == 1:
+                state_dict[f"model.layers.{i}.mlp.shared_experts.up_proj.weight"] = state_dict[
+                    f"model.layers.{i}.mlp.shared_experts.up_proj.weight"
+                ][0]
+                state_dict[f"model.layers.{i}.mlp.shared_experts.down_proj.weight"] = state_dict[
+                    f"model.layers.{i}.mlp.shared_experts.down_proj.weight"
+                ][0]
+                state_dict[f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"] = state_dict[
+                    f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"
+                ][0]
             del state_dict[f"model.layers.{i}.mlp.shared_expert.w1"]
             del state_dict[f"model.layers.{i}.mlp.shared_expert.w2"]
             del state_dict[f"model.layers.{i}.mlp.shared_expert.w3"]
