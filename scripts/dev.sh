@@ -12,27 +12,27 @@ log_info() {
 
 if [ "$1" == "off" ]; then
     # Turn off dev mode
-    log_info "Turning off dev mode..."
-    uv sync && uv sync --all-extras
-    unset UV_NO_SYNC
+    uv sync && uv sync --all-extras && unset UV_NO_SYNC
     log_info "Turned off dev mode!"
 else
     # Turn on dev mode
     if [ ! -d ~/verifiers ]; then
-        log_info "Setting up verifiers locally..."
-        cd ~ && git clone https://github.com/PrimeIntellect-ai/verifiers.git && cd verifiers && uv sync --extra dev && cd -
+        log_info "Did not find ~/verifiers. Setting up..."
+        cd ~ && curl -sSL https://raw.githubusercontent.com/PrimeIntellect-ai/verifiers/main/scripts/install.sh | bash && cd -
     fi
 
     if [ ! -d ~/prime-environments ]; then
-        log_info "Setting up prime-environments locally..."
+        log_info "Did not find ~/prime-environments. Setting up..."
         cd ~ && curl -sSL https://raw.githubusercontent.com/PrimeIntellect-ai/prime-environments/main/scripts/install.sh | bash && cd -
     fi
 
-    log_info "Installing verifiers locally..."
+    # Install verifiers as local, editable package
     uv pip install -e ~/verifiers
+
+    # This is needed so that `uv run ...` does not sync with lock file and remove the temporary packages
     export UV_NO_SYNC=1
 
-    log_info "Turned on dev mode! To turn it off, run \`source scripts/dev.sh off\`"
+    log_info "Turned on dev mode! To add local environments, run 'uv pip install -e path/to/env'. To turn it off, run 'source scripts/dev.sh off'"
 fi
 
 set +e
