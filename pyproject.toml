@@ -84,6 +84,7 @@ pydantic-adherence = { index = "primeintellect" }
 reverse-text = { index = "primeintellect" }
 unscramble = { index = "primeintellect" }
 skywork-math = { index = "primeintellect" }
+deepscaler-math = { index = "primeintellect" }
 acereason-math = { index = "primeintellect" }
 hendrycks-math = { index = "primeintellect" }
 intellect-math = { index = "primeintellect" }
