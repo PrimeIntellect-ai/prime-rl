@@ -371,14 +371,14 @@ class WeightCheckpointConfig(BaseConfig):
         ),
     ] = None
 
-    sharded: Annotated[
+    save_sharded: Annotated[
         bool,
         Field(
             description="Whether to save the weight checkpoint in sharded format.",
         ),
     ] = False
 
-    format: Annotated[
+    save_format: Annotated[
         Literal["safetensors", "torch"],
         Field(
             description="The format to save the weight checkpoint in.",

@@ -164,8 +164,8 @@ def train(config: RLTrainerConfig):
             weight_ckpt_manager.save(
                 model,
                 tokenizer,
-                save_format=config.weights.format,
-                save_sharded=config.weights.sharded,
+                save_format=config.weights.save_format,
+                save_sharded=config.weights.save_sharded,
                 step=progress.step,
             )
             save_weights_time = time.time() - save_weights_start_time
