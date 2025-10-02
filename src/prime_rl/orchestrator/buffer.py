@@ -234,6 +234,7 @@ class SimpleBuffer(Buffer):
             with open("rollout_buffer.txt", "a") as f:
                 f.write("disaster averted\n")
             sampled_problem_id = random.sample(self.problem_ids, 1)[0]
+        self.rollout_buffer[sampled_problem_id] = []
         sampled_problem = self.problem_buffer[sampled_problem_id]
 
         return [sampled_problem_id], [sampled_problem]
@@ -249,7 +250,7 @@ class SimpleBuffer(Buffer):
 
     def sample_rollouts(self, n: int) -> list[Rollout]:
         # Take the first n problems from the rollout buffer
-        available_problem_ids = list(self.rollout_buffer.keys())
+        available_problem_ids = [k for k in self.rollout_buffer.keys() if len(self.rollout_buffer[k]) > 0]
         with open("rollout_buffer.txt", "a") as f:
             _print_dict = {k: len(v) for k, v in self.rollout_buffer.items()}
             f.write(json.dumps(_print_dict) + "\n")
