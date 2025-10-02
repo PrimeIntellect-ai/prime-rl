@@ -55,6 +55,7 @@ vf = [
     "reverse-text>=0.1.4",
     "unscramble>=0.1.3",
     "skywork-math>=0.1.7",
+    "deepscaler-math>=0.1.5",
     "acereason-math>=0.1.5",
     "hendrycks-math>=0.1.5",
     "intellect-math>=0.1.5",
