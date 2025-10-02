@@ -371,6 +371,13 @@ class WeightCheckpointConfig(BaseConfig):
         ),
     ] = None
 
+    safe_serialization: Annotated[
+        bool,
+        Field(
+            description="Whether to save the weight checkpoint in using HuggingFace (safe) or PyTorch (unsafe) serialization format.",
+        ),
+    ] = True
+
     save_async: Annotated[
         bool,
         Field(
