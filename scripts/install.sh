@@ -42,7 +42,7 @@ main() {
     fi
 
     log_info "Installing base packages..."
-    sudo apt update && sudo apt install -y git tmux htop nvtop
+    sudo apt update && sudo apt install -y build-essential openssh-client curl git tmux htop nvtop
 
     log_info "Configuring SSH known_hosts for GitHub..."
     ensure_known_hosts
