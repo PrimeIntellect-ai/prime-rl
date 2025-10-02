@@ -371,12 +371,19 @@ class WeightCheckpointConfig(BaseConfig):
         ),
     ] = None
 
-    safe_serialization: Annotated[
+    sharded: Annotated[
         bool,
         Field(
-            description="Whether to save the weight checkpoint in using HuggingFace (safe) or PyTorch (unsafe) serialization format.",
+            description="Whether to save the weight checkpoint in sharded format.",
         ),
-    ] = True
+    ] = False
+
+    format: Annotated[
+        Literal["safetensors", "torch"],
+        Field(
+            description="The format to save the weight checkpoint in.",
+        ),
+    ] = "torch"
 
     save_async: Annotated[
         bool,

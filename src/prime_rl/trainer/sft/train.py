@@ -144,7 +144,13 @@ def train(config: SFTTrainerConfig):
         ):
             logger.info(f"Saving weight checkpoint at step {progress.step}")
             save_weights_start_time = time.time()
-            weight_ckpt_manager.save(model, tokenizer, step=progress.step)
+            weight_ckpt_manager.save(
+                model,
+                tokenizer,
+                save_format=config.weights.format,
+                save_sharded=config.weights.sharded,
+                step=progress.step,
+            )
             save_weights_time = time.time() - save_weights_start_time
 
         # Save the full checkpoint (if we are at an interval step and not at the first or last step)
@@ -349,8 +355,15 @@ def train(config: SFTTrainerConfig):
 
     # Write final weight checkpoint
     if weight_ckpt_manager is not None:
+        assert config.weights is not None
         logger.info("Writing final weight checkpoint")
-        weight_ckpt_manager.save(model, tokenizer, step=progress.step)
+        weight_ckpt_manager.save(
+            model,
+            tokenizer,
+            save_format=config.weights.format,
+            save_sharded=config.weights.sharded,
+            step=progress.step,
+        )
 
     # Write final checkpoint
     if ckpt_manager is not None:
