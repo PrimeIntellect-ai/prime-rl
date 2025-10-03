@@ -24,3 +24,4 @@
 
 ## Next Up
 - Port the same ablation recipe to Wordle with Granite 1B, then revisit with larger Granite variants to probe scale effects.
+- Keep an eye on replay scaling: Qwen’s experience suggests larger MoE models benefit markedly from router replay [reference](https://qwen.ai/blog?id=8e58897e632e6479c54eae4909cf0a959249569c&from=research.research-list#:~:text=We%20found%20that,maximize%20their%20capacity.g).
