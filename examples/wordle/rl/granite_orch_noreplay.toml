@@ -1,0 +1,16 @@
+max_steps = 100
+seq_len = 4096
+batch_size = 1024
+micro_batch_size = 1
+rollouts_per_example = 16
+output_dir = "outputs/granite_wordle_rl_noreplay"
+
+[model]
+name = "outputs/granite_wordle_sft_200/weights/step_200"
+trust_remote_code = true
+
+[environment]
+id = "wordle"
+
+[sampling]
+max_tokens = 1024

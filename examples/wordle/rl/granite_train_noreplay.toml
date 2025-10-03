@@ -1,0 +1,14 @@
+max_steps = 100
+use_routing_replay = false
+recompute_logprobs = true
+output_dir = "outputs/granite_wordle_rl_noreplay"
+
+[model]
+name = "outputs/granite_wordle_sft_200/weights/step_200"
+trust_remote_code = true
+moe_use_grouped_mm = false
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+
+[optim]
+lr = 1e-6

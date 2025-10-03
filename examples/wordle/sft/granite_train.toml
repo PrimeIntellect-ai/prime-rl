@@ -1,0 +1,16 @@
+max_steps = 20
+
+[model]
+name = "ibm-granite/granite-3.0-1b-a400m-instruct"
+trust_remote_code = true
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+
+[data]
+name = "willcb/V3-wordle"
+seq_len = 1024
+batch_size = 64
+micro_batch_size = 1
+
+[optim]
+lr = 2e-5
