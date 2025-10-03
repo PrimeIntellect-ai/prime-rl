@@ -1,0 +1,77 @@
+/root/prime-rl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+[2m22:18:56[0m [1m   INFO[0m [1m[22mStarting SFT trainer in World(world_size=1, rank=0, local_rank=0, local_world_size=1, num_nodes=1)[0m[0m
+[2m22:18:56[0m [1m   INFO[0m [1m[22mInitializing monitor (None)[0m[0m
+[2m22:18:56[0m [1m   INFO[0m [1m[22mInitializing model and tokenizer (name='ibm-granite/granite-3.0-1b-a400m-instruct' attn='flash_attention_2' compile=None ac=None reshard_after_forward=True trust_remote_code=True ep=1 tp=1 cp=1 impl='hf' log_signature=False load_using_meta=False optimization_dtype='bfloat16' reduce_dtype='bfloat16' moe_use_grouped_mm=True debug=DebugModelConfig(num_layers=None, random_init=False))[0m[0m
+[2m22:18:57[0m [1m   INFO[0m [1m[22mBuilding 1-D device mesh with ['dp_shard'], [1][0m[0m
+[2m22:18:57[0m [33m[1mWARNING[0m [33m[1m[22mModel is tied word embeddings, so not doing the last layer not resharding optimization[0m[0m
+[2m22:18:57[0m [1m   INFO[0m [1m[22mmodel num_layers: 24[0m[0m
+[2m22:18:57[0m [1m   INFO[0m [1m[22mInitializing optimizer (lr=2e-05 weight_decay=0.01 max_norm=1.0 type='adamw' betas1=0.9 betas2=0.999)[0m[0m
+[2m22:18:57[0m [1m   INFO[0m [1m[22mUsing `constant` scheduler (type='constant')[0m[0m
+[2m22:18:57[0m [1m   INFO[0m [1m[22mInitializing weight checkpoint manager (interval=None save_async=True)[0m[0m
+[2m22:18:57[0m [1m   INFO[0m [1m[22mInitializing checkpoint manager (None)[0m[0m
+[2m22:18:57[0m [1m   INFO[0m [1m[22mInitializing data (micro_batch_size=1 batch_size=64 seq_len=1024 num_examples=None pack_function='cat' type='sft' name='willcb/V3-wordle' splits=['train'] shuffle=True loss_mask=LossMaskConfig(system=False, user=False, assistant=True, tool=False))[0m[0m
+[2m22:18:58[0m [1m   INFO[0m [1m[22mStarting from step 0 (total_tokens=0, total_samples=0, dataloader_state={'step': 0, 'epoch': 0})[0m[0m
+[2m22:18:58[0m [1m   INFO[0m [1m[22mStarting training loop (config.max_steps=200)[0m[0m
+[2m22:19:21[0m [33m[1mWARNING[0m [33m[1m[22mError calculating flop_per_token using get_active_mm_params: 'GraniteMoeConfig' object has no attribute 'head_dim'[0m[0m
+[2m22:19:21[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 0 | Time: 22.72s | Loss: 1.6697 | Grad. Norm: 98.0000 | LR: 2.00e-05 | Throughput: 0 tokens/s | MFU: 0.0% | Peak Mem.: 12.5/139.8 GiB (8.9%)[0m[0m
+[2m22:19:37[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 1 | Time: 16.65s | Loss: 1.1774 | Grad. Norm: 10.9375 | LR: 2.00e-05 | Throughput: 3936 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:19:54[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 2 | Time: 16.46s | Loss: 0.9855 | Grad. Norm: 7.0312 | LR: 2.00e-05 | Throughput: 3958 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:20:10[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 3 | Time: 16.53s | Loss: 0.8021 | Grad. Norm: 4.8438 | LR: 2.00e-05 | Throughput: 3959 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:20:26[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 4 | Time: 16.16s | Loss: 0.7056 | Grad. Norm: 3.3750 | LR: 2.00e-05 | Throughput: 3982 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:20:43[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 5 | Time: 16.31s | Loss: 0.6598 | Grad. Norm: 3.3125 | LR: 2.00e-05 | Throughput: 3989 tokens/s | MFU: 3.4% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:20:59[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 6 | Time: 16.38s | Loss: 0.6254 | Grad. Norm: 3.2969 | LR: 2.00e-05 | Throughput: 3990 tokens/s | MFU: 3.4% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:21:15[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 7 | Time: 16.38s | Loss: 0.6127 | Grad. Norm: 3.7812 | LR: 2.00e-05 | Throughput: 3991 tokens/s | MFU: 3.4% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:21:32[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 8 | Time: 16.29s | Loss: 0.6127 | Grad. Norm: 6.4375 | LR: 2.00e-05 | Throughput: 3995 tokens/s | MFU: 3.4% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:21:48[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 9 | Time: 16.36s | Loss: 0.5132 | Grad. Norm: 2.3906 | LR: 2.00e-05 | Throughput: 3996 tokens/s | MFU: 3.4% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:22:04[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 10 | Time: 16.30s | Loss: 0.5431 | Grad. Norm: 2.4531 | LR: 2.00e-05 | Throughput: 4005 tokens/s | MFU: 3.4% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:22:21[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 11 | Time: 16.34s | Loss: 0.4951 | Grad. Norm: 2.4062 | LR: 2.00e-05 | Throughput: 4008 tokens/s | MFU: 3.4% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:22:37[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 12 | Time: 16.42s | Loss: 0.4747 | Grad. Norm: 2.2969 | LR: 2.00e-05 | Throughput: 4011 tokens/s | MFU: 3.4% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:22:54[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 13 | Time: 16.54s | Loss: 0.4872 | Grad. Norm: 2.2188 | LR: 2.00e-05 | Throughput: 4001 tokens/s | MFU: 3.4% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:23:10[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 14 | Time: 16.43s | Loss: 0.4664 | Grad. Norm: 2.4844 | LR: 2.00e-05 | Throughput: 3998 tokens/s | MFU: 3.4% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:23:27[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 15 | Time: 16.59s | Loss: 0.4399 | Grad. Norm: 2.0312 | LR: 2.00e-05 | Throughput: 3992 tokens/s | MFU: 3.4% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:23:43[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 16 | Time: 16.60s | Loss: 0.4192 | Grad. Norm: 2.3750 | LR: 2.00e-05 | Throughput: 3987 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:24:00[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 17 | Time: 16.45s | Loss: 0.4156 | Grad. Norm: 2.2500 | LR: 2.00e-05 | Throughput: 3982 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:24:16[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 18 | Time: 16.34s | Loss: 0.3924 | Grad. Norm: 2.1250 | LR: 2.00e-05 | Throughput: 3983 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:24:33[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 19 | Time: 16.43s | Loss: 0.3928 | Grad. Norm: 2.0625 | LR: 2.00e-05 | Throughput: 3979 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:24:49[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 20 | Time: 16.77s | Loss: 0.3946 | Grad. Norm: 2.4062 | LR: 2.00e-05 | Throughput: 3968 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:25:06[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 21 | Time: 16.49s | Loss: 0.3994 | Grad. Norm: 2.2656 | LR: 2.00e-05 | Throughput: 3966 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:25:23[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 22 | Time: 16.56s | Loss: 0.3847 | Grad. Norm: 2.0938 | LR: 2.00e-05 | Throughput: 3965 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:25:39[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 23 | Time: 16.41s | Loss: 0.3576 | Grad. Norm: 1.8203 | LR: 2.00e-05 | Throughput: 3966 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:25:55[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 24 | Time: 16.36s | Loss: 0.3643 | Grad. Norm: 1.9297 | LR: 2.00e-05 | Throughput: 3972 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:26:12[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 25 | Time: 16.47s | Loss: 0.3409 | Grad. Norm: 1.7812 | LR: 2.00e-05 | Throughput: 3975 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:26:29[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 26 | Time: 16.73s | Loss: 0.3472 | Grad. Norm: 2.0000 | LR: 2.00e-05 | Throughput: 3968 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:26:45[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 27 | Time: 16.69s | Loss: 0.3518 | Grad. Norm: 1.9375 | LR: 2.00e-05 | Throughput: 3958 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:27:02[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 28 | Time: 16.47s | Loss: 0.3225 | Grad. Norm: 1.9453 | LR: 2.00e-05 | Throughput: 3957 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:27:19[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 29 | Time: 16.79s | Loss: 0.3386 | Grad. Norm: 1.9453 | LR: 2.00e-05 | Throughput: 3957 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:27:35[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 30 | Time: 16.35s | Loss: 0.3292 | Grad. Norm: 1.9375 | LR: 2.00e-05 | Throughput: 3961 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:27:51[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 31 | Time: 16.35s | Loss: 0.3197 | Grad. Norm: 2.1406 | LR: 2.00e-05 | Throughput: 3966 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:28:08[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 32 | Time: 16.45s | Loss: 0.3258 | Grad. Norm: 2.0938 | LR: 2.00e-05 | Throughput: 3965 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:28:24[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 33 | Time: 16.36s | Loss: 0.3056 | Grad. Norm: 2.0156 | LR: 2.00e-05 | Throughput: 3965 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:28:41[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 34 | Time: 16.47s | Loss: 0.2989 | Grad. Norm: 1.8828 | LR: 2.00e-05 | Throughput: 3965 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:28:58[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 35 | Time: 17.13s | Loss: 0.3017 | Grad. Norm: 2.1250 | LR: 2.00e-05 | Throughput: 3954 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:29:14[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 36 | Time: 16.54s | Loss: 0.3211 | Grad. Norm: 1.9375 | LR: 2.00e-05 | Throughput: 3958 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:29:31[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 37 | Time: 16.46s | Loss: 0.3086 | Grad. Norm: 2.8594 | LR: 2.00e-05 | Throughput: 3959 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:29:47[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 38 | Time: 16.56s | Loss: 0.3176 | Grad. Norm: 2.3438 | LR: 2.00e-05 | Throughput: 3965 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:30:04[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 39 | Time: 16.39s | Loss: 0.3147 | Grad. Norm: 1.9062 | LR: 2.00e-05 | Throughput: 3964 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:30:20[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 40 | Time: 16.31s | Loss: 0.3212 | Grad. Norm: 2.0938 | LR: 2.00e-05 | Throughput: 3965 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:30:36[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 41 | Time: 16.31s | Loss: 0.2952 | Grad. Norm: 1.9297 | LR: 2.00e-05 | Throughput: 3969 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:30:53[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 42 | Time: 16.58s | Loss: 0.2816 | Grad. Norm: 2.1250 | LR: 2.00e-05 | Throughput: 3963 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:31:09[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 43 | Time: 16.35s | Loss: 0.2800 | Grad. Norm: 1.9688 | LR: 2.00e-05 | Throughput: 3966 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:31:26[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 44 | Time: 16.44s | Loss: 0.2837 | Grad. Norm: 1.8203 | LR: 2.00e-05 | Throughput: 3985 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:31:42[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 45 | Time: 16.62s | Loss: 0.2694 | Grad. Norm: 2.5156 | LR: 2.00e-05 | Throughput: 3982 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:31:59[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 46 | Time: 16.33s | Loss: 0.2660 | Grad. Norm: 2.2500 | LR: 2.00e-05 | Throughput: 3986 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:32:15[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 47 | Time: 16.41s | Loss: 0.2800 | Grad. Norm: 2.9062 | LR: 2.00e-05 | Throughput: 3990 tokens/s | MFU: 3.4% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:32:32[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 48 | Time: 16.57s | Loss: 0.2923 | Grad. Norm: 2.3906 | LR: 2.00e-05 | Throughput: 3985 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:32:48[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 49 | Time: 16.71s | Loss: 0.2716 | Grad. Norm: 2.0781 | LR: 2.00e-05 | Throughput: 3974 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:33:05[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 50 | Time: 16.59s | Loss: 0.2659 | Grad. Norm: 2.0469 | LR: 2.00e-05 | Throughput: 3967 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:33:22[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 51 | Time: 16.78s | Loss: 0.2818 | Grad. Norm: 2.2188 | LR: 2.00e-05 | Throughput: 3961 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:33:38[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 52 | Time: 16.52s | Loss: 0.2556 | Grad. Norm: 1.9297 | LR: 2.00e-05 | Throughput: 3957 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:33:55[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 53 | Time: 16.88s | Loss: 0.2606 | Grad. Norm: 2.1250 | LR: 2.00e-05 | Throughput: 3945 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:34:12[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 54 | Time: 16.36s | Loss: 0.2794 | Grad. Norm: 1.9062 | LR: 2.00e-05 | Throughput: 3952 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:34:28[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 55 | Time: 16.89s | Loss: 0.2617 | Grad. Norm: 2.0469 | LR: 2.00e-05 | Throughput: 3937 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:34:45[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 56 | Time: 16.44s | Loss: 0.2573 | Grad. Norm: 2.0781 | LR: 2.00e-05 | Throughput: 3936 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:35:01[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 57 | Time: 16.50s | Loss: 0.2496 | Grad. Norm: 1.9609 | LR: 2.00e-05 | Throughput: 3938 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:35:18[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 58 | Time: 16.47s | Loss: 0.2421 | Grad. Norm: 2.2344 | LR: 2.00e-05 | Throughput: 3944 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:35:34[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 59 | Time: 16.44s | Loss: 0.2420 | Grad. Norm: 2.1250 | LR: 2.00e-05 | Throughput: 3948 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m
+[2m22:35:51[0m [32m[1mSUCCESS[0m [32m[1m[22mStep 60 | Time: 16.36s | Loss: 0.2339 | Grad. Norm: 2.4219 | LR: 2.00e-05 | Throughput: 3960 tokens/s | MFU: 3.3% | Peak Mem.: 12.9/139.8 GiB (9.2%)[0m[0m

@@ -1,0 +1,76 @@
+/root/prime-rl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+/root/prime-rl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:182: UserWarning: CUDA initialization: Unexpected error from cudaGetDeviceCount(). Did you run some cuda functions before calling NumCudaDevices() that might have already set an error? Error 304: OS call failed or operation not supported on this OS (Triggered internally at /pytorch/c10/cuda/CUDAFunctions.cpp:109.)
+  return torch._C._cuda_getDeviceCount() > 0
+/root/prime-rl/.venv/lib/python3.12/site-packages/joblib/_multiprocessing_helpers.py:44: UserWarning: [Errno 13] Permission denied.  joblib will operate in serial mode
+  warnings.warn("%s.  joblib will operate in serial mode" % (e,))
+[2m22:16:16[0m [1m   INFO[0m [1m[22mStarting SFT trainer in World(world_size=1, rank=0, local_rank=0, local_world_size=1, num_nodes=1)[0m[0m
+[2m22:16:16[0m [1m   INFO[0m [1m[22mInitializing monitor (None)[0m[0m
+[2m22:16:16[0m [31m[1m  ERROR[0m [31m[1m[22mAn error has been caught in function 'wrapper', process 'MainProcess' (63654), thread 'MainThread' (128488314308416):[0m[0m
+[33m[1mTraceback (most recent call last):[0m
+
+  File "/root/prime-rl/.venv/bin/sft", line 10, in <module>
+    sys.exit(main())
+    │   │    └ <function main at 0x74d953e79b20>
+    │   └ <built-in function exit>
+    └ <module 'sys' (built-in)>
+
+  File "[32m/root/prime-rl/src/prime_rl/trainer/sft/[0m[32m[1mtrain.py[0m", line [33m363[0m, in [35mmain[0m
+    [1mtrain[0m[1m([0m[1mparse_argv[0m[1m([0m[1mSFTTrainerConfig[0m[1m)[0m[1m)[0m
+    [36m│     │          └ [0m[36m[1m<class 'prime_rl.trainer.sft.config.SFTTrainerConfig'>[0m
+    [36m│     └ [0m[36m[1m<function parse_argv at 0x74da52ceec00>[0m
+    [36m└ [0m[36m[1m<function train at 0x74d953e79a80>[0m
+
+> File "[32m/root/prime-rl/src/prime_rl/utils/[0m[32m[1mutils.py[0m", line [33m106[0m, in [35mwrapper[0m
+    [1mret[0m [35m[1m=[0m [1mfunc[0m[1m([0m[35m[1m*[0m[1margs[0m[1m,[0m [35m[1m**[0m[1mkwargs[0m[1m)[0m
+    [36m      │     │       └ [0m[36m[1m{}[0m
+    [36m      │     └ [0m[36m[1m(SFTTrainerConfig(toml_files=None, model=ModelConfig(name='ibm-granite/granite-3.0-1b-a400m-instruct', attn='flash_attention_...[0m
+    [36m      └ [0m[36m[1m<function train at 0x74d953e799e0>[0m
+
+  File "[32m/root/prime-rl/src/prime_rl/trainer/sft/[0m[32m[1mtrain.py[0m", line [33m61[0m, in [35mtrain[0m
+    [1msetup_torch_distributed[0m[1m([0m[1m)[0m
+    [36m└ [0m[36m[1m<function setup_torch_distributed at 0x74d953e787c0>[0m
+
+  File "[32m/root/prime-rl/src/prime_rl/trainer/[0m[32m[1mutils.py[0m", line [33m25[0m, in [35msetup_torch_distributed[0m
+    [1mtorch[0m[35m[1m.[0m[1mcuda[0m[35m[1m.[0m[1mset_device[0m[1m([0m[1mget_world[0m[1m([0m[1m)[0m[35m[1m.[0m[1mlocal_rank[0m[1m)[0m
+    [36m│     │    │          └ [0m[36m[1m<function get_world at 0x74da52cef100>[0m
+    [36m│     │    └ [0m[36m[1m<function set_device at 0x74da5fe35120>[0m
+    [36m│     └ [0m[36m[1m<module 'torch.cuda' from '/root/prime-rl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py'>[0m
+    [36m└ [0m[36m[1m<module 'torch' from '/root/prime-rl/.venv/lib/python3.12/site-packages/torch/__init__.py'>[0m
+
+  File "/root/prime-rl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py", line 569, in set_device
+    torch._C._cuda_setDevice(device)
+    │     │  │               └ 0
+    │     │  └ <built-in function _cuda_setDevice>
+    │     └ <module 'torch._C' from '/root/prime-rl/.venv/lib/python3.12/site-packages/torch/_C.cpython-312-x86_64-linux-gnu.so'>
+    └ <module 'torch' from '/root/prime-rl/.venv/lib/python3.12/site-packages/torch/__init__.py'>
+  File "/root/prime-rl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py", line 412, in _lazy_init
+    torch._C._cuda_init()
+    │     │  └ <built-in function _cuda_init>
+    │     └ <module 'torch._C' from '/root/prime-rl/.venv/lib/python3.12/site-packages/torch/_C.cpython-312-x86_64-linux-gnu.so'>
+    └ <module 'torch' from '/root/prime-rl/.venv/lib/python3.12/site-packages/torch/__init__.py'>
+
+[31m[1mRuntimeError[0m:[1m Unexpected error from cudaGetDeviceCount(). Did you run some cuda functions before calling NumCudaDevices() that might have already set an error? Error 304: OS call failed or operation not supported on this OS[0m
+Traceback (most recent call last):
+  File "/root/prime-rl/.venv/bin/sft", line 10, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/prime-rl/src/prime_rl/trainer/sft/train.py", line 363, in main
+    train(parse_argv(SFTTrainerConfig))
+  File "/root/prime-rl/src/prime_rl/utils/utils.py", line 111, in wrapper
+    raise e
+  File "/root/prime-rl/src/prime_rl/utils/utils.py", line 106, in wrapper
+    ret = func(*args, **kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^
+  File "/root/prime-rl/.venv/lib/python3.12/site-packages/loguru/_logger.py", line 1297, in catch_wrapper
+    return function(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/prime-rl/src/prime_rl/trainer/sft/train.py", line 61, in train
+    setup_torch_distributed()
+  File "/root/prime-rl/src/prime_rl/trainer/utils.py", line 25, in setup_torch_distributed
+    torch.cuda.set_device(get_world().local_rank)
+  File "/root/prime-rl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py", line 569, in set_device
+    torch._C._cuda_setDevice(device)
+  File "/root/prime-rl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py", line 412, in _lazy_init
+    torch._C._cuda_init()
+RuntimeError: Unexpected error from cudaGetDeviceCount(). Did you run some cuda functions before calling NumCudaDevices() that might have already set an error? Error 304: OS call failed or operation not supported on this OS

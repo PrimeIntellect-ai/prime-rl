@@ -189,5 +189,8 @@ debug_I2_zero_band
 .idea
 # Wordle ablation artifacts (tracked)
 !outputs/analysis/**
+!outputs/logs/
+!outputs/logs/sft/
 !outputs/logs/sft/granite_wordle_sft_200*.log
+!outputs/logs/wordle/
 !outputs/logs/wordle/**
