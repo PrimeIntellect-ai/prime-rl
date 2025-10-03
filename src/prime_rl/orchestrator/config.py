@@ -453,6 +453,14 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = "drgrpo"
 
+    advantage_keep_n_shortest: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="If set, compute advantage baselines using only the N shortest completions per problem group. Advantages are still produced for all rollouts, but baselines (and scaling for RLOO) are computed from these N shortest.",
+        ),
+    ] = None
+
     seq_len: Annotated[
         int,
         Field(

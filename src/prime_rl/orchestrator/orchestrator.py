@@ -260,6 +260,7 @@ async def orchestrate(config: OrchestratorConfig):
                 completion_lengths=list(map(len, processed_outputs.completion_ids)),
                 samples_per_problem=config.rollouts_per_example,
                 advantage_type=config.advantage_type,
+                keep_n_shortest=config.advantage_keep_n_shortest,
             )
 
             # Parse whether the completions were truncated
