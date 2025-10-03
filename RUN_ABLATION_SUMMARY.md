@@ -20,5 +20,7 @@
 ## Visual
 - “Granite RL Reward Trajectories” overlays all three reward curves; replay keeps the trajectory steadier, but final rewards cluster closely.
 
+![Granite RL Reward Trajectories](docs/assets/granite_rl_rewards_comparison.png)
+
 ## Next Up
 - Port the same ablation recipe to Wordle with Granite 1B, then revisit with larger Granite variants to probe scale effects.
