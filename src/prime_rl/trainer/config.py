@@ -282,7 +282,7 @@ class CheckpointConfig(BaseConfig):
             description="Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints.",
         ),
     ] = None
-    
+
     skip_dataloader: Annotated[
         bool,
         Field(
@@ -301,6 +301,20 @@ class WeightCheckpointConfig(BaseConfig):
             description="Interval at which to save weight checkpoint. If None, will save all necessary weight checkpoints on RL trainer and only final weight checkpoint on SFT trainer.",
         ),
     ] = None
+
+    save_sharded: Annotated[
+        bool,
+        Field(
+            description="Whether to save the weight checkpoint in sharded format.",
+        ),
+    ] = False
+
+    save_format: Annotated[
+        Literal["safetensors", "torch"],
+        Field(
+            description="The format to save the weight checkpoint in.",
+        ),
+    ] = "torch"
 
     save_async: Annotated[
         bool,
