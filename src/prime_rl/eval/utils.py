@@ -2,12 +2,12 @@ import asyncio
 import json
 import time
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 import pandas as pd
 import torch
-from datasets import Dataset, DatasetDict, load_from_disk
+from datasets import Dataset
 from openai import AsyncOpenAI
 from verifiers import load_environment
 from verifiers.types import GenerateOutputs, Messages
@@ -135,6 +135,7 @@ async def run_eval(
     rollouts_per_example: int,
     max_concurrent: int,
     save_to_disk: bool,
+    save_to_hf: str | None,
     output_dir: Path,
     ckpt_step: int,
     model_config: ModelConfig,
@@ -257,13 +258,19 @@ async def run_eval(
     }
     monitor.log(time_metrics)
 
-    # If specified, save eval artifacts
-    if save_to_disk:
-        # Save samples as dataset
-        eval_dir = get_step_path(get_eval_dir(output_dir), ckpt_step) / eval_id
+    if save_to_disk or save_to_hf is not None:
         dataset = make_dataset(generate_outputs)
-        dataset.save_to_disk(eval_dir)
-        logger.info(f"Saved eval results for {eval_id} to disk ({eval_dir})")
+
+        # If specified, save eval artifacts
+        if save_to_disk:
+            # Save samples as dataset
+            eval_dir = get_step_path(get_eval_dir(output_dir), ckpt_step) / eval_id
+            dataset.save_to_disk(eval_dir)
+            logger.info(f"Saved eval results for {eval_id} to disk ({eval_dir})")
+
+        if save_to_hf is not None:
+            dataset.push_to_hub(save_to_hf, split=eval_id)
+            logger.info(f"Pushed eval results for {eval_id} to HF Hub (https://huggingface.co/datasets/{save_to_hf})")
 
 
 async def run_evals(
@@ -276,7 +283,6 @@ async def run_evals(
     ckpt_step: int,
     step: int | None = None,
 ):
-    logger = get_logger()
     await asyncio.gather(
         *[
             run_eval(
@@ -288,6 +294,7 @@ async def run_evals(
                 max_concurrent=max_concurrent,
                 output_dir=output_dir,
                 save_to_disk=eval_config.save_to_disk,
+                save_to_hf=eval_config.save_to_hf,
                 model_config=model_config,
                 sampling_config=sampling_config,
                 client_config=client_config,
@@ -302,14 +309,3 @@ async def run_evals(
             )
         ]
     )
-
-    if eval_config.save_to_hf is not None:
-        logger.info(f"Pushing eval results for {', '.join(eval_config.environment_ids)} to HF Hub")
-        eval_dirs = [
-            get_step_path(get_eval_dir(output_dir), ckpt_step) / eval_id for eval_id in eval_config.environment_ids
-        ]
-        dataset_dict = DatasetDict(
-            {path.name.replace("-", "_"): cast(Dataset, load_from_disk(path)) for path in eval_dirs}
-        )
-        dataset_dict.push_to_hub(eval_config.save_to_hf)
-        logger.info(f"Pushed eval results to HF Hub (https://huggingface.co/datasets/{eval_config.save_to_hf})")
