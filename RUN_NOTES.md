@@ -29,7 +29,6 @@ All detailed per-step rewards are saved in `outputs/analysis/granite_rl_*_reward
 ![Granite RL Reward Trajectories](docs/assets/granite_rl_rewards_comparison.png)
 
 ## 3. Evaluation Summary
-- Quick smoke test (20 examples × 3 rollouts): replay+recompute 0.226, no-replay+recompute 0.224, no-replay+no-recompute 0.213 (`outputs/analysis/reverse_text_eval_summary.md`).
 - Full sweep (1000 examples × 3 rollouts): replay+recompute 0.227, no-replay+recompute 0.223, no-replay+no-recompute 0.231 (`outputs/analysis/reverse_text_eval_summary_full.md`).
 
 Logs for the large evals are stored in `outputs/logs/eval/eval_*_full.txt`.
