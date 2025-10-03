@@ -100,6 +100,17 @@ class LoRAConfig(BaseModel):
     ] = [r".*embed_tokens$", r".*norm$", r".*layernorm$", r"lm_head$"]
 
 
+class ExperimentalConfig(BaseModel):
+    """Experimental modeling features."""
+
+    lora: Annotated[
+        LoRAConfig | None,
+        Field(
+            description="Whether to apply LoRA to the model. If None, will not apply LoRA.",
+        ),
+    ] = None
+
+
 class ModelConfig(BaseConfig):
     """Configures the model for training."""
 
@@ -123,13 +134,6 @@ class ModelConfig(BaseConfig):
         ActivationCheckpointConfig | None,
         Field(
             description="Whether to apply activation checkpointing to the model. If None, will not apply activation checkpointing.",
-        ),
-    ] = None
-
-    lora: Annotated[
-        LoRAConfig | None,
-        Field(
-            description="Whether to apply LoRA to the model. If None, will not apply LoRA.",
         ),
     ] = None
 
@@ -220,6 +224,13 @@ class ModelConfig(BaseConfig):
             description="Debugging feature around model and distributed training.",
         ),
     ] = DebugModelConfig()
+
+    experimental: Annotated[
+        ExperimentalConfig,
+        Field(
+            description="Experimental modeling features.",
+        ),
+    ] = ExperimentalConfig()
 
     @model_validator(mode="after")
     def _map_model_name_for_moe(self):
