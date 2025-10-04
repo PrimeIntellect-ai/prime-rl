@@ -105,7 +105,7 @@ def compute_loss(
         loss = (loss[loss_mask]).sum()
 
         # Apply sequence-level normalization if configured
-        if loss_config.norm_type == "sequence" and loss_config.ratio_type == "sequence":
+        if loss_config.ratio_type == "sequence":
             loss = loss / torch.clamp_min(loss_mask.sum(), 1)
 
         total_loss = total_loss + loss

@@ -19,15 +19,10 @@ from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 class LossConfig(BaseModel):
     """Base config for loss."""
 
-    norm_type: Annotated[
-        Literal["token", "sequence"],
-        Field(
-            description="Normalization type for loss scaling. 'token' normalizes by the total number of unmasked tokens in the batch, 'sequence' normalizes by the total tokens within a sequence."
-        ),
-    ] = "token"
-
-    ratio_type: Annotated[Literal["token", "sequence"], Field(description="Type of ratio to use.")] = "token"
-    ratio_length_norm: Annotated[bool, Field(description="Whether to normalize the ratio by the length of the sequence.")] = False
+    ratio_type: Annotated[Literal["token", "sequence"], Field(description="Type of importance ratio to use.")] = "token"
+    ratio_length_norm: Annotated[
+        bool, Field(description="Whether to normalize the importance ratio by the sequence length.")
+    ] = False
 
     clip_ratio: Annotated[float, Field(ge=0)] = 8.0
 
