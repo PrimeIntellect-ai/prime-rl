@@ -1,0 +1,12 @@
+max_steps = 1000
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B"
+
+[model.ac]
+
+[optim]
+lr = 1e-6
+
+[weights]
+interval = 100

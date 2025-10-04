@@ -164,6 +164,13 @@ class EnvironmentConfig(BaseConfig):
 
     id: Annotated[str, Field(description="ID of the environment to use.")] = "reverse-text"
     args: Annotated[dict, Field(description="Arguments to pass to the environment.")] = {}
+    log_level: Annotated[str | None, Field(description="Logging level to use for verifiers.")] = None
+    max_concurrent: Annotated[
+        int | None,
+        Field(
+            description="Maximum number of concurrent rollouts to generate and score. If None, will default to -1 for all environments."
+        ),
+    ] = None
 
 
 class EvalConfig(BaseConfig):

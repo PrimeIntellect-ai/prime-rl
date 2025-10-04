@@ -1,0 +1,294 @@
+# Math-Python
+
+In this example, we train `Qwen3-8B` on math problems while having access to a Python REPL tool. We will RL against the [`math-python`](https://app.primeintellect.ai/dashboard/environments/will/math-python) environment.
+
+## Setup
+
+First, let's install the environment using the `prime` CLI.
+
+```bash
+prime env install will/math-python
+```
+
+Verify your installation by trying to import the environment.
+
+```bash
+uv run python -c "import math_python"
+```
+
+Start the pre-layouted `tmux` session which we will use to run all experiments and view logs conveniently
+
+```bash
+bash scripts/tmux.sh
+```
+
+Before training, we want to get a baseline score and test how well `Qwen3-8B` does out-of-the-box in the `math-python` environment so that we quantify our training effect. To do so, first start a local inference server to serve `Qwen3-8B` with the correct tool call parser and give the model the ability to automatically decide whether to use the tool or not.
+
+```bash
+# Run this in the `Inference` pane
+uv run inference --model.name Qwen/Qwen3-8B --enable-auto-tool-choice --tool-call-parser hermes
+```
+```bash
+# Run this in the `Trainer` pane
+uv run vf-eval math-python -m Qwen/Qwen3-8B -b http://localhost:8000/v1 -n 500 -r 1 -c -1 --max-tokens 8192
+```
+
+Reward: 0.704, Correct: 0.714, #Turns: 2.118, #Tool calls: 1.120, Errors: 0.102
+
+Let's also test how the base model that we will use does out-of-the-box. It is the same model, but with a different chat template and tool call format which is inspired by the Qwen3-Coder chat template. We expect it to be worse out of the box.
+
+```bash
+uv run inference --model.name PrimeIntellect/Qwen3-8B --enable-auto-tool-choice --tool-call-parser qwen3_coder
+```
+
+```bash
+uv run vf-eval math-python -m PrimeIntellect/Qwen3-8B -b http://localhost:8000/v1 -n 500 -r 1 -c -1 --max-tokens 8192
+```
+
+Reward: 0.646, Correct: 0.660, #Turns: 2.284, #Tool calls: 1.288, Errors: 0.144
+
+## RL
+
+```bash
+# Run this in the `Inference` pane
+uv run inference @ configs/math-python/rl/infer.toml \
+  --parallel.tp ... \
+  --parallel.dp ...
+```
+
+```bash
+# Run this in the `Trainer` pane
+uv run rl \
+  --trainer @ configs/math-python/rl/train.toml \
+  --orchestrator @ configs/math-python/rl/orch.toml \
+  --trainer-gpu-ids ... \
+  --wandb.project ... \
+  --wandb.name ...
+```
+
+## Evals
+
+| Model | MATH 500 | AIME 2024 | AIME 2025 | MATH 500 (w/ tools) | AIME 2024 (w/ tools) | AIME 2025 (w/ tools) |
+|-------|-----------|----------|----------|-----------------|---------------------|---------------------|
+| Qwen3-8B | 95.0% (5470±5107) | 73.5% (15019±8507) | - | 95.8% (3628±4370) | 70.4% (11952±7358) | 58.1% (14544±8240) |
+| ... | - | - | - | - | - | - |
+| ... | - | - | - | - | - | - |
+
+### Qwen3-8B
+
+Start the inference server
+
+```bash
+uv run inference \
+  --model.name Qwen/Qwen3-8B \
+  --enable-auto-tool-choice \
+  --tool-call-parser hermes \
+  --max-model-len 32768 \
+  --parallel.dp ... \
+  --parallel.tp ...
+```
+
+Run evals against common math benchmarks with and without tool use.
+
+```bash
+uv run eval \
+  --model.name Qwen/Qwen3-8B \
+  --environment-ids math500,aime2024,aime2025 \
+  --environment-args '{"math500": {"use_think": true}, "aime2024": {"use_think": true}, "aime2025": {"use_think": true}}' \
+  --rollouts-per-example 1,16,16
+```
+
+```bash
+uv run eval \
+  --model.name Qwen/Qwen3-8B \
+  --environment-ids math500,aime2024,aime2025 \
+  --environment-args '{"math500": {"use_think": true, "use_tools": true}, "aime2024": {"use_think": true, "use_tools": true}, "aime2025": {"use_think": true, "use_tools": true}}' \
+  --rollouts-per-example 1,16,16
+```
+
+<details>
+<summary>Raw results</summary>
+<pre><code>
+Without tools:
+Evaluated math500 in 1390.31s (Avg@1=0.9500, Pass@1: 0.9500, Completion Length: 5470.91 (±5107.79, ∈[952.00, 32694.00]), Truncated: 0.4%)
+Evaluated aime2024 in 1615.29s (Avg@16=0.7354, Pass@8: 0.8257, Completion Length: 15019.11 (±8507.26, ∈[3465.00, 32678.00]), Truncated: 4.8%)
+
+With tools:
+Evaluated math500 in 1727.55s (Avg@1=0.9580, Pass@1: 0.9580, Completion Length: 3628.63 (±4370.45, ∈[296.00, 32335.00]), Truncated: 0.6%)
+Evaluated aime2024 in 1741.10s (Avg@16=0.7042, Pass@8: 0.8653, Completion Length: 11952.65 (±7358.06, ∈[2462.00, 32346.00]), Truncated: 3.1%)
+Evaluated aime2025 in 1777.89s (Avg@16=0.5813, Pass@8: 0.8330, Completion Length: 14544.32 (±8240.12, ∈[2203.00, 32360.00]), Truncated: 4.8%)
+</code></pre>
+</details>
+
+### Qwen3-8B-Math-Python
+
+Start the inference server
+
+```bash
+uv run inference \
+  --model.name ... \
+  --enable-auto-tool-choice \
+  --tool-call-parser qwen3_coder \
+  --max-model-len 32768 \
+  --parallel.dp ... \
+  --parallel.tp ...
+```
+
+Run evals against common math benchmarks with and without tool use.
+
+```bash
+# Math benchmarks (w/o tool use)
+uv run eval \
+  --model.name ... \
+  --environment-ids math500,aime2024,aime2025 \
+  --environment-args '{"math500": {"use_think": true}, "aime2024": {"use_think": true}, "aime2025": {"use_think": true}}' \
+  --rollouts-per-example 1,16,16
+```
+
+```bash
+# Math benchmarks (w/ tool use)
+uv run eval \
+  --model.name ... \
+  --environment-ids math500,aime2024,aime2025 \
+  --environment-args '{"math500": {"use_think": true, "use_tools": true}, "aime2024": {"use_think": true, "use_tools": true}, "aime2025": {"use_think": true, "use_tools": true}}' \
+  --rollouts-per-example 1,16,16
+```
+
+## Ablations
+
+### Ablation 1
+
+From commit `0r23ugcd`. Train at 8K context with `max_turns=3. Check out the [W&B project](https://wandb.ai/primeintellect/math-python?nw=lpxt5c3z2nr).
+
+| Model | MATH 500 | AIME 2024 | AIME 2025 | MATH 500 (w/ tools) | AIME 2024 (w/ tools) | AIME 2025 (w/ tools) |
+|-------|-----------|----------|----------|-----------------|---------------------|---------------------|
+| Qwen3-8B | 95.0% (5470±5107) | 73.5% (15019±8507) | - | 95.8% (3628±4370) | 70.4% (11952±7358) | 58.1% (14544±8240) |
+| PrimeIntellect/Qwen3-8B | 96.8% (5352±4879) | 73.7% (14696±8426) | 68.1% (17723±9243) | Err. | Err. | Err. |
+| mikasenghaas/Qwen3-8B-Math-Python-v1-100 | 96.4% (4084±3903) | 73.3% (12494±7709) | 65.0% (15171±8457) | 91.6% (2901±5865) | 75.0% (8724±6630) | 61.6% (11006±6559) |
+| mikasenghaas/Qwen3-8B-Math-Python-v1-200 | 95.8% (3498±3551) | 72.3% (11275±7183) | 62.1% (13529±8257) | 95.0% (3498±3551) | 66.6% (8446±6128) | 55.0% (10359±6871) |
+
+<details>
+<summary>Raw results (without tools)</summary>
+<pre><code>
+Base:
+Evaluated math500 in 7465.86s (Avg@1=0.9680, Pass@1: 0.9680, Completion Length: 5352.14 (±4879.94, ∈[1019.00, 32724.00]), Truncated: 0.6%)
+Evaluated aime2024 in 6169.60s (Avg@16=0.7375, Pass@8: 0.8643, Completion Length: 14696.34 (±8426.39, ∈[3635.00, 32670.00]), Truncated: 5.8%)
+Evaluated aime2025 in 2072.47s (Avg@16=0.6813, Pass@8: 0.8097, Completion Length: 17723.54 (±9243.42, ∈[3583.00, 32678.00]), Truncated: 12.3%)
+
+Step 100:
+Evaluated math500 in 1586.42s (Avg@1=0.9640, Pass@1: 0.9640, Completion Length: 4084.66 (±3903.90, ∈[714.00, 30126.00]), Truncated: 0.0%)
+Evaluated aime2024 in 1375.47s (Avg@16=0.7333, Pass@8: 0.8500, Completion Length: 12494.87 (±7709.14, ∈[2267.00, 32670.00]), Truncated: 1.9%)
+Evaluated aime2025 in 1748.57s (Avg@16=0.6500, Pass@8: 0.8487, Completion Length: 15171.81 (±8457.21, ∈[2531.00, 32640.00]), Truncated: 3.3%)
+
+Step 200:
+Evaluated math500 in 1142.00s (Avg@1=0.9580, Pass@1: 0.9580, Completion Length: 3498.88 (±3551.77, ∈[645.00, 26636.00]), Truncated: 0.0%)
+Evaluated aime2024 in 1414.09s (Avg@16=0.7229, Pass@8: 0.8197, Completion Length: 11275.69 (±7183.51, ∈[2103.00, 32601.00]), Truncated: 0.6%)
+Evaluated aime2025 in 1527.87s (Avg@16=0.6208, Pass@8: 0.8233, Completion Length: 13529.70 (±8257.25, ∈[1982.00, 32640.00]), Truncated: 4.0%)
+</code></pre>
+</details>
+
+<details>
+<summary>Raw results (with tools)</summary>
+<pre><code>
+Base:
+Runs out of context - doesn't know how to call tools right.
+
+Step 100:
+Evaluated math500 in 372.61s (Avg@2=0.9167, Pass@1: 0.9140, Completion Length: 2901.47 (±5865.64, ∈[401.00, 40366.00]), Truncated: 1.7%)
+Evaluated aime2024 in 372.58s (Avg@2=0.7500, Pass@1: 0.7523, Completion Length: 8724.37 (±6630.50, ∈[1743.00, 40445.00]), Truncated: 1.7%)
+Evaluated aime2025 in 227.39s (Avg@2=0.6167, Pass@1: 0.6197, Completion Length: 11006.38 (±6559.82, ∈[1795.00, 23014.00]), Truncated: 0.0%)
+
+Step 200:
+Evaluated math500 in 91.87s (Avg@2=0.9500, Pass@1: 0.9493, Completion Length: 1885.90 (±2085.23, ∈[265.00, 8447.00]), Truncated: 0.0%)
+Evaluated aime2024 in 202.82s (Avg@2=0.6667, Pass@1: 0.6763, Completion Length: 8446.05 (±6128.38, ∈[1131.00, 21280.00]), Truncated: 0.0%)
+Evaluated aime2025 in 246.84s (Avg@2=0.5500, Pass@1: 0.5427, Completion Length: 10359.68 (±6871.26, ∈[1292.00, 28027.00]), Truncated: 0.0%)
+</code></pre>
+</details>
+
+### Ablation 2
+
+From commit 9tchdk0w. Train at 8K context with no turn limit. Check out the [W&B project](https://wandb.ai/primeintellect/math-python/workspace?nw=71j0m1uason).
+
+| Model | MATH 500 | AIME 2024 | AIME 2025 | MATH 500 (w/ tools) | AIME 2024 (w/ tools) | AIME 2025 (w/ tools) |
+|-------|-----------|----------|----------|-----------------|---------------------|---------------------|
+| Qwen3-8B | 95.0% (5470±5107) | 73.5% (15019±8507) | - | 95.8% (3628±4370) | 70.4% (11952±7358) | 58.1% (14544±8240) |
+| PrimeIntellect/Qwen3-8B | 96.8% (5352±4879) | 73.7% (14696±8426) | 68.1% (17723±9243) | Err. | Err. | Err. |
+| mikasenghaas/Qwen3-8B-Math-Python-v2-100 | 94.4% (3918±3897) | 73.5% (11800±7627) | 60.6% (14122±8764) | 96.0% (2059±2659) | 72.3% (8076±5934) | 56.8% (10256±6870) |
+| mikasenghaas/Qwen3-8B-Math-Python-v2-200 | 96.4% (3188±3068) | 71.2% (9734±6597) | 58.3% (11526±7719) | 95.8% (1689±2392) | 68.1% (6684±5149) | 53.3% (8430±5951) |
+| mikasenghaas/Qwen3-8B-Math-Python-v2-300 | 97.2% (2760±2705) | 69.8% (10533±7462) | 58.1% (11859±8006) | 95.4% (1812±2977) | 69.1% (7580±5943) | 56.2% (9132±6949) |
+
+<details>
+<summary>Raw results (without tools)</summary>
+<pre><code>
+Step 100:
+Evaluated math500 in 5878.00s (Avg@1=0.9440, Pass@1: 0.9440, Completion Length: 3918.20 (±3897.48, ∈[731.00, 28060.00]), Truncated: 0.0%)
+Evaluated aime2024 in 3827.36s (Avg@16=0.7354, Pass@8: 0.8793, Completion Length: 11800.68 (±7627.06, ∈[1880.00, 32678.00]), Truncated: 2.5%)
+Evaluated aime2025 in 6583.08s (Avg@16=0.6062, Pass@8: 0.7807, Completion Length: 14122.16 (±8764.12, ∈[2022.00, 32678.00]), Truncated: 4.4%)
+
+Step 200:
+Evaluated math500 in 892.10s (Avg@1=0.9640, Pass@1: 0.9640, Completion Length: 3187.97 (±3067.53, ∈[801.00, 20316.00]), Truncated: 0.0%)
+Evaluated aime2024 in 1128.08s (Avg@16=0.7125, Pass@8: 0.8587, Completion Length: 9733.84 (±6597.46, ∈[2033.00, 32670.00]), Truncated: 0.8%)
+Evaluated aime2025 in 1207.35s (Avg@16=0.5833, Pass@8: 0.7950, Completion Length: 11526.33 (±7719.06, ∈[1897.00, 32640.00]), Truncated: 2.5%)
+
+Step 300:
+Evaluated math500 in 1282.99s (Avg@1=0.9720, Pass@1: 0.9720, Completion Length: 3299.46 (±3625.81, ∈[768.00, 32392.00]), Truncated: 0.2%)
+Evaluated aime2024 in 1179.44s (Avg@16=0.6979, Pass@8: 0.8360, Completion Length: 10533.84 (±7462.03, ∈[2328.00, 32688.00]), Truncated: 0.8%)
+Evaluated aime2025 in 1276.39s (Avg@16=0.5813, Pass@8: 0.7907, Completion Length: 11859.55 (±8006.89, ∈[1732.00, 32640.00]), Truncated: 3.3%)
+</code></pre>
+</details>
+
+<details>
+<summary>Raw results (with tools)</summary>
+<pre><code>
+Step 100:
+Evaluated math500 in 1017.74s (Avg@1=0.9600, Pass@1: 0.9600, Completion Length: 2059.42 (±2659.82, ∈[228.00, 22534.00]), Truncated: 0.0%)
+Evaluated aime2024 in 1034.07s (Avg@16=0.7229, Pass@8: 0.8333, Completion Length: 8076.24 (±5934.43, ∈[701.00, 32247.00]), Truncated: 0.4%)
+Evaluated aime2025 in 1068.33s (Avg@16=0.5687, Pass@8: 0.7303, Completion Length: 10256.70 (±6870.71, ∈[1174.00, 32195.00]), Truncated: 0.2%)
+
+Step 200:
+Evaluated math500 in 715.45s (Avg@1=0.9580, Pass@1: 0.9580, Completion Length: 1689.16 (±2392.51, ∈[186.00, 24556.00]), Truncated: 0.0%)
+Evaluated aime2024 in 776.39s (Avg@16=0.6813, Pass@8: 0.8497, Completion Length: 6684.39 (±5149.20, ∈[685.00, 32253.00]), Truncated: 0.2%)
+Evaluated aime2025 in 730.50s (Avg@16=0.5333, Pass@8: 0.7570, Completion Length: 8430.57 (±5951.46, ∈[899.00, 26604.00]), Truncated: 0.0%)
+
+Step 300:
+Evaluated math500 in 857.99s (Avg@1=0.9540, Pass@1: 0.9540, Completion Length: 1812.69 (±2977.05, ∈[138.00, 32255.00]), Truncated: 0.2%)
+Evaluated aime2024 in 854.85s (Avg@16=0.6917, Pass@8: 0.8423, Completion Length: 7580.32 (±5943.36, ∈[1024.00, 32172.00]), Truncated: 0.2%)
+Evaluated aime2025 in 873.04s (Avg@16=0.5625, Pass@8: 0.7737, Completion Length: 9132.66 (±6949.97, ∈[837.00, 32218.00]), Truncated: 0.8%)
+</code></pre>
+</details>
+
+### Ablation 3
+
+Train at 8K context with no turn limit in new `math-python` environment using sandboxes. Check out the [W&B project](https://wandb.ai/primeintellect/math-python/workspace?nw=ts2h563p628).
+
+```bash
+bash scripts/tmux.sh -s math-python-v3 -o math-python-v3
+```
+
+Install verifiers locally
+
+```bash
+source scripts/dev.sh
+```
+
+Install the latest `math-python` environment.
+
+```bash
+prime env install primeintellect/math-python
+```
+
+```bash
+# Run this in the `Inference` pane
+uv run inference @ configs/math-python/rl/infer.toml --parallel.tp 2 --max-model-len 8192
+```
+
+```bash
+# Run this in the `Trainer` pane
+uv run rl \
+  --trainer @ configs/math-python/rl/train.toml \
+  --orchestrator @ configs/math-python/rl/orch.toml \
+  --output-dir math-python-v3 \
+  --trainer-gpu-ids 2,3 \
+  --wandb.project math-python \
+  --wandb.name 0.6b-8k-no-turn
+```
