@@ -114,6 +114,11 @@ class RLTrainerConfig(BaseSettings):
         ),
     ] = False
 
+    use_routing_replay: Annotated[
+        bool,
+        Field(description="Reuse MoE routing from the recorded policy when computing GRPO updates."),
+    ] = False
+
     bench: Annotated[
         bool,
         Field(
@@ -157,4 +162,13 @@ class RLTrainerConfig(BaseSettings):
                 raise ValueError(
                     "Tracing more than 10 steps is not recommended as your trace will be massive. Remove this line if you really want to trace more steps."
                 )
+        return self
+
+    @model_validator(mode="after")
+    def validate_routing_replay(self):
+        if self.use_routing_replay:
+            if self.loss.type != "grpo":
+                raise ValueError("Routing replay currently only supports GRPO loss")
+            if not self.recompute_logprobs:
+                raise ValueError("Routing replay requires `recompute_logprobs = True`")
         return self
