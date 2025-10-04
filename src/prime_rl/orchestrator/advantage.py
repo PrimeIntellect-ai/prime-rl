@@ -4,6 +4,7 @@ from torch import Tensor
 
 from prime_rl.orchestrator.config import AdvantageConfig
 
+
 def compute_advantage(
     rewards: Float[Tensor, "group"],
     lengths: Int[Tensor, "group"],
