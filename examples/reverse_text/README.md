@@ -6,7 +6,7 @@ We demonstrate how to train `Qwen3-0.6B` to reverse a small chunk of text. We wi
 
 ## Setup
 
-Ensure that the environment is installed (should be included in `pyproject.toml`)
+We keep the `reverse-text` in our lock file because we use it frequently in our CI and for development. If you have synced the environment, you should already have it installed. To verify, run
 
 ```bash
 uv run python -c "import reverse_text"
