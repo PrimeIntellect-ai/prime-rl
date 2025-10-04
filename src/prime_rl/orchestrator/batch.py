@@ -15,7 +15,7 @@ class BatchSample(TypedDict):
     position_ids: Int[Tensor, "seq"]
     loss_mask: Bool[Tensor, "seq"]
     advantages: Float[Tensor, "seq"]
-    logprobs: Float[Tensor, "seq"]
+    inference_logprobs: Float[Tensor, "seq"]
 
 
 def prepare_sample(
@@ -36,10 +36,10 @@ def prepare_sample(
     completion_token_ids = torch.tensor(rollout.completion_tokens).long()
     completion_token_mask = torch.tensor(rollout.completion_mask).long()
 
-    # Prepare input_ids, loss_mask, position_ids, logprobs, and advantages
+    # Prepare input_ids, loss_mask, position_ids, inference_logprobs, and advantages
     input_ids = torch.cat([prompt_token_ids, completion_token_ids]).long()
     loss_mask = torch.cat([prompt_token_mask, completion_token_mask]).bool()
-    logprobs = torch.cat([torch.zeros(len(prompt_token_ids)), torch.tensor(rollout.completion_logprobs)]).float()
+    inference_logprobs = torch.cat([torch.zeros(len(prompt_token_ids)), torch.tensor(rollout.completion_logprobs)]).float()
     position_ids = torch.arange(len(input_ids)).long()
     advantages = torch.tensor(rollout.advantage).repeat(len(input_ids)).float()
 
@@ -50,22 +50,22 @@ def prepare_sample(
             f"Number of tokens {len(input_ids)} is greater than sequence length {seq_len}. This should not happen."
         )
 
-    assert len(input_ids) == len(advantages) == len(loss_mask) == len(position_ids) == len(logprobs), (
-        f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, logprobs: {len(logprobs)}"
+    assert len(input_ids) == len(advantages) == len(loss_mask) == len(position_ids) == len(inference_logprobs), (
+        f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, inference_logprobs: {len(inference_logprobs)}"
     )
     return {
         "input_ids": input_ids,
         "advantages": advantages,
         "loss_mask": loss_mask,
         "position_ids": position_ids,
-        "logprobs": logprobs,
+        "inference_logprobs": inference_logprobs,
     }
 
 
 def prepare_micro_batch(samples: list[MicroBatch], temperature: float):
     micro_batch = {}
 
-    for key in ["input_ids", "advantages", "loss_mask", "logprobs", "position_ids"]:
+    for key in ["input_ids", "advantages", "loss_mask", "inference_logprobs", "position_ids"]:
         micro_batch[key] = torch.stack([sample[key] for sample in samples], dim=0)
 
     micro_batch["temperature"] = temperature
@@ -112,7 +112,7 @@ def prepare_micro_batch_packing(samples: list[BatchSample], max_seq_len: int, te
         "Total tokens of samples is greater than max sequence length"
     )
 
-    for key in ["input_ids", "advantages", "loss_mask", "position_ids", "logprobs"]:
+    for key in ["input_ids", "advantages", "loss_mask", "position_ids", "inference_logprobs"]:
         micro_batch[key] = torch.cat([sample[key] for sample in samples], dim=0).unsqueeze(0)
 
     micro_batch["temperature"] = temperature

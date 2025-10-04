@@ -107,10 +107,10 @@ class RLTrainerConfig(BaseSettings):
 
     memory_profiler_path: Annotated[Path | None, Field(description="Path to write memory profile to.")] = None
 
-    recompute_logprobs: Annotated[
+    log_recomputed_logprob_error: Annotated[
         bool,
         Field(
-            description="Whether to recompute the logprobs. If True, will always recompute logprobs and overwrite those found in the training batch.",
+            description="Whether to log the recomputed logprobs error. If True, recomputes logprobs using the reference model to compute an error w.r.t. the original inference_logprobs and logs it",
         ),
     ] = False
 
