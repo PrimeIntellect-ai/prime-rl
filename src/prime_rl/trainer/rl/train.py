@@ -114,7 +114,7 @@ def train(config: RLTrainerConfig):
 
     # Optionally, initialize a model to compute logprobs
     logprob_model, tensor_offloaded_repository = None, {}
-    if config.recompute_logprobs:
+    if config.log_recomputed_logprob_error:
         # Initialize the logprob model
         tensor_offloaded_repository: dict[int, OffloadedTensor] = {}
         logger.info(f"Initializing logprob model ({config.model})")
@@ -205,7 +205,7 @@ def train(config: RLTrainerConfig):
         # Optionally, compute the logprobs for the training batch
         compute_logprobs_time = 0
         num_micro_batches = len(micro_batches)
-        recomputed_logprob_errors = [torch.ones_like(mb["logprobs"], device="cuda") for mb in micro_batches]
+        recomputed_logprob_errors = [torch.ones_like(mb["inference_logprobs"], device="cuda") for mb in micro_batches]
         if logprob_model is not None:
             compute_logprobs_start_time = time.time()
             og_infer_step = progress.step - config.async_level
@@ -222,7 +222,7 @@ def train(config: RLTrainerConfig):
                     input_ids = micro_batch["input_ids"].to("cuda")
                     position_ids = micro_batch["position_ids"].to("cuda")
                     loss_mask = micro_batch["loss_mask"].to("cuda")
-                    logprobs = micro_batch["logprobs"].to("cuda")
+                    inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
                     temperature = micro_batch["temperature"]
 
                     # Compute the logprobs
@@ -232,9 +232,9 @@ def train(config: RLTrainerConfig):
                     recomputed_logprobs = selective_log_softmax(shifted_logits, input_ids)
 
                     # Compute the recomputed logprob error
-                    recomputed_logprob_error = torch.exp(recomputed_logprobs - logprobs)
+                    recomputed_logprob_error = torch.exp(recomputed_logprobs - inference_logprobs)
 
-                    micro_batch["logprobs"] = recomputed_logprobs.cpu()
+                    # Do not mutate training inputs; only record the error for logging
                     recomputed_logprob_errors[micro_step] = recomputed_logprob_error
 
             # here we sepcifically don't save the tensor offloaded, they are alreay consumed and we will never use it again.
@@ -269,7 +269,7 @@ def train(config: RLTrainerConfig):
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
-            old_logprobs = micro_batch["logprobs"].to("cuda")
+            inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
             temperature = micro_batch["temperature"]
             micro_batch_size, seq_len = input_ids.shape
 
@@ -278,13 +278,13 @@ def train(config: RLTrainerConfig):
                 logits = forward(model, input_ids, position_ids).float().contiguous()
             shifted_logits = shift_logits(logits)
             shifted_logits = shifted_logits / temperature
-            logprobs = selective_log_softmax(shifted_logits, input_ids)
+            trainer_logprobs = selective_log_softmax(shifted_logits, input_ids)
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
             loss, loss_tensors = compute_loss(
-                logprobs=logprobs.squeeze().split(response_lengths),
-                old_logprobs=old_logprobs.squeeze().split(response_lengths),
+                trainer_logprobs=trainer_logprobs.squeeze().split(response_lengths),
+                inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
                 advantages=advantages.squeeze().split(response_lengths),
                 loss_mask=loss_mask.squeeze().split(response_lengths),
                 loss_config=config.loss,
@@ -293,7 +293,7 @@ def train(config: RLTrainerConfig):
 
             # Compute entropy
             with torch.no_grad():
-                entropy = compute_entropy(shifted_logits)
+                entropy = compute_entropy(shifted_logits)   
 
             # Delete logits and shifted_logits before backward pass to avoid memory spike
             del logits, shifted_logits
@@ -303,8 +303,8 @@ def train(config: RLTrainerConfig):
                 loss.backward()
 
             # Add relevant tensors to tensor dict for logging purposes
-            tensors["probs"].append(torch.exp(logprobs)[loss_mask].detach().to("cpu"))
-            tensors["old_probs"].append(torch.exp(old_logprobs)[loss_mask].detach().to("cpu"))
+            tensors["trainer_probs"].append(torch.exp(trainer_logprobs)[loss_mask].detach().to("cpu"))
+            tensors["inference_probs"].append(torch.exp(inference_logprobs)[loss_mask].detach().to("cpu"))
             tensors["entropy"].append(entropy[loss_mask].detach().to("cpu"))
             tensors["recomputed_logprob_error"].append(
                 recomputed_logprob_errors[micro_step][loss_mask].detach().to("cpu")
