@@ -3,7 +3,6 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
 
-from prime_rl.orchestrator.advantage import AdvantageConfig
 from prime_rl.utils.config import LogConfig, ModelConfig, WandbMonitorConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
@@ -389,6 +388,13 @@ class OnlineDifficultyBufferConfig(BufferConfig):
 
 
 DataBufferConfigType: TypeAlias = SimpleBufferConfig | DifficultyPoolBufferConfig | OnlineDifficultyBufferConfig
+
+
+class AdvantageConfig(BaseConfig):
+    global_std_norm: bool = False
+    length_weighted_mean: bool = False
+    leave_one_out: bool = False
+    neg_clipped: bool = False
 
 
 class OrchestratorConfig(BaseSettings):

@@ -2,15 +2,7 @@ import torch
 from jaxtyping import Float, Int
 from torch import Tensor
 
-from prime_rl.utils.pydantic_config import BaseConfig
-
-
-class AdvantageConfig(BaseConfig):
-    global_std_norm: bool = False
-    length_weighted_mean: bool = False
-    leave_one_out: bool = False
-    neg_clipped: bool = False
-
+from prime_rl.orchestrator.config import AdvantageConfig
 
 def compute_advantage(
     rewards: Float[Tensor, "group"],
