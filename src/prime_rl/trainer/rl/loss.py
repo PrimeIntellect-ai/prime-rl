@@ -90,10 +90,9 @@ def compute_loss(
         log_importance_ratio = logprobs - old_logprobs
 
         if loss_config.ratio_type == "sequence":
+            seq_log_importance_ratio = (log_importance_ratio[loss_mask]).sum()
             if loss_config.ratio_length_norm:
-                seq_log_importance_ratio = (log_importance_ratio[loss_mask]).sum() / torch.clamp_min(loss_mask.sum(), 1)
-            else:
-                seq_log_importance_ratio = (log_importance_ratio[loss_mask]).sum()
+                seq_log_importance_ratio = seq_log_importance_ratio / torch.clamp_min(loss_mask.sum(), 1)
             log_importance_ratio = torch.clamp(seq_log_importance_ratio.unsqueeze(0), max=10.0)
 
         importance_ratio = torch.exp(log_importance_ratio)
