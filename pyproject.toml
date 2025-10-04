@@ -24,16 +24,18 @@ dependencies = [
     "wandb>=0.20.1",
     "lovely-tensors>=0.1.18",
     "rich>=14.0.0",
-    "tomli-w",
+    "tomli-w>=1.2.0",
     "textarena>=0.6.16",
     "nltk>=3.9.1",
     "math-verify>=0.8.0",
-    "dion @ git+https://github.com/samsja/dion.git@main",
     "torchdata>=0.11.0",
     "accelerate>=1.10.1",
     "torchtitan",
     "blobfile>=3.0.0",
     "reverse-text>=0.1.4",
+    "torchtitan",
+    "dion",
+    "reverse-text",
     "verifiers>=0.1.4",
 ]
 
@@ -64,8 +66,9 @@ no-build-isolation-package = ["flash-attn"]
 prerelease = "allow"
 
 [tool.uv.sources]
+torch = { index = "pytorch-cu128" }
 reverse-text = { index = "primeintellect" }
-torch = [{ index = "pytorch-cu128" }]
+dion = { git = "https://github.com/samsja/dion.git", rev = "main" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e43694bbfeff5d6ad8ac738c067bb90d41" }
 
 [[tool.uv.index]]
