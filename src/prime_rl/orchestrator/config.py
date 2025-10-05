@@ -216,10 +216,24 @@ class EvalConfig(BaseConfig):
         ),
     ] = True
 
-    save_to_hf: Annotated[
+    save_to_hf_hub: Annotated[
+        bool,
+        Field(
+            description="Whether to save the evaluation results to the Hugging Face Hub.",
+        ),
+    ] = False
+
+    save_to_env_hub: Annotated[
+        bool,
+        Field(
+            description="(Not supported yet) Whether to save the evaluation results to the PI Environment Hub.",
+        ),
+    ] = False
+
+    hf_hub_dataset_name: Annotated[
         str | None,
         Field(
-            description="The name of the HF dataset to save the evaluation results to. Defaults to None, which means we do not save to HF Hub. If multiple environments are evaluated, we upload a dataset with one split per environment. If a checkpoint is evaluated, we suffix the HF Hub name with the checkpoint step.",
+            description="Name of the dataset to save to the Hugging Face Hub. If None, will auto-generate a name based on the environment ID and model name.",
         ),
     ] = None
 
@@ -252,12 +266,6 @@ class EvalConfig(BaseConfig):
         elif len(self.max_concurrent) != len(self.environment_ids):
             raise ValueError("Number of max_concurrent entries must match number of ids")
 
-        return self
-
-    @model_validator(mode="after")
-    def save_to_disk_if_save_to_hf(self):
-        if self.save_to_hf is not None:
-            self.save_to_disk = True
         return self
 
 

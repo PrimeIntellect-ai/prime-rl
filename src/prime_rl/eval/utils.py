@@ -1,16 +1,15 @@
 import asyncio
 import json
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
-import torch
-from datasets import Dataset
 from openai import AsyncOpenAI
 from verifiers import load_environment
-from verifiers.types import GenerateOutputs, Messages
+from verifiers.utils.eval_utils import make_dataset, make_metadata
 
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.orchestrator.config import ClientConfig, EvalConfig, EvalSamplingConfig, ModelConfig
@@ -73,204 +72,127 @@ def prepare_sampling_args(sampling_config: EvalSamplingConfig, client_config: Cl
     return sampling_args
 
 
-def normalize_prompt(messages: Messages):
-    if not isinstance(messages, list):
-        return messages
-    sanitized_messages = []
-    for m in messages:
-        if isinstance(m, str):
-            sanitized_messages.append({"role": m["role"], "content": [{"type": "text", "text": m}]})
-        elif "content" in m and isinstance(m["content"], str):
-            sanitized_messages.append({"role": m["role"], "content": [{"type": "text", "text": m["content"]}]})
-        else:
-            sanitized_messages.append(m)
-    return sanitized_messages
-
-
-def normalize_completion(messages: Messages):
-    if not isinstance(messages, list):
-        return messages
-    sanitized_messages = []
-    for m in messages:
-        tool_calls = [
-            json.dumps(tc.model_dump())  # type: ignore
-            for tc in m.get("tool_calls", [])
-        ]
-        # Ensure tool_calls is always a list of strings, never empty with null inference
-        if not tool_calls:
-            tool_calls = [""]  # Add empty string to maintain list<string> type
-
-        new_m = {
-            "role": m["role"],
-            "content": m.get("content", ""),
-            "tool_calls": tool_calls,
-            "tool_call_id": m.get("tool_call_id", ""),
-        }
-        sanitized_messages.append(new_m)
-    return sanitized_messages
-
-
-# Adapted from https://github.com/willccbb/verifiers/blob/b4d851db42cebbab2358b827fd0ed19773631937/verifiers/envs/environment.py#L523
-def make_dataset(results: GenerateOutputs) -> Dataset:
-    """
-    Make a dataset from the evaluation results.
-    """
-    results_dict = {
-        "prompt": [normalize_prompt(prompt) for prompt in results.prompt],
-        "completion": [normalize_completion(completion) for completion in results.completion],
-        "answer": results.answer,
-        "task": results.task,
-        "reward": results.reward,
-        "info": [json.dumps(info) for info in results.info],
-    }
-
-    return Dataset.from_dict(results_dict)
-
-
 async def run_eval(
     client: AsyncOpenAI,
-    eval_id: str,
+    environment_id: str,
     env_args: dict,
+    model_name: str,
     num_examples: int,
     rollouts_per_example: int,
     max_concurrent: int,
-    save_to_disk: bool,
-    save_to_hf: str | None,
+    sampling_args: dict,
     output_dir: Path,
-    ckpt_step: int,
-    model_config: ModelConfig,
-    sampling_config: EvalSamplingConfig,
-    client_config: ClientConfig,
-    step: int | None = None,
+    save_to_disk: bool,
+    save_to_hf_hub: bool,
+    save_to_env_hub: bool,
+    hf_hub_dataset_name: str | None,
+    step: int | None,
 ) -> None:
-    # Get the logger
-    logger = get_logger()
-    monitor = get_monitor()
-    assert logger is not None
+    """Eval a single environment. Analogous to `vf-eval`"""
+    logger, monitor = get_logger(), get_monitor()
     eval_start_time = time.time()
 
-    # Load the eval environment
-    load_eval_start_time = time.time()
-    vf_eval = load_environment(eval_id, **env_args)
-    load_eval_time = time.time() - load_eval_start_time
-    logger.debug(f"Loaded eval environment in {load_eval_time:.2f}s")
-
-    # Build inputs dataset (mirror Environment.evaluate but async)
-    if vf_eval.eval_dataset is None:
-        logger.warning(f"Did not find eval dataset for {eval_id}, falling back to train dataset")
-        dataset = vf_eval.get_dataset(n=num_examples)
-    else:
-        dataset = vf_eval.get_eval_dataset(n=num_examples)
-
-    # Convert to list of examples
-    assert dataset is not None
-    examples = dataset.to_list()
-    example_ids = list(range(len(examples)))
-
-    # Duplicate examples `rollouts_per_example` times
-    if rollouts_per_example > 1:
-        example_ids = [example_id for example_id in example_ids for _ in range(rollouts_per_example)]
-        examples = [example for example in examples for _ in range(rollouts_per_example)]
-
-    # Prepare sampling arguments
-    sampling_args = prepare_sampling_args(sampling_config, client_config)
+    # Load environment
+    env, model = environment_id, model_name  # Shorthands
+    logger.debug(f"Loading {env} environment with args {env_args}")
+    vf_env = load_environment(env_id=env, **env_args)
 
     logger.debug(
-        f"Evaluating {eval_id} (num_examples={len(examples)}, rollouts_per_example={rollouts_per_example}) with args {env_args}"
+        f"Evaluating {env} against {model} ({num_examples=}, {rollouts_per_example=}, {max_concurrent=}, {sampling_args=})"
     )
-
-    # Run async generation and scoring
-    run_eval_start_time = time.time()
-    generate_outputs: GenerateOutputs = await vf_eval.a_generate(
-        inputs=Dataset.from_list(examples),
+    outputs = vf_env.evaluate(
         client=client,
-        model=model_config.name,
+        model=model,
         sampling_args=sampling_args,
-        score_rollouts=True,
+        num_examples=num_examples,
+        rollouts_per_example=rollouts_per_example,
         max_concurrent=max_concurrent,
+        score_rollouts=True,
+        interleave_scoring=True,
     )
-    run_eval_time = time.time() - run_eval_start_time
-    logger.debug(f"Generated and scored rollouts in {run_eval_time:.2f}s")
 
-    rewards = torch.tensor(generate_outputs.reward).reshape(-1, rollouts_per_example).float()
-    responses = [state["responses"] for state in generate_outputs.state]
-    completion_lens = torch.tensor(parse_num_completion_tokens(responses)).reshape(-1, rollouts_per_example).float()
-    is_truncated = torch.tensor(parse_is_truncated_completions(responses)).reshape(-1, rollouts_per_example).float()
-
-    k = rollouts_per_example
-    sample_stats = pd.DataFrame({"example_id": example_ids, "reward": rewards.flatten().tolist()})
-    unique_rewards = sample_stats.reward.unique()
+    # Compute statistics
+    k, n = rollouts_per_example, len(outputs.reward) // rollouts_per_example
+    responses = [state["responses"] for state in outputs.state]
+    results = pd.DataFrame(
+        {
+            "example_id": list(range(n)) * k,
+            "reward": outputs.reward,
+            "completion_len": parse_num_completion_tokens(responses),
+            "is_truncated": parse_is_truncated_completions(responses),
+        }
+    )
+    unique_rewards = results.reward.unique()
     could_be_binary = set(unique_rewards).issubset({0.0, 1.0})
+    pass_at_k = None
     if could_be_binary:
         pass_at_k = (
-            sample_stats.groupby("example_id")
+            results.groupby("example_id")
             .apply(lambda x: compute_pass_at_k(x.reward), include_groups=False)
             .apply(pd.Series)
         )
-    else:
-        pass_at_k = None
-        logger.warning("Skipping computing pass@k rates because the task rewards appear to be non-binary")
 
     # Log statistics
     eval_time = time.time() - eval_start_time
-    message = f"Evaluated {eval_id} in {eval_time:.2f}s (Avg@{k}={sample_stats.reward.mean():.4f}"
+    message = f"Evaluated {env} in {eval_time:.2f}s (Avg@{k}={results.reward.mean():.4f}"
     if could_be_binary:
         assert pass_at_k is not None
         for pass_rate, pass_rate_score in pd.Series(pass_at_k.mean()).items():
             message += f", {capitalize(str(pass_rate))}: {pass_rate_score:.4f}"
-    message += f", Completion Length: {completion_lens.mean():.2f} (±{completion_lens.std():.2f}, ∈[{completion_lens.min():.2f}, {completion_lens.max():.2f}]), Truncated: {is_truncated.mean() * 100:.1f}%)"
+    message += f", Completion Length: {results.completion_len.mean():.2f} (±{results.completion_len.std():.2f}, ∈[{results.completion_len.min():.2f}, {results.completion_len.max():.2f}]), Truncated: {results.is_truncated.mean() * 100:.1f}%)"
     logger.success(message)
 
     # Log statistics to monitor
-    eval_metrics = {
-        f"avg@{k}": rewards.mean().item(),
-    }
-
-    eval_completion_len_metrics = {
-        "avg": completion_lens.mean().item(),
-        "max": completion_lens.max().item(),
-        "min": completion_lens.min().item(),
-    }
-    eval_completion_len_metrics = {
-        **{f"eval_completion_len/{eval_id}/{k}": v for k, v in eval_completion_len_metrics.items()}
-    }
-    if step is None:
-        step = ckpt_step
-    eval_completion_len_metrics.update({"progress/ckpt_step": ckpt_step, "step": step})
-    monitor.log(eval_completion_len_metrics)
-
+    eval_metrics = {f"avg@{k}": results.reward.mean()}
     if could_be_binary:
         assert pass_at_k is not None
         eval_metrics.update(pd.Series(pass_at_k.mean()).to_dict())
-    eval_metrics = {**{f"eval/{eval_id}/{k}": v for k, v in eval_metrics.items()}}
-    if step is None:
-        step = ckpt_step
-    eval_metrics.update({"progress/ckpt_step": ckpt_step, "step": step})
+    eval_metrics = {**{f"eval/{env}/{k}": v for k, v in eval_metrics.items()}}
+    monitor.log({**eval_metrics, "step": step})
 
-    monitor.log(eval_metrics)
+    eval_completion_len_metrics = {
+        f"eval/{env}/completion_len/mean": results.completion_len.mean(),
+        f"eval/{env}/completion_len/max": results.completion_len.max(),
+        f"eval/{env}/completion_len/min": results.completion_len.min(),
+        "step": step,
+    }
+    monitor.log(eval_completion_len_metrics)
 
     # Log timing metrics to monitor
     time_metrics = {
+        f"eval/{env}/time": eval_time,
         "step": step,
-        f"time/eval/{eval_id}": eval_time,
-        f"time/eval/{eval_id}/load_environment": load_eval_time,
-        f"time/eval/{eval_id}/generate_and_score_rollouts": run_eval_time,
     }
     monitor.log(time_metrics)
 
-    if save_to_disk or save_to_hf is not None:
-        dataset = make_dataset(generate_outputs)
+    if save_to_disk or save_to_hf_hub or save_to_env_hub:
+        dataset = make_dataset(outputs, num_examples, rollouts_per_example)
+        metadata = make_metadata(
+            env, model, num_examples, rollouts_per_example, sampling_args, eval_time, eval_start_time, outputs
+        )
 
-        # If specified, save eval artifacts
+        uuid_str = str(uuid.uuid4())[:8]
+        env_model_str = f"{env}--{model.replace('/', '--')}"
         if save_to_disk:
-            # Save samples as dataset
-            eval_dir = get_step_path(get_eval_dir(output_dir), ckpt_step) / eval_id
-            dataset.save_to_disk(eval_dir)
-            logger.info(f"Saved eval results for {eval_id} to disk ({eval_dir})")
+            # Save results to disk
+            if step is not None:
+                eval_dir = get_step_path(get_eval_dir(output_dir), step)
+            else:
+                eval_dir = get_eval_dir(output_dir)
+            results_path = eval_dir / env_model_str / uuid_str
+            results_path.mkdir(parents=True, exist_ok=True)
+            dataset.to_json(results_path / "results.jsonl")
+            with open(results_path / "metadata.json", "w") as f:
+                json.dump(metadata, f)
+            logger.info(f"Saved eval results to {results_path}")
 
-        if save_to_hf is not None:
-            dataset.push_to_hub(save_to_hf, split=eval_id)
-            logger.info(f"Pushed eval results for {eval_id} to HF Hub (https://huggingface.co/datasets/{save_to_hf})")
+        if save_to_hf_hub:
+            assert hf_hub_dataset_name is not None
+            dataset.push_to_hub(hf_hub_dataset_name, env)
+            logger.info(f"Pushed eval results to HF Hub (https://huggingface.co/datasets/{hf_hub_dataset_name})")
+
+        if save_to_env_hub:
+            raise NotImplementedError("Pushing eval results to PI Environment Hub is not yet supported.")
 
 
 async def run_evals(
@@ -280,28 +202,27 @@ async def run_evals(
     sampling_config: EvalSamplingConfig,
     client_config: ClientConfig,
     output_dir: Path,
-    ckpt_step: int,
-    step: int | None = None,
+    step: int | None,
 ):
     await asyncio.gather(
         *[
             run_eval(
                 client=client,
-                eval_id=eval_id,
-                env_args=eval_config.environment_args.get(eval_id, {}),
+                environment_id=environment_id,
+                env_args=eval_config.environment_args.get(environment_id, {}),
+                model_name=model_config.name,
                 num_examples=num_examples,
                 rollouts_per_example=rollouts_per_example,
                 max_concurrent=max_concurrent,
+                sampling_args=prepare_sampling_args(sampling_config, client_config),
                 output_dir=output_dir,
                 save_to_disk=eval_config.save_to_disk,
-                save_to_hf=eval_config.save_to_hf,
-                model_config=model_config,
-                sampling_config=sampling_config,
-                client_config=client_config,
-                ckpt_step=ckpt_step,
+                save_to_hf_hub=eval_config.save_to_hf_hub,
+                save_to_env_hub=eval_config.save_to_env_hub,
+                hf_hub_dataset_name=eval_config.hf_hub_dataset_name,
                 step=step,
             )
-            for eval_id, num_examples, rollouts_per_example, max_concurrent in zip(
+            for environment_id, num_examples, rollouts_per_example, max_concurrent in zip(
                 eval_config.environment_ids,
                 eval_config.num_examples,
                 eval_config.rollouts_per_example,

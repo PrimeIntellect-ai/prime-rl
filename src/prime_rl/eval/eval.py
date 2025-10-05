@@ -60,24 +60,24 @@ async def eval(config: OfflineEvalConfig):
             sampling_config=config.sampling,
             client_config=config.client,
             output_dir=config.output_dir,
-            ckpt_step=0,
+            step=None,
         )
 
     # If specified, evaluate all checkpoints found in the weights directory
     if config.weights_dir is not None:
         logger.info(f"Evaluating weight checkpoints in {config.weights_dir}")
-        ckpt_steps = sorted([int(step_path.name.split("_")[-1]) for step_path in config.weights_dir.glob("step_*")])
-        logger.info(f"Found {len(ckpt_steps)} weight checkpoints (steps: {', '.join(map(str, ckpt_steps))})")
+        steps = sorted([int(step_path.name.split("_")[-1]) for step_path in config.weights_dir.glob("step_*")])
+        logger.info(f"Found {len(steps)} weight checkpoints (steps: {', '.join(map(str, steps))})")
 
         # Filter the steps to evaluate
         if config.steps is not None:
-            ckpt_steps = [step for step in ckpt_steps if step in config.steps]
+            steps = [step for step in steps if step in config.steps]
 
-        logger.info(f"Evaluating {len(ckpt_steps)} weight checkpoints (steps: {', '.join(map(str, ckpt_steps))})")
-        for ckpt_step in ckpt_steps[::-1]:
+        logger.info(f"Evaluating {len(steps)} weight checkpoints (steps: {', '.join(map(str, steps))})")
+        for step in steps[::-1]:
             # Update the weights
-            logger.info(f"Evaluating model {config.model.name} at checkpoint {ckpt_step}")
-            await update_weights(client, config.weights_dir, ckpt_step)
+            logger.info(f"Evaluating model {config.model.name} at step {step}")
+            await update_weights(client, config.weights_dir, step)
 
             # Run evals on checkpoint
             await run_evals(
@@ -87,7 +87,7 @@ async def eval(config: OfflineEvalConfig):
                 sampling_config=config.sampling,
                 client_config=config.client,
                 output_dir=config.output_dir,
-                ckpt_step=ckpt_step,
+                step=step,
             )
 
     logger.success("Eval finished!")
