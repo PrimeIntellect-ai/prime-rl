@@ -11,6 +11,7 @@ from datasets import Dataset
 from openai import AsyncOpenAI
 from verifiers import load_environment
 from verifiers.types import GenerateOutputs, Messages
+from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
 
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.orchestrator.config import ClientConfig, EvalConfig, EvalSamplingConfig, ModelConfig
@@ -111,20 +112,33 @@ def normalize_completion(messages: Messages):
 
 
 # Adapted from https://github.com/willccbb/verifiers/blob/b4d851db42cebbab2358b827fd0ed19773631937/verifiers/envs/environment.py#L523
-def make_dataset(results: GenerateOutputs) -> Dataset:
+def make_dataset(results: GenerateOutputs, num_examples: int, rollouts_per_example: int) -> Dataset:
     """
     Make a dataset from the evaluation results.
     """
-    results_dict = {
-        "prompt": [normalize_prompt(prompt) for prompt in results.prompt],
-        "completion": [normalize_completion(completion) for completion in results.completion],
+    printable_prompts = [messages_to_printable(p) for p in results.prompt]
+    printable_completions = [messages_to_printable(c) for c in results.completion]
+    n, r = num_examples, rollouts_per_example
+    data_dict = {
+        "id": [i // r for i in range(n * r)],
+        "prompt": [sanitize_tool_calls(p) for p in printable_prompts],
+        "completion": [sanitize_tool_calls(c) for c in printable_completions],
         "answer": results.answer,
         "task": results.task,
-        "reward": results.reward,
-        "info": [json.dumps(info) for info in results.info],
+        "generation_ms": [s["timing"]["generation_ms"] for s in results.state],
+        "scoring_ms": [s["timing"]["scoring_ms"] for s in results.state],
+        "total_ms": [s["timing"]["total_ms"] for s in results.state],
     }
+    if results.info[0] != {}:
+        data_dict["info"] = results.info
+    if results.answer[0] != "":
+        data_dict["answer"] = results.answer
+    for k in results.metrics:
+        v = results.metrics[k]
+        data_dict[k] = v
 
-    return Dataset.from_dict(results_dict)
+    dataset = Dataset.from_dict(data_dict)
+    return dataset
 
 
 async def run_eval(
@@ -259,7 +273,7 @@ async def run_eval(
     monitor.log(time_metrics)
 
     if save_to_disk or save_to_hf is not None:
-        dataset = make_dataset(generate_outputs)
+        dataset = make_dataset(generate_outputs, num_examples, rollouts_per_example)
 
         # If specified, save eval artifacts
         if save_to_disk:
