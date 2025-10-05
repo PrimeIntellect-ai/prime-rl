@@ -269,7 +269,7 @@ async def run_eval(
             logger.info(f"Saved eval results for {eval_id} to disk ({eval_dir})")
 
         if save_to_hf is not None:
-            dataset.push_to_hub(save_to_hf, split=eval_id)
+            dataset.push_to_hub(save_to_hf, eval_id)
             logger.info(f"Pushed eval results for {eval_id} to HF Hub (https://huggingface.co/datasets/{save_to_hf})")
 
 
