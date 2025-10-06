@@ -377,3 +377,10 @@ class WeightCheckpointConfig(BaseConfig):
             description="Whether to save the weight checkpoint asynchronously.",
         ),
     ] = True
+
+    save_adapter_separately: Annotated[
+        bool,
+        Field(
+            description="Whether to save LoRA adapters separately before merging into full model weights.",
+        ),
+    ] = False
