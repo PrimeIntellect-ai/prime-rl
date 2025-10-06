@@ -1,0 +1,55 @@
+[model]
+name = "gpt-4o-mini"
+
+[client]
+base_url = "https://api.openai.com/v1"
+api_key_var = "OPENAI_API_KEY"
+
+[eval]
+environment_ids = ["gsm8k", "math500", "gpqa"]
+num_examples = 50
+rollouts_per_example = 5
+max_concurrent = 16
+
+[eval.num_examples_per_env]
+gsm8k = 100
+gpqa = 20
+
+[eval.rollouts_per_example_per_env]
+math500 = 3
+gpqa = 10
+
+[eval.max_concurrent_per_env]
+gsm8k = 32
+gpqa = 8
+
+[eval.environment_args]
+gsm8k = {}
+math500 = { subset = "full" }
+gpqa = { subset = "diamond" }
+
+[eval.models_per_env]
+gsm8k = "gpt-4o"
+math500 = "claude-3-opus"
+
+[eval.sampling_args_per_env]
+gsm8k = { temperature = 0.9, top_p = 0.95, max_tokens = 4096 }
+math500 = { temperature = 0.5, max_tokens = 2048 }
+
+[eval.sampling]
+temperature = 0.7
+max_tokens = 2048
+top_p = 1.0
+
+[wandb]
+project = "my-project"
+name = "multi-model-eval"
+
+[log]
+level = "INFO"
+file = true
+
+output_dir = "outputs/multi_model_eval"
+save_to_disk = true
+push_to_hub = true
+eval_base = true

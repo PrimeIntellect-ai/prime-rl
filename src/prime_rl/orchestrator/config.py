@@ -184,30 +184,65 @@ class EvalConfig(BaseConfig):
     ] = {}
 
     num_examples: Annotated[
-        list[int],
+        int,
         Field(
-            description="Number of examples to evaluate per environment. Set all or none; if None, defaults to -1 for every ID."
+            description="Default number of examples to evaluate per environment. Use -1 for all examples. Can be overridden per-env with num_examples_per_env."
         ),
-    ] = []
+    ] = -1
+
+    num_examples_per_env: Annotated[
+        dict[str, int],
+        Field(
+            description="Per-environment num_examples overrides. Keys are environment IDs, values are number of examples."
+        ),
+    ] = {}
 
     rollouts_per_example: Annotated[
-        list[int],
+        int,
         Field(
-            description="Number of samples to generate per example for each environment (length must match eval.environment_ids)."
+            description="Default number of samples to generate per example. Can be overridden per-env with rollouts_per_example_per_env."
         ),
-    ] = []
+    ] = 1
+
+    rollouts_per_example_per_env: Annotated[
+        dict[str, int],
+        Field(
+            description="Per-environment rollouts_per_example overrides. Keys are environment IDs, values are rollout counts."
+        ),
+    ] = {}
 
     max_concurrent: Annotated[
-        list[int],
+        int,
         Field(
-            description="Maximum number of concurrent rollouts to generate and score. If empty, will default to -1 for all environments.",
+            description="Default maximum number of concurrent rollouts to generate and score. Use -1 for unlimited. Can be overridden per-env with max_concurrent_per_env."
         ),
-    ] = []
+    ] = -1
+
+    max_concurrent_per_env: Annotated[
+        dict[str, int],
+        Field(
+            description="Per-environment max_concurrent overrides. Keys are environment IDs, values are max concurrent counts."
+        ),
+    ] = {}
 
     sampling: EvalSamplingConfig = Field(
         default_factory=EvalSamplingConfig,
-        description="Shared sampling configuration for evals; can differ from training sampling.",
+        description="Global default sampling configuration for evals. Can be overridden per-env with sampling_args_per_env.",
     )
+
+    sampling_args_per_env: Annotated[
+        dict[str, dict] | None,
+        Field(
+            description="Per-environment sampling args overrides. Keys are environment IDs, values are dicts with sampling parameters (temperature, max_tokens, etc.). Overrides the global sampling config for specific environments."
+        ),
+    ] = None
+
+    models_per_env: Annotated[
+        dict[str, str] | None,
+        Field(
+            description="Per-environment model overrides. Keys are environment IDs, values are model names. If not specified for an env, uses the global model from model config."
+        ),
+    ] = None
 
     save_to_disk: Annotated[
         bool,
@@ -223,34 +258,36 @@ class EvalConfig(BaseConfig):
         ),
     ] = None
 
+    push_to_hub: Annotated[
+        bool,
+        Field(
+            description="Whether to push evaluation results to Prime Hub using prime-cli. Requires prime-cli to be installed and configured with API credentials. When enabled, displays the evals viewer URL.",
+        ),
+    ] = False
+
     @model_validator(mode="after")
-    def _validate_and_fill_eval_lists(self):
-        # If rollouts_per_example is empty, default to 1 for all ids
-        if len(self.rollouts_per_example) == 0:
-            self.rollouts_per_example = [1 for _ in self.environment_ids]
-        elif len(self.rollouts_per_example) == 1:
-            self.rollouts_per_example = [self.rollouts_per_example[0] for _ in self.environment_ids]
-
-        if len(self.rollouts_per_example) != len(self.environment_ids):
-            raise ValueError("Number of rollouts_per_example entries must match number of ids")
-
-        # num_examples: if empty/unspecified, default to -1 for all; else length must match ids
-        if len(self.num_examples) == 0:
-            self.num_examples = [-1 for _ in self.environment_ids]
-        elif len(self.num_examples) == 1:
-            self.num_examples = [self.num_examples[0] for _ in self.environment_ids]
-
-        if len(self.num_examples) != len(self.environment_ids):
-            raise ValueError("Number of num_examples entries must match number of ids")
-
-        # max_concurrent: if empty/unspecified, default to -1 for all; else length must match ids
-        if len(self.max_concurrent) == 0:
-            self.max_concurrent = [-1 for _ in self.environment_ids]
-        elif len(self.max_concurrent) == 1:
-            self.max_concurrent = [self.max_concurrent[0] for _ in self.environment_ids]
-
-        elif len(self.max_concurrent) != len(self.environment_ids):
-            raise ValueError("Number of max_concurrent entries must match number of ids")
+    def _validate_per_env_keys(self):
+        for env_id in self.num_examples_per_env.keys():
+            if env_id not in self.environment_ids:
+                raise ValueError(f"num_examples_per_env key '{env_id}' not in environment_ids")
+        
+        for env_id in self.rollouts_per_example_per_env.keys():
+            if env_id not in self.environment_ids:
+                raise ValueError(f"rollouts_per_example_per_env key '{env_id}' not in environment_ids")
+        
+        for env_id in self.max_concurrent_per_env.keys():
+            if env_id not in self.environment_ids:
+                raise ValueError(f"max_concurrent_per_env key '{env_id}' not in environment_ids")
+        
+        if self.sampling_args_per_env is not None:
+            for env_id in self.sampling_args_per_env.keys():
+                if env_id not in self.environment_ids:
+                    raise ValueError(f"sampling_args_per_env key '{env_id}' not in environment_ids")
+        
+        if self.models_per_env is not None:
+            for env_id in self.models_per_env.keys():
+                if env_id not in self.environment_ids:
+                    raise ValueError(f"models_per_env key '{env_id}' not in environment_ids")
 
         return self
 
