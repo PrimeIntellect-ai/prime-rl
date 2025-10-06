@@ -84,7 +84,7 @@ def train(config: SFTTrainerConfig):
         config.output_dir,
         config.weights,
         config.ckpt,
-        async_level=0,
+        0,
         config.model.experimental.lora
     )
 
