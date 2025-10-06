@@ -288,21 +288,6 @@ def restore_lora_weights_inplace(model: nn.Module, original_lora_state: Dict[str
             restored_count += 1
 
 
-def get_lora_state_dict(model: nn.Module) -> Dict[str, torch.Tensor]:
-    """
-    Extract only LoRA parameters from model state dict.
-
-    Returns:
-        Dictionary containing only LoRA parameters
-    """
-    lora_state_dict = {}
-    for name, param in model.named_parameters():
-        if "lora_A" in name or "lora_B" in name:
-            lora_state_dict[name] = param.data.clone()
-
-    return lora_state_dict
-
-
 def load_lora_state_dict(model: nn.Module, lora_state_dict: Dict[str, torch.Tensor]) -> None:
     """
     Load LoRA parameters into model.
