@@ -321,3 +321,48 @@ def load_lora_state_dict(model: nn.Module, lora_state_dict: Dict[str, torch.Tens
             loaded_params += 1
         else:
             logger.warning(f"LoRA parameter {name} not found in model")
+
+
+def save_lora_config(config: LoRAConfig, model: nn.Module, save_path) -> None:
+    """
+    Save LoRA configuration as JSON for adapter portability.
+    
+    Args:
+        config: LoRA configuration to save
+        model: Model with LoRA layers to introspect
+        save_path: Path object or string pointing to directory where adapter_config.json will be saved
+    """
+    import json
+    from pathlib import Path
+    
+    save_path = Path(save_path)
+    
+    # Extract actual target modules from the model
+    target_modules = set()
+    modules_to_save = set()
+    
+    for name, module in model.named_modules():
+        if isinstance(module, LoRALinear):
+            module_suffix = name.split(".")[-1]
+            target_modules.add(module_suffix)
+    
+    for name, param in model.named_parameters():
+        if param.requires_grad and "lora_A" not in name and "lora_B" not in name:
+            module_name = name.rsplit(".", 1)[0].split(".")[-1]
+            modules_to_save.add(module_name)
+    
+    adapter_config = {
+        "peft_type": "LORA",
+        "task_type": "CAUSAL_LM",
+        "base_model_name_or_path": model.config._name_or_path,
+        "r": config.rank,
+        "lora_alpha": config.alpha,
+        "lora_dropout": config.dropout,
+        "bias": "none",
+        "target_modules": sorted(list(target_modules)),
+        "modules_to_save": sorted(list(modules_to_save)) if modules_to_save else None,
+    }
+    
+    config_path = save_path / "adapter_config.json"
+    with open(config_path, "w") as f:
+        json.dump(adapter_config, f, indent=2)

@@ -80,7 +80,13 @@ def train(config: SFTTrainerConfig):
 
     # Set up weight checkpoint manager
     logger.info(f"Initializing weight checkpoint manager ({config.weights})")
-    weight_ckpt_manager = setup_weight_ckpt_manager(config.output_dir, config.weights, config.ckpt, async_level=0)
+    weight_ckpt_manager = setup_weight_ckpt_manager(
+        config.output_dir,
+        config.weights,
+        config.ckpt,
+        async_level=0,
+        config.model.experimental.lora
+    )
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")

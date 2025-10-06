@@ -96,7 +96,13 @@ def train(config: RLTrainerConfig):
 
     # Set up weight checkpoint manager
     logger.info(f"Initializing weight checkpoint manager ({config.weights})")
-    weight_ckpt_manager = setup_weight_ckpt_manager(config.output_dir, config.weights, config.ckpt, config.async_level)
+    weight_ckpt_manager = setup_weight_ckpt_manager(
+        config.output_dir,
+        config.weights,
+        config.ckpt,
+        config.async_level,
+        config.model.experimental.lora
+    )
     assert weight_ckpt_manager is not None, "Weight checkpoint manager must be set on RL trainer"
 
     # Set up checkpoint manager
