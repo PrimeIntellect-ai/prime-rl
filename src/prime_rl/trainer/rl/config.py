@@ -154,3 +154,18 @@ class RLTrainerConfig(BaseSettings):
                     "Tracing more than 10 steps is not recommended as your trace will be massive. Remove this line if you really want to trace more steps."
                 )
         return self
+
+    @model_validator(mode="after")
+    def validate_lora_adapter_saving(self):
+        if self.weights and self.weights.save_adapter_separately:
+            lora_enabled = (
+                self.model 
+                and self.model.experimental 
+                and self.model.experimental.lora
+            )
+            if not lora_enabled:
+                raise ValueError(
+                    "save_adapter_separately=True requires LoRA to be enabled. "
+                    "Set model.experimental.lora or disable save_adapter_separately."
+                )
+        return self

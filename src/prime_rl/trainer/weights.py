@@ -239,9 +239,11 @@ class WeightCheckpointManager:
         has_lora = has_lora_layers(model)
 
         # Save LoRA adapters separately if configured
-        if self.config.save_adapter_separately and has_lora and self._is_master:
-            lora_state = self._get_adapter_state_dict(model)
-            self._save_lora_adapters(lora_state, model, step)
+        if self.config.save_adapter_separately and has_lora:
+            if self._is_master:
+                lora_state = self._get_adapter_state_dict(model)
+                self._save_lora_adapters(lora_state, model, step)
+            torch.distributed.barrier()
 
         cpu_state = self._gather_weights(model, dtype, has_lora_layers=has_lora)
         if _has_tt_moe_layers(cpu_state):
@@ -305,12 +307,6 @@ def setup_weight_ckpt_manager(
 ) -> WeightCheckpointManager | None:
     if weight_ckpt_config is None:
         return None
-    
-    if weight_ckpt_config.save_adapter_separately and lora_config is None:
-        raise ValueError(
-            "save_adapter_separately=True requires LoRA to be enabled. "
-            "Set model.experimental.lora or disable save_adapter_separately."
-        )
     
     return WeightCheckpointManager(
         output_dir, weight_ckpt_config, ckpt_config, async_level=async_level, lora_config=lora_config
