@@ -55,8 +55,9 @@ def wait_for_weight_checkpoint(path: Path, step: int, interval: int = 1, log_int
     
     model_path = get_weight_ckpt_model_path(path, step)
     lora_adapter_path = path / f"step_{step}" / "lora_adapters" / "adapter_model.bin"
+    lora_config_path = path / f"step_{step}" / "lora_adapters" / "adapter_config.json"
     
-    while not (model_path.exists() or lora_adapter_path.exists()):
+    while not (model_path.exists() or (lora_adapter_path.exists() and lora_config_path.exists())):
         time.sleep(interval)
 
 
