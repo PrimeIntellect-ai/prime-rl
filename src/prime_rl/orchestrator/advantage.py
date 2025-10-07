@@ -73,6 +73,7 @@ def compute_advantages(
     completion_lengths: list[int],
     samples_per_problem: int,
     advantage_type: AdvantageType,
+    keep_n_shortest: int | None = None,
 ) -> list[float]:
     """
     Computes advantages and statistics for logging from a flattened list of rewards for a given advantage type.
@@ -84,7 +85,8 @@ def compute_advantages(
         completion_lengths: List of completion lengths for each reward. Required for OPO advantage computation.
 
     Returns:
-        Tuple of (advantages, advantage_stats)
+        List of advantages corresponding to the input rewards. If `keep_n_shortest` is set,
+        advantages for rollouts outside the N shortest (per problem group) are set to 0.0.
     """
     advantages = []
     assert len(rewards) % samples_per_problem == 0
@@ -96,7 +98,21 @@ def compute_advantages(
     for group_rewards, group_lengths in zip(all_group_rewards, all_group_lengths):
         group_rewards_tensor = torch.tensor(group_rewards)
         group_lengths_tensor = torch.tensor(group_lengths)
-        group_advantages_tensor = compute_advantage(group_rewards_tensor, group_lengths_tensor)
+
+        if keep_n_shortest is not None:
+            k = min(max(keep_n_shortest, 0), group_rewards_tensor.numel())
+            keep_indices = torch.topk(group_lengths_tensor, k, largest=False).indices
+
+            kept_rewards = group_rewards_tensor.index_select(0, keep_indices)
+            kept_lengths = group_lengths_tensor.index_select(0, keep_indices)
+            kept_advantages = compute_advantage(kept_rewards, kept_lengths)
+            assert kept_advantages.numel() == keep_indices.numel()
+
+            group_advantages_tensor = torch.zeros_like(group_rewards_tensor, dtype=kept_advantages.dtype)
+            group_advantages_tensor.index_copy_(0, keep_indices, kept_advantages)
+        else:
+            group_advantages_tensor = compute_advantage(group_rewards_tensor, group_lengths_tensor)
+
         assert len(group_advantages_tensor) == len(group_rewards_tensor)
         advantages.extend(group_advantages_tensor.tolist())
     assert len(rewards) == len(advantages)
