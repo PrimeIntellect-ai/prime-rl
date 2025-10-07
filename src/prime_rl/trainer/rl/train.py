@@ -319,7 +319,10 @@ def train(config: RLTrainerConfig):
 
             # Add loss tensors to tensor dict for logging purposes
             for key, loss_tensor in loss_tensors.items():
-                loss_tensor = loss_tensor.detach()[loss_mask.squeeze()].detach().to("cpu")
+                if config.loss.ratio_type == "sequence":
+                    loss_tensor = loss_tensor.detach().to("cpu")
+                else:
+                    loss_tensor = loss_tensor.detach()[loss_mask.squeeze()].detach().to("cpu")
                 tensors[key].append(loss_tensor)
 
             # Debug log with *local, micro step* stats
