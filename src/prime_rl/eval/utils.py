@@ -135,9 +135,8 @@ def make_dataset(results: GenerateOutputs, num_examples: int, rollouts_per_examp
         data_dict["answer"] = results.answer
     judge_responses = []
     for s in results.state:
-        judge_response = s.get("judge_response")
-        if judge_response is not None:
-            judge_responses.append(judge_response)
+        judge_response = s.get("judge_response", {})
+        judge_responses.append(judge_response)
     if judge_responses:
         data_dict["judge_response"] = judge_responses
     for k in results.metrics:
