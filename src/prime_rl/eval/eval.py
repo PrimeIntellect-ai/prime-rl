@@ -5,7 +5,6 @@ from prime_rl.eval.utils import run_evals
 from prime_rl.orchestrator.client import (
     check_has_model,
     check_health,
-    reload_weights,
     setup_client,
     update_weights,
 )
@@ -47,8 +46,8 @@ async def eval(config: OfflineEvalConfig):
     logger.success(f"Inference pool is healthy and serves {config.model.name}")
 
     # Reset weights to base model to allow reusing inference server across runs
-    logger.info("Resetting weights to base model")
-    await reload_weights(client)
+    # logger.info("Resetting weights to base model")
+    # await reload_weights(client)
 
     # Run benchmarks on base model
     if config.eval_base:
