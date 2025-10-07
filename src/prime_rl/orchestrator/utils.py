@@ -51,8 +51,13 @@ def parse_is_truncated_completions(responses: list[list[ChatCompletion]]) -> lis
 
 
 def wait_for_weight_checkpoint(path: Path, step: int, interval: int = 1, log_interval: int = 10) -> None:
+    import time
+    
     model_path = get_weight_ckpt_model_path(path, step)
-    wait_for_path(model_path, interval, log_interval)
+    lora_adapter_path = path / f"step_{step}" / "lora_adapters" / "adapter_model.bin"
+    
+    while not (model_path.exists() or lora_adapter_path.exists()):
+        time.sleep(interval)
 
 
 def print_benchmark(history: dict[str, list[Any]]) -> None:

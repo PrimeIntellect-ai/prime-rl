@@ -239,10 +239,23 @@ class WeightCheckpointManager:
         has_lora = has_lora_layers(model)
 
         # Save LoRA adapters separately if configured
-        if self.config.save_adapter_separately and has_lora and self._is_master:
+        if self.config.save_adapter_separately and has_lora:
             lora_state = self._get_adapter_state_dict(model)
-            self._save_lora_adapters(lora_state, model, step)
+            
+            if self._is_master:
+                self._save_lora_adapters(lora_state, model, step)
+                
+                # Save model config and tokenizer (needed for vLLM)
+                step_path = self._get_step_path(step)
+                step_path.mkdir(parents=True, exist_ok=True)
+                model.config.save_pretrained(step_path)
+                if model.generation_config:
+                    model.generation_config.save_pretrained(step_path)
+                tokenizer.save_pretrained(step_path)
+            
+            return self._get_model_path(step)
 
+        # Normal path: save full merged checkpoint
         cpu_state = self._gather_weights(model, dtype, has_lora_layers=has_lora)
         if _has_tt_moe_layers(cpu_state):
             _convert_tt_moe_to_hf_(cpu_state)
