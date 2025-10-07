@@ -2,6 +2,7 @@ from dion import Muon
 from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
 from torch.optim import SGD, AdamW, Optimizer
+from torchao.optim import AdamW8bit
 
 from prime_rl.trainer.config import OptimizerConfigType
 
@@ -18,6 +19,14 @@ def setup_optimizer(config: OptimizerConfigType, model: nn.Module, device_mesh: 
             )
         case "adamw":
             return AdamW(
+                params=model.parameters(),
+                lr=config.lr,
+                weight_decay=config.weight_decay,
+                betas=(config.betas1, config.betas2),
+                fused=config.fused,
+            )
+        case "adamw_8bit":
+            return AdamW8bit(
                 params=model.parameters(),
                 lr=config.lr,
                 weight_decay=config.weight_decay,
