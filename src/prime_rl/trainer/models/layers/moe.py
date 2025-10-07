@@ -4,6 +4,8 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Literal
 
@@ -11,6 +13,62 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torchtitan.distributed.expert_parallel import expert_parallel
+
+
+ROUTING_REPLAY_ENABLED = False
+ROUTING_REPLAY_STAGE: str | None = None
+ROUTING_REPLAY: RoutingReplay | None = None
+ROUTING_REPLAY_REGISTRY: dict[str, RoutingReplay] = {}
+
+
+def enable_routing_replay(enabled: bool) -> None:
+    global ROUTING_REPLAY_ENABLED
+    ROUTING_REPLAY_ENABLED = enabled
+
+
+def set_routing_replay_stage(stage: str | None) -> None:
+    if stage is not None:
+        assert stage in {"fallthrough", "record", "replay_forward", "replay_backward"}
+    global ROUTING_REPLAY_STAGE
+    ROUTING_REPLAY_STAGE = stage
+
+
+def set_routing_replay(replay: RoutingReplay) -> None:
+    global ROUTING_REPLAY
+    ROUTING_REPLAY = replay
+
+
+class RoutingReplay:
+    instances: list[RoutingReplay] = []
+
+    def __init__(self) -> None:
+        self.forward_idx = 0
+        self.backward_indices: list[int] = []
+        self.top_indices: list[torch.Tensor] = []
+        RoutingReplay.instances.append(self)
+
+    def record(self, indices: torch.Tensor) -> None:
+        self.top_indices.append(indices.detach().clone())
+
+    def pop_forward(self) -> torch.Tensor:
+        idx = self.top_indices[self.forward_idx]
+        self.backward_indices.append(self.forward_idx)
+        self.forward_idx += 1
+        return idx
+
+    def pop_backward(self) -> torch.Tensor:
+        idx = self.backward_indices.pop()
+        return self.top_indices[idx]
+
+    def clear(self) -> None:
+        self.forward_idx = 0
+        self.backward_indices.clear()
+        self.top_indices.clear()
+
+    @classmethod
+    def clear_all(cls) -> None:
+        for replay in cls.instances:
+            replay.clear()
 
 
 @dataclass
@@ -200,6 +258,14 @@ class TokenChoiceTopKRouter(nn.Module):
         self.score_func = score_func
         self.route_norm = route_norm
         self.route_scale = route_scale
+        self.routing_replay_key: str | None = None
+        self.routing_replay = RoutingReplay()
+
+        def _set_replay(*_: object) -> None:
+            set_routing_replay(self.routing_replay)
+
+        self.register_forward_pre_hook(_set_replay)
+        self.register_full_backward_pre_hook(_set_replay)
 
     def forward(
         self, x: torch.Tensor, expert_bias: torch.Tensor | None = None
@@ -233,11 +299,32 @@ class TokenChoiceTopKRouter(nn.Module):
         # top scores shape (bs*slen, top_k)
         # NOTE: The expert_bias is only used for routing. The gating value
         #       top_scores is still derived from the original scores.
-        if expert_bias is not None:
-            _, selected_experts_indices = torch.topk(scores + expert_bias, k=self.top_k, dim=1)
-            top_scores = scores.gather(dim=1, index=selected_experts_indices)
+        def _topk() -> tuple[torch.Tensor, torch.Tensor]:
+            if expert_bias is None:
+                return torch.topk(scores, k=self.top_k, dim=1)
+            _, idx = torch.topk(scores + expert_bias, k=self.top_k, dim=1)
+            return scores.gather(dim=1, index=idx), idx
+
+        stage = ROUTING_REPLAY_STAGE if ROUTING_REPLAY_ENABLED else None
+        if stage is None:
+            top_scores, selected_experts_indices = _topk()
         else:
-            top_scores, selected_experts_indices = torch.topk(scores, k=self.top_k, dim=1)
+            assert ROUTING_REPLAY is self.routing_replay
+            if stage == "fallthrough":
+                top_scores, selected_experts_indices = _topk()
+            elif stage == "record":
+                top_scores, selected_experts_indices = _topk()
+                ROUTING_REPLAY.record(selected_experts_indices)
+            elif stage == "replay_forward":
+                selected_experts_indices = ROUTING_REPLAY.pop_forward()
+                assert selected_experts_indices.shape == (scores.shape[0], self.top_k)
+                top_scores = scores.gather(1, selected_experts_indices)
+            elif stage == "replay_backward":
+                selected_experts_indices = ROUTING_REPLAY.pop_backward()
+                assert selected_experts_indices.shape == (scores.shape[0], self.top_k)
+                top_scores = scores.gather(1, selected_experts_indices)
+            else:
+                raise RuntimeError(f"Unexpected routing replay stage: {stage}")
 
         if self.route_norm:
             denominator = top_scores.sum(dim=-1, keepdim=True) + 1e-20
@@ -256,6 +343,10 @@ class TokenChoiceTopKRouter(nn.Module):
 
     def init_weights(self, init_std: float):
         nn.init.trunc_normal_(self.gate.weight, mean=0.0, std=init_std)
+
+    def set_routing_replay_key(self, key: str) -> None:
+        self.routing_replay_key = key
+        self.routing_replay = ROUTING_REPLAY_REGISTRY.setdefault(key, RoutingReplay())
 
 
 # NOTE: the reason we make this a stateless module is to support
@@ -446,3 +537,10 @@ class MoE(nn.Module):
             self.tokens_per_expert = torch.zeros(self.experts.num_experts, dtype=torch.float32)
             if self.load_balance_coeff is not None:
                 self.expert_bias = torch.zeros(self.experts.num_experts, dtype=torch.float32)
+
+def register_routing_replay_keys(module: nn.Module, prefix: str = "") -> None:
+    for name, child in module.named_children():
+        child_prefix = f"{prefix}.{name}" if prefix else name
+        if isinstance(child, TokenChoiceTopKRouter):
+            child.set_routing_replay_key(child_prefix)
+        register_routing_replay_keys(child, child_prefix)
