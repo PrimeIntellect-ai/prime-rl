@@ -63,7 +63,7 @@ r3: [0.059, 0.264, 0.731, 0.23, 0.103, 0.014, 0.099, 0.115, 0.199, 0.037, 0.181,
 We train with LoRA (rank 32, alpha 64) for 100 steps at batch size 512 (64×8 rollouts) with context length 2048. By default, LoRA weights are merged into the base model at each checkpoint.
 
 ![RL](rl/wandb.png)
-*Check out the logs on [W&B](https://wandb.ai/primeintellect/alphabet-sort-lora/groups/alphabet-sort-extended-4b/workspace?nw=nwuserandrewpi).*
+*Check out the logs on [W&B](https://wandb.ai/primeintellect/alphabet-sort-4b-lora/overview).*
 ```bash
 # In the `Trainer` pane
 uv run rl \
