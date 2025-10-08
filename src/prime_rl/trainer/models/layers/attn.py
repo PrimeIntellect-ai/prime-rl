@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn.functional as F
 from torch import nn
+from einops import rearrange
 
 from .rms_norm import RMSNorm, RMSNormConfig
 from .rotary_emb import apply_rotary_pos_emb
@@ -23,6 +24,7 @@ class AttentionConfig:
     attention_bias: bool
     use_qk_norm: bool
     rms_norm_eps: float
+    sliding_window: int
 
 
 # TODO: Does torch compile support config._attn_implementation forking?
@@ -165,8 +167,95 @@ class SDPAAttention(nn.Module):
         attn_output = self.o_proj(attn_output)
         return attn_output, attn_weights
 
+class SlidingWindowAttention(nn.Module):
+    def __init__(self, config: AttentionConfig):
+        super().__init__()
+        self.head_dim = config.head_dim
+        self.window_size = config.sliding_window
+        self.num_attention_heads = config.num_attention_heads
+        self.is_causal = config.is_causal
+
+        self.q_proj = nn.Linear(
+            config.hidden_size, config.num_attention_heads * self.head_dim, bias=config.attention_bias
+        )
+        self.k_proj = nn.Linear(
+            config.hidden_size, config.num_attention_heads * self.head_dim, bias=config.attention_bias
+        )
+        self.v_proj = nn.Linear(
+            config.hidden_size, config.num_attention_heads * self.head_dim, bias=config.attention_bias
+        )
+        self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=False)
+
+        self.use_qk_norm = config.use_qk_norm
+        if self.use_qk_norm:
+            self.q_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
+            self.k_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
+
+    def forward(
+            self,
+            hidden_states: torch.Tensor,
+            position_embeddings: tuple[torch.Tensor, torch.Tensor],
+            cu_seqlens: torch.LongTensor | None = None,
+            max_seqlen: int | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        batch_size, seq_len = hidden_states.shape[:2]
+
+        query_states = self.q_proj(hidden_states)
+        key_states = self.k_proj(hidden_states)
+        value_states = self.v_proj(hidden_states)
+
+        query_states = rearrange(query_states, 'b n (h d) -> b h n d', h=self.num_attention_heads)
+        key_states = rearrange(key_states, 'b n (h d) -> b h n d', h=self.num_attention_heads)
+        value_states = rearrange(value_states, 'b n (h d) -> b h n d', h=self.num_attention_heads)
+
+        if self.use_qk_norm:
+            query_states = self.q_norm(query_states)
+            key_states = self.k_norm(key_states)
+
+        # Apply rotary embeddings
+        cos, sin = position_embeddings
+        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+
+        # Padding
+        pad_len = (self.window_size - (seq_len % self.window_size)) % self.window_size
+        if pad_len > 0:
+            query_states = F.pad(query_states, (0, 0, 0, pad_len), value=0)
+            key_states = F.pad(key_states, (0, 0, 0, pad_len), value=0)
+            value_states = F.pad(value_states, (0, 0, 0, pad_len), value=0)
+
+        padded_seq_len = query_states.shape[2]
+        num_windows = padded_seq_len // self.window_size
+
+        # Reshape into windows
+        bq = rearrange(query_states, "b h (n w) d -> b h n w d", n=num_windows, w=self.window_size)
+        bk = rearrange(key_states, "b h (n w) d -> b h n w d", n=num_windows, w=self.window_size)
+        bv = rearrange(value_states, "b h (n w) d -> b h n w d", n=num_windows, w=self.window_size)
+
+        # Causal mask
+        causal_mask = None
+        if self.is_causal:
+            causal_mask = torch.ones(
+                self.window_size, self.window_size,
+                dtype=torch.bool,
+                device=query_states.device
+            ).triu(1)
+
+        # Attention
+        attn = F.scaled_dot_product_attention(bq, bk, bv, attn_mask=~causal_mask if causal_mask is not None else None)
+
+        # Reshape back and remove padding
+        out = rearrange(attn, "b h n w d -> b h (n w) d")
+        if pad_len > 0:
+            out = out[:, :, :seq_len, :]
+
+        out = rearrange(out, "b h s d -> b s (h d)")
+        out = self.o_proj(out)
+
+        return out, None
+
 
 ATTN_IMPL2CLASS = {
     "flash_attention_2": FlashAttention,
+    "sliding_window": SlidingWindowAttention,
     "sdpa": SDPAAttention,
 }
