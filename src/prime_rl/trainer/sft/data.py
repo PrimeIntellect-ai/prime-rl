@@ -471,11 +471,15 @@ def setup_dataset(
             assert isinstance(dataset, Dataset), "Dataset must be a Hugging Face Dataset"
         elif config.subsets is not None and config.splits is None:
             dataset = interleave_datasets(
-                [cast(Dataset, load_dataset(config.name, subset, split="train")) for subset in config.subsets]
+                [cast(Dataset, load_dataset(config.name, subset, split="train")) for subset in config.subsets],
+                probabilities=config.probabilities,
+                seed=0,
             )
         elif config.subsets is None and config.splits is not None:
             dataset = interleave_datasets(
-                [cast(Dataset, load_dataset(config.name, split=split)) for split in config.splits]
+                [cast(Dataset, load_dataset(config.name, split=split)) for split in config.splits],
+                probabilities=config.probabilities,
+                seed=0,
             )
         else:
             assert config.subsets is not None and config.splits is not None
@@ -483,7 +487,9 @@ def setup_dataset(
                 [
                     cast(Dataset, load_dataset(config.name, subset, split=split))
                     for subset, split in zip(config.subsets, config.splits)
-                ]
+                ],
+                probabilities=config.probabilities,
+                seed=0,
             )
         return SFTDataset(dataset, tokenizer, config, non_dp_size)
     else:
