@@ -1,4 +1,5 @@
 import json
+import uuid
 from collections import defaultdict
 from typing import Iterator, TypedDict, cast
 
@@ -94,7 +95,7 @@ class FakeDataset(StatefulIterableDataset):
             position_ids = list(range(seq_len))
             loss_mask = [True] * seq_len
             fake_sample = {
-                # "index": self.step,
+                "index": self.step,
                 "input_ids": input_ids[:-1],
                 "target_ids": input_ids[1:],
                 "position_ids": position_ids,
@@ -114,9 +115,9 @@ class SFTDataset(StatefulIterableDataset):
         self.tokenizer = tokenizer
 
         # Add dataset index
-        # self.dataset = dataset.add_column("index", list(range(len(dataset))), new_fingerprint=str(uuid.uuid4()))
+        self.dataset = dataset.add_column("index", list(range(len(dataset))), new_fingerprint=str(uuid.uuid4()))
 
-        # Assert that the dataset has a 'prompt' and 'completion' column
+        # Assert that the dataset has a 'text' column
         if "prompt" not in self.dataset.column_names or "completion" not in self.dataset.column_names:
             raise ValueError("HF dataset must have a 'prompt' and 'completion' column for SFT")
 
@@ -278,7 +279,7 @@ class SFTDataset(StatefulIterableDataset):
 
             if sum(loss_mask[: self.config.seq_len]) == 0:
                 self.logger.warning(
-                    f"Skipping example at step {self.step} because no trainable tokens were found within the context window ({self.config.seq_len}). This is to prevent NaN loss."
+                    f"Skipping example with index {self.step} because no trainable tokens were found within the context window ({self.config.seq_len}). This is to prevent NaN loss."
                 )
                 continue
 
@@ -290,7 +291,7 @@ class SFTDataset(StatefulIterableDataset):
 
             # Create sample (with one fake target for the last token)
             sample = {
-                # "index": example["index"],
+                "index": example["index"],
                 "input_ids": input_ids,
                 "target_ids": target_ids,
                 "loss_mask": loss_mask,
@@ -322,8 +323,8 @@ class CatDataset(StatefulIterableDataset):
             for key, value in sample.items():
                 if key == "epoch":
                     packed_samples[key] = min(packed_samples.get(key, float("inf")), value)
-                # elif key == "index":
-                #     indices.append(value)
+                elif key == "index":
+                    indices.append(value)
                 else:
                     packed_samples[key].extend(value)
 
@@ -422,8 +423,8 @@ class StackDataset(StatefulIterableDataset):
                     for key, value in bucket_item.items():
                         if key == "epoch":
                             packed_samples[key] = min(packed_samples.get(key, float("inf")), value)
-                        # elif key == "index":
-                        #     indices.append(value)
+                        elif key == "index":
+                            indices.append(value)
                         else:
                             packed_samples[key].append(value + [0] * (self.bucket_sizes[bucket_idx] - len(value)))
                 self.logger.debug(f"Yield batch with dataset indices={indices}")
