@@ -1,0 +1,32 @@
+max_steps = 100
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+
+[model.ac]
+freq = 1
+
+[model.experimental.lora]
+rank = 32
+alpha = 64
+dropout = 0.0
+target_modules = [
+    ".*\\.q_proj$",
+    ".*\\.k_proj$",
+    ".*\\.v_proj$",
+    ".*\\.o_proj$",
+    ".*\\.gate_proj$",
+    ".*\\.up_proj$",
+    ".*\\.down_proj$"
+]
+modules_to_save = [
+    ".*embed_tokens$",
+    ".*norm$",
+    ".*layernorm$",
+    "lm_head$"
+]
+
+[optim]
+lr = 1e-5
