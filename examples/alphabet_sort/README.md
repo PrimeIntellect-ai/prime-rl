@@ -50,7 +50,7 @@ uv run vf-eval alphabet-sort \
   --env-args '{"min_turns": 3, "max_turns": 3, "min_names_per_turn": 1, "max_names_per_turn": 4, "similarity_power": 8, "power_per_turn": false}'
 ```
 
-We got an **average reward of ~0.26** across 20×3 rollouts. The model achieves **0% perfect attempts** (no rollouts score 1.0) and **0% perfect examples** (no examples have all 3 rollouts at 1.0). The model shows high variance and struggles on most examples, with the high similarity power (8) heavily penalizing even small errors.
+We got an **average reward of ~0.26** across 20×3 rollouts. The model achieves **0% perfect attempts** (no rollouts score 1.0) and **0% perfect examples** (no examples have all 3 rollouts at 1.0). The model shows high variance and struggles on most examples, with the high similarity power (8) heavily penalizing even small errors, and the scores aren't different for most attempts.
 ```
 reward: avg - 0.264, std - 0.243
 r1: [0.059, 0.264, 0.731, 0.23, 0.103, 0.012, 0.099, 0.115, 0.199, 0.037, 0.181, 0.014, 0.028, 0.834, 0.207, 0.625, 0.269, 0.206, 0.501, 0.558]
@@ -96,7 +96,7 @@ uv run vf-eval alphabet-sort \
   --env-args '{"min_turns": 3, "max_turns": 3, "min_names_per_turn": 1, "max_names_per_turn": 4, "similarity_power": 8, "power_per_turn": false}'
 ```
 
-Way better! Our model now gets an **average reward of ~0.96** with **90% perfect attempts** (54/60 rollouts score 1.0) and **70% perfect examples** (14/20 examples have all 3 rollouts at 1.0).
+Way better! Our model now gets an **average reward of ~0.96** with **~82% perfect attempts** (49/60 rollouts score 1.0) and **75% perfect examples** (15/20 examples have all 3 rollouts at 1.0).
 ```
 reward: avg - 0.957, std - 0.115
 r1: [1.0, 0.775, 1.0, 1.0, 1.0, 0.671, 1.0, 1.0, 1.0, 0.416, 1.0, 1.0, 0.795, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.987]
