@@ -276,12 +276,22 @@ class EvalConfig(BaseConfig):
     def _parse_env_configs(self):
         """Parse [eval.env.X] format and populate *_per_env fields."""
         if self.env:
-            sampling_keys = {"temperature", "max_tokens", "top_p", "top_k", "min_p", "min_tokens", "repetition_penalty", "reasoning_effort", "seed"}
-            
+            sampling_keys = {
+                "temperature",
+                "max_tokens",
+                "top_p",
+                "top_k",
+                "min_p",
+                "min_tokens",
+                "repetition_penalty",
+                "reasoning_effort",
+                "seed",
+            }
+
             for env_id, env_config in self.env.items():
                 if not isinstance(env_config, dict):
                     continue
-                
+
                 # Populate per-env fields
                 if "num_examples" in env_config:
                     self.num_examples_per_env[env_id] = env_config["num_examples"]
@@ -293,20 +303,20 @@ class EvalConfig(BaseConfig):
                     if self.models_per_env is None:
                         self.models_per_env = {}
                     self.models_per_env[env_id] = env_config["model"]
-                
+
                 # Sampling args
                 env_sampling = {k: v for k, v in env_config.items() if k in sampling_keys}
                 if env_sampling:
                     if self.sampling_args_per_env is None:
                         self.sampling_args_per_env = {}
                     self.sampling_args_per_env[env_id] = env_sampling
-                
+
                 # Environment-specific init args
                 reserved_keys = {"num_examples", "rollouts_per_example", "max_concurrent", "model"} | sampling_keys
                 env_args = {k: v for k, v in env_config.items() if k not in reserved_keys}
                 if env_args:
                     self.environment_args[env_id] = env_args
-        
+
         return self
 
     @model_validator(mode="after")
@@ -314,20 +324,20 @@ class EvalConfig(BaseConfig):
         for env_id in self.num_examples_per_env.keys():
             if env_id not in self.environment_ids:
                 raise ValueError(f"num_examples_per_env key '{env_id}' not in environment_ids")
-        
+
         for env_id in self.rollouts_per_example_per_env.keys():
             if env_id not in self.environment_ids:
                 raise ValueError(f"rollouts_per_example_per_env key '{env_id}' not in environment_ids")
-        
+
         for env_id in self.max_concurrent_per_env.keys():
             if env_id not in self.environment_ids:
                 raise ValueError(f"max_concurrent_per_env key '{env_id}' not in environment_ids")
-        
+
         if self.sampling_args_per_env is not None:
             for env_id in self.sampling_args_per_env.keys():
                 if env_id not in self.environment_ids:
                     raise ValueError(f"sampling_args_per_env key '{env_id}' not in environment_ids")
-        
+
         if self.models_per_env is not None:
             for env_id in self.models_per_env.keys():
                 if env_id not in self.environment_ids:

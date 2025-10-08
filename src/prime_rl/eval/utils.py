@@ -1,7 +1,7 @@
 import asyncio
+import datetime
 import json
 import time
-import datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -161,12 +161,12 @@ async def run_eval(
         max_concurrent=max_concurrent,
         sampling_args=sampling_args,
     )
-    
+
     eval_time = time.time() - eval_start_time
-    
+
     num_samples = len(generate_outputs.reward)
     example_ids = [i // rollouts_per_example for i in range(num_samples)]
-    
+
     rewards = torch.tensor(generate_outputs.reward).reshape(-1, rollouts_per_example).float()
     responses = [state["responses"] for state in generate_outputs.state]
     completion_lens = torch.tensor(parse_num_completion_tokens(responses)).reshape(-1, rollouts_per_example).float()
@@ -249,12 +249,12 @@ async def run_eval(
             "num_samples": int(rewards.numel()),
             "num_unique_examples": len(set(example_ids)),
         }
-        
+
         # Add pass@k metrics if available
         if could_be_binary and pass_at_k is not None:
             for pass_rate, pass_rate_score in pd.Series(pass_at_k.mean()).items():
                 hub_metrics[str(pass_rate)] = float(pass_rate_score)
-        
+
         hub_metadata = {
             "checkpoint_step": ckpt_step,
             "step": step if step is not None else ckpt_step,
@@ -282,7 +282,7 @@ async def run_eval(
             "env_args": env_args,
             "is_binary_task": could_be_binary,
         }
-        
+
         # Prepare complete sample-level results with rollout numbers
         hub_results = []
         for i in range(len(example_ids)):
@@ -302,12 +302,12 @@ async def run_eval(
                         result_entry["score"] = float(info["score"])
                     if "correct" in info:
                         result_entry["correct"] = bool(info["correct"])
-            
+
             hub_results.append(result_entry)
-        
+
         # Create a descriptive eval name
         eval_name = f"{model_config.name}-{eval_id}-step{ckpt_step}"
-        
+
         push_eval_to_prime_hub(
             eval_name=eval_name,
             model_name=model_config.name,
@@ -337,7 +337,9 @@ async def run_evals(
                 eval_id=eval_id,
                 env_args=eval_config.environment_args.get(eval_id, {}),
                 num_examples=eval_config.num_examples_per_env.get(eval_id, eval_config.num_examples),
-                rollouts_per_example=eval_config.rollouts_per_example_per_env.get(eval_id, eval_config.rollouts_per_example),
+                rollouts_per_example=eval_config.rollouts_per_example_per_env.get(
+                    eval_id, eval_config.rollouts_per_example
+                ),
                 max_concurrent=eval_config.max_concurrent_per_env.get(eval_id, eval_config.max_concurrent),
                 output_dir=output_dir,
                 save_to_disk=eval_config.save_to_disk,
