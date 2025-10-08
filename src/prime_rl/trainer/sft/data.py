@@ -4,7 +4,7 @@ from collections import defaultdict
 from typing import Iterator, TypedDict, cast
 
 import torch
-from datasets import Dataset, concatenate_datasets, load_dataset
+from datasets import Dataset, interleave_datasets, load_dataset
 from jaxtyping import Bool, Int
 from torch import Tensor
 from torch.distributed.checkpoint.stateful import Stateful
@@ -466,12 +466,20 @@ def setup_dataset(
         # Shouldnt matter to handle non_dp_size if dataset is random
         return FakeDataset(tokenizer, config)
     elif config.type == "sft":
-        if config.subsets is None:
-            dataset = concatenate_datasets(
+        if config.subsets is None and config.splits is None:
+            dataset = cast(Dataset, load_dataset(config.name, split="train"))
+            assert isinstance(dataset, Dataset), "Dataset must be a Hugging Face Dataset"
+        elif config.subsets is not None and config.splits is None:
+            dataset = interleave_datasets(
+                [cast(Dataset, load_dataset(config.name, subset, split="train")) for subset in config.subsets]
+            )
+        elif config.subsets is None and config.splits is not None:
+            dataset = interleave_datasets(
                 [cast(Dataset, load_dataset(config.name, split=split)) for split in config.splits]
             )
         else:
-            dataset = concatenate_datasets(
+            assert config.subsets is not None and config.splits is not None
+            dataset = interleave_datasets(
                 [
                     cast(Dataset, load_dataset(config.name, subset, split=split))
                     for subset, split in zip(config.subsets, config.splits)
