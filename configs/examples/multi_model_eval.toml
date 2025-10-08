@@ -11,30 +11,26 @@ num_examples = 50
 rollouts_per_example = 5
 max_concurrent = 16
 
-[eval.num_examples_per_env]
-gsm8k = 100
-gpqa = 20
+[eval.env.gsm8k]
+num_examples = 100
+max_concurrent = 32
+model = "gpt-4o"
+temperature = 0.9
+top_p = 0.95
+max_tokens = 4096
 
-[eval.rollouts_per_example_per_env]
-math500 = 3
-gpqa = 10
+[eval.env.math500]
+rollouts_per_example = 3
+model = "claude-3-opus"
+temperature = 0.5
+max_tokens = 2048
+subset = "full"
 
-[eval.max_concurrent_per_env]
-gsm8k = 32
-gpqa = 8
-
-[eval.environment_args]
-gsm8k = {}
-math500 = { subset = "full" }
-gpqa = { subset = "diamond" }
-
-[eval.models_per_env]
-gsm8k = "gpt-4o"
-math500 = "claude-3-opus"
-
-[eval.sampling_args_per_env]
-gsm8k = { temperature = 0.9, top_p = 0.95, max_tokens = 4096 }
-math500 = { temperature = 0.5, max_tokens = 2048 }
+[eval.env.gpqa]
+num_examples = 20
+rollouts_per_example = 10
+max_concurrent = 8
+subset = "diamond"
 
 [eval.sampling]
 temperature = 0.7
@@ -51,5 +47,5 @@ file = true
 
 output_dir = "outputs/multi_model_eval"
 save_to_disk = true
-push_to_hub = true
+push_to_env_hub = true
 eval_base = true

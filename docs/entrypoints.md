@@ -135,3 +135,20 @@ uv run eval \
   --model.name <model-name> \
   --environment-ids math500,aime2025
 ```
+
+### Push Results to Environment Hub (Closed Beta)
+
+To automatically push evaluation results to Environment Hub for tracking and analysis:
+
+```bash
+uv run eval \
+  --model.name <model-name> \
+  --environment-ids math500,aime2025 \
+  --weights-dir outputs/weights \
+  --push-to-env-hub true
+```
+
+This creates an evaluation record with all rollout attempts, allowing you to:
+- Track model performance over training steps
+- Compare different checkpoints across multiple environments
+- Analyze rollout distributions and pass@k metrics

@@ -10,7 +10,7 @@ num_examples = 100
 # Install: pip install prime-cli
 # Configure: prime config set-api-key YOUR_API_KEY
 # When enabled, displays the evals viewer URL after each push
-push_to_hub = true
+push_to_env_hub = true
 
 # Optional: Save to disk (default: true)
 save_to_disk = true

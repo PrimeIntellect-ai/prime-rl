@@ -26,7 +26,7 @@ from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import capitalize, clean_exit, get_eval_dir, get_step_path
 
 
-async def _run_evals_with_prime_rl_features(
+async def _run_evals(
     client,
     config: OfflineEvalConfig,
     ckpt_step: int,
@@ -150,7 +150,7 @@ async def _run_evals_with_prime_rl_features(
             logger.info(f"Saved eval results for {eval_id} to disk ({eval_dir})")
         
         # Push to Prime Hub if requested
-        if config.push_to_hub:
+        if config.push_to_env_hub:
             hub_metrics = {
                 f"avg@{k}": float(rewards.mean().item()),
                 "completion_length_avg": float(completion_lens.mean().item()),
@@ -193,11 +193,13 @@ async def _run_evals_with_prime_rl_features(
                 "is_binary_task": could_be_binary,
             }
             
-            # Prepare sample-level results
+            # Prepare sample-level results with rollout numbers
             hub_results = []
+            rollouts = config.rollouts_per_example_per_env.get(eval_id, config.rollouts_per_example)
             for i in range(len(example_ids)):
                 result_entry = {
                     "example_id": int(example_ids[i]),
+                    "rollout_number": int(i % rollouts),
                     "reward": float(generate_outputs.reward[i]),
                     "task": str(generate_outputs.task[i]) if i < len(generate_outputs.task) else "",
                     "answer": str(generate_outputs.answer[i]) if i < len(generate_outputs.answer) else "",
@@ -219,6 +221,7 @@ async def _run_evals_with_prime_rl_features(
                 metrics=hub_metrics,
                 metadata=hub_metadata,
                 results=hub_results if hub_results else None,
+                framework="prime-rl",
             )
     
     # HF Hub push for all environments
@@ -231,7 +234,7 @@ async def _run_evals_with_prime_rl_features(
         dataset_dict = DatasetDict(
             {path.name.replace("-", "_"): load_from_disk(path) for path in eval_dirs}
         )
-        dataset_dict.push_to_hub(config.save_to_hf)
+        dataset_dict.push_to_env_hub(config.save_to_hf)
         logger.info(f"Pushed eval results to HF Hub (https://huggingface.co/datasets/{config.save_to_hf})")
 
 
@@ -273,7 +276,7 @@ async def eval(config: OfflineEvalConfig):
     # Run benchmarks on base model
     if config.eval_base:
         logger.info(f"Evaluating model {config.model.name}")
-        await _run_evals_with_prime_rl_features(
+        await _run_evals(
             client=client,
             config=config,
             ckpt_step=0,
@@ -297,7 +300,7 @@ async def eval(config: OfflineEvalConfig):
             await update_weights(client, config.weights_dir, ckpt_step)
 
             # Run evals on checkpoint
-            await _run_evals_with_prime_rl_features(
+            await _run_evals(
                 client=client,
                 config=config,
                 ckpt_step=ckpt_step,

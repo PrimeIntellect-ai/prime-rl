@@ -244,6 +244,13 @@ class EvalConfig(BaseConfig):
         ),
     ] = None
 
+    env: Annotated[
+        dict[str, dict] | None,
+        Field(
+            description="Per-environment configuration using [eval.env.X] format. Automatically populates *_per_env fields. Keys are environment IDs, values are dicts with any combination of: num_examples, rollouts_per_example, max_concurrent, model, sampling parameters (temperature, max_tokens, etc.), and environment-specific init args."
+        ),
+    ] = None
+
     save_to_disk: Annotated[
         bool,
         Field(
@@ -258,12 +265,49 @@ class EvalConfig(BaseConfig):
         ),
     ] = None
 
-    push_to_hub: Annotated[
+    push_to_env_hub: Annotated[
         bool,
         Field(
             description="Whether to push evaluation results to Prime Hub using prime-cli. Requires prime-cli to be installed and configured with API credentials. When enabled, displays the evals viewer URL.",
         ),
     ] = False
+
+    @model_validator(mode="after")
+    def _parse_env_configs(self):
+        """Parse [eval.env.X] format and populate *_per_env fields."""
+        if self.env:
+            sampling_keys = {"temperature", "max_tokens", "top_p", "top_k", "min_p", "min_tokens", "repetition_penalty", "reasoning_effort", "seed"}
+            
+            for env_id, env_config in self.env.items():
+                if not isinstance(env_config, dict):
+                    continue
+                
+                # Populate per-env fields
+                if "num_examples" in env_config:
+                    self.num_examples_per_env[env_id] = env_config["num_examples"]
+                if "rollouts_per_example" in env_config:
+                    self.rollouts_per_example_per_env[env_id] = env_config["rollouts_per_example"]
+                if "max_concurrent" in env_config:
+                    self.max_concurrent_per_env[env_id] = env_config["max_concurrent"]
+                if "model" in env_config:
+                    if self.models_per_env is None:
+                        self.models_per_env = {}
+                    self.models_per_env[env_id] = env_config["model"]
+                
+                # Sampling args
+                env_sampling = {k: v for k, v in env_config.items() if k in sampling_keys}
+                if env_sampling:
+                    if self.sampling_args_per_env is None:
+                        self.sampling_args_per_env = {}
+                    self.sampling_args_per_env[env_id] = env_sampling
+                
+                # Environment-specific init args
+                reserved_keys = {"num_examples", "rollouts_per_example", "max_concurrent", "model"} | sampling_keys
+                env_args = {k: v for k, v in env_config.items() if k not in reserved_keys}
+                if env_args:
+                    self.environment_args[env_id] = env_args
+        
+        return self
 
     @model_validator(mode="after")
     def _validate_per_env_keys(self):
