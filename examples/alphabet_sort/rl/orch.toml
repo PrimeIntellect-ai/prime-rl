@@ -1,5 +1,5 @@
 batch_size = 512
-micro_batch_size = 8
+micro_batch_size = 4
 rollouts_per_example = 8
 seq_len = 2048
 max_steps = 100

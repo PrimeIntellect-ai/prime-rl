@@ -2,6 +2,7 @@ max_steps = 100
 
 [model]
 name = "Qwen/Qwen3-4B-Instruct-2507"
+impl = "liger_kernel"
 
 [model.ac]
 freq = 1

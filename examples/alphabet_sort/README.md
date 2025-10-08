@@ -2,7 +2,7 @@
 
 In this example, we demonstrate how to train `Qwen3-4B-Instruct-2507` to sort names alphabetically using LoRA. Unlike other examples, this task doesn't require SFT warmup as the base model already understands the conversation format. We proceed directly to multi-turn RL against the [`kalomaze/alphabet-sort`](https://app.primeintellect.ai/dashboard/environments/kalomaze/alphabet-sort) environment.
 
-> The commands in this example were designed to be run on 2 GPUs (one trainer and one inference GPU). It is possible to run on less or more GPUs using different deployment strategies. If you run on a different setup, you may need to adjust the start commands.
+> This example runs on a single H100 GPU with `micro_batch_size=4`.
 
 ## Setup
 
@@ -25,11 +25,11 @@ bash scripts/tmux.sh
 
 This multi-turn conversation task requires the model to:
 - Sort names alphabetically by first OR last name (randomly chosen per episode)
-- Maintain a cumulative sorted list across exactly 3 turns
+- Maintain a cumulative sorted list across multiple turns
 - Tag new names with `// new name!` marker
-- Handle 1-4 names per turn
+- Handle several names per turn
 
-We use non-default settings to increase difficulty: 3 fixed turns (instead of 1-3) and up to 4 names per turn (instead of 1-5). The `similarity_power=8` setting scales rewards as similarity^8, heavily penalizing even small errors.
+We use non-default settings to balance the difficulty: 3 fixed turns (instead of 1-3) and up to 4 names per turn (instead of 1-5). The `similarity_power=8` setting scales rewards as similarity^8, heavily penalizing even small errors.
 
 ## Baseline Evaluation
 
@@ -60,10 +60,10 @@ r3: [0.059, 0.264, 0.731, 0.23, 0.103, 0.014, 0.099, 0.115, 0.199, 0.037, 0.181,
 
 ## RL
 
-We train with LoRA (rank 32, alpha 64) for 100 steps at batch size 512 (64×8 rollouts) with context length 2048. By default, LoRA weights are merged into the base model at each checkpoint.
+We train with LoRA (rank 32, alpha 64) for 100 steps. By default, LoRA weights are merged into the base model at each checkpoint.
 
 ![RL](rl/wandb.png)
-*Check out the logs on [W&B](https://wandb.ai/primeintellect/alphabet-sort-4b-lora/overview).*
+*Check out the logs on [W&B](https://wandb.ai/primeintellect/alphabet-sort-4b-lora/workspace?nw=nwuserandrewpi).*
 ```bash
 # In the `Trainer` pane
 uv run rl \
