@@ -465,9 +465,17 @@ def setup_dataset(
         # Shouldnt matter to handle non_dp_size if dataset is random
         return FakeDataset(tokenizer, config)
     elif config.type == "sft":
-        dataset = concatenate_datasets(
-            [cast(Dataset, load_dataset(config.name, split=split)) for split in config.splits]
-        )
+        if config.subsets is None:
+            dataset = concatenate_datasets(
+                [cast(Dataset, load_dataset(config.name, split=split)) for split in config.splits]
+            )
+        else:
+            dataset = concatenate_datasets(
+                [
+                    cast(Dataset, load_dataset(config.name, subset, split=split))
+                    for subset, split in zip(config.subsets, config.splits)
+                ]
+            )
         return SFTDataset(dataset, tokenizer, config, non_dp_size)
     else:
         raise ValueError(f"Invalid dataset type: {config.type}")

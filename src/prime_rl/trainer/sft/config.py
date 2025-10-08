@@ -62,12 +62,27 @@ class SFTDataConfig(BaseDataConfig):
     name: Annotated[str, Field(description="Name or path of the HF dataset to use.")] = (
         "PrimeIntellect/Reverse-Text-SFT"
     )
+    subsets: Annotated[list[str] | None, Field(description="Subsets to use from the HF dataset.")] = None
     splits: Annotated[list[str], Field(description="Splits to use from the HF dataset.")] = ["train"]
     shuffle: Annotated[bool, Field(description="Whether to shuffle the dataset at the beginning of each epoch.")] = True
-    seed: Annotated[int, Field(description="Random seed to use for shuffling the dataset. We also shuffle at the end of each epoch by adding epoch count to the seed.")] = 0
+    seed: Annotated[
+        int,
+        Field(
+            description="Random seed to use for shuffling the dataset. We also shuffle at the end of each epoch by adding epoch count to the seed."
+        ),
+    ] = 0
 
     # Configuring
     loss_mask: LossMaskConfig = LossMaskConfig()
+
+    @model_validator(mode="after")
+    def validate_subsets(self):
+        if self.subsets is not None:
+            if len(self.subsets) != len(self.splits):
+                raise ValueError(
+                    "Number of subsets must be equal to number of splits. Please specify which split to load for each subset."
+                )
+        return self
 
 
 DataConfigType: TypeAlias = FakeDataConfig | SFTDataConfig
@@ -193,11 +208,7 @@ class SFTTrainerConfig(BaseSettings):
     @model_validator(mode="after")
     def validate_lora_adapter_saving(self):
         if self.weights and self.weights.save_adapter_separately:
-            lora_enabled = (
-                self.model 
-                and self.model.experimental 
-                and self.model.experimental.lora
-            )
+            lora_enabled = self.model and self.model.experimental and self.model.experimental.lora
             if not lora_enabled:
                 raise ValueError(
                     "save_adapter_separately=True requires LoRA to be enabled. "
