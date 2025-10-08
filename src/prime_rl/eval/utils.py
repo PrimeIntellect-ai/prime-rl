@@ -10,7 +10,7 @@ import pandas as pd
 import torch
 from datasets import Dataset, DatasetDict, load_from_disk
 from openai import AsyncOpenAI
-from verifiers.scripts.eval import eval_environment_async, push_eval_to_prime_hub
+from verifiers.scripts.eval import eval_environment_async, push_eval_to_env_hub
 from verifiers.types import GenerateOutputs, Messages
 
 from prime_rl.eval.config import OfflineEvalConfig
@@ -308,7 +308,7 @@ async def run_eval(
         # Create a descriptive eval name
         eval_name = f"{model_config.name}-{eval_id}-step{ckpt_step}"
 
-        push_eval_to_prime_hub(
+        push_eval_to_env_hub(
             eval_name=eval_name,
             model_name=model_config.name,
             dataset=eval_id,

@@ -145,7 +145,7 @@ uv run eval \
   --model.name <model-name> \
   --environment-ids math500,aime2025 \
   --weights-dir outputs/weights \
-  --push-to-env-hub true
+  --push-to-env-hub
 ```
 
 This creates an evaluation record with all rollout attempts, allowing you to:

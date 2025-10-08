@@ -4,7 +4,7 @@ from datetime import datetime
 import pandas as pd
 import torch
 from datasets import DatasetDict, load_from_disk
-from verifiers.scripts.eval import eval_environment_async, push_eval_to_prime_hub
+from verifiers.scripts.eval import eval_environment_async, push_eval_to_env_hub
 
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.eval.utils import (
@@ -220,7 +220,7 @@ async def _run_evals(
                 hub_results.append(result_entry)
 
             eval_name = f"{env_model}-{eval_id}-step{ckpt_step}"
-            push_eval_to_prime_hub(
+            push_eval_to_env_hub(
                 eval_name=eval_name,
                 model_name=env_model,
                 dataset=eval_id,
