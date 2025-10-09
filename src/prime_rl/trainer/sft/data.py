@@ -180,9 +180,7 @@ class SFTDataset(StatefulIterableDataset):
             return [
                 {
                     **message,
-                    "tool_calls": [
-                        deserialize_tool_call(tool_call) for tool_call in message.get("tool_calls", []) or []
-                    ],
+                    "tool_calls": [deserialize_tool_call(tool_call) for tool_call in message.get("tool_calls") or []],
                 }
                 for message in messages
             ]
