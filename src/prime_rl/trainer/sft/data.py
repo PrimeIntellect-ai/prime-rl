@@ -1,7 +1,7 @@
 import json
 import uuid
 from collections import defaultdict
-from typing import Iterator, TypedDict, cast
+from typing import Iterator, Literal, TypedDict, cast
 
 import torch
 from datasets import Dataset, interleave_datasets, load_dataset
@@ -12,7 +12,7 @@ from torch.utils.data import IterableDataset, get_worker_info
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.trainer.sft.config import DataConfigType, FakeDataConfig, LossMaskConfig
+from prime_rl.trainer.sft.config import DataConfigType, LossMaskConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
@@ -64,33 +64,33 @@ class StatefulIterableDataset(Stateful, IterableDataset):
 class FakeDataset(StatefulIterableDataset):
     """A dataset of fake tokens"""
 
-    def __init__(self, tokenizer: PreTrainedTokenizer, config: FakeDataConfig):
+    def __init__(
+        self,
+        vocab_size: int,
+        seq_len: int,
+        length: Literal["fixed", "variable"] = "fixed",
+        input_ids: Literal["increasing", "random"] = "random",
+    ):
         super().__init__()
-        self.config = config
-        self.vocab_size = tokenizer.vocab_size
-        self.num_examples = config.num_examples
+        self.vocab_size = vocab_size
+        self.seq_len = seq_len
+        self.length = length
+        self.input_ids = input_ids
 
     def __iter__(self):
         while True:
+            # Increment step count
             self.step += 1
 
             # Skip samples that don't belong to this data rank
             if self.step % self.data_world_size != self.data_rank:
                 continue
 
-            # Update epoch if num_examples is set
-            if self.num_examples is not None:
-                self.epoch = self.step // self.num_examples
-
-            seq_len = (
-                int(torch.randint(1, self.config.seq_len, (1,)).item())
-                if self.config.length == "variable"
-                else self.config.seq_len
-            )
+            seq_len = int(torch.randint(1, self.seq_len, (1,)).item()) if self.length == "variable" else self.seq_len
             input_ids = (
                 [self.step] * (seq_len + 1)
-                if self.config.input_ids == "increasing"
-                else torch.randint(0, self.vocab_size, (seq_len + 1,)).long().tolist()
+                if self.input_ids == "increasing"
+                else torch.randint(0, self.vocab_size, (self.seq_len + 1,)).long().tolist()
             )
             position_ids = list(range(seq_len))
             loss_mask = [True] * seq_len
