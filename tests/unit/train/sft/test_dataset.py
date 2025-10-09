@@ -1,7 +1,8 @@
+from collections import Counter
 from typing import cast
 
 import pytest
-from datasets import Dataset, load_dataset
+from datasets import Dataset, interleave_datasets, load_dataset
 from transformers import AutoTokenizer
 
 from prime_rl.trainer.sft.config import FakeDataConfig, SFTDataConfig
@@ -172,3 +173,66 @@ def test_sft_dataset_state():
     micro_batch = next(dataiter)
     assert tokenizer.decode(micro_batch["input_ids"]) == SAMPLE_TEMPLATE.format(idx=0)
     assert dataset.state_dict() == {"step": 2, "epoch": 1}
+
+
+@pytest.mark.parametrize("max_epochs", [1, 2, 4])
+def test_sft_first_exhausted(max_epochs: int):
+    config = SFTDataConfig(name="", shuffle=False)
+    d1 = Dataset.from_dict({"text": ["a1"]})
+    d2 = Dataset.from_dict({"text": ["b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8", "b9"]})
+    ds = [d1, d2]
+    dataset = interleave_datasets(ds, stopping_strategy="first_exhausted")
+    dataset = SFTDataset(dataset, tokenizer=None, config=config, non_dp_size=1, max_epochs=max_epochs)
+    num_samples = 0
+    sampling_order = []
+    for x in dataset:
+        sampling_order.append(x["text"])
+        num_samples += 1
+    assert num_samples == max_epochs * min([len(d) for d in ds]) * len(ds)
+    assert sampling_order == ["a1", "b1"] * max_epochs
+
+
+@pytest.mark.parametrize("max_epochs", [1, 2, 4])
+def test_sft_all_exhausted(max_epochs: int):
+    config = SFTDataConfig(name="", shuffle=False)
+    d1 = Dataset.from_dict({"text": ["a1"]})
+    d2 = Dataset.from_dict({"text": ["b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8", "b9"]})
+    ds = [d1, d2]
+    dataset = interleave_datasets(ds, stopping_strategy="all_exhausted")
+    dataset = SFTDataset(dataset, tokenizer=None, config=config, non_dp_size=1, max_epochs=max_epochs)
+    num_samples = 0
+    sampling_order = []
+    for x in dataset:
+        sampling_order.append(x["text"])
+        num_samples += 1
+    assert num_samples == max_epochs * max([len(d) for d in ds]) * len(ds)
+    print(sampling_order)
+    assert (
+        sampling_order
+        == ["a1", "b1", "a1", "b2", "a1", "b3", "a1", "b4", "a1", "b5", "a1", "b6", "a1", "b7", "a1", "b8", "a1", "b9"]
+        * max_epochs
+    )
+
+
+@pytest.mark.parametrize("probs", [(0.5, 0.5), (1 / 3, 2 / 3), (2 / 3, 1 / 3)])
+def test_sft_all_exhausted_with_probs(probs: list[float]):
+    config = SFTDataConfig(name="", shuffle=False)
+    d1 = Dataset.from_dict({"text": ["a1", "a2", "a3", "a4", "a5"]})
+    d2 = Dataset.from_dict({"text": ["b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8", "b9", "b10"]})
+    ds = [d1, d2]
+    dataset = interleave_datasets(ds, stopping_strategy="all_exhausted", probabilities=probs)
+    dataset = SFTDataset(dataset, tokenizer=None, config=config, non_dp_size=1, max_epochs=100)
+    num_samples = 0
+    sampling_freq = []
+    for x in dataset:
+        sampling_freq.append(x["text"][0])
+        num_samples += 1
+    sampling_freq = Counter(sampling_freq)
+    ratio_a = sampling_freq["a"] / num_samples
+    ratio_b = sampling_freq["b"] / num_samples
+    assert ratio_a > probs[0] * 0.8 and ratio_a < probs[0] * 1.2, (
+        f"Exepcted frequency of samples from a to be between {probs[0] * 0.8} and {probs[0] * 1.2}, but got {ratio_a}"
+    )
+    assert ratio_b > probs[1] * 0.8 and ratio_b < probs[1] * 1.2, (
+        f"Exepcted frequency of samples from b to be between {probs[1] * 0.8} and {probs[1] * 1.2}, but got {ratio_b}"
+    )
