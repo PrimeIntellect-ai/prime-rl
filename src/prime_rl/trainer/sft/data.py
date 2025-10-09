@@ -95,7 +95,6 @@ class FakeDataset(StatefulIterableDataset):
             position_ids = list(range(seq_len))
             loss_mask = [True] * seq_len
             fake_sample = {
-                "index": self.step,
                 "input_ids": input_ids[:-1],
                 "target_ids": input_ids[1:],
                 "position_ids": position_ids,
@@ -250,7 +249,7 @@ class SFTDataset(StatefulIterableDataset):
         )
 
         # Build loss_mask
-        loss_mask = build_loss_mask(prompt, completion, self.tokenizer, self.loss_mask)
+        loss_mask = build_loss_mask(prompt, completion, self.tokenizer, self.loss_mask_config)
 
         # If EOS token is not found, manually append it
         if not self.tokenizer.eos_token_id in input_ids:
@@ -279,7 +278,6 @@ class SFTDataset(StatefulIterableDataset):
 
         # Create sample (with one fake target for the last token)
         return {
-            "index": example["index"],
             "input_ids": input_ids,
             "target_ids": target_ids,
             "loss_mask": loss_mask,
@@ -309,14 +307,21 @@ class SFTDataset(StatefulIterableDataset):
                 if i % self.data_world_size != self.data_rank:
                     continue
 
-                example = self._process(cast(dict, example))
+                processed_example = self._process(cast(dict, example))
 
-                # If example is None, skip it (e.g. if tokenized sample exceeds context window)
-                if example is None:
+                # If processed example is None, skip it (e.g. if tokenized sample exceeds context window)
+                if processed_example is None:
                     continue
 
                 # Yield the example
-                yield example
+                example = cast(dict, example)
+                subset_or_split = example.get("subset", example.get("split"))
+                self.logger.debug(
+                    f"Yield example {example['index']}"
+                    + (f" from {subset_or_split} " if subset_or_split else " ")
+                    + f"with {len(processed_example['input_ids'])} tokens ({sum(processed_example['loss_mask'])} trainable tokens)"
+                )
+                yield processed_example
 
             # Reset step count and increment epoch
             self.step = -1
@@ -341,14 +346,12 @@ class CatDataset(StatefulIterableDataset):
         self.dataset.load_state_dict(state_dict["dataset"])
 
     def __iter__(self) -> Iterator[Sample]:
-        packed_samples, seq_len, indices = defaultdict(list), 0, []
+        packed_samples, seq_len = defaultdict(list), 0
         for sample in self.dataset:
             # Add sample to packed samples
             for key, value in sample.items():
                 if key == "epoch":
                     packed_samples[key] = min(packed_samples.get(key, float("inf")), value)
-                elif key == "index":
-                    indices.append(value)
                 else:
                     packed_samples[key].extend(value)
 
@@ -360,9 +363,8 @@ class CatDataset(StatefulIterableDataset):
                 for key, value in packed_samples.items():
                     if isinstance(value, list):
                         packed_samples[key] = value[: self.seq_len]
-                self.logger.debug(f"Yield batch with dataset indices={indices}")
                 yield packed_samples
-                packed_samples, seq_len, indices = defaultdict(list), 0, []
+                packed_samples, seq_len = defaultdict(list), 0
 
 
 class StackDataset(StatefulIterableDataset):
@@ -442,16 +444,12 @@ class StackDataset(StatefulIterableDataset):
                         self.buckets[bucket_idx].append(dummy_sample)
 
                 packed_samples = defaultdict(list)
-                indices = []
                 for bucket_item in self.buckets[bucket_idx]:
                     for key, value in bucket_item.items():
                         if key == "epoch":
                             packed_samples[key] = min(packed_samples.get(key, float("inf")), value)
-                        elif key == "index":
-                            indices.append(value)
                         else:
                             packed_samples[key].append(value + [0] * (self.bucket_sizes[bucket_idx] - len(value)))
-                self.logger.debug(f"Yield batch with dataset indices={indices}")
                 yield packed_samples
                 self.step += 1
                 self.buckets[bucket_idx] = []
@@ -526,7 +524,7 @@ def setup_dataset(
             shuffle=config.shuffle,
             seed=config.seed,
             seq_len=config.seq_len,
-            loss_mask=config.loss_mask,
+            loss_mask_config=config.loss_mask,
             non_dp_size=non_dp_size,
         )
     else:
