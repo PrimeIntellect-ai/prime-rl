@@ -340,7 +340,7 @@ class CheckpointConfig(BaseConfig):
         int | None,
         Field(
             ge=-1,
-            description="Step to resume training from. If None, will start from scratch. if -1, will restart from latest checkpoint available.",
+            description="Step to resume training from. If None, will start from scratch. If -1, will restart from latest checkpoint available.",
         ),
     ] = None
 
