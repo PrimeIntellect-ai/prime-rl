@@ -1,7 +1,7 @@
 import json
 import uuid
 from collections import defaultdict
-from typing import Iterator, Literal, TypedDict, cast
+from typing import Literal, TypedDict, cast
 
 import torch
 from datasets import Dataset, interleave_datasets, load_dataset
@@ -20,7 +20,6 @@ STACKING_DATASET_BUCKET_TIMEOUT = 10
 
 
 class Sample(TypedDict):
-    epoch: int  # TODO: Argh, can we find a way to export epoch metainformation in a nicer way?
     input_ids: list[int]
     position_ids: list[int]
     loss_mask: list[bool]
@@ -28,7 +27,6 @@ class Sample(TypedDict):
 
 
 class Batch(TypedDict):
-    epoch: int
     input_ids: Int[Tensor, "batch seq"]
     position_ids: Int[Tensor, "batch seq"]
     target_ids: Int[Tensor, "batch seq"]
@@ -40,6 +38,7 @@ class StatefulIterableDataset(Stateful, IterableDataset):
 
     def __init__(self):
         self.step, self.epoch = -1, 0
+        self.num_samples = defaultdict(int)
         self._setup_world_info()
 
     def state_dict(self) -> dict:
@@ -99,8 +98,8 @@ class FakeDataset(StatefulIterableDataset):
                 "target_ids": input_ids[1:],
                 "position_ids": position_ids,
                 "loss_mask": loss_mask,
-                "epoch": self.epoch,
             }
+            self.num_samples["fake"] += 1
             yield fake_sample
 
 
@@ -282,7 +281,6 @@ class SFTDataset(StatefulIterableDataset):
             "target_ids": target_ids,
             "loss_mask": loss_mask,
             "position_ids": list(range(len(input_ids))),
-            "epoch": self.epoch,
         }
 
     def __iter__(self):
@@ -315,12 +313,13 @@ class SFTDataset(StatefulIterableDataset):
 
                 # Yield the example
                 example = cast(dict, example)
-                subset_or_split = example.get("subset", example.get("split"))
+                subset_or_split = example.get("subset", example.get("split")) or "train"
                 self.logger.debug(
                     f"Yield example {example['index']}"
                     + (f" from {subset_or_split} " if subset_or_split else " ")
                     + f"with {len(processed_example.get('input_ids', []))} tokens ({sum(processed_example.get('loss_mask', []))} trainable tokens)"
                 )
+                self.num_samples[subset_or_split] += 1
                 yield processed_example
 
             # Reset step count and increment epoch
@@ -345,15 +344,13 @@ class CatDataset(StatefulIterableDataset):
     def load_state_dict(self, state_dict: dict):
         self.dataset.load_state_dict(state_dict["dataset"])
 
-    def __iter__(self) -> Iterator[Sample]:
+    def __iter__(self):
         packed_samples, seq_len = defaultdict(list), 0
         for sample in self.dataset:
             # Add sample to packed samples
             for key, value in sample.items():
-                if key == "epoch":
-                    packed_samples[key] = min(packed_samples.get(key, float("inf")), value)
-                else:
-                    packed_samples[key].extend(value)
+                assert isinstance(value, list), f"Value for key {key} must be a list"
+                packed_samples[key].extend(value)
 
             # Update sequence length
             seq_len += len(sample["input_ids"])
@@ -361,8 +358,8 @@ class CatDataset(StatefulIterableDataset):
             # If batch is full, truncate and yield it
             if seq_len >= self.seq_len:
                 for key, value in packed_samples.items():
-                    if isinstance(value, list):
-                        packed_samples[key] = value[: self.seq_len]
+                    assert isinstance(value, list), f"Value for key {key} must be a list"
+                    packed_samples[key] = value[: self.seq_len]
                 yield packed_samples
                 packed_samples, seq_len = defaultdict(list), 0
 
@@ -395,14 +392,14 @@ class StackDataset(StatefulIterableDataset):
         self.buckets = state_dict["buckets"]
         self.bucket_timers = state_dict["bucket_timers"]
 
-    def __iter__(self) -> Iterator[Sample]:
+    def __iter__(self):
         for sample in self.dataset:
             # Truncate sample if it's longer than max area
             len_sample = len(sample["input_ids"])
             if len_sample > self.max_area:
                 for key, value in sample.items():
-                    if isinstance(value, list):
-                        sample[key] = sample[key][: self.max_area]
+                    assert isinstance(value, list)
+                    sample[key] = sample[key][: self.max_area]
                 len_sample = self.max_area
 
             # Add sample to bucket
@@ -446,10 +443,7 @@ class StackDataset(StatefulIterableDataset):
                 packed_samples = defaultdict(list)
                 for bucket_item in self.buckets[bucket_idx]:
                     for key, value in bucket_item.items():
-                        if key == "epoch":
-                            packed_samples[key] = min(packed_samples.get(key, float("inf")), value)
-                        else:
-                            packed_samples[key].append(value + [0] * (self.bucket_sizes[bucket_idx] - len(value)))
+                        packed_samples[key].append(value + [0] * (self.bucket_sizes[bucket_idx] - len(value)))
                 yield packed_samples
                 self.step += 1
                 self.buckets[bucket_idx] = []
@@ -465,7 +459,6 @@ def stack_collate(samples: list[Sample]) -> Batch:
         "position_ids": torch.tensor(samples[0]["position_ids"], dtype=torch.long, device="cuda"),
         "loss_mask": torch.tensor(samples[0]["loss_mask"], dtype=torch.bool, device="cuda"),
         "target_ids": torch.tensor(samples[0]["target_ids"], dtype=torch.long, device="cuda"),
-        "epoch": min([sample["epoch"] for sample in samples]),
     }
 
 
@@ -477,7 +470,6 @@ def cat_collate(samples: list[Sample]) -> Batch:
         .to("cuda"),
         "loss_mask": torch.stack([torch.tensor(sample["loss_mask"]) for sample in samples], dim=0).bool().to("cuda"),
         "target_ids": torch.stack([torch.tensor(sample["target_ids"]) for sample in samples], dim=0).long().to("cuda"),
-        "epoch": min([sample["epoch"] for sample in samples]),
     }
 
 

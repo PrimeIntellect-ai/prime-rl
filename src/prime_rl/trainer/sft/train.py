@@ -177,7 +177,6 @@ def train(config: SFTTrainerConfig):
 
         step_start_time = time.time()
         forward_backward_start_time = time.time()
-        epoch = 0
         grad_accum_steps = (
             config.data.batch_size
             * config.model.cp
@@ -193,7 +192,6 @@ def train(config: SFTTrainerConfig):
             position_ids = micro_batch["position_ids"].to("cuda")
             target_ids = micro_batch["target_ids"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
-            epoch = micro_batch["epoch"]
             assert input_ids.shape == position_ids.shape == target_ids.shape == loss_mask.shape, (
                 f"input_ids.shape: {input_ids.shape}, position_ids.shape: {position_ids.shape}, target_ids.shape: {target_ids.shape}, loss_mask.shape: {loss_mask.shape}"
             )
@@ -270,7 +268,7 @@ def train(config: SFTTrainerConfig):
         # Compute step metrics
         num_tokens = config.data.batch_size * config.data.seq_len
         progress.total_tokens += num_tokens
-        progress.total_samples = dataloader.state_dict()["dataset_state"]["dataset"]["step"]
+        progress.total_samples = dataset.step
         perf_counter = get_perf_counter(model, config.data.seq_len)
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_tokens_per_second() or 0
@@ -286,9 +284,13 @@ def train(config: SFTTrainerConfig):
 
         # Log progress metrics
         progress_metrics = {
-            "progress/epoch": epoch,
-            "progress/total_samples": progress.total_samples,
-            "progress/total_tokens": progress.total_tokens,
+            "progress/epoch": dataset.epoch,
+            "progress/dataset_step": dataset.step,
+            "progress/num_samples": sum(dataset.num_samples.values()),
+            **{
+                f"progress/{subset_or_split}/num_samples": num_samples
+                for subset_or_split, num_samples in dataset.num_samples.items()
+            },
             "step": progress.step,
         }
         monitor.log(progress_metrics)
