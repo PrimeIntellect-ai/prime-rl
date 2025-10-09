@@ -70,7 +70,7 @@ class SFTDataConfig(BaseDataConfig):
     stopping_strategy: Annotated[
         Literal["first_exhausted", "all_exhausted"],
         Field(description=""),
-    ] = "first_exhausted"
+    ] = "all_exhausted"
     shuffle: Annotated[bool, Field(description="Whether to shuffle the dataset at the beginning of each epoch.")] = True
     seed: Annotated[
         int,
