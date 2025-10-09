@@ -81,11 +81,7 @@ def train(config: SFTTrainerConfig):
     # Set up weight checkpoint manager
     logger.info(f"Initializing weight checkpoint manager ({config.weights})")
     weight_ckpt_manager = setup_weight_ckpt_manager(
-        config.output_dir,
-        config.weights,
-        config.ckpt,
-        0,
-        config.model.experimental.lora
+        config.output_dir, config.weights, config.ckpt, 0, config.model.experimental.lora
     )
 
     # Set up checkpoint manager
@@ -98,7 +94,7 @@ def train(config: SFTTrainerConfig):
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
     dataset = setup_dataset(tokenizer, config.data, config.model.cp * config.model.tp)
-    dataloader = setup_dataloader(dataset, tokenizer, config.data)
+    dataloader = setup_dataloader(dataset, config.data)
     dataiter = iter(dataloader)
 
     # Check that the world size and batch configuration is compatible
