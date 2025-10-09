@@ -12,7 +12,7 @@ from torch.utils.data import IterableDataset, get_worker_info
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.trainer.sft.config import DataConfigType, FakeDataConfig, LossMaskConfig, SFTDataConfig
+from prime_rl.trainer.sft.config import DataConfigType, FakeDataConfig, LossMaskConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
@@ -39,7 +39,7 @@ class StatefulIterableDataset(Stateful, IterableDataset):
     """SFT dataset are iterable (infinite) and stateful (can be checkpointed)."""
 
     def __init__(self):
-        self.step, self.epoch = -1, 0
+        self.step, self.epoch = 0, 0
         self._setup_world_info()
 
     def state_dict(self) -> dict:
@@ -112,13 +112,20 @@ class SFTDataset(StatefulIterableDataset):
         self,
         dataset: Dataset,
         tokenizer: PreTrainedTokenizer | None,
-        config: SFTDataConfig,
+        shuffle: bool = True,
+        seed: int = 0,
+        seq_len: int = 128,
+        loss_mask: LossMaskConfig = LossMaskConfig(),
         non_dp_size: int = 1,
+        max_examples: int | None = None,
         max_epochs: int | None = None,
     ):
         super().__init__()
         self.logger = get_logger()
-        self.config = config
+        self.shuffle = shuffle
+        self.seed = seed
+        self.seq_len = seq_len
+        self.loss_mask = loss_mask
         self.tokenizer = tokenizer
         self.max_epochs = max_epochs
 
@@ -139,11 +146,8 @@ class SFTDataset(StatefulIterableDataset):
         self.data_world_size = get_world().world_size // non_dp_size * num_workers
 
         # If specified, select a subset of the dataset
-        if config.num_examples is not None:
-            self.dataset = self.dataset.select(range(config.num_examples))
-
-        # Store the number of examples in the dataset
-        self.num_examples = len(self.dataset)
+        if max_examples is not None:
+            self.dataset = self.dataset.select(range(max_examples))
 
     def _process(self, example: dict) -> dict | None:
         # Skip processing if no tokenizer was provided
@@ -248,7 +252,7 @@ class SFTDataset(StatefulIterableDataset):
         )
 
         # Build loss_mask
-        loss_mask = build_loss_mask(prompt, completion, self.tokenizer, self.config.loss_mask)
+        loss_mask = build_loss_mask(prompt, completion, self.tokenizer, self.loss_mask)
 
         # If EOS token is not found, manually append it
         if not self.tokenizer.eos_token_id in input_ids:
@@ -263,9 +267,9 @@ class SFTDataset(StatefulIterableDataset):
         loss_mask = loss_mask[1:]
         input_ids = input_ids[:-1]
 
-        if sum(loss_mask[: self.config.seq_len]) == 0:
+        if sum(loss_mask[: self.seq_len]) == 0:
             self.logger.warning(
-                f"Skipping example with index {self.step} because no trainable tokens were found within the context window ({self.config.seq_len}). This is to prevent NaN loss."
+                f"Skipping example with index {self.step} because no trainable tokens were found within the context window ({self.seq_len}). This is to prevent NaN loss."
             )
             return
 
@@ -290,7 +294,7 @@ class SFTDataset(StatefulIterableDataset):
         Apply chat template and tokenize a single example in prompt + completion format (https://github.com/huggingface/trl/blob/de27d612b026526ba39b88eee348994d7636e033/trl/trainer/sft_trainer.py#L661)
         """
         while True:
-            dataset = self.dataset.shuffle(seed=self.epoch + self.config.seed) if self.config.shuffle else self.dataset
+            dataset = self.dataset.shuffle(seed=self.epoch + self.seed) if self.shuffle else self.dataset
             dataset_iter = iter(dataset)
 
             for _ in range(self.step):
@@ -298,6 +302,9 @@ class SFTDataset(StatefulIterableDataset):
 
             # Iterate over dataset (one epoch)
             for i, example in enumerate(dataset_iter):
+                # Increment step count
+                self.step += 1
+
                 # Skip samples that don't belong to this data rank
                 if i % self.data_world_size != self.data_rank:
                     continue
@@ -310,9 +317,6 @@ class SFTDataset(StatefulIterableDataset):
 
                 # Yield the example
                 yield example
-
-                # Save index of next sample for checkpoint
-                self.step = i + 1
 
             # Reset step count and increment epoch
             self.step = 0

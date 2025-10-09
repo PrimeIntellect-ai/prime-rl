@@ -1,37 +1,172 @@
 from collections import Counter
-from typing import cast
 
 import pytest
-from datasets import Dataset, interleave_datasets, load_dataset
+from datasets import Dataset, interleave_datasets
 from transformers import AutoTokenizer
 
-from prime_rl.trainer.sft.config import SFTDataConfig
 from prime_rl.trainer.sft.data import SFTDataset
 from prime_rl.trainer.utils import print_sample
 
 
-def test_init_sft_dataset():
-    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
-    config = SFTDataConfig(name="mikasenghaas/test-sft", num_examples=2)
-    dataset = cast(Dataset, load_dataset("mikasenghaas/test-sft", split="train"))
-    dataset = SFTDataset(dataset, tokenizer, config)
-    assert dataset is not None
+@pytest.fixture(scope="module")
+def build_dummy_dataset():
+    return lambda letter, num_examples: Dataset.from_list([{"text": f"{letter}{i + 1}"} for i in range(num_examples)])
 
 
-def test_raise_error_if_no_prompt_and_completion():
-    dataset = Dataset.from_list([{"text": "Text 0"}])
+def test_init_sft_dataset(build_dummy_dataset):
+    """Tests basic initialization."""
+    dataset = build_dummy_dataset("a", 1)
+    sft_dataset = SFTDataset(dataset, tokenizer=None)
+    assert sft_dataset is not None
+
+
+def test_raise_error_if_no_prompt_and_completion(build_dummy_dataset):
+    """Tests that an error is raised if no prompt and completion are provided but a tokenizer is provided."""
+    dataset = build_dummy_dataset("a", 1)
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
-    config = SFTDataConfig(num_examples=1)
+    sft_dataset = SFTDataset(dataset, tokenizer)
     with pytest.raises(ValueError):
-        SFTDataset(dataset, tokenizer, config)
+        next(iter(sft_dataset))
 
 
-def test_raise_error_if_wrong_format():
-    dataset = Dataset.from_list([{"completion": ["Completion 0"]}])
-    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
-    config = SFTDataConfig(num_examples=1)
-    with pytest.raises(ValueError):
-        SFTDataset(dataset, tokenizer, config)
+@pytest.mark.parametrize("max_epochs", [1, 2, 4])
+def test_sft_first_exhausted(build_dummy_dataset, max_epochs: int):
+    a = build_dummy_dataset("a", 1)
+    b = build_dummy_dataset("b", 9)
+    ds = [a, b]
+    dataset = interleave_datasets(ds, stopping_strategy="first_exhausted")
+    dataset = SFTDataset(dataset, tokenizer=None, shuffle=False, max_epochs=max_epochs)
+    num_samples = 0
+    sampling_order = []
+    for x in dataset:
+        sampling_order.append(x["text"])
+        num_samples += 1
+    assert num_samples == max_epochs * min([len(d) for d in ds]) * len(ds)
+    assert sampling_order == ["a1", "b1"] * max_epochs
+
+
+@pytest.mark.parametrize("max_epochs", [1, 2, 4])
+def test_sft_all_exhausted(build_dummy_dataset, max_epochs: int):
+    a = build_dummy_dataset("a", 1)
+    b = build_dummy_dataset("b", 9)
+    ds = [a, b]
+    dataset = interleave_datasets(ds, stopping_strategy="all_exhausted")
+    dataset = SFTDataset(dataset, tokenizer=None, shuffle=False, max_epochs=max_epochs)
+    num_samples = 0
+    sampling_order = []
+    for x in dataset:
+        sampling_order.append(x["text"])
+        num_samples += 1
+    assert num_samples == max_epochs * max([len(d) for d in ds]) * len(ds)
+    print(sampling_order)
+    assert (
+        sampling_order
+        == ["a1", "b1", "a1", "b2", "a1", "b3", "a1", "b4", "a1", "b5", "a1", "b6", "a1", "b7", "a1", "b8", "a1", "b9"]
+        * max_epochs
+    )
+
+
+@pytest.mark.parametrize(
+    "probs",
+    [
+        pytest.param((0.5, 0.5), id="equal_probs"),
+        pytest.param((1 / 10, 9 / 10), id="low_high_probs"),
+        pytest.param((9 / 10, 1 / 10), id="high_low_probs"),
+    ],
+)
+def test_sft_all_exhausted_with_probs(build_dummy_dataset, probs: list[float]):
+    """Tests that the ratio of samples from different datasets is as specified, in expectation."""
+    a = build_dummy_dataset("a", int(1e3))
+    b = build_dummy_dataset("b", int(10e3))
+    ds = [a, b]
+    dataset = interleave_datasets(ds, stopping_strategy="all_exhausted", probabilities=probs)
+    dataset = SFTDataset(dataset, tokenizer=None, shuffle=False, max_epochs=1)
+    num_samples = 0
+    sampling_freq = []
+    for x in dataset:
+        sampling_freq.append(x["text"][0])
+        num_samples += 1
+    sampling_freq = Counter(sampling_freq)
+    ratio_a = sampling_freq["a"] / num_samples
+    ratio_b = sampling_freq["b"] / num_samples
+    assert ratio_a > probs[0] * 0.8 and ratio_a < probs[0] * 1.2, (
+        f"Expected frequency of samples from a to be between {probs[0] * 0.8} and {probs[0] * 1.2}, but got {ratio_a}"
+    )
+    assert ratio_b > probs[1] * 0.8 and ratio_b < probs[1] * 1.2, (
+        f"Exepcted frequency of samples from b to be between {probs[1] * 0.8} and {probs[1] * 1.2}, but got {ratio_b}"
+    )
+
+
+def test_sft_dataset_state(build_dummy_dataset):
+    """Tests the state of the dataset within and across epochs."""
+    dataset = build_dummy_dataset("", 4)
+    dataset = SFTDataset(dataset, tokenizer=None, shuffle=False, max_epochs=2)
+    dataiter = iter(dataset)
+
+    # Initial state
+    assert dataset.state_dict() == {"step": 0, "epoch": 0}
+
+    # Epoch 1
+    for i in range(4):
+        sample = next(dataiter)
+        assert sample["text"] == str(i + 1)
+        assert dataset.state_dict() == {"epoch": 0, "step": i + 1}
+
+    # Epoch 2
+    for i in range(4):
+        sample = next(dataiter)
+        assert sample["text"] == str(i + 1)
+        assert dataset.state_dict() == {"epoch": 1, "step": i + 1}
+
+    with pytest.raises(StopIteration):
+        next(dataiter)
+
+
+def test_sft_dataset_state_resume(build_dummy_dataset):
+    """Tests resuming the dataset from checkpoint in between epochs."""
+    dataset = SFTDataset(build_dummy_dataset("", 4), tokenizer=None, shuffle=False, max_epochs=2)
+    dataiter = iter(dataset)
+
+    # Initial state
+    assert dataset.state_dict() == {"step": 0, "epoch": 0}
+
+    # Epoch 1
+    for i in range(4):
+        sample = next(dataiter)
+        print(sample["text"])
+        assert sample["text"] == str(i + 1)
+        assert dataset.state_dict() == {"epoch": 0, "step": i + 1}
+
+    # Resuming from checkpoint cross epoch
+    state_dict = dataset.state_dict()
+    del dataset
+    dataset = SFTDataset(build_dummy_dataset("", 4), tokenizer=None, shuffle=False, max_epochs=2)
+    dataset.load_state_dict(state_dict)
+    dataiter = iter(dataset)
+
+    # Epoch 2.1
+    for i in range(2):
+        sample = next(dataiter)
+        print(sample["text"])
+        assert sample["text"] == str(i + 1)
+        assert dataset.state_dict() == {"epoch": 1, "step": i + 1}
+
+    # Resuming from checkpoint mid epoch
+    state_dict = dataset.state_dict()
+    del dataset
+    dataset = SFTDataset(build_dummy_dataset("", 4), tokenizer=None, shuffle=False, max_epochs=2)
+    dataset.load_state_dict(state_dict)
+    dataiter = iter(dataset)
+
+    # Epoch 2.2
+    for i in range(2, 4):
+        sample = next(dataiter)
+        print(sample["text"])
+        assert sample["text"] == str(i + 1)
+        assert dataset.state_dict() == {"epoch": 1, "step": i + 1}
+
+    with pytest.raises(StopIteration):
+        next(dataiter)
 
 
 def test_multiturn_loss_mask():
@@ -48,8 +183,7 @@ def test_multiturn_loss_mask():
         ]
     )
     tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")  # Properly handles multi-turn think
-    config = SFTDataConfig(num_examples=1)
-    dataset = SFTDataset(dataset, tokenizer, config)
+    dataset = SFTDataset(dataset, tokenizer, max_examples=1)
     sample = next(iter(dataset))
     print_sample(sample["input_ids"], sample["loss_mask"], tokenizer)
 
@@ -112,106 +246,6 @@ def test_multiturn_loss_mask_with_tools():
 
     dataset = Dataset.from_list([tool_example])
     tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")  # Properly handles multi-turn think
-    config = SFTDataConfig(num_examples=1)
-    dataset = SFTDataset(dataset, tokenizer, config)
+    dataset = SFTDataset(dataset, tokenizer, max_examples=1)
     sample = next(iter(dataset))
     print_sample(sample["input_ids"], sample["loss_mask"], tokenizer)
-
-
-SAMPLE_TEMPLATE = """\
-<|im_start|>user
-Prompt {idx}<|im_end|>
-<|im_start|>assistant
-<think>
-
-</think>
-
-Completion {idx}<|im_end|>\
-"""
-
-
-def test_sft_dataset_state():
-    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
-    config = SFTDataConfig(name="mikasenghaas/test-sft", num_examples=2)
-    dataset = cast(Dataset, load_dataset("mikasenghaas/test-sft", split="train"))
-    dataset = SFTDataset(dataset, tokenizer, config)
-    dataiter = iter(dataset)
-    assert dataset.state_dict() == {"step": -1, "epoch": 0}
-
-    # Step 1
-    micro_batch = next(dataiter)
-    assert tokenizer.decode(micro_batch["input_ids"]) == SAMPLE_TEMPLATE.format(idx=0)
-    assert dataset.state_dict() == {"step": 0, "epoch": 0}
-
-    # Step 2
-    micro_batch = next(dataiter)
-    assert tokenizer.decode(micro_batch["input_ids"]) == SAMPLE_TEMPLATE.format(idx=1)
-    assert dataset.state_dict() == {"step": 1, "epoch": 0}
-
-    # Step 3 (next epoch)
-    micro_batch = next(dataiter)
-    assert tokenizer.decode(micro_batch["input_ids"]) == SAMPLE_TEMPLATE.format(idx=0)
-    assert dataset.state_dict() == {"step": 2, "epoch": 1}
-
-
-@pytest.mark.parametrize("max_epochs", [1, 2, 4])
-def test_sft_first_exhausted(max_epochs: int):
-    config = SFTDataConfig(name="", shuffle=False)
-    d1 = Dataset.from_dict({"text": ["a1"]})
-    d2 = Dataset.from_dict({"text": ["b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8", "b9"]})
-    ds = [d1, d2]
-    dataset = interleave_datasets(ds, stopping_strategy="first_exhausted")
-    dataset = SFTDataset(dataset, tokenizer=None, config=config, non_dp_size=1, max_epochs=max_epochs)
-    num_samples = 0
-    sampling_order = []
-    for x in dataset:
-        sampling_order.append(x["text"])
-        num_samples += 1
-    assert num_samples == max_epochs * min([len(d) for d in ds]) * len(ds)
-    assert sampling_order == ["a1", "b1"] * max_epochs
-
-
-@pytest.mark.parametrize("max_epochs", [1, 2, 4])
-def test_sft_all_exhausted(max_epochs: int):
-    config = SFTDataConfig(name="", shuffle=False)
-    d1 = Dataset.from_dict({"text": ["a1"]})
-    d2 = Dataset.from_dict({"text": ["b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8", "b9"]})
-    ds = [d1, d2]
-    dataset = interleave_datasets(ds, stopping_strategy="all_exhausted")
-    dataset = SFTDataset(dataset, tokenizer=None, config=config, non_dp_size=1, max_epochs=max_epochs)
-    num_samples = 0
-    sampling_order = []
-    for x in dataset:
-        sampling_order.append(x["text"])
-        num_samples += 1
-    assert num_samples == max_epochs * max([len(d) for d in ds]) * len(ds)
-    print(sampling_order)
-    assert (
-        sampling_order
-        == ["a1", "b1", "a1", "b2", "a1", "b3", "a1", "b4", "a1", "b5", "a1", "b6", "a1", "b7", "a1", "b8", "a1", "b9"]
-        * max_epochs
-    )
-
-
-@pytest.mark.parametrize("probs", [(0.5, 0.5), (1 / 3, 2 / 3), (2 / 3, 1 / 3)])
-def test_sft_all_exhausted_with_probs(probs: list[float]):
-    config = SFTDataConfig(name="", shuffle=False)
-    d1 = Dataset.from_dict({"text": ["a1", "a2", "a3", "a4", "a5"]})
-    d2 = Dataset.from_dict({"text": ["b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8", "b9", "b10"]})
-    ds = [d1, d2]
-    dataset = interleave_datasets(ds, stopping_strategy="all_exhausted", probabilities=probs)
-    dataset = SFTDataset(dataset, tokenizer=None, config=config, non_dp_size=1, max_epochs=100)
-    num_samples = 0
-    sampling_freq = []
-    for x in dataset:
-        sampling_freq.append(x["text"][0])
-        num_samples += 1
-    sampling_freq = Counter(sampling_freq)
-    ratio_a = sampling_freq["a"] / num_samples
-    ratio_b = sampling_freq["b"] / num_samples
-    assert ratio_a > probs[0] * 0.8 and ratio_a < probs[0] * 1.2, (
-        f"Exepcted frequency of samples from a to be between {probs[0] * 0.8} and {probs[0] * 1.2}, but got {ratio_a}"
-    )
-    assert ratio_b > probs[1] * 0.8 and ratio_b < probs[1] * 1.2, (
-        f"Exepcted frequency of samples from b to be between {probs[1] * 0.8} and {probs[1] * 1.2}, but got {ratio_b}"
-    )
