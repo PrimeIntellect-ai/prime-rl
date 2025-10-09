@@ -142,7 +142,7 @@ async def run_eval(
     sampling_config: EvalSamplingConfig,
     client_config: ClientConfig,
     step: int | None = None,
-    push_to_env_hub: bool = False,
+    save_to_env_hub: bool = False,
 ) -> None:
     logger = get_logger()
     monitor = get_monitor()
@@ -236,8 +236,8 @@ async def run_eval(
         dataset.save_to_disk(eval_dir)
         logger.info(f"Saved eval results for {eval_id} to disk ({eval_dir})")
 
-    # If specified, push eval results to Prime Hub
-    if push_to_env_hub:
+    # If specified, push eval results to Environment Hub
+    if save_to_env_hub:
         # Prepare metrics with all available information
         hub_metrics: dict[str, float] = {
             f"avg@{k}": float(rewards.mean().item()),
@@ -311,7 +311,6 @@ async def run_eval(
         push_eval_to_env_hub(
             eval_name=eval_name,
             model_name=model_config.name,
-            dataset=eval_id,
             metrics=hub_metrics,
             metadata=hub_metadata,
             results=hub_results if hub_results else None,
@@ -348,7 +347,7 @@ async def run_evals(
                 client_config=client_config,
                 ckpt_step=ckpt_step,
                 step=step,
-                push_to_env_hub=eval_config.push_to_env_hub,
+                save_to_env_hub=eval_config.save_to_env_hub,
             )
             for eval_id in eval_config.environment_ids
         ]
@@ -362,5 +361,5 @@ async def run_evals(
         dataset_dict = DatasetDict(
             {path.name.replace("-", "_"): cast(Dataset, load_from_disk(path)) for path in eval_dirs}
         )
-        dataset_dict.push_to_env_hub(eval_config.save_to_hf)
+        dataset_dict.push_to_hub(eval_config.save_to_hf)
         logger.info(f"Pushed eval results to HF Hub (https://huggingface.co/datasets/{eval_config.save_to_hf})")

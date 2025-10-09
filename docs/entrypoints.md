@@ -136,6 +136,56 @@ uv run eval \
   --environment-ids math500,aime2025
 ```
 
+### Per-Environment Configuration
+
+You can customize evaluation settings per environment using the `--eval.env.<env-id>.*` format. This is useful when:
+- Different tasks need different sampling strategies (e.g., temperature=0 for code, temperature=0.7 for math)
+- You want to evaluate multiple models in a single run
+- Specific environments need more/fewer rollouts or examples
+
+Example: Evaluate math500 with high temperature and gpqa with greedy sampling:
+
+```bash
+uv run eval \
+  --model.name <model-name> \
+  --environment-ids math500,gpqa \
+  --eval.env.math500.temperature 0.7 \
+  --eval.env.math500.rollouts-per-example 8 \
+  --eval.env.gpqa.temperature 0.0 \
+  --eval.env.gpqa.max-tokens 2048
+```
+
+Example: Evaluate different models on different environments:
+
+```bash
+uv run eval \
+  --model.name <base-model> \
+  --environment-ids math500,gpqa \
+  --eval.env.math500.model <specialist-math-model> \
+  --eval.env.gpqa.model <reasoning-model>
+```
+
+You can also use TOML config files for complex per-environment settings:
+
+```toml
+environment_ids = ["math500", "gpqa", "aime2025"]
+
+[eval.env.math500]
+temperature = 0.7
+rollouts_per_example = 8
+max_tokens = 4096
+
+[eval.env.gpqa]
+temperature = 0.0
+max_tokens = 2048
+num_examples = 100
+
+[eval.env.aime2025]
+model = "my-specialist-math-model"
+temperature = 0.8
+rollouts_per_example = 16
+```
+
 ### Push Results to Environment Hub (Closed Beta)
 
 To automatically push evaluation results to Environment Hub for tracking and analysis:

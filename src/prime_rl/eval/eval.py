@@ -38,7 +38,7 @@ async def _run_evals(
     This wraps verifiers.scripts.eval.eval_environments_parallel and adds:
     - Wandb/monitor logging
     - Disk saving
-    - Prime Hub push
+    - Environment Hub push
     - HF Hub push
     - Pass@k computation
     - Checkpoint-aware metrics
@@ -155,8 +155,8 @@ async def _run_evals(
             dataset.save_to_disk(eval_dir)
             logger.info(f"Saved eval results for {eval_id} to disk ({eval_dir})")
 
-        # Push to Prime Hub if requested
-        if config.push_to_env_hub:
+        # Push to Environment Hub if requested
+        if config.save_to_env_hub:
             hub_metrics = {
                 f"avg@{k}": float(rewards.mean().item()),
                 "completion_length_avg": float(completion_lens.mean().item()),
@@ -223,7 +223,6 @@ async def _run_evals(
             push_eval_to_env_hub(
                 eval_name=eval_name,
                 model_name=env_model,
-                dataset=eval_id,
                 metrics=hub_metrics,
                 metadata=hub_metadata,
                 results=hub_results if hub_results else None,
@@ -237,7 +236,7 @@ async def _run_evals(
             get_step_path(get_eval_dir(config.output_dir), ckpt_step) / eval_id for eval_id in config.environment_ids
         ]
         dataset_dict = DatasetDict({path.name.replace("-", "_"): load_from_disk(path) for path in eval_dirs})
-        dataset_dict.push_to_env_hub(config.save_to_hf)
+        dataset_dict.push_to_hub(config.save_to_hf)
         logger.info(f"Pushed eval results to HF Hub (https://huggingface.co/datasets/{config.save_to_hf})")
 
 

@@ -265,10 +265,10 @@ class EvalConfig(BaseConfig):
         ),
     ] = None
 
-    push_to_env_hub: Annotated[
+    save_to_env_hub: Annotated[
         bool,
         Field(
-            description="Whether to push evaluation results to Prime Hub using prime-cli. Requires prime-cli to be installed and configured with API credentials. When enabled, displays the evals viewer URL.",
+            description="Whether to save evaluation results to Environment Hub using prime-evals. Requires prime-evals to be installed and configured with API credentials. When enabled, displays the evals viewer URL.",
         ),
     ] = False
 

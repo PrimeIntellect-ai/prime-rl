@@ -47,5 +47,5 @@ file = true
 
 output_dir = "outputs/multi_model_eval"
 save_to_disk = true
-push_to_env_hub = true
+save_to_env_hub = true
 eval_base = true
