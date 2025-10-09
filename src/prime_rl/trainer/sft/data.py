@@ -115,8 +115,8 @@ class SFTDataset(StatefulIterableDataset):
         shuffle: bool = True,
         seed: int = 0,
         seq_len: int = 128,
-        loss_mask: LossMaskConfig = LossMaskConfig(),
         non_dp_size: int = 1,
+        loss_mask_config: LossMaskConfig = LossMaskConfig(),
         max_examples: int | None = None,
         max_epochs: int | None = None,
     ):
@@ -125,7 +125,7 @@ class SFTDataset(StatefulIterableDataset):
         self.shuffle = shuffle
         self.seed = seed
         self.seq_len = seq_len
-        self.loss_mask = loss_mask
+        self.loss_mask_config = loss_mask_config
         self.tokenizer = tokenizer
         self.max_epochs = max_epochs
 
@@ -267,7 +267,7 @@ class SFTDataset(StatefulIterableDataset):
 
         if sum(loss_mask[: self.seq_len]) == 0:
             self.logger.warning(
-                f"Skipping example with index {self.step} because no trainable tokens were found within the context window ({self.seq_len}). This is to prevent NaN loss."
+                f"Skipping example with index {example['index']} because no trainable tokens were found within the context window ({self.seq_len}). This is to prevent NaN loss."
             )
             return
 
