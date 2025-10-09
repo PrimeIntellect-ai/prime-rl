@@ -530,7 +530,6 @@ def setup_dataset(
             seq_len=config.seq_len,
             loss_mask=config.loss_mask,
             non_dp_size=non_dp_size,
-            max_examples=config.max_examples,
         )
     else:
         raise ValueError(f"Invalid dataset type: {config.type}")

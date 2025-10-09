@@ -69,9 +69,6 @@ class SFTDataConfig(BaseDataConfig):
         Field(description=""),
     ] = "all_exhausted"
     shuffle: Annotated[bool, Field(description="Whether to shuffle the dataset at the beginning of each epoch.")] = True
-    max_examples: Annotated[
-        int | None, Field(description="Number of examples to use from the dataset. If None, will use all examples.")
-    ] = None
     seed: Annotated[
         int,
         Field(
