@@ -292,6 +292,8 @@ async def run_eval(
                 "reward": float(generate_outputs.reward[i]),
                 "task": str(generate_outputs.task[i]) if i < len(generate_outputs.task) else "",
                 "answer": str(generate_outputs.answer[i]) if i < len(generate_outputs.answer) else "",
+                "prompt": generate_outputs.prompt[i] if i < len(generate_outputs.prompt) else None,
+                "completion": generate_outputs.completion[i] if i < len(generate_outputs.completion) else None,
             }
             # Add info if available
             if i < len(generate_outputs.info):
