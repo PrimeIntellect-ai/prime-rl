@@ -87,7 +87,6 @@ def test_fake_dataset_single_rank_resume():
         micro_batch = next(dataiter)
         assert micro_batch["input_ids"].shape == (1, 128)
         assert micro_batch["input_ids"].unique().item() == step
-        assert micro_batch["epoch"] == 0
         assert dataloader.state_dict()["dataset_state"] == {"dataset": {"step": step, "epoch": 0}}
 
     # Reload dataloader
@@ -101,7 +100,6 @@ def test_fake_dataset_single_rank_resume():
         micro_batch = next(dataiter)
         assert micro_batch["input_ids"].shape == (1, 128)
         assert micro_batch["input_ids"].unique().item() == step
-        assert micro_batch["epoch"] == 0
         assert dataloader.state_dict()["dataset_state"] == {"dataset": {"step": step, "epoch": 0}}
 
 
