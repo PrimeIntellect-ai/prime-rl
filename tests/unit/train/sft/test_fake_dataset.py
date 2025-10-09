@@ -9,10 +9,12 @@ def test_init_fake_dataset():
 def test_fake_dataset_state():
     dataset = FakeDataset(vocab_size=10000, seq_len=128)
     dataiter = iter(dataset)
+
     # Initial state
-    assert dataset.state_dict() == {"step": 0, "epoch": 0}
+    assert dataset.state_dict() == {"step": -1, "epoch": 0}
 
     # Iterate
+    next(dataiter)
     assert dataset.state_dict() == {"step": 0, "epoch": 0}
     next(dataiter)
     assert dataset.state_dict() == {"step": 1, "epoch": 0}

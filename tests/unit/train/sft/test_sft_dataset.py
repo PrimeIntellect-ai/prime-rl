@@ -10,7 +10,7 @@ from prime_rl.trainer.utils import print_sample
 
 @pytest.fixture(scope="module")
 def build_dummy_dataset():
-    return lambda letter, num_examples: Dataset.from_list([{"text": f"{letter}{i + 1}"} for i in range(num_examples)])
+    return lambda letter, num_examples: Dataset.from_list([{"text": f"{letter}{i}"} for i in range(num_examples)])
 
 
 def test_init_sft_dataset(build_dummy_dataset):
@@ -32,7 +32,7 @@ def test_raise_error_if_no_prompt_and_completion(build_dummy_dataset):
 @pytest.mark.parametrize("max_epochs", [1, 2, 4])
 def test_sft_first_exhausted(build_dummy_dataset, max_epochs: int):
     a = build_dummy_dataset("a", 1)
-    b = build_dummy_dataset("b", 9)
+    b = build_dummy_dataset("b", 2)
     ds = [a, b]
     dataset = interleave_datasets(ds, stopping_strategy="first_exhausted")
     dataset = SFTDataset(dataset, tokenizer=None, shuffle=False, max_epochs=max_epochs)
@@ -42,13 +42,13 @@ def test_sft_first_exhausted(build_dummy_dataset, max_epochs: int):
         sampling_order.append(x["text"])
         num_samples += 1
     assert num_samples == max_epochs * min([len(d) for d in ds]) * len(ds)
-    assert sampling_order == ["a1", "b1"] * max_epochs
+    assert sampling_order == ["a0", "b0"] * max_epochs
 
 
 @pytest.mark.parametrize("max_epochs", [1, 2, 4])
 def test_sft_all_exhausted(build_dummy_dataset, max_epochs: int):
     a = build_dummy_dataset("a", 1)
-    b = build_dummy_dataset("b", 9)
+    b = build_dummy_dataset("b", 2)
     ds = [a, b]
     dataset = interleave_datasets(ds, stopping_strategy="all_exhausted")
     dataset = SFTDataset(dataset, tokenizer=None, shuffle=False, max_epochs=max_epochs)
@@ -59,11 +59,7 @@ def test_sft_all_exhausted(build_dummy_dataset, max_epochs: int):
         num_samples += 1
     assert num_samples == max_epochs * max([len(d) for d in ds]) * len(ds)
     print(sampling_order)
-    assert (
-        sampling_order
-        == ["a1", "b1", "a1", "b2", "a1", "b3", "a1", "b4", "a1", "b5", "a1", "b6", "a1", "b7", "a1", "b8", "a1", "b9"]
-        * max_epochs
-    )
+    assert sampling_order == ["a0", "b0", "a0", "b1"] * max_epochs
 
 
 @pytest.mark.parametrize(
@@ -104,19 +100,19 @@ def test_sft_dataset_state(build_dummy_dataset):
     dataiter = iter(dataset)
 
     # Initial state
-    assert dataset.state_dict() == {"step": 0, "epoch": 0}
+    assert dataset.state_dict() == {"step": -1, "epoch": 0}
 
     # Epoch 1
     for i in range(4):
         sample = next(dataiter)
-        assert sample["text"] == str(i + 1)
-        assert dataset.state_dict() == {"epoch": 0, "step": i + 1}
+        assert sample["text"] == str(i)
+        assert dataset.state_dict() == {"epoch": 0, "step": i}
 
     # Epoch 2
     for i in range(4):
         sample = next(dataiter)
-        assert sample["text"] == str(i + 1)
-        assert dataset.state_dict() == {"epoch": 1, "step": i + 1}
+        assert sample["text"] == str(i)
+        assert dataset.state_dict() == {"epoch": 1, "step": i}
 
     with pytest.raises(StopIteration):
         next(dataiter)
@@ -128,14 +124,14 @@ def test_sft_dataset_state_resume(build_dummy_dataset):
     dataiter = iter(dataset)
 
     # Initial state
-    assert dataset.state_dict() == {"step": 0, "epoch": 0}
+    assert dataset.state_dict() == {"step": -1, "epoch": 0}
 
     # Epoch 1
     for i in range(4):
         sample = next(dataiter)
         print(sample["text"])
-        assert sample["text"] == str(i + 1)
-        assert dataset.state_dict() == {"epoch": 0, "step": i + 1}
+        assert sample["text"] == str(i)
+        assert dataset.state_dict() == {"epoch": 0, "step": i}
 
     # Resuming from checkpoint cross epoch
     state_dict = dataset.state_dict()
@@ -148,8 +144,8 @@ def test_sft_dataset_state_resume(build_dummy_dataset):
     for i in range(2):
         sample = next(dataiter)
         print(sample["text"])
-        assert sample["text"] == str(i + 1)
-        assert dataset.state_dict() == {"epoch": 1, "step": i + 1}
+        assert sample["text"] == str(i)
+        assert dataset.state_dict() == {"epoch": 1, "step": i}
 
     # Resuming from checkpoint mid epoch
     state_dict = dataset.state_dict()
@@ -162,8 +158,8 @@ def test_sft_dataset_state_resume(build_dummy_dataset):
     for i in range(2, 4):
         sample = next(dataiter)
         print(sample["text"])
-        assert sample["text"] == str(i + 1)
-        assert dataset.state_dict() == {"epoch": 1, "step": i + 1}
+        assert sample["text"] == str(i)
+        assert dataset.state_dict() == {"epoch": 1, "step": i}
 
     with pytest.raises(StopIteration):
         next(dataiter)

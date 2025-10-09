@@ -22,9 +22,6 @@ class BaseDataConfig(BaseModel):
     micro_batch_size: Annotated[int, Field(ge=1)] = 8
     batch_size: Annotated[int, Field(ge=1)] = 128
     seq_len: Annotated[int, Field(ge=1)] = 128
-    num_examples: Annotated[
-        int | None, Field(description="Number of examples to use from the dataset. If None, will use all examples.")
-    ] = None
     pack_function: Literal["cat", "stack"] = "cat"
 
     @model_validator(mode="after")
@@ -72,6 +69,9 @@ class SFTDataConfig(BaseDataConfig):
         Field(description=""),
     ] = "all_exhausted"
     shuffle: Annotated[bool, Field(description="Whether to shuffle the dataset at the beginning of each epoch.")] = True
+    max_examples: Annotated[
+        int | None, Field(description="Number of examples to use from the dataset. If None, will use all examples.")
+    ] = None
     seed: Annotated[
         int,
         Field(

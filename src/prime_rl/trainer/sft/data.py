@@ -39,7 +39,7 @@ class StatefulIterableDataset(Stateful, IterableDataset):
     """SFT dataset are iterable (infinite) and stateful (can be checkpointed)."""
 
     def __init__(self):
-        self.step, self.epoch = 0, 0
+        self.step, self.epoch = -1, 0
         self._setup_world_info()
 
     def state_dict(self) -> dict:
@@ -297,8 +297,10 @@ class SFTDataset(StatefulIterableDataset):
             dataset = self.dataset.shuffle(seed=self.epoch + self.seed) if self.shuffle else self.dataset
             dataset_iter = iter(dataset)
 
-            for _ in range(self.step):
-                next(dataset_iter)
+            if self.step >= 0:
+                self.logger.info(f"Skipping the first {self.step + 1} examples in epoch {self.epoch}")
+                for _ in range(self.step + 1):
+                    next(dataset_iter)
 
             # Iterate over dataset (one epoch)
             for i, example in enumerate(dataset_iter):
@@ -319,7 +321,7 @@ class SFTDataset(StatefulIterableDataset):
                 yield example
 
             # Reset step count and increment epoch
-            self.step = 0
+            self.step = -1
             self.epoch += 1
 
             if self.max_epochs is not None and self.epoch >= self.max_epochs:
@@ -488,7 +490,9 @@ def setup_dataset(
 ) -> StatefulIterableDataset:
     if config.type == "fake":
         # Shouldnt matter to handle non_dp_size if dataset is random
-        return FakeDataset(tokenizer, config)
+        return FakeDataset(
+            vocab_size=tokenizer.vocab_size, seq_len=config.seq_len, length=config.length, input_ids=config.input_ids
+        )
     elif config.type == "sft":
         if config.subsets is None and config.splits is None:
             dataset = cast(Dataset, load_dataset(config.name, split="train"))
@@ -518,14 +522,21 @@ def setup_dataset(
                 stopping_strategy=config.stopping_strategy,
                 seed=0,
             )
-        return SFTDataset(dataset, tokenizer, config, non_dp_size, max_epochs=config.max_epochs)
+        return SFTDataset(
+            dataset,
+            tokenizer,
+            shuffle=config.shuffle,
+            seed=config.seed,
+            seq_len=config.seq_len,
+            loss_mask=config.loss_mask,
+            non_dp_size=non_dp_size,
+            max_examples=config.max_examples,
+        )
     else:
         raise ValueError(f"Invalid dataset type: {config.type}")
 
 
-def setup_dataloader(
-    dataset: StatefulIterableDataset, tokenizer: PreTrainedTokenizer, config: DataConfigType
-) -> StatefulDataLoader:
+def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfigType) -> StatefulDataLoader:
     seq_len = config.micro_batch_size * config.seq_len
     if config.pack_function == "stack":
         stacking_dataset = StackDataset(dataset, seq_len)
