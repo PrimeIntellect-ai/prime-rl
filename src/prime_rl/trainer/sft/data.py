@@ -473,12 +473,14 @@ def setup_dataset(
             dataset = interleave_datasets(
                 [cast(Dataset, load_dataset(config.name, subset, split="train")) for subset in config.subsets],
                 probabilities=config.probabilities,
+                stopping_strategy=config.stopping_strategy,
                 seed=0,
             )
         elif config.subsets is None and config.splits is not None:
             dataset = interleave_datasets(
                 [cast(Dataset, load_dataset(config.name, split=split)) for split in config.splits],
                 probabilities=config.probabilities,
+                stopping_strategy=config.stopping_strategy,
                 seed=0,
             )
         else:
@@ -489,6 +491,7 @@ def setup_dataset(
                     for subset, split in zip(config.subsets, config.splits)
                 ],
                 probabilities=config.probabilities,
+                stopping_strategy=config.stopping_strategy,
                 seed=0,
             )
         return SFTDataset(dataset, tokenizer, config, non_dp_size)
