@@ -319,7 +319,7 @@ class SFTDataset(StatefulIterableDataset):
                 self.logger.debug(
                     f"Yield example {example['index']}"
                     + (f" from {subset_or_split} " if subset_or_split else " ")
-                    + f"with {len(processed_example['input_ids'])} tokens ({sum(processed_example['loss_mask'])} trainable tokens)"
+                    + f"with {len(processed_example.get('input_ids', []))} tokens ({sum(processed_example.get('loss_mask', []))} trainable tokens)"
                 )
                 yield processed_example
 
