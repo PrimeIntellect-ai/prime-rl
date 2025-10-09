@@ -283,17 +283,27 @@ def train(config: SFTTrainerConfig):
         logger.success(step_message)
 
         # Log progress metrics
+        total_samples = sum(dataset.num_samples.values())
+        total_tokens = sum(dataset.num_tokens.values())
         progress_metrics = {
             "progress/epoch": dataset.epoch,
             "progress/dataset_step": dataset.step,
-            "progress/num_samples": sum(dataset.num_samples.values()),
+            "progress/num_samples": total_samples,
+            "progress/num_tokens": total_tokens,
             **{
                 f"progress/{subset_or_split}/num_samples": num_samples
                 for subset_or_split, num_samples in dataset.num_samples.items()
             },
-            "progress/num_tokens": sum(dataset.num_tokens.values()),
+            **{
+                f"progress/{subset_or_split}/ratio_samples": num_samples / total_samples
+                for subset_or_split, num_samples in dataset.num_samples.items()
+            },
             **{
                 f"progress/{subset_or_split}/num_tokens": num_tokens
+                for subset_or_split, num_tokens in dataset.num_tokens.items()
+            },
+            **{
+                f"progress/{subset_or_split}/ratio_tokens": num_tokens / total_tokens
                 for subset_or_split, num_tokens in dataset.num_tokens.items()
             },
             "step": progress.step,
