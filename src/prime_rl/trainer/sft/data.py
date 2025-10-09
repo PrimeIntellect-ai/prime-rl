@@ -108,18 +108,25 @@ class FakeDataset(StatefulIterableDataset):
 class SFTDataset(StatefulIterableDataset):
     """A dataset wrapping a HF SFT dataset with prompt + completion format."""
 
-    def __init__(self, dataset: Dataset, tokenizer: PreTrainedTokenizer, config: SFTDataConfig, non_dp_size: int = 1):
+    def __init__(
+        self,
+        dataset: Dataset,
+        tokenizer: PreTrainedTokenizer | None,
+        config: SFTDataConfig,
+        non_dp_size: int = 1,
+        max_epochs: int | None = None,
+    ):
         super().__init__()
         self.logger = get_logger()
         self.config = config
         self.tokenizer = tokenizer
+        self.max_epochs = max_epochs
+
+        if self.tokenizer is None:
+            self.logger.warning("No tokenizer provided, will not process examples")
 
         # Add dataset index
         self.dataset = dataset.add_column("index", list(range(len(dataset))), new_fingerprint=str(uuid.uuid4()))
-
-        # Assert that the dataset has a 'text' column
-        if "prompt" not in self.dataset.column_names or "completion" not in self.dataset.column_names:
-            raise ValueError("HF dataset must have a 'prompt' and 'completion' column for SFT")
 
         # Get the data rank and world size
         worker_info = get_worker_info()
@@ -138,168 +145,181 @@ class SFTDataset(StatefulIterableDataset):
         # Store the number of examples in the dataset
         self.num_examples = len(self.dataset)
 
+    def _process(self, example: dict) -> dict | None:
+        # Skip processing if no tokenizer was provided
+        if self.tokenizer is None:
+            return example
+
+        # Assert that the example has a 'prompt' and 'completion' column
+        if "prompt" not in example or "completion" not in example:
+            raise ValueError("All examples in the dataset must have a 'prompt' and 'completion' column for SFT")
+
+        def deserialize_tool_calls(messages: list[dict]) -> list[dict]:
+            """
+            Deserialize tool calls in messages, if any are present. Iterates
+            over all messages in a message list and tries to find
+            "tool_calls" key. If found, assumes it is a OAI format and has
+            key "function" with "arguments" key which is stringified. It
+            will then deserialize the argument so that chat tmeplates like
+            Qwen3's can be used.
+            """
+
+            def deserialize_tool_call(tool_call: dict) -> dict:
+                return {
+                    **tool_call,
+                    "function": {
+                        **tool_call["function"],
+                        "arguments": json.loads(tool_call["function"]["arguments"]),
+                    },
+                }
+
+            return [
+                {
+                    **message,
+                    "tool_calls": [
+                        deserialize_tool_call(tool_call) for tool_call in message.get("tool_calls", []) or []
+                    ],
+                }
+                for message in messages
+            ]
+
+        # Deserialize tool call arguments from message list, if present - assumes OAI format
+        # Reference: https://platform.openai.com/docs/guides/function-calling#handling-function-calls
+        prompt = deserialize_tool_calls(example["prompt"])
+        completion = deserialize_tool_calls(example["completion"])
+
+        # Parse available tools, if present - assumes OAI format
+        # Reference: https://platform.openai.com/docs/guides/function-calling#function-tool-example
+        tools = json.loads(example.get("tools", "[]"))
+
+        def should_mask(message: dict, loss_mask_config: LossMaskConfig) -> bool:
+            assert "role" in message, "Message must have a role"
+            match message["role"]:
+                case "user":
+                    return True if loss_mask_config.user else False
+                case "assistant":
+                    return True if loss_mask_config.assistant else False
+                case "system":
+                    return True if loss_mask_config.system else False
+                case "tool":
+                    return True if loss_mask_config.tool else False
+                case _:
+                    raise ValueError(f"Invalid message role: {message['role']}")
+
+        def build_loss_mask(prompt, completion, tokenizer, loss_mask_config: LossMaskConfig) -> list[bool]:
+            messages = prompt + completion
+            loss_mask: list[bool] = []
+            prev_ids, prev_len = [], 0
+            for i, message in enumerate(messages):
+                assert "role" in message, "Message must have a role"
+                # Support parallel tool call outputs (treat them as one message for loss mask)
+                if message["role"] == "tool" and i + 1 < len(messages) and messages[i + 1]["role"] == "tool":
+                    continue
+                cur_ids = tokenizer.apply_chat_template(
+                    messages[: i + 1],
+                    tools=tools,
+                    # This is to mask out the generation prompt after user and tool messages
+                    # It leads to us not training on <|im_start|>assistant
+                    add_generation_prompt=True
+                    if (
+                        message["role"] in ["user", "tool"]
+                        and i + 1 < len(messages)
+                        and messages[i + 1]["role"] == "assistant"
+                    )
+                    else False,
+                    **example.get("chat_template_kwargs", {}),
+                )
+                assert prev_ids == cur_ids[:prev_len], (
+                    f"Got mismatch in incremental tokenization with chat template at message {i}. Previous ids: {prev_ids} != {cur_ids[:prev_len]=}.\nDecoded prev_ids:\n{tokenizer.decode(prev_ids)}\nDecoded cur_ids:\n{tokenizer.decode(cur_ids[:prev_len])}"
+                )
+                loss_mask.extend([should_mask(message, loss_mask_config)] * (len(cur_ids) - prev_len))
+                prev_ids, prev_len = cur_ids, len(cur_ids)
+
+            return loss_mask
+
+        # Build input_ids
+        input_ids = cast(
+            list[int],
+            self.tokenizer.apply_chat_template(
+                prompt + completion,
+                tools=tools,
+                **example.get("chat_template_kwargs", {}),
+            ),
+        )
+
+        # Build loss_mask
+        loss_mask = build_loss_mask(prompt, completion, self.tokenizer, self.config.loss_mask)
+
+        # If EOS token is not found, manually append it
+        if not self.tokenizer.eos_token_id in input_ids:
+            self.logger.warning(
+                f"Did not find EOS token ID {self.tokenizer.eos_token_id} in input_ids. Is something wrong with the chat template? Manually appending EOS token..."
+            )
+            input_ids.append(cast(int, self.tokenizer.eos_token_id))
+            loss_mask.append(True)
+
+        # Prepare inputs
+        target_ids = input_ids.copy()[1:]
+        loss_mask = loss_mask[1:]
+        input_ids = input_ids[:-1]
+
+        if sum(loss_mask[: self.config.seq_len]) == 0:
+            self.logger.warning(
+                f"Skipping example with index {self.step} because no trainable tokens were found within the context window ({self.config.seq_len}). This is to prevent NaN loss."
+            )
+            return
+
+        assert len(input_ids) == len(loss_mask) == len(target_ids), (
+            f"input_ids, loss_mask and target_ids must have the same length, but got {len(input_ids)=}, {len(loss_mask)=}, {len(target_ids)=}"
+        )
+        assert sum(loss_mask) > 0, "There are no tokens in this sample that contribute to the loss"
+        assert self.tokenizer.eos_token_id in target_ids, "EOS token ID must be present in target_ids"
+
+        # Create sample (with one fake target for the last token)
+        return {
+            "index": example["index"],
+            "input_ids": input_ids,
+            "target_ids": target_ids,
+            "loss_mask": loss_mask,
+            "position_ids": list(range(len(input_ids))),
+            "epoch": self.epoch,
+        }
+
     def __iter__(self):
         """
         Apply chat template and tokenize a single example in prompt + completion format (https://github.com/huggingface/trl/blob/de27d612b026526ba39b88eee348994d7636e033/trl/trainer/sft_trainer.py#L661)
         """
-        dataset = self.dataset.shuffle(seed=self.epoch + self.config.seed) if self.config.shuffle else self.dataset
         while True:
-            self.step += 1
+            dataset = self.dataset.shuffle(seed=self.epoch + self.config.seed) if self.config.shuffle else self.dataset
+            dataset_iter = iter(dataset)
 
-            # Get example from dataset
-            example = dataset[self.step % self.num_examples]
+            for _ in range(self.step):
+                next(dataset_iter)
 
-            # Skip samples that don't belong to this data rank
-            if self.step % self.data_world_size != self.data_rank:
-                continue
+            # Iterate over dataset (one epoch)
+            for i, example in enumerate(dataset_iter):
+                # Skip samples that don't belong to this data rank
+                if i % self.data_world_size != self.data_rank:
+                    continue
 
-            # Compute current epoch based on step count (total samples seen)
-            epoch = self.step // self.num_examples
+                example = self._process(cast(dict, example))
 
-            # Update stored epoch if new epoch is reached, optionall shuffle
-            if epoch > self.epoch:
-                dataset = self.dataset.shuffle(seed=epoch + self.config.seed) if self.config.shuffle else self.dataset
-                self.epoch = epoch
+                # If example is None, skip it (e.g. if tokenized sample exceeds context window)
+                if example is None:
+                    continue
 
-            assert "prompt" in example and "completion" in example, (
-                "Prompt and completion must be present in the example"
-            )
-            assert isinstance(example["prompt"], list) and isinstance(example["completion"], list), (
-                "Prompt and completion must be lists."
-            )
+                # Yield the example
+                yield example
 
-            def deserialize_tool_calls(messages: list[dict]) -> list[dict]:
-                """
-                Deserialize tool calls in messages, if any are present. Iterates
-                over all messages in a message list and tries to find
-                "tool_calls" key. If found, assumes it is a OAI format and has
-                key "function" with "arguments" key which is stringified. It
-                will then deserialize the argument so that chat tmeplates like
-                Qwen3's can be used.
-                """
+                # Save index of next sample for checkpoint
+                self.step = i + 1
 
-                def deserialize_tool_call(tool_call: dict) -> dict:
-                    return {
-                        **tool_call,
-                        "function": {
-                            **tool_call["function"],
-                            "arguments": json.loads(tool_call["function"]["arguments"]),
-                        },
-                    }
+            # Reset step count and increment epoch
+            self.step = 0
+            self.epoch += 1
 
-                return [
-                    {
-                        **message,
-                        "tool_calls": [
-                            deserialize_tool_call(tool_call) for tool_call in message.get("tool_calls", []) or []
-                        ],
-                    }
-                    for message in messages
-                ]
-
-            # Deserialize tool call arguments from message list, if present - assumes OAI format
-            # Reference: https://platform.openai.com/docs/guides/function-calling#handling-function-calls
-            prompt = deserialize_tool_calls(example["prompt"])
-            completion = deserialize_tool_calls(example["completion"])
-
-            # Parse available tools, if present - assumes OAI format
-            # Reference: https://platform.openai.com/docs/guides/function-calling#function-tool-example
-            tools = json.loads(example.get("tools", "[]"))
-
-            def should_mask(message: dict, loss_mask_config: LossMaskConfig) -> bool:
-                assert "role" in message, "Message must have a role"
-                match message["role"]:
-                    case "user":
-                        return True if loss_mask_config.user else False
-                    case "assistant":
-                        return True if loss_mask_config.assistant else False
-                    case "system":
-                        return True if loss_mask_config.system else False
-                    case "tool":
-                        return True if loss_mask_config.tool else False
-                    case _:
-                        raise ValueError(f"Invalid message role: {message['role']}")
-
-            def build_loss_mask(prompt, completion, tokenizer, loss_mask_config: LossMaskConfig) -> list[bool]:
-                messages = prompt + completion
-                loss_mask: list[bool] = []
-                prev_ids, prev_len = [], 0
-                for i, message in enumerate(messages):
-                    assert "role" in message, "Message must have a role"
-                    # Support parallel tool call outputs (treat them as one message for loss mask)
-                    if message["role"] == "tool" and i + 1 < len(messages) and messages[i + 1]["role"] == "tool":
-                        continue
-                    cur_ids = tokenizer.apply_chat_template(
-                        messages[: i + 1],
-                        tools=tools,
-                        # This is to mask out the generation prompt after user and tool messages
-                        # It leads to us not training on <|im_start|>assistant
-                        add_generation_prompt=True
-                        if (
-                            message["role"] in ["user", "tool"]
-                            and i + 1 < len(messages)
-                            and messages[i + 1]["role"] == "assistant"
-                        )
-                        else False,
-                        **example.get("chat_template_kwargs", {}),
-                    )
-                    assert prev_ids == cur_ids[:prev_len], (
-                        f"Got mismatch in incremental tokenization with chat template at message {i}. Previous ids: {prev_ids} != {cur_ids[:prev_len]=}.\nDecoded prev_ids:\n{tokenizer.decode(prev_ids)}\nDecoded cur_ids:\n{tokenizer.decode(cur_ids[:prev_len])}"
-                    )
-                    loss_mask.extend([should_mask(message, loss_mask_config)] * (len(cur_ids) - prev_len))
-                    prev_ids, prev_len = cur_ids, len(cur_ids)
-
-                return loss_mask
-
-            # Build input_ids
-            input_ids = cast(
-                list[int],
-                self.tokenizer.apply_chat_template(
-                    prompt + completion,
-                    tools=tools,
-                    **example.get("chat_template_kwargs", {}),
-                ),
-            )
-
-            # Build loss_mask
-            loss_mask = build_loss_mask(prompt, completion, self.tokenizer, self.config.loss_mask)
-
-            # If EOS token is not found, manually append it
-            if not self.tokenizer.eos_token_id in input_ids:
-                self.logger.warning(
-                    f"Did not find EOS token ID {self.tokenizer.eos_token_id} in input_ids. Is something wrong with the chat template? Manually appending EOS token..."
-                )
-                input_ids.append(cast(int, self.tokenizer.eos_token_id))
-                loss_mask.append(True)
-
-            # Prepare inputs
-            target_ids = input_ids.copy()[1:]
-            loss_mask = loss_mask[1:]
-            input_ids = input_ids[:-1]
-
-            if sum(loss_mask[: self.config.seq_len]) == 0:
-                self.logger.warning(
-                    f"Skipping example with index {self.step} because no trainable tokens were found within the context window ({self.config.seq_len}). This is to prevent NaN loss."
-                )
-                continue
-
-            assert len(input_ids) == len(loss_mask) == len(target_ids), (
-                f"input_ids, loss_mask and target_ids must have the same length, but got {len(input_ids)=}, {len(loss_mask)=}, {len(target_ids)=}"
-            )
-            assert sum(loss_mask) > 0, "There are no tokens in this sample that contribute to the loss"
-            assert self.tokenizer.eos_token_id in target_ids, "EOS token ID must be present in target_ids"
-
-            # Create sample (with one fake target for the last token)
-            sample = {
-                "index": example["index"],
-                "input_ids": input_ids,
-                "target_ids": target_ids,
-                "loss_mask": loss_mask,
-                "position_ids": list(range(len(input_ids))),
-                "epoch": self.epoch,
-            }
-
-            yield sample
+            if self.max_epochs is not None and self.epoch >= self.max_epochs:
+                break
 
 
 class CatDataset(StatefulIterableDataset):
@@ -494,7 +514,7 @@ def setup_dataset(
                 stopping_strategy=config.stopping_strategy,
                 seed=0,
             )
-        return SFTDataset(dataset, tokenizer, config, non_dp_size)
+        return SFTDataset(dataset, tokenizer, config, non_dp_size, max_epochs=config.max_epochs)
     else:
         raise ValueError(f"Invalid dataset type: {config.type}")
 
