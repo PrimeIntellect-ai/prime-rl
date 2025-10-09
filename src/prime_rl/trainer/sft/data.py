@@ -194,7 +194,7 @@ class SFTDataset(StatefulIterableDataset):
 
         # Parse available tools, if present - assumes OAI format
         # Reference: https://platform.openai.com/docs/guides/function-calling#function-tool-example
-        tools = json.loads(example.get("tools", "[]"))
+        tools = json.loads(example.get("tools") or "[]")
 
         def should_mask(message: dict, loss_mask_config: LossMaskConfig) -> bool:
             assert "role" in message, "Message must have a role"
