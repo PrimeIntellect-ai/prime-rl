@@ -39,6 +39,7 @@ class StatefulIterableDataset(Stateful, IterableDataset):
     def __init__(self):
         self.step, self.epoch = -1, 0
         self.num_samples = defaultdict(int)
+        self.num_tokens = defaultdict(int)
         self._setup_world_info()
 
     def state_dict(self) -> dict:
@@ -100,6 +101,7 @@ class FakeDataset(StatefulIterableDataset):
                 "loss_mask": loss_mask,
             }
             self.num_samples["fake"] += 1
+            self.num_tokens["fake"] += len(input_ids)
             yield fake_sample
 
 
@@ -320,6 +322,7 @@ class SFTDataset(StatefulIterableDataset):
                     + f"with {len(processed_example.get('input_ids', []))} tokens ({sum(processed_example.get('loss_mask', []))} trainable tokens)"
                 )
                 self.num_samples[subset_or_split] += 1
+                self.num_tokens[subset_or_split] += len(processed_example.get("input_ids", []))
                 yield processed_example
 
             # Reset step count and increment epoch

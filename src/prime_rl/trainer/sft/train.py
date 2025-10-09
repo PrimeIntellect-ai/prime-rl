@@ -291,6 +291,11 @@ def train(config: SFTTrainerConfig):
                 f"progress/{subset_or_split}/num_samples": num_samples
                 for subset_or_split, num_samples in dataset.num_samples.items()
             },
+            "progress/num_tokens": sum(dataset.num_tokens.values()),
+            **{
+                f"progress/{subset_or_split}/num_tokens": num_tokens
+                for subset_or_split, num_tokens in dataset.num_tokens.items()
+            },
             "step": progress.step,
         }
         monitor.log(progress_metrics)
