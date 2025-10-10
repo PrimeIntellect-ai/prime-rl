@@ -309,11 +309,15 @@ class SFTDataset(StatefulIterableDataset):
             if self.resumed:
                 skip_steps = self.step % self.num_examples
                 self.logger.info(f"Skipping the first {skip_steps} examples in epoch {self.epoch}")
-                for _ in range(skip_steps):
-                    next(dataset_iter)
+            else:
+                skip_steps = 0
 
             # Iterate over dataset (one epoch)
             for i, example in enumerate(dataset_iter):
+                if skip_steps > 0:
+                    skip_steps -= 1
+                    continue
+
                 self.step += 1
 
                 # Skip samples that don't belong to this data rank
