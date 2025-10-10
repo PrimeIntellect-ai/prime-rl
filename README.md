@@ -145,7 +145,7 @@ uv run wandb login
 2. If you require gated/ private models or datasets from [HuggingFace](https://huggingface.co), log in
 
 ```bash
-uv run huggingface-cli login
+uv run hf auth login
 # Or set `export HF_TOKEN=...`
 ```
 
