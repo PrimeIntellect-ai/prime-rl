@@ -458,21 +458,19 @@ class StackDataset(StatefulIterableDataset):
 
 def stack_collate(samples: list[Sample]) -> Batch:
     return {
-        "input_ids": torch.tensor(samples[0]["input_ids"], dtype=torch.long, device="cuda"),
-        "position_ids": torch.tensor(samples[0]["position_ids"], dtype=torch.long, device="cuda"),
-        "loss_mask": torch.tensor(samples[0]["loss_mask"], dtype=torch.bool, device="cuda"),
-        "target_ids": torch.tensor(samples[0]["target_ids"], dtype=torch.long, device="cuda"),
+        "input_ids": torch.tensor(samples[0]["input_ids"], dtype=torch.long),
+        "position_ids": torch.tensor(samples[0]["position_ids"], dtype=torch.long),
+        "loss_mask": torch.tensor(samples[0]["loss_mask"], dtype=torch.bool),
+        "target_ids": torch.tensor(samples[0]["target_ids"], dtype=torch.long),
     }
 
 
 def cat_collate(samples: list[Sample]) -> Batch:
     return {
-        "input_ids": torch.stack([torch.tensor(sample["input_ids"]) for sample in samples], dim=0).long().to("cuda"),
-        "position_ids": torch.stack([torch.tensor(sample["position_ids"]) for sample in samples], dim=0)
-        .long()
-        .to("cuda"),
-        "loss_mask": torch.stack([torch.tensor(sample["loss_mask"]) for sample in samples], dim=0).bool().to("cuda"),
-        "target_ids": torch.stack([torch.tensor(sample["target_ids"]) for sample in samples], dim=0).long().to("cuda"),
+        "input_ids": torch.stack([torch.tensor(sample["input_ids"]) for sample in samples], dim=0).long(),
+        "position_ids": torch.stack([torch.tensor(sample["position_ids"]) for sample in samples], dim=0).long(),
+        "loss_mask": torch.stack([torch.tensor(sample["loss_mask"]) for sample in samples], dim=0).bool(),
+        "target_ids": torch.stack([torch.tensor(sample["target_ids"]) for sample in samples], dim=0).long(),
     }
 
 
@@ -530,9 +528,9 @@ def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfigType) -
     seq_len = config.micro_batch_size * config.seq_len
     if config.pack_function == "stack":
         stacking_dataset = StackDataset(dataset, seq_len)
-        return StatefulDataLoader(stacking_dataset, batch_size=1, collate_fn=stack_collate)
+        return StatefulDataLoader(stacking_dataset, batch_size=1, collate_fn=stack_collate, pin_memory=True)
     elif config.pack_function == "cat":
         packing_dataset = CatDataset(dataset, seq_len)
-        return StatefulDataLoader(packing_dataset, batch_size=1, collate_fn=cat_collate)
+        return StatefulDataLoader(packing_dataset, batch_size=1, collate_fn=cat_collate, pin_memory=True)
     else:
         raise ValueError(f"Invalid pack function: {config.pack_function}")
