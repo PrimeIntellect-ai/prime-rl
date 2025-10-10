@@ -8,7 +8,6 @@ from openai import AsyncOpenAI, NotFoundError
 
 from prime_rl.orchestrator.config import ClientConfig
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.utils import get_weight_ckpt_model_path
 
 
 def setup_client(client_config: ClientConfig) -> AsyncOpenAI:
@@ -60,14 +59,13 @@ async def check_has_model(client: AsyncOpenAI, model_name: str) -> None:
     logger.debug(f"Model {model_name} was found in the inference pool")
 
 
-async def update_weights(client: AsyncOpenAI, path: Path, step: int) -> None:
+async def update_weights(client: AsyncOpenAI, weight_dir: Path) -> None:
     """Make a HTTP post request to the vLLM server to update the weights."""
     logger = get_logger()
     url = str(client.base_url).strip()[:-4] + "/update_weights"
     try:
-        model_path = get_weight_ckpt_model_path(path, step).absolute()
-        logger.debug(f"Sending request to {url} to update weights from {model_path}")
-        await client.post(url, cast_to=Response, body={"model_path": model_path.as_posix()})
+        logger.debug(f"Sending request to {url} to update weights from {weight_dir}")
+        await client.post(url, cast_to=Response, body={"weight_dir": weight_dir.as_posix()})
     except NotFoundError:
         logger.warning(f"The route {url} does not exist. Skipping weight update.")
         return

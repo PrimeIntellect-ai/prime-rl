@@ -89,11 +89,11 @@ def compute_loss(
     for trainer_logprobs, inference_logprobs, advantages, loss_mask in zip(trainer_logprobs, inference_logprobs, advantages, loss_mask):
         log_importance_ratio = trainer_logprobs - inference_logprobs
 
-        if loss_config.type == "gspo":
-            # https://arxiv.org/abs/2507.18071
-            seq_log_importance_ratio = (log_importance_ratio[loss_mask]).sum() / torch.clamp_min(loss_mask.sum(), 1)
-            log_importance_ratio = trainer_logprobs - trainer_logprobs.detach() + seq_log_importance_ratio.detach()
-            log_importance_ratio = torch.clamp(log_importance_ratio, max=10.0)
+        if loss_config.ratio_type == "sequence":
+            seq_log_importance_ratio = (log_importance_ratio[loss_mask]).sum()
+            if loss_config.ratio_length_norm:
+                seq_log_importance_ratio = seq_log_importance_ratio / torch.clamp_min(loss_mask.sum(), 1)
+            log_importance_ratio = torch.clamp(seq_log_importance_ratio.unsqueeze(0), max=10.0)
 
         importance_ratio = torch.exp(log_importance_ratio)
         clipped_importance_ratio = torch.clamp(importance_ratio, max=loss_config.clip_ratio)
@@ -104,7 +104,7 @@ def compute_loss(
         loss = (loss[loss_mask]).sum()
 
         # Apply sequence-level normalization if configured
-        if loss_config.norm_type == "sequence":
+        if loss_config.ratio_type == "sequence":
             loss = loss / torch.clamp_min(loss_mask.sum(), 1)
 
         total_loss = total_loss + loss

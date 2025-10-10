@@ -340,7 +340,7 @@ class CheckpointConfig(BaseConfig):
         int | None,
         Field(
             ge=-1,
-            description="Step to resume training from. If None, will start from scratch. if -1, will restart from latest checkpoint available.",
+            description="Step to resume training from. If None, will start from scratch. If -1, will restart from latest checkpoint available.",
         ),
     ] = None
 
@@ -371,9 +371,30 @@ class WeightCheckpointConfig(BaseConfig):
         ),
     ] = None
 
+    save_sharded: Annotated[
+        bool,
+        Field(
+            description="Whether to save the weight checkpoint in sharded format.",
+        ),
+    ] = False
+
+    save_format: Annotated[
+        Literal["safetensors", "torch"],
+        Field(
+            description="The format to save the weight checkpoint in.",
+        ),
+    ] = "torch"
+
     save_async: Annotated[
         bool,
         Field(
             description="Whether to save the weight checkpoint asynchronously.",
         ),
     ] = True
+
+    save_adapter_separately: Annotated[
+        bool,
+        Field(
+            description="Whether to save LoRA adapters separately before merging into full model weights.",
+        ),
+    ] = False

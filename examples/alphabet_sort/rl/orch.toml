@@ -1,0 +1,23 @@
+batch_size = 512
+micro_batch_size = 4
+rollouts_per_example = 8
+seq_len = 2048
+max_steps = 100
+mask_truncated_completions = false
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[sampling]
+max_tokens = 768
+
+[environment]
+id = "alphabet-sort"
+
+[environment.args]
+min_turns = 3
+max_turns = 3
+min_names_per_turn = 1
+max_names_per_turn = 4
+similarity_power = 8
+power_per_turn = false
