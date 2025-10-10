@@ -114,28 +114,6 @@ def train(config: RLTrainerConfig):
         f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
     )
 
-    # Optionally, initialize a model to compute logprobs
-    logprob_model, tensor_offloaded_repository = None, {}
-    if config.log_recomputed_logprob_error:
-        # Initialize the logprob model
-        tensor_offloaded_repository: dict[int, OffloadedTensor] = {}
-        logger.info(f"Initializing logprob model ({config.model})")
-        logprob_model = setup_model(config.model, parallel_dims)
-
-        # Load async models from weights checkpoint if resuming from checkpoint
-        if config.ckpt and config.ckpt.resume_step:
-            for step in range(max(progress.step - config.async_level, 0), progress.step):
-                logger.info(f"Initializing logprob model ({config.model}) for step {step}")
-                model_name_or_path = (
-                    config.model.name
-                    if not (config.ckpt and config.ckpt.resume_step)
-                    else weight_ckpt_manager._get_step_path(step).as_posix()
-                )
-                model_config = deepcopy(config.model)
-                model_config.name = model_name_or_path
-                logprob_model = setup_model(model_config, parallel_dims)
-                tensor_offloaded_repository[step] = offload_model_to_cpu(logprob_model)
-
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
     dataloader = DataLoader(config.output_dir, progress.step)
@@ -210,49 +188,6 @@ def train(config: RLTrainerConfig):
         load_data_time = time.time() - load_data_start_time
         logger.debug(f"Loaded batch in {load_data_time:.2f} seconds")
 
-        # Optionally, compute the logprobs for the training batch
-        compute_logprobs_time = 0
-        num_micro_batches = len(micro_batches)
-        recomputed_logprob_errors = [torch.ones_like(mb["inference_logprobs"], device="cuda") for mb in micro_batches]
-        if logprob_model is not None:
-            compute_logprobs_start_time = time.time()
-            og_infer_step = progress.step - config.async_level
-            infer_step = max(og_infer_step, 0)
-            logger.info(f"Recomputing logprobs with model weight checkpoint {infer_step}")
-
-            # Wake up the logprob model from CPU
-            wake_up_model_from_cpu(logprob_model, tensor_offloaded_repository[infer_step])
-            if og_infer_step == infer_step:
-                del tensor_offloaded_repository[infer_step]
-
-            with torch.no_grad():
-                for micro_step, micro_batch in enumerate(micro_batches):
-                    input_ids = micro_batch["input_ids"].to("cuda")
-                    position_ids = micro_batch["position_ids"].to("cuda")
-                    loss_mask = micro_batch["loss_mask"].to("cuda")
-                    inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
-                    temperature = micro_batch["temperature"]
-
-                    # Compute the logprobs
-                    logits = forward(logprob_model, input_ids, position_ids).float().contiguous()
-                    shifted_logits = shift_logits(logits)
-                    shifted_logits = shifted_logits / temperature
-                    recomputed_logprobs = selective_log_softmax(shifted_logits, input_ids)
-
-                    # Compute the recomputed logprob error
-                    recomputed_logprob_error = torch.exp(recomputed_logprobs - inference_logprobs)
-
-                    # Do not mutate training inputs; only record the error for logging
-                    recomputed_logprob_errors[micro_step] = recomputed_logprob_error
-
-            # here we sepcifically don't save the tensor offloaded, they are alreay consumed and we will never use it again.
-            # this avoid having to make sure we don't keep too much tensor offloaded in cpu memory
-            reshard_module(logprob_model)
-            offload_model_to_cpu(logprob_model)
-
-            compute_logprobs_time = time.time() - compute_logprobs_start_time
-            logger.debug(f"Recomputed logprobs in {compute_logprobs_time:.2f} seconds")
-
         memory_profiler = None
         if config.memory_profiler_path is not None:
             memory_profiler = MemoryProfiler(progress.step, config.memory_profiler_path)
@@ -266,6 +201,7 @@ def train(config: RLTrainerConfig):
             loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
         elif config.loss.ratio_type == "sequence":
             loss_scale = batch_size
+        loss_scale = max(loss_scale, 1)
 
         logger.info(f"Starting forward and backward pass ({num_micro_batches=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
@@ -314,9 +250,6 @@ def train(config: RLTrainerConfig):
             tensors["trainer_probs"].append(torch.exp(trainer_logprobs)[loss_mask].detach().to("cpu"))
             tensors["inference_probs"].append(torch.exp(inference_logprobs)[loss_mask].detach().to("cpu"))
             tensors["entropy"].append(entropy[loss_mask].detach().to("cpu"))
-            tensors["recomputed_logprob_error"].append(
-                recomputed_logprob_errors[micro_step][loss_mask].detach().to("cpu")
-            )
             tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
 
             if is_tt_moe_model(model):

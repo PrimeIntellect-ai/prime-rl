@@ -120,7 +120,7 @@ def compute_loss(
         total_is_clipped.append(is_clipped)
 
     # Apply loss scaling
-    scaled_loss = total_loss / max(loss_scale, 1)
+    scaled_loss = total_loss / loss_scale
 
     return scaled_loss, {
         "mismatch_kl": torch.cat(total_mismatch_kl),
