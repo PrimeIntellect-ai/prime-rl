@@ -1,10 +1,10 @@
 import json
-import uuid
 from collections import defaultdict
 from typing import Literal, TypedDict, cast
 
 import torch
-from datasets import Dataset, interleave_datasets, load_dataset
+from datasets import IterableDataset as HFIterableDataset
+from datasets import interleave_datasets, load_dataset
 from jaxtyping import Bool, Int
 from torch import Tensor
 from torch.distributed.checkpoint.stateful import Stateful
@@ -109,7 +109,8 @@ class SFTDataset(StatefulIterableDataset):
 
     def __init__(
         self,
-        dataset: Dataset,
+        dataset: HFIterableDataset,
+        num_examples: int,
         tokenizer: PreTrainedTokenizer | None,
         shuffle: bool = True,
         seed: int = 0,
@@ -121,18 +122,26 @@ class SFTDataset(StatefulIterableDataset):
     ):
         super().__init__()
         self.logger = get_logger()
+        self.dataset = dataset
+        self.num_examples = num_examples
+        self.tokenizer = tokenizer
         self.shuffle = shuffle
         self.seed = seed
         self.seq_len = seq_len
         self.loss_mask_config = loss_mask_config
-        self.tokenizer = tokenizer
+        self.max_examples = max_examples
         self.max_epochs = max_epochs
 
         if self.tokenizer is None:
             self.logger.warning("No tokenizer provided, will not process examples")
 
+        # If specified, select a subset of the dataset
+        if self.max_examples is not None:
+            self.num_examples = min(self.num_examples, self.max_examples)
+            self.dataset = self.dataset.take(self.max_examples)
+
         # Add dataset index
-        self.dataset = dataset.add_column("index", list(range(len(dataset))), new_fingerprint=str(uuid.uuid4()))
+        # self.dataset = dataset.add_column("index", list(range(len(dataset))), new_fingerprint=str(uuid.uuid4()))
 
         # Get the data rank and world size
         worker_info = get_worker_info()
@@ -143,10 +152,6 @@ class SFTDataset(StatefulIterableDataset):
         assert get_world().world_size % non_dp_size == 0, "world_size must be divisible by non_dp_size"
         self.data_rank = get_world().rank // non_dp_size * num_workers + worker_id
         self.data_world_size = get_world().world_size // non_dp_size * num_workers
-
-        # If specified, select a subset of the dataset
-        if max_examples is not None:
-            self.dataset = self.dataset.select(range(max_examples))
 
     def _process(self, example: dict) -> dict | None:
         # Skip processing if no tokenizer was provided
@@ -266,7 +271,7 @@ class SFTDataset(StatefulIterableDataset):
 
         if sum(loss_mask[: self.seq_len]) == 0:
             self.logger.warning(
-                f"Skipping example with index {example['index']} because no trainable tokens were found within the context window ({self.seq_len}). This is to prevent NaN loss."
+                f"Skipping example because no trainable tokens were found within the context window ({self.seq_len}). This is to prevent NaN loss."
             )
             return
 
@@ -290,7 +295,7 @@ class SFTDataset(StatefulIterableDataset):
         """
         while True:
             # Determine eoch from current step
-            self.epoch = self.step // len(self.dataset)
+            self.epoch = self.step // self.num_examples
 
             # Break if max epochs is reached
             if self.max_epochs is not None and self.epoch >= self.max_epochs:
@@ -302,7 +307,7 @@ class SFTDataset(StatefulIterableDataset):
 
             # If resuming, skip the first few samples in the epoch
             if self.step > 0:
-                skip_steps = self.step % len(self.dataset)
+                skip_steps = self.step % self.num_examples
             else:
                 skip_steps = 0
             if skip_steps > 0:
@@ -331,7 +336,7 @@ class SFTDataset(StatefulIterableDataset):
                 example = cast(dict, example)
                 subset_or_split = example.get("subset", example.get("split")) or "train"
                 self.logger.debug(
-                    f"Yield example {example['index']}"
+                    f"Yield example {i}"
                     + (f" from {subset_or_split} " if subset_or_split else " ")
                     + f"with {len(processed_example.get('input_ids', []))} tokens ({sum(processed_example.get('loss_mask', []))} trainable tokens)"
                 )
@@ -492,36 +497,50 @@ def setup_dataset(
             vocab_size=tokenizer.vocab_size, seq_len=config.seq_len, length=config.length, input_ids=config.input_ids
         )
     elif config.type == "sft":
+        logger = get_logger()
         if config.subsets is None and config.splits is None:
             dataset = cast(Dataset, load_dataset(config.name, split="train"))
-            assert isinstance(dataset, Dataset), "Dataset must be a Hugging Face Dataset"
+            num_examples = len(dataset)
+            iterable_dataset = dataset.to_iterable_dataset()
         elif config.subsets is not None and config.splits is None:
-            dataset = interleave_datasets(
-                [cast(Dataset, load_dataset(config.name, subset, split="train")) for subset in config.subsets],
+            logger.debug(f"Loading datasets for subsets {config.subsets} with default split 'train'")
+            datasets = [cast(Dataset, load_dataset(config.name, subset, split="train")) for subset in config.subsets]
+            num_examples = len([len(dataset) for dataset in datasets])
+            iterable_dataset = interleave_datasets(
+                [dataset.to_iterable_dataset() for dataset in datasets],
                 probabilities=config.probabilities,
                 stopping_strategy=config.stopping_strategy,
                 seed=0,
             )
         elif config.subsets is None and config.splits is not None:
-            dataset = interleave_datasets(
-                [cast(Dataset, load_dataset(config.name, split=split)) for split in config.splits],
+            logger.debug(f"Loading datasets for splits {config.splits} with default subset 'None'")
+            datasets = [cast(Dataset, load_dataset(config.name, split=split)) for split in config.splits]
+            num_examples = len([len(dataset) for dataset in datasets])
+            iterable_dataset = interleave_datasets(
+                [dataset.to_iterable_dataset() for dataset in datasets],
                 probabilities=config.probabilities,
                 stopping_strategy=config.stopping_strategy,
                 seed=0,
             )
         else:
             assert config.subsets is not None and config.splits is not None
-            dataset = interleave_datasets(
-                [
-                    cast(Dataset, load_dataset(config.name, subset, split=split))
-                    for subset, split in zip(config.subsets, config.splits)
-                ],
+            logger.debug(
+                f"Loading datasets for subsets {config.subsets} and splits {config.splits} with default probabilities 'None'"
+            )
+            datasets = [
+                cast(Dataset, load_dataset(config.name, subset, split=split))
+                for subset, split in zip(config.subsets, config.splits)
+            ]
+            num_examples = len([len(dataset) for dataset in datasets])
+            iterable_dataset = interleave_datasets(
+                [dataset.to_iterable_dataset() for dataset in datasets],
                 probabilities=config.probabilities,
                 stopping_strategy=config.stopping_strategy,
                 seed=0,
             )
         return SFTDataset(
-            dataset,
+            iterable_dataset,
+            num_examples,
             tokenizer,
             shuffle=config.shuffle,
             seed=config.seed,
