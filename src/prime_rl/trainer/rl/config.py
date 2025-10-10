@@ -158,11 +158,7 @@ class RLTrainerConfig(BaseSettings):
     @model_validator(mode="after")
     def validate_lora_adapter_saving(self):
         if self.weights and self.weights.save_adapter_separately:
-            lora_enabled = (
-                self.model 
-                and self.model.experimental 
-                and self.model.experimental.lora
-            )
+            lora_enabled = self.model and self.model.experimental and self.model.experimental.lora
             if not lora_enabled:
                 raise ValueError(
                     "save_adapter_separately=True requires LoRA to be enabled. "

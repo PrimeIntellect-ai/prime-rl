@@ -39,7 +39,9 @@ def prepare_sample(
     # Prepare input_ids, loss_mask, position_ids, inference_logprobs, and advantages
     input_ids = torch.cat([prompt_token_ids, completion_token_ids]).long()
     loss_mask = torch.cat([prompt_token_mask, completion_token_mask]).bool()
-    inference_logprobs = torch.cat([torch.zeros(len(prompt_token_ids)), torch.tensor(rollout.completion_logprobs)]).float()
+    inference_logprobs = torch.cat(
+        [torch.zeros(len(prompt_token_ids)), torch.tensor(rollout.completion_logprobs)]
+    ).float()
     position_ids = torch.arange(len(input_ids)).long()
     advantages = torch.tensor(rollout.advantage).repeat(len(input_ids)).float()
 

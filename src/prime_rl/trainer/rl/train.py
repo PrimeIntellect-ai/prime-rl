@@ -97,11 +97,7 @@ def train(config: RLTrainerConfig):
     # Set up weight checkpoint manager
     logger.info(f"Initializing weight checkpoint manager ({config.weights})")
     weight_ckpt_manager = setup_weight_ckpt_manager(
-        config.output_dir,
-        config.weights,
-        config.ckpt,
-        config.async_level,
-        config.model.experimental.lora
+        config.output_dir, config.weights, config.ckpt, config.async_level, config.model.experimental.lora
     )
     assert weight_ckpt_manager is not None, "Weight checkpoint manager must be set on RL trainer"
 
@@ -305,7 +301,7 @@ def train(config: RLTrainerConfig):
 
             # Compute entropy
             with torch.no_grad():
-                entropy = compute_entropy(shifted_logits)   
+                entropy = compute_entropy(shifted_logits)
 
             # Delete logits and shifted_logits before backward pass to avoid memory spike
             del logits, shifted_logits

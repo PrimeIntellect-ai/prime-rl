@@ -82,17 +82,23 @@ def compute_loss(
     """
 
     total_loss = 0
-    total_importance_ratio = []
-    total_clipped_importance_ratio = []
     total_is_clipped = []
+    total_mismatch_kl = []
 
-    for trainer_logprobs, inference_logprobs, advantages, loss_mask in zip(trainer_logprobs, inference_logprobs, advantages, loss_mask):
+    for trainer_logprobs, inference_logprobs, advantages, loss_mask in zip(
+        trainer_logprobs, inference_logprobs, advantages, loss_mask
+    ):
+        total_tokens = torch.clamp_min(loss_mask.sum(), 1)
+
         log_importance_ratio = trainer_logprobs - inference_logprobs
+
+        # Compute trainer-inference mismatch KL
+        mismatch_kl = (torch.exp(log_importance_ratio) - log_importance_ratio - 1).sum() / total_tokens
 
         if loss_config.ratio_type == "sequence":
             seq_log_importance_ratio = (log_importance_ratio[loss_mask]).sum()
             if loss_config.ratio_length_norm:
-                seq_log_importance_ratio = seq_log_importance_ratio / torch.clamp_min(loss_mask.sum(), 1)
+                seq_log_importance_ratio = seq_log_importance_ratio / total_tokens
             log_importance_ratio = torch.clamp(seq_log_importance_ratio.unsqueeze(0), max=10.0)
 
         importance_ratio = torch.exp(log_importance_ratio)
@@ -105,20 +111,18 @@ def compute_loss(
 
         # Apply sequence-level normalization if configured
         if loss_config.ratio_type == "sequence":
-            loss = loss / torch.clamp_min(loss_mask.sum(), 1)
+            loss = loss / total_tokens
 
         total_loss = total_loss + loss
 
         # Aggregate loss tensors
-        total_importance_ratio.append(importance_ratio)
-        total_clipped_importance_ratio.append(clipped_importance_ratio)
+        total_mismatch_kl.append(mismatch_kl)
         total_is_clipped.append(is_clipped)
 
     # Apply loss scaling
     scaled_loss = total_loss / max(loss_scale, 1)
 
     return scaled_loss, {
-        "importance_ratio": torch.cat(total_importance_ratio),
-        "clipped_importance_ratio": torch.cat(total_clipped_importance_ratio),
+        "mismatch_kl": torch.cat(total_mismatch_kl),
         "is_clipped": torch.cat(total_is_clipped),
     }
