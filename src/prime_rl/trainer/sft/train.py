@@ -289,16 +289,20 @@ def train(config: SFTTrainerConfig):
             "progress/epoch": dataset.epoch,
             "progress/num_samples": progress.total_samples,
             "progress/num_tokens": progress.total_tokens,
-            **{
-                f"progress/{subset_or_split}/ratio_samples": num_samples / total_samples
-                for subset_or_split, num_samples in dataset.num_samples.items()
-            },
-            **{
-                f"progress/{subset_or_split}/ratio_tokens": num_tokens / total_tokens
-                for subset_or_split, num_tokens in dataset.num_tokens.items()
-            },
             "step": progress.step,
         }
+        # At least two subsets/splits
+        if len(dataset.num_samples) > 1:
+            progress_metrics.update(
+                **{
+                    f"progress/{subset_or_split}/ratio_samples": num_samples / total_samples
+                    for subset_or_split, num_samples in dataset.num_samples.items()
+                },
+                **{
+                    f"progress/{subset_or_split}/ratio_tokens": num_tokens / total_tokens
+                    for subset_or_split, num_tokens in dataset.num_tokens.items()
+                },
+            )
         monitor.log(progress_metrics)
 
         # Log performance metrics
