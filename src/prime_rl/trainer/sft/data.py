@@ -42,6 +42,7 @@ class StatefulIterableDataset(Stateful, IterableDataset):
         self.step, self.epoch = 0, 0
         self.num_samples = defaultdict(int)
         self.num_tokens = defaultdict(int)
+        self.resumed = False
         self._setup_world_info()
 
     def state_dict(self) -> dict:
@@ -49,6 +50,7 @@ class StatefulIterableDataset(Stateful, IterableDataset):
 
     def load_state_dict(self, state_dict: dict):
         assert "step" in state_dict and "epoch" in state_dict
+        self.resumed = True
         self.step = state_dict["step"]
         self.epoch = state_dict["epoch"]
 
@@ -295,6 +297,7 @@ class SFTDataset(StatefulIterableDataset):
         while True:
             # Determine eoch from current step
             self.epoch = self.step // self.num_examples
+            self.logger.info(f"Starting epoch {self.epoch}")
 
             # Break if max epochs is reached
             if self.max_epochs is not None and self.epoch >= self.max_epochs:
@@ -304,13 +307,12 @@ class SFTDataset(StatefulIterableDataset):
             dataset = self.dataset.shuffle(seed=self.epoch + self.seed) if self.shuffle else self.dataset
             dataset_iter = iter(dataset)
 
-            # If resuming, skip the first few samples in the epoch
-            if self.step > 0:
+            # If resuming, skip the samples in the epoch that have already been processed
+            if self.resumed:
                 skip_steps = self.step % self.num_examples
+                self.logger.info(f"Skipping the first {skip_steps} examples in epoch {self.epoch}")
             else:
                 skip_steps = 0
-            if skip_steps > 0:
-                self.logger.info(f"Skipping the first {skip_steps} examples in epoch {self.epoch}")
 
             # Iterate over dataset (one epoch)
             for i, example in enumerate(dataset_iter):
