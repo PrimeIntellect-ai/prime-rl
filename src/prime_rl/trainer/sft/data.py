@@ -4,9 +4,7 @@ from collections import defaultdict
 from typing import Literal, TypedDict, cast
 
 import torch
-from datasets import Dataset as HFDataset
-from datasets import IterableDataset as HFIterableDataset
-from datasets import interleave_datasets, load_dataset
+from datasets import Dataset, interleave_datasets, load_dataset
 from jaxtyping import Bool, Int
 from torch import Tensor
 from torch.distributed.checkpoint.stateful import Stateful
@@ -113,8 +111,7 @@ class SFTDataset(StatefulIterableDataset):
 
     def __init__(
         self,
-        dataset: HFIterableDataset,
-        num_examples: int,
+        dataset: Dataset,
         tokenizer: PreTrainedTokenizer | None,
         shuffle: bool = True,
         seed: int = 0,
@@ -127,7 +124,7 @@ class SFTDataset(StatefulIterableDataset):
         super().__init__()
         self.logger = get_logger()
         self.dataset = dataset
-        self.num_examples = num_examples
+        self.num_examples = len(self.dataset)
         self.tokenizer = tokenizer
         self.shuffle = shuffle
         self.seed = seed
@@ -297,30 +294,26 @@ class SFTDataset(StatefulIterableDataset):
         while True:
             # Determine eoch from current step
             self.epoch = self.step // self.num_examples
-            self.logger.info(f"Starting epoch {self.epoch}")
 
             # Break if max epochs is reached
             if self.max_epochs is not None and self.epoch >= self.max_epochs:
                 break
 
             # Shuffle dataset before each epoch
-            dataset = self.dataset.shuffle(seed=self.epoch + self.seed) if self.shuffle else self.dataset
+            seed = self.epoch + self.seed
+            self.logger.info(f"Starting epoch {self.epoch} (shuffling with seed {seed})")
+            dataset = self.dataset.shuffle(seed=seed) if self.shuffle else self.dataset
             dataset_iter = iter(dataset)
 
             # If resuming, skip the samples in the epoch that have already been processed
             if self.resumed:
                 skip_steps = self.step % self.num_examples
                 self.logger.info(f"Skipping the first {skip_steps} examples in epoch {self.epoch}")
-            else:
-                skip_steps = 0
+                for _ in range(skip_steps):
+                    next(dataset_iter)
 
             # Iterate over dataset (one epoch)
             for i, example in enumerate(dataset_iter):
-                # Skip steps
-                if skip_steps > 0:
-                    skip_steps -= 1
-                    continue
-
                 self.step += 1
 
                 # Skip samples that don't belong to this data rank
@@ -495,31 +488,29 @@ def setup_and_interleave_datasets(
     probabilities: list[float] | None,
     stopping_strategy: Literal["first_exhausted", "all_exhausted"],
     seed: int = 0,
-) -> tuple[HFIterableDataset, int]:
+) -> Dataset:
     logger = get_logger()
-    num_examples = 0
-    iterable_datasets = []
+    datasets = []
     for subset, split in subsets_and_splits:
         logger.debug(f"Loading dataset {dataset_name} with {subset=} and {split=}")
-        dataset = cast(HFDataset, load_dataset(dataset_name, subset, split=split))
+        dataset = cast(Dataset, load_dataset(dataset_name, subset, split=split))
         num_examples = len(dataset)
         dataset = dataset.add_column("__subset", [subset] * num_examples, new_fingerprint=str(uuid.uuid4()))
         dataset = dataset.add_column("__split", [split] * num_examples, new_fingerprint=str(uuid.uuid4()))
         dataset = dataset.add_column("__index", list(range(num_examples)), new_fingerprint=str(uuid.uuid4()))
-        num_examples += num_examples
-        iterable_datasets.append(dataset.to_iterable_dataset())
-    if len(iterable_datasets) > 1:
+        datasets.append(dataset)
+    if len(datasets) > 1:
         logger.debug(f"Interleaving datasets with {probabilities=} and {stopping_strategy=}")
-        iterable_dataset = interleave_datasets(
-            iterable_datasets,
+        dataset = interleave_datasets(
+            datasets,
             probabilities=probabilities,
             stopping_strategy=stopping_strategy,
             seed=seed,
         )
     else:
-        iterable_dataset = iterable_datasets[0]
+        dataset = datasets[0]
 
-    return iterable_dataset, num_examples
+    return dataset
 
 
 def setup_dataset(
@@ -533,11 +524,7 @@ def setup_dataset(
     elif config.type == "sft":
         logger = get_logger()
         if config.subsets is None and config.splits is None:
-            dataset = cast(HFDataset, load_dataset(config.name, split="train"))
-            num_examples = len(dataset)
-            dataset = dataset.add_column("__index", list(range(num_examples)), new_fingerprint=str(uuid.uuid4()))
-            iterable_dataset = dataset.to_iterable_dataset()
-            iterable_dataset, num_examples = setup_and_interleave_datasets(
+            dataset = setup_and_interleave_datasets(
                 dataset_name=config.name,
                 subsets_and_splits=[(None, "train")],
                 probabilities=config.probabilities,
@@ -545,7 +532,7 @@ def setup_dataset(
             )
         elif config.subsets is not None and config.splits is None:
             logger.debug(f"Loading datasets for subsets {config.subsets} with default split 'train'")
-            iterable_dataset, num_examples = setup_and_interleave_datasets(
+            dataset = setup_and_interleave_datasets(
                 dataset_name=config.name,
                 subsets_and_splits=[(subset, "train") for subset in config.subsets],
                 probabilities=config.probabilities,
@@ -553,7 +540,7 @@ def setup_dataset(
             )
         elif config.subsets is None and config.splits is not None:
             logger.debug(f"Loading datasets for splits {config.splits} with default subset 'None'")
-            iterable_dataset, num_examples = setup_and_interleave_datasets(
+            dataset = setup_and_interleave_datasets(
                 dataset_name=config.name,
                 subsets_and_splits=[(None, split) for split in config.splits],
                 probabilities=config.probabilities,
@@ -562,15 +549,14 @@ def setup_dataset(
         else:
             assert config.subsets is not None and config.splits is not None
             logger.debug(f"Loading datasets for subsets {config.subsets} with splits {config.splits}")
-            iterable_dataset, num_examples = setup_and_interleave_datasets(
+            dataset = setup_and_interleave_datasets(
                 dataset_name=config.name,
                 subsets_and_splits=list(zip(config.subsets, config.splits)),
                 probabilities=config.probabilities,
                 stopping_strategy=config.stopping_strategy,
             )
         return SFTDataset(
-            iterable_dataset,
-            num_examples,
+            dataset,
             tokenizer,
             shuffle=config.shuffle,
             seed=config.seed,
