@@ -37,7 +37,7 @@ class StatefulIterableDataset(Stateful, IterableDataset):
     """SFT dataset are iterable (infinite) and stateful (can be checkpointed)."""
 
     def __init__(self):
-        self.step, self.epoch = -1, 0
+        self.step, self.epoch = 0, 0
         self.num_samples = defaultdict(int)
         self.num_tokens = defaultdict(int)
         self._setup_world_info()
@@ -79,7 +79,6 @@ class FakeDataset(StatefulIterableDataset):
 
     def __iter__(self):
         while True:
-            # Increment step count
             self.step += 1
 
             # Skip samples that don't belong to this data rank
@@ -293,14 +292,14 @@ class SFTDataset(StatefulIterableDataset):
             dataset = self.dataset.shuffle(seed=self.epoch + self.seed) if self.shuffle else self.dataset
             dataset_iter = iter(dataset)
 
-            if self.step >= 0:
-                self.logger.info(f"Skipping the first {self.step + 1} examples in epoch {self.epoch}")
-                for _ in range(self.step + 1):
+            skip_steps = self.step % len(dataset)
+            if skip_steps > 0:
+                self.logger.info(f"Skipping the first {skip_steps} examples in epoch {self.epoch}")
+                for _ in range(skip_steps):
                     next(dataset_iter)
 
             # Iterate over dataset (one epoch)
             for i, example in enumerate(dataset_iter):
-                # Increment step count
                 self.step += 1
 
                 # Skip samples that don't belong to this data rank
@@ -325,8 +324,7 @@ class SFTDataset(StatefulIterableDataset):
                 self.num_tokens[subset_or_split] += len(processed_example.get("input_ids", []))
                 yield processed_example
 
-            # Reset step count and increment epoch
-            self.step = -1
+            # Increment epoch
             self.epoch += 1
 
             if self.max_epochs is not None and self.epoch >= self.max_epochs:

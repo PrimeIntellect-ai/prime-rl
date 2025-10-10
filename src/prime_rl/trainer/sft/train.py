@@ -114,7 +114,7 @@ def train(config: SFTTrainerConfig):
         logger.info(f"Resuming training from checkpoint step {config.ckpt.resume_step}")
         ckpt_manager.load(model, [optimizer], scheduler, progress, step=config.ckpt.resume_step, dataloader=dataloader)
     logger.info(
-        f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples}, dataloader_state={dataloader.state_dict()['dataset_state']})"
+        f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples}, dataset_state={dataloader.state_dict()['dataset_state']})"
     )
 
     logger.info(f"Starting training loop ({config.max_steps=})")
@@ -287,20 +287,11 @@ def train(config: SFTTrainerConfig):
         total_tokens = sum(dataset.num_tokens.values())
         progress_metrics = {
             "progress/epoch": dataset.epoch,
-            "progress/dataset_step": dataset.step,
-            "progress/num_samples": total_samples,
-            "progress/num_tokens": total_tokens,
-            **{
-                f"progress/{subset_or_split}/num_samples": num_samples
-                for subset_or_split, num_samples in dataset.num_samples.items()
-            },
+            "progress/num_samples": progress.total_samples,
+            "progress/num_tokens": progress.total_tokens,
             **{
                 f"progress/{subset_or_split}/ratio_samples": num_samples / total_samples
                 for subset_or_split, num_samples in dataset.num_samples.items()
-            },
-            **{
-                f"progress/{subset_or_split}/num_tokens": num_tokens
-                for subset_or_split, num_tokens in dataset.num_tokens.items()
             },
             **{
                 f"progress/{subset_or_split}/ratio_tokens": num_tokens / total_tokens
