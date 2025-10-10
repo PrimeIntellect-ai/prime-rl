@@ -11,14 +11,14 @@ def test_fake_dataset_state():
     dataiter = iter(dataset)
 
     # Initial state
-    assert dataset.state_dict() == {"step": -1, "epoch": 0}
+    assert dataset.state_dict() == {"step": 0, "epoch": 0}
 
     # Iterate
-    next(dataiter)
-    assert dataset.state_dict() == {"step": 0, "epoch": 0}
     next(dataiter)
     assert dataset.state_dict() == {"step": 1, "epoch": 0}
     next(dataiter)
     assert dataset.state_dict() == {"step": 2, "epoch": 0}
     next(dataiter)
     assert dataset.state_dict() == {"step": 3, "epoch": 0}
+    next(dataiter)
+    assert dataset.state_dict() == {"step": 4, "epoch": 0}

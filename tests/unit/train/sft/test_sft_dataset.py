@@ -100,19 +100,19 @@ def test_sft_dataset_state(build_dummy_dataset):
     dataiter = iter(dataset)
 
     # Initial state
-    assert dataset.state_dict() == {"step": -1, "epoch": 0}
+    assert dataset.state_dict() == {"step": 0, "epoch": 0}
 
     # Epoch 1
     for i in range(4):
         sample = next(dataiter)
         assert sample["text"] == str(i)
-        assert dataset.state_dict() == {"epoch": 0, "step": i}
+        assert dataset.state_dict() == {"epoch": 0, "step": i + 1}
 
     # Epoch 2
     for i in range(4):
         sample = next(dataiter)
         assert sample["text"] == str(i)
-        assert dataset.state_dict() == {"epoch": 1, "step": i}
+        assert dataset.state_dict() == {"epoch": 1, "step": 4 + i + 1}
 
     with pytest.raises(StopIteration):
         next(dataiter)
@@ -124,14 +124,14 @@ def test_sft_dataset_state_resume(build_dummy_dataset):
     dataiter = iter(dataset)
 
     # Initial state
-    assert dataset.state_dict() == {"step": -1, "epoch": 0}
+    assert dataset.state_dict() == {"step": 0, "epoch": 0}
 
     # Epoch 1
     for i in range(4):
         sample = next(dataiter)
         print(sample["text"])
         assert sample["text"] == str(i)
-        assert dataset.state_dict() == {"epoch": 0, "step": i}
+        assert dataset.state_dict() == {"epoch": 0, "step": i + 1}
 
     # Resuming from checkpoint cross epoch
     state_dict = dataset.state_dict()
@@ -145,7 +145,7 @@ def test_sft_dataset_state_resume(build_dummy_dataset):
         sample = next(dataiter)
         print(sample["text"])
         assert sample["text"] == str(i)
-        assert dataset.state_dict() == {"epoch": 1, "step": i}
+        assert dataset.state_dict() == {"epoch": 1, "step": 4 + i + 1}
 
     # Resuming from checkpoint mid epoch
     state_dict = dataset.state_dict()
@@ -159,7 +159,7 @@ def test_sft_dataset_state_resume(build_dummy_dataset):
         sample = next(dataiter)
         print(sample["text"])
         assert sample["text"] == str(i)
-        assert dataset.state_dict() == {"epoch": 1, "step": i}
+        assert dataset.state_dict() == {"epoch": 1, "step": 4 + i + 1}
 
     with pytest.raises(StopIteration):
         next(dataiter)

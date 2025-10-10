@@ -82,12 +82,12 @@ class FakeDataset(StatefulIterableDataset):
             self.step += 1
 
             # Skip samples that don't belong to this data rank
-            if self.step % self.data_world_size != self.data_rank:
+            if (self.step - 1) % self.data_world_size != self.data_rank:
                 continue
 
             seq_len = int(torch.randint(1, self.seq_len, (1,)).item()) if self.length == "variable" else self.seq_len
             input_ids = (
-                [self.step] * (seq_len + 1)
+                [self.step - 1] * (seq_len + 1)
                 if self.input_ids == "increasing"
                 else torch.randint(0, self.vocab_size, (self.seq_len + 1,)).long().tolist()
             )
@@ -289,10 +289,20 @@ class SFTDataset(StatefulIterableDataset):
         Apply chat template and tokenize a single example in prompt + completion format (https://github.com/huggingface/trl/blob/de27d612b026526ba39b88eee348994d7636e033/trl/trainer/sft_trainer.py#L661)
         """
         while True:
+            # Update epoch if not starting from scratch
+            if self.step > 0:
+                self.epoch = self.step // len(self.dataset)
+
+                # Break if max epochs is reached
+                if self.max_epochs is not None and self.epoch >= self.max_epochs:
+                    break
+
+            # Shuffle dataset before each epoch
             dataset = self.dataset.shuffle(seed=self.epoch + self.seed) if self.shuffle else self.dataset
             dataset_iter = iter(dataset)
 
-            skip_steps = self.step % len(dataset)
+            # If resuming, skip the first few samples in the epoch
+            skip_steps = self.step % len(self.dataset)
             if skip_steps > 0:
                 self.logger.info(f"Skipping the first {skip_steps} examples in epoch {self.epoch}")
                 for _ in range(skip_steps):
@@ -323,12 +333,6 @@ class SFTDataset(StatefulIterableDataset):
                 self.num_samples[subset_or_split] += 1
                 self.num_tokens[subset_or_split] += len(processed_example.get("input_ids", []))
                 yield processed_example
-
-            # Increment epoch
-            self.epoch += 1
-
-            if self.max_epochs is not None and self.epoch >= self.max_epochs:
-                break
 
 
 class CatDataset(StatefulIterableDataset):
