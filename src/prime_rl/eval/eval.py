@@ -225,6 +225,7 @@ async def _run_evals(
             push_eval_to_env_hub(
                 eval_name=eval_name,
                 model_name=env_model,
+                environment_id=eval_id,
                 metrics=hub_metrics,
                 metadata=hub_metadata,
                 results=hub_results if hub_results else None,

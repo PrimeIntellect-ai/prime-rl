@@ -307,12 +307,12 @@ async def run_eval(
 
             hub_results.append(result_entry)
 
-        # Create a descriptive eval name
         eval_name = f"{model_config.name}-{eval_id}-step{ckpt_step}"
 
         push_eval_to_env_hub(
             eval_name=eval_name,
             model_name=model_config.name,
+            environment_id=eval_id,
             metrics=hub_metrics,
             metadata=hub_metadata,
             results=hub_results if hub_results else None,
