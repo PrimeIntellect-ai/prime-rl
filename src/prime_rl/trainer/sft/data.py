@@ -289,27 +289,32 @@ class SFTDataset(StatefulIterableDataset):
         Apply chat template and tokenize a single example in prompt + completion format (https://github.com/huggingface/trl/blob/de27d612b026526ba39b88eee348994d7636e033/trl/trainer/sft_trainer.py#L661)
         """
         while True:
-            # Update epoch if not starting from scratch
-            if self.step > 0:
-                self.epoch = self.step // len(self.dataset)
+            # Determine eoch from current step
+            self.epoch = self.step // len(self.dataset)
 
-                # Break if max epochs is reached
-                if self.max_epochs is not None and self.epoch >= self.max_epochs:
-                    break
+            # Break if max epochs is reached
+            if self.max_epochs is not None and self.epoch >= self.max_epochs:
+                break
 
             # Shuffle dataset before each epoch
             dataset = self.dataset.shuffle(seed=self.epoch + self.seed) if self.shuffle else self.dataset
             dataset_iter = iter(dataset)
 
             # If resuming, skip the first few samples in the epoch
-            skip_steps = self.step % len(self.dataset)
+            if self.step > 0:
+                skip_steps = self.step % len(self.dataset)
+            else:
+                skip_steps = 0
             if skip_steps > 0:
                 self.logger.info(f"Skipping the first {skip_steps} examples in epoch {self.epoch}")
-                for _ in range(skip_steps):
-                    next(dataset_iter)
 
             # Iterate over dataset (one epoch)
             for i, example in enumerate(dataset_iter):
+                # Skip steps
+                if skip_steps > 0:
+                    skip_steps -= 1
+                    continue
+
                 self.step += 1
 
                 # Skip samples that don't belong to this data rank
