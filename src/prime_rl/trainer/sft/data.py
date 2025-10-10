@@ -498,7 +498,7 @@ def setup_and_interleave_datasets(
     num_examples = 0
     iterable_datasets = []
     for subset, split in subsets_and_splits:
-        logger.info(f"Loading dataset {dataset_name} with {subset=} and {split=}")
+        logger.debug(f"Loading dataset {dataset_name} with {subset=} and {split=}")
         dataset = cast(HFDataset, load_dataset(dataset_name, subset, split=split))
         num_examples = len(dataset)
         dataset = dataset.add_column("__subset", [subset] * num_examples, new_fingerprint=str(uuid.uuid4()))
@@ -507,7 +507,7 @@ def setup_and_interleave_datasets(
         num_examples += num_examples
         iterable_datasets.append(dataset.to_iterable_dataset())
     if len(iterable_datasets) > 1:
-        logger.info(f"Interleaving datasets with {probabilities=} and {stopping_strategy=}")
+        logger.debug(f"Interleaving datasets with {probabilities=} and {stopping_strategy=}")
         iterable_dataset = interleave_datasets(
             iterable_datasets,
             probabilities=probabilities,
