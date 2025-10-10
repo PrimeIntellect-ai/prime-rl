@@ -336,7 +336,7 @@ class SFTDataset(StatefulIterableDataset):
                 subset_or_split = example.get("__subset") or example.get("__split")
                 self.logger.debug(
                     f"Yield example {example.get('__index', '')}"
-                    + (f" from '{subset_or_split}' " if subset_or_split else " ")
+                    + (f" from {subset_or_split} " if subset_or_split else " ")
                     + f"with {len(processed_example.get('input_ids', []))} tokens ({sum(processed_example.get('loss_mask', []))} trainable tokens)"
                 )
                 self.num_samples[subset_or_split] += 1
