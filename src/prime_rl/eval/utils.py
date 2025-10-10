@@ -10,7 +10,7 @@ import pandas as pd
 import torch
 from datasets import Dataset, DatasetDict, load_from_disk
 from openai import AsyncOpenAI
-from verifiers.scripts.eval import eval_environment_async, push_eval_to_env_hub
+from verifiers.scripts.eval import eval_environment_async, push_eval_to_env_hub, serialize_messages_for_hub
 from verifiers.types import GenerateOutputs, Messages
 
 from prime_rl.eval.config import OfflineEvalConfig
@@ -283,27 +283,45 @@ async def run_eval(
             "is_binary_task": could_be_binary,
         }
 
-        # Prepare complete sample-level results with rollout numbers
         hub_results = []
         for i in range(len(example_ids)):
+            task_val = generate_outputs.task[i] if i < len(generate_outputs.task) else ""
+            answer_val = generate_outputs.answer[i] if i < len(generate_outputs.answer) else ""
+
+            if hasattr(task_val, "model_dump"):
+                task_str = json.dumps(task_val.model_dump())
+            else:
+                task_str = str(task_val) if task_val else ""
+
+            if hasattr(answer_val, "model_dump"):
+                answer_str = json.dumps(answer_val.model_dump())
+            else:
+                answer_str = str(answer_val) if answer_val else ""
+
             result_entry = {
                 "example_id": int(example_ids[i]),
                 "rollout_number": int(i % rollouts_per_example),
                 "reward": float(generate_outputs.reward[i]),
-                "task": str(generate_outputs.task[i]) if i < len(generate_outputs.task) else "",
-                "answer": str(generate_outputs.answer[i]) if i < len(generate_outputs.answer) else "",
-                "prompt": generate_outputs.prompt[i] if i < len(generate_outputs.prompt) else None,
-                "completion": generate_outputs.completion[i] if i < len(generate_outputs.completion) else None,
+                "task": task_str,
+                "answer": answer_str,
+                "prompt": serialize_messages_for_hub(generate_outputs.prompt[i])
+                if i < len(generate_outputs.prompt)
+                else None,
+                "completion": serialize_messages_for_hub(generate_outputs.completion[i])
+                if i < len(generate_outputs.completion)
+                else None,
             }
-            # Add info if available
+
             if i < len(generate_outputs.info):
                 info = generate_outputs.info[i]
                 if isinstance(info, dict):
-                    # Include select info fields that are useful
                     if "score" in info:
                         result_entry["score"] = float(info["score"])
                     if "correct" in info:
                         result_entry["correct"] = bool(info["correct"])
+
+            for metric_name, metric_values in generate_outputs.metrics.items():
+                result_entry[metric_name] = float(metric_values[i])
 
             hub_results.append(result_entry)
 
