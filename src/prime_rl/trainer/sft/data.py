@@ -3,6 +3,7 @@ from collections import defaultdict
 from typing import Literal, TypedDict, cast
 
 import torch
+from datasets import Dataset as HFDataset
 from datasets import IterableDataset as HFIterableDataset
 from datasets import interleave_datasets, load_dataset
 from jaxtyping import Bool, Int
@@ -499,12 +500,12 @@ def setup_dataset(
     elif config.type == "sft":
         logger = get_logger()
         if config.subsets is None and config.splits is None:
-            dataset = cast(Dataset, load_dataset(config.name, split="train"))
+            dataset = cast(HFDataset, load_dataset(config.name, split="train"))
             num_examples = len(dataset)
             iterable_dataset = dataset.to_iterable_dataset()
         elif config.subsets is not None and config.splits is None:
             logger.debug(f"Loading datasets for subsets {config.subsets} with default split 'train'")
-            datasets = [cast(Dataset, load_dataset(config.name, subset, split="train")) for subset in config.subsets]
+            datasets = [cast(HFDataset, load_dataset(config.name, subset, split="train")) for subset in config.subsets]
             num_examples = len([len(dataset) for dataset in datasets])
             iterable_dataset = interleave_datasets(
                 [dataset.to_iterable_dataset() for dataset in datasets],
@@ -514,7 +515,7 @@ def setup_dataset(
             )
         elif config.subsets is None and config.splits is not None:
             logger.debug(f"Loading datasets for splits {config.splits} with default subset 'None'")
-            datasets = [cast(Dataset, load_dataset(config.name, split=split)) for split in config.splits]
+            datasets = [cast(HFDataset, load_dataset(config.name, split=split)) for split in config.splits]
             num_examples = len([len(dataset) for dataset in datasets])
             iterable_dataset = interleave_datasets(
                 [dataset.to_iterable_dataset() for dataset in datasets],
@@ -528,7 +529,7 @@ def setup_dataset(
                 f"Loading datasets for subsets {config.subsets} and splits {config.splits} with default probabilities 'None'"
             )
             datasets = [
-                cast(Dataset, load_dataset(config.name, subset, split=split))
+                cast(HFDataset, load_dataset(config.name, subset, split=split))
                 for subset, split in zip(config.subsets, config.splits)
             ]
             num_examples = len([len(dataset) for dataset in datasets])
