@@ -24,7 +24,6 @@ from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
     setup_tokenizer,
-    reshard_module,
     setup_model,
     is_tt_moe_model,
     get_load_balance_stats,
@@ -34,7 +33,6 @@ from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     MemoryProfiler,
     Tensors,
-    copy_model_to_cpu,
     setup_torch_distributed,
     print_benchmark,
     get_response_lengths,
