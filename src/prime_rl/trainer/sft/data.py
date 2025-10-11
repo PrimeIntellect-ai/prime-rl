@@ -40,7 +40,7 @@ class StatefulIterableDataset(Stateful, IterableDataset):
         self.step, self.epoch = 0, 0
         self.num_samples = defaultdict(int)
         self.num_tokens = defaultdict(int)
-        self.resumed = False
+        self.fast_forward = False
         self._setup_world_info()
 
     def state_dict(self) -> dict:
@@ -48,7 +48,7 @@ class StatefulIterableDataset(Stateful, IterableDataset):
 
     def load_state_dict(self, state_dict: dict):
         assert "step" in state_dict and "epoch" in state_dict
-        self.resumed = True
+        self.fast_forward = True
         self.step = state_dict["step"]
         self.epoch = state_dict["epoch"]
 
@@ -306,9 +306,10 @@ class SFTDataset(StatefulIterableDataset):
             dataset_iter = iter(dataset)
 
             # If resuming, skip the samples in the epoch that have already been processed
-            if self.resumed:
+            if self.fast_forward:
                 skip_steps = self.step % self.num_examples
                 self.logger.info(f"Skipping the first {skip_steps} examples in epoch {self.epoch}")
+                self.fast_forward = False  # Only fast forward once
             else:
                 skip_steps = 0
 
