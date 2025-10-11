@@ -1,6 +1,5 @@
 from contextlib import nullcontext
 import time
-from copy import deepcopy
 from datetime import timedelta
 
 # Import environment before any other imports
@@ -34,12 +33,9 @@ from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     MemoryProfiler,
-    OffloadedTensor,
     Tensors,
     copy_model_to_cpu,
     setup_torch_distributed,
-    offload_model_to_cpu,
-    wake_up_model_from_cpu,
     print_benchmark,
     get_response_lengths,
 )
@@ -168,11 +164,6 @@ def train(config: RLTrainerConfig):
         logger.info(f"Starting training step {progress.step}")
         step_start_time = time.time()
 
-        # Offload the current model to CPU for logprob computation
-        if logprob_model is not None:
-            logger.debug(f"Offloading model for step {progress.step} to CPU for future logprob calculation")
-            reshard_module(logprob_model)
-            tensor_offloaded_repository[progress.step] = copy_model_to_cpu(model)
 
         # Wait for the batch to be available
         logger.info("Waiting for training batch to arrive")
@@ -260,10 +251,7 @@ def train(config: RLTrainerConfig):
 
             # Add loss tensors to tensor dict for logging purposes
             for key, loss_tensor in loss_tensors.items():
-                if config.loss.ratio_type == "sequence":
-                    loss_tensor = loss_tensor.detach().to("cpu")
-                else:
-                    loss_tensor = loss_tensor.detach()[loss_mask.squeeze()].detach().to("cpu")
+                loss_tensor = loss_tensor.detach().to("cpu")
                 tensors[key].append(loss_tensor)
 
             # Debug log with *local, micro step* stats

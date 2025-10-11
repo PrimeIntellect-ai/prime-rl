@@ -106,6 +106,9 @@ def compute_loss(
         loss = -clipped_importance_ratio * advantages
         is_clipped = (importance_ratio > loss_config.clip_ratio).float()
 
+        if loss_config.ratio_type == "token":
+            is_clipped = is_clipped[loss_mask]
+
         # Apply loss mask and sum
         loss = (loss[loss_mask]).sum()
 
