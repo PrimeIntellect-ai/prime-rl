@@ -93,7 +93,7 @@ def compute_loss(
         log_importance_ratio = trainer_logprobs - inference_logprobs
 
         # Compute trainer-inference mismatch KL
-        mismatch_kl = (torch.exp(log_importance_ratio) - log_importance_ratio - 1).sum().unsqueeze(0) / total_tokens
+        mismatch_kl = (torch.exp(log_importance_ratio) - log_importance_ratio - 1)[loss_mask].sum().unsqueeze(0) / total_tokens
 
         if loss_config.ratio_type == "sequence":
             seq_log_importance_ratio = (log_importance_ratio[loss_mask]).sum()
