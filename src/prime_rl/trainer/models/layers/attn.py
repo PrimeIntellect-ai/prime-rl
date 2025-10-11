@@ -231,20 +231,26 @@ class SlidingWindowAttention(nn.Module):
         bk = rearrange(key_states, "b h (n w) d -> b h n w d", n=num_windows, w=self.window_size)
         bv = rearrange(value_states, "b h (n w) d -> b h n w d", n=num_windows, w=self.window_size)
 
-        # Causal mask
-        causal_mask = None
+        attn_scores = torch.einsum('bhnqd,bhnkd->bhnqk', bq, bk) / (self.head_dim ** 0.5)
+
+        # Apply causal mask if needed
         if self.is_causal:
             causal_mask = torch.ones(
                 self.window_size, self.window_size,
                 dtype=torch.bool,
                 device=query_states.device
             ).triu(1)
+            attn_scores = attn_scores.masked_fill(causal_mask, float('-inf'))
 
-        # Attention
-        attn = F.scaled_dot_product_attention(bq, bk, bv, attn_mask=~causal_mask if causal_mask is not None else None)
+        # Apply softmax
+        attn_weights = F.softmax(attn_scores, dim=-1)
 
-        # Reshape back and remove padding
-        out = rearrange(attn, "b h n w d -> b h (n w) d")
+        attn_output = torch.einsum('bhnqk,bhnkd->bhnqd', attn_weights, bv)
+
+        # Reshape back
+        out = rearrange(attn_output, "b h n w d -> b h (n w) d")
+
+        # Remove padding
         if pad_len > 0:
             out = out[:, :, :seq_len, :]
 
