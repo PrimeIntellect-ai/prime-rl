@@ -37,6 +37,7 @@ dependencies = [
     "dion",
     "reverse-text",
     "verifiers>=0.1.4",
+    "torchao>=0.13.0",
 ]
 
 [project.scripts]
