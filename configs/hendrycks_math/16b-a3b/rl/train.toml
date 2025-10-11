@@ -1,6 +1,3 @@
-## to run on 8H200
-recompute_logprobs = false
-
 [wandb]
 
 [model]
