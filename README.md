@@ -150,11 +150,13 @@ uv run hf auth login
 ```
 
 ## Training Examples
+
 We provide end-to-end training examples in the [`examples`](examples) directory to highlight features of the framework and guide you through the process of training your own models.
 1. [**Reverse Text**](examples/reverse_text/README.md): Train `Qwen3-0.6B` to reverse a small chunk of text. Demonstrates tiny-scale single-turn SFT and RL training. Can be trained on a single consumer GPU in a few minutes, and is ideal for getting started.
 2. [**Wordle**](examples/wordle/README.md): Train `Qwen3-1.7B` to play Wordle. A fun example of multi-turn SFT and RL training. Can be trained on a 2-4 H100 GPUs in a few hours. Ideal for exploring the multi-turn training capabilities of the framework.
 3. [**Alphabet Sort**](examples/alphabet_sort/README.md): Train `Qwen3-4B-Instruct-2507` to sort names alphabetically. Demonstrates multi-turn RL training via LoRA without SFT warmup. Can be trained on a single H100 GPU in just over an hour. Ideal for exploring LoRA-based training.
-4. *More to come...*
+4. [**Mini Sudoku**](examples/mini_sudoku/README.md): Train `Qwen3-0.6B` to solve 4x4 sudoku puzzles uisng LoRA. Can in trained on a single H100 GPU in less than 90 minutes.
+5. *More to come...*
 
 ## Docs
 
@@ -180,7 +182,7 @@ uv run pre-commit install
 
 ### Tests
 
-Run the full test suite 
+Run the full test suite
 
 ```bash
 uv run pytest -v
