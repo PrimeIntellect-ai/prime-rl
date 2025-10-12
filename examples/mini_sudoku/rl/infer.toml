@@ -1,0 +1,4 @@
+gpu_memory_utilization = 0.5
+
+[model]
+name = "Qwen/Qwen3-0.6B"
