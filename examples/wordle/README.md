@@ -6,7 +6,7 @@ In this example, we demonstrate how to train `Qwen3-1.7B` to play Wordle. This w
 
 ## Setup
 
-First, let's install the environment using the `prime` CLI.
+First, let's install the environment using the `prime` (`uv tool install prime`)
 
 ```bash
 prime env install will/wordle

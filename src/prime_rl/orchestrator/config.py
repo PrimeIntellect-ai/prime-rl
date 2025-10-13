@@ -287,8 +287,8 @@ class CheckpointConfig(BaseConfig):
     resume_step: Annotated[
         int | None,
         Field(
-            ge=1,
-            description="Step to resume orchestrator from. If None, will start from scratch.",
+            ge=-1,
+            description="Step to resume orchestrator from. If None, will start from scratch. If -1, will restart from latest checkpoint available.",
         ),
     ] = None
 

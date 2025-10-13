@@ -41,14 +41,8 @@ main() {
         apt install -y sudo
     fi
 
-    log_info "Updating apt..."
-    sudo apt update
-
     log_info "Installing base packages..."
-    sudo apt install -y \
-    git tmux htop nvtop cmake python3-dev cgroup-tools \
-    build-essential curl ca-certificates gnupg \
-    openssh-client
+    sudo apt update && sudo apt install -y build-essential openssh-client curl git tmux htop nvtop
 
     log_info "Configuring SSH known_hosts for GitHub..."
     ensure_known_hosts
@@ -73,8 +67,15 @@ main() {
         source $HOME/.local/bin/env
     fi
 
-    log_info "Installing dependencies in virtual environment..."
+    log_info "Installing prime..."
+    uv tool install prime
+
+    log_info "Syncing virtual environment..."
     uv sync && uv sync --all-extras
+
+    log_info "Installing pre-commit hooks..."
+    uv run pre-commit install
+
     log_info "Installation completed!"
 }
 

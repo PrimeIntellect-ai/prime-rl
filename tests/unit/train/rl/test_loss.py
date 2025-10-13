@@ -18,7 +18,7 @@ def test_grpo_loss():
         old_logprobs,
         advantages,
         loss_mask=loss_mask,
-        loss_config=LossConfig(type="grpo", clip_ratio=10.0),
+        loss_config=LossConfig(ratio_type="token", clip_ratio=10.0),
         loss_scale=1.0,
     )
     assert loss.shape == ()
@@ -36,7 +36,7 @@ def test_gspo_loss():
         old_logprobs,
         advantages,
         loss_mask=loss_mask,
-        loss_config=LossConfig(type="gspo", clip_ratio=10.0),
+        loss_config=LossConfig(ratio_type="sequence", clip_ratio=10.0),
         loss_scale=1.0,
     )
     assert loss.shape == ()

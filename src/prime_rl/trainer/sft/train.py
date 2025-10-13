@@ -80,7 +80,9 @@ def train(config: SFTTrainerConfig):
 
     # Set up weight checkpoint manager
     logger.info(f"Initializing weight checkpoint manager ({config.weights})")
-    weight_ckpt_manager = setup_weight_ckpt_manager(config.output_dir, config.weights, config.ckpt, async_level=0)
+    weight_ckpt_manager = setup_weight_ckpt_manager(
+        config.output_dir, config.weights, config.ckpt, 0, config.model.experimental.lora
+    )
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
@@ -92,7 +94,7 @@ def train(config: SFTTrainerConfig):
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
     dataset = setup_dataset(tokenizer, config.data, config.model.cp * config.model.tp)
-    dataloader = setup_dataloader(dataset, tokenizer, config.data)
+    dataloader = setup_dataloader(dataset, config.data)
     dataiter = iter(dataloader)
 
     # Check that the world size and batch configuration is compatible
@@ -112,7 +114,7 @@ def train(config: SFTTrainerConfig):
         logger.info(f"Resuming training from checkpoint step {config.ckpt.resume_step}")
         ckpt_manager.load(model, [optimizer], scheduler, progress, step=config.ckpt.resume_step, dataloader=dataloader)
     logger.info(
-        f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples}, dataloader_state={dataloader.state_dict()['dataset_state']})"
+        f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples}, dataset_state={dataloader.state_dict()['dataset_state']})"
     )
 
     logger.info(f"Starting training loop ({config.max_steps=})")
@@ -138,7 +140,13 @@ def train(config: SFTTrainerConfig):
         ):
             logger.info(f"Saving weight checkpoint at step {progress.step}")
             save_weights_start_time = time.time()
-            weight_ckpt_manager.save(model, tokenizer, step=progress.step)
+            weight_ckpt_manager.save(
+                model,
+                tokenizer,
+                save_format=config.weights.save_format,
+                save_sharded=config.weights.save_sharded,
+                step=progress.step,
+            )
             save_weights_time = time.time() - save_weights_start_time
 
         # Save the full checkpoint (if we are at an interval step and not at the first or last step)
@@ -169,7 +177,6 @@ def train(config: SFTTrainerConfig):
 
         step_start_time = time.time()
         forward_backward_start_time = time.time()
-        epoch = 0
         grad_accum_steps = (
             config.data.batch_size
             * config.model.cp
@@ -185,7 +192,6 @@ def train(config: SFTTrainerConfig):
             position_ids = micro_batch["position_ids"].to("cuda")
             target_ids = micro_batch["target_ids"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
-            epoch = micro_batch["epoch"]
             assert input_ids.shape == position_ids.shape == target_ids.shape == loss_mask.shape, (
                 f"input_ids.shape: {input_ids.shape}, position_ids.shape: {position_ids.shape}, target_ids.shape: {target_ids.shape}, loss_mask.shape: {loss_mask.shape}"
             )
@@ -262,7 +268,7 @@ def train(config: SFTTrainerConfig):
         # Compute step metrics
         num_tokens = config.data.batch_size * config.data.seq_len
         progress.total_tokens += num_tokens
-        progress.total_samples = dataloader.state_dict()["dataset_state"]["dataset"]["step"]
+        progress.total_samples = dataset.step
         perf_counter = get_perf_counter(model, config.data.seq_len)
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_tokens_per_second() or 0
@@ -277,12 +283,26 @@ def train(config: SFTTrainerConfig):
         logger.success(step_message)
 
         # Log progress metrics
+        total_samples = sum(dataset.num_samples.values())
+        total_tokens = sum(dataset.num_tokens.values())
         progress_metrics = {
-            "progress/epoch": epoch,
-            "progress/total_samples": progress.total_samples,
-            "progress/total_tokens": progress.total_tokens,
+            "progress/epoch": dataset.epoch,
+            "progress/num_samples": progress.total_samples,
+            "progress/num_tokens": progress.total_tokens,
             "step": progress.step,
         }
+        # At least two subsets/splits
+        if len(dataset.num_samples) > 1:
+            progress_metrics.update(
+                **{
+                    f"progress/{subset_or_split}/ratio_samples": num_samples / total_samples
+                    for subset_or_split, num_samples in dataset.num_samples.items()
+                },
+                **{
+                    f"progress/{subset_or_split}/ratio_tokens": num_tokens / total_tokens
+                    for subset_or_split, num_tokens in dataset.num_tokens.items()
+                },
+            )
         monitor.log(progress_metrics)
 
         # Log performance metrics
@@ -343,8 +363,15 @@ def train(config: SFTTrainerConfig):
 
     # Write final weight checkpoint
     if weight_ckpt_manager is not None:
+        assert config.weights is not None
         logger.info("Writing final weight checkpoint")
-        weight_ckpt_manager.save(model, tokenizer, step=progress.step)
+        weight_ckpt_manager.save(
+            model,
+            tokenizer,
+            save_format=config.weights.save_format,
+            save_sharded=config.weights.save_sharded,
+            step=progress.step,
+        )
 
     # Write final checkpoint
     if ckpt_manager is not None:
