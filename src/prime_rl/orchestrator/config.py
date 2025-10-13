@@ -292,6 +292,9 @@ class EvalConfig(BaseConfig):
                 if not isinstance(env_config, dict):
                     continue
 
+                if env_id not in self.environment_ids:
+                    self.environment_ids.append(env_id)
+
                 # Populate per-env fields
                 if "num_examples" in env_config:
                     self.num_examples_per_env[env_id] = env_config["num_examples"]
