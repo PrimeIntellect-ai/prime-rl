@@ -41,8 +41,8 @@ class AppState(Stateful):
         self,
         model: Module,
         optimizers: list[Optimizer],
-        scheduler: LRScheduler,
-        progress: Progress,
+        scheduler: LRScheduler | None,
+        progress: Progress | None,
     ):
         self.model = model
         self.optimizers = optimizers
@@ -52,23 +52,28 @@ class AppState(Stateful):
     def state_dict(self) -> dict[str, Any]:
         # Automatically manages FSDP FQN's, as well as sets the default state dict type to FSDP.SHARDED_STATE_DICT
         model_state_dict, optimizer_state_dict = get_state_dict(self.model, self.optimizers)
-        scheduler_state_dict = self.scheduler.state_dict()
-        progress_state_dict = asdict(self.progress)
         state_dict = {
             "model": model_state_dict,
             "optimizers": optimizer_state_dict,
-            "scheduler": scheduler_state_dict,
-            "progress": progress_state_dict,
         }
+        if self.scheduler is not None:
+            scheduler_state_dict = self.scheduler.state_dict()
+            state_dict["scheduler"] = scheduler_state_dict
+        if self.progress is not None:
+            progress_state_dict = asdict(self.progress)
+            state_dict["progress"] = progress_state_dict
         return state_dict
 
     def load_state_dict(self, state_dict: dict[str, Any]):
         set_state_dict(
             self.model, self.optimizers, model_state_dict=state_dict["model"], optim_state_dict=state_dict["optimizers"]
         )
-        self.scheduler.load_state_dict(state_dict["scheduler"])
-        for key, value in state_dict["progress"].items():
-            setattr(self.progress, key, value)
+        if self.scheduler is not None:
+            print("loading scheduler")
+            self.scheduler.load_state_dict(state_dict["scheduler"])
+        if self.progress is not None:
+            for key, value in state_dict["progress"].items():
+                setattr(self.progress, key, value)
 
 
 class CheckpointManager:
@@ -130,8 +135,8 @@ class CheckpointManager:
         ckpt_path: Path,
         model: nn.Module,
         optimizers: list[Optimizer],
-        scheduler: LRScheduler,
-        progress: Progress,
+        scheduler: LRScheduler | None,
+        progress: Progress | None,
         dataloader: StatefulDataLoader | None = None,
     ):
         """Loads a checkpoint from a given path in-place."""
@@ -144,10 +149,7 @@ class CheckpointManager:
         dcp.load(state_dict=state_dict, checkpoint_id=ckpt_path)
 
         # Load the dataloader
-        if self.config.skip_dataloader:
-            get_logger().warning("Skipping dataloader checkpointing")
-
-        if dataloader is not None and not self.config.skip_dataloader:
+        if dataloader is not None:
             dataloader_path = ckpt_path / "dataloader" / f"rank_{self._world.rank}.pt"
             if not dataloader_path.exists():
                 self._logger.warning(
@@ -166,8 +168,8 @@ class CheckpointManager:
         self,
         model: nn.Module,
         optimizers: list[Optimizer],
-        scheduler: LRScheduler,
-        progress: Progress,
+        scheduler: LRScheduler | None,
+        progress: Progress | None,
         step: int,
         dataloader: StatefulDataLoader | None = None,
     ) -> None:

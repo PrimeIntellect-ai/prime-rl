@@ -352,10 +352,24 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = None
 
+    skip_progress: Annotated[
+        bool,
+        Field(
+            description="Whether to skip loading the progress from checkpoint.",
+        ),
+    ] = False
+
+    skip_scheduler: Annotated[
+        bool,
+        Field(
+            description="Whether to skip loading the scheduler from checkpoint.",
+        ),
+    ] = False
+
     skip_dataloader: Annotated[
         bool,
         Field(
-            description="Whether to skip checkpointing the dataloader. If True, will not checkpoint the dataloader.",
+            description="Whether to skip loading the dataloader from checkpoint.",
         ),
     ] = False
 
