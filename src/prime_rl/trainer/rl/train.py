@@ -162,7 +162,6 @@ def train(config: RLTrainerConfig):
         logger.info(f"Starting training step {progress.step}")
         step_start_time = time.time()
 
-
         # Wait for the batch to be available
         logger.info("Waiting for training batch to arrive")
         wait_for_batch_start_time = time.time()
