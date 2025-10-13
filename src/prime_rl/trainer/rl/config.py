@@ -24,7 +24,8 @@ class LossConfig(BaseModel):
         bool, Field(description="Whether to normalize the importance ratio by the sequence length.")
     ] = False
 
-    clip_ratio: Annotated[float, Field(ge=0)] = 8.0
+    mask_ratio_high: Annotated[float, Field(ge=0)] = 8.0
+    mask_ratio_low: Annotated[float, Field(ge=0)] = 0.0
 
 
 class FakeDataLoaderConfig(BaseConfig):

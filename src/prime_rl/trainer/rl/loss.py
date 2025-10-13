@@ -82,8 +82,10 @@ def compute_loss(
     """
 
     total_loss = 0
-    total_is_clipped = []
     total_mismatch_kl = []
+    total_is_masked = []
+    total_is_masked_low = []
+    total_is_masked_high = []
 
     for trainer_logprobs, inference_logprobs, advantages, loss_mask in zip(
         trainer_logprobs, inference_logprobs, advantages, loss_mask
@@ -103,12 +105,16 @@ def compute_loss(
             log_importance_ratio = torch.clamp(seq_log_importance_ratio.unsqueeze(0), max=10.0)
 
         importance_ratio = torch.exp(log_importance_ratio)
-        clipped_importance_ratio = torch.clamp(importance_ratio, max=loss_config.clip_ratio)
-        loss = -clipped_importance_ratio * advantages
-        is_clipped = (importance_ratio > loss_config.clip_ratio).float()
+        keep_mask = (importance_ratio >= loss_config.mask_ratio_low) & (importance_ratio <= loss_config.mask_ratio_high)
+        loss = -importance_ratio[keep_mask] * advantages
+        is_masked_low = (importance_ratio < loss_config.mask_ratio_low).float()
+        is_masked_high = (importance_ratio > loss_config.mask_ratio_high).float()
+        is_masked = (~keep_mask).float()
 
         if loss_config.ratio_type == "token":
-            is_clipped = is_clipped[loss_mask]
+            is_masked = is_masked[loss_mask]
+            is_masked_low = is_masked_low[loss_mask]
+            is_masked_high = is_masked_high[loss_mask]
 
         # Apply loss mask and sum
         loss = (loss[loss_mask]).sum()
@@ -121,12 +127,16 @@ def compute_loss(
 
         # Aggregate loss tensors
         total_mismatch_kl.append(mismatch_kl)
-        total_is_clipped.append(is_clipped)
+        total_is_masked.append(is_masked)
+        total_is_masked_low.append(is_masked_low)
+        total_is_masked_high.append(is_masked_high)
 
     # Apply loss scaling
     scaled_loss = total_loss / loss_scale
 
     return scaled_loss, {
         "mismatch_kl": torch.cat(total_mismatch_kl),
-        "is_clipped": torch.cat(total_is_clipped),
+        "is_masked": torch.cat(total_is_masked),
+        "is_masked_low": torch.cat(total_is_masked_low),
+        "is_masked_high": torch.cat(total_is_masked_high),
     }
