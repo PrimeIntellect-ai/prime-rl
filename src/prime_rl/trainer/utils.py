@@ -2,9 +2,8 @@ import pickle
 import time
 from collections import defaultdict
 from datetime import timedelta
-from itertools import chain
 from pathlib import Path
-from typing import Any, TypeAlias
+from typing import Any
 
 import pandas as pd
 import torch
@@ -13,8 +12,7 @@ from rich import print as rich_print
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text
-from torch import Tensor, nn
-from torch.distributed.tensor import DTensor
+from torch import Tensor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.world import get_world
@@ -67,12 +65,6 @@ def get_response_lengths(position_ids: torch.Tensor) -> list[int]:
         lengths.append(end - start)
 
     return lengths
-
-
-def get_real_tensor(tensor: Tensor | DTensor) -> Tensor:
-    if isinstance(tensor, DTensor):
-        return tensor.to_local()
-    return tensor
 
 
 def print_sample(input_ids: list[int], loss_mask: list[bool], tokenizer: PreTrainedTokenizer):
