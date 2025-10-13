@@ -106,7 +106,7 @@ def compute_loss(
 
         importance_ratio = torch.exp(log_importance_ratio)
         keep_mask = (importance_ratio >= loss_config.mask_ratio_low) & (importance_ratio <= loss_config.mask_ratio_high)
-        loss = -importance_ratio[keep_mask] * advantages
+        loss = -importance_ratio * advantages * keep_mask.float()
         is_masked_low = (importance_ratio < loss_config.mask_ratio_low).float()
         is_masked_high = (importance_ratio > loss_config.mask_ratio_high).float()
         is_masked = (~keep_mask).float()
