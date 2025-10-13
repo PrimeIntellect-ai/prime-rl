@@ -126,6 +126,10 @@ def train(config: SFTTrainerConfig):
             step=config.ckpt.resume_step,
             dataloader=dataloader if not config.ckpt.skip_dataloader else None,
         )
+        # This redundant setup is necessary because loading the optimizer's state has side effects on the scheduler state dict
+        if config.ckpt.skip_scheduler:
+            scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
+        print(scheduler.state_dict())
     logger.info(
         f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples}, dataset_state={dataloader.state_dict()['dataset_state']})"
     )
