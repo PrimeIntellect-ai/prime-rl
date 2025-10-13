@@ -223,6 +223,27 @@ class EvalConfig(BaseConfig):
         ),
     ] = None
 
+    batch_size: Annotated[
+        int,
+        Field(
+            description="Number of examples to evaluate per generation call (chunk size). If -1 or 0, processes the entire dataset in one call. Applies to all environments.",
+        ),
+    ] = 512
+
+    judge_model: Annotated[
+        str | None,
+        Field(
+            description="The model to use for judging the rollouts. Defaults to None, which means we use the base model.",
+        ),
+    ] = None
+
+    judge_port: Annotated[
+        str | None,
+        Field(
+            description="The port to use for the judge model. Defaults to None, which means we use the base model.",
+        ),
+    ] = None
+
     @model_validator(mode="after")
     def _validate_and_fill_eval_lists(self):
         # If rollouts_per_example is empty, default to 1 for all ids

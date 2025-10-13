@@ -3,6 +3,7 @@ import json
 import time
 from pathlib import Path
 from typing import Any, cast
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
@@ -11,6 +12,7 @@ from datasets import Dataset, DatasetDict, load_from_disk
 from openai import AsyncOpenAI
 from verifiers import load_environment
 from verifiers.types import GenerateOutputs, Messages
+from types import SimpleNamespace
 
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.orchestrator.config import ClientConfig, EvalConfig, EvalSamplingConfig, ModelConfig
@@ -71,6 +73,80 @@ def prepare_sampling_args(sampling_config: EvalSamplingConfig, client_config: Cl
         sampling_args["extra_body"] = extra_body
 
     return sampling_args
+
+def _effective_batch_size(total_examples: int, batch_size: int | None) -> int:
+    """Resolve the batch size where non-positive means process all at once."""
+    return total_examples if batch_size is None or batch_size <= 0 else batch_size
+
+
+def _iter_dataset_batches(examples: list[dict], batch_size: int):
+    """Yield datasets constructed from list slices of examples with the given batch size."""
+    total = len(examples)
+    for start in range(0, total, batch_size):
+        end = min(start + batch_size, total)
+        yield start, end, Dataset.from_list(examples[start:end])
+
+
+class _OutputsAggregator:
+    """Accumulate GenerateOutputs across batches into simple python lists."""
+
+    def __init__(self):
+        self.prompt: list[Any] = []
+        self.completion: list[Any] = []
+        self.answer: list[Any] = []
+        self.task: list[Any] = []
+        self.reward: list[float] = []
+        self.info: list[Any] = []
+        self.state: list[Any] = []
+
+    def extend(self, outputs: GenerateOutputs) -> None:
+        self.prompt.extend(outputs.prompt)
+        self.completion.extend(outputs.completion)
+        self.answer.extend(outputs.answer)
+        self.task.extend(outputs.task)
+        self.reward.extend(outputs.reward)
+        self.info.extend(outputs.info)
+        self.state.extend(outputs.state)
+
+    def to_namespace(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            prompt=self.prompt,
+            completion=self.completion,
+            answer=self.answer,
+            task=self.task,
+            reward=self.reward,
+            info=self.info,
+            state=self.state,
+        )
+
+
+@dataclass
+class _RunningEvalStats:
+    correct_rollouts: int = 0
+    total_rollouts: int = 0
+    perfect_samples: int = 0
+    total_problems_seen: int = 0
+
+    def update(self, rewards: torch.Tensor, rollouts_per_example: int) -> tuple[float, int, int, float, float]:
+        """Update running stats from a (num_problems x k) reward tensor.
+        Returns: batch_accuracy, batch_perfect_count, batch_num_problems,
+        running_accuracy, running_perfect_rate
+        """
+        batch_accuracy = rewards.mean().item()
+        batch_perfect_count = int(rewards.sum(-1).eq(rollouts_per_example).sum().item())
+        batch_num_problems = rewards.shape[0]
+
+        self.correct_rollouts += int(rewards.sum().item())
+        self.total_rollouts += rewards.numel()
+        self.perfect_samples += batch_perfect_count
+        self.total_problems_seen += batch_num_problems
+
+        running_accuracy = float(self.correct_rollouts) / float(self.total_rollouts) if self.total_rollouts > 0 else 0.0
+        running_perfect_rate = (
+            float(self.perfect_samples) / float(self.total_problems_seen) if self.total_problems_seen > 0 else 0.0
+        )
+
+        return batch_accuracy, batch_perfect_count, batch_num_problems, running_accuracy, running_perfect_rate
 
 
 def normalize_prompt(messages: Messages):
@@ -134,6 +210,7 @@ async def run_eval(
     num_examples: int,
     rollouts_per_example: int,
     max_concurrent: int,
+    batch_size: int,
     save_to_disk: bool,
     output_dir: Path,
     ckpt_step: int,
@@ -180,14 +257,66 @@ async def run_eval(
 
     # Run async generation and scoring
     run_eval_start_time = time.time()
-    generate_outputs: GenerateOutputs = await vf_eval.a_generate(
-        inputs=Dataset.from_list(examples),
-        client=client,
-        model=model_config.name,
-        sampling_args=sampling_args,
-        score_rollouts=True,
-        max_concurrent=max_concurrent,
-    )
+    total_examples = len(examples)
+    effective_batch_size = _effective_batch_size(total_examples, batch_size)
+    total_batches = (total_examples + effective_batch_size - 1) // effective_batch_size
+
+    # Debug samples file removed
+
+    aggregator = _OutputsAggregator()
+    stats = _RunningEvalStats()
+
+    for batch_idx, (start, end, batch_inputs) in enumerate(
+        _iter_dataset_batches(examples, effective_batch_size), start=1
+    ):
+        batch_outputs: GenerateOutputs = await vf_eval.a_generate(
+            inputs=batch_inputs,
+            client=client,
+            model=model_config.name,
+            sampling_args=sampling_args,
+            score_rollouts=True,
+            max_concurrent=max_concurrent,
+        )
+
+        # Compute per-batch accuracy and perfect-sample stats
+        batch_rewards = torch.tensor(batch_outputs.reward).float().reshape(-1, rollouts_per_example)
+        (
+            batch_accuracy,
+            batch_perfect_count,
+            batch_num_problems,
+            running_accuracy,
+            running_perfect_rate,
+        ) = stats.update(batch_rewards, rollouts_per_example)
+
+        # Log between batches to terminal
+        logger.info(
+            f"[{eval_id}] Batch {batch_idx}/{total_batches} | Acc: {batch_accuracy:.4f} (run {running_accuracy:.4f}) | "
+            f"Perfect: {batch_perfect_count}/{batch_num_problems} (run {stats.perfect_samples}/{stats.total_problems_seen}, {running_perfect_rate:.4f})"
+        )
+
+        # Log between batches to monitor
+        monitor.log(
+            {
+                f"eval/{eval_id}/accuracy/batch": batch_accuracy,
+                f"eval/{eval_id}/accuracy/running": running_accuracy,
+                f"eval/{eval_id}/perfect/batch_count": batch_perfect_count,
+                f"eval/{eval_id}/perfect/batch_total": batch_num_problems,
+                f"eval/{eval_id}/perfect/running_count": stats.perfect_samples,
+                f"eval/{eval_id}/perfect/running_total": stats.total_problems_seen,
+                f"eval/{eval_id}/perfect/running_rate": running_perfect_rate,
+                "progress/ckpt_step": ckpt_step,
+                "step": step if step is not None else ckpt_step,
+            }
+        )
+
+        # Removed sample printing and file writing
+
+        # Aggregate batch outputs
+        aggregator.extend(batch_outputs)
+
+    # Wrap aggregated lists into an object with attribute access compatible with GenerateOutputs
+    generate_outputs = aggregator.to_namespace()
+
     run_eval_time = time.time() - run_eval_start_time
     logger.debug(f"Generated and scored rollouts in {run_eval_time:.2f}s")
 
@@ -261,7 +390,7 @@ async def run_eval(
     if save_to_disk:
         # Save samples as dataset
         eval_dir = get_step_path(get_eval_dir(output_dir), ckpt_step) / eval_id
-        dataset = make_dataset(generate_outputs)
+        dataset = vf_eval.make_dataset(generate_outputs, rollouts_per_example, push_to_hf_hub=True, hub_name="Fareso/dataset")
         dataset.save_to_disk(eval_dir)
         logger.info(f"Saved eval results for {eval_id} to disk ({eval_dir})")
 
@@ -286,6 +415,7 @@ async def run_evals(
                 num_examples=num_examples,
                 rollouts_per_example=rollouts_per_example,
                 max_concurrent=max_concurrent,
+                batch_size=eval_config.batch_size,
                 output_dir=output_dir,
                 save_to_disk=eval_config.save_to_disk,
                 model_config=model_config,
