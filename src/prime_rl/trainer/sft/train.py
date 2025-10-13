@@ -75,8 +75,14 @@ def train(config: SFTTrainerConfig):
     optimizer = setup_optimizer(config.optim, model, parallel_dims.world_mesh["dp_shard_cp"])
 
     # Set up the learning rate scheduler
-    scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
-    logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
+    scheduler_steps = (
+        config.max_steps - config.ckpt.resume_step
+        if config.max_steps is not None
+        and (config.ckpt and config.ckpt.skip_scheduler and config.ckpt.resume_step is not None)
+        else config.max_steps
+    )
+    logger.info(f"Setting up {config.scheduler.type} scheduler with {scheduler_steps} steps ({config.scheduler})")
+    scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
 
     # Set up weight checkpoint manager
     logger.info(f"Initializing weight checkpoint manager ({config.weights})")
