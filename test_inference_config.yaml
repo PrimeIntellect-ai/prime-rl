@@ -1,0 +1,14 @@
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+model:
+  name: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+  dtype: "auto"
+  trust_remote_code: false
+
+parallel:
+  tp: 1
+  dp: 1
+
+gpu_memory_utilization: 0.3
