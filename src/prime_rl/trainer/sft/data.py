@@ -291,6 +291,7 @@ class SFTDataset(StatefulIterableDataset):
         """
         Apply chat template and tokenize a single example in prompt + completion format (https://github.com/huggingface/trl/blob/de27d612b026526ba39b88eee348994d7636e033/trl/trainer/sft_trainer.py#L661)
         """
+        dataset = self.dataset.shuffle(seed=self.epoch + self.seed) if self.shuffle else self.dataset
         while True:
             self.step += 1
 
@@ -301,13 +302,10 @@ class SFTDataset(StatefulIterableDataset):
             if self.max_epochs is not None and epoch >= self.max_epochs:
                 break
 
-            # Update stored epoch if new epoch is reached, optionall shuffle
+            # Update stored epoch if new epoch is reached, optionally shuffle
             if epoch > self.epoch:
-                dataset = self.dataset.shuffle(seed=epoch + self.seed) if self.shuffle else self.dataset
-                self.epoch += 1
-                assert self.epoch == epoch
-            else:
-                dataset = self.dataset
+                self.epoch = epoch
+                dataset = self.dataset.shuffle(seed=self.epoch + self.seed) if self.shuffle else self.dataset
 
             # Skip samples that don't belong to this data rank
             if (self.step - 1) % self.data_world_size != self.data_rank:
