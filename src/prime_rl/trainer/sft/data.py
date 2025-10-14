@@ -187,10 +187,18 @@ class SFTDataset(StatefulIterableDataset):
                 for message in messages
             ]
 
+        def strip_content(messages: list[dict]) -> list[dict]:
+            return [{**message, "content": message["content"].strip()} for message in messages]
+
         # Deserialize tool call arguments from message list, if present - assumes OAI format
         # Reference: https://platform.openai.com/docs/guides/function-calling#handling-function-calls
         prompt = deserialize_tool_calls(example["prompt"])
         completion = deserialize_tool_calls(example["completion"])
+
+        # Strip content from all messages so that incremental tokenization works
+        # NOTE: This has the side effect that we do never train on leading or trailing whitespace
+        prompt = strip_content(prompt)
+        completion = strip_content(completion)
 
         # Parse available tools, if present - assumes OAI format
         # Reference: https://platform.openai.com/docs/guides/function-calling#function-tool-example
