@@ -98,7 +98,7 @@ async def main():
 
     # Setup client
     client = AsyncOpenAI(
-        base_url="http://localhost:8000/v1",
+        base_url="http://localhost:8000/v1/",  # Note trailing slash to avoid double-slash in _server_base_from_oai
         api_key="EMPTY",
     )
 
