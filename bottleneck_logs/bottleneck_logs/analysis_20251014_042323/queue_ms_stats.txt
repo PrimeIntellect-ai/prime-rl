@@ -1,0 +1,5 @@
+Count: 10
+Mean: 10.73 ms
+StdDev: 0.583181 ms
+Min: 10.0 ms
+Max: 11.9 ms

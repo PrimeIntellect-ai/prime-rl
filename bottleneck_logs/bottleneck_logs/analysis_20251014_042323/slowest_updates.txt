@@ -1,0 +1,10 @@
+[2m11:22:20[0m [1m   INFO[0m [1m[22m[weights][bae4d097d7704bc7] client.done wall_ms=433.5 rpc_ms=422.5 queue_ms=11.1[0m[0m
+[2m11:22:39[0m [1m   INFO[0m [1m[22m[weights][a1682a07a8c14d5e] client.done wall_ms=434.2 rpc_ms=424.0 queue_ms=10.2[0m[0m
+[2m11:22:46[0m [1m   INFO[0m [1m[22m[weights][0f38fd43aa544e8f] client.done wall_ms=435.2 rpc_ms=425.0 queue_ms=10.3[0m[0m
+[2m11:22:35[0m [1m   INFO[0m [1m[22m[weights][6563be07a72f49c0] client.done wall_ms=436.2 rpc_ms=426.2 queue_ms=10.0[0m[0m
+[2m11:22:42[0m [1m   INFO[0m [1m[22m[weights][db21ae9125ab441e] client.done wall_ms=437.8 rpc_ms=425.9 queue_ms=11.9[0m[0m
+[2m11:22:17[0m [1m   INFO[0m [1m[22m[weights][b2141687b05a46b8] client.done wall_ms=438.9 rpc_ms=428.5 queue_ms=10.4[0m[0m
+[2m11:22:15[0m [1m   INFO[0m [1m[22m[weights][3b3c1090dbad4c0e] client.done wall_ms=439.5 rpc_ms=428.0 queue_ms=11.4[0m[0m
+[2m11:22:32[0m [1m   INFO[0m [1m[22m[weights][d7ed3dee567e44d1] client.done wall_ms=445.1 rpc_ms=434.5 queue_ms=10.6[0m[0m
+[2m11:22:10[0m [1m   INFO[0m [1m[22m[weights][54127134d8134dbd] client.done wall_ms=447.9 rpc_ms=437.5 queue_ms=10.3[0m[0m
+[2m11:22:12[0m [1m   INFO[0m [1m[22m[weights][3c21ccaaea1045af] client.done wall_ms=645.2 rpc_ms=634.1 queue_ms=11.1[0m[0m
