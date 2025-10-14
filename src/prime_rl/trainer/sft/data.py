@@ -389,15 +389,11 @@ class StackDataset(StatefulIterableDataset):
         self.dataset = dataset
         self.max_area = max_area
         assert self.max_area % 256 == 0
-        self.bucket_sizes = [
-            max_area // 64,
-            max_area // 32,
-            max_area // 16,
-            max_area // 8,
-            max_area // 4,
-            max_area // 2,
-            max_area,
-        ]
+        self.bucket_sizes = []
+        while max_area % 256 == 0:
+            self.bucket_sizes.insert(0, max_area)
+            max_area //= 2
+        self.logger.debug(f"Initialized {len(self.bucket_sizes)} buckets (bucket_sizes={self.bucket_sizes})")
         # Checkpoint state
         self.step = 0
         self.buckets = [[] for _ in range(len(self.bucket_sizes))]
@@ -435,7 +431,6 @@ class StackDataset(StatefulIterableDataset):
                 return bucket_idx
 
             bucket_idx = find_bucket_idx(len_sample)
-            self.logger.debug(f"Add sample to bucket {bucket_idx} with {len_sample=}")
             self.buckets[bucket_idx].append(sample)
 
             # Check if bucket has timed out
