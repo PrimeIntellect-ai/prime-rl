@@ -4,6 +4,8 @@
 configs/endpoints.py
 
 # Artifacts
+**/slurm
+**/torchrun
 **/weights
 **/checkpoints
 **/rollouts
