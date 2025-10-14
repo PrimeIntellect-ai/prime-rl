@@ -183,13 +183,6 @@ class ModelConfig(BaseConfig):
         ),
     ] = "hf"
 
-    log_signature: Annotated[
-        bool,
-        Field(
-            description="Whether to log the model signature after loading the model.",
-        ),
-    ] = False
-
     load_using_meta: Annotated[
         bool,
         Field(

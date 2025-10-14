@@ -227,6 +227,7 @@ def train(config: SFTTrainerConfig):
 
             with maybe_context_parallel:
                 # Forward pass
+                logger.debug("Starting forward pass")
                 with maybe_record_function("forward"):
                     logits = forward(model, input_ids, position_ids)
                 B, L, V = logits.shape
@@ -244,6 +245,7 @@ def train(config: SFTTrainerConfig):
                 del logits
 
                 # Backward pass
+                logger.debug("Starting backward pass")
                 with maybe_record_function("backward"):
                     (loss / grad_accum_steps).backward()
 
