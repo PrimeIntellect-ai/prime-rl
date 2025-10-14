@@ -292,56 +292,48 @@ class SFTDataset(StatefulIterableDataset):
         Apply chat template and tokenize a single example in prompt + completion format (https://github.com/huggingface/trl/blob/de27d612b026526ba39b88eee348994d7636e033/trl/trainer/sft_trainer.py#L661)
         """
         while True:
-            # Determine eoch from current step
-            self.epoch = self.step // self.num_examples
+            self.step += 1
+
+            # Determine epoch from current step
+            epoch = (self.step - 1) // self.num_examples
 
             # Break if max epochs is reached
-            if self.max_epochs is not None and self.epoch >= self.max_epochs:
+            if self.max_epochs is not None and epoch >= self.max_epochs:
                 break
 
-            # Shuffle dataset before each epoch
-            seed = self.epoch + self.seed
-            self.logger.info(f"Starting epoch {self.epoch} (shuffling with seed {seed})")
-            dataset = self.dataset.shuffle(seed=seed) if self.shuffle else self.dataset
-            dataset_iter = iter(dataset)
-
-            # If resuming, skip the samples in the epoch that have already been processed
-            if self.fast_forward:
-                skip_steps = self.step % self.num_examples
-                self.logger.info(f"Skipping the first {skip_steps} examples in epoch {self.epoch}")
-                self.fast_forward = False  # Only fast forward once
+            # Update stored epoch if new epoch is reached, optionall shuffle
+            if epoch > self.epoch:
+                dataset = self.dataset.shuffle(seed=epoch + self.seed) if self.shuffle else self.dataset
+                self.epoch += 1
+                assert self.epoch == epoch
             else:
-                skip_steps = 0
+                dataset = self.dataset
 
-            # Iterate over dataset (one epoch)
-            for i, example in enumerate(dataset_iter):
-                if skip_steps > 0:
-                    skip_steps -= 1
-                    continue
+            # Skip samples that don't belong to this data rank
+            if (self.step - 1) % self.data_world_size != self.data_rank:
+                continue
 
-                self.step += 1
+            # Get example
+            example = dataset[(self.step - 1) % self.num_examples]
 
-                # Skip samples that don't belong to this data rank
-                if i % self.data_world_size != self.data_rank:
-                    continue
+            # Process example
+            processed_example = self._process(cast(dict, example))
 
-                processed_example = self._process(cast(dict, example))
+            # If processed example is None, skip it (e.g. if tokenized sample exceeds context window)
+            if processed_example is None:
+                continue
 
-                # If processed example is None, skip it (e.g. if tokenized sample exceeds context window)
-                if processed_example is None:
-                    continue
-
-                # Yield the example
-                example = cast(dict, example)
-                subset_or_split = example.get("__subset") or example.get("__split")
-                self.logger.debug(
-                    f"Yield example {example.get('__index', '')}"
-                    + (f" from {subset_or_split} " if subset_or_split else " ")
-                    + f"with {len(processed_example.get('input_ids', []))} tokens ({sum(processed_example.get('loss_mask', []))} trainable tokens)"
-                )
-                self.num_samples[subset_or_split] += 1
-                self.num_tokens[subset_or_split] += len(processed_example.get("input_ids", []))
-                yield processed_example
+            # Yield the example
+            example = cast(dict, example)
+            subset_or_split = example.get("__subset") or example.get("__split")
+            self.logger.debug(
+                f"Yield example {example.get('__index', '')}"
+                + (f" from {subset_or_split} " if subset_or_split else " ")
+                + f"with {len(processed_example.get('input_ids', []))} tokens ({sum(processed_example.get('loss_mask', []))} trainable tokens)"
+            )
+            self.num_samples[subset_or_split] += 1
+            self.num_tokens[subset_or_split] += len(processed_example.get("input_ids", []))
+            yield processed_example
 
 
 class CatDataset(StatefulIterableDataset):
