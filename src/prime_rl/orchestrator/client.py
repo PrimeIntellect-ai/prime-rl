@@ -17,7 +17,13 @@ from prime_rl.utils.utils import get_weight_ckpt_model_path
 def _server_base_from_oai(base_url: str) -> str:
     """Extract server base URL from OpenAI base URL (removes /v1 suffix)"""
     s = str(base_url).strip()
-    return s[:-3] if s.endswith("/v1") else s
+    # Remove /v1 or /v1/ suffix
+    if s.endswith("/v1/"):
+        return s[:-4]
+    elif s.endswith("/v1"):
+        return s[:-3]
+    # Remove trailing slash if present
+    return s.rstrip("/")
 
 
 def _admin_client() -> httpx.AsyncClient:
