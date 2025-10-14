@@ -27,7 +27,7 @@ def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT):
     dist.init_process_group(
         backend="nccl",
         device_id=torch.device("cuda", torch.cuda.current_device()),
-        timeout=timeout,
+        timeout=timedelta(seconds=1200),
     )
 
 
