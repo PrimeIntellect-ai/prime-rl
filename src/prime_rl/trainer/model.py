@@ -1,5 +1,6 @@
 import logging
 import time
+from typing import cast
 
 import torch
 import torch.distributed.checkpoint as dcp
@@ -10,7 +11,7 @@ from liger_kernel.transformers import AutoLigerKernelForCausalLM
 from torch import Tensor
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, fully_shard
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, ModelConfig
@@ -61,12 +62,15 @@ def get_model(
     logger.info(
         f"Loading model config (name={config.name}, attn={config.attn}, trust_remote_code={config.trust_remote_code})"
     )
-    model_config = AutoConfig.from_pretrained(
-        config.name, attn_implementation=config.attn, trust_remote_code=config.trust_remote_code
+    model_config = cast(
+        PretrainedConfig,
+        AutoConfig.from_pretrained(
+            config.name, attn_implementation=config.attn, trust_remote_code=config.trust_remote_code
+        ),
     )
     model_config.use_cache = False
     model_config.use_grouped_mm = config.moe_use_grouped_mm
-    logger.debug(f"Loaded model config ({model_config})")
+    logger.debug(f"Loaded model config ({model_config.to_dict()})")
 
     if config.debug.num_layers is not None:
         num_hidden_layers = min(config.debug.num_layers, model_config.num_hidden_layers)
@@ -86,10 +90,10 @@ def get_model(
 
         load_model_start_time = time.time()
         if device == torch.device("meta"):
-            logger.info(f"Loading model {config.name} using {model_cls} to meta device")
+            logger.info(f"Loading model {config.name} using {model_cls.__name__} to meta device")
             model = model_cls.from_config(model_config, trust_remote_code=config.trust_remote_code, dtype=dtype)
         else:
-            logger.info(f"Loading model {config.name} using {model_cls} to CPU")
+            logger.info(f"Loading model {config.name} using {model_cls.__name__} to CPU")
             model = model_cls.from_pretrained(
                 pretrained_model_name_or_path=config.name,
                 config=model_config,
