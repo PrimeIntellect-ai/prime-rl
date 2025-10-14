@@ -1,3 +1,4 @@
+import time
 from argparse import Namespace
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -6,6 +7,7 @@ from typing import Any, Optional
 import uvloop
 import vllm.envs as envs
 from fastapi import Request
+from starlette.middleware.base import BaseHTTPMiddleware
 from vllm.config import LogprobsMode
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.protocol import EngineClient
@@ -47,6 +49,15 @@ async def custom_build_async_engine_client(
         yield engine
 
 
+# Middleware to track first-byte receive time
+class FirstByteMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        tid = request.headers.get("x-trace-id", "-")
+        t = time.monotonic()
+        logger.info(f"[weights][{tid}] server.recv path={request.url.path} t={t:.6f}")
+        return await call_next(request)
+
+
 # Copied from vllm/entrypoints/openai/api_server.py
 # Only difference is that we inject custom routes and build async engine client differently
 async def custom_run_server_worker(listen_address, sock, args, client_config=None, **uvicorn_kwargs) -> None:
@@ -63,18 +74,33 @@ async def custom_run_server_worker(listen_address, sock, args, client_config=Non
     async with custom_build_async_engine_client(args, client_config) as engine_client:
         app = build_app(args)
 
+        # Add first-byte middleware
+        app.add_middleware(FirstByteMiddleware)
+
         ### CUSTOM ENDPOINTS ###
         @app.post("/update_weights")
         async def _update_weights(request: Request):
+            tid = request.headers.get("x-trace-id", "-")
             data = await request.json()
             model_path = data.get("model_path")
+            t0 = time.monotonic()
+            logger.info(f"[weights][{tid}] rpc.start op=update_weights t={t0:.6f}")
             await engine_client.collective_rpc("update_weights", args=(model_path,))
-            return {"status": "ok"}
+            t1 = time.monotonic()
+            rpc_ms = (t1 - t0) * 1000.0
+            logger.info(f"[weights][{tid}] rpc.done op=update_weights t={t1:.6f} rpc_ms={rpc_ms:.1f}")
+            return {"status": "ok", "rpc_ms": rpc_ms}
 
         @app.post("/reload_weights")
         async def _reload_weights(request: Request):
+            tid = request.headers.get("x-trace-id", "-")
+            t0 = time.monotonic()
+            logger.info(f"[weights][{tid}] rpc.start op=reload_weights t={t0:.6f}")
             await engine_client.collective_rpc("reload_weights")
-            return {"status": "ok"}
+            t1 = time.monotonic()
+            rpc_ms = (t1 - t0) * 1000.0
+            logger.info(f"[weights][{tid}] rpc.done op=reload_weights t={t1:.6f} rpc_ms={rpc_ms:.1f}")
+            return {"status": "ok", "rpc_ms": rpc_ms}
 
         vllm_config = await engine_client.get_vllm_config()
         await init_app_state(engine_client, vllm_config, app.state, args)

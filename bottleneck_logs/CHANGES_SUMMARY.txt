@@ -1,0 +1,189 @@
+================================================================================
+BOTTLENECK INVESTIGATION - CODE CHANGES SUMMARY
+================================================================================
+
+Date: 2025-10-14
+Branch: ameen/feat-multi-step-rollout
+Purpose: Add comprehensive logging to identify model reload bottlenecks
+
+================================================================================
+FILES MODIFIED
+================================================================================
+
+1. src/prime_rl/orchestrator/client.py
+   - Added imports: time, uuid, typing.Any
+   - Added _server_base_from_oai() helper function
+   - Added _admin_client() to create dedicated HTTP client
+   - Added _trace_id() for request correlation
+   - Modified update_weights():
+     * Uses dedicated admin client (no keep-alive)
+     * Logs [weights] client.send with trace ID and timestamp
+     * Logs [weights] client.done with wall_ms, rpc_ms, queue_ms
+   - Modified reload_weights():
+     * Uses dedicated admin client
+     * Logs [weights] client.send and client.done
+   - Key improvement: Dedicated client avoids queuing behind streaming requests
+
+2. src/prime_rl/inference/vllm/server.py
+   - Added import: time, starlette.middleware.base.BaseHTTPMiddleware
+   - Added FirstByteMiddleware class:
+     * Logs [weights] server.recv when request is received
+     * Uses trace ID from request header
+   - Modified custom_run_server_worker():
+     * Adds FirstByteMiddleware to app
+     * Updates /update_weights endpoint:
+       - Logs [weights] rpc.start before engine call
+       - Logs [weights] rpc.done after engine call
+       - Returns rpc_ms in response payload
+     * Updates /reload_weights endpoint:
+       - Logs [weights] rpc.start and rpc.done
+       - Returns rpc_ms in response payload
+
+3. src/prime_rl/trainer/rl/train.py
+   - Modified weight checkpoint saving block:
+     * Added log after weight_ckpt_manager.save():
+       [ckpt] write.done step=X write_ms=Y
+
+4. src/prime_rl/orchestrator/orchestrator.py
+   - Modified checkpoint wait block:
+     * Changed "Waiting for weight checkpoint" to:
+       [ckpt] wait.start target_step=X
+     * Changed wait completion log to:
+       [ckpt] wait.done target_step=X wait_ms=Y
+   - Modified generation batch loop:
+     * Added at start of batch generation:
+       [gen] batch.start inflight=X target_batch=Y
+     * Modified completion log to:
+       [gen] batch.done completions=X dur_ms=Y inflight=Z
+   - Added rollout metrics after is_truncated parsing:
+     * Logs [rollout] trunc_pct=X current_step=Y ckpt_step=Z staleness=W
+
+================================================================================
+LOG TAGS ADDED
+================================================================================
+
+[weights] - Weight update operations
+  - client.send: Client initiates request
+  - server.recv: Server receives request (first byte)
+  - rpc.start:   Engine RPC begins
+  - rpc.done:    Engine RPC completes
+  - client.done: Client receives response
+
+[ckpt] - Checkpoint operations
+  - write.done: Checkpoint written to disk (trainer)
+  - wait.start: Orchestrator starts waiting for checkpoint
+  - wait.done:  Checkpoint becomes available
+
+[gen] - Generation batching
+  - batch.start: Start generating batch of completions
+  - batch.done:  Batch generation complete
+
+[rollout] - Rollout quality metrics
+  - Logs truncation percentage and staleness
+
+================================================================================
+KEY METRICS
+================================================================================
+
+Timing Metrics:
+  - wall_ms:  Total client-side time (client.send to client.done)
+  - rpc_ms:   Server-side engine operation time (returned in response)
+  - queue_ms: Queuing delay (wall_ms - rpc_ms)
+  - write_ms: Checkpoint write time (trainer)
+  - wait_ms:  Checkpoint wait time (orchestrator)
+  - dur_ms:   Batch generation duration
+
+Quality Metrics:
+  - trunc_pct: Percentage of truncated completions
+  - staleness: current_step - ckpt_step (should be ≤ async_level)
+  - inflight:  Number of concurrent generation tasks
+
+Request Correlation:
+  - Trace ID format: 16-char hex (e.g., "abc123def4567890")
+  - Appears in all logs for same request: [weights][abc123]
+
+================================================================================
+EXPECTED BEHAVIOR
+================================================================================
+
+Normal Flow (Fast Update):
+  [weights][abc] client.send t=1234.56
+  [weights][abc] server.recv t=1234.57  (~10ms gap)
+  [weights][abc] rpc.start t=1234.58
+  [weights][abc] rpc.done t=1235.80 rpc_ms=1220
+  [weights][abc] client.done wall_ms=1240 rpc_ms=1220 queue_ms=20
+
+Bottleneck (Queue Saturation):
+  [weights][def] client.send t=1234.56
+  [weights][def] server.recv t=1264.89  (~30s gap!)
+  [weights][def] rpc.start t=1264.90
+  [weights][def] rpc.done t=1266.12 rpc_ms=1220
+  [weights][def] client.done wall_ms=31560 rpc_ms=1220 queue_ms=30340
+
+Diagnosis:
+  - If queue_ms >> rpc_ms: Front-end queue bottleneck (main issue)
+  - If rpc_ms >> 2000ms: Weight loading bottleneck
+  - If wait_ms >> 1000ms: Checkpoint I/O bottleneck
+
+================================================================================
+FIX IMPLEMENTED
+================================================================================
+
+Primary Fix: Dedicated Admin Client
+  - _admin_client() creates fresh HTTP connection for each admin request
+  - No keep-alive, closes immediately after response
+  - Avoids queuing behind long-lived streaming inference connections
+  - Expected improvement: queue_ms from ~30000ms to <300ms
+
+To Validate:
+  1. Deploy instrumented code
+  2. Run high-concurrency workload
+  3. Compare queue_ms statistics before/after
+  4. Expected: queue_ms < 300ms consistently
+
+================================================================================
+ANALYSIS TOOLS
+================================================================================
+
+Scripts:
+  - bottleneck_logs/analyze_logs.sh: Automated log analysis
+
+Documentation:
+  - bottleneck_logs/INDEX.md: Navigation and overview
+  - bottleneck_logs/INVESTIGATION_SUMMARY.md: Technical details
+  - bottleneck_logs/DEPLOYMENT_GUIDE.md: Testing instructions
+  - bottleneck_logs/README.md: Comprehensive reference
+  - bottleneck_logs/LOG_PATTERNS.md: Log interpretation
+  - bottleneck_logs/COMMANDS.md: Command cheat sheet
+
+Usage:
+  ./bottleneck_logs/analyze_logs.sh <orchestrator.log>
+  # Produces: bottleneck_logs/analysis_<timestamp>/SUMMARY.md
+
+================================================================================
+DEPLOYMENT CHECKLIST
+================================================================================
+
+[ ] Commit changes with descriptive message
+[ ] Push to branch: ameen/feat-multi-step-rollout
+[ ] SSH to ubuntu@216.81.248.153
+[ ] Pull latest code
+[ ] Start inference server (Terminal 1)
+[ ] Start trainer (Terminal 2)
+[ ] Start orchestrator (Terminal 3)
+[ ] Monitor logs in real-time (Terminal 4)
+[ ] Collect logs after run
+[ ] Run analyze_logs.sh
+[ ] Review SUMMARY.md for diagnosis
+[ ] Validate queue_ms < 300ms
+
+================================================================================
+REMOTE MACHINE INFO
+================================================================================
+
+Host: ubuntu@216.81.248.153
+Hostname: 0038-dsm-gba100-prxmx30196
+GPUs: 2x NVIDIA A100 80GB PCIe
+Status: Currently idle (0% utilization)
+
+================================================================================

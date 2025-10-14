@@ -194,11 +194,11 @@ async def orchestrate(config: OrchestratorConfig):
 
             # Wait for the checkpoint to be available
             ckpt_step = progress.step - config.async_level
-            logger.info(f"Waiting for weight checkpoint {ckpt_step}")
+            logger.info(f"[ckpt] wait.start target_step={ckpt_step}")
             wait_for_weight_ckpt_start_time = time.time()
             await async_wait_for_weight_checkpoint(get_weights_dir(config.output_dir), ckpt_step)
             wait_for_weight_ckpt_time = time.time() - wait_for_weight_ckpt_start_time
-            logger.debug(f"Waited {wait_for_weight_ckpt_time:.2f}s for weight checkpoint")
+            logger.info(f"[ckpt] wait.done target_step={ckpt_step} wait_ms={wait_for_weight_ckpt_time*1000:.1f}")
 
             # Update the weights
             logger.info(f"Updating weights to weight checkpoint {ckpt_step}")
@@ -237,7 +237,9 @@ async def orchestrate(config: OrchestratorConfig):
         problems_to_sample = problems_per_batch
 
         while True:
+            batch_loop_start_time = time.time()
             generate_completions_start_time = time.time()
+            logger.info(f"[gen] batch.start inflight={len(inflight_tasks)} target_batch={config.batch_size}")
             while len(inflight_tasks) < MAX_INFLIGHT_PROBLEMS:
                 problem_id, coro = generate_call()
                 task = asyncio.create_task(coro)
@@ -285,8 +287,8 @@ async def orchestrate(config: OrchestratorConfig):
 
             with open("done.txt", "a") as f:
                 f.write(f"Generated {len(problem_ids)} completions\n")
-            logger.info(f"Generated {len(problem_ids)} completions")
             generate_completions_time = time.time() - generate_completions_start_time
+            logger.info(f"[gen] batch.done completions={len(problem_ids)} dur_ms={generate_completions_time*1000:.1f} inflight={len(inflight_tasks)}")
             problem_requests += problems_to_sample
             completion_requests += problems_to_sample * config.rollouts_per_example
             calls_to_generate += 1
@@ -321,6 +323,10 @@ async def orchestrate(config: OrchestratorConfig):
             # Parse whether the completions were truncated
             responses = [state["responses"] for state in generate_outputs.state]
             is_truncated = parse_is_truncated_completions(responses=responses)
+
+            # Log truncation and staleness metrics
+            trunc_pct = 100.0 * sum(is_truncated) / max(1, len(is_truncated))
+            logger.info(f"[rollout] trunc_pct={trunc_pct:.1f} current_step={progress.step} ckpt_step={ckpt_step} staleness={progress.step - ckpt_step}")
 
             # Update pool
             rollouts = make_rollouts(

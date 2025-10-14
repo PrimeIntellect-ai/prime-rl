@@ -158,6 +158,7 @@ def train(config: RLTrainerConfig):
             save_weights_start_time = time.time()
             weight_ckpt_manager.save(model, tokenizer, step=progress.step)
             save_weights_time = time.time() - save_weights_start_time
+            logger.info(f"[ckpt] write.done step={progress.step} write_ms={save_weights_time*1000:.1f}")
 
         # Save the full checkpoint (if we are at an interval step and not at the first or last step)
         is_last_step = config.max_steps is not None and progress.step == config.max_steps
