@@ -389,7 +389,15 @@ class StackDataset(StatefulIterableDataset):
         self.dataset = dataset
         self.max_area = max_area
         assert self.max_area % 256 == 0
-        self.bucket_sizes = [max_area // 4, max_area // 2, max_area]
+        self.bucket_sizes = [
+            max_area // 64,
+            max_area // 32,
+            max_area // 16,
+            max_area // 8,
+            max_area // 4,
+            max_area // 2,
+            max_area,
+        ]
         # Checkpoint state
         self.step = 0
         self.buckets = [[] for _ in range(len(self.bucket_sizes))]
@@ -420,7 +428,14 @@ class StackDataset(StatefulIterableDataset):
                 len_sample = self.max_area
 
             # Add sample to bucket
-            bucket_idx = 0 if len_sample <= self.bucket_sizes[0] else 1 if len_sample <= self.bucket_sizes[1] else 2
+            def find_bucket_idx(len_sample: int) -> int:
+                bucket_idx = 0
+                while bucket_idx < len(self.bucket_sizes) - 1 and len_sample > self.bucket_sizes[bucket_idx]:
+                    bucket_idx += 1
+                return bucket_idx
+
+            bucket_idx = find_bucket_idx(len_sample)
+            self.logger.debug(f"Add sample to bucket {bucket_idx} with {len_sample=}")
             self.buckets[bucket_idx].append(sample)
 
             # Check if bucket has timed out
@@ -451,16 +466,26 @@ class StackDataset(StatefulIterableDataset):
                     while self.bucket_sizes[bucket_idx] * len(self.buckets[bucket_idx]) < self.max_area:
                         dummy_sample = {}
                         for key, value in sample.items():
-                            if key == "epoch":
-                                dummy_sample[key] = value
-                            else:
-                                dummy_sample[key] = [0]
+                            dummy_sample[key] = [0]
                         self.buckets[bucket_idx].append(dummy_sample)
 
                 packed_samples = defaultdict(list)
+                num_samples, num_tokens, num_trainable_tokens, num_pad_tokens = 0, 0, 0, 0
                 for bucket_item in self.buckets[bucket_idx]:
+                    num_samples += 1
                     for key, value in bucket_item.items():
-                        packed_samples[key].append(value + [0] * (self.bucket_sizes[bucket_idx] - len(value)))
+                        pad_tokens = [0] * (self.bucket_sizes[bucket_idx] - len(value))
+                        if key == "loss_mask":
+                            num_tokens += len(value)
+                            num_trainable_tokens += sum(value)
+                            num_pad_tokens += len(pad_tokens)
+                        packed_samples[key].append(value + pad_tokens)
+                reason = "bucket is full" if is_full else "because bucket timed out"
+                reason += " and " if is_full and hit_timeout else ""
+                reason += "bucket timed out" if hit_timeout else ""
+                self.logger.debug(
+                    f"Yield bucket {bucket_idx} because {reason} with {num_samples=}, {num_tokens=}, {num_trainable_tokens=}, {num_pad_tokens=}"
+                )
                 yield packed_samples
                 self.step += 1
                 self.buckets[bucket_idx] = []
