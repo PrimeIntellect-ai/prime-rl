@@ -188,7 +188,12 @@ class SFTDataset(StatefulIterableDataset):
             ]
 
         def strip_content(messages: list[dict]) -> list[dict]:
-            return [{**message, "content": message["content"].strip()} for message in messages]
+            def _strip_content(message: dict) -> dict:
+                if isinstance(message.get("content"), str):
+                    return {**message, "content": message["content"].strip()}
+                return message
+
+            return [_strip_content(message) for message in messages]
 
         # Deserialize tool call arguments from message list, if present - assumes OAI format
         # Reference: https://platform.openai.com/docs/guides/function-calling#handling-function-calls
