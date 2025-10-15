@@ -10,6 +10,18 @@ from prime_rl.orchestrator.config import ClientConfig
 from prime_rl.utils.logger import get_logger
 
 
+def _admin_client() -> httpx.AsyncClient:
+    """Create a dedicated admin client for weight update operations.
+
+    Uses a separate connection pool to avoid queueing behind streaming requests.
+    """
+    return httpx.AsyncClient(
+        limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
+        headers={"Connection": "close"},
+        timeout=httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=None),
+    )
+
+
 def setup_client(client_config: ClientConfig) -> AsyncOpenAI:
     # We use a longer request timeout than default, but if more than 20min, we probably need faster inference deployment
     timeout = httpx.Timeout(timeout=client_config.timeout, connect=5.0)
@@ -65,7 +77,10 @@ async def update_weights(client: AsyncOpenAI, weight_dir: Path) -> None:
     url = str(client.base_url).strip()[:-4] + "/update_weights"
     try:
         logger.debug(f"Sending request to {url} to update weights from {weight_dir}")
-        await client.post(url, cast_to=Response, body={"weight_dir": weight_dir.as_posix()})
+
+        async with _admin_client() as admin:
+            response = await admin.post(url, json={"weight_dir": weight_dir.as_posix()})
+            response.raise_for_status()
     except NotFoundError:
         logger.warning(f"The route {url} does not exist. Skipping weight update.")
         return
@@ -77,8 +92,10 @@ async def reload_weights(client: AsyncOpenAI) -> None:
     url = str(client.base_url).strip()[:-4] + "/reload_weights"
     try:
         logger.debug(f"Sending request to {url} to reload weights (reset to base model)")
-        await client.post(url, cast_to=Response, body={})
+
+        async with _admin_client() as admin:
+            response = await admin.post(url, json={})
+            response.raise_for_status()
     except NotFoundError:
         logger.warning(f"The route {url} does not exist. Skipping weight reload.")
         return
-    await client.post(url, cast_to=Response, body={})
