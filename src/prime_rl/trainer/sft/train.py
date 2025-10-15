@@ -201,6 +201,7 @@ def train(config: SFTTrainerConfig):
         )
 
         batch_loss = torch.tensor(0.0).to("cuda")
+        nan_loss_count = torch.tensor(0).to("cuda")
         batch_max_vio, max_vio = torch.tensor(0.0).to("cuda"), None
         for micro_step in range(grad_accum_steps):
             micro_batch = next(dataiter)
@@ -238,7 +239,16 @@ def train(config: SFTTrainerConfig):
                 loss = loss[loss_mask].mean()
 
                 # Accumulate average loss over gradient accumulation steps
-                batch_loss += loss.detach() / grad_accum_steps
+                
+                current_loss = loss.detach() / grad_accum_steps
+                
+                # only add if the loss is not nan
+                if not torch.isnan(current_loss):
+                    batch_loss += current_loss
+                else:
+                    nan_loss_count += 1
+                    logger.warning("Loss is nan, not taking into account in the batch loss calculation")
+
 
                 # Delete logits before backward pass to avoid memory spike
                 del logits
@@ -280,6 +290,7 @@ def train(config: SFTTrainerConfig):
         # Synchronize the tensor metrics across all steps and ranks
         logger.debug("Synchronizing tensor metrics across all steps and ranks")
         dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)
+        dist.all_reduce(nan_loss_count, op=dist.ReduceOp.SUM)
 
         # Compute step metrics
         num_tokens = config.data.batch_size * config.data.seq_len
@@ -341,6 +352,7 @@ def train(config: SFTTrainerConfig):
 
         loss_log_metrics = {
             "loss/mean": batch_loss.item(),
+            "loss/nan_count": nan_loss_count.item(),
             "step": progress.step,
         }
         # Log tensor stats
