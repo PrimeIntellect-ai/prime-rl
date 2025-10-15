@@ -110,23 +110,6 @@ def normalize_completion(messages: Messages):
     return sanitized_messages
 
 
-# Adapted from https://github.com/willccbb/verifiers/blob/b4d851db42cebbab2358b827fd0ed19773631937/verifiers/envs/environment.py#L523
-def make_dataset(results: GenerateOutputs) -> Dataset:
-    """
-    Make a dataset from the evaluation results.
-    """
-    results_dict = {
-        "prompt": [normalize_prompt(prompt) for prompt in results.prompt],
-        "completion": [normalize_completion(completion) for completion in results.completion],
-        "answer": results.answer,
-        "task": results.task,
-        "reward": results.reward,
-        "info": [json.dumps(info) for info in results.info],
-    }
-
-    return Dataset.from_dict(results_dict)
-
-
 async def run_eval(
     client: AsyncOpenAI,
     eval_id: str,
@@ -134,6 +117,7 @@ async def run_eval(
     num_examples: int,
     rollouts_per_example: int,
     max_concurrent: int,
+    save_to_hf: str | None,
     save_to_disk: bool,
     output_dir: Path,
     ckpt_step: int,
@@ -261,7 +245,7 @@ async def run_eval(
     if save_to_disk:
         # Save samples as dataset
         eval_dir = get_step_path(get_eval_dir(output_dir), ckpt_step) / eval_id
-        dataset = make_dataset(generate_outputs)
+        dataset = vf_eval.make_dataset(generate_outputs, rollouts_per_example, save_to_hf)
         dataset.save_to_disk(eval_dir)
         logger.info(f"Saved eval results for {eval_id} to disk ({eval_dir})")
 
@@ -285,6 +269,7 @@ async def run_evals(
                 env_args=eval_config.environment_args.get(eval_id, {}),
                 num_examples=num_examples,
                 rollouts_per_example=rollouts_per_example,
+                save_to_hf=eval_config.save_to_hf,
                 max_concurrent=max_concurrent,
                 output_dir=output_dir,
                 save_to_disk=eval_config.save_to_disk,
