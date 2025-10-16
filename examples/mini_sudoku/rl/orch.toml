@@ -1,0 +1,15 @@
+batch_size = 256
+micro_batch_size = 8
+rollouts_per_example = 16
+seq_len = 1536
+max_steps = 96
+mask_truncated_completions = false
+
+[model]
+name = "Qwen/Qwen3-0.6B"
+
+[sampling]
+max_tokens = 1536
+
+[environment]
+id = "mini_sudoku"
