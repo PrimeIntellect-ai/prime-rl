@@ -36,7 +36,7 @@ dependencies = [
     "torchtitan",
     "dion",
     "reverse-text",
-    "verifiers>=0.1.4",
+    "verifiers>=0.1.5",
 ]
 
 [project.scripts]

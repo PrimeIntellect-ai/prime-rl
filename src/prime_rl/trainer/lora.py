@@ -311,7 +311,7 @@ def load_lora_state_dict(model: nn.Module, lora_state_dict: Dict[str, torch.Tens
 def save_lora_config(config: LoRAConfig, model: nn.Module, save_path) -> None:
     """
     Save LoRA configuration as JSON for adapter portability.
-    
+
     Args:
         config: LoRA configuration to save
         model: Model with LoRA layers to introspect
@@ -319,23 +319,23 @@ def save_lora_config(config: LoRAConfig, model: nn.Module, save_path) -> None:
     """
     import json
     from pathlib import Path
-    
+
     save_path = Path(save_path)
-    
+
     # Extract actual target modules from the model
     target_modules = set()
     modules_to_save = set()
-    
+
     for name, module in model.named_modules():
         if isinstance(module, LoRALinear):
             module_suffix = name.split(".")[-1]
             target_modules.add(module_suffix)
-    
+
     for name, param in model.named_parameters():
         if param.requires_grad and "lora_A" not in name and "lora_B" not in name:
             module_name = name.rsplit(".", 1)[0].split(".")[-1]
             modules_to_save.add(module_name)
-    
+
     adapter_config = {
         "peft_type": "LORA",
         "task_type": "CAUSAL_LM",
@@ -347,7 +347,7 @@ def save_lora_config(config: LoRAConfig, model: nn.Module, save_path) -> None:
         "target_modules": sorted(list(target_modules)),
         "modules_to_save": sorted(list(modules_to_save)) if modules_to_save else None,
     }
-    
+
     config_path = save_path / "adapter_config.json"
     with open(config_path, "w") as f:
         json.dump(adapter_config, f, indent=2)

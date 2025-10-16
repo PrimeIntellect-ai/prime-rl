@@ -162,9 +162,9 @@ class PerfCounter:
     def _get_num_params(self, model: nn.Module, exclude_embedding: bool = False) -> int:
         num_params = sum(p.numel() for p in model.parameters())
         if exclude_embedding:
-            if hasattr(model.lm_head, 'weight'):
+            if hasattr(model.lm_head, "weight"):
                 num_params -= model.lm_head.weight.numel()
-            elif hasattr(model.lm_head, 'base_layer'):  # LoRALinear
+            elif hasattr(model.lm_head, "base_layer"):  # LoRALinear
                 num_params -= model.lm_head.base_layer.weight.numel()
         return num_params
 

@@ -1901,7 +1901,7 @@ wheels = [
 
 [[package]]
 name = "openai"
-version = "1.107.1"
+version = "2.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -1913,14 +1913,14 @@ dependencies = [
     { name = "tqdm" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f3/e0/a62daa7ff769df969cc1b782852cace79615039630b297005356f5fb46fb/openai-1.107.1.tar.gz", hash = "sha256:7c51b6b8adadfcf5cada08a613423575258b180af5ad4bc2954b36ebc0d3ad48", size = 563671, upload-time = "2025-09-10T15:04:40.288Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/de/90/8f26554d24d63ed4f94d33c24271559863223a67e624f4d2e65ba8e48dca/openai-2.3.0.tar.gz", hash = "sha256:8d213ee5aaf91737faea2d7fc1cd608657a5367a18966372a3756ceaabfbd812", size = 589616, upload-time = "2025-10-10T01:12:50.851Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d4/12/32c19999a58eec4a695e8ce334442b6135df949f0bb61b2ceaa4fa60d3a9/openai-1.107.1-py3-none-any.whl", hash = "sha256:168f9885b1b70d13ada0868a0d0adfd538c16a02f7fd9fe063851a2c9a025e72", size = 945177, upload-time = "2025-09-10T15:04:37.782Z" },
+    { url = "https://files.pythonhosted.org/packages/9c/5b/4be258ff072ed8ee15f6bfd8d5a1a4618aa4704b127c0c5959212ad177d6/openai-2.3.0-py3-none-any.whl", hash = "sha256:a7aa83be6f7b0ab2e4d4d7bcaf36e3d790874c0167380c5d0afd0ed99a86bd7b", size = 999768, upload-time = "2025-10-10T01:12:48.647Z" },
 ]
 
 [[package]]
 name = "openai-agents"
-version = "0.2.11"
+version = "0.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "griffe" },
@@ -1931,9 +1931,9 @@ dependencies = [
     { name = "types-requests" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/dd/c7/e8b588851bdbb33f16397b45d182998a01e6e57ff028a143788036a89d53/openai_agents-0.2.11.tar.gz", hash = "sha256:1a2e3fade02b3d8571560dbd121bfe0d84c80f48da04c838d9d5195966714abc", size = 1677542, upload-time = "2025-09-03T22:16:05.856Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/99/f8/a292d8f506997355755d88db619966539ec838ce18f070c5a101e5a430ec/openai_agents-0.1.0.tar.gz", hash = "sha256:a697a4fdd881a7a16db8c0dcafba0f17d9e90b6236a4b79923bd043b6ae86d80", size = 1379588, upload-time = "2025-06-27T20:58:03.186Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6a/71/a8712a89502b95da64db6b0b31c12ac5039542ae8e31caddba369b6bd324/openai_agents-0.2.11-py3-none-any.whl", hash = "sha256:ed26f7bb2b08bd7607ae87eb7bcfcee8c8f4431da134252757b31120a68b9086", size = 179141, upload-time = "2025-09-03T22:16:03.823Z" },
+    { url = "https://files.pythonhosted.org/packages/31/5b/326e6b1b661dbef718977a8379f9702a4eec1df772450517870beeb3af35/openai_agents-0.1.0-py3-none-any.whl", hash = "sha256:6a8ef71d3f20aecba0f01bca2e059590d1c23f5adc02d780cb5921ea8a7ca774", size = 130620, upload-time = "2025-06-27T20:58:01.461Z" },
 ]
 
 [[package]]
@@ -2232,7 +2232,7 @@ requires-dist = [
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e43694bbfeff5d6ad8ac738c067bb90d41" },
     { name = "transformers", specifier = ">=4.56.0" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", specifier = ">=0.1.4" },
+    { name = "verifiers", specifier = ">=0.1.5" },
     { name = "vllm", specifier = "==0.10.2" },
     { name = "wandb", specifier = ">=0.20.1" },
 ]
@@ -2245,6 +2245,19 @@ dev = [
     { name = "pre-commit", specifier = ">=4.2.0" },
     { name = "pytest", specifier = ">=8.4.1" },
     { name = "ruff", specifier = ">=0.12.1" },
+]
+
+[[package]]
+name = "prime-sandboxes"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/4d/bb/f7c8b0f3dd73651b456a6e2dbb6b7154c19aa7ed699b1faacd88dd82b9fa/prime_sandboxes-0.1.0.tar.gz", hash = "sha256:99d7c0a799aba8685a9583446886eb258a579be2b741066708a9afab6737212e", size = 34581, upload-time = "2025-10-09T01:06:50.71Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e7/6b/bfaa9d100a398c227e6af790452fd818f210a2f070e62391e7648da77009/prime_sandboxes-0.1.0-py3-none-any.whl", hash = "sha256:67a408d2bc4f96d73f8266f01582ab402d566b96ad941f031d4c37bf95753767", size = 14798, upload-time = "2025-10-09T01:06:49.403Z" },
 ]
 
 [[package]]
@@ -3550,7 +3563,7 @@ wheels = [
 
 [[package]]
 name = "verifiers"
-version = "0.1.4"
+version = "0.1.5.post0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "datasets" },
@@ -3558,14 +3571,15 @@ dependencies = [
     { name = "nest-asyncio" },
     { name = "openai" },
     { name = "openai-agents" },
+    { name = "prime-sandboxes" },
     { name = "pydantic" },
     { name = "requests" },
     { name = "rich" },
     { name = "textual" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/91/3e/5aa99c90f6f642ca270111003c63c82b7145e6888a145346d2317ee53e0c/verifiers-0.1.4.tar.gz", hash = "sha256:4e843368c34ffa154fc6343bd0d38a51e48962f278fbe97cce4e3532aabac88c", size = 112825, upload-time = "2025-09-22T06:39:56.664Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/cf/98/240e5a7ce91f774564c45dc4518a98c92808eccb2ba761725697a3788ec1/verifiers-0.1.5.post0.tar.gz", hash = "sha256:d4b4b4739fe2c4ea3f52fec013c526e232192dff1dae1f68fb89e98e293ed88d", size = 121848, upload-time = "2025-10-09T21:18:25.77Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6c/6f/5ce86ea075ce1a8c46ca863c49942c667474512e6e5631bc13a7ce1e3969/verifiers-0.1.4-py3-none-any.whl", hash = "sha256:1d12e9ae93dbe28d8e97ae12980098404f3fa791a8d06ef13bee8fef6e04faae", size = 102773, upload-time = "2025-09-22T06:39:55.508Z" },
+    { url = "https://files.pythonhosted.org/packages/22/30/e27d2d47ec20184f12cf684b77defafa891bfcd5737ba2a2e03031d89deb/verifiers-0.1.5.post0-py3-none-any.whl", hash = "sha256:5ffc59380115c4d1a360a6722d2e1f40e327c1fe314f82997d6f34f1e948f4c1", size = 111816, upload-time = "2025-10-09T21:18:24.753Z" },
 ]
 
 [[package]]

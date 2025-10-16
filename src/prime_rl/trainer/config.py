@@ -183,13 +183,6 @@ class ModelConfig(BaseConfig):
         ),
     ] = "hf"
 
-    log_signature: Annotated[
-        bool,
-        Field(
-            description="Whether to log the model signature after loading the model.",
-        ),
-    ] = False
-
     load_using_meta: Annotated[
         bool,
         Field(
@@ -340,7 +333,7 @@ class CheckpointConfig(BaseConfig):
         int | None,
         Field(
             ge=-1,
-            description="Step to resume training from. If None, will start from scratch. if -1, will restart from latest checkpoint available.",
+            description="Step to resume training from. If None, will start from scratch. If -1, will restart from latest checkpoint available.",
         ),
     ] = None
 
@@ -352,10 +345,24 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = None
 
+    skip_progress: Annotated[
+        bool,
+        Field(
+            description="Whether to skip loading the progress from checkpoint.",
+        ),
+    ] = False
+
+    skip_scheduler: Annotated[
+        bool,
+        Field(
+            description="Whether to skip loading the scheduler from checkpoint.",
+        ),
+    ] = False
+
     skip_dataloader: Annotated[
         bool,
         Field(
-            description="Whether to skip checkpointing the dataloader. If True, will not checkpoint the dataloader.",
+            description="Whether to skip loading the dataloader from checkpoint.",
         ),
     ] = False
 
@@ -370,6 +377,20 @@ class WeightCheckpointConfig(BaseConfig):
             description="Interval at which to save weight checkpoint. If None, will save all necessary weight checkpoints on RL trainer and only final weight checkpoint on SFT trainer.",
         ),
     ] = None
+
+    save_sharded: Annotated[
+        bool,
+        Field(
+            description="Whether to save the weight checkpoint in sharded format.",
+        ),
+    ] = False
+
+    save_format: Annotated[
+        Literal["safetensors", "torch"],
+        Field(
+            description="The format to save the weight checkpoint in.",
+        ),
+    ] = "torch"
 
     save_async: Annotated[
         bool,

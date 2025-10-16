@@ -22,9 +22,6 @@ class BaseDataConfig(BaseModel):
     micro_batch_size: Annotated[int, Field(ge=1)] = 8
     batch_size: Annotated[int, Field(ge=1)] = 128
     seq_len: Annotated[int, Field(ge=1)] = 128
-    num_examples: Annotated[
-        int | None, Field(description="Number of examples to use from the dataset. If None, will use all examples.")
-    ] = None
     pack_function: Literal["cat", "stack"] = "cat"
 
     @model_validator(mode="after")
@@ -62,12 +59,45 @@ class SFTDataConfig(BaseDataConfig):
     name: Annotated[str, Field(description="Name or path of the HF dataset to use.")] = (
         "PrimeIntellect/Reverse-Text-SFT"
     )
-    splits: Annotated[list[str], Field(description="Splits to use from the HF dataset.")] = ["train"]
+    subsets: Annotated[list[str] | None, Field(description="Subsets to use from the HF dataset.")] = None
+    splits: Annotated[list[str] | None, Field(description="Splits to use from the HF dataset.")] = None
+    probabilities: Annotated[list[float] | None, Field(description="Probabilities to use for each subset/split.")] = (
+        None
+    )
+    stopping_strategy: Annotated[
+        Literal["first_exhausted", "all_exhausted"],
+        Field(description=""),
+    ] = "all_exhausted"
     shuffle: Annotated[bool, Field(description="Whether to shuffle the dataset at the beginning of each epoch.")] = True
-    seed: Annotated[int, Field(description="Random seed to use for shuffling the dataset. We also shuffle at the end of each epoch by adding epoch count to the seed.")] = 0
+    seed: Annotated[
+        int,
+        Field(
+            description="Random seed to use for shuffling the dataset. We also shuffle at the end of each epoch by adding epoch count to the seed."
+        ),
+    ] = 0
 
     # Configuring
     loss_mask: LossMaskConfig = LossMaskConfig()
+
+    @model_validator(mode="after")
+    def validate_subsets_and_splits(self):
+        if self.subsets is not None or self.splits is not None:
+            if self.subsets is not None and self.splits is not None:
+                if len(self.subsets) != len(self.splits):
+                    raise ValueError(
+                        "Number of subsets must be equal to number of splits. Please specify which split to load for each subset."
+                    )
+            if self.subsets is not None and self.probabilities is not None:
+                if len(self.probabilities) != len(self.subsets):
+                    raise ValueError(
+                        "Number of probabilities must be equal to number of subsets. Please specify a probability for each subset."
+                    )
+            if self.splits is not None and self.probabilities is not None:
+                if len(self.probabilities) != len(self.splits):
+                    raise ValueError(
+                        "Number of probabilities must be equal to number of splits. Please specify a probability for each split."
+                    )
+        return self
 
 
 DataConfigType: TypeAlias = FakeDataConfig | SFTDataConfig
@@ -187,5 +217,16 @@ class SFTTrainerConfig(BaseSettings):
             ):
                 raise ValueError(
                     "Use a weight checkpoint interval that ensures that a weight checkpoint is saved with every full checkpoint"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def validate_lora_adapter_saving(self):
+        if self.weights and self.weights.save_adapter_separately:
+            lora_enabled = self.model and self.model.experimental and self.model.experimental.lora
+            if not lora_enabled:
+                raise ValueError(
+                    "save_adapter_separately=True requires LoRA to be enabled. "
+                    "Set model.experimental.lora or disable save_adapter_separately."
                 )
         return self
