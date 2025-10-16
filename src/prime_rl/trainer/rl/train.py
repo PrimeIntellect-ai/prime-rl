@@ -1,6 +1,8 @@
 from contextlib import nullcontext
 import time
 from datetime import timedelta
+import json
+from pathlib import Path
 
 # Import environment before any other imports
 # ruff: noqa: I001
@@ -213,7 +215,124 @@ def train(config: RLTrainerConfig):
             shifted_logits = shifted_logits / temperature
             trainer_logprobs = selective_log_softmax(shifted_logits, input_ids)
 
-            # Compute loss
+            # ===== SERIALIZE LOGPROB COMPARISONS =====
+            if progress.step <= 5 and micro_step == 0:  # Only save first few steps, first micro batch
+                output_dir = Path(config.output_dir) / "logprob_comparisons"
+                output_dir.mkdir(parents=True, exist_ok=True)
+                output_file = output_dir / f"step_{progress.step}_rank_{world.rank}.jsonl"
+                
+                # Process each sequence in the micro batch
+                for seq_idx in range(micro_batch_size):
+                    # Get masked positions (where we actually compute loss)
+                    mask = loss_mask[seq_idx]
+                    masked_positions = torch.where(mask)[0]
+                    
+                    if masked_positions.numel() == 0:
+                        continue
+                    
+                    # Extract full sequence tokens
+                    tokens = input_ids[seq_idx].cpu().tolist()
+                    
+                    # Extract logprobs for the full sequence
+                    inference_lp = inference_logprobs[seq_idx].cpu().tolist()
+                    trainer_lp = trainer_logprobs[seq_idx].cpu().tolist()
+                    
+                    # Create mask list (0 or 1)
+                    mask_list = mask.cpu().tolist()
+                    
+                    # Compute advantages for masked positions only
+                    advantages_list = advantages[seq_idx].cpu().tolist()
+                    
+                    record = {
+                        "step": progress.step,
+                        "rank": world.rank,
+                        "micro_step": micro_step,
+                        "seq_idx": seq_idx,
+                        "token_ids": tokens,
+                        "mask": mask_list,
+                        "inference_logprobs": inference_lp,
+                        "trainer_logprobs": trainer_lp,
+                        "advantages": advantages_list,
+                        "temperature": temperature,
+                        "metadata": {
+                            "total_tokens": len(tokens),
+                            "masked_tokens": int(masked_positions.numel()),
+                            "seq_len": seq_len,
+                            "micro_batch_size": micro_batch_size
+                        }
+                    }
+                    
+                    with open(output_file, 'a') as f:
+                        f.write(json.dumps(record) + '\n')
+                
+                if micro_batch_size > 0:  # Log once per micro batch
+                    logger.info(f"Saved {micro_batch_size} logprob comparison records to {output_file}")
+            # ===== END SERIALIZATION =====
+
+            # ===== DEBUGGING LOGPROBS =====
+            if progress.step == 1 and micro_step == 0:
+                first_sample_mask = loss_mask[0]
+                masked_positions = torch.where(first_sample_mask)[0]
+                
+                logger.info(f"\nSHAPE DEBUG:")
+                logger.info(f"  input_ids: {input_ids.shape}")
+                logger.info(f"  loss_mask: {loss_mask.shape}")
+                logger.info(f"  trainer_logprobs: {trainer_logprobs.shape}")
+                logger.info(f"  inference_logprobs: {inference_logprobs.shape}")
+                logger.info(f"  num masked tokens: {masked_positions.numel()}")
+                
+                if masked_positions.numel() > 0:
+                    all_train_lp = trainer_logprobs[0, masked_positions]
+                    all_infer_lp = inference_logprobs[0, masked_positions]
+                    all_train_prob = torch.exp(all_train_lp)
+                    all_infer_prob = torch.exp(all_infer_lp)
+                    all_diffs = torch.abs(all_train_lp - all_infer_lp)
+                    
+                    logger.info(f"\nLOGPROB STATS ({masked_positions.numel()} tokens):")
+                    logger.info(f"  LP diff: mean={all_diffs.mean().item():.6f} std={all_diffs.std().item():.6f}")
+                    logger.info(f"  LP diff: min={all_diffs.min().item():.6f} max={all_diffs.max().item():.6f}")
+                    logger.info(f"  LP diff: median={all_diffs.median().item():.6f}")
+                    logger.info(f"  Tokens LP diff > 0.1: {(all_diffs > 0.1).sum().item()}")
+                    logger.info(f"  Tokens LP diff > 1.0: {(all_diffs > 1.0).sum().item()}")
+                    logger.info(f"  Tokens LP diff > 5.0: {(all_diffs > 5.0).sum().item()}")
+                    
+                    logger.info(f"\nPROB STATS:")
+                    logger.info(f"  Trainer: mean={all_train_prob.mean().item():.6f} min={all_train_prob.min().item():.10f} max={all_train_prob.max().item():.6f}")
+                    logger.info(f"  Inference: mean={all_infer_prob.mean().item():.6f} min={all_infer_prob.min().item():.10f} max={all_infer_prob.max().item():.6f}")
+                    
+                    # Decode token 27 specifically
+                    try:
+                        token_27_text = tokenizer.decode([27])
+                        logger.info(f"\nToken 27 decodes to: '{token_27_text}' (repr: {repr(token_27_text)})")
+                    except:
+                        logger.info(f"\nToken 27 cannot be decoded")
+                    
+                    top_k = min(20, masked_positions.numel())
+                    top_diff_indices = torch.topk(all_diffs, top_k).indices
+                    
+                    logger.info(f"\nTop {top_k} WORST mismatches:")
+                    for i, idx in enumerate(top_diff_indices):
+                        pos = masked_positions[idx]
+                        tok = input_ids[0, pos].item()
+                        t_lp = all_train_lp[idx].item()
+                        i_lp = all_infer_lp[idx].item()
+                        t_prob = all_train_prob[idx].item()
+                        i_prob = all_infer_prob[idx].item()
+                        
+                        # Decode the token
+                        try:
+                            tok_text = tokenizer.decode([tok])
+                            tok_repr = repr(tok_text)
+                        except:
+                            tok_text = "<DECODE_ERROR>"
+                            tok_repr = "<DECODE_ERROR>"
+                        
+                        logger.info(f"\n  {i+1}. pos={pos.item()} tok_id={tok} text={tok_repr}")
+                        logger.info(f"      trainer:   lp={t_lp:8.4f}  prob={t_prob:.8f}")
+                        logger.info(f"      inference: lp={i_lp:8.4f}  prob={i_prob:.8f}")
+                        logger.info(f"      DIFF: {all_diffs[idx].item():.4f}")
+            # ===== END DEBUGGING =====
+
             response_lengths = get_response_lengths(position_ids)
             loss, loss_tensors = compute_loss(
                 trainer_logprobs=trainer_logprobs.squeeze().split(response_lengths),
