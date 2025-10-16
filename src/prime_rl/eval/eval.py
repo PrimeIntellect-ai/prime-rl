@@ -6,6 +6,7 @@ from prime_rl.orchestrator.client import (
     check_has_model,
     check_health,
     reload_weights,
+    setup_admin_client,
     setup_client,
     update_weights,
 )
@@ -39,6 +40,8 @@ async def eval(config: OfflineEvalConfig):
         f"Initializing OpenAI client (base_url={config.client.base_url}, api_key_var={config.client.api_key_var}, server_type={config.client.server_type})"
     )
     client = setup_client(config.client)
+    admin_client = setup_admin_client(config.client)
+
 
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")
@@ -48,7 +51,7 @@ async def eval(config: OfflineEvalConfig):
 
     # Reset weights to base model to allow reusing inference server across runs
     logger.info("Resetting weights to base model")
-    await reload_weights(client)
+    await reload_weights(admin_client)
 
     # Run benchmarks on base model
     if config.eval_base:
