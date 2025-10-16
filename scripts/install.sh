@@ -11,8 +11,8 @@ log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 
 REPO_ID="prime-rl"
 
-# Flag defaults
-SKIP_CLONE=0
+# Flag defaults (can be overridden via env)
+SKIP_CLONE=${SKIP_CLONE:-0}
 
 has_ssh_access() {
     # Probe SSH auth to GitHub without prompting; treat any nonzero as "no ssh"
@@ -38,12 +38,6 @@ ensure_known_hosts() {
 }
 
 main() {
-    # Parse args
-    for arg in "$@"; do
-        if [ "$arg" = "--skip-clone" ]; then
-            SKIP_CLONE=1
-        fi
-    done
     # Ensure sudo exists
     if ! command -v sudo &>/dev/null; then
         apt update
