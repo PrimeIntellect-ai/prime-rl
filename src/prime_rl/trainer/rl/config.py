@@ -25,7 +25,7 @@ class LossConfig(BaseModel):
     ] = False
 
     mask_ratio_high: Annotated[float, Field(ge=0)] = 8.0
-    mask_ratio_low: Annotated[float, Field(ge=0)] = 0.0
+    mask_ratio_low: Annotated[float, Field(ge=0)] = 0.125
 
 
 class FakeDataLoaderConfig(BaseConfig):
