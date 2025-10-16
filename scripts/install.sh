@@ -38,8 +38,12 @@ ensure_known_hosts() {
 }
 
 main() {
-    # Parse args (compact)
-    [[ " $* " == *" --skip-clone "* ]] && SKIP_CLONE=1
+    # Parse args
+    for arg in "$@"; do
+        if [ "$arg" = "--skip-clone" ]; then
+            SKIP_CLONE=1
+        fi
+    done
     # Ensure sudo exists
     if ! command -v sudo &>/dev/null; then
         apt update
