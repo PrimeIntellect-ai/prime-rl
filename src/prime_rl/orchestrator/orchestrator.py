@@ -193,8 +193,8 @@ async def orchestrate(config: OrchestratorConfig):
 
         accepted_rollouts: list[Rollout] = []
         problem_requests, completion_requests, calls_to_generate = 0, 0, 0
+        problems_per_batch = config.batch_size // config.rollouts_per_example
         problems_to_sample = problems_per_batch
-
         while True:
             # Get the batch
             problem_ids, problems = buffer.sample_problems(problems_to_sample)
