@@ -15,12 +15,9 @@ from transformers import AutoTokenizer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.eval.utils import run_evals
 from prime_rl.utils.client import (
+    AdminClient,
     check_has_model,
-    check_health,
-    reload_weights,
-    setup_admin_client,
     setup_client,
-    update_weights,
 )
 from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.orchestrator.buffer import setup_buffer, make_rollouts, Rollout
@@ -66,7 +63,7 @@ async def orchestrate(config: OrchestratorConfig):
         f"Initializing OpenAI client (base_url={config.client.base_url}, api_key_var={config.client.api_key_var}, server_type={config.client.server_type})"
     )
     client = setup_client(config.client)
-    admin_client = setup_admin_client(config.client)
+    admin_client = AdminClient(config.client)
 
     # Load tokenizer
     logger.info(f"Initializing tokenizer for {config.model.name}")
@@ -92,7 +89,7 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")
-    await check_health(client)
+    await admin_client.check_health()
     await check_has_model(client, config.model.name)
     logger.success("Inference pool ready")
 
@@ -107,10 +104,10 @@ async def orchestrate(config: OrchestratorConfig):
         logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
         ckpt_manager.load(progress, buffer, step=config.ckpt.resume_step)
         ckpt_step = max(progress.step - config.async_level, 0)
-        await update_weights(admin_client, get_step_path(get_weights_dir(config.output_dir), ckpt_step))
+        await admin_client.update_weights(get_step_path(get_weights_dir(config.output_dir), ckpt_step))
     else:
         logger.info("Training from scratch. Resetting weights to base model")
-        await reload_weights(admin_client)
+        await admin_client.reload_weights()
 
     # Iterate over dataset in batches
     max_steps = config.max_steps or int(1e9)
@@ -162,7 +159,7 @@ async def orchestrate(config: OrchestratorConfig):
             # Update the weights
             logger.info(f"Updating weights to weight checkpoint {ckpt_step}")
             update_weights_start_time = time.time()
-            await update_weights(admin_client, get_step_path(get_weights_dir(config.output_dir), ckpt_step))
+            await admin_client.update_weights(get_step_path(get_weights_dir(config.output_dir), ckpt_step))
             update_weights_time = time.time() - update_weights_start_time
             logger.debug(f"Updated weights in {update_weights_time:.2f}s")
 
