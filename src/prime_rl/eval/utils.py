@@ -157,7 +157,6 @@ async def run_eval(
 
     # Build inputs dataset (mirror Environment.evaluate but async)
     dataset = env.get_eval_dataset(n=num_examples)
-    assert dataset is not None  # TODO: Remove once https://github.com/PrimeIntellect-ai/verifiers/pull/480 is merged
 
     # Prepare sampling arguments
     sampling_args = prepare_sampling_args(sampling_config, client_config)
