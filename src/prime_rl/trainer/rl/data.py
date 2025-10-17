@@ -65,8 +65,8 @@ class DataLoader:
     def get_rollout_path(self) -> Path:
         return self.rollout_dir / f"step_{self.current_step}" / f"rank_{self.world.rank}.pt"
 
-    def wait_for_batch(self) -> None:
-        wait_for_path(self.get_rollout_path())
+    async def wait_for_batch(self) -> None:
+        await wait_for_path(self.get_rollout_path())
 
     def get_batch(self) -> list[MicroBatch]:
         batches = torch.load(self.get_rollout_path())
