@@ -1,4 +1,5 @@
 import asyncio
+from itertools import cycle
 import time
 from loguru import logger
 
@@ -17,9 +18,10 @@ from prime_rl.eval.utils import run_evals
 from prime_rl.utils.client import (
     check_has_model,
     check_health,
+    generate_batch,
     reload_weights,
     setup_admin_clients,
-    setup_client,
+    setup_clients,
     update_weights,
 )
 from prime_rl.orchestrator.config import OrchestratorConfig
@@ -65,7 +67,7 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info(
         f"Initializing round-robin OpenAI client (base_urls={config.client.base_urls}, api_key_var={config.client.api_key_var}, server_type={config.client.server_type})"
     )
-    client = setup_client(config.client)
+    clients = setup_clients(config.client)
     admin_clients = setup_admin_clients(config.client)
 
     # Load tokenizer
@@ -93,7 +95,7 @@ async def orchestrate(config: OrchestratorConfig):
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")
     await check_health(admin_clients)
-    await check_has_model(client, config.model.name)
+    await check_has_model(clients, config.model.name)
     logger.success("Inference pool ready")
 
     # Get checkpoint manager
@@ -179,7 +181,7 @@ async def orchestrate(config: OrchestratorConfig):
             logger.info(f"Running evals for checkpoint step {ckpt_step}")
             eval_start_time = time.time()
             await run_evals(
-                client=client,
+                clients=clients,
                 eval_config=config.eval,
                 model_config=config.model,
                 sampling_config=config.eval.sampling,
@@ -198,19 +200,8 @@ async def orchestrate(config: OrchestratorConfig):
         while True:
             # Get the batch
             problem_ids, problems = buffer.sample_problems(problems_to_sample)
-
-            # Duplicate problems `rollouts_per_example` times
             problem_ids = [problem_id for problem_id in problem_ids for _ in range(config.rollouts_per_example)]
-            problems = [problem for problem in problems for _ in range(config.rollouts_per_example)]
 
-            # Prepare inputs for verifiers generation
-            # TODO: Can we use `prime_rl.utils.utils.to_col_format` here?
-            inputs = {
-                "prompt": [problem["prompt"] for problem in problems],
-                "info": [problem.get("info", {}) for problem in problems],
-                "task": [problem.get("task", config.environment.id) for problem in problems],
-                "answer": [problem.get("answer", "") for problem in problems],
-            }
             # Convert SamplingConfig to vLLM OAI sampling args
             # https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#extra-parameters_2
             sampling_args = dict(config.sampling)
@@ -225,11 +216,14 @@ async def orchestrate(config: OrchestratorConfig):
             sampling_args["extra_body"]["repetition_penalty"] = sampling_args.pop("repetition_penalty")
 
             # Generate completions + rewards with verifiers
-            logger.info(f"Sending {len(problems)} requests to environments")
-
             generate_completions_start_time = time.time()
-            generate_outputs: GenerateOutputs = await vf_env.a_generate(
-                inputs=inputs, client=client, model=config.model.name, sampling_args=sampling_args
+            generate_outputs: GenerateOutputs = await generate_batch(
+                clients=clients,
+                env=vf_env,
+                model_name=config.model.name,
+                problems=problems,
+                rollouts_per_example=config.rollouts_per_example,
+                sampling_args=sampling_args,
             )
             generate_completions_time = time.time() - generate_completions_start_time
             problem_requests += problems_to_sample

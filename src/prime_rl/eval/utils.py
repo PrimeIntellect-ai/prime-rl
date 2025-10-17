@@ -128,7 +128,7 @@ def make_dataset(results: GenerateOutputs) -> Dataset:
 
 
 async def run_eval(
-    client: AsyncOpenAI,
+    clients: list[AsyncOpenAI],
     eval_id: str,
     env_args: dict,
     num_examples: int,
@@ -267,7 +267,7 @@ async def run_eval(
 
 
 async def run_evals(
-    client: AsyncOpenAI,
+    clients: list[AsyncOpenAI],
     eval_config: EvalConfig | OfflineEvalConfig,
     model_config: ModelConfig,
     sampling_config: EvalSamplingConfig,
@@ -280,7 +280,7 @@ async def run_evals(
     await asyncio.gather(
         *[
             run_eval(
-                client=client,
+                clients=clients,
                 eval_id=eval_id,
                 env_args=eval_config.environment_args.get(eval_id, {}),
                 num_examples=num_examples,
