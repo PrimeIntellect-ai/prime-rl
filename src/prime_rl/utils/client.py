@@ -8,7 +8,7 @@ from httpx import AsyncClient
 from openai import AsyncOpenAI, NotFoundError
 from openai.resources import AsyncChat, AsyncCompletions
 
-from prime_rl.orchestrator.config import ClientConfig
+from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.logger import get_logger
 
 
@@ -50,7 +50,7 @@ def setup_client(client_config: ClientConfig) -> RoundRobinAsyncOpenAI:
             http_client=http_client,
         )
 
-    clients = [setup_single_client(base_url) for base_url in client_config.base_url]
+    clients = [setup_single_client(base_url) for base_url in client_config.base_urls]
     return RoundRobinAsyncOpenAI(clients=clients)
 
 
@@ -71,9 +71,9 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
     Uses a separate connection pool to avoid queueing behind streaming requests.
     """
 
-    def setup_single_admin_client(base_url: str, api_key_var: str) -> httpx.AsyncClient:
+    def setup_single_admin_client(base_url: str) -> httpx.AsyncClient:
         headers = {}
-        api_key = os.getenv(api_key_var, "EMPTY")
+        api_key = os.getenv(client_config.api_key_var, "EMPTY")
         if api_key and api_key != "EMPTY":
             headers["Authorization"] = f"Bearer {api_key}"
 
@@ -87,10 +87,7 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
             timeout=httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=None),
         )
 
-    return [
-        setup_single_admin_client(base_url, api_key_var)
-        for base_url, api_key_var in zip(client_config.base_url, client_config.api_key_var)
-    ]
+    return [setup_single_admin_client(base_url) for base_url in client_config.base_urls]
 
 
 async def check_health(

@@ -1,6 +1,6 @@
-from typing import Annotated
+from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from prime_rl.utils.pydantic_config import BaseConfig
 
@@ -16,6 +16,47 @@ class ModelConfig(BaseConfig):
             description="Whether to trust remote code for tokenizer initialization.",
         ),
     ] = False
+
+
+ServerType = Literal["vllm", "openai"]
+
+
+class ClientConfig(BaseConfig):
+    """Configures the OAI client."""
+
+    timeout: Annotated[
+        int,
+        Field(
+            description="Timeout in seconds. By default, it is set to 1200 seconds.",
+        ),
+    ] = 1200
+
+    base_urls: Annotated[
+        list[str],
+        Field(
+            description="Base URLs to use for the OpenAI API. By default, it is set to a single server on localhost at port 8000 which matches the default local vLLM server configuration. If you specify more than one URL, the client will round-robin (chat) completion requests across all servers.",
+        ),
+    ] = ["http://localhost:8000/v1"]
+
+    api_key_var: Annotated[
+        str,
+        Field(
+            description="Name of environment variable containing the API key to use for the OpenAI API. Will parse using `os.getenv(client_config.api_key_var)`. Can be set to an arbitrary string if the inference server is not protected by an API key. If multiple URLs are specified, the same API key will be used for all servers.",
+        ),
+    ] = "OPENAI_API_KEY"
+
+    server_type: Annotated[
+        ServerType,
+        Field(
+            description="Type of inference server that the client is connected to. Can be 'vllm' or 'openai'. Defaults to vLLM, which is our default client for training.",
+        ),
+    ] = "vllm"
+
+    @model_validator(mode="after")
+    def auto_setup_server_type(self):
+        if any(base_url == "https://api.openai.com/v1" for base_url in self.base_urls):
+            self.server_type = "openai"
+        return self
 
 
 class LogConfig(BaseConfig):

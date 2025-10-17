@@ -63,7 +63,7 @@ async def orchestrate(config: OrchestratorConfig):
     # Setup client
     assert config.client.server_type == "vllm", "Orchestrator only supports vLLM server type."
     logger.info(
-        f"Initializing OpenAI client (base_url={config.client.base_url}, api_key_var={config.client.api_key_var}, server_type={config.client.server_type})"
+        f"Initializing round-robin OpenAI client (base_urls={config.client.base_urls}, api_key_var={config.client.api_key_var}, server_type={config.client.server_type})"
     )
     client = setup_client(config.client)
     admin_clients = setup_admin_clients(config.client)

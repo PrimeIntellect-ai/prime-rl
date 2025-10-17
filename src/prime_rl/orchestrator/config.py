@@ -3,48 +3,8 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
 
-from prime_rl.utils.config import LogConfig, ModelConfig, WandbMonitorConfig
+from prime_rl.utils.config import ClientConfig, LogConfig, ModelConfig, WandbMonitorConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
-
-ServerType = Literal["vllm", "openai"]
-
-
-class ClientConfig(BaseConfig):
-    """Configures the client to be used for inference."""
-
-    timeout: Annotated[
-        int,
-        Field(
-            description="Timeout in seconds for the OpenAI API. By default, it is set to 1200 seconds.",
-        ),
-    ] = 1200
-
-    base_url: Annotated[
-        list[str],
-        Field(
-            description="Base URL to use for the OpenAI API. By default, it is set to None, which means ",
-        ),
-    ] = ["http://localhost:8000/v1"]
-
-    api_key_var: Annotated[
-        str,
-        Field(
-            description="Name of environment varaible containing the API key to use for the OpenAI API. Will parse using `os.getenv(client_config.api_key_var)`. Can be set to an arbitrary string if the inference server is not protected by an API key .",
-        ),
-    ] = "OPENAI_API_KEY"
-
-    server_type: Annotated[
-        ServerType,
-        Field(
-            description="Type of inference server that the client is connected to. Can be 'vllm' or 'openai'. Defaults to vLLM, which is our default client for training.",
-        ),
-    ] = "vllm"
-
-    @model_validator(mode="after")
-    def auto_setup_server_type(self):
-        if any(base_url == "https://api.openai.com/v1" for base_url in self.base_url):
-            self.server_type = "openai"
-        return self
 
 
 class SamplingConfig(BaseConfig):
