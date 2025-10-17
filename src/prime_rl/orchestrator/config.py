@@ -27,11 +27,11 @@ class ClientConfig(BaseConfig):
     ] = ["http://localhost:8000/v1"]
 
     api_key_var: Annotated[
-        list[str],
+        str,
         Field(
             description="Name of environment varaible containing the API key to use for the OpenAI API. Will parse using `os.getenv(client_config.api_key_var)`. Can be set to an arbitrary string if the inference server is not protected by an API key .",
         ),
-    ] = ["OPENAI_API_KEY"]
+    ] = "OPENAI_API_KEY"
 
     server_type: Annotated[
         ServerType,

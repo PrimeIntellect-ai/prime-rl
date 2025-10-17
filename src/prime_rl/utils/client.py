@@ -34,7 +34,7 @@ class RoundRobinAsyncOpenAI(AsyncOpenAI):
 
 
 def setup_client(client_config: ClientConfig) -> RoundRobinAsyncOpenAI:
-    def setup_single_client(base_url: str, api_key_var: str) -> AsyncOpenAI:
+    def setup_single_client(base_url: str) -> AsyncOpenAI:
         # We use a longer request timeout than default, but if more than 20min, we probably need faster inference deployment
         timeout = httpx.Timeout(timeout=client_config.timeout, connect=5.0)
         # We use as many concurrent connections as possible, but lower than available ports
@@ -45,15 +45,12 @@ def setup_client(client_config: ClientConfig) -> RoundRobinAsyncOpenAI:
         http_client = httpx.AsyncClient(limits=limits, timeout=timeout)
         return AsyncOpenAI(
             base_url=base_url,
-            api_key=os.getenv(api_key_var, "EMPTY"),
+            api_key=os.getenv(client_config.api_key_var, "EMPTY"),
             max_retries=10,  # OAI default: 2 (does exponential backoff and reasonable timeout in between retries)
             http_client=http_client,
         )
 
-    clients = [
-        setup_single_client(base_url, api_key_var)
-        for base_url, api_key_var in zip(client_config.base_url, client_config.api_key_var)
-    ]
+    clients = [setup_single_client(base_url) for base_url in client_config.base_url]
     return RoundRobinAsyncOpenAI(clients=clients)
 
 
