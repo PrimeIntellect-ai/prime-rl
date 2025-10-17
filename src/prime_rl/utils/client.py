@@ -126,16 +126,25 @@ async def generate_batch(
     max_concurrent: int = -1,
 ) -> GenerateOutputs:
     """Asynchronously generate and score rollouts for a list of problems."""
-    from tqdm.asyncio import tqdm_asyncio
+    from tqdm import tqdm
 
-    generate_outputs_list: list[GenerateOutputs] = await tqdm_asyncio.gather(
-        *[
-            generate_group(client, env, model_name, problem, rollouts_per_example, sampling_args, max_concurrent)
-            for client, problem in zip(cycle(clients), problems)
-        ],
-        total=len(problems),
-        desc="Generating rollouts",
-    )
+    pbar = tqdm(total=len(problems) * rollouts_per_example, desc="Generating rollouts")
+
+    async def generate_group_with_progress(client, problem):
+        """Generate rollouts for one problem and update progress."""
+        result = await generate_group(
+            client, env, model_name, problem, rollouts_per_example, sampling_args, max_concurrent
+        )
+        pbar.update(rollouts_per_example)
+        return result
+
+    try:
+        generate_outputs_list: list[GenerateOutputs] = await asyncio.gather(
+            *[generate_group_with_progress(client, problem) for client, problem in zip(cycle(clients), problems)]
+        )
+    finally:
+        pbar.close()
+
     return merge_outputs(generate_outputs_list)
 
 
