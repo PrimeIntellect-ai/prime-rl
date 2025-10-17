@@ -5,6 +5,7 @@ from itertools import cycle
 from pathlib import Path
 
 import httpx
+from datasets import Dataset
 from httpx import AsyncClient
 from openai import AsyncOpenAI, NotFoundError
 from verifiers import Environment
@@ -70,47 +71,8 @@ async def check_has_model(clients: list[AsyncOpenAI], model_name: str) -> None:
     logger.debug(f"Model {model_name} was found in the inference pool")
 
 
-async def generate_group(
-    client: AsyncOpenAI,
-    env: Environment,
-    model_name: str,
-    problem: dict,
-    rollouts_per_example: int,
-    sampling_args: dict,
-) -> GenerateOutputs:
-    """Asynchronously generate completions and rewards for a single problem."""
-    problems = [problem for _ in range(rollouts_per_example)]
-    inputs = {
-        "prompt": [problem["prompt"] for problem in problems],
-        "info": [problem.get("info", {}) for problem in problems],
-        "task": [problem.get("task", "default") for problem in problems],
-        "answer": [problem.get("answer", "") for problem in problems],
-    }
-    return await env.a_generate(inputs=inputs, client=client, model=model_name, sampling_args=sampling_args)
-
-
-async def generate_batch(
-    clients: list[AsyncOpenAI],
-    env: Environment,
-    model_name: str,
-    problems: list[dict],
-    rollouts_per_example: int,
-    sampling_args: dict,
-) -> GenerateOutputs:
-    """Asynchronously generate completions and rewards for a batch of problems."""
-    generate_outputs_list: list[GenerateOutputs] = await asyncio.gather(
-        *[
-            generate_group(
-                client=client,
-                env=env,
-                model_name=model_name,
-                problem=problem,
-                rollouts_per_example=rollouts_per_example,
-                sampling_args=sampling_args,
-            )
-            for client, problem in zip(cycle(clients), problems)
-        ]
-    )
+def merge_outputs(generate_outputs_list: list[GenerateOutputs]) -> GenerateOutputs:
+    """Merge multiple GenerateOutputs into a single GenerateOutputs."""
     prompt, completion, answer, state, reward, info, task, metrics = [], [], [], [], [], [], [], defaultdict(list)
     for generate_output in generate_outputs_list:
         prompt.extend(generate_output.prompt)
@@ -132,6 +94,44 @@ async def generate_batch(
         task=task,
         metrics=metrics,
     )
+
+
+async def generate_group(
+    client: AsyncOpenAI,
+    env: Environment,
+    model_name: str,
+    problem: dict,
+    rollouts_per_example: int,
+    sampling_args: dict,
+    max_concurrent: int,
+) -> GenerateOutputs:
+    """Asynchronously generate and score rollouts for one problem."""
+    return await env.a_generate(
+        inputs=Dataset.from_list([problem] * rollouts_per_example),
+        client=client,
+        model=model_name,
+        sampling_args=sampling_args,
+        max_concurrent=max_concurrent,
+    )
+
+
+async def generate_batch(
+    clients: list[AsyncOpenAI],
+    env: Environment,
+    model_name: str,
+    problems: list[dict],
+    rollouts_per_example: int,
+    sampling_args: dict,
+    max_concurrent: int = -1,
+) -> GenerateOutputs:
+    """Asynchronously generate and score rollouts for a list of problems."""
+    generate_outputs_list: list[GenerateOutputs] = await asyncio.gather(
+        *[
+            generate_group(client, env, model_name, problem, rollouts_per_example, sampling_args, max_concurrent)
+            for client, problem in zip(cycle(clients), problems)
+        ]
+    )
+    return merge_outputs(generate_outputs_list)
 
 
 async def check_health(
