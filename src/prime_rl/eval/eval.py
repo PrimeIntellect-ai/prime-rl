@@ -6,14 +6,14 @@ from prime_rl.utils.client import (
     check_has_model,
     check_health,
     reload_weights,
-    setup_admin_client,
+    setup_admin_clients,
     setup_client,
     update_weights,
 )
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
-from prime_rl.utils.utils import clean_exit
+from prime_rl.utils.utils import clean_exit, get_step_path
 
 
 @clean_exit
@@ -40,17 +40,17 @@ async def eval(config: OfflineEvalConfig):
         f"Initializing OpenAI client (base_url={config.client.base_url}, api_key_var={config.client.api_key_var}, server_type={config.client.server_type})"
     )
     client = setup_client(config.client)
-    admin_client = setup_admin_client(config.client)
+    admin_clients = setup_admin_clients(config.client)
 
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")
-    await check_health(client)
+    await check_health(admin_clients)
     await check_has_model(client, config.model.name)
     logger.success(f"Inference pool is healthy and serves {config.model.name}")
 
     # Reset weights to base model to allow reusing inference server across runs
     logger.info("Resetting weights to base model")
-    await reload_weights(admin_client)
+    await reload_weights(admin_clients)
 
     # Run benchmarks on base model
     if config.eval_base:
@@ -79,7 +79,7 @@ async def eval(config: OfflineEvalConfig):
         for ckpt_step in ckpt_steps[::-1]:
             # Update the weights
             logger.info(f"Evaluating model {config.model.name} at checkpoint {ckpt_step}")
-            await update_weights(client, config.weights_dir, ckpt_step)
+            await update_weights(admin_clients, get_step_path(config.weights_dir, ckpt_step))
 
             # Run evals on checkpoint
             await run_evals(
