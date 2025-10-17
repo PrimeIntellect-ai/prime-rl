@@ -7,7 +7,7 @@ from torch import Tensor
 
 from prime_rl.trainer.rl.config import FakeDataLoaderConfig
 from prime_rl.trainer.world import get_world
-from prime_rl.utils.utils import get_rollout_dir, wait_for_path
+from prime_rl.utils.utils import get_rollout_dir, sync_wait_for_path
 
 
 class MicroBatch(TypedDict):
@@ -65,8 +65,8 @@ class DataLoader:
     def get_rollout_path(self) -> Path:
         return self.rollout_dir / f"step_{self.current_step}" / f"rank_{self.world.rank}.pt"
 
-    async def wait_for_batch(self) -> None:
-        await wait_for_path(self.get_rollout_path())
+    def wait_for_batch(self) -> None:
+        sync_wait_for_path(self.get_rollout_path())
 
     def get_batch(self) -> list[MicroBatch]:
         batches = torch.load(self.get_rollout_path())

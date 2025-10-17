@@ -1,4 +1,3 @@
-import asyncio
 from contextlib import nullcontext
 import time
 from datetime import timedelta
@@ -47,7 +46,7 @@ from prime_rl.utils.utils import clean_exit, to_col_format
 
 @clean_exit
 @logger.catch(reraise=True)
-async def train(config: RLTrainerConfig):
+def train(config: RLTrainerConfig):
     # Setup world and logger
     world = get_world()
     logger = setup_logger(
@@ -167,7 +166,7 @@ async def train(config: RLTrainerConfig):
         # Wait for the batch to be available
         logger.info("Waiting for training batch to arrive")
         wait_for_batch_start_time = time.time()
-        await dataloader.wait_for_batch()
+        dataloader.wait_for_batch()
         wait_for_batch_time = time.time() - wait_for_batch_start_time
         logger.debug(f"Waited for batch to arrive for {wait_for_batch_time:.2f} seconds")
 
@@ -377,7 +376,7 @@ async def train(config: RLTrainerConfig):
 def main():
     """Main entry-point for RL trainer. Run using `uv run trainer`"""
 
-    asyncio.run(train(parse_argv(RLTrainerConfig)))
+    train(parse_argv(RLTrainerConfig))
 
 
 if __name__ == "__main__":
