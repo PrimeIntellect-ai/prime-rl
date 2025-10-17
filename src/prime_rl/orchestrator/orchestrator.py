@@ -1,5 +1,4 @@
 import asyncio
-from itertools import cycle
 import time
 from loguru import logger
 
@@ -65,7 +64,7 @@ async def orchestrate(config: OrchestratorConfig):
     # Setup client
     assert config.client.server_type == "vllm", "Orchestrator only supports vLLM server type."
     logger.info(
-        f"Initializing round-robin OpenAI client (base_urls={config.client.base_urls}, api_key_var={config.client.api_key_var}, server_type={config.client.server_type})"
+        f"Initializing clients (base_url={config.client.base_url}, api_key_var={config.client.api_key_var}, server_type={config.client.server_type})"
     )
     clients = setup_clients(config.client)
     admin_clients = setup_admin_clients(config.client)

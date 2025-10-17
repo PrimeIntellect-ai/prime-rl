@@ -32,7 +32,7 @@ def setup_clients(client_config: ClientConfig) -> list[AsyncOpenAI]:
             http_client=http_client,
         )
 
-    return [_setup_client(base_url) for base_url in client_config.base_urls]
+    return [_setup_client(base_url) for base_url in client_config.base_url]
 
 
 def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
@@ -57,7 +57,7 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
             timeout=httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=None),
         )
 
-    return [_setup_admin_client(base_url) for base_url in client_config.base_urls]
+    return [_setup_admin_client(base_url) for base_url in client_config.base_url]
 
 
 async def check_has_model(clients: list[AsyncOpenAI], model_name: str) -> None:
