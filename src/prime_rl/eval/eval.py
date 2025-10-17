@@ -2,7 +2,7 @@ import asyncio
 
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.eval.utils import run_evals
-from prime_rl.orchestrator.client import (
+from prime_rl.utils.client import (
     check_has_model,
     check_health,
     reload_weights,
@@ -41,7 +41,6 @@ async def eval(config: OfflineEvalConfig):
     )
     client = setup_client(config.client)
     admin_client = setup_admin_client(config.client)
-
 
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")
