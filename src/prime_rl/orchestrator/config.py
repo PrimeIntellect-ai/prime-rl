@@ -20,18 +20,18 @@ class ClientConfig(BaseConfig):
     ] = 1200
 
     base_url: Annotated[
-        str,
+        list[str],
         Field(
             description="Base URL to use for the OpenAI API. By default, it is set to None, which means ",
         ),
-    ] = "http://localhost:8000/v1"
+    ] = ["http://localhost:8000/v1"]
 
     api_key_var: Annotated[
-        str,
+        list[str],
         Field(
             description="Name of environment varaible containing the API key to use for the OpenAI API. Will parse using `os.getenv(client_config.api_key_var)`. Can be set to an arbitrary string if the inference server is not protected by an API key .",
         ),
-    ] = "OPENAI_API_KEY"
+    ] = ["OPENAI_API_KEY"]
 
     server_type: Annotated[
         ServerType,
@@ -42,7 +42,7 @@ class ClientConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_server_type(self):
-        if self.base_url == "https://api.openai.com/v1":
+        if any(base_url == "https://api.openai.com/v1" for base_url in self.base_url):
             self.server_type = "openai"
         return self
 
