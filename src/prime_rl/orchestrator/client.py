@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 
 import httpx
-from httpx import Response
+from httpx import AsyncClient, Response
 from openai import AsyncOpenAI, NotFoundError
 
 from prime_rl.orchestrator.config import ClientConfig
@@ -80,7 +80,7 @@ async def check_has_model(client: AsyncOpenAI, model_name: str) -> None:
     logger.debug(f"Model {model_name} was found in the inference pool")
 
 
-async def update_weights(admin_client: httpx.AsyncClient, weight_dir: Path) -> None:
+async def update_weights(admin_client: AsyncClient, weight_dir: Path) -> None:
     """Make a HTTP post request to the vLLM server to update the weights."""
     logger = get_logger()
     try:
@@ -93,7 +93,7 @@ async def update_weights(admin_client: httpx.AsyncClient, weight_dir: Path) -> N
         raise
 
 
-async def reload_weights(admin_client: httpx.AsyncClient) -> None:
+async def reload_weights(admin_client: AsyncClient) -> None:
     """Make a HTTP post request to the vLLM server to reload weights (reset to base model)."""
     logger = get_logger()
     logger.debug("Sending request to reload weights (reset to base model)")
