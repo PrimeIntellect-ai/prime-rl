@@ -199,8 +199,7 @@ async def orchestrate(config: OrchestratorConfig):
         problems_to_sample = problems_per_batch
         while True:
             # Get the batch
-            problem_ids, problems = buffer.sample_problems(problems_to_sample)
-            problem_ids = [problem_id for problem_id in problem_ids for _ in range(config.rollouts_per_example)]
+            problems = buffer.sample_problems(problems_to_sample)
 
             # Convert SamplingConfig to vLLM OAI sampling args
             # https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#extra-parameters_2
@@ -263,7 +262,7 @@ async def orchestrate(config: OrchestratorConfig):
 
             # Update pool
             rollouts = make_rollouts(
-                problem_ids=problem_ids,
+                problem_ids=[problem["id"] for problem in problems for _ in range(config.rollouts_per_example)],
                 prompt_tokens=processed_outputs.prompt_ids,
                 prompt_masks=processed_outputs.prompt_mask,
                 completion_tokens=processed_outputs.completion_ids,
