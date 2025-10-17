@@ -15,6 +15,7 @@ from verifiers.types import GenerateOutputs, Messages
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.orchestrator.config import ClientConfig, EvalConfig, EvalSamplingConfig, ModelConfig
 from prime_rl.orchestrator.utils import parse_is_truncated_completions, parse_num_completion_tokens
+from prime_rl.utils.client import generate_batch
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor import get_monitor
 from prime_rl.utils.utils import capitalize, get_eval_dir, get_step_path
@@ -150,44 +151,32 @@ async def run_eval(
 
     # Load the eval environment
     load_eval_start_time = time.time()
-    vf_eval = load_environment(eval_id, **env_args)
+    env = load_environment(eval_id, **env_args)
     load_eval_time = time.time() - load_eval_start_time
     logger.debug(f"Loaded eval environment in {load_eval_time:.2f}s")
 
     # Build inputs dataset (mirror Environment.evaluate but async)
-    if vf_eval.eval_dataset is None:
-        logger.warning(f"Did not find eval dataset for {eval_id}, falling back to train dataset")
-        dataset = vf_eval.get_dataset(n=num_examples)
-    else:
-        dataset = vf_eval.get_eval_dataset(n=num_examples)
-
-    # Convert to list of examples
-    assert dataset is not None
-    examples = dataset.to_list()
-    example_ids = list(range(len(examples)))
-
-    # Duplicate examples `rollouts_per_example` times
-    if rollouts_per_example > 1:
-        example_ids = [example_id for example_id in example_ids for _ in range(rollouts_per_example)]
-        examples = [example for example in examples for _ in range(rollouts_per_example)]
+    dataset = env.get_eval_dataset(n=num_examples)
+    assert dataset is not None  # TODO: Remove once https://github.com/PrimeIntellect-ai/verifiers/pull/480 is merged
 
     # Prepare sampling arguments
     sampling_args = prepare_sampling_args(sampling_config, client_config)
 
     logger.debug(
-        f"Evaluating {eval_id} (num_examples={len(examples)}, rollouts_per_example={rollouts_per_example}) with args {env_args}"
+        f"Evaluating {eval_id} (num_examples={len(dataset)}, rollouts_per_example={rollouts_per_example}) with args {env_args}"
     )
-
     # Run async generation and scoring
     run_eval_start_time = time.time()
-    generate_outputs: GenerateOutputs = await vf_eval.a_generate(
-        inputs=Dataset.from_list(examples),
-        client=client,
-        model=model_config.name,
+    generate_outputs: GenerateOutputs = await generate_batch(
+        env=env,
+        model_name=model_config.name,
+        problems=dataset.to_list(),
+        clients=clients,
+        rollouts_per_example=rollouts_per_example,
         sampling_args=sampling_args,
-        score_rollouts=True,
         max_concurrent=max_concurrent,
     )
+
     run_eval_time = time.time() - run_eval_start_time
     logger.debug(f"Generated and scored rollouts in {run_eval_time:.2f}s")
 
@@ -197,12 +186,13 @@ async def run_eval(
     is_truncated = torch.tensor(parse_is_truncated_completions(responses)).reshape(-1, rollouts_per_example).float()
 
     k = rollouts_per_example
-    sample_stats = pd.DataFrame({"example_id": example_ids, "reward": rewards.flatten().tolist()})
+    problem_ids = [problem["id"] for problem in dataset.to_list() for _ in range(rollouts_per_example)]
+    sample_stats = pd.DataFrame({"problem_ids": problem_ids, "reward": rewards.flatten().tolist()})
     unique_rewards = sample_stats.reward.unique()
     could_be_binary = set(unique_rewards).issubset({0.0, 1.0})
     if could_be_binary:
         pass_at_k = (
-            sample_stats.groupby("example_id")
+            sample_stats.groupby("problem_ids")
             .apply(lambda x: compute_pass_at_k(x.reward), include_groups=False)
             .apply(pd.Series)
         )
