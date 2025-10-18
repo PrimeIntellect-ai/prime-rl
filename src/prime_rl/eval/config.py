@@ -3,8 +3,8 @@ from typing import Annotated
 
 from pydantic import Field, model_validator
 
-from prime_rl.orchestrator.config import ClientConfig, EvalConfig
-from prime_rl.utils.config import LogConfig, ModelConfig, WandbMonitorConfig
+from prime_rl.orchestrator.config import EvalConfig
+from prime_rl.utils.config import ClientConfig, LogConfig, ModelConfig, WandbMonitorConfig
 from prime_rl.utils.pydantic_config import BaseSettings
 
 

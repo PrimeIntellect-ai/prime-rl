@@ -82,20 +82,16 @@ def test_online_difficulty_buffer_init(difficulty_dataset):
 
 def test_simple_buffer_sample_problems(dataset):
     buffer = SimpleBuffer(dataset, SimpleBufferConfig())
-    sampled_problem_ids, sampled_problems = buffer.sample_problems(2)
-    assert len(sampled_problem_ids) == len(sampled_problems) == 2
-    assert sampled_problem_ids == [0, 4]
-    assert sampled_problems[0] == {"problem": "0"}
-    assert sampled_problems[1] == {"problem": "4"}
+    sampled_problems = buffer.sample_problems(2)
+    assert sampled_problems[0] == {"id": 0, "problem": "0"}
+    assert sampled_problems[1] == {"id": 4, "problem": "4"}
 
 
 def test_difficulty_pool_buffer_sample_default_problems(dataset):
     buffer = DifficultyPoolBuffer(dataset, DifficultyPoolBufferConfig())
-    sampled_problem_ids, sampled_problems = buffer.sample_problems(2)
-    assert len(sampled_problem_ids) == len(sampled_problems) == 2
-    assert sampled_problem_ids == [0, 4]
-    assert sampled_problems[0] == {"problem": "0"}
-    assert sampled_problems[1] == {"problem": "4"}
+    sampled_problems = buffer.sample_problems(2)
+    assert sampled_problems[0] == {"id": 0, "problem": "0"}
+    assert sampled_problems[1] == {"id": 4, "problem": "4"}
 
 
 def test_difficulty_pool_buffer_sample_problems_mix(difficulty_dataset):
@@ -103,12 +99,10 @@ def test_difficulty_pool_buffer_sample_problems_mix(difficulty_dataset):
         difficulty_dataset,
         DifficultyPoolBufferConfig(easy_fraction=0.5, hard_fraction=0.5, from_scratch=False),
     )
-    sampled_problem_ids, sampled_problems = buffer.sample_problems(3)
-    assert len(sampled_problem_ids) == len(sampled_problems) == 3
-    assert sampled_problem_ids == [0, 3, 4]
-    assert sampled_problems[0] == {"problem": "0"}
-    assert sampled_problems[1] == {"problem": "3"}
-    assert sampled_problems[2] == {"problem": "4"}
+    sampled_problems = buffer.sample_problems(3)
+    assert sampled_problems[0] == {"id": 0, "problem": "0"}
+    assert sampled_problems[1] == {"id": 3, "problem": "3"}
+    assert sampled_problems[2] == {"id": 4, "problem": "4"}
 
 
 def test_difficulty_pool_buffer_sample_problems_only_easy(difficulty_dataset):
@@ -116,11 +110,9 @@ def test_difficulty_pool_buffer_sample_problems_only_easy(difficulty_dataset):
         difficulty_dataset,
         DifficultyPoolBufferConfig(easy_fraction=1.0, hard_fraction=0.0, from_scratch=False),
     )
-    sampled_problem_ids, sampled_problems = buffer.sample_problems(2)
-    assert len(sampled_problem_ids) == len(sampled_problems) == 2
-    assert sampled_problem_ids == [0, 1]
-    assert sampled_problems[0] == {"problem": "0"}
-    assert sampled_problems[1] == {"problem": "1"}
+    sampled_problems = buffer.sample_problems(2)
+    assert sampled_problems[0] == {"id": 0, "problem": "0"}
+    assert sampled_problems[1] == {"id": 1, "problem": "1"}
 
 
 def test_difficulty_pool_buffer_sample_problems_only_hard(difficulty_dataset):
@@ -128,58 +120,42 @@ def test_difficulty_pool_buffer_sample_problems_only_hard(difficulty_dataset):
         difficulty_dataset,
         DifficultyPoolBufferConfig(easy_fraction=0.0, hard_fraction=1.0, from_scratch=False),
     )
-    sampled_problem_ids, sampled_problems = buffer.sample_problems(2)
-    assert len(sampled_problem_ids) == len(sampled_problems) == 2
-    assert sampled_problem_ids == [2, 4]
-    assert sampled_problems[0] == {"problem": "2"}
-    assert sampled_problems[1] == {"problem": "4"}
+    sampled_problems = buffer.sample_problems(2)
+    assert sampled_problems[0] == {"id": 2, "problem": "2"}
+    assert sampled_problems[1] == {"id": 4, "problem": "4"}
 
 
 def test_online_difficulty_buffer_sample_problems(dataset):
     buffer = OnlineDifficultyBuffer(dataset, OnlineDifficultyBufferConfig())
-    sampled_problem_ids, sampled_problems = buffer.sample_problems(2)
-    assert len(sampled_problem_ids) == len(sampled_problems) == 2
-    assert sampled_problem_ids == [0, 4]
-    assert sampled_problems[0] == {"problem": "0"}
-    assert sampled_problems[1] == {"problem": "4"}
+    sampled_problems = buffer.sample_problems(2)
+    assert sampled_problems[0] == {"id": 0, "problem": "0"}
+    assert sampled_problems[1] == {"id": 4, "problem": "4"}
 
 
 def test_simple_buffer_sample_problems_multiple_epochs(dataset):
     buffer = SimpleBuffer(dataset, SimpleBufferConfig())
-    sampled_problem_ids, sampled_problems = buffer.sample_problems(2)
-    assert len(sampled_problem_ids) == len(sampled_problems) == 2
-    assert sampled_problem_ids == [0, 4]
-    assert sampled_problems[0] == {"problem": "0"}
-    assert sampled_problems[1] == {"problem": "4"}
-    sampled_problem_ids, sampled_problems = buffer.sample_problems(2)
-    assert len(sampled_problem_ids) == len(sampled_problems) == 2
-    assert sampled_problem_ids == [2, 1]
-    assert sampled_problems[0] == {"problem": "2"}
-    assert sampled_problems[1] == {"problem": "1"}
-    sampled_problem_ids, sampled_problems = buffer.sample_problems(2)
-    assert len(sampled_problem_ids) == len(sampled_problems) == 2
-    assert sampled_problem_ids == [1, 4]
-    assert sampled_problems[0] == {"problem": "1"}
-    assert sampled_problems[1] == {"problem": "4"}
+    sampled_problems = buffer.sample_problems(2)
+    assert sampled_problems[0] == {"id": 0, "problem": "0"}
+    assert sampled_problems[1] == {"id": 4, "problem": "4"}
+    sampled_problems = buffer.sample_problems(2)
+    assert sampled_problems[0] == {"id": 2, "problem": "2"}
+    assert sampled_problems[1] == {"id": 1, "problem": "1"}
+    sampled_problems = buffer.sample_problems(2)
+    assert sampled_problems[0] == {"id": 1, "problem": "1"}
+    assert sampled_problems[1] == {"id": 4, "problem": "4"}
 
 
 def test_difficulty_pool_buffer_sample_default_problems_multiple_epochs(dataset):
     buffer = DifficultyPoolBuffer(dataset, DifficultyPoolBufferConfig())
-    sampled_problem_ids, sampled_problems = buffer.sample_problems(2)
-    assert len(sampled_problem_ids) == len(sampled_problems) == 2
-    assert sampled_problem_ids == [0, 4]
-    assert sampled_problems[0] == {"problem": "0"}
-    assert sampled_problems[1] == {"problem": "4"}
-    sampled_problem_ids, sampled_problems = buffer.sample_problems(2)
-    assert len(sampled_problem_ids) == len(sampled_problems) == 2
-    assert sampled_problem_ids == [2, 1]
-    assert sampled_problems[0] == {"problem": "2"}
-    assert sampled_problems[1] == {"problem": "1"}
-    sampled_problem_ids, sampled_problems = buffer.sample_problems(2)
-    assert len(sampled_problem_ids) == len(sampled_problems) == 2
-    assert sampled_problem_ids == [1, 4]
-    assert sampled_problems[0] == {"problem": "1"}
-    assert sampled_problems[1] == {"problem": "4"}
+    sampled_problems = buffer.sample_problems(2)
+    assert sampled_problems[0] == {"id": 0, "problem": "0"}
+    assert sampled_problems[1] == {"id": 4, "problem": "4"}
+    sampled_problems = buffer.sample_problems(2)
+    assert sampled_problems[0] == {"id": 2, "problem": "2"}
+    assert sampled_problems[1] == {"id": 1, "problem": "1"}
+    sampled_problems = buffer.sample_problems(2)
+    assert sampled_problems[0] == {"id": 1, "problem": "1"}
+    assert sampled_problems[1] == {"id": 4, "problem": "4"}
 
 
 def test_difficulty_pool_buffer_sample_problems_multiple_epochs_mix(difficulty_dataset):
@@ -187,18 +163,14 @@ def test_difficulty_pool_buffer_sample_problems_multiple_epochs_mix(difficulty_d
         difficulty_dataset,
         DifficultyPoolBufferConfig(easy_fraction=0.5, hard_fraction=0.5, from_scratch=False),
     )
-    sampled_problem_ids, sampled_problems = buffer.sample_problems(3)
-    assert len(sampled_problem_ids) == len(sampled_problems) == 3
-    assert sampled_problem_ids == [0, 3, 4]
-    assert sampled_problems[0] == {"problem": "0"}
-    assert sampled_problems[1] == {"problem": "3"}
-    assert sampled_problems[2] == {"problem": "4"}
-    sampled_problem_ids, sampled_problems = buffer.sample_problems(3)
-    assert len(sampled_problem_ids) == len(sampled_problems) == 3
-    assert sampled_problem_ids == [0, 2, 4]
-    assert sampled_problems[0] == {"problem": "0"}
-    assert sampled_problems[1] == {"problem": "2"}
-    assert sampled_problems[2] == {"problem": "4"}
+    sampled_problems = buffer.sample_problems(3)
+    assert sampled_problems[0] == {"id": 0, "problem": "0"}
+    assert sampled_problems[1] == {"id": 3, "problem": "3"}
+    assert sampled_problems[2] == {"id": 4, "problem": "4"}
+    sampled_problems = buffer.sample_problems(3)
+    assert sampled_problems[0] == {"id": 0, "problem": "0"}
+    assert sampled_problems[1] == {"id": 2, "problem": "2"}
+    assert sampled_problems[2] == {"id": 4, "problem": "4"}
 
 
 def test_difficulty_pool_buffer_sample_problems_multiple_epochs_only_easy(difficulty_dataset):
@@ -206,16 +178,12 @@ def test_difficulty_pool_buffer_sample_problems_multiple_epochs_only_easy(diffic
         difficulty_dataset,
         DifficultyPoolBufferConfig(easy_fraction=1.0, hard_fraction=0.0, from_scratch=False),
     )
-    sampled_problem_ids, sampled_problems = buffer.sample_problems(2)
-    assert len(sampled_problem_ids) == len(sampled_problems) == 2
-    assert sampled_problem_ids == [0, 1]
-    assert sampled_problems[0] == {"problem": "0"}
-    assert sampled_problems[1] == {"problem": "1"}
-    sampled_problem_ids, sampled_problems = buffer.sample_problems(2)
-    assert len(sampled_problem_ids) == len(sampled_problems) == 2
-    assert sampled_problem_ids == [1, 0]
-    assert sampled_problems[0] == {"problem": "1"}
-    assert sampled_problems[1] == {"problem": "0"}
+    sampled_problems = buffer.sample_problems(2)
+    assert sampled_problems[0] == {"id": 0, "problem": "0"}
+    assert sampled_problems[1] == {"id": 1, "problem": "1"}
+    sampled_problems = buffer.sample_problems(2)
+    assert sampled_problems[0] == {"id": 1, "problem": "1"}
+    assert sampled_problems[1] == {"id": 0, "problem": "0"}
 
 
 def test_difficulty_pool_buffer_sample_problems_multiple_epochs_only_hard(difficulty_dataset):
@@ -223,35 +191,25 @@ def test_difficulty_pool_buffer_sample_problems_multiple_epochs_only_hard(diffic
         difficulty_dataset,
         DifficultyPoolBufferConfig(easy_fraction=0.0, hard_fraction=1.0, from_scratch=False),
     )
-    sampled_problem_ids, sampled_problems = buffer.sample_problems(2)
-    assert len(sampled_problem_ids) == len(sampled_problems) == 2
-    assert sampled_problem_ids == [2, 4]
-    assert sampled_problems[0] == {"problem": "2"}
-    assert sampled_problems[1] == {"problem": "4"}
-    sampled_problem_ids, sampled_problems = buffer.sample_problems(2)
-    assert len(sampled_problem_ids) == len(sampled_problems) == 2
-    assert sampled_problem_ids == [2, 4]
-    assert sampled_problems[0] == {"problem": "2"}
-    assert sampled_problems[1] == {"problem": "4"}
+    sampled_problems = buffer.sample_problems(2)
+    assert sampled_problems[0] == {"id": 2, "problem": "2"}
+    assert sampled_problems[1] == {"id": 4, "problem": "4"}
+    sampled_problems = buffer.sample_problems(2)
+    assert sampled_problems[0] == {"id": 2, "problem": "2"}
+    assert sampled_problems[1] == {"id": 4, "problem": "4"}
 
 
 def test_online_difficulty_buffer_sample_problems_multiple_epochs(dataset):
     buffer = OnlineDifficultyBuffer(dataset, OnlineDifficultyBufferConfig())
-    sampled_problem_ids, sampled_problems = buffer.sample_problems(2)
-    assert len(sampled_problem_ids) == len(sampled_problems) == 2
-    assert sampled_problem_ids == [0, 4]
-    assert sampled_problems[0] == {"problem": "0"}
-    assert sampled_problems[1] == {"problem": "4"}
-    sampled_problem_ids, sampled_problems = buffer.sample_problems(2)
-    assert len(sampled_problem_ids) == len(sampled_problems) == 2
-    assert sampled_problem_ids == [2, 1]
-    assert sampled_problems[0] == {"problem": "2"}
-    assert sampled_problems[1] == {"problem": "1"}
-    sampled_problem_ids, sampled_problems = buffer.sample_problems(2)
-    assert len(sampled_problem_ids) == len(sampled_problems) == 2
-    assert sampled_problem_ids == [1, 4]
-    assert sampled_problems[0] == {"problem": "1"}
-    assert sampled_problems[1] == {"problem": "4"}
+    sampled_problems = buffer.sample_problems(2)
+    assert sampled_problems[0] == {"id": 0, "problem": "0"}
+    assert sampled_problems[1] == {"id": 4, "problem": "4"}
+    sampled_problems = buffer.sample_problems(2)
+    assert sampled_problems[0] == {"id": 2, "problem": "2"}
+    assert sampled_problems[1] == {"id": 1, "problem": "1"}
+    sampled_problems = buffer.sample_problems(2)
+    assert sampled_problems[0] == {"id": 1, "problem": "1"}
+    assert sampled_problems[1] == {"id": 4, "problem": "4"}
 
 
 def test_simple_buffer_sample_rollouts(dataset, make_rollouts):
