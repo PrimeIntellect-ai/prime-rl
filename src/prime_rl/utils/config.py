@@ -31,7 +31,7 @@ class ClientConfig(BaseConfig):
         ),
     ] = 1200
 
-    base_urls: Annotated[
+    base_url: Annotated[
         list[str],
         Field(
             description="Base URLs to use for the OpenAI API. By default, it is set to a single server on localhost at port 8000 which matches the default local vLLM server configuration. If you specify more than one URL, the client will round-robin (chat) completion requests across all servers.",
@@ -54,7 +54,7 @@ class ClientConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_server_type(self):
-        if any(base_url == "https://api.openai.com/v1" for base_url in self.base_urls):
+        if any(base_url == "https://api.openai.com/v1" for base_url in self.base_url):
             self.server_type = "openai"
         return self
 

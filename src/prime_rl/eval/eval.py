@@ -7,7 +7,7 @@ from prime_rl.utils.client import (
     check_health,
     # reload_weights,
     setup_admin_clients,
-    setup_client,
+    setup_clients,
     update_weights,
 )
 from prime_rl.utils.logger import setup_logger
@@ -37,15 +37,15 @@ async def eval(config: OfflineEvalConfig):
 
     # Setup client
     logger.info(
-        f"Initializing OpenAI client (base_url={config.client.base_url}, api_key_var={config.client.api_key_var}, server_type={config.client.server_type})"
+        f"Initializing OpenAI client (base_url={', '.join(config.client.base_url)}, api_key_var={config.client.api_key_var}, server_type={config.client.server_type})"
     )
-    client = setup_client(config.client)
+    clients = setup_clients(config.client)
     admin_clients = setup_admin_clients(config.client)
 
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")
     await check_health(admin_clients)
-    await check_has_model(client, config.model.name)
+    await check_has_model(clients, config.model.name)
     logger.success(f"Inference pool is healthy and serves {config.model.name}")
 
     # Reset weights to base model to allow reusing inference server across runs
@@ -56,7 +56,7 @@ async def eval(config: OfflineEvalConfig):
     if config.eval_base:
         logger.info(f"Evaluating model {config.model.name}")
         await run_evals(
-            client=client,
+            clients=clients,
             eval_config=config,
             model_config=config.model,
             sampling_config=config.sampling,
@@ -83,7 +83,7 @@ async def eval(config: OfflineEvalConfig):
 
             # Run evals on checkpoint
             await run_evals(
-                client=client,
+                clients=clients,
                 eval_config=config,
                 model_config=config.model,
                 sampling_config=config.sampling,

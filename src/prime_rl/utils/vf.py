@@ -1,0 +1,85 @@
+import asyncio
+from collections import defaultdict
+from itertools import cycle
+
+from datasets import Dataset
+from openai import AsyncOpenAI
+from verifiers import Environment
+from verifiers.types import GenerateOutputs
+
+
+def merge_outputs(generate_outputs_list: list[GenerateOutputs]) -> GenerateOutputs:
+    """Merge multiple GenerateOutputs into a single GenerateOutputs."""
+    prompt, completion, answer, state, reward, info, task, metrics = [], [], [], [], [], [], [], defaultdict(list)
+    for generate_output in generate_outputs_list:
+        prompt.extend(generate_output.prompt)
+        completion.extend(generate_output.completion)
+        answer.extend(generate_output.answer)
+        state.extend(generate_output.state)
+        reward.extend(generate_output.reward)
+        info.extend(generate_output.info)
+        task.extend(generate_output.task)
+        for key, value in generate_output.metrics.items():
+            metrics[key].extend(value)
+    return GenerateOutputs(
+        prompt=prompt,
+        completion=completion,
+        answer=answer,
+        state=state,
+        reward=reward,
+        info=info,
+        task=task,
+        metrics=metrics,
+    )
+
+
+async def generate_group(
+    client: AsyncOpenAI,
+    env: Environment,
+    model_name: str,
+    problem: dict,
+    rollouts_per_example: int,
+    sampling_args: dict,
+    max_concurrent: int,
+) -> GenerateOutputs:
+    """Asynchronously generate and score rollouts for one problem."""
+    return await env.a_generate(
+        inputs=Dataset.from_list([problem] * rollouts_per_example),
+        client=client,
+        model=model_name,
+        sampling_args=sampling_args,
+        max_concurrent=max_concurrent,
+        use_tqdm=False,
+    )
+
+
+async def generate_batch(
+    clients: list[AsyncOpenAI],
+    env: Environment,
+    model_name: str,
+    problems: list[dict],
+    rollouts_per_example: int,
+    sampling_args: dict,
+    max_concurrent: int = -1,
+) -> GenerateOutputs:
+    """Asynchronously generate and score rollouts for a list of problems."""
+    from tqdm import tqdm
+
+    pbar = tqdm(total=len(problems) * rollouts_per_example, desc="Generating rollouts")
+
+    async def generate_group_with_progress(client, problem):
+        """Generate rollouts for one problem and update progress."""
+        result = await generate_group(
+            client, env, model_name, problem, rollouts_per_example, sampling_args, max_concurrent
+        )
+        pbar.update(rollouts_per_example)
+        return result
+
+    try:
+        generate_outputs_list: list[GenerateOutputs] = await asyncio.gather(
+            *[generate_group_with_progress(client, problem) for client, problem in zip(cycle(clients), problems)]
+        )
+    finally:
+        pbar.close()
+
+    return merge_outputs(generate_outputs_list)

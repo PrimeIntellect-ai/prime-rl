@@ -1,40 +1,17 @@
 import asyncio
-import itertools
 import os
 from pathlib import Path
 
 import httpx
 from httpx import AsyncClient
 from openai import AsyncOpenAI, NotFoundError
-from openai.resources import AsyncChat, AsyncCompletions
 
 from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.logger import get_logger
 
 
-class RoundRobinAsyncOpenAI(AsyncOpenAI):
-    """A AsyncOpenAI client which round-robins (chat) completions requests across multiple clients."""
-
-    def __init__(self, clients: list[AsyncOpenAI]):
-        self.clients = clients
-        self.cycle = itertools.cycle(clients)
-
-    def _next_client(self) -> AsyncOpenAI:
-        return next(self.cycle)
-
-    @property
-    def chat(self) -> AsyncChat:
-        """Round-robin chat requests"""
-        return AsyncChat(self._next_client())
-
-    @property
-    def completions(self) -> AsyncCompletions:
-        """Round-robin completion requests"""
-        return AsyncCompletions(self._next_client())
-
-
-def setup_client(client_config: ClientConfig) -> RoundRobinAsyncOpenAI:
-    def setup_single_client(base_url: str) -> AsyncOpenAI:
+def setup_clients(client_config: ClientConfig) -> list[AsyncOpenAI]:
+    def _setup_client(base_url: str) -> AsyncOpenAI:
         # We use a longer request timeout than default, but if more than 20min, we probably need faster inference deployment
         timeout = httpx.Timeout(timeout=client_config.timeout, connect=5.0)
         # We use as many concurrent connections as possible, but lower than available ports
@@ -50,19 +27,7 @@ def setup_client(client_config: ClientConfig) -> RoundRobinAsyncOpenAI:
             http_client=http_client,
         )
 
-    clients = [setup_single_client(base_url) for base_url in client_config.base_urls]
-    return RoundRobinAsyncOpenAI(clients=clients)
-
-
-async def check_has_model(client: RoundRobinAsyncOpenAI, model_name: str) -> None:
-    logger = get_logger()
-    logger.debug(f"Checking if model {model_name} is in the inference pool")
-    results = await asyncio.gather(*[c.models.list() for c in client.clients])
-    for c, result in zip(client.clients, results):
-        models = result.data
-        if not any(model.id == model_name for model in models):
-            raise ValueError(f"Model {model_name} was not found in the inference pool on {c.base_url}")
-    logger.debug(f"Model {model_name} was found in the inference pool")
+    return [_setup_client(base_url) for base_url in client_config.base_url]
 
 
 def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
@@ -71,7 +36,7 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
     Uses a separate connection pool to avoid queueing behind streaming requests.
     """
 
-    def setup_single_admin_client(base_url: str) -> httpx.AsyncClient:
+    def _setup_admin_client(base_url: str) -> httpx.AsyncClient:
         headers = {}
         api_key = os.getenv(client_config.api_key_var, "EMPTY")
         if api_key and api_key != "EMPTY":
@@ -87,7 +52,18 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
             timeout=httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=None),
         )
 
-    return [setup_single_admin_client(base_url) for base_url in client_config.base_urls]
+    return [_setup_admin_client(base_url) for base_url in client_config.base_url]
+
+
+async def check_has_model(clients: list[AsyncOpenAI], model_name: str) -> None:
+    logger = get_logger()
+    logger.debug(f"Checking if model {model_name} is in the inference pool")
+    results = await asyncio.gather(*[client.models.list() for client in clients])
+    for client, result in zip(clients, results):
+        models = result.data
+        if not any(model.id == model_name for model in models):
+            raise ValueError(f"Model {model_name} was not found in the inference pool on {client.base_url}")
+    logger.debug(f"Model {model_name} was found in the inference pool")
 
 
 async def check_health(
@@ -95,7 +71,7 @@ async def check_health(
 ) -> None:
     logger = get_logger()
 
-    async def check_health_single_client(admin_client: AsyncClient) -> None:
+    async def _check_health(admin_client: AsyncClient) -> None:
         wait_time = 0
         logger.debug("Starting pinging /health to check health")
         while wait_time < timeout:
@@ -115,14 +91,14 @@ async def check_health(
         logger.error(msg)
         raise TimeoutError(msg)
 
-    await asyncio.gather(*[check_health_single_client(admin_client) for admin_client in admin_clients])
+    await asyncio.gather(*[_check_health(admin_client) for admin_client in admin_clients])
 
 
 async def update_weights(admin_clients: list[AsyncClient], weight_dir: Path) -> None:
     """Make a HTTP post request to the vLLM server to update the weights."""
     logger = get_logger()
 
-    async def update_weights_single_client(admin_client: AsyncClient, weight_dir: Path) -> None:
+    async def _update_weights(admin_client: AsyncClient, weight_dir: Path) -> None:
         try:
             response = await admin_client.post("/update_weights", json={"weight_dir": weight_dir.as_posix()})
             response.raise_for_status()
@@ -132,14 +108,14 @@ async def update_weights(admin_clients: list[AsyncClient], weight_dir: Path) -> 
                 return
             raise
 
-    await asyncio.gather(*[update_weights_single_client(admin_client, weight_dir) for admin_client in admin_clients])
+    await asyncio.gather(*[_update_weights(admin_client, weight_dir) for admin_client in admin_clients])
 
 
 async def reload_weights(admin_clients: list[AsyncClient]) -> None:
     """Make a HTTP post request to the vLLM server to reload weights (reset to base model)."""
     logger = get_logger()
 
-    async def reload_weights_single_client(admin_client: AsyncClient) -> None:
+    async def _reload_weights(admin_client: AsyncClient) -> None:
         logger.debug("Sending request to reload weights (reset to base model)")
         try:
             response = await admin_client.post("/reload_weights", json={})
@@ -150,4 +126,4 @@ async def reload_weights(admin_clients: list[AsyncClient]) -> None:
                 return
             raise
 
-    await asyncio.gather(*[reload_weights_single_client(admin_client) for admin_client in admin_clients])
+    await asyncio.gather(*[_reload_weights(admin_client) for admin_client in admin_clients])
