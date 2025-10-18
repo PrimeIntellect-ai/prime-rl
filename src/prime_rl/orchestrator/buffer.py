@@ -1,5 +1,6 @@
 import json
 import random
+import uuid
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
@@ -95,7 +96,8 @@ class Buffer(ABC):
     def _init_buffer(self, dataset: Dataset, from_scratch: bool) -> None:
         """Initializes the buffer state from a dataset."""
         # Store problem IDs
-        assert "id" in dataset.column_names, "The dataset must contain a column `id`."
+        if "id" not in dataset.column_names:
+            dataset = dataset.add_column("id", list(range(len(dataset))), new_fingerprint=str(uuid.uuid4()))
         self.problem_ids = dataset["id"]
 
         if from_scratch:
