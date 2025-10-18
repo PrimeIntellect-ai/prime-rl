@@ -14,10 +14,10 @@ from transformers import AutoTokenizer
 
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.eval.utils import run_evals
+from prime_rl.utils.vf import generate_batch
 from prime_rl.utils.client import (
     check_has_model,
     check_health,
-    generate_batch,
     reload_weights,
     setup_admin_clients,
     setup_clients,
@@ -478,7 +478,7 @@ async def orchestrate(config: OrchestratorConfig):
     if config.eval:
         logger.info("Running final evals")
         await run_evals(
-            client=client,
+            clients=clients,
             eval_config=config.eval,
             model_config=config.model,
             sampling_config=config.eval.sampling,

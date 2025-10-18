@@ -15,10 +15,10 @@ from verifiers.types import GenerateOutputs, Messages
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.orchestrator.config import ClientConfig, EvalConfig, EvalSamplingConfig, ModelConfig
 from prime_rl.orchestrator.utils import parse_is_truncated_completions, parse_num_completion_tokens
-from prime_rl.utils.client import generate_batch
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor import get_monitor
 from prime_rl.utils.utils import capitalize, get_eval_dir, get_step_path
+from prime_rl.utils.vf import generate_batch
 
 
 def compute_pass_at_k(rewards: list[int]) -> dict[str, float]:
