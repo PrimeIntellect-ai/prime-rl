@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import json
 import time
 from pathlib import Path
@@ -9,7 +10,7 @@ import pandas as pd
 import torch
 from datasets import Dataset, DatasetDict, load_from_disk
 from openai import AsyncOpenAI
-from verifiers import load_environment
+from verifiers.scripts.eval import eval_environment_async, push_eval_to_env_hub, serialize_messages_for_hub
 from verifiers.types import GenerateOutputs, Messages
 
 from prime_rl.eval.config import OfflineEvalConfig
@@ -141,55 +142,30 @@ async def run_eval(
     sampling_config: EvalSamplingConfig,
     client_config: ClientConfig,
     step: int | None = None,
+    save_to_env_hub: bool = False,
 ) -> None:
-    # Get the logger
     logger = get_logger()
     monitor = get_monitor()
     assert logger is not None
     eval_start_time = time.time()
 
-    # Load the eval environment
-    load_eval_start_time = time.time()
-    vf_eval = load_environment(eval_id, **env_args)
-    load_eval_time = time.time() - load_eval_start_time
-    logger.debug(f"Loaded eval environment in {load_eval_time:.2f}s")
-
-    # Build inputs dataset (mirror Environment.evaluate but async)
-    if vf_eval.eval_dataset is None:
-        logger.warning(f"Did not find eval dataset for {eval_id}, falling back to train dataset")
-        dataset = vf_eval.get_dataset(n=num_examples)
-    else:
-        dataset = vf_eval.get_eval_dataset(n=num_examples)
-
-    # Convert to list of examples
-    assert dataset is not None
-    examples = dataset.to_list()
-    example_ids = list(range(len(examples)))
-
-    # Duplicate examples `rollouts_per_example` times
-    if rollouts_per_example > 1:
-        example_ids = [example_id for example_id in example_ids for _ in range(rollouts_per_example)]
-        examples = [example for example in examples for _ in range(rollouts_per_example)]
-
-    # Prepare sampling arguments
     sampling_args = prepare_sampling_args(sampling_config, client_config)
 
-    logger.debug(
-        f"Evaluating {eval_id} (num_examples={len(examples)}, rollouts_per_example={rollouts_per_example}) with args {env_args}"
-    )
-
-    # Run async generation and scoring
-    run_eval_start_time = time.time()
-    generate_outputs: GenerateOutputs = await vf_eval.a_generate(
-        inputs=Dataset.from_list(examples),
+    _, generate_outputs = await eval_environment_async(
+        env=eval_id,
+        env_args=env_args,
         client=client,
         model=model_config.name,
-        sampling_args=sampling_args,
-        score_rollouts=True,
+        num_examples=num_examples,
+        rollouts_per_example=rollouts_per_example,
         max_concurrent=max_concurrent,
+        sampling_args=sampling_args,
     )
-    run_eval_time = time.time() - run_eval_start_time
-    logger.debug(f"Generated and scored rollouts in {run_eval_time:.2f}s")
+
+    eval_time = time.time() - eval_start_time
+
+    num_samples = len(generate_outputs.reward)
+    example_ids = [i // rollouts_per_example for i in range(num_samples)]
 
     rewards = torch.tensor(generate_outputs.reward).reshape(-1, rollouts_per_example).float()
     responses = [state["responses"] for state in generate_outputs.state]
@@ -210,8 +186,6 @@ async def run_eval(
         pass_at_k = None
         logger.warning("Skipping computing pass@k rates because the task rewards appear to be non-binary")
 
-    # Log statistics
-    eval_time = time.time() - eval_start_time
     message = f"Evaluated {eval_id} in {eval_time:.2f}s (Avg@{k}={sample_stats.reward.mean():.4f}"
     if could_be_binary:
         assert pass_at_k is not None
@@ -248,12 +222,9 @@ async def run_eval(
 
     monitor.log(eval_metrics)
 
-    # Log timing metrics to monitor
     time_metrics = {
         "step": step,
         f"time/eval/{eval_id}": eval_time,
-        f"time/eval/{eval_id}/load_environment": load_eval_time,
-        f"time/eval/{eval_id}/generate_and_score_rollouts": run_eval_time,
     }
     monitor.log(time_metrics)
 
@@ -264,6 +235,107 @@ async def run_eval(
         dataset = make_dataset(generate_outputs)
         dataset.save_to_disk(eval_dir)
         logger.info(f"Saved eval results for {eval_id} to disk ({eval_dir})")
+
+    # If specified, push eval results to Environment Hub
+    if save_to_env_hub:
+        # Prepare metrics with all available information
+        hub_metrics: dict[str, float] = {
+            f"avg@{k}": float(rewards.mean().item()),
+            "completion_length_avg": float(completion_lens.mean().item()),
+            "completion_length_max": float(completion_lens.max().item()),
+            "completion_length_min": float(completion_lens.min().item()),
+            "completion_length_std": float(completion_lens.std().item()),
+            "truncated_rate": float(is_truncated.mean().item()),
+            "num_samples": int(rewards.numel()),
+            "num_unique_examples": len(set(example_ids)),
+        }
+
+        # Add pass@k metrics if available
+        if could_be_binary and pass_at_k is not None:
+            for pass_rate, pass_rate_score in pd.Series(pass_at_k.mean()).items():
+                hub_metrics[str(pass_rate)] = float(pass_rate_score)
+
+        hub_metadata = {
+            "checkpoint_step": ckpt_step,
+            "step": step if step is not None else ckpt_step,
+            "num_examples": num_examples,
+            "rollouts_per_example": rollouts_per_example,
+            "max_concurrent": max_concurrent,
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "eval_time_seconds": float(eval_time),
+            "sampling_config": {
+                "temperature": sampling_config.temperature,
+                "max_tokens": sampling_config.max_tokens,
+                "top_p": sampling_config.top_p,
+                "top_k": sampling_config.top_k,
+                "min_p": sampling_config.min_p,
+                "min_tokens": sampling_config.min_tokens,
+                "repetition_penalty": sampling_config.repetition_penalty,
+                "reasoning_effort": sampling_config.reasoning_effort,
+                "seed": sampling_config.seed,
+            },
+            "client_config": {
+                "base_url": client_config.base_url,
+                "server_type": client_config.server_type,
+                "timeout": client_config.timeout,
+            },
+            "env_args": env_args,
+            "is_binary_task": could_be_binary,
+        }
+
+        hub_results = []
+        for i in range(len(example_ids)):
+            task_val = generate_outputs.task[i] if i < len(generate_outputs.task) else ""
+            answer_val = generate_outputs.answer[i] if i < len(generate_outputs.answer) else ""
+
+            if hasattr(task_val, "model_dump"):
+                task_str = json.dumps(task_val.model_dump())
+            else:
+                task_str = str(task_val) if task_val else ""
+
+            if hasattr(answer_val, "model_dump"):
+                answer_str = json.dumps(answer_val.model_dump())
+            else:
+                answer_str = str(answer_val) if answer_val else ""
+
+            result_entry = {
+                "example_id": int(example_ids[i]),
+                "rollout_number": int(i % rollouts_per_example),
+                "reward": float(generate_outputs.reward[i]),
+                "task": task_str,
+                "answer": answer_str,
+                "prompt": serialize_messages_for_hub(generate_outputs.prompt[i])
+                if i < len(generate_outputs.prompt)
+                else None,
+                "completion": serialize_messages_for_hub(generate_outputs.completion[i])
+                if i < len(generate_outputs.completion)
+                else None,
+            }
+
+            if i < len(generate_outputs.info):
+                info = generate_outputs.info[i]
+                if isinstance(info, dict):
+                    if "score" in info:
+                        result_entry["score"] = float(info["score"])
+                    if "correct" in info:
+                        result_entry["correct"] = bool(info["correct"])
+
+            for metric_name, metric_values in generate_outputs.metrics.items():
+                result_entry[metric_name] = float(metric_values[i])
+
+            hub_results.append(result_entry)
+
+        eval_name = f"{model_config.name}-{eval_id}-step{ckpt_step}"
+
+        push_eval_to_env_hub(
+            eval_name=eval_name,
+            model_name=model_config.name,
+            environment_id=eval_id,
+            metrics=hub_metrics,
+            metadata=hub_metadata,
+            results=hub_results if hub_results else None,
+            framework="prime-rl",
+        )
 
 
 async def run_evals(
@@ -283,9 +355,11 @@ async def run_evals(
                 client=client,
                 eval_id=eval_id,
                 env_args=eval_config.environment_args.get(eval_id, {}),
-                num_examples=num_examples,
-                rollouts_per_example=rollouts_per_example,
-                max_concurrent=max_concurrent,
+                num_examples=eval_config.num_examples_per_env.get(eval_id, eval_config.num_examples),
+                rollouts_per_example=eval_config.rollouts_per_example_per_env.get(
+                    eval_id, eval_config.rollouts_per_example
+                ),
+                max_concurrent=eval_config.max_concurrent_per_env.get(eval_id, eval_config.max_concurrent),
                 output_dir=output_dir,
                 save_to_disk=eval_config.save_to_disk,
                 model_config=model_config,
@@ -293,13 +367,9 @@ async def run_evals(
                 client_config=client_config,
                 ckpt_step=ckpt_step,
                 step=step,
+                save_to_env_hub=eval_config.save_to_env_hub,
             )
-            for eval_id, num_examples, rollouts_per_example, max_concurrent in zip(
-                eval_config.environment_ids,
-                eval_config.num_examples,
-                eval_config.rollouts_per_example,
-                eval_config.max_concurrent,
-            )
+            for eval_id in eval_config.environment_ids
         ]
     )
 

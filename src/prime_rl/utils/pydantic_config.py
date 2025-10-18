@@ -1,3 +1,4 @@
+import json
 import sys
 import uuid
 import warnings
@@ -243,26 +244,96 @@ def parse_unknown_args(args: list[str], config_cls: type) -> tuple[list[str], li
     return known_args, unknown_args
 
 
+def parse_eval_env_spec(spec: str) -> tuple[str, dict]:
+    """Parse --eval.env spec: 'id=gsm8k,num_examples=10,temperature=0.7' or shorthand 'gsm8k,num_examples=10'."""
+    parts = spec.split(",")
+    env_id = None
+    config = {}
+
+    int_fields = {"num_examples", "rollouts_per_example", "max_concurrent", "max_tokens", "min_tokens", "top_k", "seed"}
+    float_fields = {"temperature", "top_p", "min_p", "repetition_penalty", "reasoning_effort"}
+    str_fields = {"model"}
+
+    for part in parts:
+        if "=" not in part:
+            if env_id is None:
+                env_id = part.strip()
+            continue
+
+        key, value = part.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+
+        if key == "id":
+            env_id = value
+        elif key in int_fields:
+            try:
+                config[key] = int(value)
+            except ValueError:
+                raise ValueError(f"Invalid integer value for '{key}': {value}")
+        elif key in float_fields:
+            try:
+                config[key] = float(value)
+            except ValueError:
+                raise ValueError(f"Invalid numeric value for '{key}': {value}")
+        elif key in str_fields:
+            config[key] = value
+        else:
+            try:
+                config[key] = json.loads(value)
+            except json.JSONDecodeError:
+                config[key] = value
+
+    if env_id is None:
+        raise ValueError(f"Environment spec must include 'id=<name>' or start with env name: {spec}")
+
+    return env_id, config
+
+
+def extract_and_process_eval_env_args(cli_args: list[str]) -> tuple[list[str], dict[str, dict]]:
+    """Extract --eval.env flags from CLI args and parse into dict."""
+    eval_env_dict = {}
+    filtered_args = []
+    i = 0
+
+    while i < len(cli_args):
+        if cli_args[i] == "--eval.env":
+            if i + 1 >= len(cli_args):
+                raise ValueError("--eval.env flag requires a value")
+
+            spec = cli_args[i + 1]
+            try:
+                env_id, env_config = parse_eval_env_spec(spec)
+                eval_env_dict[env_id] = env_config
+            except ValueError as e:
+                raise ValueError(f"Invalid --eval.env specification '{spec}': {e}")
+
+            i += 2
+        else:
+            filtered_args.append(cli_args[i])
+            i += 1
+
+    return filtered_args, eval_env_dict
+
+
+def merge_eval_env_into_cli_args(cli_args: list[str], eval_env_dict: dict[str, dict]) -> list[str]:
+    """Convert eval_env_dict to --env JSON argument."""
+    if not eval_env_dict:
+        return cli_args
+
+    cli_args.extend(["--env", json.dumps(eval_env_dict)])
+    return cli_args
+
+
 T = TypeVar("T", bound=BaseSettings)
 
 
-# Class[BaseSettings]
 def parse_argv(config_cls: Type[T], allow_extras: bool = False) -> T:
-    """
-    Parse CLI arguments and TOML configuration files into a pydantic settings instance.
-
-    Supports loading TOML files via @ syntax (e.g., @config.toml or @ config.toml).
-    Automatically converts snake_case CLI args to kebab-case for pydantic compatibility.
-    TOML files can inherit from other TOML files via the 'toml_files' field.
-
-    Args:
-        config_cls: A pydantic BaseSettings class to instantiate with parsed configuration.
-
-    Returns:
-        An instance of config_cls populated with values from TOML files and CLI args.
-        CLI args take precedence over TOML file values.
-    """
+    """Parse CLI args and TOML configs into pydantic settings. Supports --eval.env for per-environment config."""
     toml_paths, cli_args = extract_toml_paths(sys.argv[1:])
+    cli_args, eval_env_dict = extract_and_process_eval_env_args(cli_args)
+    cli_args = merge_eval_env_into_cli_args(cli_args, eval_env_dict)
+
     config_cls.set_toml_files(toml_paths)
     if allow_extras:
         cli_args, unknown_args = parse_unknown_args(cli_args, config_cls)
