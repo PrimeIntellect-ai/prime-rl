@@ -82,7 +82,7 @@ def sft_resume_process(
     )
 
 
-SFT_CMD_MOE = ["uv", "run", "sft", "@", "configs/debug/moe/sft/train.toml"]
+SFT_CMD_MOE = ["uv", "run", "sft", "@", "configs/debug_moe/sft/train.toml"]
 
 
 @pytest.fixture
