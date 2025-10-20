@@ -45,11 +45,11 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
         # Strip /v1 suffix since admin endpoints are at root level
         base_url = base_url.rstrip("/").removesuffix("/v1")
 
-        return httpx.AsyncClient(
+        return AsyncClient(
             base_url=base_url,
-            limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
             headers=headers,
-            timeout=httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=None),
+            limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
+            timeout=httpx.Timeout(client_config.timeout, connect=5.0, pool=None),
         )
 
     return [_setup_admin_client(base_url) for base_url in client_config.base_url]
