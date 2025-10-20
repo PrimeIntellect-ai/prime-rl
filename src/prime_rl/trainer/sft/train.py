@@ -302,7 +302,7 @@ def train(config: SFTTrainerConfig):
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_tokens_per_second() or 0
         mfu = perf_counter.get_mfu() or 0
-        peak_memory = torch.cuda.max_memory_allocated() / 1024**3  # GiB
+        peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
 
         # Log step metrics
         step_time = time.time() - step_start_time
