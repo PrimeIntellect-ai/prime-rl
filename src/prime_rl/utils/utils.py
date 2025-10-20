@@ -131,7 +131,7 @@ def sync_wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) ->
         wait_time += interval
 
 
-async def async_wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:
+async def wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:
     logger = get_logger()
     wait_time = 0
     logger.debug(f"Waiting for path `{path}`")

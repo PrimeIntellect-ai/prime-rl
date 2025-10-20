@@ -34,7 +34,7 @@ from prime_rl.orchestrator.utils import (
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import (
-    async_wait_for_path,
+    wait_for_path,
     clean_exit,
     format_num,
     get_rollout_dir,
@@ -199,7 +199,7 @@ async def orchestrate(config: OrchestratorConfig):
             ckpt_step = progress.step - config.async_level
             logger.info(f"Waiting for weight checkpoint {ckpt_step}")
             wait_for_weight_ckpt_start_time = time.time()
-            await async_wait_for_path(get_step_path(get_weights_dir(config.output_dir), ckpt_step) / "STABLE")
+            await wait_for_path(get_step_path(get_weights_dir(config.output_dir), ckpt_step) / "STABLE")
             wait_for_weight_ckpt_time = time.time() - wait_for_weight_ckpt_start_time
             logger.debug(f"Waited {wait_for_weight_ckpt_time:.2f}s for weight checkpoint")
 
