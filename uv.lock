@@ -2190,7 +2190,7 @@ requires-dist = [
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e43694bbfeff5d6ad8ac738c067bb90d41" },
     { name = "transformers", specifier = ">=4.56.0" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", specifier = ">=0.1.5" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=247491a" },
     { name = "vllm", specifier = "==0.10.2" },
     { name = "wandb", specifier = ">=0.20.1" },
 ]
@@ -3501,7 +3501,7 @@ wheels = [
 [[package]]
 name = "verifiers"
 version = "0.1.5.post0"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=247491a#247491a1b35e73a8e19c68b3bd3d0987e623153f" }
 dependencies = [
     { name = "datasets" },
     { name = "jinja2" },
@@ -3513,10 +3513,6 @@ dependencies = [
     { name = "requests" },
     { name = "rich" },
     { name = "textual" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/cf/98/240e5a7ce91f774564c45dc4518a98c92808eccb2ba761725697a3788ec1/verifiers-0.1.5.post0.tar.gz", hash = "sha256:d4b4b4739fe2c4ea3f52fec013c526e232192dff1dae1f68fb89e98e293ed88d", size = 121848, upload-time = "2025-10-09T21:18:25.77Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/22/30/e27d2d47ec20184f12cf684b77defafa891bfcd5737ba2a2e03031d89deb/verifiers-0.1.5.post0-py3-none-any.whl", hash = "sha256:5ffc59380115c4d1a360a6722d2e1f40e327c1fe314f82997d6f34f1e948f4c1", size = 111816, upload-time = "2025-10-09T21:18:24.753Z" },
 ]
 
 [[package]]
