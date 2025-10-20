@@ -10,8 +10,19 @@ from verifiers.types import GenerateOutputs
 
 def merge_outputs(generate_outputs_list: list[GenerateOutputs]) -> GenerateOutputs:
     """Merge multiple GenerateOutputs into a single GenerateOutputs."""
-    prompt, completion, answer, state, reward, info, task, metrics = [], [], [], [], [], [], [], defaultdict(list)
+    example_id, prompt, completion, answer, state, reward, info, task, metrics = (
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        defaultdict(list),
+    )
     for generate_output in generate_outputs_list:
+        example_id.extend(generate_output.example_id)
         prompt.extend(generate_output.prompt)
         completion.extend(generate_output.completion)
         answer.extend(generate_output.answer)
@@ -30,6 +41,8 @@ def merge_outputs(generate_outputs_list: list[GenerateOutputs]) -> GenerateOutpu
         info=info,
         task=task,
         metrics=metrics,
+        metadata=generate_outputs_list[0].metadata,  # TODO
+        example_id=example_id,
     )
 
 
