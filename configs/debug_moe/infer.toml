@@ -1,3 +1,0 @@
-[model]
-enforce_eager = true
-name = "PrimeIntellect/GLM-0.5B" 
