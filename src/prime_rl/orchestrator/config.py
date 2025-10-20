@@ -118,6 +118,52 @@ class EvalSamplingConfig(BaseConfig):
     ] = None
 
 
+class EvalSaveDiskConfig(BaseConfig):
+    """Configures how to save the eval results to disk."""
+
+    path: Annotated[
+        Path | None,
+        Field(
+            description="The path to save the eval results to. If None, will default to <output_dir>/evals/<step_path>/<env_id> for online evals and the verifiers default for offline evals."
+        ),
+    ] = None
+
+
+class EvalSaveHFConfig(BaseConfig):
+    """Configures how to save the eval results to HF."""
+
+    dataset_name: Annotated[
+        str | None,
+        Field(
+            description="The name of the HF dataset to save the eval results to. If None, will auto-generate a name."
+        ),
+    ] = None
+
+    dataset_subset: Annotated[
+        str | None,
+        Field(
+            description="The subset name of the HF dataset to save the evaluation results. If None, will default to the environment ID.",
+        ),
+    ] = None
+
+    dataset_split: Annotated[
+        str | None,
+        Field(
+            description="The split name of the HF dataset to save the evaluation results. If None, will default to 'evals'.",
+        ),
+    ] = None
+
+    private: Annotated[
+        bool,
+        Field(description="Whether to save the eval results to a private HF dataset."),
+    ] = False
+
+
+class EvalSaveConfig(BaseConfig):
+    disk: EvalSaveDiskConfig | None = None
+    hf: EvalSaveHFConfig | None = None
+
+
 class EnvironmentConfig(BaseConfig):
     """Configures the environment to be used for inference."""
 
@@ -168,19 +214,10 @@ class EvalConfig(BaseConfig):
         description="Shared sampling configuration for evals; can differ from training sampling.",
     )
 
-    save_to_disk: Annotated[
-        bool,
-        Field(
-            description="Whether to save the evaluation artifacts to the outputs directory.",
-        ),
-    ] = True
-
-    save_to_hf: Annotated[
-        str | None,
-        Field(
-            description="The name of the HF dataset to save the evaluation results to. Defaults to None, which means we do not save to HF Hub. If multiple environments are evaluated, we upload a dataset with one split per environment. If a checkpoint is evaluated, we suffix the HF Hub name with the checkpoint step.",
-        ),
-    ] = None
+    save: EvalSaveConfig = Field(
+        default_factory=EvalSaveConfig,
+        description="Configures how to save the eval results.",
+    )
 
     @model_validator(mode="after")
     def _validate_and_fill_eval_lists(self):
@@ -211,12 +248,6 @@ class EvalConfig(BaseConfig):
         elif len(self.max_concurrent) != len(self.environment_ids):
             raise ValueError("Number of max_concurrent entries must match number of ids")
 
-        return self
-
-    @model_validator(mode="after")
-    def save_to_disk_if_save_to_hf(self):
-        if self.save_to_hf is not None:
-            self.save_to_disk = True
         return self
 
 
