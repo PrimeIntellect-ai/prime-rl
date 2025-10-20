@@ -286,8 +286,6 @@ async def orchestrate(config: OrchestratorConfig):
                     generate_outputs.reward.extend(_generate_outputs.reward)
                     generate_outputs.metrics.update(_generate_outputs.metrics)
 
-            with open("done.txt", "a") as f:
-                f.write(f"Generated {len(problem_ids)} completions\n")
             logger.info(f"Generated {len(problem_ids)} completions")
             generate_completions_time = time.time() - generate_completions_start_time
             problem_requests += problems_to_sample
