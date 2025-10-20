@@ -135,7 +135,7 @@ async def run_eval(
         pass_at_k = None
         logger.warning("Skipping computing pass@k rates because the task rewards appear to be non-binary")
 
-    # Log statistics
+    # Log statistics to console
     eval_time = time.time() - eval_start_time
     message = f"Evaluated {env_id} in {eval_time:.2f}s (Avg@{k}={results_df.reward.mean():.4f}"
     if could_be_binary:
@@ -151,6 +151,7 @@ async def run_eval(
         "completion_len/avg": results_df.completion_len.mean().item(),
         "completion_len/max": results_df.completion_len.max().item(),
         "completion_len/min": results_df.completion_len.min().item(),
+        "is_truncated/mean": results_df.is_truncated.mean().item(),
         "time": eval_time,
     }
     if could_be_binary:
@@ -165,11 +166,16 @@ async def run_eval(
         dataset = make_dataset(results)
 
         if save_config.disk is not None:
-            # Save samples as dataset
-            eval_dir = get_step_path(get_eval_dir(output_dir), ckpt_step) / env_id
+            is_online = step is not None
+            default_save_path = (
+                get_step_path(get_eval_dir(output_dir), ckpt_step) / env_id
+                if is_online
+                else results.metadata.path_to_save
+            )
+            save_path = save_config.disk.path or default_save_path
             metadata_dict = sanitize_metadata(results.metadata)
-            save_to_disk(dataset, metadata_dict, eval_dir)
-            logger.info(f"Saved eval results for {env_id} to disk ({eval_dir})")
+            save_to_disk(dataset, metadata_dict, save_path)
+            logger.info(f"Saved eval results for {env_id} to disk ({save_path})")
 
         if save_config.hf is not None:
             dataset_name = save_config.hf.dataset_name or get_hf_hub_dataset_name(results)
@@ -178,7 +184,9 @@ async def run_eval(
             dataset.push_to_hub(dataset_name, dataset_subset, split=dataset_split, private=save_config.hf.private)
             default_org = whoami().get("name", "")
             repo_name = dataset_name if "/" in dataset_name else f"{default_org}/{dataset_name}"
-            logger.info(f"Pushed eval results for {env_id} to HF Hub (https://huggingface.co/datasets/{repo_name})")
+            logger.info(
+                f"Pushed {'private' if save_config.hf.private else 'public'} eval results for {env_id} to HF Hub (https://huggingface.co/datasets/{repo_name})"
+            )
 
 
 async def run_evals(
