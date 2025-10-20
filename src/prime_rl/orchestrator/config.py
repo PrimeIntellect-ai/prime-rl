@@ -436,7 +436,7 @@ class OrchestratorConfig(BaseSettings):
             ge=1,
             description="Number of samples to train on per micro batch. This value should be tuned based on the hardware available. Usually, to the largest value divisble by the training batch size.",
         ),
-    ] = 128
+    ] = 1
 
     rollouts_per_example: Annotated[
         int,
