@@ -19,16 +19,13 @@ from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 class LossConfig(BaseModel):
     """Base config for loss."""
 
-    norm_type: Annotated[
-        Literal["token", "sequence"],
-        Field(
-            description="Normalization type for loss scaling. 'token' normalizes by the total number of unmasked tokens in the batch, 'sequence' normalizes by the total tokens within a sequence."
-        ),
-    ] = "token"
+    ratio_type: Annotated[Literal["token", "sequence"], Field(description="Type of importance ratio to use.")] = "token"
+    ratio_length_norm: Annotated[
+        bool, Field(description="Whether to normalize the importance ratio by the sequence length.")
+    ] = False
 
-    type: Annotated[Literal["gspo", "grpo"], Field(description="Type of loss to use.")] = "grpo"
-
-    clip_ratio: Annotated[float, Field(ge=0)] = 8.0
+    mask_ratio_high: Annotated[float, Field(ge=0)] = 8.0
+    mask_ratio_low: Annotated[float, Field(ge=0)] = 0.125
 
 
 class FakeDataLoaderConfig(BaseConfig):
@@ -107,10 +104,10 @@ class RLTrainerConfig(BaseSettings):
 
     memory_profiler_path: Annotated[Path | None, Field(description="Path to write memory profile to.")] = None
 
-    recompute_logprobs: Annotated[
+    log_recomputed_logprob_error: Annotated[
         bool,
         Field(
-            description="Whether to recompute the logprobs. If True, will always recompute logprobs and overwrite those found in the training batch.",
+            description="Whether to log the recomputed logprobs error. If True, recomputes logprobs using the reference model to compute an error w.r.t. the original inference_logprobs and logs it",
         ),
     ] = False
 
@@ -156,5 +153,16 @@ class RLTrainerConfig(BaseSettings):
             if self.max_steps >= 10:
                 raise ValueError(
                     "Tracing more than 10 steps is not recommended as your trace will be massive. Remove this line if you really want to trace more steps."
+                )
+        return self
+
+    @model_validator(mode="after")
+    def validate_lora_adapter_saving(self):
+        if self.weights and self.weights.save_adapter_separately:
+            lora_enabled = self.model and self.model.experimental and self.model.experimental.lora
+            if not lora_enabled:
+                raise ValueError(
+                    "save_adapter_separately=True requires LoRA to be enabled. "
+                    "Set model.experimental.lora or disable save_adapter_separately."
                 )
         return self

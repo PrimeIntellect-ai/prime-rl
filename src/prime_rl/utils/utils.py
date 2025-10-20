@@ -117,7 +117,7 @@ def clean_exit(func):
     return wrapper
 
 
-def wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:
+def sync_wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:
     logger = get_logger()
     wait_time = 0
     logger.debug(f"Waiting for path `{path}`")

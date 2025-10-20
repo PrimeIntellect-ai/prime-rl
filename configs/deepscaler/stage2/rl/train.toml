@@ -1,6 +1,4 @@
-max_steps = 1500
-
-[wandb]
+max_steps = 1000
 
 [model]
 name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
@@ -12,4 +10,4 @@ lr = 1e-6
 
 [ckpt]
 interval = 100
-resume_step = 1000
+resume_step = 500

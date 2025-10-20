@@ -11,6 +11,9 @@ log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 
 REPO_ID="prime-rl"
 
+# Flag defaults (can be overridden via env)
+SKIP_CLONE=${SKIP_CLONE:-0}
+
 has_ssh_access() {
     # Probe SSH auth to GitHub without prompting; treat any nonzero as "no ssh"
     # We try a quick ls-remote to avoid cloning on failure.
@@ -41,29 +44,27 @@ main() {
         apt install -y sudo
     fi
 
-    log_info "Updating apt..."
-    sudo apt update
-
     log_info "Installing base packages..."
-    sudo apt install -y \
-    git tmux htop nvtop cmake python3-dev cgroup-tools \
-    build-essential curl ca-certificates gnupg \
-    openssh-client
+    sudo apt update && sudo apt install -y build-essential openssh-client curl git tmux htop nvtop
 
     log_info "Configuring SSH known_hosts for GitHub..."
     ensure_known_hosts
 
-    log_info "Determining best way to clone (SSH vs HTTPS)..."
-    if has_ssh_access; then
-        log_info "SSH access to GitHub works. Cloning via SSH."
-        git clone git@github.com:PrimeIntellect-ai/${REPO_ID}.git
+    if [ "$SKIP_CLONE" -eq 1 ]; then
+        log_info "Skipping clone; assuming we are already inside the repo."
     else
-        log_warn "SSH auth to GitHub not available. Cloning via HTTPS."
-        git clone https://github.com/PrimeIntellect-ai/${REPO_ID}.git
-    fi
+        log_info "Determining best way to clone (SSH vs HTTPS)..."
+        if has_ssh_access; then
+            log_info "SSH access to GitHub works. Cloning via SSH."
+            git clone git@github.com:PrimeIntellect-ai/${REPO_ID}.git
+        else
+            log_warn "SSH auth to GitHub not available. Cloning via HTTPS."
+            git clone https://github.com/PrimeIntellect-ai/${REPO_ID}.git
+        fi
 
-    log_info "Entering project directory..."
-    cd ${REPO_ID}
+        log_info "Entering project directory..."
+        cd ${REPO_ID}
+    fi
 
     log_info "Installing uv..."
     curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -73,8 +74,15 @@ main() {
         source $HOME/.local/bin/env
     fi
 
-    log_info "Installing dependencies in virtual environment..."
+    log_info "Installing prime..."
+    uv tool install prime
+
+    log_info "Syncing virtual environment..."
     uv sync && uv sync --all-extras
+
+    log_info "Installing pre-commit hooks..."
+    uv run pre-commit install
+
     log_info "Installation completed!"
 }
 

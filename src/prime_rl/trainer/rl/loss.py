@@ -59,8 +59,8 @@ def shift_logits(logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "bat
 
 
 def compute_loss(
-    logprobs: Any,  # list of Float[Tensor, "seq_i"] with potentially different seq_i lengths
-    old_logprobs: Any,  # list of Float[Tensor, "seq_i"] with potentially different seq_i lengths
+    trainer_logprobs: Any,  # list of Float[Tensor, "seq_i"] with potentially different seq_i lengths
+    inference_logprobs: Any,  # list of Float[Tensor, "seq_i"] with potentially different seq_i lengths
     advantages: Any,  # list of Float[Tensor, "seq_i"] with potentially different seq_i lengths
     loss_mask: Any,  # list of Bool[Tensor, "seq_i"] with potentially different seq_i lengths
     loss_config: LossConfig,
@@ -70,8 +70,8 @@ def compute_loss(
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
 
     Args:
-        logprobs: Log probabilities tensor for packed sequences
-        old_logprobs: Old log probabilities tensor for packed sequences
+        trainer_logprobs: Log probabilities tensor for packed sequences
+        inference_logprobs: Old log probabilities tensor for packed sequences
         advantages: Advantages tensor for packed sequences
         loss_mask: Loss mask tensor for packed sequences
         loss_config: Loss configuration object
@@ -82,43 +82,63 @@ def compute_loss(
     """
 
     total_loss = 0
-    total_importance_ratio = []
-    total_clipped_importance_ratio = []
-    total_is_clipped = []
+    total_mismatch_kl = []
+    total_masked_mismatch_kl = []
+    total_unmasked_mismatch_kl = []
+    total_is_masked = []
+    total_is_masked_low = []
+    total_is_masked_high = []
 
-    for logprobs, old_logprobs, advantages, loss_mask in zip(logprobs, old_logprobs, advantages, loss_mask):
-        log_importance_ratio = logprobs - old_logprobs
+    for trainer_logprobs, inference_logprobs, advantages, loss_mask in zip(
+        trainer_logprobs, inference_logprobs, advantages, loss_mask
+    ):
+        log_importance_ratio = trainer_logprobs - inference_logprobs
 
-        if loss_config.type == "gspo":
-            # https://arxiv.org/abs/2507.18071
-            seq_log_importance_ratio = (log_importance_ratio[loss_mask]).sum() / torch.clamp_min(loss_mask.sum(), 1)
-            log_importance_ratio = logprobs - logprobs.detach() + seq_log_importance_ratio.detach()
+        # Compute trainer-inference mismatch KL
+        token_mismatch_kl = torch.exp(log_importance_ratio) - log_importance_ratio - 1
+
+        if loss_config.ratio_type == "sequence":
+            seq_log_importance_ratio = (log_importance_ratio[loss_mask]).sum()
+            if loss_config.ratio_length_norm:
+                seq_log_importance_ratio = seq_log_importance_ratio / torch.clamp_min(loss_mask.sum(), 1)
+            log_importance_ratio = trainer_logprobs - trainer_logprobs.detach() + seq_log_importance_ratio.detach()
             log_importance_ratio = torch.clamp(log_importance_ratio, max=10.0)
 
         importance_ratio = torch.exp(log_importance_ratio)
-        clipped_importance_ratio = torch.clamp(importance_ratio, max=loss_config.clip_ratio)
-        loss = -clipped_importance_ratio * advantages
-        is_clipped = (importance_ratio > loss_config.clip_ratio).float()
-
-        # Apply loss mask and sum
-        loss = (loss[loss_mask]).sum()
+        is_masked_low = importance_ratio < loss_config.mask_ratio_low
+        is_masked_high = importance_ratio > loss_config.mask_ratio_high
+        is_masked = is_masked_low | is_masked_high
+        keep_mask = loss_mask & ~is_masked
+        loss = (-importance_ratio * advantages)[keep_mask].sum()
 
         # Apply sequence-level normalization if configured
-        if loss_config.norm_type == "sequence":
+        if loss_config.ratio_type == "sequence":
             loss = loss / torch.clamp_min(loss_mask.sum(), 1)
 
         total_loss = total_loss + loss
 
+        mismatch_kl = token_mismatch_kl[loss_mask].sum() / torch.clamp_min(loss_mask.sum(), 1)
+        masked_mismatch_kl = token_mismatch_kl[loss_mask & is_masked].sum() / torch.clamp_min(
+            (loss_mask & is_masked).sum(), 1
+        )
+        unmasked_mismatch_kl = token_mismatch_kl[keep_mask].sum() / torch.clamp_min(keep_mask.sum(), 1)
+
         # Aggregate loss tensors
-        total_importance_ratio.append(importance_ratio)
-        total_clipped_importance_ratio.append(clipped_importance_ratio)
-        total_is_clipped.append(is_clipped)
+        total_mismatch_kl.append(mismatch_kl)
+        total_masked_mismatch_kl.append(masked_mismatch_kl)
+        total_unmasked_mismatch_kl.append(unmasked_mismatch_kl)
+        total_is_masked.append(is_masked[loss_mask].float())
+        total_is_masked_low.append(is_masked_low[loss_mask].float())
+        total_is_masked_high.append(is_masked_high[loss_mask].float())
 
     # Apply loss scaling
-    scaled_loss = total_loss / max(loss_scale, 1)
+    scaled_loss = total_loss / loss_scale
 
     return scaled_loss, {
-        "importance_ratio": torch.cat(total_importance_ratio),
-        "clipped_importance_ratio": torch.cat(total_clipped_importance_ratio),
-        "is_clipped": torch.cat(total_is_clipped),
+        "mismatch_kl": torch.stack(total_mismatch_kl),
+        "masked_mismatch_kl": torch.stack(total_masked_mismatch_kl),
+        "unmasked_mismatch_kl": torch.stack(total_unmasked_mismatch_kl),
+        "is_masked": torch.cat(total_is_masked),
+        "is_masked_low": torch.cat(total_is_masked_low),
+        "is_masked_high": torch.cat(total_is_masked_high),
     }

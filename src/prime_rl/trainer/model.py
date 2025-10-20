@@ -1,4 +1,6 @@
 import logging
+import time
+from typing import cast
 
 import torch
 import torch.distributed.checkpoint as dcp
@@ -9,13 +11,15 @@ from liger_kernel.transformers import AutoLigerKernelForCausalLM
 from torch import Tensor
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, fully_shard
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, ModelConfig
+from prime_rl.trainer.lora import apply_lora_to_model
 from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.tensor_hashing import get_module_signature
 
 # Add filter to the standard logging module for transformers.modeling_utils to supress the
 # flash attention dtype warnings since FSDP is used to handle mixed precision.
@@ -54,17 +58,26 @@ def get_load_balance_stats(model: nn.Module, reset_stats: bool = True) -> dict[s
 def get_model(
     config: ModelConfig, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.bfloat16
 ) -> nn.Module:
-    config_model = AutoConfig.from_pretrained(
-        config.name, attn_implementation=config.attn, trust_remote_code=config.trust_remote_code
+    logger = get_logger()
+    logger.info(
+        f"Loading model config (name={config.name}, attn={config.attn}, trust_remote_code={config.trust_remote_code})"
     )
-    config_model.use_cache = False
-    config_model.use_grouped_mm = config.moe_use_grouped_mm
+    model_config = cast(
+        PretrainedConfig,
+        AutoConfig.from_pretrained(
+            config.name, attn_implementation=config.attn, trust_remote_code=config.trust_remote_code
+        ),
+    )
+    model_config.use_cache = False
+    model_config.use_grouped_mm = config.moe_use_grouped_mm
+    logger.debug(f"Loaded model config ({model_config.to_dict()})")
 
     if config.debug.num_layers is not None:
-        get_logger().info(f"Setting num_layers to {config.debug.num_layers}")
-        num_hidden_layers = min(config.debug.num_layers, config_model.num_hidden_layers)
-        get_logger().info(f"removed {config_model.num_hidden_layers - num_hidden_layers} layers")
-        config_model.num_hidden_layers = num_hidden_layers
+        num_hidden_layers = min(config.debug.num_layers, model_config.num_hidden_layers)
+        logger.warning(
+            f"Setting the number of layers to {config.debug.num_layers} in the model config. This means {model_config.num_hidden_layers - num_hidden_layers} layers will not be loaded."
+        )
+        model_config.num_hidden_layers = num_hidden_layers
 
     with device:
         match config.impl:
@@ -75,16 +88,19 @@ def get_model(
             case "custom":
                 model_cls = AutoModelForCausalLMPrimeRL
 
+        load_model_start_time = time.time()
         if device == torch.device("meta"):
-            get_logger().info(f"model num_layers random init: {config_model.num_hidden_layers}")
-            model = model_cls.from_config(config_model, trust_remote_code=config.trust_remote_code, dtype=dtype)
+            logger.info(f"Loading model {config.name} using {model_cls.__name__} to meta device")
+            model = model_cls.from_config(model_config, trust_remote_code=config.trust_remote_code, dtype=dtype)
         else:
+            logger.info(f"Loading model {config.name} using {model_cls.__name__} to CPU")
             model = model_cls.from_pretrained(
                 pretrained_model_name_or_path=config.name,
-                config=config_model,
+                config=model_config,
                 trust_remote_code=config.trust_remote_code,
                 dtype=dtype,
             )
+        logger.debug(f"Loaded model {config.name} in {time.time() - load_model_start_time:.2f} seconds")
 
     assert model.lm_head.weight.dtype == dtype, (
         f"LM head dtype wasnt loaded correctly {model.lm_head.weight.dtype} != {dtype}"
@@ -140,10 +156,13 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
 
     model.to_empty(device="cuda")
 
+    logger = get_logger()
     if config.debug.random_init:
-        get_logger().warning("Zero initialization model. skipping HF checkpoint loading.")
+        logger.warning("Randomly initializing model. Skipping loading weights from HF.")
         return
 
+    logger.info("Loading model weights from HF")
+    load_dcp_start_time = time.time()
     path_snapshot = snapshot_download(repo_id=config.name, repo_type="model")
     dcp.load(
         model.state_dict(),
@@ -152,6 +171,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
         planner=DefaultLoadPlanner(allow_partial_load=True),
     )
     fix_model_post_empty(model)
+    logger.debug(f"Loaded model weights from HF in {time.time() - load_dcp_start_time:.2f} seconds")
 
 
 def can_load_dcp_from_hf(model: nn.Module):
@@ -214,13 +234,22 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
 
 
 def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
+    logger = get_logger()
+    # Get model from specified device
     model = get_model(
         config,
         device=torch.device("meta" if config.load_using_meta else "cpu"),
         dtype=DTYPE_MAP[config.optimization_dtype],
     )
+
+    # Reload the model to CPU if we cannot load from
     if config.load_using_meta and not can_load_dcp_from_hf(model):
+        logger.warning("Cannot load model from meta device. Loading model to CPU instead.")
         model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype])
+
+    # Apply LoRA before FSDP setup
+    if config.experimental.lora is not None:
+        apply_lora_to_model(model, config.experimental.lora)
 
     # the right order is AC -> Compile -> FSDP
     if config.ac is not None:
@@ -233,12 +262,7 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
     if config.load_using_meta and can_load_dcp_from_hf(model):
         load_dcp_from_hf(model, config)
 
-    if config.log_signature:
-        from prime_rl.utils.tensor_hashing import get_module_signature
-
-        get_logger().info(f"model signature: {get_module_signature(model, compress=True)}")
-
-    get_logger().info(f"model num_layers: {len(model.model.layers)}")
+    logger.debug(f"Model signature: {get_module_signature(model, compress=True)}")
     return model
 
 

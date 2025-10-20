@@ -3,12 +3,32 @@ import os
 from pathlib import Path
 
 import httpx
-from httpx import Response
+from httpx import AsyncClient, Response
 from openai import AsyncOpenAI, NotFoundError
 
 from prime_rl.orchestrator.config import ClientConfig
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.utils import get_weight_ckpt_model_path
+
+
+def setup_admin_client(client_config: ClientConfig) -> httpx.AsyncClient:
+    """Create a dedicated admin client for weight update operations.
+
+    Uses a separate connection pool to avoid queueing behind streaming requests.
+    """
+    headers = {}
+    api_key = os.getenv(client_config.api_key_var, "EMPTY")
+    if api_key and api_key != "EMPTY":
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    # Strip /v1 suffix since admin endpoints are at root level
+    base_url = client_config.base_url.rstrip("/").removesuffix("/v1")
+
+    return httpx.AsyncClient(
+        base_url=base_url,
+        limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
+        headers=headers,
+        timeout=httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=None),
+    )
 
 
 def setup_admin_client(client_config: ClientConfig) -> httpx.AsyncClient:

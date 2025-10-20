@@ -3,7 +3,6 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
 
-from prime_rl.orchestrator.advantage import AdvantageType
 from prime_rl.utils.config import LogConfig, ModelConfig, WandbMonitorConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
@@ -288,8 +287,8 @@ class CheckpointConfig(BaseConfig):
     resume_step: Annotated[
         int | None,
         Field(
-            ge=1,
-            description="Step to resume orchestrator from. If None, will start from scratch.",
+            ge=-1,
+            description="Step to resume orchestrator from. If None, will start from scratch. If -1, will restart from latest checkpoint available.",
         ),
     ] = None
 
@@ -391,6 +390,13 @@ class OnlineDifficultyBufferConfig(BufferConfig):
 DataBufferConfigType: TypeAlias = SimpleBufferConfig | DifficultyPoolBufferConfig | OnlineDifficultyBufferConfig
 
 
+class AdvantageConfig(BaseConfig):
+    global_std_norm: bool = False
+    length_weighted_mean: bool = False
+    leave_one_out: bool = False
+    neg_clipped: bool = False
+
+
 class OrchestratorConfig(BaseSettings):
     """Configures the orchestrator for RL training."""
 
@@ -411,6 +417,9 @@ class OrchestratorConfig(BaseSettings):
 
     # Data buffer configuration
     buffer: Annotated[DataBufferConfigType, Field(discriminator="type")] = SimpleBufferConfig()
+
+    # The advantage configuration
+    advantage: AdvantageConfig = AdvantageConfig()
 
     # The logging configuration
     log: LogConfig = LogConfig()
@@ -445,13 +454,6 @@ class OrchestratorConfig(BaseSettings):
             description="Number of output sequences to return per example during training.",
         ),
     ] = 1
-
-    advantage_type: Annotated[
-        AdvantageType,
-        Field(
-            description="Type of advantage computation to use. For details on the variants please refer directly to their docstrings."
-        ),
-    ] = "drgrpo"
 
     seq_len: Annotated[
         int,

@@ -7,7 +7,7 @@ from torch import Tensor
 
 from prime_rl.trainer.rl.config import FakeDataLoaderConfig
 from prime_rl.trainer.world import get_world
-from prime_rl.utils.utils import get_rollout_dir, wait_for_path
+from prime_rl.utils.utils import get_rollout_dir, sync_wait_for_path
 
 
 class MicroBatch(TypedDict):
@@ -15,7 +15,7 @@ class MicroBatch(TypedDict):
     input_ids: Int[Tensor, "batch seq"]
     position_ids: Int[Tensor, "batch seq"]
     advantages: Float[Tensor, "batch seq"]
-    logprobs: Float[Tensor, "batch seq"]
+    inference_logprobs: Float[Tensor, "batch seq"]
     loss_mask: Bool[Tensor, "batch seq"]
 
     # Batch level
@@ -48,7 +48,7 @@ class FakeDataLoader:
             ),
             "position_ids": torch.cat([torch.arange(self.seq_len)] * self.micro_batch_size).unsqueeze(0),
             "advantages": torch.randn(self.micro_batch_size * self.seq_len).unsqueeze(0),
-            "logprobs": torch.randn(self.micro_batch_size * self.seq_len).unsqueeze(0),
+            "inference_logprobs": torch.randn(self.micro_batch_size * self.seq_len).unsqueeze(0),
             "temperature": 1.0,
             "loss_mask": torch.ones(self.micro_batch_size * self.seq_len, dtype=torch.bool).unsqueeze(0),
         }
@@ -66,7 +66,7 @@ class DataLoader:
         return self.rollout_dir / f"step_{self.current_step}" / f"rank_{self.world.rank}.pt"
 
     def wait_for_batch(self) -> None:
-        wait_for_path(self.get_rollout_path())
+        sync_wait_for_path(self.get_rollout_path())
 
     def get_batch(self) -> list[MicroBatch]:
         batches = torch.load(self.get_rollout_path())
