@@ -87,11 +87,10 @@ async def generate_group(
 ) -> GenerateOutputs:
     """Asynchronously generate and score rollouts for one problem."""
     return await env.generate(
-        inputs=Dataset.from_list([problem]),
+        inputs=Dataset.from_list([problem] * rollouts_per_example),
         client=client,
         model=model_name,
         sampling_args=sampling_args,
-        rollouts_per_example=rollouts_per_example,
         max_concurrent=max_concurrent,
         use_tqdm=False,
     )
