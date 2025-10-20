@@ -49,7 +49,6 @@ eval = "prime_rl.eval.eval:main"
 
 [project.optional-dependencies]
 flash-attn = ["flash-attn>=2.8.3"]
-flash-infer = ["flashinfer-python>=0.2.8rc1"]
 
 [dependency-groups]
 dev = [
@@ -68,6 +67,7 @@ prerelease = "allow"
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
 reverse-text = { index = "primeintellect" }
+verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "b97441d" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "main" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e43694bbfeff5d6ad8ac738c067bb90d41" }
 
