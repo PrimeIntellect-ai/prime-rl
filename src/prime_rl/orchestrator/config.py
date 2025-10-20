@@ -122,9 +122,11 @@ class EvalSaveDiskConfig(BaseConfig):
     """Configures how to save the eval results to disk."""
 
     path: Annotated[
-        Path,
-        Field(description="The path to save the eval results to."),
-    ] = Path("outputs")
+        Path | None,
+        Field(
+            description="The path to save the eval results to. If None, will default to <output_dir>/evals/<step_path>/<env_id> for online evals and the verifiers default for offline evals."
+        ),
+    ] = None
 
 
 class EvalSaveHFConfig(BaseConfig):
