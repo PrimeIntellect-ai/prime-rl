@@ -8,10 +8,8 @@ from rich.console import Console
 from rich.table import Table
 
 from prime_rl.utils.utils import (
-    async_wait_for_path,
     format_num,
     format_time,
-    get_weight_ckpt_model_path,
 )
 
 
@@ -47,11 +45,6 @@ def parse_is_truncated_completions(responses: list[list[ChatCompletion]]) -> lis
                 is_truncated = True
         all_is_truncated.append(is_truncated)
     return all_is_truncated
-
-
-async def async_wait_for_weight_checkpoint(path: Path, step: int, interval: int = 1, log_interval: int = 10) -> None:
-    model_path = get_weight_ckpt_model_path(path, step)
-    await async_wait_for_path(model_path, interval, log_interval)
 
 
 def print_benchmark(history: dict[str, list[Any]]) -> None:
