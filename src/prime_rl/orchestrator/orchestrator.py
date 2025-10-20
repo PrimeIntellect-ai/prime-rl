@@ -124,6 +124,11 @@ async def orchestrate(config: OrchestratorConfig):
     inflight_tasks: list[asyncio.Task] = []
     task_to_problem_id: dict[asyncio.Task, int] = {}
 
+    logger.info(f"Max inflight problems: {MAX_INFLIGHT_PROBLEMS}")
+    logger.info(f"Problems per batch: {problems_per_batch}")
+    logger.info(f"Batch size: {config.batch_size}")
+    logger.info(f"Rollouts per example: {config.rollouts_per_example}")
+
     def generate_call():
         problem_ids, problems = buffer.sample_problem()
 
@@ -160,9 +165,10 @@ async def orchestrate(config: OrchestratorConfig):
             client=client,
             model=config.model.name,
             sampling_args=sampling_args,
+            use_tqdm=False,
         )
         return problem_ids, task
-
+    
     while True:
         # Save checkpoint (if we are at an interval step and not at the first or last step)
         is_last_step = config.max_steps is not None and progress.step == config.max_steps - 1
@@ -262,8 +268,6 @@ async def orchestrate(config: OrchestratorConfig):
             problem_ids = []
             while len(problem_ids) < config.batch_size:
                 done, _ = await asyncio.wait(inflight_tasks, return_when=asyncio.FIRST_COMPLETED)
-                with open("done.txt", "a") as f:
-                    f.write(f"Done: {len(done)}\n")
                 for task in done:
                     if len(problem_ids) == config.batch_size:
                         break
@@ -285,6 +289,7 @@ async def orchestrate(config: OrchestratorConfig):
                     generate_outputs.task.extend(_generate_outputs.task)
                     generate_outputs.reward.extend(_generate_outputs.reward)
                     generate_outputs.metrics.update(_generate_outputs.metrics)
+
 
             logger.info(f"Generated {len(problem_ids)} completions")
             generate_completions_time = time.time() - generate_completions_start_time
