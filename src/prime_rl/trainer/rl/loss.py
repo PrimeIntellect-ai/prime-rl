@@ -101,8 +101,8 @@ def compute_loss(
             seq_log_importance_ratio = (log_importance_ratio[loss_mask]).sum()
             if loss_config.ratio_length_norm:
                 seq_log_importance_ratio = seq_log_importance_ratio / torch.clamp_min(loss_mask.sum(), 1)
-            seq_log_importance_ratio = torch.clamp(seq_log_importance_ratio, max=10.0)
-            log_importance_ratio = torch.full_like(log_importance_ratio, seq_log_importance_ratio)
+            log_importance_ratio = trainer_loprobs - trainer_logprobs.detach() + seq_log_importance_ratio.detach()
+            log_importance_ratio = torch.clamp(log_importance_ratio, max=10.0)
 
         importance_ratio = torch.exp(log_importance_ratio)
         is_masked_low = importance_ratio < loss_config.mask_ratio_low
