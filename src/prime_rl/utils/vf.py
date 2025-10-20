@@ -5,7 +5,36 @@ from itertools import cycle
 from datasets import Dataset
 from openai import AsyncOpenAI
 from verifiers import Environment
-from verifiers.types import GenerateOutputs
+from verifiers.types import GenerateMetadata, GenerateOutputs
+
+
+def merge_metadata(generate_metadata_list: list[GenerateMetadata]) -> GenerateMetadata:
+    """Merge multiple GenerateMetadata into a single GenerateMetadata."""
+    num_examples = len(generate_metadata_list)  # Assumes one generate metadata per example
+    time_ms = max(metadata.time_ms for metadata in generate_metadata_list)
+    avg_reward = sum(metadata.avg_reward for metadata in generate_metadata_list) / num_examples
+    avg_metrics = {
+        key: sum(metadata.avg_metrics[key] for metadata in generate_metadata_list) / num_examples
+        for key in generate_metadata_list[0].avg_metrics
+    }
+    state_columns = []
+    for metadata in generate_metadata_list:
+        state_columns.extend(metadata.state_columns)
+    return GenerateMetadata(
+        env_id=generate_metadata_list[0].env_id,
+        env_args=generate_metadata_list[0].env_args,
+        model=generate_metadata_list[0].model,
+        base_url=generate_metadata_list[0].base_url,
+        num_examples=num_examples,
+        rollouts_per_example=generate_metadata_list[0].rollouts_per_example,
+        sampling_args=generate_metadata_list[0].sampling_args,
+        date=generate_metadata_list[0].date,
+        time_ms=time_ms,
+        avg_reward=avg_reward,
+        avg_metrics=avg_metrics,
+        state_columns=state_columns,
+        path_to_save=generate_metadata_list[0].path_to_save,
+    )
 
 
 def merge_outputs(generate_outputs_list: list[GenerateOutputs]) -> GenerateOutputs:
@@ -32,6 +61,7 @@ def merge_outputs(generate_outputs_list: list[GenerateOutputs]) -> GenerateOutpu
         task.extend(generate_output.task)
         for key, value in generate_output.metrics.items():
             metrics[key].extend(value)
+    metadata = merge_metadata([generate_output.metadata for generate_output in generate_outputs_list])
     return GenerateOutputs(
         prompt=prompt,
         completion=completion,
@@ -41,7 +71,7 @@ def merge_outputs(generate_outputs_list: list[GenerateOutputs]) -> GenerateOutpu
         info=info,
         task=task,
         metrics=metrics,
-        metadata=generate_outputs_list[0].metadata,  # TODO
+        metadata=metadata,
         example_id=example_id,
     )
 
@@ -56,11 +86,12 @@ async def generate_group(
     max_concurrent: int,
 ) -> GenerateOutputs:
     """Asynchronously generate and score rollouts for one problem."""
-    return await env.a_generate(
-        inputs=Dataset.from_list([problem] * rollouts_per_example),
+    return await env.generate(
+        inputs=Dataset.from_list([problem]),
         client=client,
         model=model_name,
         sampling_args=sampling_args,
+        rollouts_per_example=rollouts_per_example,
         max_concurrent=max_concurrent,
         use_tqdm=False,
     )
