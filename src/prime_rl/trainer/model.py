@@ -1,6 +1,6 @@
 import logging
-from pathlib import Path
 import time
+from pathlib import Path
 from typing import cast
 
 import torch
@@ -164,13 +164,15 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
 
     logger.info("Loading model weights from HF")
     load_dcp_start_time = time.time()
-    
+
     if not Path(config.name).exists():
         path_snapshot = snapshot_download(repo_id=config.name, repo_type="model")
     else:
-        logger.info(f"Loading model weights from {config.name} directly, skipping snapshot download, if this is not expected please remove the directory {config.name} and run again")
+        logger.info(
+            f"Loading model weights from {config.name} directly, skipping snapshot download, if this is not expected please remove the directory {config.name} and run again"
+        )
         path_snapshot = config.name
-        
+
     dcp.load(
         model.state_dict(),
         storage_reader=HuggingFaceStorageReader(path=path_snapshot),
