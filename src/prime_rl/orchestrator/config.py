@@ -502,6 +502,14 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = 2
 
+    inflight_problems_factor: Annotated[
+        float,
+        Field(
+            gt=0,
+            description="Max fraction of the batch that is being generated at once. Defaults to 1.5, which means at most 1.5x the batch size is being generated at once.",
+        ),
+    ] = 1.5
+
     bench: Annotated[
         bool,
         Field(

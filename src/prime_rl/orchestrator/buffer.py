@@ -234,8 +234,6 @@ class SimpleBuffer(Buffer):
     def sample_problem(self) -> tuple[list[int], list[dict]]:
         sampled_problem_id = random.sample(self.problem_ids, 1)[0]
         while sampled_problem_id in self.rollout_buffer:
-            with open("rollout_buffer.txt", "a") as f:
-                f.write("disaster averted\n")
             sampled_problem_id = random.sample(self.problem_ids, 1)[0]
         self.rollout_buffer[sampled_problem_id] = []
         sampled_problem = self.problem_buffer[sampled_problem_id]
