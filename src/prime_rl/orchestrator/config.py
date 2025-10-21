@@ -159,9 +159,24 @@ class EvalSaveHFConfig(BaseConfig):
     ] = False
 
 
+class EvalSaveHubConfig(BaseConfig):
+    """Configures how to save eval results to Prime Environment Hub."""
+
+    run_id: Annotated[
+        str | None,
+        Field(description="Link to existing training run ID. Either run_id or env_hub_id must be provided."),
+    ] = None
+
+    env_hub_id: Annotated[
+        str | None,
+        Field(description="Environment Hub ID. Either run_id or env_hub_id must be provided."),
+    ] = None
+
+
 class EvalSaveConfig(BaseConfig):
     disk: EvalSaveDiskConfig | None = None
     hf: EvalSaveHFConfig | None = None
+    hub: EvalSaveHubConfig | None = None
 
 
 class EnvironmentConfig(BaseConfig):

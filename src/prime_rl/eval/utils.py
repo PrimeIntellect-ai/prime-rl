@@ -162,7 +162,7 @@ async def run_eval(
     monitor.log(eval_metrics)
 
     # Save results
-    if save_config.disk is not None or save_config.hf is not None:
+    if save_config.disk is not None or save_config.hf is not None or save_config.hub is not None:
         dataset = make_dataset(results)
 
         if save_config.disk is not None:
@@ -187,6 +187,48 @@ async def run_eval(
             logger.info(
                 f"Pushed {'private' if save_config.hf.private else 'public'} eval results for {env_id} to HF Hub (https://huggingface.co/datasets/{repo_name})"
             )
+
+        if save_config.hub is not None:
+            from prime_core import APIClient
+            from prime_evals import EvalsClient
+
+            results_list = []
+            for i in range(len(dataset)):
+                sample = dataset[i]
+                results_list.append(dict(sample))
+
+            # Push to Prime Hub
+            api_client = APIClient()
+            evals_client = EvalsClient(api_client)
+
+            eval_name = f"{env_id}--{model_config.name.replace('/', '--')}"
+            metadata_dict = sanitize_metadata(results.metadata)
+
+            # Determine environments or run_id
+            environments = [{"id": save_config.hub.env_hub_id}] if save_config.hub.env_hub_id else None
+
+            # Create evaluation
+            create_response = evals_client.create_evaluation(
+                name=eval_name,
+                environments=environments,
+                run_id=save_config.hub.run_id,
+                model_name=model_config.name,
+                dataset=env_id,
+                framework="verifiers",
+                metadata=metadata_dict,
+                metrics=eval_metrics,
+            )
+
+            eval_id = create_response.get("evaluation_id") or create_response.get("id")
+
+            # Push samples if provided
+            if results_list:
+                evals_client.push_samples(eval_id, results_list)
+
+            # Finalize evaluation
+            evals_client.finalize_evaluation(eval_id, metrics=eval_metrics)
+
+            logger.info(f"Pushed eval results for {env_id} to Prime Hub (eval_id: {eval_id})")
 
 
 async def run_evals(
