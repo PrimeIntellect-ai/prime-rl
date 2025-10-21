@@ -35,6 +35,7 @@ from prime_rl.orchestrator.utils import (
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import (
+    get_latest_ckpt_step,
     wait_for_path,
     clean_exit,
     format_num,
@@ -191,27 +192,22 @@ async def orchestrate(config: OrchestratorConfig):
         logger.info(f"Starting orchestrator step {progress.step} ({ckpt_step=})")
         step_start_time = time.time()
 
-        # Optionally, wait for the next checkpoint to be available
-        wait_for_weight_ckpt_time, update_weights_time = 0, 0
-        if progress.step - ckpt_step > config.async_level:
-            logger.debug(
-                f"Hit async barrier because step {progress.step} is {progress.step - ckpt_step} (>{config.async_level}) steps ahead of checkpoint step {ckpt_step}."
-            )
+        # Optionally, update the weights to the latest checkpoint
+        update_weights_time = 0
+        newest_ckpt_step = get_latest_ckpt_step(get_weights_dir(config.output_dir))
+        logger.info(f"Newest checkpoint step: {newest_ckpt_step}")
 
-            # Wait for the checkpoint to be available
-            ckpt_step = progress.step - config.async_level
-            logger.info(f"Waiting for weight checkpoint {ckpt_step}")
-            wait_for_weight_ckpt_start_time = time.time()
-            await wait_for_path(get_step_path(get_weights_dir(config.output_dir), ckpt_step) / "STABLE")
-            wait_for_weight_ckpt_time = time.time() - wait_for_weight_ckpt_start_time
-            logger.debug(f"Waited {wait_for_weight_ckpt_time:.2f}s for weight checkpoint")
+        if newest_ckpt_step is not None and newest_ckpt_step > progress.step:
+            logger.info(f"Found newer checkpoint at step {newest_ckpt_step}.")
 
-            # Update the weights
-            logger.info(f"Updating weights to weight checkpoint {ckpt_step}")
+            # no need to wait, get_latest_ckpt_step ensures that the checkpoint is available
+            logger.info(f"Updating weights to latest checkpoint {newest_ckpt_step}")
             update_weights_start_time = time.time()
-            await update_weights(admin_clients, get_step_path(get_weights_dir(config.output_dir), ckpt_step))
+            await update_weights(admin_clients, get_step_path(get_weights_dir(config.output_dir), newest_ckpt_step))
             update_weights_time = time.time() - update_weights_start_time
-            logger.debug(f"Updated weights in {update_weights_time:.2f}s")
+            logger.info(f"Updated weights in {update_weights_time:.2f}s")
+            logger.info(f"New checkpoint staleness: {newest_ckpt_step - progress.step}")
+            ckpt_step = newest_ckpt_step
 
         # Optionally, run online evals at the specified interval
         eval_time = 0
@@ -315,7 +311,7 @@ async def orchestrate(config: OrchestratorConfig):
                     generate_outputs.example_id.extend(_generate_outputs.example_id)
 
                     generate_metadata.append(_generate_outputs.metadata)
-                
+
             generate_outputs.metadata = merge_metadata(generate_metadata)
 
             logger.info(f"Generated {len(problem_ids)} completions")
@@ -540,7 +536,6 @@ async def orchestrate(config: OrchestratorConfig):
         # Log time metrics to monitor
         time_metrics = {
             "time/step": step_time,
-            "time/wait_for_weight_ckpt": wait_for_weight_ckpt_time,
             "time/generate_completions": generate_completions_time,
             "time/update_weights": update_weights_time,
             "time/save_ckpt": save_ckpt_time,
