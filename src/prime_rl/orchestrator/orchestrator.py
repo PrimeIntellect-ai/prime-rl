@@ -9,7 +9,7 @@ from prime_rl.orchestrator import envs
 import lovely_tensors as lt
 import torch
 from verifiers import load_environment
-from verifiers.types import GenerateOutputs, ProcessedOutputs
+from verifiers.types import GenerateOutputs, ProcessedOutputs, GenerateMetadata
 from transformers import AutoTokenizer
 
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
@@ -130,46 +130,42 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info(f"Batch size: {config.batch_size}")
     logger.info(f"Rollouts per example: {config.rollouts_per_example}")
 
+    sampling_args = dict(config.sampling)
+    # Convert SamplingConfig to vLLM OAI sampling args
+    # https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#extra-parameters_2
+    sampling_args = dict(config.sampling)
+    sampling_args["top_p"] = 1.0
+    sampling_args["logprobs"] = True
+    sampling_args["extra_body"] = {
+        "return_tokens_as_token_ids": True,
+        "top_k": -1,
+        "min_p": 0.0,
+    }
+    sampling_args["extra_body"]["min_tokens"] = sampling_args.pop("min_tokens")
+    sampling_args["extra_body"]["repetition_penalty"] = sampling_args.pop("repetition_penalty")
+
     def generate_call():
-        problem_ids, problems = buffer.sample_problem()
+        problem_ids, problem = buffer.sample_problem()
 
-        # Duplicate problems `rollouts_per_example` times
         problem_ids = [problem_id for problem_id in problem_ids for _ in range(config.rollouts_per_example)]
-        problems = [problem for problem in problems for _ in range(config.rollouts_per_example)]
 
-        # Prepare inputs for verifiers generation
-        # TODO: Can we use `prime_rl.utils.utils.to_col_format` here?
-        inputs = {
-            "prompt": [problem["prompt"] for problem in problems],
-            "info": [problem.get("info", {}) for problem in problems],
-            "task": [problem.get("task", config.environment.id) for problem in problems],
-            "answer": [problem.get("answer", "") for problem in problems],
-        }
-
-        # Convert SamplingConfig to vLLM OAI sampling args
-        # https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#extra-parameters_2
-        sampling_args = dict(config.sampling)
-        sampling_args["top_p"] = 1.0
-        sampling_args["logprobs"] = True
-        sampling_args["extra_body"] = {
-            "return_tokens_as_token_ids": True,
-            "top_k": -1,
-            "min_p": 0.0,
-        }
-        sampling_args["extra_body"]["min_tokens"] = sampling_args.pop("min_tokens")
-        sampling_args["extra_body"]["repetition_penalty"] = sampling_args.pop("repetition_penalty")
+        logger.info(f"Sampled problem {problem_ids}")
 
         # Generate completions + rewards with verifiers
-        logger.info(f"Sending {len(problems)} requests to environments")
-        task = vf_env.a_generate(
-            inputs=inputs,
-            client=client,
-            model=config.model.name,
+        logger.info(f"Sending {len(problem)} * {config.rollouts_per_example} requests to environments")
+
+        task = generate_batch(
+            clients=clients,
+            env=vf_env,
+            model_name=config.model.name,
+            problems=problem,
+            rollouts_per_example=config.rollouts_per_example,
             sampling_args=sampling_args,
             use_tqdm=False,
         )
+
         return problem_ids, task
-    
+
     while True:
         # Save checkpoint (if we are at an interval step and not at the first or last step)
         is_last_step = config.max_steps is not None and progress.step == config.max_steps - 1
@@ -246,50 +242,66 @@ async def orchestrate(config: OrchestratorConfig):
         problem_requests, completion_requests, calls_to_generate = 0, 0, 0
         problems_to_sample = problems_per_batch
 
+        assert problems_per_batch <= MAX_INFLIGHT_PROBLEMS, (
+            f"Problems per batch {problems_per_batch} must be less than or equal to the max inflight problems {MAX_INFLIGHT_PROBLEMS}"
+        )
+
         while True:
-            # Get the batch
-            problems = buffer.sample_problems(problems_to_sample)
-
-            # Convert SamplingConfig to vLLM OAI sampling args
-            # https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#extra-parameters_2
-            sampling_args = dict(config.sampling)
-            sampling_args["top_p"] = 1.0
-            sampling_args["logprobs"] = True
-            sampling_args["extra_body"] = {
-                "return_tokens_as_token_ids": True,
-                "top_k": -1,
-                "min_p": 0.0,
-            }
-            sampling_args["extra_body"]["min_tokens"] = sampling_args.pop("min_tokens")
-            sampling_args["extra_body"]["repetition_penalty"] = sampling_args.pop("repetition_penalty")
-
-            # Generate completions + rewards with verifiers
             generate_completions_start_time = time.time()
-            generate_outputs: GenerateOutputs = await generate_batch(
-                clients=clients,
-                env=vf_env,
-                model_name=config.model.name,
-                problems=problems,
-                rollouts_per_example=config.rollouts_per_example,
-                sampling_args=sampling_args,
+
+            # re-fill the inflight tasks to the max
+            while len(inflight_tasks) < MAX_INFLIGHT_PROBLEMS:
+                problem_ids, coro = generate_call()
+                task = asyncio.create_task(coro)
+                await asyncio.sleep(0)
+                inflight_tasks.append(task)
+                task_to_problem_id[task] = problem_ids
+
+            generate_outputs = GenerateOutputs(
+                prompt=[],
+                completion=[],
+                answer=[],
+                state=[],
+                info=[],
+                task=[],
+                reward=[],
+                example_id=[],
+                metrics={},
+                metadata=GenerateMetadata(
+                    env_id=config.environment.id,
+                    env_args=config.environment.args,
+                    model=config.model.name,
+                    base_url=config.client.base_url[0],
+                    num_examples=problems_per_batch,
+                    rollouts_per_example=config.rollouts_per_example,
+                    sampling_args=sampling_args,
+                    date=time.strftime("%Y-%m-%d"),
+                    time_ms=0.0,
+                    avg_reward=0.0,
+                    avg_metrics={},
+                    state_columns=[],
+                    path_to_save=get_rollout_dir(config.output_dir) / f"step_{progress.step}",
+                ),
             )
 
             problem_ids = []
             while len(problem_ids) < config.batch_size:
                 done, _ = await asyncio.wait(inflight_tasks, return_when=asyncio.FIRST_COMPLETED)
+                logger.info(f"Completed {len(done)} tasks")
                 for task in done:
                     if len(problem_ids) == config.batch_size:
                         break
                     inflight_tasks.remove(task)
                     problem_ids.extend(task_to_problem_id[task])
                     del task_to_problem_id[task]
-                    problem_id, coro = generate_call()
+                    new_problem_ids, coro = generate_call()
                     new_task = asyncio.create_task(coro)
                     await asyncio.sleep(0)
                     inflight_tasks.append(new_task)
-                    task_to_problem_id[new_task] = problem_id
+                    task_to_problem_id[new_task] = new_problem_ids
 
                     _generate_outputs: GenerateOutputs = task.result()
+
                     generate_outputs.prompt.extend(_generate_outputs.prompt)
                     generate_outputs.completion.extend(_generate_outputs.completion)
                     generate_outputs.answer.extend(_generate_outputs.answer)
@@ -298,7 +310,7 @@ async def orchestrate(config: OrchestratorConfig):
                     generate_outputs.task.extend(_generate_outputs.task)
                     generate_outputs.reward.extend(_generate_outputs.reward)
                     generate_outputs.metrics.update(_generate_outputs.metrics)
-
+                    generate_outputs.example_id.extend(_generate_outputs.example_id)
 
             logger.info(f"Generated {len(problem_ids)} completions")
             generate_completions_time = time.time() - generate_completions_start_time
@@ -337,9 +349,13 @@ async def orchestrate(config: OrchestratorConfig):
             responses = [state["responses"] for state in generate_outputs.state]
             is_truncated = parse_is_truncated_completions(responses=responses)
 
+            logger.info(f"Got {len(problem_ids)} problem IDs")
+            logger.info(f"Got {len(processed_outputs.prompt_ids)} prompt IDs")
+            logger.info(f"Problem IDs: {problem_ids}")
+
             # Update pool
             rollouts = make_rollouts(
-                problem_ids=[problem["id"] for problem in problems for _ in range(config.rollouts_per_example)],
+                problem_ids=problem_ids,
                 prompt_tokens=processed_outputs.prompt_ids,
                 prompt_masks=processed_outputs.prompt_mask,
                 completion_tokens=processed_outputs.completion_ids,
