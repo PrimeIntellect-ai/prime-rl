@@ -1,6 +1,6 @@
 version = 1
-revision = 3
-requires-python = "==3.12.*"
+revision = 2
+requires-python = ">=3.12.0, <3.13"
 resolution-markers = [
     "sys_platform == 'linux'",
     "sys_platform != 'linux'",
@@ -1677,6 +1677,19 @@ wheels = [
 ]
 
 [[package]]
+name = "nixl"
+version = "0.6.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "torch" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/54/c2/e1679421bed63ba5d59d9573cfa64d64fcc6769e6844f9de5df7f62d4fc0/nixl-0.6.1-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:77eab96bef382bfb91b9d6222e5581e49b193fcf573b38dcaa7a296822a2894e", size = 22292504, upload-time = "2025-10-09T03:05:48.868Z" },
+    { url = "https://files.pythonhosted.org/packages/0a/35/23e3e9ec86fe5512842926a1d6a6c2b9f55b5fc995a516ce215c4da72d72/nixl-0.6.1-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:8507c73d9bc044dd921edbef81ebae3e0750584a70a63ea90e5ade79233535d2", size = 23263501, upload-time = "2025-10-09T05:31:10.067Z" },
+]
+
+[[package]]
 name = "nltk"
 version = "3.9.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2149,6 +2162,9 @@ dependencies = [
 flash-attn = [
     { name = "flash-attn" },
 ]
+nixl = [
+    { name = "nixl" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -2173,6 +2189,7 @@ requires-dist = [
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "lovely-tensors", specifier = ">=0.1.18" },
     { name = "math-verify", specifier = ">=0.8.0" },
+    { name = "nixl", marker = "extra == 'nixl'", specifier = ">=0.1.0" },
     { name = "nltk", specifier = ">=3.9.1" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "openai", specifier = ">=1.106.1" },
@@ -2194,7 +2211,7 @@ requires-dist = [
     { name = "vllm", specifier = "==0.10.2" },
     { name = "wandb", specifier = ">=0.20.1" },
 ]
-provides-extras = ["flash-attn"]
+provides-extras = ["flash-attn", "nixl"]
 
 [package.metadata.requires-dev]
 dev = [

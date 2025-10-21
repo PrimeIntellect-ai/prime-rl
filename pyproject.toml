@@ -48,6 +48,7 @@ eval = "prime_rl.eval.eval:main"
 
 [project.optional-dependencies]
 flash-attn = ["flash-attn>=2.8.3"]
+nixl = ["nixl>=0.1.0"]
 
 [dependency-groups]
 dev = [
