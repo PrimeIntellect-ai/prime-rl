@@ -302,8 +302,8 @@ async def orchestrate(config: OrchestratorConfig):
 
                     rewards = candidate_generate_outputs.reward
 
-                    if all(reward == rewards[0] for reward in rewards):
-                        logger.warning("All rewards are the same, skipping rollout: ")
+                    if config.difficulty_filtering and all(reward == rewards[0] for reward in rewards):
+                        logger.debug("All rewards are the same, skipping rollout due to difficulty filtering: ")
                         continue
 
                     problem_ids.extend(new_problem_ids)

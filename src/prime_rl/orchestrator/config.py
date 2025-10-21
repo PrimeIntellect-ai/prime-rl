@@ -510,6 +510,13 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = 1.5
 
+    difficulty_filtering: Annotated[
+        bool,
+        Field(
+            description="Whether to filter out rollouts with all rewards being the same. This is useful to avoid training on rollouts that are too easy or too hard.",
+        ),
+    ] = False
+
     bench: Annotated[
         bool,
         Field(
