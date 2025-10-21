@@ -14,7 +14,7 @@ from transformers import AutoTokenizer
 
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.eval.utils import run_evals
-from prime_rl.utils.vf import generate_batch
+from prime_rl.utils.vf import generate_batch, merge_metadata
 from prime_rl.utils.client import (
     check_has_model,
     check_health,
@@ -257,6 +257,7 @@ async def orchestrate(config: OrchestratorConfig):
                 inflight_tasks.append(task)
                 task_to_problem_id[task] = problem_ids
 
+            generate_metadata = []
             generate_outputs = GenerateOutputs(
                 prompt=[],
                 completion=[],
@@ -267,6 +268,7 @@ async def orchestrate(config: OrchestratorConfig):
                 reward=[],
                 example_id=[],
                 metrics={},
+                # temporary metadata, to be replaced with the actual one
                 metadata=GenerateMetadata(
                     env_id=config.environment.id,
                     env_args=config.environment.args,
@@ -311,6 +313,10 @@ async def orchestrate(config: OrchestratorConfig):
                     generate_outputs.reward.extend(_generate_outputs.reward)
                     generate_outputs.metrics.update(_generate_outputs.metrics)
                     generate_outputs.example_id.extend(_generate_outputs.example_id)
+
+                    generate_metadata.append(_generate_outputs.metadata)
+                
+            generate_outputs.metadata = merge_metadata(generate_metadata)
 
             logger.info(f"Generated {len(problem_ids)} completions")
             generate_completions_time = time.time() - generate_completions_start_time
