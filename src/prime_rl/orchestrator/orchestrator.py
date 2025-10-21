@@ -148,12 +148,7 @@ async def orchestrate(config: OrchestratorConfig):
 
     def generate_call():
         problem_ids, problem = buffer.sample_problem()
-
         problem_ids = [problem_id for problem_id in problem_ids for _ in range(config.rollouts_per_example)]
-
-        logger.info(f"Sampled problem {problem_ids}")
-
-        # Generate completions + rewards with verifiers
         logger.info(f"Sending {len(problem)} * {config.rollouts_per_example} requests to environments")
 
         task = generate_batch(
@@ -295,27 +290,34 @@ async def orchestrate(config: OrchestratorConfig):
                     if len(problem_ids) == config.batch_size:
                         break
                     inflight_tasks.remove(task)
-                    problem_ids.extend(task_to_problem_id[task])
                     del task_to_problem_id[task]
+
                     new_problem_ids, coro = generate_call()
                     new_task = asyncio.create_task(coro)
                     await asyncio.sleep(0)
                     inflight_tasks.append(new_task)
                     task_to_problem_id[new_task] = new_problem_ids
 
-                    _generate_outputs: GenerateOutputs = task.result()
+                    candidate_generate_outputs: GenerateOutputs = task.result()
 
-                    generate_outputs.prompt.extend(_generate_outputs.prompt)
-                    generate_outputs.completion.extend(_generate_outputs.completion)
-                    generate_outputs.answer.extend(_generate_outputs.answer)
-                    generate_outputs.state.extend(_generate_outputs.state)
-                    generate_outputs.info.extend(_generate_outputs.info)
-                    generate_outputs.task.extend(_generate_outputs.task)
-                    generate_outputs.reward.extend(_generate_outputs.reward)
-                    generate_outputs.metrics.update(_generate_outputs.metrics)
-                    generate_outputs.example_id.extend(_generate_outputs.example_id)
+                    rewards = candidate_generate_outputs.reward
 
-                    generate_metadata.append(_generate_outputs.metadata)
+                    if all(reward == rewards[0] for reward in rewards):
+                        logger.warning("All rewards are the same, skipping rollout: ")
+                        continue
+
+                    problem_ids.extend(new_problem_ids)
+
+                    generate_outputs.prompt.extend(candidate_generate_outputs.prompt)
+                    generate_outputs.completion.extend(candidate_generate_outputs.completion)
+                    generate_outputs.answer.extend(candidate_generate_outputs.answer)
+                    generate_outputs.state.extend(candidate_generate_outputs.state)
+                    generate_outputs.info.extend(candidate_generate_outputs.info)
+                    generate_outputs.task.extend(candidate_generate_outputs.task)
+                    generate_outputs.reward.extend(candidate_generate_outputs.reward)
+                    generate_outputs.metrics.update(candidate_generate_outputs.metrics)
+                    generate_outputs.example_id.extend(candidate_generate_outputs.example_id)
+                    generate_metadata.append(candidate_generate_outputs.metadata)
 
             generate_outputs.metadata = merge_metadata(generate_metadata)
 
@@ -355,10 +357,6 @@ async def orchestrate(config: OrchestratorConfig):
             # Parse whether the completions were truncated
             responses = [state["responses"] for state in generate_outputs.state]
             is_truncated = parse_is_truncated_completions(responses=responses)
-
-            logger.info(f"Got {len(problem_ids)} problem IDs")
-            logger.info(f"Got {len(processed_outputs.prompt_ids)} prompt IDs")
-            logger.info(f"Problem IDs: {problem_ids}")
 
             # Update pool
             rollouts = make_rollouts(

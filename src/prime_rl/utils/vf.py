@@ -109,6 +109,7 @@ async def generate_batch(
     """Asynchronously generate and score rollouts for a list of problems."""
     if use_tqdm:
         from tqdm import tqdm
+
         pbar = tqdm(total=len(problems) * rollouts_per_example, desc="Generating rollouts")
     else:
         pbar = None
