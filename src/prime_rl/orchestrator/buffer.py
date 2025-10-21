@@ -252,12 +252,8 @@ class SimpleBuffer(Buffer):
     def sample_rollouts(self, n: int) -> list[Rollout]:
         # Take the first n problems from the rollout buffer
         available_problem_ids = [k for k in self.rollout_buffer.keys() if len(self.rollout_buffer[k]) > 0]
-        with open("rollout_buffer.txt", "a") as f:
-            _print_dict = {k: len(v) for k, v in self.rollout_buffer.items()}
-            f.write(json.dumps(_print_dict) + "\n")
         assert len(available_problem_ids) == n, (
             "The number of available problems should always be equal to the requested number of problems"
-            f"{len(available_problem_ids)=}, {n=}"
         )
         sampled_problem_ids = available_problem_ids[:n]
         assert len(sampled_problem_ids) == n, (
