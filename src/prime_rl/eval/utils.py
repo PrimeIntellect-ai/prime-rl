@@ -1,5 +1,6 @@
 import asyncio
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -7,6 +8,7 @@ import numpy as np
 import pandas as pd
 from huggingface_hub import whoami
 from openai import AsyncOpenAI
+from prime_evals import AsyncEvalsClient
 from verifiers import load_environment
 from verifiers.types import GenerateOutputs
 from verifiers.utils.eval_utils import get_hf_hub_dataset_name, make_dataset, sanitize_metadata, save_to_disk
@@ -18,6 +20,15 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor import get_monitor
 from prime_rl.utils.utils import capitalize, get_eval_dir, get_step_path
 from prime_rl.utils.vf import generate_batch
+
+
+@asynccontextmanager
+async def get_evals_client_if_needed(save_hub_config):
+    if save_hub_config is not None:
+        async with AsyncEvalsClient() as client:
+            yield client
+    else:
+        yield None
 
 
 def compute_pass_at_k(rewards: list[int]) -> dict[str, float]:
@@ -87,6 +98,7 @@ async def run_eval(
     client_config: ClientConfig,
     save_config: EvalSaveConfig,
     step: int | None = None,
+    evals_client: Any | None = None,
 ) -> None:
     # Get the logger
     logger = get_logger()
@@ -189,17 +201,10 @@ async def run_eval(
             )
 
         if save_config.hub is not None:
-            from prime_core import APIClient
-            from prime_evals import EvalsClient
-
             results_list = []
             for i in range(len(dataset)):
                 sample = dataset[i]
                 results_list.append(dict(sample))
-
-            # Push to Prime Hub
-            api_client = APIClient()
-            evals_client = EvalsClient(api_client)
 
             eval_name = f"{env_id}--{model_config.name.replace('/', '--')}"
             metadata_dict = sanitize_metadata(results.metadata)
@@ -208,7 +213,7 @@ async def run_eval(
             environments = [{"id": save_config.hub.env_hub_id}] if save_config.hub.env_hub_id else None
 
             # Create evaluation
-            create_response = evals_client.create_evaluation(
+            create_response = await evals_client.create_evaluation(
                 name=eval_name,
                 environments=environments,
                 run_id=save_config.hub.run_id,
@@ -223,10 +228,10 @@ async def run_eval(
 
             # Push samples if provided
             if results_list:
-                evals_client.push_samples(eval_id, results_list)
+                await evals_client.push_samples(eval_id, results_list)
 
             # Finalize evaluation
-            evals_client.finalize_evaluation(eval_id, metrics=eval_metrics)
+            await evals_client.finalize_evaluation(eval_id, metrics=eval_metrics)
 
             logger.info(f"Pushed eval results for {env_id} to Prime Hub (eval_id: {eval_id})")
 
@@ -241,28 +246,30 @@ async def run_evals(
     ckpt_step: int,
     step: int | None = None,
 ):
-    await asyncio.gather(
-        *[
-            run_eval(
-                clients=clients,
-                env_id=env_id,
-                env_args=eval_config.environment_args.get(env_id, {}),
-                num_examples=num_examples,
-                rollouts_per_example=rollouts_per_example,
-                max_concurrent=max_concurrent,
-                output_dir=output_dir,
-                model_config=model_config,
-                sampling_config=sampling_config,
-                client_config=client_config,
-                save_config=eval_config.save,
-                ckpt_step=ckpt_step,
-                step=step,
-            )
-            for env_id, num_examples, rollouts_per_example, max_concurrent in zip(
-                eval_config.environment_ids,
-                eval_config.num_examples,
-                eval_config.rollouts_per_example,
-                eval_config.max_concurrent,
-            )
-        ]
-    )
+    async with get_evals_client_if_needed(eval_config.save.hub) as evals_client:
+        await asyncio.gather(
+            *[
+                run_eval(
+                    clients=clients,
+                    env_id=env_id,
+                    env_args=eval_config.environment_args.get(env_id, {}),
+                    num_examples=num_examples,
+                    rollouts_per_example=rollouts_per_example,
+                    max_concurrent=max_concurrent,
+                    output_dir=output_dir,
+                    model_config=model_config,
+                    sampling_config=sampling_config,
+                    client_config=client_config,
+                    save_config=eval_config.save,
+                    ckpt_step=ckpt_step,
+                    step=step,
+                    evals_client=evals_client,
+                )
+                for env_id, num_examples, rollouts_per_example, max_concurrent in zip(
+                    eval_config.environment_ids,
+                    eval_config.num_examples,
+                    eval_config.rollouts_per_example,
+                    eval_config.max_concurrent,
+                )
+            ]
+        )
