@@ -149,7 +149,7 @@ async def orchestrate(config: OrchestratorConfig):
     def generate_call():
         problem_ids, problem = buffer.sample_problem()
         problem_ids = [problem_id for problem_id in problem_ids for _ in range(config.rollouts_per_example)]
-        logger.info(f"Sending {len(problem)} * {config.rollouts_per_example} requests to environments")
+        logger.debug(f"Sending {len(problem)} * {config.rollouts_per_example} requests to environments")
 
         task = generate_batch(
             clients=clients,
@@ -241,6 +241,7 @@ async def orchestrate(config: OrchestratorConfig):
         accepted_rollouts: list[Rollout] = []
         problem_requests, completion_requests, calls_to_generate = 0, 0, 0
         problems_to_sample = problems_per_batch
+        filtered = 0
 
         while True:
             generate_completions_start_time = time.time()
@@ -304,6 +305,7 @@ async def orchestrate(config: OrchestratorConfig):
 
                     if config.difficulty_filtering and all(reward == rewards[0] for reward in rewards):
                         logger.debug("All rewards are the same, skipping rollout due to difficulty filtering: ")
+                        filtered += 1
                         continue
 
                     problem_ids.extend(new_problem_ids)
@@ -532,6 +534,7 @@ async def orchestrate(config: OrchestratorConfig):
             "batch/solve_none": solve_none,
             "batch/solve_all": solve_all,
             "batch/effective_batch_size": effective_batch_size,
+            "batch/difficulty_filtered": filtered,
             "step": progress.step,
         }
         monitor.log(solve_metrics)
