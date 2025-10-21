@@ -29,6 +29,8 @@ def compute_advantage(
         advantages = torch.maximum(advantages, torch.zeros_like(advantages))
     if advantage_config.global_std_norm:
         advantages = advantages / global_std
+    elif advantage_config.local_std_norm:
+        advantages = advantages / (rewards.std() + 1e-8)
     return advantages
 
 
