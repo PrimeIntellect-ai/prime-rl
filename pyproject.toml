@@ -30,7 +30,6 @@ dependencies = [
     "math-verify>=0.8.0",
     "torchdata>=0.11.0",
     "accelerate>=1.10.1",
-    "torchtitan",
     "blobfile>=3.0.0",
     "reverse-text>=0.1.4",
     "torchtitan",
