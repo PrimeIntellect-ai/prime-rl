@@ -153,7 +153,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     from huggingface_hub import snapshot_download
-    from torch.distributed.checkpoint import DefaultLoadPlanner, HuggingFaceStorageReader
+    from torch.distributed.checkpoint import HuggingFaceStorageReader
 
     model.to_empty(device="cuda")
 
@@ -162,7 +162,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
         logger.warning("Randomly initializing model. Skipping loading weights from HF.")
         return
 
-    logger.info("Loading model weights from HF")
+    logger.info("Loading weights using HF DCP")
     load_dcp_start_time = time.time()
 
     if not Path(config.name).exists():
@@ -177,10 +177,10 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
         model.state_dict(),
         storage_reader=HuggingFaceStorageReader(path=path_snapshot),
         # Note: This allow is needed by weight tying but could cause silent issues
-        planner=DefaultLoadPlanner(allow_partial_load=True),
+        # planner=DefaultLoadPlanner(allow_partial_load=True),
     )
     fix_model_post_empty(model)
-    logger.debug(f"Loaded model weights from HF in {time.time() - load_dcp_start_time:.2f} seconds")
+    logger.debug(f"Loaded weights using HF DCP in {time.time() - load_dcp_start_time:.2f} seconds")
 
 
 def can_load_dcp_from_hf(model: nn.Module):
