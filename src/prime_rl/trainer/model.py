@@ -216,8 +216,12 @@ def fix_model_post_empty(model: nn.Module):
         inv_freq, rotary_emb.attention_scaling = rotary_emb.rope_init_fn(rotary_emb.config, rotary_emb.inv_freq.device)
         rotary_emb.inv_freq.copy_(inv_freq)
 
-    # TODO: Init TT MoE buffers
-    # I think .to_empty() on gpu by default fills 0 so we are ok but this might not be guaranteed behavior
+    # Initialize MoE buffers
+    for name, module in model.named_modules():
+        if hasattr(module, "tokens_per_expert"):
+            module.tokens_per_expert.zero_()
+        if hasattr(module, "expert_bias") and module.expert_bias is not None:
+            module.expert_bias.zero_()
 
 
 def reshard_module(model: nn.Module):
