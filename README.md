@@ -131,6 +131,8 @@ uv run orchestrator @ configs/debug/orch.toml
 uv run eval @ configs/debug/eval.toml
 ```
 
+You can find more about debugging config in the [docs](docs/debug.md).
+
 </details>
 
 ### Additional Setup

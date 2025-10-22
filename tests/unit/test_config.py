@@ -85,7 +85,7 @@ def get_rl_dirs() -> list[Path]:
 
 @pytest.mark.parametrize("config_dir", [pytest.param(cfg_dir, id=cfg_dir.as_posix()) for cfg_dir in get_rl_dirs()])
 def test_rl_configs(config_dir: Path, monkeypatch: pytest.MonkeyPatch):
-    if config_dir.parent.name == "debug":
+    if config_dir.parent.name in ["debug", "debug_moe"]:
         pytest.skip("Skipping debug configs")
 
     # Require that all three files are present in the directory
