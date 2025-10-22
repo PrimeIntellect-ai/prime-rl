@@ -74,6 +74,8 @@ class RLTrainerConfig(BaseSettings):
     # The weight checkpoint configuration
     weights: WeightCheckpointConfig = WeightCheckpointConfig()
 
+    nixl_broadcast: bool = False
+
     # The logging configuration
     log: LogConfig = LogConfig()
 
