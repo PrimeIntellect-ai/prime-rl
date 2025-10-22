@@ -2190,7 +2190,7 @@ requires-dist = [
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e43694bbfeff5d6ad8ac738c067bb90d41" },
     { name = "transformers", specifier = ">=4.56.0" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?branch=multiturn-template-fix" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=a9e2a17" },
     { name = "vllm", specifier = "==0.10.2" },
     { name = "wandb", specifier = ">=0.20.1" },
 ]
@@ -3500,8 +3500,8 @@ wheels = [
 
 [[package]]
 name = "verifiers"
-version = "0.1.5.post0"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?branch=multiturn-template-fix#d58df4a562f0e9233657f4805bc4f4726009134c" }
+version = "0.1.6.post0"
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=a9e2a17#a9e2a1750d0eed3c114ee8392da7dce452029521" }
 dependencies = [
     { name = "datasets" },
     { name = "jinja2" },
