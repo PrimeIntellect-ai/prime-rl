@@ -156,13 +156,7 @@ def train(config: SFTTrainerConfig):
         ):
             logger.info(f"Saving weight checkpoint at step {progress.step}")
             save_weights_start_time = time.time()
-            weight_ckpt_manager.save(
-                model,
-                tokenizer,
-                save_format=config.weights.save_format,
-                save_sharded=config.weights.save_sharded,
-                step=progress.step,
-            )
+            weight_ckpt_manager.save(model, tokenizer, step=progress.step)
             save_weights_time = time.time() - save_weights_start_time
 
         # Save the full checkpoint (if we are at an interval step and not at the first or last step)
@@ -240,16 +234,15 @@ def train(config: SFTTrainerConfig):
                 loss = loss[loss_mask].mean()
 
                 # Accumulate average loss over gradient accumulation steps
-                
+
                 current_loss = loss.detach() / grad_accum_steps
-                
+
                 # only add if the loss is not nan
                 if not torch.isnan(current_loss):
                     batch_loss += current_loss
                 else:
                     nan_loss_count += 1
                     logger.warning("Loss is nan, not taking into account in the batch loss calculation")
-
 
                 # Delete logits before backward pass to avoid memory spike
                 del logits
@@ -395,13 +388,7 @@ def train(config: SFTTrainerConfig):
     if weight_ckpt_manager is not None:
         assert config.weights is not None
         logger.info("Writing final weight checkpoint")
-        weight_ckpt_manager.save(
-            model,
-            tokenizer,
-            save_format=config.weights.save_format,
-            save_sharded=config.weights.save_sharded,
-            step=progress.step,
-        )
+        weight_ckpt_manager.save(model, tokenizer, step=progress.step)
 
     # Write final checkpoint
     if ckpt_manager is not None:
