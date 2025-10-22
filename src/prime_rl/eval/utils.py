@@ -1,6 +1,5 @@
 import asyncio
 import time
-from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -20,15 +19,6 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor import get_monitor
 from prime_rl.utils.utils import capitalize, get_eval_dir, get_step_path
 from prime_rl.utils.vf import generate_batch
-
-
-@asynccontextmanager
-async def get_evals_client_if_needed(save_hub_config):
-    if save_hub_config is not None:
-        async with AsyncEvalsClient() as client:
-            yield client
-    else:
-        yield None
 
 
 def compute_pass_at_k(rewards: list[int]) -> dict[str, float]:
@@ -97,8 +87,8 @@ async def run_eval(
     sampling_config: EvalSamplingConfig,
     client_config: ClientConfig,
     save_config: EvalSaveConfig,
+    evals_client: AsyncEvalsClient,
     step: int | None = None,
-    evals_client: Any | None = None,
 ) -> None:
     # Get the logger
     logger = get_logger()
@@ -176,6 +166,7 @@ async def run_eval(
     # Save results
     if save_config.disk is not None or save_config.hf is not None or save_config.hub is not None:
         dataset = make_dataset(results)
+        metadata_dict = sanitize_metadata(results.metadata)
 
         if save_config.disk is not None:
             is_online = step is not None
@@ -185,7 +176,6 @@ async def run_eval(
                 else results.metadata.path_to_save
             )
             save_path = save_config.disk.path or default_save_path
-            metadata_dict = sanitize_metadata(results.metadata)
             save_to_disk(dataset, metadata_dict, save_path)
             logger.info(f"Saved eval results for {env_id} to disk ({save_path})")
 
@@ -201,13 +191,7 @@ async def run_eval(
             )
 
         if save_config.hub is not None:
-            results_list = []
-            for i in range(len(dataset)):
-                sample = dataset[i]
-                results_list.append(dict(sample))
-
             eval_name = f"{env_id}--{model_config.name.replace('/', '--')}"
-            metadata_dict = sanitize_metadata(results.metadata)
 
             # Determine environments or run_id
             environments = [{"id": save_config.hub.env_hub_id}] if save_config.hub.env_hub_id else None
@@ -226,9 +210,8 @@ async def run_eval(
 
             eval_id = create_response.get("evaluation_id") or create_response.get("id")
 
-            # Push samples if provided
-            if results_list:
-                await evals_client.push_samples(eval_id, results_list)
+            # Push samples
+            await evals_client.push_samples(eval_id, dataset.to_list())
 
             # Finalize evaluation
             await evals_client.finalize_evaluation(eval_id, metrics=eval_metrics)
@@ -242,34 +225,34 @@ async def run_evals(
     model_config: ModelConfig,
     sampling_config: EvalSamplingConfig,
     client_config: ClientConfig,
+    evals_client: AsyncEvalsClient,
     output_dir: Path,
     ckpt_step: int,
     step: int | None = None,
 ):
-    async with get_evals_client_if_needed(eval_config.save.hub) as evals_client:
-        await asyncio.gather(
-            *[
-                run_eval(
-                    clients=clients,
-                    env_id=env_id,
-                    env_args=eval_config.environment_args.get(env_id, {}),
-                    num_examples=num_examples,
-                    rollouts_per_example=rollouts_per_example,
-                    max_concurrent=max_concurrent,
-                    output_dir=output_dir,
-                    model_config=model_config,
-                    sampling_config=sampling_config,
-                    client_config=client_config,
-                    save_config=eval_config.save,
-                    ckpt_step=ckpt_step,
-                    step=step,
-                    evals_client=evals_client,
-                )
-                for env_id, num_examples, rollouts_per_example, max_concurrent in zip(
-                    eval_config.environment_ids,
-                    eval_config.num_examples,
-                    eval_config.rollouts_per_example,
-                    eval_config.max_concurrent,
-                )
-            ]
-        )
+    await asyncio.gather(
+        *[
+            run_eval(
+                clients=clients,
+                env_id=env_id,
+                env_args=eval_config.environment_args.get(env_id, {}),
+                num_examples=num_examples,
+                rollouts_per_example=rollouts_per_example,
+                max_concurrent=max_concurrent,
+                output_dir=output_dir,
+                model_config=model_config,
+                sampling_config=sampling_config,
+                client_config=client_config,
+                save_config=eval_config.save,
+                evals_client=evals_client,
+                ckpt_step=ckpt_step,
+                step=step,
+            )
+            for env_id, num_examples, rollouts_per_example, max_concurrent in zip(
+                eval_config.environment_ids,
+                eval_config.num_examples,
+                eval_config.rollouts_per_example,
+                eval_config.max_concurrent,
+            )
+        ]
+    )
