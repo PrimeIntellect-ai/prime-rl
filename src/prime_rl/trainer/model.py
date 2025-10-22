@@ -183,34 +183,34 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     model_state_dict = model.state_dict()
 
     # Dynamically convert between different weight formats if needed
-    if snapshot_state_dict.keys() != model_state_dict.keys():
-        world = get_world()
+    if has_hf_moe_layers(snapshot_state_dict) and has_tt_moe_layers(model_state_dict):
         logger.warning(
-            "Found mismatch between snapshot and model state dict keys. Will try to auto-convert the snapshot to match the model state dict."
+            "Found HF weight format in snapshot state dict and TT weight format in model state dict. Trying to auto-convert..."
         )
-        if has_hf_moe_layers(snapshot_state_dict) and has_tt_moe_layers(model_state_dict):
-            logger.debug("Found HF format in snapshot and TT format in model.")
-            snapshot_path = snapshot_path / "tt"
-            if snapshot_path.exists():
-                logger.debug(f"Conversion found at {snapshot_path}.")
-            else:
-                if world.is_master:
-                    logger.debug(
-                        f"Converting snapshot state dict to TT format and saving to {snapshot_path} on master rank. This is a one-time operation."
-                    )
-                    convert_hf_to_tt_moe(snapshot_state_dict)
-                    save_state_dict(snapshot_state_dict, snapshot_path)
-        elif has_tt_moe_layers(snapshot_state_dict) and has_hf_moe_layers(model_state_dict):
-            snapshot_path = snapshot_path / "hf"
-            if snapshot_path.exists():
-                logger.debug(f"Conversion already done. Loading from {snapshot_path}")
-            else:
-                if world.is_master:
-                    logger.debug(
-                        f"Converting snapshot state dict to HF format and saving to {snapshot_path} on master rank. This is a one-time operation."
-                    )
-                    convert_tt_to_hf_moe(snapshot_state_dict)
-                    save_state_dict(snapshot_state_dict, snapshot_path)
+        snapshot_path = snapshot_path / "tt"
+        if snapshot_path.exists():
+            logger.debug(f"Conversion found at {snapshot_path}.")
+        else:
+            if get_world().is_master:
+                logger.debug(
+                    f"Converting snapshot state dict to TT format and saving to {snapshot_path} on master rank. This is a one-time operation."
+                )
+                convert_hf_to_tt_moe(snapshot_state_dict)
+                save_state_dict(snapshot_state_dict, snapshot_path)
+    elif has_tt_moe_layers(snapshot_state_dict) and has_hf_moe_layers(model_state_dict):
+        logger.warning(
+            "Found TT weight format in snapshot state dict and HF weight format in model state dict. Trying to auto-convert..."
+        )
+        snapshot_path = snapshot_path / "hf"
+        if snapshot_path.exists():
+            logger.debug(f"Conversion found at {snapshot_path}.")
+        else:
+            if get_world().is_master:
+                logger.debug(
+                    f"Converting snapshot state dict to HF format and saving to {snapshot_path} on master rank. This is a one-time operation."
+                )
+                convert_tt_to_hf_moe(snapshot_state_dict)
+                save_state_dict(snapshot_state_dict, snapshot_path)
 
         # All ranks wait for master rank to finish conversion
         torch.distributed.barrier()
