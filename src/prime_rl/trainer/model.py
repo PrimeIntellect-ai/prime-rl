@@ -29,6 +29,7 @@ from prime_rl.trainer.weights import (
     load_state_dict,
     save_state_dict,
 )
+from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.tensor_hashing import get_module_signature
 
@@ -169,9 +170,6 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
         logger.warning("Randomly initializing model. Skipping loading weights from HF.")
         return
 
-    logger.info("Loading weights using HF DCP")
-    load_dcp_start_time = time.time()
-
     if not Path(config.name).exists():
         snapshot_path = Path(snapshot_download(repo_id=config.name, repo_type="model"))
     else:
@@ -186,30 +184,39 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
 
     # Dynamically convert between different weight formats if needed
     if snapshot_state_dict.keys() != model_state_dict.keys():
+        world = get_world()
         logger.warning(
             "Found mismatch between snapshot and model state dict keys. Will try to auto-convert the snapshot to match the model state dict."
         )
         if has_hf_moe_layers(snapshot_state_dict) and has_tt_moe_layers(model_state_dict):
-            logger.info("Found HF format in snapshot and TT format in model.")
+            logger.debug("Found HF format in snapshot and TT format in model.")
             snapshot_path = snapshot_path / "tt"
             if snapshot_path.exists():
-                logger.info(f"Conversion already done. Loading from {snapshot_path}")
+                logger.debug(f"Conversion found at {snapshot_path}.")
             else:
-                logger.info(f"Converting snapshot state dict to TT format and saving to {snapshot_path}")
-                convert_hf_to_tt_moe(snapshot_state_dict)
-                save_state_dict(snapshot_state_dict, snapshot_path)
+                if world.is_master:
+                    logger.debug(
+                        f"Converting snapshot state dict to TT format and saving to {snapshot_path} on master rank. This is a one-time operation."
+                    )
+                    convert_hf_to_tt_moe(snapshot_state_dict)
+                    save_state_dict(snapshot_state_dict, snapshot_path)
         elif has_tt_moe_layers(snapshot_state_dict) and has_hf_moe_layers(model_state_dict):
             snapshot_path = snapshot_path / "hf"
             if snapshot_path.exists():
-                logger.info(f"Conversion already done. Loading from {snapshot_path}")
+                logger.debug(f"Conversion already done. Loading from {snapshot_path}")
             else:
-                logger.info(f"Converting snapshot state dict to HF format and saving to {snapshot_path}")
-                convert_tt_to_hf_moe(snapshot_state_dict)
-                save_state_dict(snapshot_state_dict, snapshot_path)
+                if world.is_master:
+                    logger.debug(
+                        f"Converting snapshot state dict to HF format and saving to {snapshot_path} on master rank. This is a one-time operation."
+                    )
+                    convert_tt_to_hf_moe(snapshot_state_dict)
+                    save_state_dict(snapshot_state_dict, snapshot_path)
 
-        # Reload the snapshot state dict
-        snapshot_state_dict = load_state_dict(snapshot_path)
+        # All ranks wait for master rank to finish conversion
+        torch.distributed.barrier()
 
+    logger.info(f"Loading weights using HF DCP from {snapshot_path}")
+    load_dcp_start_time = time.time()
     dcp_load(
         model.state_dict(),
         storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),
