@@ -112,63 +112,51 @@ def _convert_hf_moe_to_tt(state_dict: dict[str, Tensor]):
     expert_keys = [k for k in state_dict.keys() if "model.layers.0.mlp.experts." in k and ".gate_proj.weight" in k]
     num_experts = len(expert_keys)
 
-    for i in range(num_layers):
-        # Convert gate to router
-        if f"model.layers.{i}.mlp.gate.weight" in state_dict:
-            state_dict[f"model.layers.{i}.mlp.router.gate.weight"] = state_dict[f"model.layers.{i}.mlp.gate.weight"]
-            del state_dict[f"model.layers.{i}.mlp.gate.weight"]
+    for i in range(1, num_layers + 1):
+        state_dict[f"model.layers.{i}.mlp.router.gate.weight"] = state_dict[f"model.layers.{i}.mlp.gate.weight"]
+        del state_dict[f"model.layers.{i}.mlp.gate.weight"]
 
-        # Convert experts from per-expert format to grouped format
-        if f"model.layers.{i}.mlp.experts.0.gate_proj.weight" in state_dict:
-            # Get dimensions from first expert
-            dim, moe_dim = state_dict[f"model.layers.{i}.mlp.experts.0.down_proj.weight"].shape
+        dim, moe_dim = state_dict[f"model.layers.{i}.mlp.experts.0.down_proj.weight"].shape
+        w1 = torch.empty(
+            (num_experts, moe_dim, dim), dtype=state_dict[f"model.layers.{i}.mlp.experts.1.down_proj.weight"].dtype
+        )  # Gate
+        w2 = torch.empty(
+            (num_experts, dim, moe_dim), dtype=state_dict[f"model.layers.{i}.mlp.experts.1.down_proj.weight"].dtype
+        )  # Down
+        w3 = torch.empty(
+            (num_experts, moe_dim, dim), dtype=state_dict[f"model.layers.{i}.mlp.experts.1.down_proj.weight"].dtype
+        )  # Up
+        for j in range(num_experts):
+            w1[j].copy_(state_dict[f"model.layers.{i}.mlp.experts.{j}.gate_proj.weight"])
+            w2[j].copy_(state_dict[f"model.layers.{i}.mlp.experts.{j}.down_proj.weight"])
+            w3[j].copy_(state_dict[f"model.layers.{i}.mlp.experts.{j}.up_proj.weight"])
 
-            # Initialize expert weight tensors
-            w1 = torch.empty(
-                (num_experts, moe_dim, dim), dtype=state_dict[f"model.layers.{i}.mlp.experts.0.gate_proj.weight"].dtype
-            )
-            w2 = torch.empty(
-                (num_experts, dim, moe_dim), dtype=state_dict[f"model.layers.{i}.mlp.experts.0.down_proj.weight"].dtype
-            )
-            w3 = torch.empty(
-                (num_experts, moe_dim, dim), dtype=state_dict[f"model.layers.{i}.mlp.experts.0.up_proj.weight"].dtype
-            )
+            del state_dict[f"model.layers.{i}.mlp.experts.{j}.gate_proj.weight"]
+            del state_dict[f"model.layers.{i}.mlp.experts.{j}.down_proj.weight"]
+            del state_dict[f"model.layers.{i}.mlp.experts.{j}.up_proj.weight"]
 
-            for j in range(num_experts):
-                w1[j].copy_(state_dict[f"model.layers.{i}.mlp.experts.{j}.gate_proj.weight"])
-                w2[j].copy_(state_dict[f"model.layers.{i}.mlp.experts.{j}.down_proj.weight"])
-                w3[j].copy_(state_dict[f"model.layers.{i}.mlp.experts.{j}.up_proj.weight"])
+        state_dict[f"model.layers.{i}.mlp.experts.w1"] = w1
+        state_dict[f"model.layers.{i}.mlp.experts.w2"] = w2
+        state_dict[f"model.layers.{i}.mlp.experts.w3"] = w3
 
-                del state_dict[f"model.layers.{i}.mlp.experts.{j}.gate_proj.weight"]
-                del state_dict[f"model.layers.{i}.mlp.experts.{j}.down_proj.weight"]
-                del state_dict[f"model.layers.{i}.mlp.experts.{j}.up_proj.weight"]
+        state_dict[f"model.layers.{i}.mlp.shared_expert.w1"] = state_dict[
+            f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"
+        ].unsqueeze(0)
+        state_dict[f"model.layers.{i}.mlp.shared_expert.w2"] = state_dict[
+            f"model.layers.{i}.mlp.shared_experts.down_proj.weight"
+        ].unsqueeze(0)
+        state_dict[f"model.layers.{i}.mlp.shared_expert.w3"] = state_dict[
+            f"model.layers.{i}.mlp.shared_experts.up_proj.weight"
+        ].unsqueeze(0)
 
-            state_dict[f"model.layers.{i}.mlp.experts.w1"] = w1
-            state_dict[f"model.layers.{i}.mlp.experts.w2"] = w2
-            state_dict[f"model.layers.{i}.mlp.experts.w3"] = w3
+        del state_dict[f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"]
+        del state_dict[f"model.layers.{i}.mlp.shared_experts.down_proj.weight"]
+        del state_dict[f"model.layers.{i}.mlp.shared_experts.up_proj.weight"]
 
-        # Convert shared experts
-        if f"model.layers.{i}.mlp.shared_experts.gate_proj.weight" in state_dict:
-            state_dict[f"model.layers.{i}.mlp.shared_expert.w1"] = state_dict[
-                f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"
-            ].unsqueeze(0)
-            state_dict[f"model.layers.{i}.mlp.shared_expert.w2"] = state_dict[
-                f"model.layers.{i}.mlp.shared_experts.down_proj.weight"
-            ].unsqueeze(0)
-            state_dict[f"model.layers.{i}.mlp.shared_expert.w3"] = state_dict[
-                f"model.layers.{i}.mlp.shared_experts.up_proj.weight"
-            ].unsqueeze(0)
-
-            del state_dict[f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"]
-            del state_dict[f"model.layers.{i}.mlp.shared_experts.down_proj.weight"]
-            del state_dict[f"model.layers.{i}.mlp.shared_experts.up_proj.weight"]
-
-        # Convert expert bias
-        if f"model.layers.{i}.mlp.gate.e_score_correction_bias" in state_dict:
-            state_dict[f"model.layers.{i}.mlp.expert_bias"] = state_dict[
-                f"model.layers.{i}.mlp.gate.e_score_correction_bias"
-            ]
-            del state_dict[f"model.layers.{i}.mlp.gate.e_score_correction_bias"]
+        state_dict[f"model.layers.{i}.mlp.expert_bias"] = state_dict[
+            f"model.layers.{i}.mlp.gate.e_score_correction_bias"
+        ]
+        del state_dict[f"model.layers.{i}.mlp.gate.e_score_correction_bias"]
 
 
 class WeightCheckpointManager:

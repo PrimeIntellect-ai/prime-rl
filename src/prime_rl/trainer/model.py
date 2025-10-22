@@ -42,7 +42,7 @@ def is_tt_moe_model(model: nn.Module) -> bool:
 
 def has_hf_moe_layer(state_dict: dict[str, Tensor]) -> bool:
     """Check if state dict contains HF MoE layers."""
-    return any("mlp.gate.weight" in key for key in state_dict.keys())
+    return any("mlp.shared_experts.gate_proj" in i for i in state_dict.keys())
 
 
 def get_load_balance_stats(model: nn.Module, reset_stats: bool = True) -> dict[str, Tensor | None]:
