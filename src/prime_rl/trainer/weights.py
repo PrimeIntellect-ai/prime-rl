@@ -8,10 +8,12 @@ from typing import Literal
 
 import torch
 from huggingface_hub import split_torch_state_dict_into_shards
+from safetensors import safe_open
 from safetensors.torch import save_file
 from torch import Tensor, nn
 from torch.distributed.checkpoint.state_dict import _get_fqns as get_fqns
 from torch.distributed.tensor import DTensor
+from tqdm import tqdm
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils import SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME, WEIGHTS_INDEX_NAME, WEIGHTS_NAME
 
@@ -29,17 +31,77 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import get_step_path, get_weight_ckpt_model_path, get_weights_dir
 
 
-def _has_tt_moe_layers(state_dict: dict[str, Tensor]) -> bool:
-    return any("mlp.router.gate" in i for i in state_dict.keys())
+def has_hf_moe_layers(state_dict: dict[str, Tensor]) -> bool:
+    """Whether the model contains MoE layers in HF format."""
+    return any("mlp.experts.1.up_proj" in module_name for module_name in state_dict.keys())
 
 
-def _get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
+def has_tt_moe_layers(state_dict: dict[str, Tensor]) -> bool:
+    """Whether the model contains MoE layers in TT format."""
+    return any("mlp.experts.w1" in module_name for module_name in state_dict.keys())
+
+
+def get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
+    """Get the maximum number of layers in the model."""
     return max(int(i.split(".")[2]) for i in state_dict.keys() if "model.layers." in i) + 1
 
 
-def _convert_tt_moe_to_hf_(state_dict: dict[str, Tensor]):
-    num_layers = _get_max_layer_num(state_dict)
-    for i in range(num_layers):
+def convert_hf_to_tt_moe(state_dict: dict[str, Tensor]):
+    """Convert MoE weights from HF to TT format in-place."""
+    num_layers = len(list(i for i in state_dict.keys() if "mlp.gate.weight" in i))
+    num_experts = len(list(i for i in state_dict.keys() if "model.layers.2.mlp.experts" in i)) // 3
+
+    for i in tqdm(range(1, num_layers + 1), desc="Converting weights from HF to TT format", total=num_layers):
+        state_dict[f"model.layers.{i}.mlp.router.gate.weight"] = state_dict[f"model.layers.{i}.mlp.gate.weight"]
+        del state_dict[f"model.layers.{i}.mlp.gate.weight"]
+
+        dim, moe_dim = state_dict[f"model.layers.{i}.mlp.experts.0.down_proj.weight"].shape
+        w1 = torch.empty(
+            (num_experts, moe_dim, dim), dtype=state_dict[f"model.layers.{i}.mlp.experts.1.down_proj.weight"].dtype
+        )  # Gate
+        w2 = torch.empty(
+            (num_experts, dim, moe_dim), dtype=state_dict[f"model.layers.{i}.mlp.experts.1.down_proj.weight"].dtype
+        )  # Down
+        w3 = torch.empty(
+            (num_experts, moe_dim, dim), dtype=state_dict[f"model.layers.{i}.mlp.experts.1.down_proj.weight"].dtype
+        )  # Up
+        for j in range(num_experts):
+            w1[j].copy_(state_dict[f"model.layers.{i}.mlp.experts.{j}.gate_proj.weight"])
+            w2[j].copy_(state_dict[f"model.layers.{i}.mlp.experts.{j}.down_proj.weight"])
+            w3[j].copy_(state_dict[f"model.layers.{i}.mlp.experts.{j}.up_proj.weight"])
+
+            del state_dict[f"model.layers.{i}.mlp.experts.{j}.gate_proj.weight"]
+            del state_dict[f"model.layers.{i}.mlp.experts.{j}.down_proj.weight"]
+            del state_dict[f"model.layers.{i}.mlp.experts.{j}.up_proj.weight"]
+
+        state_dict[f"model.layers.{i}.mlp.experts.w1"] = w1
+        state_dict[f"model.layers.{i}.mlp.experts.w2"] = w2
+        state_dict[f"model.layers.{i}.mlp.experts.w3"] = w3
+
+        state_dict[f"model.layers.{i}.mlp.shared_expert.w1"] = state_dict[
+            f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"
+        ].unsqueeze(0)
+        state_dict[f"model.layers.{i}.mlp.shared_expert.w2"] = state_dict[
+            f"model.layers.{i}.mlp.shared_experts.down_proj.weight"
+        ].unsqueeze(0)
+        state_dict[f"model.layers.{i}.mlp.shared_expert.w3"] = state_dict[
+            f"model.layers.{i}.mlp.shared_experts.up_proj.weight"
+        ].unsqueeze(0)
+
+        del state_dict[f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"]
+        del state_dict[f"model.layers.{i}.mlp.shared_experts.down_proj.weight"]
+        del state_dict[f"model.layers.{i}.mlp.shared_experts.up_proj.weight"]
+
+        state_dict[f"model.layers.{i}.mlp.expert_bias"] = state_dict[
+            f"model.layers.{i}.mlp.gate.e_score_correction_bias"
+        ]
+        del state_dict[f"model.layers.{i}.mlp.gate.e_score_correction_bias"]
+
+
+def convert_tt_to_hf_moe(state_dict: dict[str, Tensor]):
+    """Convert MoE weights from TT to HF format in-place."""
+    num_layers = get_max_layer_num(state_dict)
+    for i in tqdm(range(num_layers), desc="Converting weights from TT to HF format", total=num_layers):
         if not f"model.layers.{i}.mlp.router.gate.weight" in state_dict:
             continue  # Not a TT-MoE layer
 
@@ -97,6 +159,55 @@ def _convert_tt_moe_to_hf_(state_dict: dict[str, Tensor]):
         del state_dict[f"model.layers.{i}.mlp.experts.w1"]
         del state_dict[f"model.layers.{i}.mlp.experts.w2"]
         del state_dict[f"model.layers.{i}.mlp.experts.w3"]
+
+
+def load_state_dict(path: Path) -> dict[str, Tensor]:
+    """Load a sharded safetensors state dict from a local directory."""
+    safetensors_paths = list(path.glob("*.safetensors"))
+    safetensors_paths.sort(key=lambda x: int(x.stem.split("-")[1].split("of")[0]))
+    state_dict = {}
+    for safetensor_path in tqdm(safetensors_paths, desc="Loading weight shards", total=len(safetensors_paths)):
+        with safe_open(safetensor_path, framework="pt", device="cpu") as f:
+            for key in f.keys():
+                state_dict[key] = f.get_tensor(key)
+    return state_dict
+
+
+def save_state_dict(state_dict: dict[str, Tensor], path: Path):
+    """Save a state dict to a local directory as sharded safetensors."""
+    weights_name = SAFE_WEIGHTS_NAME
+    filename_pattern = weights_name.replace(".bin", "{suffix}.bin").replace(".safetensors", "{suffix}.safetensors")
+    state_dict_split = split_torch_state_dict_into_shards(
+        state_dict,
+        filename_pattern=filename_pattern,
+    )
+
+    # Save weights (https://github.com/huggingface/transformers/blob/cd74917ffc3e8f84e4a886052c5ab32b7ac623cc/src/transformers/modeling_utils.py#L4252)
+    filename_to_tensors = state_dict_split.filename_to_tensors.items()
+    for shard_file, tensors in tqdm(filename_to_tensors, desc="Saving weight shards", total=len(filename_to_tensors)):
+        shard = {}
+        for tensor in tensors:
+            assert isinstance(state_dict[tensor], Tensor)
+            shard[tensor] = state_dict[tensor].contiguous()
+            # delete reference, see https://github.com/huggingface/transformers/pull/34890
+            del state_dict[tensor]
+        safetensor_path = path / shard_file
+        safetensor_path.parent.mkdir(parents=True, exist_ok=True)
+        save_file(shard, safetensor_path, metadata={"format": "pt"})
+    del state_dict
+
+    # Save index (https://github.com/huggingface/transformers/blob/cd74917ffc3e8f84e4a886052c5ab32b7ac623cc/src/transformers/modeling_utils.py#L4301)
+    if state_dict_split.is_sharded:
+        index = {
+            "metadata": {**state_dict_split.metadata},
+            "weight_map": state_dict_split.tensor_to_filename,
+        }
+        save_index_file = SAFE_WEIGHTS_INDEX_NAME
+        save_index_file = path / save_index_file
+        # Save the index as well
+        with open(save_index_file, "w", encoding="utf-8") as f:
+            content = json.dumps(index, indent=2, sort_keys=True) + "\n"
+            f.write(content)
 
 
 class WeightCheckpointManager:
@@ -314,8 +425,8 @@ class WeightCheckpointManager:
             torch.distributed.barrier()
 
         cpu_state = self._gather_weights(model, dtype, has_lora_layers=has_lora)
-        if _has_tt_moe_layers(cpu_state):
-            _convert_tt_moe_to_hf_(cpu_state)
+        if has_tt_moe_layers(cpu_state):
+            convert_tt_to_hf_moe(cpu_state)
 
         if self._is_master:
             if self.config.save_async:
