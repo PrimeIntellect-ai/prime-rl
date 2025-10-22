@@ -219,6 +219,10 @@ class EvalConfig(BaseConfig):
         description="Configures how to save the eval results.",
     )
 
+    broadcast_backend: Annotated[
+        Literal["nccl", "filesystem"], Field(description="The backend to use for broadcast.")
+    ] = "filesystem"
+
     @model_validator(mode="after")
     def _validate_and_fill_eval_lists(self):
         # If rollouts_per_example is empty, default to 1 for all ids
@@ -499,7 +503,7 @@ class OrchestratorConfig(BaseSettings):
             ge=0,
             description="Maximum number of async levels to use. If 0, will do synchronous RL. Else, it will allow to go `async_level` steps ahead of training.",
         ),
-    ] = 2
+    ] = 1
 
     bench: Annotated[
         bool,

@@ -74,6 +74,10 @@ class RLTrainerConfig(BaseSettings):
     # The weight checkpoint configuration
     weights: WeightCheckpointConfig = WeightCheckpointConfig()
 
+    broadcast_backend: Annotated[
+        Literal["nccl", "filesystem"], Field(description="The backend to use for broadcast.")
+    ] = "filesystem"
+
     # The logging configuration
     log: LogConfig = LogConfig()
 
@@ -100,7 +104,7 @@ class RLTrainerConfig(BaseSettings):
             ge=0,
             description="Maximum number of steps that inference can be ahead of training. Determines how 'off-policy' the inference engines can be. Higher values yield better throughput through async execution, but may yield lower powerofrmance. If 0, will be fully synchronous.",
         ),
-    ] = 2
+    ] = 1
 
     memory_profiler_path: Annotated[Path | None, Field(description="Path to write memory profile to.")] = None
 
