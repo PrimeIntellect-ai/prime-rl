@@ -203,11 +203,11 @@ class EvalConfig(BaseConfig):
     ] = []
 
     max_concurrent: Annotated[
-        list[int],
+        int,
         Field(
             description="Maximum number of concurrent rollouts to generate and score. If empty, will default to -1 for all environments.",
         ),
-    ] = []
+    ] = 1024
 
     sampling: EvalSamplingConfig = Field(
         default_factory=EvalSamplingConfig,
@@ -238,15 +238,6 @@ class EvalConfig(BaseConfig):
 
         if len(self.num_examples) != len(self.environment_ids):
             raise ValueError("Number of num_examples entries must match number of ids")
-
-        # max_concurrent: if empty/unspecified, default to -1 for all; else length must match ids
-        if len(self.max_concurrent) == 0:
-            self.max_concurrent = [-1 for _ in self.environment_ids]
-        elif len(self.max_concurrent) == 1:
-            self.max_concurrent = [self.max_concurrent[0] for _ in self.environment_ids]
-
-        elif len(self.max_concurrent) != len(self.environment_ids):
-            raise ValueError("Number of max_concurrent entries must match number of ids")
 
         return self
 
@@ -428,6 +419,14 @@ class OrchestratorConfig(BaseSettings):
             description="Directory to write outputs to. Will be populated with checkpoints, weights, rollouts and logs as subdirectories. Should be set to a persistent directory with enough disk space. This value should be distinct across experiments running on a single node. See the README for more details."
         ),
     ] = Path("outputs")
+
+    max_concurrent: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Maximum number of concurrent rollouts to generate and score.",
+        ),
+    ] = 1024
 
     batch_size: Annotated[int, Field(ge=1, description="Number of samples to train on per step.")] = 128
 

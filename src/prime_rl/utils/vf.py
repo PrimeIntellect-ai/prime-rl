@@ -83,17 +83,17 @@ async def generate_group(
     problem: dict,
     rollouts_per_example: int,
     sampling_args: dict,
-    max_concurrent: int,
+    semaphore: asyncio.Semaphore,
 ) -> GenerateOutputs:
     """Asynchronously generate and score rollouts for one problem."""
-    return await env.generate(
-        inputs=Dataset.from_list([problem] * rollouts_per_example),
-        client=client,
-        model=model_name,
-        sampling_args=sampling_args,
-        max_concurrent=max_concurrent,
-        use_tqdm=False,
-    )
+    async with semaphore:
+        return await env.generate(
+            inputs=Dataset.from_list([problem] * rollouts_per_example),
+            client=client,
+            model=model_name,
+            sampling_args=sampling_args,
+            use_tqdm=False,
+        )
 
 
 async def generate_batch(
@@ -103,7 +103,7 @@ async def generate_batch(
     problems: list[dict],
     rollouts_per_example: int,
     sampling_args: dict,
-    max_concurrent: int = -1,
+    semaphore: asyncio.Semaphore,
 ) -> GenerateOutputs:
     """Asynchronously generate and score rollouts for a list of problems."""
     from tqdm import tqdm
@@ -112,9 +112,7 @@ async def generate_batch(
 
     async def generate_group_with_progress(client, problem):
         """Generate rollouts for one problem and update progress."""
-        result = await generate_group(
-            client, env, model_name, problem, rollouts_per_example, sampling_args, max_concurrent
-        )
+        result = await generate_group(client, env, model_name, problem, rollouts_per_example, sampling_args, semaphore)
         pbar.update(rollouts_per_example)
         return result
 

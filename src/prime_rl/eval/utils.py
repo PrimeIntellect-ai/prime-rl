@@ -79,9 +79,9 @@ async def run_eval(
     env_args: dict,
     num_examples: int,
     rollouts_per_example: int,
-    max_concurrent: int,
     output_dir: Path,
     ckpt_step: int,
+    semaphore: asyncio.Semaphore,
     model_config: ModelConfig,
     sampling_config: EvalSamplingConfig,
     client_config: ClientConfig,
@@ -109,7 +109,7 @@ async def run_eval(
         clients=clients,
         rollouts_per_example=rollouts_per_example,
         sampling_args=sampling_args,
-        max_concurrent=max_concurrent,
+        semaphore=semaphore,
     )
 
     # Parse vLLM responses
@@ -197,6 +197,7 @@ async def run_evals(
     client_config: ClientConfig,
     output_dir: Path,
     ckpt_step: int,
+    semaphore: asyncio.Semaphore,
     step: int | None = None,
 ):
     await asyncio.gather(
@@ -207,7 +208,7 @@ async def run_evals(
                 env_args=eval_config.environment_args.get(env_id, {}),
                 num_examples=num_examples,
                 rollouts_per_example=rollouts_per_example,
-                max_concurrent=max_concurrent,
+                semaphore=semaphore,
                 output_dir=output_dir,
                 model_config=model_config,
                 sampling_config=sampling_config,
@@ -216,11 +217,10 @@ async def run_evals(
                 ckpt_step=ckpt_step,
                 step=step,
             )
-            for env_id, num_examples, rollouts_per_example, max_concurrent in zip(
+            for env_id, num_examples, rollouts_per_example in zip(
                 eval_config.environment_ids,
                 eval_config.num_examples,
                 eval_config.rollouts_per_example,
-                eval_config.max_concurrent,
             )
         ]
     )
