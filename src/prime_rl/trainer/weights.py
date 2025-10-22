@@ -267,8 +267,6 @@ class WeightCheckpointManager:
         model,
         tokenizer,
         step: int,
-        save_format: Literal["safetensors", "torch"],
-        save_sharded: bool,
     ):
         """Save weight checkpoint for given step."""
         # Save weight checkpoint temporary dir to avoid race condition
@@ -283,7 +281,7 @@ class WeightCheckpointManager:
             warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
 
             # Save weights
-            self._save_weights(state_dict, step_path, save_format, save_sharded)
+            self._save_weights(state_dict, step_path, self.config.save_format, self.config.save_sharded)
 
             # Save model config, generation arguments and tokenizer
             model.config.save_pretrained(step_path)
@@ -299,8 +297,6 @@ class WeightCheckpointManager:
         model: nn.Module,
         tokenizer: PreTrainedTokenizer,
         step: int,
-        save_format: Literal["safetensors", "torch"],
-        save_sharded: bool,
         dtype: torch.dtype = torch.bfloat16,
     ):
         """Save a HF-compatible weight-only checkpoint for a given step."""
@@ -321,12 +317,12 @@ class WeightCheckpointManager:
             if self.config.save_async:
                 thread = threading.Thread(
                     target=self._save_to_path,
-                    args=(cpu_state, model, tokenizer, step, save_format, save_sharded),
+                    args=(cpu_state, model, tokenizer, step),
                     name=f"weight-checkpoint-save-{step}",
                 )
                 thread.start()
             else:
-                self._save_to_path(cpu_state, model, tokenizer, step, save_format, save_sharded)
+                self._save_to_path(cpu_state, model, tokenizer, step)
 
         return self._get_model_path(step)
 
