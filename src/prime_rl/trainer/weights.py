@@ -13,7 +13,6 @@ from safetensors.torch import save_file
 from torch import Tensor, nn
 from torch.distributed.checkpoint.state_dict import _get_fqns as get_fqns
 from torch.distributed.tensor import DTensor
-from tqdm import tqdm
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils import SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME, WEIGHTS_INDEX_NAME, WEIGHTS_NAME
 
@@ -51,7 +50,7 @@ def convert_hf_to_tt_moe(state_dict: dict[str, Tensor]):
     num_layers = len(list(i for i in state_dict.keys() if "mlp.gate.weight" in i))
     num_experts = len(list(i for i in state_dict.keys() if "model.layers.2.mlp.experts" in i)) // 3
 
-    for i in tqdm(range(1, num_layers + 1), desc="Converting weights from HF to TT format", total=num_layers):
+    for i in range(1, num_layers + 1):
         state_dict[f"model.layers.{i}.mlp.router.gate.weight"] = state_dict[f"model.layers.{i}.mlp.gate.weight"]
         del state_dict[f"model.layers.{i}.mlp.gate.weight"]
 
@@ -101,7 +100,7 @@ def convert_hf_to_tt_moe(state_dict: dict[str, Tensor]):
 def convert_tt_to_hf_moe(state_dict: dict[str, Tensor]):
     """Convert MoE weights from TT to HF format in-place."""
     num_layers = get_max_layer_num(state_dict)
-    for i in tqdm(range(num_layers), desc="Converting weights from TT to HF format", total=num_layers):
+    for i in range(num_layers):
         if not f"model.layers.{i}.mlp.router.gate.weight" in state_dict:
             continue  # Not a TT-MoE layer
 
@@ -166,7 +165,7 @@ def load_state_dict(path: Path) -> dict[str, Tensor]:
     safetensors_paths = list(path.glob("*.safetensors"))
     safetensors_paths.sort(key=lambda x: int(x.stem.split("-")[1].split("of")[0]))
     state_dict = {}
-    for safetensor_path in tqdm(safetensors_paths, desc="Loading weight shards", total=len(safetensors_paths)):
+    for safetensor_path in safetensors_paths:
         with safe_open(safetensor_path, framework="pt", device="cpu") as f:
             for key in f.keys():
                 state_dict[key] = f.get_tensor(key)
@@ -184,7 +183,7 @@ def save_state_dict(state_dict: dict[str, Tensor], path: Path):
 
     # Save weights (https://github.com/huggingface/transformers/blob/cd74917ffc3e8f84e4a886052c5ab32b7ac623cc/src/transformers/modeling_utils.py#L4252)
     filename_to_tensors = state_dict_split.filename_to_tensors.items()
-    for shard_file, tensors in tqdm(filename_to_tensors, desc="Saving weight shards", total=len(filename_to_tensors)):
+    for shard_file, tensors in filename_to_tensors:
         shard = {}
         for tensor in tensors:
             assert isinstance(state_dict[tensor], Tensor)
