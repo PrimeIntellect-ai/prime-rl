@@ -81,6 +81,11 @@ async def custom_run_server_worker(listen_address, sock, args, client_config=Non
             await engine_client.collective_rpc("reload_weights")
             return {"status": "ok"}
 
+        @app.post("/init_broadcaster")
+        async def _init_broadcaster(request: Request):
+            await engine_client.collective_rpc("init_broadcaster")
+            return {"status": "ok"}
+
         vllm_config = await engine_client.get_vllm_config()
         await init_app_state(engine_client, vllm_config, app.state, args)
 

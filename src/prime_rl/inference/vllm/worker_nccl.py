@@ -15,7 +15,7 @@ class NCCLBroadcastWorker(Worker):
     using NCCL across multiple GPUs.
     """
 
-    def init_process_group(self) -> None:
+    def init_broadcaster(self) -> None:
         """Initialize the process group for NCCL broadcast."""
         # torch.distributed.init_process_group(backend="nccl", device_id=torch.cuda.current_device())
         raise NotImplementedError("NCCL broadcast is not implemented yet.")
