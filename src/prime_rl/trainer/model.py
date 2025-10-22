@@ -4,13 +4,15 @@ from pathlib import Path
 from typing import cast
 
 import torch
-import torch.distributed.checkpoint as dcp
 import torch.nn as nn
 from beartype import beartype as typechecker
+from huggingface_hub import snapshot_download
 from jaxtyping import Float, Int, jaxtyped
 from liger_kernel.transformers import AutoLigerKernelForCausalLM
 from torch import Tensor
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
+from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
+from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, fully_shard
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -19,6 +21,14 @@ from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, M
 from prime_rl.trainer.lora import apply_lora_to_model
 from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL
 from prime_rl.trainer.parallel_dims import ParallelDims
+from prime_rl.trainer.weights import (
+    convert_hf_to_tt_moe,
+    convert_tt_to_hf_moe,
+    has_hf_moe_layers,
+    has_tt_moe_layers,
+    load_state_dict,
+    save_state_dict,
+)
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.tensor_hashing import get_module_signature
 
@@ -152,9 +162,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
 
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
-    from huggingface_hub import snapshot_download
-    from torch.distributed.checkpoint import HuggingFaceStorageReader
-
     model.to_empty(device="cuda")
 
     logger = get_logger()
@@ -166,16 +173,46 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     load_dcp_start_time = time.time()
 
     if not Path(config.name).exists():
-        path_snapshot = snapshot_download(repo_id=config.name, repo_type="model")
+        snapshot_path = Path(snapshot_download(repo_id=config.name, repo_type="model"))
     else:
         logger.info(
-            f"Loading model weights from {config.name} directly, skipping snapshot download, if this is not expected please remove the directory {config.name} and run again"
+            f"Loading model weights from path {config.name}, skipping snapshot download. If this is not expected, please remove the directory {config.name} and run again"
         )
-        path_snapshot = config.name
+        snapshot_path = Path(config.name)
 
-    dcp.load(
+    # Load the snapshot state
+    snapshot_state_dict = load_state_dict(snapshot_path)
+    model_state_dict = model.state_dict()
+
+    # Dynamically convert between different weight formats if needed
+    if snapshot_state_dict.keys() != model_state_dict.keys():
+        logger.warning(
+            "Found mismatch between snapshot and model state dict keys. Will try to auto-convert the snapshot to match the model state dict."
+        )
+        if has_hf_moe_layers(snapshot_state_dict) and has_tt_moe_layers(model_state_dict):
+            logger.info("Found HF format in snapshot and TT format in model.")
+            snapshot_path = snapshot_path / "tt"
+            if snapshot_path.exists():
+                logger.info(f"Conversion already done. Loading from {snapshot_path}")
+            else:
+                logger.info(f"Converting snapshot state dict to TT format and saving to {snapshot_path}")
+                convert_hf_to_tt_moe(snapshot_state_dict)
+                save_state_dict(snapshot_state_dict, snapshot_path)
+        elif has_tt_moe_layers(snapshot_state_dict) and has_hf_moe_layers(model_state_dict):
+            snapshot_path = snapshot_path / "hf"
+            if snapshot_path.exists():
+                logger.info(f"Conversion already done. Loading from {snapshot_path}")
+            else:
+                logger.info(f"Converting snapshot state dict to HF format and saving to {snapshot_path}")
+                convert_tt_to_hf_moe(snapshot_state_dict)
+                save_state_dict(snapshot_state_dict, snapshot_path)
+
+        # Reload the snapshot state dict
+        snapshot_state_dict = load_state_dict(snapshot_path)
+
+    dcp_load(
         model.state_dict(),
-        storage_reader=HuggingFaceStorageReader(path=path_snapshot),
+        storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),
         # Note: This allow is needed by weight tying but could cause silent issues
         # planner=DefaultLoadPlanner(allow_partial_load=True),
     )
