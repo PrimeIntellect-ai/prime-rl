@@ -204,6 +204,8 @@ def train(config: SFTTrainerConfig):
         nan_loss_count = torch.tensor(0).to("cuda")
         batch_max_vio, max_vio = torch.tensor(0.0).to("cuda"), None
         for micro_step in range(grad_accum_steps):
+            model.set_requires_all_reduce(micro_step == grad_accum_steps - 1)
+
             micro_batch = next(dataiter)
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
@@ -240,16 +242,15 @@ def train(config: SFTTrainerConfig):
                 loss = loss[loss_mask].mean()
 
                 # Accumulate average loss over gradient accumulation steps
-                
+
                 current_loss = loss.detach() / grad_accum_steps
-                
+
                 # only add if the loss is not nan
                 if not torch.isnan(current_loss):
                     batch_loss += current_loss
                 else:
                     nan_loss_count += 1
                     logger.warning("Loss is nan, not taking into account in the batch loss calculation")
-
 
                 # Delete logits before backward pass to avoid memory spike
                 del logits
