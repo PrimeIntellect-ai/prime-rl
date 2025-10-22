@@ -11,6 +11,7 @@ from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
+from prime_rl.trainer.rl.nixl_utils import NixlBroadcastManager
 from prime_rl.trainer.weights import setup_weight_ckpt_manager
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
@@ -94,7 +95,11 @@ def train(config: RLTrainerConfig):
     weight_ckpt_manager = setup_weight_ckpt_manager(
         config.output_dir, config.weights, config.ckpt, config.async_level, config.model.experimental.lora
     )
-    assert weight_ckpt_manager is not None, "Weight checkpoint manager must be set on RL trainer"
+    if config.nixl_broadcast:
+        # assert weight_ckpt_manager is None, "Nixl broadcast and weights cannot be used together."
+        nixl_broadcast_manager = NixlBroadcastManager(config.nixl_broadcast)
+    else:
+        nixl_broadcast_manager = None
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
@@ -130,7 +135,12 @@ def train(config: RLTrainerConfig):
         save_weights_time = 0
         if progress.step > 0:
             save_weights_start_time = time.time()
-            weight_ckpt_manager.save(model, tokenizer, step=progress.step)
+
+            if config.nixl_broadcast:
+                nixl_broadcast_manager.broadcast(model)
+            else:
+                weight_ckpt_manager.save(model, tokenizer, step=progress.step)
+
             save_weights_time = time.time() - save_weights_start_time
 
         # Save the full checkpoint (if we are at an interval step and not at the first or last step)

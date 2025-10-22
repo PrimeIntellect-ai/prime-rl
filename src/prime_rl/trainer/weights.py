@@ -375,23 +375,3 @@ def setup_weight_ckpt_manager(
     return WeightCheckpointManager(
         output_dir, weight_ckpt_config, ckpt_config, async_level=async_level, lora_config=lora_config
     )
-
-
-class NixlBroadcastManager:
-    """Utility class to broadcast the weight checkpoint using Nixl."""
-
-    def __init__(self):
-        self.logger = get_logger()
-        self.world = get_world()
-
-    def broadcast(self, model: nn.Module, dtype: torch.dtype = torch.bfloat16):
-        """Broadcast the weight checkpoint using Nixl."""
-
-        model_state_dict = model.state_dict()
-        if _has_tt_moe_layers(model_state_dict):
-            _convert_tt_moe_to_hf_(model_state_dict)
-
-        for key, value in model.state_dict().items():
-            if isinstance(value, DTensor):
-                value = value.to(dtype)
-                value = value.full_tensor()

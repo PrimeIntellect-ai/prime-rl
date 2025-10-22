@@ -1,7 +1,38 @@
 import torch
-from nixl._api import nixl_agent
+from nixl._api import nixl_agent, nixl_agent_config
+from torch import nn
+from torch.distributed.tensor import DTensor
 
+from prime_rl.trainer.rl.config import NixlBroadcastConfig
+from prime_rl.trainer.weights import _convert_tt_moe_to_hf_, _has_tt_moe_layers
 from prime_rl.utils.logger import get_logger
+
+
+class NixlBroadcastManager:
+    """Utility class to broadcast the weight checkpoint using Nixl."""
+
+    def __init__(self, config: NixlBroadcastConfig):
+        self.logger = get_logger()
+
+        agent_config = nixl_agent_config(True, True, config.port)
+        self.agent = nixl_agent("target", agent_config)
+
+    def broadcast(self, model: nn.Module, dtype: torch.dtype = torch.bfloat16):
+        """Broadcast the weight checkpoint using Nixl."""
+
+        model_state_dict = model.state_dict()
+        if _has_tt_moe_layers(model_state_dict):
+            _convert_tt_moe_to_hf_(model_state_dict)
+
+        for key, value in model.state_dict().items():
+            if isinstance(value, DTensor):
+                value = value.to(dtype)
+                value = value.full_tensor()
+
+            # todo: use a better bucketing strategy
+            # todo: make sure both communication can be done in parallel
+            sender = SenderTensor(self.agent, [value])
+            sender.send()
 
 
 class SenderTensor:

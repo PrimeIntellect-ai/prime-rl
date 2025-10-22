@@ -50,6 +50,13 @@ class DataLoaderConfig(BaseConfig):
     fake: Annotated[FakeDataLoaderConfig | None, Field(description="Whether to use a fake data loader.")] = None
 
 
+class NixlBroadcastConfig(BaseConfig):
+    """Configures the Nixl broadcast."""
+
+    ip: Annotated[str, Field(description="The IP address of the Nixl agent.")] = "127.0.0.1"
+    port: Annotated[int, Field(description="The port of the Nixl agent.")] = 5555
+
+
 class RLTrainerConfig(BaseSettings):
     """Configures the RL trainer"""
 
@@ -73,8 +80,6 @@ class RLTrainerConfig(BaseSettings):
 
     # The weight checkpoint configuration
     weights: WeightCheckpointConfig = WeightCheckpointConfig()
-
-    nixl_broadcast: bool = False
 
     # The logging configuration
     log: LogConfig = LogConfig()
@@ -102,7 +107,7 @@ class RLTrainerConfig(BaseSettings):
             ge=0,
             description="Maximum number of steps that inference can be ahead of training. Determines how 'off-policy' the inference engines can be. Higher values yield better throughput through async execution, but may yield lower powerofrmance. If 0, will be fully synchronous.",
         ),
-    ] = 2
+    ] = 1
 
     memory_profiler_path: Annotated[Path | None, Field(description="Path to write memory profile to.")] = None
 
@@ -128,6 +133,18 @@ class RLTrainerConfig(BaseSettings):
             description="Timeout in seconds for torch distributed ops. Defaults to 600 seconds.",
         ),
     ] = 600
+
+    nixl_broadcast: Annotated[
+        NixlBroadcastConfig | None,
+        Field(
+            description="Whether to use Nixl to broadcast the weight checkpoint.",
+        ),
+    ] = None
+
+    def mixl_async_1(self):
+        if self.nixl_broadcast:
+            assert self.async_level == 1, "Nixl broadcast requires async level to be 1."
+        return self
 
     @model_validator(mode="after")
     def auto_setup_bench(self):
