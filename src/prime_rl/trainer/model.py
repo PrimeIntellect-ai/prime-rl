@@ -19,6 +19,7 @@ from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, M
 from prime_rl.trainer.lora import apply_lora_to_model
 from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL
 from prime_rl.trainer.parallel_dims import ParallelDims
+from prime_rl.trainer.weights import _convert_hf_moe_to_tt
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.tensor_hashing import get_module_signature
 
@@ -37,6 +38,11 @@ DTYPE_MAP = {
 
 def is_tt_moe_model(model: nn.Module) -> bool:
     return hasattr(model.config, "num_experts") or hasattr(model.config, "n_routed_experts")
+
+
+def has_hf_moe_layer(state_dict: dict[str, Tensor]) -> bool:
+    """Check if state dict contains HF MoE layers."""
+    return any("mlp.gate.weight" in key for key in state_dict.keys())
 
 
 def get_load_balance_stats(model: nn.Module, reset_stats: bool = True) -> dict[str, Tensor | None]:
@@ -173,12 +179,20 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
         )
         path_snapshot = config.name
 
+    state_dict = model.state_dict()
     dcp.load(
-        model.state_dict(),
+        state_dict,
         storage_reader=HuggingFaceStorageReader(path=path_snapshot),
         # Note: This allow is needed by weight tying but could cause silent issues
         planner=DefaultLoadPlanner(allow_partial_load=True),
     )
+
+    if has_hf_moe_layer(state_dict):
+        logger.info("Converting HF MoE format to TT-MoE format")
+        _convert_hf_moe_to_tt(state_dict)
+
+    # Load the converted state dict
+    model.load_state_dict(state_dict, strict=False)
     fix_model_post_empty(model)
     logger.debug(f"Loaded model weights from HF in {time.time() - load_dcp_start_time:.2f} seconds")
 
