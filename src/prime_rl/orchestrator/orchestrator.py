@@ -14,7 +14,11 @@ from transformers import AutoTokenizer
 
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.eval.utils import run_evals
-from prime_rl.utils.vf import generate_batch
+from prime_rl.utils.vf import (
+    generate_batch,
+    _get_placeholder_generate_outputs,
+    merge_outputs,
+)
 from prime_rl.utils.client import (
     check_has_model,
     check_health,
@@ -35,13 +39,14 @@ from prime_rl.orchestrator.utils import (
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import (
+    get_latest_ckpt_step,
+    wait_for_path,
     clean_exit,
     format_num,
     get_rollout_dir,
     get_step_path,
     get_weights_dir,
     to_col_format,
-    wait_for_path,
 )
 import numpy as np
 
@@ -120,6 +125,27 @@ async def orchestrate(config: OrchestratorConfig):
     last_eval_step = -1
     is_first_step = True
 
+    problems_per_batch = config.batch_size // config.rollouts_per_example
+
+    if config.areal:
+        max_inflight_problems = int(problems_per_batch * config.areal.inflight_problems_factor)
+        inflight_tasks: list[asyncio.Task] = []
+        task_to_problem_id: dict[asyncio.Task, int] = {}
+
+    sampling_args = dict(config.sampling)
+    # Convert SamplingConfig to vLLM OAI sampling args
+    # https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#extra-parameters_2
+    sampling_args = dict(config.sampling)
+    sampling_args["top_p"] = 1.0
+    sampling_args["logprobs"] = True
+    sampling_args["extra_body"] = {
+        "return_tokens_as_token_ids": True,
+        "top_k": -1,
+        "min_p": 0.0,
+    }
+    sampling_args["extra_body"]["min_tokens"] = sampling_args.pop("min_tokens")
+    sampling_args["extra_body"]["repetition_penalty"] = sampling_args.pop("repetition_penalty")
+
     while True:
         # Save checkpoint (if we are at an interval step and not at the first or last step)
         is_last_step = config.max_steps is not None and progress.step == config.max_steps - 1
@@ -145,27 +171,36 @@ async def orchestrate(config: OrchestratorConfig):
         logger.info(f"Starting orchestrator step {progress.step} ({ckpt_step=})")
         step_start_time = time.time()
 
-        # Optionally, wait for the next checkpoint to be available
         wait_for_weight_ckpt_time, update_weights_time = 0, 0
-        if progress.step - ckpt_step > config.async_level:
-            logger.debug(
-                f"Hit async barrier because step {progress.step} is {progress.step - ckpt_step} (>{config.async_level}) steps ahead of checkpoint step {ckpt_step}."
-            )
 
-            # Wait for the checkpoint to be available
-            ckpt_step = progress.step - config.async_level
-            logger.info(f"Waiting for weight checkpoint {ckpt_step}")
+        # If we are in AREAL mode, we load the latest ready checkpoint, otherwise we load the checkpoint only if we are behind the staleness
+        ckpt_step_to_load = get_latest_ckpt_step(get_weights_dir(config.output_dir)) if config.areal else None
+
+        # If we are in AREAL mode and the next avaiable checkpoint is too old, we still throttle for async_level
+        # next_weight_ckpt is either the latest reaedy checkpoint (areal & checkpoint available) or the the current step (non-areal or no checkpoint available)
+        next_weight_ckpt = ckpt_step_to_load if ckpt_step_to_load is not None else ckpt_step
+
+        # if the next available checkpoint is still too old, we throttle and wait for one to satisfy the async_level
+        if progress.step - next_weight_ckpt > config.async_level:
+            logger.debug(
+                f"Hit async barrier because next weight checkpoint {next_weight_ckpt} is {progress.step - next_weight_ckpt} (>{config.async_level}) steps ahead of current step {progress.step}."
+            )
+            ckpt_step_to_load = progress.step - config.async_level
             wait_for_weight_ckpt_start_time = time.time()
-            await wait_for_path(get_step_path(get_weights_dir(config.output_dir), ckpt_step) / "STABLE")
+            await wait_for_path(get_step_path(get_weights_dir(config.output_dir), ckpt_step_to_load) / "STABLE")
             wait_for_weight_ckpt_time = time.time() - wait_for_weight_ckpt_start_time
             logger.debug(f"Waited {wait_for_weight_ckpt_time:.2f}s for weight checkpoint")
 
-            # Update the weights
-            logger.info(f"Updating weights to weight checkpoint {ckpt_step}")
+        # Finally, load the weights if needed
+        if ckpt_step_to_load is not None:
+            logger.info(f"Updating weights to weight checkpoint {ckpt_step_to_load}")
             update_weights_start_time = time.time()
-            await update_weights(admin_clients, get_step_path(get_weights_dir(config.output_dir), ckpt_step))
+            await update_weights(admin_clients, get_step_path(get_weights_dir(config.output_dir), ckpt_step_to_load))
             update_weights_time = time.time() - update_weights_start_time
             logger.debug(f"Updated weights in {update_weights_time:.2f}s")
+            ckpt_step = ckpt_step_to_load
+
+        off_policyness = progress.step - ckpt_step
 
         # Optionally, run online evals at the specified interval
         eval_time = 0
@@ -194,28 +229,73 @@ async def orchestrate(config: OrchestratorConfig):
 
         accepted_rollouts: list[Rollout] = []
         problem_requests, completion_requests, calls_to_generate = 0, 0, 0
-        problems_per_batch = config.batch_size // config.rollouts_per_example
         problems_to_sample = problems_per_batch
-        while True:
-            # Get the batch
+        filtered = 0
+
+        async def areal_loop():
+            nonlocal filtered
+
+            def generate_call():
+                problem_ids, problem = buffer.sample_problem()
+                problem_ids = [problem_id for problem_id in problem_ids for _ in range(config.rollouts_per_example)]
+                logger.debug(f"Sending {len(problem)} * {config.rollouts_per_example} requests to environments")
+
+                task = generate_batch(
+                    clients=clients,
+                    env=vf_env,
+                    model_name=config.model.name,
+                    problems=problem,
+                    rollouts_per_example=config.rollouts_per_example,
+                    sampling_args=sampling_args,
+                    use_tqdm=False,
+                )
+
+                return problem_ids, task
+
+            # re-fill the inflight tasks to the max
+            while len(inflight_tasks) < max_inflight_problems:
+                problem_ids, coro = generate_call()
+                task = asyncio.create_task(coro)
+                await asyncio.sleep(0)
+                inflight_tasks.append(task)
+                task_to_problem_id[task] = problem_ids
+
+            generate_outputs = _get_placeholder_generate_outputs()
+            problem_ids = []
+
+            while len(problem_ids) < config.batch_size:
+                done, _ = await asyncio.wait(inflight_tasks, return_when=asyncio.FIRST_COMPLETED)
+
+                for task in done:
+                    if len(problem_ids) == config.batch_size:
+                        break
+                    inflight_tasks.remove(task)
+                    del task_to_problem_id[task]
+
+                    new_problem_ids, coro = generate_call()
+                    new_task = asyncio.create_task(coro)
+                    await asyncio.sleep(0)
+                    inflight_tasks.append(new_task)
+                    task_to_problem_id[new_task] = new_problem_ids
+
+                    candidate_generate_outputs: GenerateOutputs = task.result()
+
+                    rewards = candidate_generate_outputs.reward
+
+                    if config.areal.filter_advantage_zero and all(reward == rewards[0] for reward in rewards):
+                        logger.debug("All rewards are the same, skipping rollout due to filter_advantage_zero")
+                        filtered += 1
+                        continue
+
+                    problem_ids.extend(new_problem_ids)
+
+                    generate_outputs = merge_outputs([generate_outputs, candidate_generate_outputs])
+
+            return problem_ids, generate_outputs
+
+        async def default_loop():
             problems = buffer.sample_problems(problems_to_sample)
-
-            # Convert SamplingConfig to vLLM OAI sampling args
-            # https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#extra-parameters_2
-            sampling_args = dict(config.sampling)
-            sampling_args["top_p"] = 1.0
-            sampling_args["logprobs"] = True
-            sampling_args["extra_body"] = {
-                "return_tokens_as_token_ids": True,
-                "top_k": -1,
-                "min_p": 0.0,
-            }
-            sampling_args["extra_body"]["min_tokens"] = sampling_args.pop("min_tokens")
-            sampling_args["extra_body"]["repetition_penalty"] = sampling_args.pop("repetition_penalty")
-
-            # Generate completions + rewards with verifiers
-            generate_completions_start_time = time.time()
-            generate_outputs: GenerateOutputs = await generate_batch(
+            generate_outputs = await generate_batch(
                 clients=clients,
                 env=vf_env,
                 model_name=config.model.name,
@@ -223,6 +303,19 @@ async def orchestrate(config: OrchestratorConfig):
                 rollouts_per_example=config.rollouts_per_example,
                 sampling_args=sampling_args,
             )
+
+            return (
+                [problem["id"] for problem in problems for _ in range(config.rollouts_per_example)],
+                generate_outputs,
+            )
+
+        while True:
+            generate_completions_start_time = time.time()
+
+            loop = areal_loop if config.areal else default_loop
+
+            problem_ids, generate_outputs = await loop()
+
             generate_completions_time = time.time() - generate_completions_start_time
             problem_requests += problems_to_sample
             completion_requests += problems_to_sample * config.rollouts_per_example
@@ -261,7 +354,7 @@ async def orchestrate(config: OrchestratorConfig):
 
             # Update pool
             rollouts = make_rollouts(
-                problem_ids=[problem["id"] for problem in problems for _ in range(config.rollouts_per_example)],
+                problem_ids=problem_ids,
                 prompt_tokens=processed_outputs.prompt_ids,
                 prompt_masks=processed_outputs.prompt_mask,
                 completion_tokens=processed_outputs.completion_ids,
@@ -433,6 +526,8 @@ async def orchestrate(config: OrchestratorConfig):
             "batch/solve_none": solve_none,
             "batch/solve_all": solve_all,
             "batch/effective_batch_size": effective_batch_size,
+            "batch/difficulty_filtered": filtered,
+            "batch/off_policyness": off_policyness,
             "step": progress.step,
         }
         monitor.log(solve_metrics)

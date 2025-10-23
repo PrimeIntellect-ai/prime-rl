@@ -104,18 +104,23 @@ async def generate_batch(
     rollouts_per_example: int,
     sampling_args: dict,
     max_concurrent: int = -1,
+    use_tqdm: bool = True,
 ) -> GenerateOutputs:
     """Asynchronously generate and score rollouts for a list of problems."""
-    from tqdm import tqdm
+    if use_tqdm:
+        from tqdm import tqdm
 
-    pbar = tqdm(total=len(problems) * rollouts_per_example, desc="Generating rollouts")
+        pbar = tqdm(total=len(problems) * rollouts_per_example, desc="Generating rollouts")
+    else:
+        pbar = None
 
     async def generate_group_with_progress(client, problem):
         """Generate rollouts for one problem and update progress."""
         result = await generate_group(
             client, env, model_name, problem, rollouts_per_example, sampling_args, max_concurrent
         )
-        pbar.update(rollouts_per_example)
+        if pbar:
+            pbar.update(rollouts_per_example)
         return result
 
     try:
@@ -123,6 +128,39 @@ async def generate_batch(
             *[generate_group_with_progress(client, problem) for client, problem in zip(cycle(clients), problems)]
         )
     finally:
-        pbar.close()
+        if pbar:
+            pbar.close()
 
     return merge_outputs(generate_outputs_list)
+
+
+def _get_placeholder_generate_outputs() -> GenerateOutputs:
+    generate_outputs = GenerateOutputs(
+        prompt=[],
+        completion=[],
+        answer=[],
+        state=[],
+        info=[],
+        task=[],
+        reward=[],
+        example_id=[],
+        metrics={},
+        # temporary metadata, to be replaced with the actual one
+        metadata=GenerateMetadata(
+            env_id="placeholder",
+            env_args={},
+            model="placeholder",
+            base_url="placeholder",
+            num_examples=0,
+            rollouts_per_example=0,
+            sampling_args={},
+            date="placeholder",
+            time_ms=0.0,
+            avg_reward=0.0,
+            avg_metrics={},
+            state_columns=[],
+            path_to_save="",
+        ),
+    )
+
+    return generate_outputs
