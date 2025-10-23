@@ -1,6 +1,7 @@
 import concurrent.futures
 import os
 import shutil
+import socket
 import subprocess
 from pathlib import Path
 from typing import Callable, Generator
@@ -190,3 +191,10 @@ def vllm_server() -> Generator[None, None, None]:
             # If it doesn't terminate gracefully, kill it
             process.kill()
             process.wait()
+
+
+@pytest.fixture()
+def free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]

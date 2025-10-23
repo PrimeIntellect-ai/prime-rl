@@ -1,5 +1,8 @@
 from typing import TYPE_CHECKING
 
+from torch.nn import Module
+from vllm.model_executor.model_loader.utils import process_weights_after_loading
+
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
 if TYPE_CHECKING:
     from vllm.v1.worker.gpu_worker import Worker
@@ -27,8 +30,15 @@ class NCCLBroadcastWorker(Worker):
 
     def update_weights(self, weight_dir: str) -> None:
         """Update weights from a specified path pointing to a .pt file."""
-        import torch
 
-        tensor = torch.zeros(1000, dtype=torch.float32, device=self.device)
-        self.communicator.broadcast(tensor, src=0)
-        assert tensor.mean().item() == 1, "Tensor should be all ones"
+        model_runner = self.model_runner
+        model = model_runner.model
+        assert isinstance(model, Module)
+
+        state_dict = model.state_dict()
+
+        for key, value in state_dict.items():
+            self.communicator.broadcast(value, src=0)
+
+        device = next(model.parameters()).device
+        process_weights_after_loading(model, self.model_runner.model_config, device)
