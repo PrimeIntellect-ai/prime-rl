@@ -11,6 +11,7 @@ from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
+from prime_rl.trainer.rl.nccl_broadcast import NCCLBroadcast
 from prime_rl.trainer.weights import setup_weight_ckpt_manager
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
@@ -96,6 +97,10 @@ def train(config: RLTrainerConfig):
     )
     assert weight_ckpt_manager is not None, "Weight checkpoint manager must be set on RL trainer"
 
+    # Set up NCCL broadcast
+    if config.broadcast_backend == "nccl":
+        nccl_broadcast = NCCLBroadcast(host="localhost", port=29500, rank=0, world_size=2)
+
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
     ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
@@ -132,6 +137,9 @@ def train(config: RLTrainerConfig):
             save_weights_start_time = time.time()
             weight_ckpt_manager.save(model, tokenizer, step=progress.step)
             save_weights_time = time.time() - save_weights_start_time
+
+        if config.broadcast_backend == "nccl":
+            nccl_broadcast.broadcast(model)
 
         # Save the full checkpoint (if we are at an interval step and not at the first or last step)
         is_last_step = config.max_steps is not None and progress.step == config.max_steps

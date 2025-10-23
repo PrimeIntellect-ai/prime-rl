@@ -15,12 +15,20 @@ class NCCLBroadcastWorker(Worker):
     using NCCL across multiple GPUs.
     """
 
-    def init_broadcaster(self) -> None:
+    def init_broadcaster(self, host: str, port: int, rank: int, world_size: int) -> None:
         """Initialize the process group for NCCL broadcast."""
-        # torch.distributed.init_process_group(backend="nccl", device_id=torch.cuda.current_device())
-        raise NotImplementedError("NCCL broadcast is not implemented yet.")
+        from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
+        from vllm.distributed.utils import StatelessProcessGroup
 
-    def update_weights(self, weight_path: str) -> None:
+        pg = StatelessProcessGroup.create(host=host, port=port, rank=rank, world_size=world_size)
+        self.communicator = PyNcclCommunicator(pg, device=self.device)
+
+        print(f"NCCL broadcast initialized for rank {rank} and world size {world_size}")
+
+    def update_weights(self, weight_dir: str) -> None:
         """Update weights from a specified path pointing to a .pt file."""
-        # torch.distributed.broadcast(torch.tensor(np.array(pd.read_parquet(weight_path))), src=0)
-        raise NotImplementedError("NCCL broadcast is not implemented yet.")
+        import torch
+
+        tensor = torch.zeros(1000, dtype=torch.float32, device=self.device)
+        self.communicator.broadcast(tensor, src=0)
+        assert tensor.mean().item() == 1, "Tensor should be all ones"

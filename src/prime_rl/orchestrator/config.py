@@ -219,10 +219,6 @@ class EvalConfig(BaseConfig):
         description="Configures how to save the eval results.",
     )
 
-    broadcast_backend: Annotated[
-        Literal["nccl", "filesystem"], Field(description="The backend to use for broadcast.")
-    ] = "filesystem"
-
     @model_validator(mode="after")
     def _validate_and_fill_eval_lists(self):
         # If rollouts_per_example is empty, default to 1 for all ids
@@ -513,6 +509,10 @@ class OrchestratorConfig(BaseSettings):
     ] = False
 
     seed: Annotated[int | None, Field(description="Random seed for the orchestrator.")] = 42
+
+    broadcast_backend: Annotated[
+        Literal["nccl", "filesystem"], Field(description="The backend to use for broadcast.")
+    ] = "filesystem"
 
     @model_validator(mode="after")
     def validate_batch_size(self):

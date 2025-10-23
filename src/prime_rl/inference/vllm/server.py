@@ -83,7 +83,12 @@ async def custom_run_server_worker(listen_address, sock, args, client_config=Non
 
         @app.post("/init_broadcaster")
         async def _init_broadcaster(request: Request):
-            await engine_client.collective_rpc("init_broadcaster")
+            data = await request.json()
+            host = data.get("host")
+            port = data.get("port")
+            rank = data.get("rank")
+            world_size = data.get("world_size")
+            await engine_client.collective_rpc("init_broadcaster", args=(host, port, rank, world_size))
             return {"status": "ok"}
 
         vllm_config = await engine_client.get_vllm_config()

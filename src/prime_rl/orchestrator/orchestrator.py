@@ -18,10 +18,12 @@ from prime_rl.utils.vf import generate_batch
 from prime_rl.utils.client import (
     check_has_model,
     check_health,
+    init_nccl_broadcast,
     reload_weights,
     setup_admin_clients,
     setup_clients,
     update_weights,
+    update_weights_nccl,
 )
 from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.orchestrator.buffer import setup_buffer, make_rollouts, Rollout
@@ -95,6 +97,12 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info("Waiting for inference pool to be ready")
     await check_health(admin_clients)
     await check_has_model(clients, config.model.name)
+
+    # Set up NCCL broadcast
+    if config.broadcast_backend == "nccl":
+        logger.info(f"Initializing NCCL broadcast ({config.broadcast_backend})")
+        await init_nccl_broadcast(admin_clients, "localhost", 29500)
+
     logger.success("Inference pool ready")
 
     # Get checkpoint manager
@@ -105,10 +113,16 @@ async def orchestrate(config: OrchestratorConfig):
     progress = Progress()
     ckpt_step = 0
     if config.ckpt and ckpt_manager and config.ckpt.resume_step:
-        logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
-        ckpt_manager.load(progress, buffer, step=config.ckpt.resume_step)
-        ckpt_step = max(progress.step - config.async_level, 0)
-        await update_weights(admin_clients, get_step_path(get_weights_dir(config.output_dir), ckpt_step))
+        if config.broadcast_backend == "filesystem":
+            logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
+            ckpt_manager.load(progress, buffer, step=config.ckpt.resume_step)
+            ckpt_step = max(progress.step - config.async_level, 0)
+            await update_weights(admin_clients, get_step_path(get_weights_dir(config.output_dir), ckpt_step))
+        elif config.broadcast_backend == "nccl":
+            logger.info("Resuming training form latest ckpt via NCCL broadcast")
+            await update_weights_nccl(admin_clients)
+        else:
+            raise ValueError(f"Invalid broadcast backend: {config.broadcast_backend}")
     else:
         logger.info("Training from scratch. Resetting weights to base model")
         await reload_weights(admin_clients)
