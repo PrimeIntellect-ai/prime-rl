@@ -203,9 +203,9 @@ class EvalConfig(BaseConfig):
     ] = []
 
     max_concurrent: Annotated[
-        int,
+        int | None,
         Field(
-            description="Maximum number of concurrent rollouts to generate and score. If empty, will default to -1 for all environments.",
+            description="Maximum number of concurrent rollouts to generate and score. Will create a global semaphore and pass to verifiers Environment. If None, will not limit concurrency.",
         ),
     ] = 1024
 
@@ -421,10 +421,9 @@ class OrchestratorConfig(BaseSettings):
     ] = Path("outputs")
 
     max_concurrent: Annotated[
-        int,
+        int | None,
         Field(
-            ge=1,
-            description="Maximum number of concurrent rollouts to generate and score.",
+            description="Maximum number of concurrent rollouts to generate and score. Will create a global semaphore and pass to verifiers Environment. If None, will not limit concurrency.",
         ),
     ] = 1024
 
