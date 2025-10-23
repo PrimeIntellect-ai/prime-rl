@@ -286,7 +286,7 @@ async def orchestrate(config: OrchestratorConfig):
             problem_ids = []
             while len(problem_ids) < config.batch_size:
                 done, _ = await asyncio.wait(inflight_tasks, return_when=asyncio.FIRST_COMPLETED)
-                logger.info(f"Completed {len(done)} tasks")
+                logger.info(f"Completed {len(done)} tasks: {len(problem_ids)}/{config.batch_size} problems")
                 for task in done:
                     if len(problem_ids) == config.batch_size:
                         break
@@ -304,7 +304,7 @@ async def orchestrate(config: OrchestratorConfig):
                     rewards = candidate_generate_outputs.reward
 
                     if config.difficulty_filtering and all(reward == rewards[0] for reward in rewards):
-                        logger.debug("All rewards are the same, skipping rollout due to difficulty filtering: ")
+                        logger.info("All rewards are the same, skipping rollout due to difficulty filtering: ")
                         filtered += 1
                         continue
 
