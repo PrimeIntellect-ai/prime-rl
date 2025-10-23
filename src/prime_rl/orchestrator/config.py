@@ -502,18 +502,25 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = 2
 
+    areal: Annotated[
+        bool,
+        Field(
+            description="Whether to run in AREAL mode. If True, will be constantly adding rollouts to the inference worker and updating weights as soon as possible.",
+        ),
+    ] = False
+
     inflight_problems_factor: Annotated[
         float,
         Field(
             gt=0,
-            description="Max fraction of the batch that is being generated at once. Defaults to 1.5, which means at most 1.5x the batch size is being generated at once.",
+            description="Only used if `areal=True`. Max fraction of the batch that is being generated at once. Defaults to 1.5, which means at most 1.5x the batch size is being generated at once.",
         ),
     ] = 1.5
 
     difficulty_filtering: Annotated[
         bool,
         Field(
-            description="Whether to filter out rollouts with all rewards being the same. This is useful to avoid training on rollouts that are too easy or too hard.",
+            description="Only used if `areal=True`. Whether to filter out rollouts with all rewards being the same. This is useful to avoid training on rollouts that are too easy or too hard.",
         ),
     ] = False
 
@@ -546,5 +553,15 @@ class OrchestratorConfig(BaseSettings):
             self.eval = None
             if self.wandb:
                 self.wandb.log_extras = None
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_areal(self):
+        if not self.areal and self.difficulty_filtering:
+            raise ValueError("Difficulty filtering can only be used if `areal=True`")
+
+        if self.areal and not isinstance(self.buffer, SimpleBufferConfig):
+            raise ValueError("AREAL mode is currently only supported with the simple buffer.")
 
         return self

@@ -132,3 +132,33 @@ async def generate_batch(
             pbar.close()
 
     return merge_outputs(generate_outputs_list)
+
+
+def _get_placeholder_generate_outputs() -> GenerateOutputs:
+    generate_outputs = GenerateOutputs(
+        prompt=[],
+        completion=[],
+        answer=[],
+        state=[],
+        info=[],
+        task=[],
+        reward=[],
+        example_id=[],
+        metrics={},
+        # temporary metadata, to be replaced with the actual one
+        metadata=GenerateMetadata(
+            env_id="placeholder",
+            env_args={},
+            model="placeholder",
+            base_url="placeholder",
+            num_examples=0,
+            rollouts_per_example=0,
+            sampling_args={},
+            date="placeholder",
+            time_ms=0.0,
+            avg_reward=0.0,
+            avg_metrics={},
+        ),
+    )
+
+    return generate_outputs
