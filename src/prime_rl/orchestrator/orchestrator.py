@@ -9,12 +9,16 @@ from prime_rl.orchestrator import envs
 import lovely_tensors as lt
 import torch
 from verifiers import load_environment
-from verifiers.types import GenerateOutputs, ProcessedOutputs
+from verifiers.types import GenerateOutputs
 from transformers import AutoTokenizer
 
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.eval.utils import run_evals
-from prime_rl.utils.vf import generate_batch, merge_metadata, _get_placeholder_generate_outputs, merge_outputs
+from prime_rl.utils.vf import (
+    generate_batch,
+    _get_placeholder_generate_outputs,
+    merge_outputs,
+)
 from prime_rl.utils.client import (
     check_has_model,
     check_health,
@@ -123,9 +127,10 @@ async def orchestrate(config: OrchestratorConfig):
 
     problems_per_batch = config.batch_size // config.rollouts_per_example
 
-    max_inflight_problems = int(problems_per_batch * config.inflight_problems_factor)
-    inflight_tasks: list[asyncio.Task] = []
-    task_to_problem_id: dict[asyncio.Task, int] = {}
+    if config.areal:
+        max_inflight_problems = int(problems_per_batch * config.areal.inflight_problems_factor)
+        inflight_tasks: list[asyncio.Task] = []
+        task_to_problem_id: dict[asyncio.Task, int] = {}
 
     sampling_args = dict(config.sampling)
     # Convert SamplingConfig to vLLM OAI sampling args
@@ -194,7 +199,7 @@ async def orchestrate(config: OrchestratorConfig):
             update_weights_time = time.time() - update_weights_start_time
             logger.debug(f"Updated weights in {update_weights_time:.2f}s")
             ckpt_step = ckpt_step_to_load
-        
+
         off_policyness = progress.step - ckpt_step
 
         # Optionally, run online evals at the specified interval
@@ -256,11 +261,11 @@ async def orchestrate(config: OrchestratorConfig):
                 task_to_problem_id[task] = problem_ids
 
             generate_outputs = _get_placeholder_generate_outputs()
-
             problem_ids = []
+
             while len(problem_ids) < config.batch_size:
                 done, _ = await asyncio.wait(inflight_tasks, return_when=asyncio.FIRST_COMPLETED)
-                logger.info(f"Completed {len(done)} tasks: {len(problem_ids)}/{config.batch_size} problems")
+
                 for task in done:
                     if len(problem_ids) == config.batch_size:
                         break
@@ -277,8 +282,8 @@ async def orchestrate(config: OrchestratorConfig):
 
                     rewards = candidate_generate_outputs.reward
 
-                    if config.difficulty_filtering and all(reward == rewards[0] for reward in rewards):
-                        logger.debug("All rewards are the same, skipping rollout due to difficulty filtering: ")
+                    if config.areal.filter_advantage_zero and all(reward == rewards[0] for reward in rewards):
+                        logger.debug("All rewards are the same, skipping rollout due to filter_advantage_zero")
                         filtered += 1
                         continue
 
@@ -299,7 +304,10 @@ async def orchestrate(config: OrchestratorConfig):
                 sampling_args=sampling_args,
             )
 
-            return [problem["id"] for problem in problems for _ in range(config.rollouts_per_example)], generate_outputs
+            return (
+                [problem["id"] for problem in problems for _ in range(config.rollouts_per_example)],
+                generate_outputs,
+            )
 
         while True:
             generate_completions_start_time = time.time()
@@ -308,13 +316,12 @@ async def orchestrate(config: OrchestratorConfig):
 
             problem_ids, generate_outputs = await loop()
 
-            logger.info(f"Generated {len(problem_ids)} completions")
             generate_completions_time = time.time() - generate_completions_start_time
             problem_requests += problems_to_sample
             completion_requests += problems_to_sample * config.rollouts_per_example
             calls_to_generate += 1
 
-            processed_outputs: ProcessedOutputs = vf_env.process_env_results_vllm(
+            processed_outputs = vf_env.process_env_results_vllm(
                 prompts=generate_outputs.prompt,
                 completions=generate_outputs.completion,
                 states=generate_outputs.state,

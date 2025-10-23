@@ -158,6 +158,8 @@ def _get_placeholder_generate_outputs() -> GenerateOutputs:
             time_ms=0.0,
             avg_reward=0.0,
             avg_metrics={},
+            state_columns=[],
+            path_to_save="",
         ),
     )
 
