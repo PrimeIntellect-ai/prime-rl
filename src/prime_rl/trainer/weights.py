@@ -163,7 +163,8 @@ def convert_tt_to_hf_moe(state_dict: dict[str, Tensor]):
 def load_state_dict(save_dir: Path) -> dict[str, Tensor]:
     """Load a state dict from a local directory with safetensor files."""
     safetensors_paths = list(save_dir.glob("*.safetensors"))
-    safetensors_paths.sort(key=lambda x: int(x.stem.split("-")[1].split("of")[0]))
+    if len(safetensors_paths) > 1:
+        safetensors_paths.sort(key=lambda x: int(x.stem.split("-")[1].split("of")[0]))
     state_dict = {}
     for safetensor_path in safetensors_paths:
         with safe_open(safetensor_path, framework="pt", device="cpu") as f:
