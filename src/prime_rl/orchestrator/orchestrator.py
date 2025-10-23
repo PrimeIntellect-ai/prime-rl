@@ -9,7 +9,7 @@ from prime_rl.orchestrator import envs
 import lovely_tensors as lt
 import torch
 from verifiers import load_environment
-from verifiers.types import GenerateOutputs
+from verifiers.types import GenerateOutputs, ProcessedOutputs
 from transformers import AutoTokenizer
 
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
@@ -321,7 +321,7 @@ async def orchestrate(config: OrchestratorConfig):
             completion_requests += problems_to_sample * config.rollouts_per_example
             calls_to_generate += 1
 
-            processed_outputs = vf_env.process_env_results_vllm(
+            processed_outputs: ProcessedOutputs = vf_env.process_env_results_vllm(
                 prompts=generate_outputs.prompt,
                 completions=generate_outputs.completion,
                 states=generate_outputs.state,
