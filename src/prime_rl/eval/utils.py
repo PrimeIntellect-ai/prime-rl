@@ -81,7 +81,7 @@ async def run_eval(
     rollouts_per_example: int,
     output_dir: Path,
     ckpt_step: int,
-    semaphore: asyncio.Semaphore,
+    semaphore: asyncio.Semaphore | None,
     model_config: ModelConfig,
     sampling_config: EvalSamplingConfig,
     client_config: ClientConfig,
@@ -197,9 +197,9 @@ async def run_evals(
     client_config: ClientConfig,
     output_dir: Path,
     ckpt_step: int,
-    semaphore: asyncio.Semaphore,
     step: int | None = None,
 ):
+    semaphore = asyncio.Semaphore(eval_config.max_concurrent) if eval_config.max_concurrent else None
     await asyncio.gather(
         *[
             run_eval(

@@ -83,17 +83,17 @@ async def generate_group(
     problem: dict,
     rollouts_per_example: int,
     sampling_args: dict,
-    semaphore: asyncio.Semaphore,
+    semaphore: asyncio.Semaphore | None,
 ) -> GenerateOutputs:
     """Asynchronously generate and score rollouts for one problem."""
-    async with semaphore:
-        return await env.generate(
-            inputs=Dataset.from_list([problem] * rollouts_per_example),
-            client=client,
-            model=model_name,
-            sampling_args=sampling_args,
-            use_tqdm=False,
-        )
+    return await env.generate(
+        inputs=Dataset.from_list([problem] * rollouts_per_example),
+        client=client,
+        model=model_name,
+        sampling_args=sampling_args,
+        semaphore=semaphore,
+        use_tqdm=False,
+    )
 
 
 async def generate_batch(
@@ -103,7 +103,7 @@ async def generate_batch(
     problems: list[dict],
     rollouts_per_example: int,
     sampling_args: dict,
-    semaphore: asyncio.Semaphore,
+    semaphore: asyncio.Semaphore | None,
 ) -> GenerateOutputs:
     """Asynchronously generate and score rollouts for a list of problems."""
     from tqdm import tqdm

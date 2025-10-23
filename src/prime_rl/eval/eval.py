@@ -53,7 +53,6 @@ async def eval(config: OfflineEvalConfig):
     await reload_weights(admin_clients)
 
     # Run benchmarks on base model
-    semaphore = asyncio.Semaphore(config.max_concurrent)
     if config.eval_base:
         logger.info(f"Evaluating model {config.model.name}")
         await run_evals(
@@ -64,7 +63,6 @@ async def eval(config: OfflineEvalConfig):
             client_config=config.client,
             output_dir=config.output_dir,
             ckpt_step=0,
-            semaphore=semaphore,
         )
 
     # If specified, evaluate all checkpoints found in the weights directory
