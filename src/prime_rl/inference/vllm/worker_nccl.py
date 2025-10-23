@@ -1,7 +1,9 @@
 from typing import TYPE_CHECKING
 
-from torch.nn import Module
+from vllm.logger import init_logger
 from vllm.model_executor.model_loader.utils import process_weights_after_loading
+
+from prime_rl.trainer.rl.broadcast.nccl_broadcast import NCCLBroadcast
 
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
 if TYPE_CHECKING:
@@ -20,25 +22,19 @@ class NCCLBroadcastWorker(Worker):
 
     def init_broadcaster(self, host: str, port: int, rank: int, world_size: int) -> None:
         """Initialize the process group for NCCL broadcast."""
-        from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
-        from vllm.distributed.utils import StatelessProcessGroup
-
-        pg = StatelessProcessGroup.create(host=host, port=port, rank=rank, world_size=world_size)
-        self.communicator = PyNcclCommunicator(pg, device=self.device)
-
-        print(f"NCCL broadcast initialized for rank {rank} and world size {world_size}")
+        logger = init_logger("vllm.inference.vllm.worker_nccl")
+        self.nccl_broadcast = NCCLBroadcast(
+            host=host, port=port, rank=rank, world_size=world_size, device=self.device, logger=logger
+        )
 
     def update_weights(self, weight_dir: str) -> None:
         """Update weights from a specified path pointing to a .pt file."""
-
+        ...
         model_runner = self.model_runner
         model = model_runner.model
-        assert isinstance(model, Module)
 
-        state_dict = model.state_dict()
+        model.load_weights(self.nccl_broadcast.receive_state_dict())
 
-        for key, value in state_dict.items():
-            self.communicator.broadcast(value, src=0)
-
+        # Process weights after loading (important for some models)
         device = next(model.parameters()).device
         process_weights_after_loading(model, self.model_runner.model_config, device)

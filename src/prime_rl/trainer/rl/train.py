@@ -99,7 +99,9 @@ def train(config: RLTrainerConfig):
 
     # Set up NCCL broadcast
     if config.broadcast_backend == "nccl":
-        nccl_broadcast = NCCLBroadcast(host="localhost", port=29500, rank=0, world_size=2)
+        nccl_broadcast = NCCLBroadcast(
+            host="localhost", port=29500, rank=0, world_size=2, device=torch.cuda.current_device(), logger=logger
+        )
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
@@ -139,7 +141,7 @@ def train(config: RLTrainerConfig):
             save_weights_time = time.time() - save_weights_start_time
 
         if config.broadcast_backend == "nccl":
-            nccl_broadcast.broadcast(model)
+            nccl_broadcast.broadcast_state_dict(model)
 
         # Save the full checkpoint (if we are at an interval step and not at the first or last step)
         is_last_step = config.max_steps is not None and progress.step == config.max_steps
