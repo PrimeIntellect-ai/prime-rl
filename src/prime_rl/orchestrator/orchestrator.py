@@ -168,13 +168,14 @@ async def orchestrate(config: OrchestratorConfig):
 
         wait_for_weight_ckpt_time, update_weights_time = 0, 0
 
-        # This method gets the latest ready checkpoint (the one with the STABLE file)
-        ckpt_step_to_load = get_latest_ckpt_step(get_weights_dir(config.output_dir))
+        # If we are in AREAL mode, we load the latest ready checkpoint, otherwise we load the checkpoint only if we are behind the staleness
+        ckpt_step_to_load = get_latest_ckpt_step(get_weights_dir(config.output_dir)) if config.areal else None
 
-        # TODO(siro): this should be named bit more sensibly - it is a a next checkpoint step if we didn't throttle for async_level
+        # If we are in AREAL mode and the next avaiable checkpoint is too old, we still throttle for async_level
+        # next_weight_ckpt is either the latest reaedy checkpoint (areal & checkpoint available) or the the current step (non-areal or no checkpoint available)
         next_weight_ckpt = ckpt_step_to_load if ckpt_step_to_load is not None else ckpt_step
 
-        # if the latest ready checkpoint is still too old, we wait for the next one
+        # if the next available checkpoint is still too old, we throttle and wait for one to satisfy the async_level
         if progress.step - next_weight_ckpt > config.async_level:
             logger.debug(
                 f"Hit async barrier because next weight checkpoint {next_weight_ckpt} is {progress.step - next_weight_ckpt} (>{config.async_level}) steps ahead of current step {progress.step}."
@@ -193,6 +194,8 @@ async def orchestrate(config: OrchestratorConfig):
             update_weights_time = time.time() - update_weights_start_time
             logger.debug(f"Updated weights in {update_weights_time:.2f}s")
             ckpt_step = ckpt_step_to_load
+        
+        off_policyness = progress.step - ckpt_step
 
         # Optionally, run online evals at the specified interval
         eval_time = 0
@@ -517,6 +520,7 @@ async def orchestrate(config: OrchestratorConfig):
             "batch/solve_all": solve_all,
             "batch/effective_batch_size": effective_batch_size,
             "batch/difficulty_filtered": filtered,
+            "batch/off_policyness": off_policyness,
             "step": progress.step,
         }
         monitor.log(solve_metrics)
