@@ -160,9 +160,9 @@ def convert_tt_to_hf_moe(state_dict: dict[str, Tensor]):
         del state_dict[f"model.layers.{i}.mlp.experts.w3"]
 
 
-def load_state_dict(path: Path) -> dict[str, Tensor]:
-    """Load a sharded safetensors state dict from a local directory."""
-    safetensors_paths = list(path.glob("*.safetensors"))
+def load_state_dict(save_dir: Path) -> dict[str, Tensor]:
+    """Load a state dict from a local directory with safetensor files."""
+    safetensors_paths = list(save_dir.glob("*.safetensors"))
     safetensors_paths.sort(key=lambda x: int(x.stem.split("-")[1].split("of")[0]))
     state_dict = {}
     for safetensor_path in safetensors_paths:
@@ -172,41 +172,59 @@ def load_state_dict(path: Path) -> dict[str, Tensor]:
     return state_dict
 
 
-def save_state_dict(state_dict: dict[str, Tensor], path: Path):
-    """Save a state dict to a local directory as sharded safetensors."""
-    weights_name = SAFE_WEIGHTS_NAME
-    filename_pattern = weights_name.replace(".bin", "{suffix}.bin").replace(".safetensors", "{suffix}.safetensors")
-    state_dict_split = split_torch_state_dict_into_shards(
-        state_dict,
-        filename_pattern=filename_pattern,
-    )
+def save_state_dict(
+    state_dict: dict[str, Tensor],
+    save_dir: Path,
+    save_format: Literal["torch", "safetensors"] = "safetensors",
+    save_sharded: bool = True,
+):
+    """Save a state dict to a local directory in safetensors or torch format."""
+    logger = get_logger()
+    weights_name = SAFE_WEIGHTS_NAME if save_format == "safetensors" else WEIGHTS_NAME
+    if save_sharded:
+        filename_pattern = weights_name.replace(".bin", "{suffix}.bin").replace(".safetensors", "{suffix}.safetensors")
+        state_dict_split = split_torch_state_dict_into_shards(
+            state_dict,
+            filename_pattern=filename_pattern,
+        )
+        if state_dict_split.is_sharded:
+            filenames = state_dict_split.filename_to_tensors.keys()
+            logger.debug(f"Saving sharded weights to {len(filenames)} files: ({', '.join(filenames)})")
+        else:
+            logger.debug(f"Saving unsharded weights to {weights_name}")
 
-    # Save weights (https://github.com/huggingface/transformers/blob/cd74917ffc3e8f84e4a886052c5ab32b7ac623cc/src/transformers/modeling_utils.py#L4252)
-    filename_to_tensors = state_dict_split.filename_to_tensors.items()
-    for shard_file, tensors in filename_to_tensors:
-        shard = {}
-        for tensor in tensors:
-            assert isinstance(state_dict[tensor], Tensor)
-            shard[tensor] = state_dict[tensor].contiguous()
-            # delete reference, see https://github.com/huggingface/transformers/pull/34890
-            del state_dict[tensor]
-        safetensor_path = path / shard_file
-        safetensor_path.parent.mkdir(parents=True, exist_ok=True)
-        save_file(shard, safetensor_path, metadata={"format": "pt"})
-    del state_dict
+        # Save weights (https://github.com/huggingface/transformers/blob/cd74917ffc3e8f84e4a886052c5ab32b7ac623cc/src/transformers/modeling_utils.py#L4252)
+        filename_to_tensors = state_dict_split.filename_to_tensors.items()
+        for shard_file, tensors in filename_to_tensors:
+            shard = {}
+            for tensor in tensors:
+                assert isinstance(state_dict[tensor], Tensor)
+                shard[tensor] = state_dict[tensor].contiguous()
+                # delete reference, see https://github.com/huggingface/transformers/pull/34890
+                del state_dict[tensor]
+            if save_format == "safetensors":
+                save_file(shard, save_dir / shard_file, metadata={"format": "pt"})
+            else:
+                torch.save(shard, save_dir / shard_file)
+        del state_dict
 
-    # Save index (https://github.com/huggingface/transformers/blob/cd74917ffc3e8f84e4a886052c5ab32b7ac623cc/src/transformers/modeling_utils.py#L4301)
-    if state_dict_split.is_sharded:
-        index = {
-            "metadata": {**state_dict_split.metadata},
-            "weight_map": state_dict_split.tensor_to_filename,
-        }
-        save_index_file = SAFE_WEIGHTS_INDEX_NAME
-        save_index_file = path / save_index_file
-        # Save the index as well
-        with open(save_index_file, "w", encoding="utf-8") as f:
-            content = json.dumps(index, indent=2, sort_keys=True) + "\n"
-            f.write(content)
+        # Save index (https://github.com/huggingface/transformers/blob/cd74917ffc3e8f84e4a886052c5ab32b7ac623cc/src/transformers/modeling_utils.py#L4301)
+        if state_dict_split.is_sharded:
+            index = {
+                "metadata": {**state_dict_split.metadata},
+                "weight_map": state_dict_split.tensor_to_filename,
+            }
+            save_index_file = SAFE_WEIGHTS_INDEX_NAME if save_format == "safetensors" else WEIGHTS_INDEX_NAME
+            save_index_file = save_dir / save_index_file
+            # Save the index as well
+            with open(save_index_file, "w", encoding="utf-8") as f:
+                content = json.dumps(index, indent=2, sort_keys=True) + "\n"
+                f.write(content)
+    else:
+        if save_format == "safetensors":
+            save_file(state_dict, save_dir / weights_name, metadata={"format": "pt"})
+        else:
+            torch.save(state_dict, save_dir / weights_name)
 
 
 class WeightCheckpointManager:
@@ -322,54 +340,7 @@ class WeightCheckpointManager:
         save_format: Literal["safetensors", "torch"],
         save_sharded: bool,
     ):
-        """Utility function to save sharded weights to a directory. Inspired by `save_pretrained` from transformers."""
-        weights_name = SAFE_WEIGHTS_NAME if save_format == "safetensors" else WEIGHTS_NAME
-        if save_sharded:
-            filename_pattern = weights_name.replace(".bin", "{suffix}.bin").replace(
-                ".safetensors", "{suffix}.safetensors"
-            )
-            state_dict_split = split_torch_state_dict_into_shards(
-                state_dict,
-                filename_pattern=filename_pattern,
-            )
-            if state_dict_split.is_sharded:
-                filenames = state_dict_split.filename_to_tensors.keys()
-                self._logger.debug(f"Saving sharded weights to {len(filenames)} files: ({', '.join(filenames)})")
-            else:
-                self._logger.debug(f"Saving unsharded weights to {weights_name}")
-
-            # Save weights (https://github.com/huggingface/transformers/blob/cd74917ffc3e8f84e4a886052c5ab32b7ac623cc/src/transformers/modeling_utils.py#L4252)
-            filename_to_tensors = state_dict_split.filename_to_tensors.items()
-            for shard_file, tensors in filename_to_tensors:
-                shard = {}
-                for tensor in tensors:
-                    assert isinstance(state_dict[tensor], Tensor)
-                    shard[tensor] = state_dict[tensor].contiguous()
-                    # delete reference, see https://github.com/huggingface/transformers/pull/34890
-                    del state_dict[tensor]
-                if save_format == "safetensors":
-                    save_file(shard, save_dir / shard_file, metadata={"format": "pt"})
-                else:
-                    torch.save(shard, save_dir / shard_file)
-            del state_dict
-
-            # Save index (https://github.com/huggingface/transformers/blob/cd74917ffc3e8f84e4a886052c5ab32b7ac623cc/src/transformers/modeling_utils.py#L4301)
-            if state_dict_split.is_sharded:
-                index = {
-                    "metadata": {**state_dict_split.metadata},
-                    "weight_map": state_dict_split.tensor_to_filename,
-                }
-                save_index_file = SAFE_WEIGHTS_INDEX_NAME if save_format == "safetensors" else WEIGHTS_INDEX_NAME
-                save_index_file = save_dir / save_index_file
-                # Save the index as well
-                with open(save_index_file, "w", encoding="utf-8") as f:
-                    content = json.dumps(index, indent=2, sort_keys=True) + "\n"
-                    f.write(content)
-        else:
-            if save_format == "safetensors":
-                save_file(state_dict, save_dir / weights_name, metadata={"format": "pt"})
-            else:
-                torch.save(state_dict, save_dir / weights_name)
+        return save_state_dict(state_dict, save_dir, save_format, save_sharded)
 
     def _save_to_path(
         self,
