@@ -146,38 +146,34 @@ async def orchestrate(config: OrchestratorConfig):
         logger.info(f"Starting orchestrator step {progress.step}")
         step_start_time = time.time()
 
-        wait_for_weight_ckpt_time, update_weights_time = 0, 0
+        # Determine next ckpt step
+        # In AREAL mode, we always use the latest available checkpoint, else, we use a fixed-step off-policy level
+        fixed_off_policy_ckpt_step = max(progress.step - config.async_level, 0)
+        latest_ckpt_step = get_latest_ckpt_step(get_weights_dir(config.output_dir)) or 0
+        next_ckpt_step = latest_ckpt_step if config.scheduler == "areal" else fixed_off_policy_ckpt_step
+        logger.debug(f"Determined {next_ckpt_step=} ({latest_ckpt_step=}, {fixed_off_policy_ckpt_step=})")
 
-        # If we are in AREAL mode, we load the latest ready checkpoint, otherwise we load the checkpoint only if we are behind the staleness
-        ckpt_step_to_load = (
-            get_latest_ckpt_step(get_weights_dir(config.output_dir)) if config.scheduler == "areal" else None
-        )
-
-        # If we are in AREAL mode and the next avaiable checkpoint is too old, we still throttle for async_level
-        # next_weight_ckpt is either the latest reaedy checkpoint (areal & checkpoint available) or the the current step (non-areal or no checkpoint available)
-        next_weight_ckpt = ckpt_step_to_load if ckpt_step_to_load is not None else ckpt_step
-
-        # if the next available checkpoint is still too old, we throttle and wait for one to satisfy the async_level
-        if progress.step - next_weight_ckpt > config.async_level:
+        # If the next available checkpoint is too old, we throttle and wait for a checkpoint to satisfy the async_level
+        off_policy_level = progress.step - next_ckpt_step
+        logger.debug(f"Determined {off_policy_level=} ({progress.step=}, {next_ckpt_step=})")
+        wait_for_weight_ckpt_time = 0
+        if off_policy_level > config.async_level:
             logger.debug(
-                f"Hit async barrier because next weight checkpoint {next_weight_ckpt} is {progress.step - next_weight_ckpt} (>{config.async_level}) steps ahead of current step {progress.step}."
+                f"Hit async barrier because next weight checkpoint {next_ckpt_step} is {off_policy_level} off-policy (>{config.async_level})."
             )
-            ckpt_step_to_load = progress.step - config.async_level
             wait_for_weight_ckpt_start_time = time.time()
-            await wait_for_path(get_step_path(get_weights_dir(config.output_dir), ckpt_step_to_load) / "STABLE")
+            await wait_for_path(get_step_path(get_weights_dir(config.output_dir), next_ckpt_step) / "STABLE")
             wait_for_weight_ckpt_time = time.time() - wait_for_weight_ckpt_start_time
             logger.debug(f"Waited {wait_for_weight_ckpt_time:.2f}s for weight checkpoint")
 
         # Finally, load the weights if needed
-        if ckpt_step_to_load is not None:
-            logger.info(f"Updating weights to weight checkpoint {ckpt_step_to_load}")
+        update_weights_time = 0
+        if next_ckpt_step > 0:
+            logger.info(f"Updating weights to weight checkpoint {next_ckpt_step}")
             update_weights_start_time = time.time()
-            await update_weights(admin_clients, get_step_path(get_weights_dir(config.output_dir), ckpt_step_to_load))
+            await update_weights(admin_clients, get_step_path(get_weights_dir(config.output_dir), next_ckpt_step))
             update_weights_time = time.time() - update_weights_start_time
             logger.debug(f"Updated weights in {update_weights_time:.2f}s")
-            ckpt_step = ckpt_step_to_load
-
-        off_policyness = progress.step - ckpt_step
 
         # Optionally, run online evals at the specified interval
         eval_time = 0
@@ -367,7 +363,7 @@ async def orchestrate(config: OrchestratorConfig):
             "batch/solve_all": solve_all,
             "batch/effective_batch_size": effective_batch_size,
             # "batch/difficulty_filtered": filtered,
-            "batch/off_policyness": off_policyness,
+            "batch/off_policy_level": off_policy_level,
             "step": progress.step,
         }
         monitor.log(solve_metrics)
