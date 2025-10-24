@@ -14,9 +14,9 @@ from transformers import AutoTokenizer
 
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.eval.utils import run_evals
+from prime_rl.orchestrator.scheduler import areal_loop, default_loop
 from prime_rl.utils.vf import (
     generate_batch,
-    _get_placeholder_generate_outputs,
     merge_outputs,
 )
 from prime_rl.utils.client import (
@@ -127,11 +127,6 @@ async def orchestrate(config: OrchestratorConfig):
 
     problems_per_batch = config.batch_size // config.rollouts_per_example
 
-    if config.areal:
-        max_inflight_problems = int(problems_per_batch * config.areal.inflight_problems_factor)
-        inflight_tasks: list[asyncio.Task] = []
-        task_to_problem_id: dict[asyncio.Task, int] = {}
-
     sampling_args = dict(config.sampling)
     # Convert SamplingConfig to vLLM OAI sampling args
     # https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#extra-parameters_2
@@ -174,7 +169,9 @@ async def orchestrate(config: OrchestratorConfig):
         wait_for_weight_ckpt_time, update_weights_time = 0, 0
 
         # If we are in AREAL mode, we load the latest ready checkpoint, otherwise we load the checkpoint only if we are behind the staleness
-        ckpt_step_to_load = get_latest_ckpt_step(get_weights_dir(config.output_dir)) if config.areal else None
+        ckpt_step_to_load = (
+            get_latest_ckpt_step(get_weights_dir(config.output_dir)) if config.scheduler == "areal" else None
+        )
 
         # If we are in AREAL mode and the next avaiable checkpoint is too old, we still throttle for async_level
         # next_weight_ckpt is either the latest reaedy checkpoint (areal & checkpoint available) or the the current step (non-areal or no checkpoint available)
@@ -227,156 +224,19 @@ async def orchestrate(config: OrchestratorConfig):
             eval_time = time.time() - eval_start_time
             logger.info(f"Evaluated in {eval_time:.2f}s")
 
-        accepted_rollouts: list[Rollout] = []
-        problem_requests, completion_requests, calls_to_generate = 0, 0, 0
-        problems_to_sample = problems_per_batch
-        filtered = 0
-
-        async def areal_loop():
-            nonlocal filtered
-
-            def generate_call():
-                problem_ids, problem = buffer.sample_problem()
-                problem_ids = [problem_id for problem_id in problem_ids for _ in range(config.rollouts_per_example)]
-                logger.debug(f"Sending {len(problem)} * {config.rollouts_per_example} requests to environments")
-
-                task = generate_batch(
-                    clients=clients,
-                    env=vf_env,
-                    model_name=config.model.name,
-                    problems=problem,
-                    rollouts_per_example=config.rollouts_per_example,
-                    sampling_args=sampling_args,
-                    use_tqdm=False,
-                )
-
-                return problem_ids, task
-
-            # re-fill the inflight tasks to the max
-            while len(inflight_tasks) < max_inflight_problems:
-                problem_ids, coro = generate_call()
-                task = asyncio.create_task(coro)
-                await asyncio.sleep(0)
-                inflight_tasks.append(task)
-                task_to_problem_id[task] = problem_ids
-
-            generate_outputs = _get_placeholder_generate_outputs()
-            problem_ids = []
-
-            while len(problem_ids) < config.batch_size:
-                done, _ = await asyncio.wait(inflight_tasks, return_when=asyncio.FIRST_COMPLETED)
-
-                for task in done:
-                    if len(problem_ids) == config.batch_size:
-                        break
-                    inflight_tasks.remove(task)
-                    del task_to_problem_id[task]
-
-                    new_problem_ids, coro = generate_call()
-                    new_task = asyncio.create_task(coro)
-                    await asyncio.sleep(0)
-                    inflight_tasks.append(new_task)
-                    task_to_problem_id[new_task] = new_problem_ids
-
-                    candidate_generate_outputs: GenerateOutputs = task.result()
-
-                    rewards = candidate_generate_outputs.reward
-
-                    if config.areal.filter_advantage_zero and all(reward == rewards[0] for reward in rewards):
-                        logger.debug("All rewards are the same, skipping rollout due to filter_advantage_zero")
-                        filtered += 1
-                        continue
-
-                    problem_ids.extend(new_problem_ids)
-
-                    generate_outputs = merge_outputs([generate_outputs, candidate_generate_outputs])
-
-            return problem_ids, generate_outputs
-
-        async def default_loop():
-            problems = buffer.sample_problems(problems_to_sample)
-            semaphore = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent is not None else None
-            generate_outputs = await generate_batch(
-                clients=clients,
-                env=vf_env,
-                model_name=config.model.name,
-                problems=problems,
-                rollouts_per_example=config.rollouts_per_example,
-                sampling_args=sampling_args,
-                semaphore=semaphore,
-            )
-
-            return (
-                [problem["id"] for problem in problems for _ in range(config.rollouts_per_example)],
-                generate_outputs,
-            )
-
-        while True:
-            generate_completions_start_time = time.time()
-
-            loop = areal_loop if config.areal else default_loop
-
-            problem_ids, generate_outputs = await loop()
-
-            generate_completions_time = time.time() - generate_completions_start_time
-            problem_requests += problems_to_sample
-            completion_requests += problems_to_sample * config.rollouts_per_example
-            calls_to_generate += 1
-
-            processed_outputs: ProcessedOutputs = vf_env.process_env_results_vllm(
-                prompts=generate_outputs.prompt,
-                completions=generate_outputs.completion,
-                states=generate_outputs.state,
-                rewards=generate_outputs.reward,
-                processing_class=tokenizer,
-                max_seq_len=config.seq_len,
-                mask_env_responses=config.mask_env_responses,
-                zero_truncated_completions=config.zero_truncated_completions,
-                mask_truncated_completions=config.mask_truncated_completions,
-            )
-
-            # Extract individual reward function metrics from generate_outputs
-            individual_reward_outputs = {}
-            logger.debug(f"Found {len(generate_outputs.metrics)} individual reward functions")
-            for func_name, func_rewards in generate_outputs.metrics.items():
-                individual_reward_outputs[func_name] = torch.tensor(func_rewards)
-                logger.debug(f"Collected {len(func_rewards)} rewards for {func_name}")
-
-            # Compute advantages
-            advantages = compute_advantages(
-                rewards=processed_outputs.rewards,
-                completion_lengths=list(map(len, processed_outputs.completion_ids)),
-                samples_per_problem=config.rollouts_per_example,
-                advantage_config=config.advantage,
-            )
-
-            # Parse whether the completions were truncated
-            responses = [state["responses"] for state in generate_outputs.state]
-            is_truncated = parse_is_truncated_completions(responses=responses)
-
-            # Update pool
-            rollouts = make_rollouts(
-                problem_ids=problem_ids,
-                prompt_tokens=processed_outputs.prompt_ids,
-                prompt_masks=processed_outputs.prompt_mask,
-                completion_tokens=processed_outputs.completion_ids,
-                completion_masks=processed_outputs.completion_mask,
-                completion_logprobs=processed_outputs.completion_logprobs,
-                is_truncated=is_truncated,
-                rewards=processed_outputs.rewards,
-                advantages=advantages,
-            )
-            buffer.update(rollouts)
-            accepted_rollouts.extend(buffer.sample_rollouts(problems_to_sample))
-
-            # Break if we have enough rollouts to fill the batch
-            if len(accepted_rollouts) >= config.batch_size:
-                accepted_rollouts = accepted_rollouts[: config.batch_size]
-                break
-
-            # On next iteration, sample the remaining problems to fill the batch
-            problems_sampled = len(accepted_rollouts) // config.rollouts_per_example
-            problems_to_sample = problems_per_batch - problems_sampled
+        generate_batch_start_time = time.time()
+        loop = default_loop if config.scheduler == "default" else areal_loop
+        accepted_rollouts = await loop(
+            clients=clients,
+            buffer=buffer,
+            env=vf_env,
+            tokenizer=tokenizer,
+            batch_size=config.batch_size,
+            rollouts_per_example=config.rollouts_per_example,
+            sampling_args=sampling_args,
+            config=config,
+        )
+        generate_batch_time = time.time() - generate_batch_start_time
 
         # Unpack accepted rollouts
         rewards = (
@@ -423,7 +283,7 @@ async def orchestrate(config: OrchestratorConfig):
         progress.total_tokens += num_tokens
         progress.total_samples += config.batch_size
         progress.total_problems += config.batch_size // config.rollouts_per_example
-        throughput = num_tokens / (generate_completions_time)
+        throughput = num_tokens / generate_batch_time
 
         # Compute solve all and none tensors
         solve_all = rewards.sum(-1).eq(config.rollouts_per_example).float().mean().item()
@@ -431,8 +291,10 @@ async def orchestrate(config: OrchestratorConfig):
         effective_batch_size = 1 - solve_none - solve_all
 
         # Write serialized batch to disk for trainer workers to consume
+        logger.debug(f"Preparing batch for step {progress.step}")
+        prepare_batch_start_time = time.time()
         all_data_ranks_batches = prepare_batch(
-            rollouts=rollouts,
+            rollouts=accepted_rollouts,
             temperature=config.sampling.temperature,
             tokenizer=tokenizer,
             batch_size=config.batch_size,
@@ -440,7 +302,11 @@ async def orchestrate(config: OrchestratorConfig):
             num_train_workers=config.num_train_workers,
             seq_len=config.seq_len,
         )
+        prepare_batch_time = time.time() - prepare_batch_start_time
+        logger.debug(f"Prepared batch in {prepare_batch_time:.2f}s")
 
+        logger.debug(f"Saving batch for step {progress.step}")
+        save_batch_start_time = time.time()
         step_path = get_rollout_dir(config.output_dir) / f"step_{progress.step}"
         step_path.mkdir(parents=True, exist_ok=True)
         for i, batches in enumerate(all_data_ranks_batches):
@@ -449,6 +315,8 @@ async def orchestrate(config: OrchestratorConfig):
             logger.debug(f"Saving rollouts for step {progress.step} for rank {i} to {batch_path}")
             torch.save(batches, tmp_path)
             tmp_path.rename(batch_path)
+        save_batch_time = time.time() - save_batch_start_time
+        logger.debug(f"Saved batch in {save_batch_time:.2f}s")
 
         # Log step metrics
         step_time = time.time() - step_start_time
@@ -504,9 +372,9 @@ async def orchestrate(config: OrchestratorConfig):
         # Log performance metrics to monitor
         perf_metrics = {
             "perf/throughput": throughput,
-            "perf/problem_requests": problem_requests,
-            "perf/completion_requests": completion_requests,
-            "perf/calls_to_generate": calls_to_generate,
+            # "perf/problem_requests": problem_requests,
+            # "perf/completion_requests": completion_requests,
+            # "perf/calls_to_generate": calls_to_generate,
             "step": progress.step,
         }
         monitor.log(perf_metrics)
@@ -518,8 +386,8 @@ async def orchestrate(config: OrchestratorConfig):
         }
 
         # Add individual reward function metrics
-        for func_name, func_rewards in individual_reward_outputs.items():
-            reward_metrics[f"reward/{func_name}/mean"] = func_rewards.mean().item()
+        # for func_name, func_rewards in individual_reward_outputs.items():
+        #     reward_metrics[f"reward/{func_name}/mean"] = func_rewards.mean().item()
 
         monitor.log(reward_metrics)
 
@@ -528,7 +396,7 @@ async def orchestrate(config: OrchestratorConfig):
             "batch/solve_none": solve_none,
             "batch/solve_all": solve_all,
             "batch/effective_batch_size": effective_batch_size,
-            "batch/difficulty_filtered": filtered,
+            # "batch/difficulty_filtered": filtered,
             "batch/off_policyness": off_policyness,
             "step": progress.step,
         }
@@ -538,7 +406,7 @@ async def orchestrate(config: OrchestratorConfig):
         time_metrics = {
             "time/step": step_time,
             "time/wait_for_weight_ckpt": wait_for_weight_ckpt_time,
-            "time/generate_completions": generate_completions_time,
+            # "time/generate_completions": generate_completions_time,
             "time/update_weights": update_weights_time,
             "time/save_ckpt": save_ckpt_time,
             "time/eval": eval_time,
@@ -563,8 +431,8 @@ async def orchestrate(config: OrchestratorConfig):
             "problem_advantages": advantages.mean(-1).tolist(),
         }
 
-        for func_name, func_rewards in individual_reward_outputs.items():
-            distributions[f"{func_name}_rewards"] = func_rewards.tolist()
+        # for func_name, func_rewards in individual_reward_outputs.items():
+        #     distributions[f"{func_name}_rewards"] = func_rewards.tolist()
 
         monitor.log_distributions(distributions=distributions, step=progress.step)
 

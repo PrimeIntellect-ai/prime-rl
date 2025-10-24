@@ -380,23 +380,6 @@ class AdvantageConfig(BaseConfig):
     neg_clipped: bool = False
 
 
-class ArealConfig(BaseConfig):
-    inflight_problems_factor: Annotated[
-        float,
-        Field(
-            gt=0,
-            description="Maximum fraction of the batch that is being generated at once. Defaults to 1.5, which means at most 1.5x the batch size is being generated at once.",
-        ),
-    ] = 1.5
-
-    filter_advantage_zero: Annotated[
-        bool,
-        Field(
-            description="Whether to filter out rollouts with all rewards being the same (advantage is 0).",
-        ),
-    ] = False
-
-
 class OrchestratorConfig(BaseSettings):
     """Configures the orchestrator for RL training."""
 
@@ -430,7 +413,7 @@ class OrchestratorConfig(BaseSettings):
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
 
-    areal: ArealConfig | None = None
+    scheduler: Literal["default", "areal"] = "default"
 
     output_dir: Annotated[
         Path,
@@ -549,12 +532,5 @@ class OrchestratorConfig(BaseSettings):
             self.eval = None
             if self.wandb:
                 self.wandb.log_extras = None
-
-        return self
-
-    @model_validator(mode="after")
-    def validate_areal(self):
-        if self.areal and not isinstance(self.buffer, SimpleBufferConfig):
-            raise ValueError("AREAL mode is currently only supported with the simple buffer.")
 
         return self

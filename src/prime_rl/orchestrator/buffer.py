@@ -224,7 +224,7 @@ class SimpleBuffer(Buffer):
         )
         sampled_problem_ids = random.sample(self.problem_ids, n)
         assert len(sampled_problem_ids) == n
-        self.logger.debug(f"Sampled {n} problems ({sampled_problem_ids=})")
+        # self.logger.debug(f"Sampled {n} problems ({sampled_problem_ids=})")
 
         # Get problems from indices
         sampled_problems = [self.problem_buffer[problem_id] for problem_id in sampled_problem_ids]
