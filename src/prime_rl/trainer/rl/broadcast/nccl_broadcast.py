@@ -4,7 +4,6 @@ import torch
 from torch.distributed.tensor import DTensor
 
 from prime_rl.trainer.rl.broadcast.utils import init_tensor_from_string_description, tensor_string_description
-from prime_rl.trainer.weights import _convert_tt_moe_to_hf_, _has_tt_moe_layers
 
 
 class NCCLBroadcast:
@@ -23,7 +22,7 @@ class NCCLBroadcast:
 
     def broadcast_state_dict(self, model: torch.nn.Module, dtype: torch.dtype = torch.bfloat16) -> None:
         self.logger.info("Broadcasting weights to inference pool")
-        
+
         state_dict = model.state_dict()
 
         # if _has_tt_moe_layers(state_dict):
@@ -44,7 +43,6 @@ class NCCLBroadcast:
             # tensor = torch.ones(10, 10).to(self.device)
             self.communicator.broadcast(value, src=0)
             del value  # Release memory immediately
-        
 
         self.logger.info("Weights broadcasted to inference pool")
 
@@ -55,10 +53,9 @@ class NCCLBroadcast:
         self.communicator.broadcast(state_tensor, src=0)
 
         state = pickle.loads(bytes(state_tensor.cpu().numpy()))
-        
+
         for key, value in state.items():
             tensor = init_tensor_from_string_description(value, self.device)
             # tensor = torch.ones(10, 10).to(self.device)
             self.communicator.broadcast(tensor, src=0)
             yield key, tensor
-        

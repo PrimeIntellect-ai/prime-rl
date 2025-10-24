@@ -97,7 +97,7 @@ def train(config: RLTrainerConfig):
     )
     assert weight_ckpt_manager is not None, "Weight checkpoint manager must be set on RL trainer"
 
-    #Set up NCCL broadcast
+    # Set up NCCL broadcast
     if config.broadcast_backend == "nccl":
         nccl_broadcast = NCCLBroadcast(
             host="localhost", port=29500, rank=0, world_size=2, device=torch.cuda.current_device(), logger=logger
