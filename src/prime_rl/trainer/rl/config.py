@@ -132,6 +132,13 @@ class RLTrainerConfig(BaseSettings):
     ] = 600
 
     @model_validator(mode="after")
+    def ascyn_nccl(self):
+        if self.broadcast_backend == "nccl":
+            if not self.async_level == 1:
+                raise ValueError("Async level must be 1 for NCCL broadcast")
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench:
             self.max_steps = 4  # 1 Warmup + 3 Benchmark

@@ -180,6 +180,13 @@ class RLConfig(BaseSettings):
     ] = "filesystem"
 
     @model_validator(mode="after")
+    def ascyn_nccl(self):
+        if self.broadcast_backend == "nccl":
+            if not self.async_level == 1:
+                raise ValueError("Async level must be 1 for NCCL broadcast")
+        return self
+
+    @model_validator(mode="after")
     def validate_device(self):
         available_gpu_ids = get_cuda_visible_devices()
         requested_gpu_ids = sorted(set(self.trainer_gpu_ids + self.inference_gpu_ids))

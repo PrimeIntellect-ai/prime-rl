@@ -515,6 +515,13 @@ class OrchestratorConfig(BaseSettings):
     ] = "filesystem"
 
     @model_validator(mode="after")
+    def ascyn_nccl(self):
+        if self.broadcast_backend == "nccl":
+            if not self.async_level == 1:
+                raise ValueError("Async level must be 1 for NCCL broadcast")
+        return self
+
+    @model_validator(mode="after")
     def validate_batch_size(self):
         if self.batch_size % self.rollouts_per_example != 0:
             raise ValueError("Batch size must be divisible by the number of samples per problem")
