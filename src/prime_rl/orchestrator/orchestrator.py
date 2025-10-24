@@ -151,28 +151,31 @@ async def orchestrate(config: OrchestratorConfig):
         # In AREAL mode, we always use the latest available checkpoint, else, we use a fixed-step off-policy level
         fixed_off_policy_ckpt_step = max(progress.step - config.async_level, 0)
         latest_ckpt_step = get_latest_ckpt_step(get_weights_dir(config.output_dir)) or 0
-        next_ckpt_step = latest_ckpt_step if config.scheduler == "areal" else fixed_off_policy_ckpt_step
+        next_ckpt_step = (
+            max(latest_ckpt_step, fixed_off_policy_ckpt_step)
+            if config.scheduler == "areal"
+            else fixed_off_policy_ckpt_step
+        )
         logger.debug(f"Determined {next_ckpt_step=} ({latest_ckpt_step=}, {fixed_off_policy_ckpt_step=})")
 
         # If the next available checkpoint is too old, we throttle and wait for a checkpoint to satisfy the async_level
         wait_for_weight_ckpt_time, update_weights_time = 0, 0
-        if progress.step - ckpt_step > config.async_level and next_ckpt_step > 0:
+        if progress.step - ckpt_step > config.async_level:
             logger.debug(
-                f"Hit async barrier because we are >{config.async_level} off-policy. Waiting for weight checkpoint {next_ckpt_step}"
+                f"Hit async barrier because we are >{config.async_level} steps off-policy. Waiting for weight checkpoint {next_ckpt_step}"
             )
             wait_for_weight_ckpt_start_time = time.time()
             await wait_for_path(get_step_path(get_weights_dir(config.output_dir), next_ckpt_step) / "STABLE")
             wait_for_weight_ckpt_time = time.time() - wait_for_weight_ckpt_start_time
             logger.debug(f"Waited {wait_for_weight_ckpt_time:.2f}s for weight checkpoint")
 
-            # Finally, load the weights if needed
+        # Finally, load the weights if needed
+        if next_ckpt_step > ckpt_step:
             logger.debug(f"Updating weights to weight checkpoint {next_ckpt_step}")
             update_weights_start_time = time.time()
             await update_weights(admin_clients, get_step_path(get_weights_dir(config.output_dir), next_ckpt_step))
             update_weights_time = time.time() - update_weights_start_time
             logger.debug(f"Updated weights in {update_weights_time:.2f}s")
-
-            # Update current checkpoint step
             ckpt_step = next_ckpt_step
 
         off_policy_level = progress.step - ckpt_step
@@ -288,7 +291,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Log step metrics
         step_time = time.time() - step_start_time
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {rewards.mean().item():.4f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {seq_lens.mean().item():.1f} tokens/sample"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {rewards.mean().item():.4f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {seq_lens.mean().item():.1f} tokens/sample | Off-Policy: {off_policy_level}"
         logger.success(step_message)
 
         # Log progress metrics to monitor
