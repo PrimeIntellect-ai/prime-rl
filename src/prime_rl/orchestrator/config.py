@@ -162,22 +162,10 @@ class EvalSaveHFConfig(BaseConfig):
 class EvalSaveHubConfig(BaseConfig):
     """Configures how to save eval results to Prime Environment Hub."""
 
-    run_id: Annotated[
-        str | None,
-        Field(description="Link to existing training run ID. Either run_id or env_hub_id must be provided."),
-    ] = None
-
-    env_hub_id: Annotated[
-        str | None,
-        Field(description="Environment Hub ID. Either run_id or env_hub_id must be provided."),
-    ] = None
-
-    @model_validator(mode="after")
-    def id_check(self):
-        if self.run_id is None and self.env_hub_id is None:
-            raise ValueError(f"Either run_id or env_hub_id must be provided but got {self.run_id}, {self.env_hub_id}")
-
-        return self
+    env: Annotated[
+        str,
+        Field(description="Environment name or owner/name format (e.g., 'gsm8k' or 'primeintellect/aime2024')."),
+    ]
 
 
 class EvalSaveConfig(BaseConfig):

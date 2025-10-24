@@ -193,14 +193,10 @@ async def run_eval(
         if save_config.hub is not None:
             eval_name = f"{env_id}--{model_config.name.replace('/', '--')}"
 
-            # Determine environments or run_id
-            environments = [{"id": save_config.hub.env_hub_id}] if save_config.hub.env_hub_id else None
-
-            # Create evaluation
+            # Create evaluation with environment
             create_response = await evals_client.create_evaluation(
                 name=eval_name,
-                environments=environments,
-                run_id=save_config.hub.run_id,
+                environments=[{"id": save_config.hub.env}],
                 model_name=model_config.name,
                 dataset=env_id,
                 framework="verifiers",
@@ -208,7 +204,7 @@ async def run_eval(
                 metrics=eval_metrics,
             )
 
-            eval_id = create_response.get("evaluation_id") or create_response.get("id")
+            eval_id = create_response.get("evaluation_id")
 
             # Push samples
             await evals_client.push_samples(eval_id, dataset.to_list())
