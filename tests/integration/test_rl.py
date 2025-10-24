@@ -112,3 +112,12 @@ def test_check_reward(output_dir: Path, rl_process: ProcessResult, rl_resume_pro
             assert wandb_summary["reward/mean"] > 0.7
         else:
             raise ValueError(f"Unexpected step {wandb_summary['_step']}")
+
+
+def test_rl_nccl(run_process):
+    process = run_process(
+        RL_CMD + ["--broadcast-backend", "nccl"],
+        {},
+        TIMEOUT,
+    )
+    assert process.returncode == 0, f"RL process failed with return code {process.returncode}"
