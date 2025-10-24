@@ -50,6 +50,14 @@ class DataLoaderConfig(BaseConfig):
     fake: Annotated[FakeDataLoaderConfig | None, Field(description="Whether to use a fake data loader.")] = None
 
 
+class NCCLBroadcastConfig(BaseConfig):
+    """Configures the NCCL broadcast."""
+
+    host: Annotated[str, Field(description="The host to use for the NCCL broadcast.")] = "localhost"
+    port: Annotated[int, Field(description="The port to use for the NCCL broadcast.")] = 29500
+    inferece_wordl_size: Annotated[int, Field(description="The world size to use for the NCCL broadcast.")] = 1
+
+
 class RLTrainerConfig(BaseSettings):
     """Configures the RL trainer"""
 
@@ -73,6 +81,8 @@ class RLTrainerConfig(BaseSettings):
 
     # The weight checkpoint configuration
     weights: WeightCheckpointConfig = WeightCheckpointConfig()
+
+    nccl_broadcast: NCCLBroadcastConfig = NCCLBroadcastConfig()
 
     broadcast_backend: Annotated[
         Literal["nccl", "filesystem"], Field(description="The backend to use for broadcast.")

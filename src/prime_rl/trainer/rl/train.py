@@ -99,8 +99,14 @@ def train(config: RLTrainerConfig):
 
     # Set up NCCL broadcast
     if config.broadcast_backend == "nccl":
+        # we do inferece world size + 1 because we have the trainer broadcaster as rank 0
         nccl_broadcast = NCCLBroadcast(
-            host="localhost", port=29500, rank=0, world_size=2, device=torch.cuda.current_device(), logger=logger
+            host=config.nccl_broadcast.host,
+            port=config.nccl_broadcast.port,
+            rank=0,
+            world_size=config.nccl_broadcast.inferece_wordl_size + 1,
+            device=torch.cuda.current_device(),
+            logger=logger,
         )
 
     # Set up checkpoint manager

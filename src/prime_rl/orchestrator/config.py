@@ -380,6 +380,13 @@ class AdvantageConfig(BaseConfig):
     neg_clipped: bool = False
 
 
+class NCCLBroadcastConfig(BaseConfig):
+    """Configures the NCCL broadcast."""
+
+    host: Annotated[str, Field(description="The host to use for the NCCL broadcast.")] = "localhost"
+    port: Annotated[int, Field(description="The port to use for the NCCL broadcast.")] = 29500
+
+
 class OrchestratorConfig(BaseSettings):
     """Configures the orchestrator for RL training."""
 
@@ -509,6 +516,8 @@ class OrchestratorConfig(BaseSettings):
     ] = False
 
     seed: Annotated[int | None, Field(description="Random seed for the orchestrator.")] = 42
+
+    nccl_broadcast: NCCLBroadcastConfig = NCCLBroadcastConfig()
 
     broadcast_backend: Annotated[
         Literal["nccl", "filesystem"], Field(description="The backend to use for broadcast.")
