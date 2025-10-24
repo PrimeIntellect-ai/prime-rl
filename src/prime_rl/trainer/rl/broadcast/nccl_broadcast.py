@@ -7,7 +7,7 @@ from prime_rl.trainer.rl.broadcast.utils import init_tensor_from_string_descript
 
 
 class NCCLBroadcast:
-    def __init__(self, host: str, port: int, rank: int, world_size: int, device, logger):
+    def __init__(self, host: str, port: int, rank: int, world_size: int, device, logger, dtype: torch.dtype = torch.bfloat16):
         self.logger = logger
 
         self.logger.info(f"Initializing NCCL broadcast ({host}:{port}, rank={rank}, world_size={world_size})")
@@ -19,8 +19,10 @@ class NCCLBroadcast:
 
         self.logger.info(f"NCCL broadcast initialized for rank {rank} and world size {world_size}")
         self.device = device
+        
+        self.dtype = dtype
 
-    def broadcast_state_dict(self, model: torch.nn.Module, dtype: torch.dtype = torch.bfloat16) -> None:
+    def broadcast_state_dict(self, model: torch.nn.Module) -> None:
         self.logger.info("Broadcasting weights to inference pool")
 
         state_dict = model.state_dict()
@@ -36,11 +38,12 @@ class NCCLBroadcast:
 
         for key, value in state_dict.items():
             if isinstance(value, DTensor):
-                # value = value.to(dtype)
+                value = value.to(self.dtype)
                 # only gather after the downcast to dtype as it will be faster
                 value = value.full_tensor()
-            # logger.info(f"value: {value}")
-            # tensor = torch.ones(10, 10).to(self.device)
+            else:
+                value = value.to(self.dtype)
+
             self.communicator.broadcast(value, src=0)
             del value  # Release memory immediately
 
@@ -55,7 +58,6 @@ class NCCLBroadcast:
         state = pickle.loads(bytes(state_tensor.cpu().numpy()))
 
         for key, value in state.items():
-            tensor = init_tensor_from_string_description(value, self.device)
-            # tensor = torch.ones(10, 10).to(self.device)
+            tensor = init_tensor_from_string_description(value, self.device, self.dtype)
             self.communicator.broadcast(tensor, src=0)
             yield key, tensor
