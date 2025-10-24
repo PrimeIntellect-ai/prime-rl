@@ -4,10 +4,13 @@ import torch
 from torch.distributed.tensor import DTensor
 
 from prime_rl.trainer.rl.broadcast.utils import init_tensor_from_string_description, tensor_string_description
+from prime_rl.trainer.weights import _convert_tt_moe_to_hf_, _has_tt_moe_layers
 
 
 class NCCLBroadcast:
-    def __init__(self, host: str, port: int, rank: int, world_size: int, device, logger, dtype: torch.dtype = torch.bfloat16):
+    def __init__(
+        self, host: str, port: int, rank: int, world_size: int, device, logger, dtype: torch.dtype = torch.bfloat16
+    ):
         self.logger = logger
 
         self.logger.info(f"Initializing NCCL broadcast ({host}:{port}, rank={rank}, world_size={world_size})")
@@ -19,7 +22,7 @@ class NCCLBroadcast:
 
         self.logger.info(f"NCCL broadcast initialized for rank {rank} and world size {world_size}")
         self.device = device
-        
+
         self.dtype = dtype
 
     def broadcast_state_dict(self, model: torch.nn.Module) -> None:
@@ -27,8 +30,8 @@ class NCCLBroadcast:
 
         state_dict = model.state_dict()
 
-        # if _has_tt_moe_layers(state_dict):
-        #     _convert_tt_moe_to_hf_(state_dict)
+        if _has_tt_moe_layers(state_dict):
+            _convert_tt_moe_to_hf_(state_dict)
 
         state = pickle.dumps({key: tensor_string_description(value) for key, value in state_dict.items()})
         size_tensor = torch.tensor([len(state)], dtype=torch.long).cuda()
@@ -44,8 +47,8 @@ class NCCLBroadcast:
             else:
                 value = value.to(self.dtype)
 
+            value = value.to(self.dtype)
             self.communicator.broadcast(value, src=0)
-            del value  # Release memory immediately
 
         self.logger.info("Weights broadcasted to inference pool")
 
@@ -60,4 +63,4 @@ class NCCLBroadcast:
         for key, value in state.items():
             tensor = init_tensor_from_string_description(value, self.device, self.dtype)
             self.communicator.broadcast(tensor, src=0)
-            yield key, tensor
+            # yield key, tensor
