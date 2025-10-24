@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader.utils import process_weights_after_loading
 
-from prime_rl.trainer.rl.broadcast.nccl_broadcast import NCCLBroadcast
+from prime_rl.trainer.rl.broadcast.nccl_broadcast import NCCLBroadcastInference
 
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
 if TYPE_CHECKING:
@@ -23,7 +23,7 @@ class NCCLBroadcastWorker(Worker):
     def init_broadcaster(self, host: str, port: int, rank: int, world_size: int) -> None:
         """Initialize the process group for NCCL broadcast."""
         logger = init_logger("vllm.inference.vllm.worker_nccl")
-        self.nccl_broadcast = NCCLBroadcast(
+        self.nccl_broadcast = NCCLBroadcastInference(
             host=host, port=port, rank=rank, world_size=world_size, device=self.device, logger=logger
         )
 

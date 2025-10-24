@@ -4,25 +4,31 @@ import torch
 from torch.distributed.tensor import DTensor
 
 from prime_rl.trainer.rl.broadcast.utils import init_tensor_from_string_description, tensor_string_description
+from prime_rl.trainer.utils import get_world
 from prime_rl.trainer.weights import _convert_tt_moe_to_hf_, _has_tt_moe_layers
 
 
-class NCCLBroadcast:
+class NCCLBroadcastTrainer:
     def __init__(
         self, host: str, port: int, rank: int, world_size: int, device, logger, dtype: torch.dtype = torch.bfloat16
     ):
         self.logger = logger
 
-        self.logger.info(f"Initializing NCCL broadcast ({host}:{port}, rank={rank}, world_size={world_size})")
-        from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
-        from vllm.distributed.utils import StatelessProcessGroup
+        self.training_rank = get_world().rank
 
-        pg = StatelessProcessGroup.create(host=host, port=port, rank=rank, world_size=world_size)
-        self.communicator = PyNcclCommunicator(pg, device=device)
+        if self.training_rank == 0:
+            self.logger.info(
+                f"Initializing NCCL broadcast ({host}:{port}, rank={get_world().rank}, world_size={world_size})"
+            )
+            from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
+            from vllm.distributed.utils import StatelessProcessGroup
 
-        self.logger.info(f"NCCL broadcast initialized for rank {rank} and world size {world_size}")
+            pg = StatelessProcessGroup.create(host=host, port=port, rank=rank, world_size=world_size)
+            self.communicator = PyNcclCommunicator(pg, device=device)
+
+            self.logger.info(f"NCCL broadcast initialized for rank {rank} and world size {world_size}")
+
         self.device = device
-
         self.dtype = dtype
 
     def broadcast_state_dict(self, model: torch.nn.Module) -> None:
@@ -39,6 +45,10 @@ class NCCLBroadcast:
         state_tensor = torch.ByteTensor(list(state)).cuda()
         self.communicator.broadcast(state_tensor, src=0)
 
+        # TODO(SAMI): there are two performance optimization we should do here:
+        # 1. we should bucket more tensor into one broadcast call
+        # 2. we should make sure both gather and broadcast are done in parallel
+
         for key, value in state_dict.items():
             if isinstance(value, DTensor):
                 value = value.to(self.dtype)
@@ -47,10 +57,28 @@ class NCCLBroadcast:
             else:
                 value = value.to(self.dtype)
 
-            value = value.to(self.dtype)
-            self.communicator.broadcast(value, src=0)
+            if self.training_rank == 0:
+                value = value.to(self.dtype)
+                self.communicator.broadcast(value, src=0)
 
         self.logger.info("Weights broadcasted to inference pool")
+
+
+class NCCLBroadcastInference:
+    def __init__(
+        self, host: str, port: int, rank: int, world_size: int, device, logger, dtype: torch.dtype = torch.bfloat16
+    ):
+        self.logger = logger
+
+        self.logger.info(f"Initializing NCCL broadcast ({host}:{port}, rank={rank}, world_size={world_size})")
+        from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
+        from vllm.distributed.utils import StatelessProcessGroup
+
+        pg = StatelessProcessGroup.create(host=host, port=port, rank=rank, world_size=world_size)
+        self.communicator = PyNcclCommunicator(pg, device=device)
+
+        self.device = device
+        self.dtype = dtype
 
     def receive_state_dict(self):
         size_tensor = torch.tensor([10], dtype=torch.long).to(self.device)

@@ -181,7 +181,7 @@ class RLConfig(BaseSettings):
 
     @model_validator(mode="after")
     def ascyn_nccl(self):
-        if self.broadcast_backend == "nccl":
+        if self.broadcast_backend == "nccl" and self.async_level is not None:
             if not self.async_level == 1:
                 raise ValueError("Async level must be 1 for NCCL broadcast")
         return self

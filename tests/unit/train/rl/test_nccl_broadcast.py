@@ -3,7 +3,7 @@ import multiprocessing as mp
 import pytest
 import torch
 
-from prime_rl.trainer.rl.broadcast.nccl_broadcast import NCCLBroadcast
+from prime_rl.trainer.rl.broadcast.nccl_broadcast import NCCLBroadcastInference, NCCLBroadcastTrainer
 from prime_rl.utils.logger import get_logger
 
 pytestmark = [pytest.mark.gpu]
@@ -18,7 +18,9 @@ def test_nccl_broadcast(free_port):
         device = torch.device(f"cuda:{0}")
 
         logger.info("Sending weights")
-        nccl_broadcast = NCCLBroadcast(host=host, port=free_port, rank=0, world_size=2, device=device, logger=logger)
+        nccl_broadcast = NCCLBroadcastTrainer(
+            host=host, port=free_port, rank=0, world_size=2, device=device, logger=logger
+        )
 
         class Model(torch.nn.Module):
             def __init__(self):
@@ -42,7 +44,9 @@ def test_nccl_broadcast(free_port):
     def receive():
         device = torch.device(f"cuda:{1}")
         logger.info("Receiving weights")
-        nccl_broadcast = NCCLBroadcast(host=host, port=free_port, rank=1, world_size=2, device=device, logger=logger)
+        nccl_broadcast = NCCLBroadcastInference(
+            host=host, port=free_port, rank=1, world_size=2, device=device, logger=logger
+        )
 
         for key, value in nccl_broadcast.receive_state_dict():
             assert value.allclose(torch.ones_like(value))
