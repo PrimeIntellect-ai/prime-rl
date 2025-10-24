@@ -115,7 +115,7 @@ class DefaultScheduler(Scheduler):
         super().__init__(clients, env, buffer, tokenizer, config)
 
     async def generate_batch(self) -> list[Rollout]:
-        batch_accepted_rollouts: list[Rollout] = []
+        batch_rollouts: list[Rollout] = []
         problems_left = self.problems_per_batch
         while True:
             generate_outputs = await generate_batch(
@@ -130,18 +130,18 @@ class DefaultScheduler(Scheduler):
 
             # Process outputs and update accepted rollouts
             accepted_rollouts = self.process_generate_outputs(generate_outputs=generate_outputs)
-            batch_accepted_rollouts.extend(accepted_rollouts)
+            batch_rollouts.extend(accepted_rollouts)
 
             # Break if we have enough rollouts to fill the batch
-            if len(batch_accepted_rollouts) >= self.config.batch_size:
-                batch_accepted_rollouts = batch_accepted_rollouts[: self.config.batch_size]
+            if len(batch_rollouts) >= self.config.batch_size:
+                batch_rollouts = batch_rollouts[: self.config.batch_size]
                 break
 
             # On next iteration, sample the remaining problems to fill the batch
-            problems_sampled = len(accepted_rollouts) // self.config.rollouts_per_example
+            problems_sampled = len(batch_rollouts) // self.config.rollouts_per_example
             problems_left = self.problems_per_batch - problems_sampled
 
-        return accepted_rollouts
+        return batch_rollouts
 
 
 class ARealScheduler(Scheduler):
@@ -156,47 +156,50 @@ class ARealScheduler(Scheduler):
         clients: list[AsyncOpenAI],
     ):
         super().__init__(clients, env, buffer, tokenizer, config)
-        self.inflight_tasks: list[asyncio.Task] = []
+        self.inflight_group_rollouts: list[asyncio.Task] = []
         self.cycle_clients = cycle(self.clients)
 
     async def schedule_task(self):
-        task = asyncio.create_task(
+        problem = self.buffer.sample_problems(n=1)[0]
+        group_rollout_request = asyncio.create_task(
             generate_group(
                 client=next(self.cycle_clients),
                 env=self.env,
                 model_name=self.config.model.name,
-                problem=self.buffer.sample_problems(n=1)[0],
+                problem=problem,
                 rollouts_per_example=self.config.rollouts_per_example,
                 sampling_args=self.sampling_args,
-                semaphore=None,
+                semaphore=self.semaphore,
             )
         )
         await asyncio.sleep(0)
-        self.inflight_tasks.append(task)
+        self.inflight_group_rollouts.append(group_rollout_request)
 
     async def generate_batch(self) -> list[Rollout]:
         # Schedule initial tasks
-        while len(self.inflight_tasks) < self.problems_per_batch:
+        while len(self.inflight_group_rollouts) < self.problems_per_batch:
             await self.schedule_task()
 
-        batch_accepted_rollouts: list[Rollout] = []
-        while len(batch_accepted_rollouts) < self.config.batch_size:
-            done, _ = await asyncio.wait(self.inflight_tasks, return_when=asyncio.FIRST_COMPLETED)
+        batch_rollouts: list[Rollout] = []
+        while len(batch_rollouts) < self.config.batch_size:
+            finished_group_rollouts, _ = await asyncio.wait(
+                self.inflight_group_rollouts, return_when=asyncio.FIRST_COMPLETED
+            )
 
-            for task in done:
-                if len(batch_accepted_rollouts) >= self.config.batch_size:
-                    batch_accepted_rollouts = batch_accepted_rollouts[: self.config.batch_size]
+            for finished_group_rollout in finished_group_rollouts:
+                if len(batch_rollouts) >= self.config.batch_size:
+                    batch_rollouts = batch_rollouts[: self.config.batch_size]
                     break
 
-                self.inflight_tasks.remove(task)
-                generate_outputs: GenerateOutputs = task.result()
+                self.inflight_group_rollouts.remove(finished_group_rollout)
+                generate_outputs: GenerateOutputs = finished_group_rollout.result()
 
                 accepted_rollouts = self.process_generate_outputs(generate_outputs=generate_outputs)
-                batch_accepted_rollouts.extend(accepted_rollouts)
+                batch_rollouts.extend(accepted_rollouts)
 
                 await self.schedule_task()
 
-        return batch_accepted_rollouts
+        return batch_rollouts
 
 
 def setup_scheduler(
