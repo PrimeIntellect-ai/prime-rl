@@ -143,7 +143,7 @@ async def orchestrate(config: OrchestratorConfig):
         if config.max_steps and progress.step >= config.max_steps:
             break
 
-        logger.info(f"Starting orchestrator step {progress.step} ({ckpt_step=})")
+        logger.info(f"Starting orchestrator step {progress.step}")
         step_start_time = time.time()
 
         wait_for_weight_ckpt_time, update_weights_time = 0, 0
