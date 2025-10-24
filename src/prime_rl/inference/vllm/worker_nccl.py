@@ -1,6 +1,7 @@
 from typing import TYPE_CHECKING
 
 from vllm.logger import init_logger
+from vllm.model_executor.model_loader.utils import process_weights_after_loading
 
 from prime_rl.trainer.rl.broadcast.nccl_broadcast import NCCLBroadcast
 
@@ -34,8 +35,8 @@ class NCCLBroadcastWorker(Worker):
 
         self.nccl_broadcast.receive_state_dict()
 
-        # model.load_weights(self.nccl_broadcast.receive_state_dict())
+        model.load_weights(self.nccl_broadcast.receive_state_dict())
 
-        # # # Process weights after loading (important for some models)
-        # # device = next(model.parameters()).device
-        # # process_weights_after_loading(model, self.model_runner.model_config, device)
+        # # Process weights after loading (important for some models)
+        device = next(model.parameters()).device
+        process_weights_after_loading(model, self.model_runner.model_config, device)

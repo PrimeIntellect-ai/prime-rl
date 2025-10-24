@@ -63,4 +63,4 @@ class NCCLBroadcast:
         for key, value in state.items():
             tensor = init_tensor_from_string_description(value, self.device, self.dtype)
             self.communicator.broadcast(tensor, src=0)
-            # yield key, tensor
+            yield key, tensor
