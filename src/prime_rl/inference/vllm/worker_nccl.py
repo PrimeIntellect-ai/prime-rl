@@ -1,5 +1,6 @@
 from typing import TYPE_CHECKING
 
+import torch
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader.utils import process_weights_after_loading
 
@@ -32,9 +33,11 @@ class NCCLBroadcastWorker(Worker):
         ...
         model_runner = self.model_runner
         model = model_runner.model
+        
+        self.nccl_broadcast.receive_state_dict()
+        
+        # model.load_weights(self.nccl_broadcast.receive_state_dict())
 
-        model.load_weights(self.nccl_broadcast.receive_state_dict())
-
-        # Process weights after loading (important for some models)
-        device = next(model.parameters()).device
-        process_weights_after_loading(model, self.model_runner.model_config, device)
+        # # # Process weights after loading (important for some models)
+        # # device = next(model.parameters()).device
+        # # process_weights_after_loading(model, self.model_runner.model_config, device)

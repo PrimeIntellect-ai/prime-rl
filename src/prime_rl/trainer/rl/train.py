@@ -97,7 +97,7 @@ def train(config: RLTrainerConfig):
     )
     assert weight_ckpt_manager is not None, "Weight checkpoint manager must be set on RL trainer"
 
-    # Set up NCCL broadcast
+    #Set up NCCL broadcast
     if config.broadcast_backend == "nccl":
         nccl_broadcast = NCCLBroadcast(
             host="localhost", port=29500, rank=0, world_size=2, device=torch.cuda.current_device(), logger=logger
@@ -140,7 +140,7 @@ def train(config: RLTrainerConfig):
             weight_ckpt_manager.save(model, tokenizer, step=progress.step)
             save_weights_time = time.time() - save_weights_start_time
 
-        if config.broadcast_backend == "nccl":
+        if config.broadcast_backend == "nccl" and progress.step > 0:
             nccl_broadcast.broadcast_state_dict(model)
 
         # Save the full checkpoint (if we are at an interval step and not at the first or last step)

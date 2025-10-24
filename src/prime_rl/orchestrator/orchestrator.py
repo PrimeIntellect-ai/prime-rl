@@ -170,7 +170,10 @@ async def orchestrate(config: OrchestratorConfig):
             ckpt_step = progress.step - config.async_level
             logger.info(f"Waiting for weight checkpoint {ckpt_step}")
             wait_for_weight_ckpt_start_time = time.time()
+            
+            # if config.broadcast_backend == "filesystem":
             await wait_for_path(get_step_path(get_weights_dir(config.output_dir), ckpt_step) / "STABLE")
+
             wait_for_weight_ckpt_time = time.time() - wait_for_weight_ckpt_start_time
             logger.debug(f"Waited {wait_for_weight_ckpt_time:.2f}s for weight checkpoint")
 

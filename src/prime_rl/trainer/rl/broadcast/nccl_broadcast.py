@@ -23,11 +23,11 @@ class NCCLBroadcast:
 
     def broadcast_state_dict(self, model: torch.nn.Module, dtype: torch.dtype = torch.bfloat16) -> None:
         self.logger.info("Broadcasting weights to inference pool")
-
+        
         state_dict = model.state_dict()
 
-        if _has_tt_moe_layers(state_dict):
-            _convert_tt_moe_to_hf_(state_dict)
+        # if _has_tt_moe_layers(state_dict):
+        #     _convert_tt_moe_to_hf_(state_dict)
 
         state = pickle.dumps({key: tensor_string_description(value) for key, value in state_dict.items()})
         size_tensor = torch.tensor([len(state)], dtype=torch.long).cuda()
@@ -37,11 +37,14 @@ class NCCLBroadcast:
 
         for key, value in state_dict.items():
             if isinstance(value, DTensor):
-                value = value.to(dtype)
+                # value = value.to(dtype)
                 # only gather after the downcast to dtype as it will be faster
                 value = value.full_tensor()
-
+            # logger.info(f"value: {value}")
+            # tensor = torch.ones(10, 10).to(self.device)
             self.communicator.broadcast(value, src=0)
+            del value  # Release memory immediately
+        
 
         self.logger.info("Weights broadcasted to inference pool")
 
@@ -52,8 +55,10 @@ class NCCLBroadcast:
         self.communicator.broadcast(state_tensor, src=0)
 
         state = pickle.loads(bytes(state_tensor.cpu().numpy()))
-
+        
         for key, value in state.items():
             tensor = init_tensor_from_string_description(value, self.device)
+            # tensor = torch.ones(10, 10).to(self.device)
             self.communicator.broadcast(tensor, src=0)
             yield key, tensor
+        
