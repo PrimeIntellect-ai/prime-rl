@@ -135,13 +135,17 @@ def train(config: RLTrainerConfig):
 
         # Save the weight checkpoint (if we are not at the first step, because no updates to the model have been made yet)
         save_weights_time = 0
+        broadcast_weights_time = 0
         if progress.step > 0:
             save_weights_start_time = time.time()
             weight_ckpt_manager.save(model, tokenizer, step=progress.step)
             save_weights_time = time.time() - save_weights_start_time
+            broadcast_weights_time = save_weights_time
 
         if config.broadcast_backend == "nccl" and progress.step > 0:
+            broadcast_weights_start_time = time.time()
             nccl_broadcast.broadcast_state_dict(model)
+            broadcast_weights_time = time.time() - broadcast_weights_start_time
 
         # Save the full checkpoint (if we are at an interval step and not at the first or last step)
         is_last_step = config.max_steps is not None and progress.step == config.max_steps
@@ -335,6 +339,7 @@ def train(config: RLTrainerConfig):
             "time/wait_for_batch": wait_for_batch_time,
             "time/load_data": load_data_time,
             "time/save_weights": save_weights_time,
+            "time/broadcast_weights": broadcast_weights_time,
             "time/save_ckpt": save_ckpt_time,
             "time/forward_backward": forward_backward_time,
             "step": progress.step,
