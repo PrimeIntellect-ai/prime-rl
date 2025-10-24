@@ -215,6 +215,7 @@ async def orchestrate(config: OrchestratorConfig):
 
             # Generate completions + rewards with verifiers
             generate_completions_start_time = time.time()
+            semaphore = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent is not None else None
             generate_outputs: GenerateOutputs = await generate_batch(
                 clients=clients,
                 env=vf_env,
@@ -222,6 +223,7 @@ async def orchestrate(config: OrchestratorConfig):
                 problems=problems,
                 rollouts_per_example=config.rollouts_per_example,
                 sampling_args=sampling_args,
+                semaphore=semaphore,
             )
             generate_completions_time = time.time() - generate_completions_start_time
             problem_requests += problems_to_sample
