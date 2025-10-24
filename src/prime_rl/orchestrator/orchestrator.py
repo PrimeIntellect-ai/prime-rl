@@ -9,16 +9,11 @@ from prime_rl.orchestrator import envs
 import lovely_tensors as lt
 import torch
 from verifiers import load_environment
-from verifiers.types import GenerateOutputs, ProcessedOutputs
 from transformers import AutoTokenizer
 
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.eval.utils import run_evals
-from prime_rl.orchestrator.scheduler import areal_loop, default_loop
-from prime_rl.utils.vf import (
-    generate_batch,
-    merge_outputs,
-)
+from prime_rl.orchestrator.scheduler import setup_scheduler
 from prime_rl.utils.client import (
     check_has_model,
     check_health,
@@ -28,14 +23,10 @@ from prime_rl.utils.client import (
     update_weights,
 )
 from prime_rl.orchestrator.config import OrchestratorConfig
-from prime_rl.orchestrator.buffer import setup_buffer, make_rollouts, Rollout
+from prime_rl.orchestrator.buffer import setup_buffer
 from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.utils.logger import setup_logger
-from prime_rl.orchestrator.advantage import compute_advantages
-from prime_rl.orchestrator.utils import (
-    print_benchmark,
-    parse_is_truncated_completions,
-)
+from prime_rl.orchestrator.utils import print_benchmark
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import (
@@ -48,7 +39,6 @@ from prime_rl.utils.utils import (
     get_weights_dir,
     to_col_format,
 )
-import numpy as np
 
 
 @clean_exit
@@ -96,6 +86,10 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info(f"Setting up buffer ({config.buffer})")
     buffer = setup_buffer(dataset, config.buffer)
 
+    # Setup scheduler
+    logger.info(f"Setting up scheduler ({config.scheduler})")
+    scheduler = setup_scheduler(buffer, vf_env, tokenizer, config, clients)
+
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")
     await check_health(admin_clients)
@@ -126,20 +120,6 @@ async def orchestrate(config: OrchestratorConfig):
     is_first_step = True
 
     problems_per_batch = config.batch_size // config.rollouts_per_example
-
-    sampling_args = dict(config.sampling)
-    # Convert SamplingConfig to vLLM OAI sampling args
-    # https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#extra-parameters_2
-    sampling_args = dict(config.sampling)
-    sampling_args["top_p"] = 1.0
-    sampling_args["logprobs"] = True
-    sampling_args["extra_body"] = {
-        "return_tokens_as_token_ids": True,
-        "top_k": -1,
-        "min_p": 0.0,
-    }
-    sampling_args["extra_body"]["min_tokens"] = sampling_args.pop("min_tokens")
-    sampling_args["extra_body"]["repetition_penalty"] = sampling_args.pop("repetition_penalty")
 
     while True:
         # Save checkpoint (if we are at an interval step and not at the first or last step)
@@ -225,17 +205,7 @@ async def orchestrate(config: OrchestratorConfig):
             logger.info(f"Evaluated in {eval_time:.2f}s")
 
         generate_batch_start_time = time.time()
-        loop = default_loop if config.scheduler == "default" else areal_loop
-        accepted_rollouts = await loop(
-            clients=clients,
-            buffer=buffer,
-            env=vf_env,
-            tokenizer=tokenizer,
-            batch_size=config.batch_size,
-            rollouts_per_example=config.rollouts_per_example,
-            sampling_args=sampling_args,
-            config=config,
-        )
+        accepted_rollouts = await scheduler.generate_batch()
         generate_batch_time = time.time() - generate_batch_start_time
 
         # Unpack accepted rollouts
