@@ -1,15 +1,18 @@
 import logging
 import time
+from pathlib import Path
 from typing import cast
 
 import torch
-import torch.distributed.checkpoint as dcp
 import torch.nn as nn
 from beartype import beartype as typechecker
+from huggingface_hub import snapshot_download
 from jaxtyping import Float, Int, jaxtyped
 from liger_kernel.transformers import AutoLigerKernelForCausalLM
 from torch import Tensor
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
+from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
+from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, fully_shard
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -18,6 +21,15 @@ from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, M
 from prime_rl.trainer.lora import apply_lora_to_model
 from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL
 from prime_rl.trainer.parallel_dims import ParallelDims
+from prime_rl.trainer.weights import (
+    convert_hf_to_tt_moe,
+    convert_tt_to_hf_moe,
+    has_hf_moe_layers,
+    has_tt_moe_layers,
+    load_state_dict,
+    save_state_dict,
+)
+from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.tensor_hashing import get_module_signature
 
@@ -151,9 +163,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
 
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
-    from huggingface_hub import snapshot_download
-    from torch.distributed.checkpoint import DefaultLoadPlanner, HuggingFaceStorageReader
-
     model.to_empty(device="cuda")
 
     logger = get_logger()
@@ -161,17 +170,61 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
         logger.warning("Randomly initializing model. Skipping loading weights from HF.")
         return
 
-    logger.info("Loading model weights from HF")
+    if not Path(config.name).exists():
+        snapshot_path = Path(snapshot_download(repo_id=config.name, repo_type="model"))
+    else:
+        logger.info(
+            f"Loading model weights from path {config.name}, skipping snapshot download. If this is not expected, please remove the directory {config.name} and run again"
+        )
+        snapshot_path = Path(config.name)
+
+    # Load the snapshot state
+    snapshot_state_dict = load_state_dict(snapshot_path)
+    model_state_dict = model.state_dict()
+
+    # Dynamically convert between different weight formats if needed
+    if has_hf_moe_layers(snapshot_state_dict) and has_tt_moe_layers(model_state_dict):
+        logger.warning(
+            "Found HF weight format in snapshot state dict and TT weight format in model state dict. Trying to auto-convert..."
+        )
+        snapshot_path = snapshot_path / "tt"
+        if snapshot_path.exists():
+            logger.debug(f"Conversion found at {snapshot_path}.")
+        else:
+            if get_world().is_master:
+                logger.debug(
+                    f"Converting snapshot state dict to TT format and saving to {snapshot_path} on master rank. This is a one-time operation."
+                )
+                convert_hf_to_tt_moe(snapshot_state_dict)
+                save_state_dict(snapshot_state_dict, snapshot_path)
+    elif has_tt_moe_layers(snapshot_state_dict) and has_hf_moe_layers(model_state_dict):
+        logger.warning(
+            "Found TT weight format in snapshot state dict and HF weight format in model state dict. Trying to auto-convert..."
+        )
+        snapshot_path = snapshot_path / "hf"
+        if snapshot_path.exists():
+            logger.debug(f"Conversion found at {snapshot_path}.")
+        else:
+            if get_world().is_master:
+                logger.debug(
+                    f"Converting snapshot state dict to HF format and saving to {snapshot_path} on master rank. This is a one-time operation."
+                )
+                convert_tt_to_hf_moe(snapshot_state_dict)
+                save_state_dict(snapshot_state_dict, snapshot_path)
+
+        # All ranks wait for master rank to finish conversion
+        torch.distributed.barrier()
+
+    logger.info(f"Loading weights using HF DCP from {snapshot_path}")
     load_dcp_start_time = time.time()
-    path_snapshot = snapshot_download(repo_id=config.name, repo_type="model")
-    dcp.load(
+    dcp_load(
         model.state_dict(),
-        storage_reader=HuggingFaceStorageReader(path=path_snapshot),
+        storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),
         # Note: This allow is needed by weight tying but could cause silent issues
-        planner=DefaultLoadPlanner(allow_partial_load=True),
+        # planner=DefaultLoadPlanner(allow_partial_load=True),
     )
     fix_model_post_empty(model)
-    logger.debug(f"Loaded model weights from HF in {time.time() - load_dcp_start_time:.2f} seconds")
+    logger.debug(f"Loaded weights using HF DCP in {time.time() - load_dcp_start_time:.2f} seconds")
 
 
 def can_load_dcp_from_hf(model: nn.Module):

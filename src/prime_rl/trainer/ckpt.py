@@ -5,9 +5,10 @@ from pathlib import Path
 from typing import Any
 
 import torch
-import torch.distributed.checkpoint as dcp
 from torch import nn
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
+from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
+from torch.distributed.checkpoint.state_dict_saver import save as dcp_save
 from torch.distributed.checkpoint.stateful import Stateful
 from torch.nn import Module
 from torch.optim.lr_scheduler import LRScheduler
@@ -119,7 +120,7 @@ class CheckpointManager:
             torch.save(dataloader.state_dict(), dataloader_dir / f"rank_{self._world.rank}.pt")
 
         # Save sharded state
-        dcp.save(state_dict, checkpoint_id=ckpt_path)
+        dcp_save(state_dict, checkpoint_id=ckpt_path)
 
         # Append to list of saved steps
         if self._is_master:
@@ -143,7 +144,7 @@ class CheckpointManager:
         # Load sharded state
         app_state = AppState(model, optimizers, scheduler, progress)
         state_dict = {"app": app_state}
-        dcp.load(state_dict=state_dict, checkpoint_id=ckpt_path)
+        dcp_load(state_dict=state_dict, checkpoint_id=ckpt_path)
 
         # Load the dataloader
         if dataloader is not None:

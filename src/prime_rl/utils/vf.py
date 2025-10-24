@@ -83,7 +83,7 @@ async def generate_group(
     problem: dict,
     rollouts_per_example: int,
     sampling_args: dict,
-    max_concurrent: int,
+    semaphore: asyncio.Semaphore | None,
 ) -> GenerateOutputs:
     """Asynchronously generate and score rollouts for one problem."""
     return await env.generate(
@@ -91,7 +91,7 @@ async def generate_group(
         client=client,
         model=model_name,
         sampling_args=sampling_args,
-        max_concurrent=max_concurrent,
+        semaphore=semaphore,
         use_tqdm=False,
     )
 
@@ -103,7 +103,7 @@ async def generate_batch(
     problems: list[dict],
     rollouts_per_example: int,
     sampling_args: dict,
-    max_concurrent: int = -1,
+    semaphore: asyncio.Semaphore | None,
     use_tqdm: bool = True,
 ) -> GenerateOutputs:
     """Asynchronously generate and score rollouts for a list of problems."""
@@ -116,9 +116,7 @@ async def generate_batch(
 
     async def generate_group_with_progress(client, problem):
         """Generate rollouts for one problem and update progress."""
-        result = await generate_group(
-            client, env, model_name, problem, rollouts_per_example, sampling_args, max_concurrent
-        )
+        result = await generate_group(client, env, model_name, problem, rollouts_per_example, sampling_args, semaphore)
         if pbar:
             pbar.update(rollouts_per_example)
         return result

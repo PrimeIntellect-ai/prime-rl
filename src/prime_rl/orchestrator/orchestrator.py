@@ -295,6 +295,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         async def default_loop():
             problems = buffer.sample_problems(problems_to_sample)
+            semaphore = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent is not None else None
             generate_outputs = await generate_batch(
                 clients=clients,
                 env=vf_env,
@@ -302,6 +303,7 @@ async def orchestrate(config: OrchestratorConfig):
                 problems=problems,
                 rollouts_per_example=config.rollouts_per_example,
                 sampling_args=sampling_args,
+                semaphore=semaphore,
             )
 
             return (

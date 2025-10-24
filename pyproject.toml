@@ -30,7 +30,6 @@ dependencies = [
     "math-verify>=0.8.0",
     "torchdata>=0.11.0",
     "accelerate>=1.10.1",
-    "torchtitan",
     "blobfile>=3.0.0",
     "reverse-text>=0.1.4",
     "torchtitan",
@@ -67,7 +66,7 @@ prerelease = "allow"
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
 reverse-text = { index = "primeintellect" }
-verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "b97441d" }
+verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "a793bf6deb3896d2844bcae6de4dcddb6436fac1" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "main" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e43694bbfeff5d6ad8ac738c067bb90d41" }
 

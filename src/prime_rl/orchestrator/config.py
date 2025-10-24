@@ -203,11 +203,11 @@ class EvalConfig(BaseConfig):
     ] = []
 
     max_concurrent: Annotated[
-        list[int],
+        int | None,
         Field(
-            description="Maximum number of concurrent rollouts to generate and score. If empty, will default to -1 for all environments.",
+            description="Maximum number of concurrent rollouts to generate and score. Will create a global semaphore and pass to verifiers Environment. If None, will not limit concurrency.",
         ),
-    ] = []
+    ] = 1024
 
     sampling: EvalSamplingConfig = Field(
         default_factory=EvalSamplingConfig,
@@ -238,15 +238,6 @@ class EvalConfig(BaseConfig):
 
         if len(self.num_examples) != len(self.environment_ids):
             raise ValueError("Number of num_examples entries must match number of ids")
-
-        # max_concurrent: if empty/unspecified, default to -1 for all; else length must match ids
-        if len(self.max_concurrent) == 0:
-            self.max_concurrent = [-1 for _ in self.environment_ids]
-        elif len(self.max_concurrent) == 1:
-            self.max_concurrent = [self.max_concurrent[0] for _ in self.environment_ids]
-
-        elif len(self.max_concurrent) != len(self.environment_ids):
-            raise ValueError("Number of max_concurrent entries must match number of ids")
 
         return self
 
@@ -383,6 +374,7 @@ DataBufferConfigType: TypeAlias = SimpleBufferConfig | DifficultyPoolBufferConfi
 
 class AdvantageConfig(BaseConfig):
     global_std_norm: bool = False
+    local_std_norm: bool = False
     length_weighted_mean: bool = False
     leave_one_out: bool = False
     neg_clipped: bool = False
@@ -447,6 +439,13 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = Path("outputs")
 
+    max_concurrent: Annotated[
+        int | None,
+        Field(
+            description="Maximum number of concurrent rollouts to generate and score. Will create a global semaphore and pass to verifiers Environment. If None, will not limit concurrency.",
+        ),
+    ] = 1024
+
     batch_size: Annotated[int, Field(ge=1, description="Number of samples to train on per step.")] = 128
 
     micro_batch_size: Annotated[
@@ -455,7 +454,7 @@ class OrchestratorConfig(BaseSettings):
             ge=1,
             description="Number of samples to train on per micro batch. This value should be tuned based on the hardware available. Usually, to the largest value divisble by the training batch size.",
         ),
-    ] = 128
+    ] = 1
 
     rollouts_per_example: Annotated[
         int,
