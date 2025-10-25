@@ -2,7 +2,6 @@ import asyncio
 from abc import ABC, abstractmethod
 from itertools import cycle
 
-from httpx import AsyncClient
 from openai import AsyncOpenAI
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from verifiers import Environment
@@ -12,35 +11,23 @@ from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.buffer import Buffer, Rollout, make_rollouts
 from prime_rl.orchestrator.config import OrchestratorConfig, SamplingConfig
 from prime_rl.orchestrator.utils import parse_is_truncated_completions
-from prime_rl.utils.client import update_weights
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.utils import get_latest_ckpt_step, get_step_path, get_weights_dir, wait_for_path
 from prime_rl.utils.vf import generate_batch, generate_group
 
 
 class Scheduler(ABC):
-    """
-    Abstract base class for schedulers. They are responsible for scheduling rollout and weight update requests.
-    """
+    """Abstract base class for schedulers."""
 
     def __init__(
         self,
         clients: list[AsyncOpenAI],
-        admin_clients: list[AsyncClient],
         env: Environment,
         buffer: Buffer,
         tokenizer: PreTrainedTokenizerFast,
         config: OrchestratorConfig,
     ):
         self.logger = get_logger()
-        self.clients, self.admin_clients, self.env, self.buffer, self.tokenizer, self.config = (
-            clients,
-            admin_clients,
-            env,
-            buffer,
-            tokenizer,
-            config,
-        )
+        self.clients, self.env, self.buffer, self.tokenizer, self.config = clients, env, buffer, tokenizer, config
         self.problems_per_batch = self.config.batch_size // self.config.rollouts_per_example
         self.semaphore = (
             asyncio.Semaphore(self.config.max_concurrent) if self.config.max_concurrent is not None else None
@@ -112,48 +99,22 @@ class Scheduler(ABC):
         return accepted_rollouts
 
     @abstractmethod
-    async def update_policy(self, **kwargs):
-        pass
-
-    @abstractmethod
-    async def generate_batch(self, **kwargs) -> list[Rollout]:
-        pass
-
-    @abstractmethod
-    async def step(self, step: int) -> list[Rollout]:
+    async def generate_batch(self) -> list[Rollout]:
         pass
 
 
 class DefaultScheduler(Scheduler):
-    """Schedules and awaits all batch rollout requests synchronously. Updates policy in between training steps."""
-
     def __init__(
         self,
-        clients: list[AsyncOpenAI],
-        admin_clients: list[AsyncClient],
-        env: Environment,
         buffer: Buffer,
+        env: Environment,
         tokenizer: PreTrainedTokenizerFast,
         config: OrchestratorConfig,
+        clients: list[AsyncOpenAI],
     ):
-        super().__init__(clients, admin_clients, env, buffer, tokenizer, config)
-        self.ckpt_step = 0
-        self.off_policy_level = 0
-
-    async def update_policy(self, step: int):
-        """Updates the policy to be exactly off-policy step away."""
-        next_ckpt_step = max(step - self.config.async_level, 0)
-        if step - self.ckpt_step > self.config.async_level:
-            await wait_for_path(get_step_path(get_weights_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
-            await update_weights(
-                self.admin_clients, get_step_path(get_weights_dir(self.config.output_dir), next_ckpt_step)
-            )
-            self.ckpt_step = next_ckpt_step
-
-        self.off_policy_level = step - self.ckpt_step
+        super().__init__(clients, env, buffer, tokenizer, config)
 
     async def generate_batch(self) -> list[Rollout]:
-        """Schedules and awaits all batch rollout requests synchronously."""
         batch_rollouts: list[Rollout] = []
         problems_left = self.problems_per_batch
         while True:
@@ -182,25 +143,19 @@ class DefaultScheduler(Scheduler):
 
         return batch_rollouts
 
-    async def step(self, step: int) -> list[Rollout]:
-        """Updates the policy and generates a batch of rollouts."""
-        await self.update_policy(step=step)
-        return await self.generate_batch()
-
 
 class ARealScheduler(Scheduler):
-    """Asynchronously schedules group rollout requests and re-schedules them as they complete (continuous batching). Updates policy in between group rollout requests."""
+    """Scheduler for AREAL training."""
 
     def __init__(
         self,
-        clients: list[AsyncOpenAI],
-        admin_clients: list[AsyncClient],
-        env: Environment,
         buffer: Buffer,
+        env: Environment,
         tokenizer: PreTrainedTokenizerFast,
         config: OrchestratorConfig,
+        clients: list[AsyncOpenAI],
     ):
-        super().__init__(clients, admin_clients, env, buffer, tokenizer, config)
+        super().__init__(clients, env, buffer, tokenizer, config)
         self.inflight_group_rollouts: list[asyncio.Task] = []
         self.cycle_clients = cycle(self.clients)
 
@@ -220,18 +175,7 @@ class ARealScheduler(Scheduler):
         await asyncio.sleep(0)
         self.inflight_group_rollouts.append(group_rollout_request)
 
-    async def update_policy(self, step: int):
-        """Updates the policy to the latest available checkpoint."""
-        latest_ckpt_step = get_latest_ckpt_step(get_weights_dir(self.config.output_dir)) or 0
-
-        if latest_ckpt_step > self.ckpt_step:
-            await update_weights(
-                self.admin_clients, get_step_path(get_weights_dir(self.config.output_dir), latest_ckpt_step)
-            )
-            self.ckpt_step = latest_ckpt_step
-        self.off_policy_level = step - self.ckpt_step
-
-    async def generate_batch(self, step: int) -> list[Rollout]:
+    async def generate_batch(self) -> list[Rollout]:
         # Schedule initial tasks
         while len(self.inflight_group_rollouts) < self.problems_per_batch:
             await self.schedule_task()
@@ -255,26 +199,19 @@ class ARealScheduler(Scheduler):
 
                 await self.schedule_task()
 
-        await self.update_policy(step=step)
-
         return batch_rollouts
-
-    async def step(self, step: int) -> list[Rollout]:
-        """Generates group rollouts continuously until the batch is filled."""
-        return await self.generate_batch(step)
 
 
 def setup_scheduler(
-    clients: list[AsyncOpenAI],
-    admin_clients: list[AsyncClient],
-    env: Environment,
     buffer: Buffer,
+    env: Environment,
     tokenizer: PreTrainedTokenizerFast,
     config: OrchestratorConfig,
+    clients: list[AsyncOpenAI],
 ) -> Scheduler:
     if config.scheduler == "default":
-        return DefaultScheduler(clients, admin_clients, env, buffer, tokenizer, config)
+        return DefaultScheduler(buffer, env, tokenizer, config, clients)
     elif config.scheduler == "areal":
-        return ARealScheduler(clients, admin_clients, env, buffer, tokenizer, config)
+        return ARealScheduler(buffer, env, tokenizer, config, clients)
     else:
         raise ValueError(f"Invalid scheduler type: {config.scheduler}")
