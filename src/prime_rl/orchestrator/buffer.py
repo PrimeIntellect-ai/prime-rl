@@ -89,9 +89,11 @@ class Buffer(ABC):
 
     def __init__(self, dataset: Dataset, buffer_config: DataBufferConfigType):
         self.logger = get_logger()
+        self.config = buffer_config
+        random.seed(self.config.seed)
 
         # Initialize buffer
-        self._init_buffer(dataset, buffer_config.from_scratch)
+        self._init_buffer(dataset, self.config.from_scratch)
 
     def _init_buffer(self, dataset: Dataset, from_scratch: bool) -> None:
         """Initializes the buffer state from a dataset."""
