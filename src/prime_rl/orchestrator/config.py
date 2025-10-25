@@ -162,6 +162,12 @@ class EvalSaveHFConfig(BaseConfig):
 class EvalSaveConfig(BaseConfig):
     disk: EvalSaveDiskConfig | None = None
     hf: EvalSaveHFConfig | None = None
+    hub: Annotated[
+        bool,
+        Field(
+            description="Whether to push eval results to Environment Hub. Automatically pushes all evaluated environments."
+        ),
+    ] = False
 
 
 class EnvironmentConfig(BaseConfig):

@@ -8,6 +8,7 @@ from prime_rl.utils.client import (
     reload_weights,
     setup_admin_clients,
     setup_clients,
+    setup_evals_client,
     update_weights,
 )
 from prime_rl.utils.logger import setup_logger
@@ -35,12 +36,13 @@ async def eval(config: OfflineEvalConfig):
         run_config=config,
     )
 
-    # Setup client
+    # Setup clients
     logger.info(
         f"Initializing OpenAI client (base_url={', '.join(config.client.base_url)}, api_key_var={config.client.api_key_var}, server_type={config.client.server_type})"
     )
     clients = setup_clients(config.client)
     admin_clients = setup_admin_clients(config.client)
+    evals_client = setup_evals_client()
 
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")
@@ -61,6 +63,7 @@ async def eval(config: OfflineEvalConfig):
             model_config=config.model,
             sampling_config=config.sampling,
             client_config=config.client,
+            evals_client=evals_client,
             output_dir=config.output_dir,
             ckpt_step=0,
         )
@@ -88,6 +91,7 @@ async def eval(config: OfflineEvalConfig):
                 model_config=config.model,
                 sampling_config=config.sampling,
                 client_config=config.client,
+                evals_client=evals_client,
                 output_dir=config.output_dir,
                 ckpt_step=ckpt_step,
             )
