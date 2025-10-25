@@ -1,15 +1,17 @@
-max_steps = 500
+max_steps = 100
 batch_size = 1024
-micro_batch_size = 1
 rollouts_per_example = 16
-seq_len = 16384
-mask_truncated_completions = false
+seq_len = 12288
+
+[buffer]
+seed = 0
 
 [model]
 name = "willcb/DeepSeek-R1-Distill-Qwen-1.5B"
 
 [sampling]
-max_tokens = 16384
+max_tokens = 12288
+seed = 0
 
 [environment]
 id = "hendrycks-math"
