@@ -12,6 +12,7 @@ configs/endpoints.py
 **/logs
 **/wandb
 **/evals
+final_summary.json
 .pydantic_config
 
 # Byte-compiled / optimized / DLL files

@@ -293,6 +293,13 @@ class BufferConfig(BaseModel):
         ),
     ] = True
 
+    seed: Annotated[
+        int | None,
+        Field(
+            description="Random seed to use for the buffer. If set, the sampling from the buffer will be deterministic.",
+        ),
+    ] = 0
+
 
 class SimpleBufferConfig(BufferConfig):
     type: Literal["simple"] = "simple"
@@ -360,16 +367,20 @@ class OnlineDifficultyBufferConfig(BufferConfig):
         ),
     ] = 0.99
 
+
+DataBufferConfigType: TypeAlias = SimpleBufferConfig | DifficultyPoolBufferConfig | OnlineDifficultyBufferConfig
+
+
+class SchedulerConfig(BaseConfig):
+    type: Literal["default", "areal"] = "default"
+
     oversampling_factor: Annotated[
         float,
         Field(
-            gt=0,
-            description="Factor by which to oversample during filtering to ensure sufficient samples.",
+            ge=1,
+            description="Factor by which to oversample the buffer to generate more rollouts than needed for training.",
         ),
     ] = 1.0
-
-
-DataBufferConfigType: TypeAlias = SimpleBufferConfig | DifficultyPoolBufferConfig | OnlineDifficultyBufferConfig
 
 
 class AdvantageConfig(BaseConfig):
@@ -412,6 +423,9 @@ class OrchestratorConfig(BaseSettings):
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
+
+    # The scheduler configuration
+    scheduler: SchedulerConfig = SchedulerConfig()
 
     output_dir: Annotated[
         Path,
