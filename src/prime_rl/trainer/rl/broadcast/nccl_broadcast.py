@@ -5,7 +5,7 @@ from torch.distributed.tensor import DTensor
 
 from prime_rl.trainer.rl.broadcast.utils import init_tensor_from_string_description, tensor_string_description
 from prime_rl.trainer.utils import get_world
-from prime_rl.trainer.weights import _convert_tt_moe_to_hf_, _has_tt_moe_layers
+from prime_rl.trainer.weights import convert_tt_to_hf_moe, has_tt_moe_layers
 
 
 class NCCLBroadcastTrainer:
@@ -36,8 +36,8 @@ class NCCLBroadcastTrainer:
 
         state_dict = model.state_dict()
 
-        if _has_tt_moe_layers(state_dict):
-            _convert_tt_moe_to_hf_(state_dict)
+        if has_tt_moe_layers(state_dict):
+            convert_tt_to_hf_moe(state_dict)
 
         if self.training_rank == 0:
             state = pickle.dumps({key: tensor_string_description(value) for key, value in state_dict.items()})
