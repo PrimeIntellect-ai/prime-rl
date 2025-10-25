@@ -55,7 +55,7 @@ class NCCLBroadcastConfig(BaseConfig):
 
     host: Annotated[str, Field(description="The host to use for the NCCL broadcast.")] = "localhost"
     port: Annotated[int, Field(description="The port to use for the NCCL broadcast.")] = 29500
-    inferece_wordl_size: Annotated[int, Field(description="The world size to use for the NCCL broadcast.")] = 1
+    inference_world_size: Annotated[int, Field(description="The world size to use for the NCCL broadcast.")] = 1
 
 
 class RLTrainerConfig(BaseSettings):

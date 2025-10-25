@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 
-from vllm.distributed.parallel_state import get_tensor_model_parallel_rank
+from vllm.distributed.parallel_state import get_dp_group, get_tensor_model_parallel_rank
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader.utils import process_weights_after_loading
 
@@ -25,11 +25,19 @@ class NCCLBroadcastWorker(Worker):
         """Initialize the process group for NCCL broadcast."""
         logger = init_logger("vllm.inference.vllm.worker_nccl")
         self.tp_rank = get_tensor_model_parallel_rank()
+        self.dp_rank = get_dp_group().rank
+        self.dp_world_size = get_dp_group().world_size
+
         logger.info(f"Worker TP rank: {self.tp_rank}")
 
         if self.tp_rank == 0:
             self.nccl_broadcast = NCCLBroadcastInference(
-                host=host, port=port, rank=rank, world_size=world_size, device=self.device, logger=logger
+                host=host,
+                port=port,
+                rank=rank + self.dp_rank,
+                world_size=(world_size - 1) * self.dp_world_size + 1,
+                device=self.device,
+                logger=logger,
             )
 
     def update_weights(self, weight_dir: str) -> None:
