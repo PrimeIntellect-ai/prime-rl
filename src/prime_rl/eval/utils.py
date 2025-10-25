@@ -193,12 +193,11 @@ async def run_eval(
         if save_config.hub:
             eval_name = f"{env_id}--{model_config.name.replace('/', '--')}"
 
-            # Create evaluation with environment
+            # Create evaluation for environment
             create_response = await evals_client.create_evaluation(
                 name=eval_name,
                 environments=[{"id": env_id}],
                 model_name=model_config.name,
-                dataset=env_id,
                 framework="verifiers",
                 metadata=metadata_dict,
                 metrics=eval_metrics,
