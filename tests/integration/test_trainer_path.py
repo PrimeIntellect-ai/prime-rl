@@ -26,9 +26,9 @@ def create_sample(seq_len: int) -> BatchSample:
     }
 
 
-def create_dummy_batch(batch_size: int, max_seq_len: int) -> MicroBatch:
+def create_dummy_batch(batch_size: int, seq_len: int) -> MicroBatch:
     micro_batch = {}
-    samples = [create_sample(max_seq_len) for _ in range(batch_size)]
+    samples = [create_sample(seq_len) for _ in range(batch_size)]
     for key in ["input_ids", "advantages", "loss_mask", "inference_logprobs", "position_ids"]:
         micro_batch[key] = torch.cat([sample[key] for sample in samples]).unsqueeze(0)
     micro_batch["temperature"] = 1.0
@@ -45,7 +45,7 @@ def fake_rollout_dir(
     def write_dummy_batches(
         steps: list[int] = [1],
         batch_size: int = 1,
-        max_seq_len: int = 10,
+        seq_len: int = 10,
     ) -> Path:
         for step in steps:
             step_path = get_rollout_dir(output_dir) / f"step_{step}"
@@ -54,7 +54,7 @@ def fake_rollout_dir(
             tmp_path = batch_path.with_suffix(".tmp")
             batches = []
             for _ in range(batch_size):
-                micro_batch = create_dummy_batch(batch_size, max_seq_len)
+                micro_batch = create_dummy_batch(batch_size, seq_len)
                 batches.append(micro_batch)
             torch.save(batches, tmp_path)
             tmp_path.rename(batch_path)
