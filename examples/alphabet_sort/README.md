@@ -2,7 +2,7 @@
 
 In this example, we demonstrate how to train `Qwen3-4B-Instruct-2507` to sort names alphabetically using LoRA. Unlike other examples, this task doesn't require SFT warmup as the base model already understands the conversation format. We proceed directly to multi-turn RL against the [`kalomaze/alphabet-sort`](https://app.primeintellect.ai/dashboard/environments/kalomaze/alphabet-sort) environment.
 
-> This example runs on a single H100 GPU with `micro_batch_size=4`.
+> This example runs on a single H100 GPU.
 
 ## Setup
 

@@ -126,9 +126,7 @@ def prepare_batch(
     rollouts: list[Rollout],
     temperature: float,
     tokenizer: PreTrainedTokenizer,
-    batch_size: int,
-    micro_batch_size: int,
-    seq_len: int,
+    max_seq_len: int,
     num_train_workers: int,
 ) -> list[list[MicroBatch]]:
     """
@@ -136,7 +134,6 @@ def prepare_batch(
     Each micro batch is shape [1, micro_bs * max_seq_len], the namber of sample is not fixed per micro batch.
     """
     rollouts = copy.deepcopy(rollouts)
-    max_seq_len = seq_len * micro_batch_size
 
     all_samples = [
         prepare_sample(

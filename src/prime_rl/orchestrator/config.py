@@ -429,14 +429,6 @@ class OrchestratorConfig(BaseSettings):
 
     batch_size: Annotated[int, Field(ge=1, description="Number of samples to train on per step.")] = 128
 
-    micro_batch_size: Annotated[
-        int,
-        Field(
-            ge=1,
-            description="Number of samples to train on per micro batch. This value should be tuned based on the hardware available. Usually, to the largest value divisble by the training batch size.",
-        ),
-    ] = 1
-
     rollouts_per_example: Annotated[
         int,
         Field(
@@ -514,10 +506,6 @@ class OrchestratorConfig(BaseSettings):
     def validate_batch_size(self):
         if self.batch_size % self.rollouts_per_example != 0:
             raise ValueError("Batch size must be divisible by the number of samples per problem")
-        if self.batch_size % self.micro_batch_size != 0:
-            raise ValueError("Batch size must be divisible by micro batch size")
-        if self.batch_size < self.micro_batch_size:
-            raise ValueError("Batch size must be greater than or equal to micro batch size")
         return self
 
     @model_validator(mode="after")

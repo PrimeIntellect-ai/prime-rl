@@ -19,18 +19,9 @@ from prime_rl.utils.pydantic_config import BaseSettings
 class BaseDataConfig(BaseModel):
     """Base config for SFT data."""
 
-    micro_batch_size: Annotated[int, Field(ge=1)] = 8
     batch_size: Annotated[int, Field(ge=1)] = 128
     seq_len: Annotated[int, Field(ge=1)] = 128
     pack_function: Literal["cat", "stack"] = "cat"
-
-    @model_validator(mode="after")
-    def validate_batch_size(self):
-        if self.batch_size % self.micro_batch_size != 0:
-            raise ValueError("Batch size must be divisible by micro batch size")
-        if self.batch_size < self.micro_batch_size:
-            raise ValueError("Batch size must be greater than or equal to micro batch size")
-        return self
 
 
 class FakeDataConfig(BaseDataConfig):

@@ -20,14 +20,12 @@ class MicroBatch(TypedDict):
 
     # Batch level
     temperature: float
-    total_tokens: int
 
 
 class FakeDataLoader:
     def __init__(self, config: FakeDataLoaderConfig):
         self.batch_size = config.batch_size
-        self.micro_batch_size = config.micro_batch_size
-        self.num_micro_batches = self.batch_size // self.micro_batch_size // get_world().world_size
+        self.num_micro_batches = self.batch_size // get_world().world_size
         self.seq_len = config.seq_len
 
     def wait_for_batch(self) -> None:
@@ -43,14 +41,14 @@ class FakeDataLoader:
                 100,
                 (
                     1,
-                    self.micro_batch_size * self.seq_len,
+                    self.seq_len,
                 ),
             ),
-            "position_ids": torch.cat([torch.arange(self.seq_len)] * self.micro_batch_size).unsqueeze(0),
-            "advantages": torch.randn(self.micro_batch_size * self.seq_len).unsqueeze(0),
-            "inference_logprobs": torch.randn(self.micro_batch_size * self.seq_len).unsqueeze(0),
+            "position_ids": torch.cat([torch.arange(self.seq_len)]).unsqueeze(0),
+            "advantages": torch.randn(self.seq_len).unsqueeze(0),
+            "inference_logprobs": torch.randn(self.seq_len).unsqueeze(0),
             "temperature": 1.0,
-            "loss_mask": torch.ones(self.micro_batch_size * self.seq_len, dtype=torch.bool).unsqueeze(0),
+            "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
         }
 
 

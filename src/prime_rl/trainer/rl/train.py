@@ -171,14 +171,13 @@ def train(config: RLTrainerConfig):
         load_data_time = time.time() - load_data_start_time
         logger.debug(f"Loaded batch in {load_data_time:.2f} seconds")
 
-        num_micro_batches = len(micro_batches)
+        batch_size = len(micro_batches)
         memory_profiler = None
         if config.memory_profiler_path is not None:
             memory_profiler = MemoryProfiler(progress.step, config.memory_profiler_path)
 
         forward_backward_start_time = time.time()
-        micro_batch_size, seq_len = micro_batches[0]["input_ids"].shape
-        batch_size = micro_batch_size * num_micro_batches
+        max_seq_len = micro_batches[0]["input_ids"].shape[1]
 
         # Normalize by the local number of unmasked tokens in the batch (per-batch length normalization)
         if config.loss.ratio_type == "token":
@@ -187,7 +186,7 @@ def train(config: RLTrainerConfig):
             loss_scale = batch_size
         loss_scale = max(loss_scale, 1)
 
-        logger.info(f"Starting forward and backward pass ({num_micro_batches=})")
+        logger.info(f"Starting forward and backward pass ({batch_size=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
         for micro_step, micro_batch in enumerate(micro_batches):
             # we only all reduce at the last grad acc step
@@ -199,7 +198,6 @@ def train(config: RLTrainerConfig):
             loss_mask = micro_batch["loss_mask"].to("cuda")
             inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
             temperature = micro_batch["temperature"]
-            micro_batch_size, seq_len = input_ids.shape
 
             # Forward pass
             with maybe_record_function("forward"):
@@ -279,12 +277,11 @@ def train(config: RLTrainerConfig):
         tensor_stats = tensors.compute_stats()
 
         # Compute step metrics
-        num_local_tokens = micro_batch_size * seq_len * num_micro_batches
+        num_local_tokens = max_seq_len * batch_size
         num_tokens = world.world_size * num_local_tokens
-        batch_size = micro_batch_size * num_micro_batches
         progress.total_tokens += num_tokens
         progress.total_samples += batch_size
-        perf_counter = get_perf_counter(model, seq_len)
+        perf_counter = get_perf_counter(model, max_seq_len)
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_tokens_per_second() or 0
         mfu = perf_counter.get_mfu() or 0

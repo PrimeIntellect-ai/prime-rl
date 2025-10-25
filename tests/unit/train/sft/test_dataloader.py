@@ -13,7 +13,7 @@ pytestmark = [pytest.mark.gpu]
 def test_fake_dataset_single_rank_state():
     # Setup stateful dataloader
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
-    config = FakeDataConfig(length="fixed", input_ids="increasing", batch_size=1, micro_batch_size=1)
+    config = FakeDataConfig(length="fixed", input_ids="increasing", batch_size=1)
     dataset = setup_dataset(tokenizer, config)
     dataloader = setup_dataloader(dataset, config)
     dataiter = iter(dataloader)
@@ -48,7 +48,7 @@ def test_fake_dataset_multi_rank_state(rank: int):
 
     # Setup stateful dataloader
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
-    config = FakeDataConfig(length="fixed", input_ids="increasing", batch_size=1, micro_batch_size=1)
+    config = FakeDataConfig(length="fixed", input_ids="increasing", batch_size=1)
     dataset = setup_dataset(tokenizer, config)
     dataloader = setup_dataloader(dataset, config)
     dataiter = iter(dataloader)
@@ -78,7 +78,7 @@ def test_fake_dataset_multi_rank_state(rank: int):
 
 def test_fake_dataset_single_rank_resume():
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
-    config = FakeDataConfig(length="fixed", input_ids="increasing", batch_size=1, micro_batch_size=1)
+    config = FakeDataConfig(length="fixed", input_ids="increasing", batch_size=1)
     dataset = setup_dataset(tokenizer, config)
     dataloader = setup_dataloader(dataset, config)
     dataiter = iter(dataloader)
@@ -106,7 +106,7 @@ def test_fake_dataset_single_rank_resume():
 
 def test_fake_dataset_single_rank_state_with_packing():
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
-    config = FakeDataConfig(length="variable", input_ids="increasing", batch_size=1, micro_batch_size=1)
+    config = FakeDataConfig(length="variable", input_ids="increasing", batch_size=1)
     dataset = setup_dataset(tokenizer, config)
     dataloader = setup_dataloader(dataset, config)
     dataiter = iter(dataloader)

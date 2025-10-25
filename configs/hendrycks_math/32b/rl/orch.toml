@@ -1,6 +1,5 @@
 ## to run on 8H200
 batch_size = 512
-micro_batch_size = 8
 rollouts_per_example = 16
 seq_len = 2048
 mask_truncated_completions = false
