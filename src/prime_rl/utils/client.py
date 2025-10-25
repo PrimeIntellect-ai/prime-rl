@@ -9,6 +9,10 @@ from openai import AsyncOpenAI, NotFoundError
 from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.logger import get_logger
 
+# We give higher priority to admin requests for immediate handling
+ADMIN_PRIORITY = 0
+OAI_PRIORITY = 1
+
 
 def setup_clients(client_config: ClientConfig) -> list[AsyncOpenAI]:
     def _setup_client(base_url: str) -> AsyncOpenAI:
@@ -49,7 +53,7 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
             base_url=base_url,
             headers=headers,
             limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
-            timeout=httpx.Timeout(client_config.timeout, connect=5.0, pool=None),
+            timeout=httpx.Timeout(client_config.timeout, connect=30.0, pool=None),
         )
 
     return [_setup_admin_client(base_url) for base_url in client_config.base_url]
@@ -100,7 +104,9 @@ async def update_weights(admin_clients: list[AsyncClient], weight_dir: Path) -> 
 
     async def _update_weights(admin_client: AsyncClient, weight_dir: Path) -> None:
         try:
-            response = await admin_client.post("/update_weights", json={"weight_dir": weight_dir.as_posix()})
+            response = await admin_client.post(
+                "/update_weights", json=dict(weight_dir=weight_dir.as_posix(), priority=ADMIN_PRIORITY)
+            )
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
@@ -118,7 +124,7 @@ async def reload_weights(admin_clients: list[AsyncClient]) -> None:
     async def _reload_weights(admin_client: AsyncClient) -> None:
         logger.debug("Sending request to reload weights (reset to base model)")
         try:
-            response = await admin_client.post("/reload_weights", json={})
+            response = await admin_client.post("/reload_weights", json=dict(priority=ADMIN_PRIORITY))
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:

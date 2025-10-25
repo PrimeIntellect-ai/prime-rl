@@ -141,5 +141,6 @@ class InferenceConfig(BaseSettings):
 
         # Set `logprobs_mode` to `processed_logprobs` by default
         rsetattr(namespace, "logprobs_mode", "processed_logprobs")
+        rsetattr(namespace, "scheduling_policy", "priority")
 
         return namespace
