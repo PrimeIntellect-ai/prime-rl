@@ -104,7 +104,7 @@ def train(config: RLTrainerConfig):
             host=config.nccl_broadcast.host,
             port=config.nccl_broadcast.port,
             rank=0,
-            world_size=config.nccl_broadcast.inference_world_size + 1,
+            world_size=config.nccl_broadcast.dp_inference_world_size + 1,
             device=torch.cuda.current_device(),
             logger=logger,
         )
