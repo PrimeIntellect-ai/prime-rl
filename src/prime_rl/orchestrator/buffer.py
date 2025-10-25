@@ -404,9 +404,6 @@ class OnlineDifficultyBuffer(Buffer):
         self.config = buffer_config
 
     def sample_problems(self, n: int) -> list[dict]:
-        # Multiply by oversampling factor
-        n = int(self.config.oversampling_factor * n)
-
         # Get indices to sample
         assert len(self.problem_ids) >= n, (
             f"There should be at least {n} problems in the buffer, but found only {len(self.problem_ids)}"
