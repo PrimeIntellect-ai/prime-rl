@@ -1,4 +1,5 @@
 import asyncio
+import time
 from abc import ABC, abstractmethod
 from itertools import cycle
 
@@ -62,6 +63,13 @@ class Scheduler(ABC):
             return sampling_args
 
         self.sampling_args = prepare_sampling_args(config.sampling)
+        self.ckpt_step = 0
+
+        # Metrics
+        self.off_policy_level = 0
+        self.update_weights_time = 0
+        self.generate_batch_time = 0
+        self.wait_for_weight_ckpt_time = 0
 
     def process_generate_outputs(
         self,
@@ -112,14 +120,6 @@ class Scheduler(ABC):
         return accepted_rollouts
 
     @abstractmethod
-    async def update_policy(self, **kwargs):
-        pass
-
-    @abstractmethod
-    async def generate_batch(self, **kwargs) -> list[Rollout]:
-        pass
-
-    @abstractmethod
     async def step(self, step: int) -> list[Rollout]:
         pass
 
@@ -137,17 +137,22 @@ class DefaultScheduler(Scheduler):
         config: OrchestratorConfig,
     ):
         super().__init__(clients, admin_clients, env, buffer, tokenizer, config)
-        self.ckpt_step = 0
-        self.off_policy_level = 0
 
     async def update_policy(self, step: int):
         """Updates the policy to be exactly off-policy step away."""
         next_ckpt_step = max(step - self.config.async_level, 0)
         if step - self.ckpt_step > self.config.async_level:
+            self.logger.debug(
+                f"Hit async barrier because we are >{self.config.async_level} steps off-policy. Waiting for weight checkpoint {next_ckpt_step}"
+            )
+            wait_for_path_start_time = time.time()
             await wait_for_path(get_step_path(get_weights_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
+            self.wait_for_weight_ckpt_time = time.time() - wait_for_path_start_time
+            update_weights_start_time = time.time()
             await update_weights(
                 self.admin_clients, get_step_path(get_weights_dir(self.config.output_dir), next_ckpt_step)
             )
+            self.update_weight_time = time.time() - update_weights_start_time
             self.ckpt_step = next_ckpt_step
 
         self.off_policy_level = step - self.ckpt_step
@@ -156,6 +161,7 @@ class DefaultScheduler(Scheduler):
         """Schedules and awaits all batch rollout requests synchronously."""
         batch_rollouts: list[Rollout] = []
         problems_left = self.problems_per_batch
+        start_generate_batch_time = time.time()
         while True:
             generate_outputs = await generate_batch(
                 clients=self.clients,
@@ -179,6 +185,7 @@ class DefaultScheduler(Scheduler):
             # On next iteration, sample the remaining problems to fill the batch
             problems_sampled = len(batch_rollouts) // self.config.rollouts_per_example
             problems_left = self.problems_per_batch - problems_sampled
+        self.generate_batch_time = time.time() - start_generate_batch_time
 
         return batch_rollouts
 
@@ -225,9 +232,12 @@ class ARealScheduler(Scheduler):
         latest_ckpt_step = get_latest_ckpt_step(get_weights_dir(self.config.output_dir)) or 0
 
         if latest_ckpt_step > self.ckpt_step:
+            self.logger.debug(f"Found new policy with step {latest_ckpt_step}. Updating weights.")
+            update_weights_start_time = time.time()
             await update_weights(
                 self.admin_clients, get_step_path(get_weights_dir(self.config.output_dir), latest_ckpt_step)
             )
+            self.update_weights_time = time.time() - update_weights_start_time
             self.ckpt_step = latest_ckpt_step
         self.off_policy_level = step - self.ckpt_step
 
@@ -237,6 +247,7 @@ class ARealScheduler(Scheduler):
             await self.schedule_task()
 
         batch_rollouts: list[Rollout] = []
+        start_generate_batch_time = time.time()
         while len(batch_rollouts) < self.config.batch_size:
             finished_group_rollouts, _ = await asyncio.wait(
                 self.inflight_group_rollouts, return_when=asyncio.FIRST_COMPLETED
@@ -254,8 +265,9 @@ class ARealScheduler(Scheduler):
                 batch_rollouts.extend(accepted_rollouts)
 
                 await self.schedule_task()
+            await self.update_policy(step=step)
 
-        await self.update_policy(step=step)
+        self.generate_batch_time = time.time() - start_generate_batch_time
 
         return batch_rollouts
 
