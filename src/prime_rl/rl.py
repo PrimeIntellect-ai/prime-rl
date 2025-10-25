@@ -371,6 +371,11 @@ class RLConfig(BaseSettings):
 
         return self
 
+    def auto_dp_inference_world_size(self):
+        if self.inference and self.broadcast_backend == "nccl":
+            self.inference.trainer.nccl_broadcast.dp_inference_world_size = len(self.inference_gpu_ids)
+        return self
+
 
 def cleanup_threads(threads: list[Thread]):
     for thread in threads:
