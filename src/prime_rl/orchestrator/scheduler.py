@@ -32,6 +32,7 @@ class Scheduler(ABC):
         self.config = config
         self.oversampling_factor = config.scheduler.oversampling_factor
         self.batch_size = config.batch_size
+        self.seq_len = config.seq_len
         self.rollouts_per_example = config.rollouts_per_example
         self.problems_per_batch = int(self.oversampling_factor * self.batch_size // self.rollouts_per_example)
 
@@ -66,6 +67,7 @@ class Scheduler(ABC):
             states=generate_outputs.state,
             rewards=generate_outputs.reward,
             processing_class=self.tokenizer,
+            max_seq_len=self.seq_len,
             mask_env_responses=self.config.mask_env_responses,
             zero_truncated_completions=self.config.zero_truncated_completions,
             mask_truncated_completions=self.config.mask_truncated_completions,
