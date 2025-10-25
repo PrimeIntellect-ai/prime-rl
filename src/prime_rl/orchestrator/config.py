@@ -293,6 +293,13 @@ class BufferConfig(BaseModel):
         ),
     ] = True
 
+    seed: Annotated[
+        int | None,
+        Field(
+            description="Random seed to use for the buffer. If set, the sampling from the buffer will be deterministic.",
+        ),
+    ] = 0
+
 
 class SimpleBufferConfig(BufferConfig):
     type: Literal["simple"] = "simple"
