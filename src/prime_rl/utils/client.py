@@ -127,3 +127,44 @@ async def reload_weights(admin_clients: list[AsyncClient]) -> None:
             raise
 
     await asyncio.gather(*[_reload_weights(admin_client) for admin_client in admin_clients])
+
+
+async def init_nccl_broadcast(admin_clients: list[AsyncClient], host: str, port: int) -> None:
+    """Make a HTTP post request to the vLLM server to initialize the NCCL broadcast."""
+    logger = get_logger()
+
+    async def _init_nccl_broadcast(admin_client: AsyncClient, host: str, port: int, client_num: int) -> None:
+        try:
+            world_size = len(admin_clients) + 1  # n client for each dp + 1 for the trainer broadcaster
+            rank = client_num + 1  # +1 because the trainer broadcaster is rank 0
+            response = await admin_client.post(
+                "/init_broadcaster", json={"host": host, "port": port, "world_size": world_size, "rank": rank}
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                logger.warning("The route /init_broadcaster does not exist. Skipping NCCL broadcast initialization.")
+                return
+
+    await asyncio.gather(
+        *[
+            _init_nccl_broadcast(admin_client, host, port, client_num)
+            for client_num, admin_client in enumerate(admin_clients)
+        ]
+    )
+
+
+async def update_weights_nccl(admin_clients: list[AsyncClient]) -> None:
+    """Make a HTTP post request to the vLLM server to update the weights via NCCL broadcast."""
+    logger = get_logger()
+
+    async def _update_weights_nccl(admin_client: AsyncClient) -> None:
+        try:
+            response = await admin_client.post("/update_weights", json={"weight_dir": ""})
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                logger.warning("The route /update_weights does not exist. Skipping weight update via NCCL broadcast.")
+                return
+
+    await asyncio.gather(*[_update_weights_nccl(admin_client) for admin_client in admin_clients])

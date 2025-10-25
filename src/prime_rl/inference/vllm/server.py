@@ -28,6 +28,12 @@ from prime_rl.inference.config import InferenceConfig
 logger = init_logger("vllm.entrypoints.openai.api_server")
 
 
+WORKER_EXTENSION_CLS = {
+    "nccl": "prime_rl.inference.vllm.worker_nccl.NCCLBroadcastWorker",
+    "filesystem": "prime_rl.inference.vllm.worker.CheckpointWorker",
+}
+
+
 # Copied from vllm/entrypoints/openai/api_server.py
 # Only difference is that we extend the engine args with our custom worker extension
 @asynccontextmanager
@@ -38,7 +44,7 @@ async def custom_build_async_engine_client(
     # Context manager to handle engine_client lifecycle
     # Ensures everything is shutdown and cleaned up on error/exit
     engine_args = AsyncEngineArgs.from_cli_args(args)
-    engine_args.worker_extension_cls = "prime_rl.inference.vllm.worker.CheckpointWorker"
+    engine_args.worker_extension_cls = args.worker_extension_cls
     engine_args.logprobs_mode = LogprobsMode.PROCESSED_LOGPROBS
 
     async with build_async_engine_client_from_engine_args(
@@ -73,6 +79,16 @@ async def custom_run_server_worker(listen_address, sock, args, client_config=Non
         @app.post("/reload_weights")
         async def _reload_weights(request: Request):
             await engine_client.collective_rpc("reload_weights")
+            return {"status": "ok"}
+
+        @app.post("/init_broadcaster")
+        async def _init_broadcaster(request: Request):
+            data = await request.json()
+            host = data.get("host")
+            port = data.get("port")
+            rank = data.get("rank")
+            world_size = data.get("world_size")
+            await engine_client.collective_rpc("init_broadcaster", args=(host, port, rank, world_size))
             return {"status": "ok"}
 
         vllm_config = await engine_client.get_vllm_config()
@@ -118,6 +134,8 @@ def server(config: InferenceConfig, vllm_args: list[str]):
     parser = make_arg_parser(parser)
     args = parser.parse_args(args=vllm_args, namespace=config.to_vllm())
     validate_parsed_serve_args(args)
+
+    args.worker_extension_cls = WORKER_EXTENSION_CLS[args.broadcast_backend]
 
     # Raise error if logprobs_mode is not set to processed_logprobs
     if args.logprobs_mode != "processed_logprobs":

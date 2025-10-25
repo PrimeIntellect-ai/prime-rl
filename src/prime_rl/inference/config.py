@@ -117,6 +117,10 @@ class InferenceConfig(BaseSettings):
         ),
     ] = None
 
+    broadcast_backend: Annotated[
+        Literal["nccl", "filesystem"], Field(description="The backend to use for broadcast.")
+    ] = "filesystem"
+
     def to_vllm(self) -> Namespace:
         """Convert InferenceConfig to vLLM-compatible Namespace."""
         namespace = Namespace()

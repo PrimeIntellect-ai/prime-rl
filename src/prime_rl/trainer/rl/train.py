@@ -11,6 +11,7 @@ from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
+from prime_rl.trainer.rl.broadcast.nccl_broadcast import NCCLBroadcastTrainer
 from prime_rl.trainer.weights import setup_weight_ckpt_manager
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
@@ -96,6 +97,18 @@ def train(config: RLTrainerConfig):
     )
     assert weight_ckpt_manager is not None, "Weight checkpoint manager must be set on RL trainer"
 
+    # Set up NCCL broadcast
+    if config.broadcast_backend == "nccl":
+        # we do inferece world size + 1 because we have the trainer broadcaster as rank 0
+        nccl_broadcast = NCCLBroadcastTrainer(
+            host=config.nccl_broadcast.host,
+            port=config.nccl_broadcast.port,
+            rank=0,
+            world_size=config.nccl_broadcast.dp_inference_world_size + 1,
+            device=torch.cuda.current_device(),
+            logger=logger,
+        )
+
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
     ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
@@ -128,10 +141,17 @@ def train(config: RLTrainerConfig):
 
         # Save the weight checkpoint (if we are not at the first step, because no updates to the model have been made yet)
         save_weights_time = 0
+        broadcast_weights_time = 0
         if progress.step > 0:
             save_weights_start_time = time.time()
             weight_ckpt_manager.save(model, tokenizer, step=progress.step)
             save_weights_time = time.time() - save_weights_start_time
+            broadcast_weights_time = save_weights_time
+
+        if config.broadcast_backend == "nccl" and progress.step > 0:
+            broadcast_weights_start_time = time.time()
+            nccl_broadcast.broadcast_state_dict(model)
+            broadcast_weights_time = time.time() - broadcast_weights_start_time
 
         # Save the full checkpoint (if we are at an interval step and not at the first or last step)
         is_last_step = config.max_steps is not None and progress.step == config.max_steps
@@ -325,6 +345,7 @@ def train(config: RLTrainerConfig):
             "time/wait_for_batch": wait_for_batch_time,
             "time/load_data": load_data_time,
             "time/save_weights": save_weights_time,
+            "time/broadcast_weights": broadcast_weights_time,
             "time/save_ckpt": save_ckpt_time,
             "time/forward_backward": forward_backward_time,
             "step": progress.step,
