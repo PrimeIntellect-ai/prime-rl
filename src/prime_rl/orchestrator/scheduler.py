@@ -277,7 +277,7 @@ class ARealScheduler(Scheduler):
                     num_old_rollout_requests += 1
                 else:
                     self.inflight_group_rollouts[task] = retention_step + 1
-            self.logger.debug(f"Cancelled and re-scheduled {num_old_rollout_requests} old rollout requests.")
+            self.logger.warning(f"Cancelled and re-scheduled {num_old_rollout_requests} old rollout requests.")
             self.ckpt_step = latest_ckpt_step
 
     async def step(self, step: int) -> list[Rollout]:
@@ -315,12 +315,12 @@ class ARealScheduler(Scheduler):
         return batch_rollouts
 
     @property
-    def retention_level(self) -> int:
+    def max_retention_level(self) -> int:
         return max(self.inflight_group_rollouts.values())
 
     def metrics(self) -> dict:
         return {
-            "batch/retention_level": self.retention_level,
+            "batch/max_retention_level": self.max_retention_level,
         }
 
 
