@@ -39,11 +39,12 @@ class NCCLBroadcastTrainer:
         if _has_tt_moe_layers(state_dict):
             _convert_tt_moe_to_hf_(state_dict)
 
-        state = pickle.dumps({key: tensor_string_description(value) for key, value in state_dict.items()})
-        size_tensor = torch.tensor([len(state)], dtype=torch.long).cuda()
-        self.communicator.broadcast(size_tensor, src=0)
-        state_tensor = torch.ByteTensor(list(state)).cuda()
-        self.communicator.broadcast(state_tensor, src=0)
+        if self.training_rank == 0:
+            state = pickle.dumps({key: tensor_string_description(value) for key, value in state_dict.items()})
+            size_tensor = torch.tensor([len(state)], dtype=torch.long).cuda()
+            self.communicator.broadcast(size_tensor, src=0)
+            state_tensor = torch.ByteTensor(list(state)).cuda()
+            self.communicator.broadcast(state_tensor, src=0)
 
         # TODO(SAMI): there are two performance optimization we should do here:
         # 1. we should bucket more tensor into one broadcast call
