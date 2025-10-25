@@ -13,7 +13,7 @@ from transformers import AutoTokenizer
 
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.eval.utils import run_evals
-from prime_rl.orchestrator.scheduler import setup_scheduler
+from prime_rl.orchestrator.scheduler import ARealScheduler, DefaultScheduler, setup_scheduler
 from prime_rl.utils.client import (
     check_has_model,
     check_health,
@@ -30,8 +30,6 @@ from prime_rl.orchestrator.utils import print_benchmark
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import (
-    get_latest_ckpt_step,
-    wait_for_path,
     clean_exit,
     format_num,
     get_rollout_dir,
@@ -52,9 +50,7 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Print warning if running in benchmark mode
     if config.bench:
-        logger.warning(
-            f"Running in benchmark mode (max_steps={config.max_steps}, async_level={format_num(config.async_level, precision=0)})"
-        )
+        logger.warning(f"Running in benchmark mode (max_steps={config.max_steps})")
 
     # Setup client
     assert config.client.server_type == "vllm", "Orchestrator only supports vLLM server type."
@@ -88,7 +84,7 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup scheduler
     logger.info(f"Setting up scheduler ({config.scheduler})")
-    scheduler = setup_scheduler(buffer, vf_env, tokenizer, config, clients)
+    scheduler = setup_scheduler(clients, admin_clients, vf_env, buffer, tokenizer, config)
 
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")
@@ -106,7 +102,11 @@ async def orchestrate(config: OrchestratorConfig):
     if config.ckpt and ckpt_manager and config.ckpt.resume_step:
         logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
         ckpt_manager.load(progress, buffer, step=config.ckpt.resume_step)
-        ckpt_step = max(progress.step - config.async_level, 0)
+        ckpt_step = (
+            max(progress.step - config.scheduler.max_off_policy_steps, 0)
+            if config.scheduler.type == "default"
+            else progress.step
+        )
         await update_weights(admin_clients, get_step_path(get_weights_dir(config.output_dir), ckpt_step))
     else:
         logger.info("Training from scratch. Resetting weights to base model")
@@ -115,11 +115,8 @@ async def orchestrate(config: OrchestratorConfig):
     # Iterate over dataset in batches
     max_steps = config.max_steps or int(1e9)
     logger.info(f"Starting orchestrator loop ({max_steps=})")
-    ckpt_step = 0
     last_eval_step = -1
     is_first_step = True
-
-    ckpt_step = 0
     problems_per_batch = config.batch_size // config.rollouts_per_example
 
     while True:
@@ -147,38 +144,10 @@ async def orchestrate(config: OrchestratorConfig):
         logger.debug(f"Starting orchestrator step {progress.step}")
         step_start_time = time.time()
 
-        # Determine next ckpt step
-        # In AREAL mode, we always use the latest available checkpoint, else, we use a fixed-step off-policy level
-        fixed_off_policy_ckpt_step = max(progress.step - config.async_level, 0)
-        latest_ckpt_step = get_latest_ckpt_step(get_weights_dir(config.output_dir)) or 0
-        next_ckpt_step = (
-            max(latest_ckpt_step, fixed_off_policy_ckpt_step)
-            if config.scheduler == "areal"
-            else fixed_off_policy_ckpt_step
-        )
-        logger.debug(f"Determined {next_ckpt_step=} ({latest_ckpt_step=}, {fixed_off_policy_ckpt_step=})")
-
-        # If the next available checkpoint is too old, we throttle and wait for a checkpoint to satisfy the async_level
-        wait_for_weight_ckpt_time, update_weights_time = 0, 0
-        if progress.step - ckpt_step > config.async_level:
-            logger.debug(
-                f"Hit async barrier because we are >{config.async_level} steps off-policy. Waiting for weight checkpoint {next_ckpt_step}"
-            )
-            wait_for_weight_ckpt_start_time = time.time()
-            await wait_for_path(get_step_path(get_weights_dir(config.output_dir), next_ckpt_step) / "STABLE")
-            wait_for_weight_ckpt_time = time.time() - wait_for_weight_ckpt_start_time
-            logger.debug(f"Waited {wait_for_weight_ckpt_time:.2f}s for weight checkpoint")
-
-        # Finally, load the weights if needed
-        if next_ckpt_step > ckpt_step:
-            logger.debug(f"Updating weights to weight checkpoint {next_ckpt_step}")
-            update_weights_start_time = time.time()
-            await update_weights(admin_clients, get_step_path(get_weights_dir(config.output_dir), next_ckpt_step))
-            update_weights_time = time.time() - update_weights_start_time
-            logger.debug(f"Updated weights in {update_weights_time:.2f}s")
-            ckpt_step = next_ckpt_step
-
-        off_policy_level = progress.step - ckpt_step
+        # Generate a batch of rollouts
+        generate_completions_start_time = time.time()
+        accepted_rollouts = await scheduler.step(step=progress.step)
+        generate_completions_time = time.time() - generate_completions_start_time
 
         # Optionally, run online evals at the specified interval
         eval_time = 0
@@ -204,10 +173,6 @@ async def orchestrate(config: OrchestratorConfig):
             )
             eval_time = time.time() - eval_start_time
             logger.debug(f"Evaluated in {eval_time:.2f}s")
-
-        generate_batch_start_time = time.time()
-        accepted_rollouts = await scheduler.generate_batch()
-        generate_batch_time = time.time() - generate_batch_start_time
 
         # Unpack accepted rollouts
         rewards = (
@@ -254,7 +219,7 @@ async def orchestrate(config: OrchestratorConfig):
         progress.total_tokens += num_tokens
         progress.total_samples += config.batch_size
         progress.total_problems += config.batch_size // config.rollouts_per_example
-        throughput = num_tokens / generate_batch_time
+        throughput = num_tokens / generate_completions_time
 
         # Compute solve all and none tensors
         solve_all = rewards.sum(-1).eq(config.rollouts_per_example).float().mean().item()
@@ -291,7 +256,11 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Log step metrics
         step_time = time.time() - step_start_time
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {rewards.mean().item():.4f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {seq_lens.mean().item():.1f} tokens/sample | Off-Policy: {off_policy_level}"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {rewards.mean().item():.4f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {seq_lens.mean().item():.1f} tokens/sample"
+        if isinstance(scheduler, ARealScheduler):
+            step_message += f" | Retention Level: {scheduler.retention_level}"
+        elif isinstance(scheduler, DefaultScheduler):
+            step_message += f" | Off-Policy Level: {scheduler.off_policy_level}"
         logger.success(step_message)
 
         # Log progress metrics to monitor
@@ -343,9 +312,6 @@ async def orchestrate(config: OrchestratorConfig):
         # Log performance metrics to monitor
         perf_metrics = {
             "perf/throughput": throughput,
-            # "perf/problem_requests": problem_requests,
-            # "perf/completion_requests": completion_requests,
-            # "perf/calls_to_generate": calls_to_generate,
             "step": progress.step,
         }
         monitor.log(perf_metrics)
@@ -367,8 +333,6 @@ async def orchestrate(config: OrchestratorConfig):
             "batch/solve_none": solve_none,
             "batch/solve_all": solve_all,
             "batch/effective_batch_size": effective_batch_size,
-            # "batch/difficulty_filtered": filtered,
-            "batch/off_policy_level": off_policy_level,
             "step": progress.step,
         }
         monitor.log(solve_metrics)
@@ -376,14 +340,14 @@ async def orchestrate(config: OrchestratorConfig):
         # Log time metrics to monitor
         time_metrics = {
             "time/step": step_time,
-            "time/wait_for_weight_ckpt": wait_for_weight_ckpt_time,
-            # "time/generate_completions": generate_completions_time,
-            "time/update_weights": update_weights_time,
+            "time/generate_completions": generate_completions_time,
             "time/save_ckpt": save_ckpt_time,
             "time/eval": eval_time,
             "step": progress.step,
         }
         monitor.log(time_metrics)
+
+        monitor.log(scheduler.metrics())
 
         # Log samples and distributions to W&B table if enabled
         monitor.log_samples(

@@ -371,9 +371,7 @@ class OnlineDifficultyBufferConfig(BufferConfig):
 DataBufferConfigType: TypeAlias = SimpleBufferConfig | DifficultyPoolBufferConfig | OnlineDifficultyBufferConfig
 
 
-class SchedulerConfig(BaseConfig):
-    type: Literal["default", "areal"] = "default"
-
+class SchedulerConfig(BaseModel):
     oversampling_factor: Annotated[
         float,
         Field(
@@ -381,6 +379,37 @@ class SchedulerConfig(BaseConfig):
             description="Factor by which to oversample the buffer to generate more rollouts than needed for training.",
         ),
     ] = 1.0
+
+
+class DefaultSchedulerConfig(SchedulerConfig):
+    """Configures the default scheduler."""
+
+    type: Literal["default"] = "default"
+
+    max_off_policy_steps: Annotated[
+        int,
+        Field(
+            ge=0,
+            description="Maximum number of off-policy steps to allow. If 0, will do synchronous RL. Else, it will allow to go `max_off_policy_steps` steps ahead of training.",
+        ),
+    ] = 2
+
+
+class ARealSchedulerConfig(SchedulerConfig):
+    """Configures the AREAL scheduler."""
+
+    type: Literal["areal"] = "areal"
+
+    max_retention_steps: Annotated[
+        int,
+        Field(
+            ge=0,
+            description="Maximum number of steps to allow an in-flight group rollout request to be behind the current policy.",
+        ),
+    ] = 8
+
+
+SchedulerConfigType: TypeAlias = DefaultSchedulerConfig | ARealSchedulerConfig
 
 
 class AdvantageConfig(BaseConfig):
@@ -425,7 +454,7 @@ class OrchestratorConfig(BaseSettings):
     ckpt: CheckpointConfig | None = None
 
     # The scheduler configuration
-    scheduler: SchedulerConfig = SchedulerConfig()
+    scheduler: Annotated[SchedulerConfigType, Field(discriminator="type")] = DefaultSchedulerConfig()
 
     output_dir: Annotated[
         Path,
@@ -507,18 +536,10 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = None
 
-    async_level: Annotated[
-        int,
-        Field(
-            ge=0,
-            description="Maximum number of async levels to use. If 0, will do synchronous RL. Else, it will allow to go `async_level` steps ahead of training.",
-        ),
-    ] = 2
-
     bench: Annotated[
         bool,
         Field(
-            description="Whether to run in benchmark mode. It will automatically set the maximum number of steps to run to 5, max async level to ~infinity and disable W&B.",
+            description="Whether to run in benchmark mode. It will automatically set the maximum number of steps to run to 5 disable W&B.",
         ),
     ] = False
 
@@ -538,7 +559,6 @@ class OrchestratorConfig(BaseSettings):
     def auto_setup_bench(self):
         if self.bench:
             self.max_steps = 4  # Run for 1 warmup step + 3 evaluation steps
-            self.async_level = int(1e9)  # Never wait for RL weight checkpoints
 
             # Disable evaluation
             self.eval = None
