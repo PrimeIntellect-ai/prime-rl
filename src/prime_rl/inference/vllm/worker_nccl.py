@@ -1,5 +1,6 @@
 from typing import TYPE_CHECKING
 
+from vllm.distributed.parallel_state import get_tensor_model_parallel_rank
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader.utils import process_weights_after_loading
 
@@ -23,20 +24,25 @@ class NCCLBroadcastWorker(Worker):
     def init_broadcaster(self, host: str, port: int, rank: int, world_size: int) -> None:
         """Initialize the process group for NCCL broadcast."""
         logger = init_logger("vllm.inference.vllm.worker_nccl")
-        self.nccl_broadcast = NCCLBroadcastInference(
-            host=host, port=port, rank=rank, world_size=world_size, device=self.device, logger=logger
-        )
+        self.tp_rank = get_tensor_model_parallel_rank()
+        logger.info(f"Worker TP rank: {self.tp_rank}")
+
+        if self.tp_rank == 0:
+            self.nccl_broadcast = NCCLBroadcastInference(
+                host=host, port=port, rank=rank, world_size=world_size, device=self.device, logger=logger
+            )
 
     def update_weights(self, weight_dir: str) -> None:
         """Update weights from a specified path pointing to a .pt file."""
         ...
-        model_runner = self.model_runner
-        model = model_runner.model
+        if self.tp_rank == 0:
+            model_runner = self.model_runner
+            model = model_runner.model
 
-        self.nccl_broadcast.receive_state_dict()
+            self.nccl_broadcast.receive_state_dict()
 
-        model.load_weights(self.nccl_broadcast.receive_state_dict())
+            model.load_weights(self.nccl_broadcast.receive_state_dict())
 
-        # # Process weights after loading (important for some models)
-        device = next(model.parameters()).device
-        process_weights_after_loading(model, self.model_runner.model_config, device)
+            # # Process weights after loading (important for some models)
+            device = next(model.parameters()).device
+            process_weights_after_loading(model, self.model_runner.model_config, device)
