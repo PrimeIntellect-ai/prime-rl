@@ -66,7 +66,6 @@ class Scheduler(ABC):
             states=generate_outputs.state,
             rewards=generate_outputs.reward,
             processing_class=self.tokenizer,
-            max_seq_len=self.config.seq_len,
             mask_env_responses=self.config.mask_env_responses,
             zero_truncated_completions=self.config.zero_truncated_completions,
             mask_truncated_completions=self.config.mask_truncated_completions,
@@ -183,6 +182,7 @@ class ARealScheduler(Scheduler):
 
     async def generate_batch(self) -> list[Rollout]:
         # Schedule initial tasks
+        self.logger.info("Starting to generate batch rollouts")
         while len(self.inflight_group_rollouts) < self.problems_per_batch:
             await self.schedule_task()
 
@@ -205,6 +205,11 @@ class ARealScheduler(Scheduler):
 
                 await self.schedule_task()
 
+            self.logger.debug(
+                f"Got {len(batch_rollouts)} rollouts in batch. Need {self.config.batch_size - len(batch_rollouts)} more. Current in-flight group rollout requests: {len(self.inflight_group_rollouts)}"
+            )
+
+        self.logger.debug("Batch done.")
         return batch_rollouts
 
 
@@ -215,9 +220,9 @@ def setup_scheduler(
     config: OrchestratorConfig,
     clients: list[AsyncOpenAI],
 ) -> Scheduler:
-    if config.scheduler == "default":
+    if config.scheduler.type == "default":
         return DefaultScheduler(buffer, env, tokenizer, config, clients)
-    elif config.scheduler == "areal":
+    elif config.scheduler.type == "areal":
         return ARealScheduler(buffer, env, tokenizer, config, clients)
     else:
         raise ValueError(f"Invalid scheduler type: {config.scheduler}")
