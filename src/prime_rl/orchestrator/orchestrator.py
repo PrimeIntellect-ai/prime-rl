@@ -342,10 +342,8 @@ async def orchestrate(config: OrchestratorConfig):
             rollouts=rollouts,
             temperature=config.sampling.temperature,
             tokenizer=tokenizer,
-            batch_size=config.batch_size,
-            micro_batch_size=config.micro_batch_size,
             num_train_workers=config.num_train_workers,
-            seq_len=config.seq_len,
+            max_seq_len=config.seq_len,
         )
 
         step_path = get_rollout_dir(config.output_dir) / f"step_{progress.step}"

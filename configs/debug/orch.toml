@@ -1,7 +1,6 @@
 max_steps = 5
 async_level = 5
 batch_size = 16
-micro_batch_size = 8
 seq_len = 2048
 
 [sampling]
