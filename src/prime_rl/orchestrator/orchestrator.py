@@ -79,8 +79,8 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Load environment and extract dataset
     logger.info(f"Loading environment {config.environment.id} with args {config.environment.args}")
-    vf_env = load_environment(config.environment.id, **config.environment.args)
-    dataset = vf_env.get_dataset(seed=config.seed)
+    env = load_environment(config.environment.id, **config.environment.args)
+    dataset = env.get_dataset(seed=config.seed)
 
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
@@ -88,7 +88,7 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup scheduler
     logger.info(f"Setting up scheduler ({config.scheduler})")
-    scheduler = setup_scheduler(buffer, vf_env, tokenizer, config, clients)
+    scheduler = setup_scheduler(clients, admin_clients, env, buffer, tokenizer, config)
 
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")
@@ -147,38 +147,9 @@ async def orchestrate(config: OrchestratorConfig):
         logger.debug(f"Starting orchestrator step {progress.step}")
         step_start_time = time.time()
 
-        # Determine next ckpt step
-        # In AREAL mode, we always use the latest available checkpoint, else, we use a fixed-step off-policy level
-        fixed_off_policy_ckpt_step = max(progress.step - config.async_level, 0)
-        latest_ckpt_step = get_latest_ckpt_step(get_weights_dir(config.output_dir)) or 0
-        next_ckpt_step = (
-            max(latest_ckpt_step, fixed_off_policy_ckpt_step)
-            if config.scheduler == "areal"
-            else fixed_off_policy_ckpt_step
-        )
-        logger.debug(f"Determined {next_ckpt_step=} ({latest_ckpt_step=}, {fixed_off_policy_ckpt_step=})")
-
-        # If the next available checkpoint is too old, we throttle and wait for a checkpoint to satisfy the async_level
-        wait_for_weight_ckpt_time, update_weights_time = 0, 0
-        if progress.step - ckpt_step > config.async_level:
-            logger.debug(
-                f"Hit async barrier because we are >{config.async_level} steps off-policy. Waiting for weight checkpoint {next_ckpt_step}"
-            )
-            wait_for_weight_ckpt_start_time = time.time()
-            await wait_for_path(get_step_path(get_weights_dir(config.output_dir), next_ckpt_step) / "STABLE")
-            wait_for_weight_ckpt_time = time.time() - wait_for_weight_ckpt_start_time
-            logger.debug(f"Waited {wait_for_weight_ckpt_time:.2f}s for weight checkpoint")
-
-        # Finally, load the weights if needed
-        if next_ckpt_step > ckpt_step:
-            logger.debug(f"Updating weights to weight checkpoint {next_ckpt_step}")
-            update_weights_start_time = time.time()
-            await update_weights(admin_clients, get_step_path(get_weights_dir(config.output_dir), next_ckpt_step))
-            update_weights_time = time.time() - update_weights_start_time
-            logger.debug(f"Updated weights in {update_weights_time:.2f}s")
-            ckpt_step = next_ckpt_step
-
-        off_policy_level = progress.step - ckpt_step
+        generate_batch_start_time = time.time()
+        accepted_rollouts = await scheduler.step(progress.step)
+        generate_batch_time = time.time() - generate_batch_start_time
 
         # Optionally, run online evals at the specified interval
         eval_time = 0
@@ -204,10 +175,6 @@ async def orchestrate(config: OrchestratorConfig):
             )
             eval_time = time.time() - eval_start_time
             logger.debug(f"Evaluated in {eval_time:.2f}s")
-
-        generate_batch_start_time = time.time()
-        accepted_rollouts = await scheduler.generate_batch()
-        generate_batch_time = time.time() - generate_batch_start_time
 
         # Unpack accepted rollouts
         rewards = (
@@ -291,7 +258,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Log step metrics
         step_time = time.time() - step_start_time
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {rewards.mean().item():.4f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {seq_lens.mean().item():.1f} tokens/sample | Off-Policy: {off_policy_level}"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {rewards.mean().item():.4f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {seq_lens.mean().item():.1f} tokens/sample | Off-Policy: {scheduler.off_policy_level}"
         logger.success(step_message)
 
         # Log progress metrics to monitor
@@ -368,7 +335,7 @@ async def orchestrate(config: OrchestratorConfig):
             "batch/solve_all": solve_all,
             "batch/effective_batch_size": effective_batch_size,
             # "batch/difficulty_filtered": filtered,
-            "batch/off_policy_level": off_policy_level,
+            "batch/off_policy_level": scheduler.off_policy_level,
             "step": progress.step,
         }
         monitor.log(solve_metrics)
@@ -376,9 +343,9 @@ async def orchestrate(config: OrchestratorConfig):
         # Log time metrics to monitor
         time_metrics = {
             "time/step": step_time,
-            "time/wait_for_weight_ckpt": wait_for_weight_ckpt_time,
-            # "time/generate_completions": generate_completions_time,
-            "time/update_weights": update_weights_time,
+            "time/wait_for_weight_ckpt": scheduler.wait_for_weight_ckpt_time,
+            "time/generate_batch": generate_batch_time,
+            "time/update_weights": scheduler.update_weights_time,
             "time/save_ckpt": save_ckpt_time,
             "time/eval": eval_time,
             "step": progress.step,
