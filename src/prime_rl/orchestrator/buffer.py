@@ -226,7 +226,7 @@ class SimpleBuffer(Buffer):
         )
         sampled_problem_ids = random.sample(self.problem_ids, n)
         assert len(sampled_problem_ids) == n
-        # self.logger.debug(f"Sampled {n} problems ({sampled_problem_ids=})")
+        self.logger.debug(f"Sampled {n} problem(s) ({sampled_problem_ids=})")
 
         # Get problems from indices
         sampled_problems = [self.problem_buffer[problem_id] for problem_id in sampled_problem_ids]
@@ -311,7 +311,7 @@ class DifficultyPoolBuffer(Buffer):
         assert len(sampled_easy_problem_ids) == n_easy_sampled
         if n_easy_sampled < n_easy:
             self.logger.warning(
-                f"Only {n_easy_sampled} easy problems available, sampling {n_easy - n_easy_sampled} normal problems more"
+                f"Only {n_easy_sampled} easy problem(s) available, sampling {n_easy - n_easy_sampled} normal problem(s) more"
             )
             n_normal += n_easy - n_easy_sampled
 
@@ -321,7 +321,7 @@ class DifficultyPoolBuffer(Buffer):
         assert len(sampled_hard_problem_ids) == n_hard_sampled
         if n_hard_sampled < n_hard:
             self.logger.warning(
-                f"Only {n_hard_sampled} hard problems available, sampling {n_hard - n_hard_sampled} normal problems more"
+                f"Only {n_hard_sampled} hard problem(s) available, sampling {n_hard - n_hard_sampled} normal problem(s) more"
             )
             n_normal += n_hard - n_hard_sampled
 
@@ -335,7 +335,7 @@ class DifficultyPoolBuffer(Buffer):
         sampled_problem_ids = sampled_easy_problem_ids + sampled_normal_problem_ids + sampled_hard_problem_ids
         assert len(sampled_problem_ids) == n
         self.logger.debug(
-            f"Sampled {n} problems (easy={len(sampled_easy_problem_ids)}, normal={len(sampled_normal_problem_ids)}, hard={len(sampled_hard_problem_ids)}, {sampled_problem_ids=})"
+            f"Sampled {n} problem(s) (easy={len(sampled_easy_problem_ids)}, normal={len(sampled_normal_problem_ids)}, hard={len(sampled_hard_problem_ids)}, {sampled_problem_ids=})"
         )
 
         # Sample problems
@@ -367,7 +367,7 @@ class DifficultyPoolBuffer(Buffer):
             old_difficulty = self.metadata[problem_id]["difficulty"]
             stats[(old_difficulty, new_difficulty)] += 1
             self.metadata[problem_id].update({"difficulty": new_difficulty})
-        stats_str = ", ".join([f"{v} problems moved from `{k[0]}` to `{k[1]}`" for k, v in stats.items()])
+        stats_str = ", ".join([f"{v} problem(s) moved from `{k[0]}` to `{k[1]}`" for k, v in stats.items()])
         self.logger.debug(f"Updated difficulty information ({stats_str})")
 
     def sample_rollouts(self, n: int) -> list[Rollout]:
@@ -406,10 +406,10 @@ class OnlineDifficultyBuffer(Buffer):
     def sample_problems(self, n: int) -> list[dict]:
         # Get indices to sample
         assert len(self.problem_ids) >= n, (
-            f"There should be at least {n} problems in the buffer, but found only {len(self.problem_ids)}"
+            f"There should be at least {n} problem(s) in the buffer, but found only {len(self.problem_ids)}"
         )
         sampled_problem_ids = random.sample(self.problem_ids, n)
-        self.logger.debug(f"Sampled {n} problems ({sampled_problem_ids=})")
+        self.logger.debug(f"Sampled {n} problem(s) ({sampled_problem_ids=})")
 
         # Sample problems
         sampled_problems = [self.problem_buffer[problem_id] for problem_id in sampled_problem_ids]
@@ -460,12 +460,12 @@ class OnlineDifficultyBuffer(Buffer):
             ]
         )
         self.logger.debug(
-            f"Sampled {len(sampled_problem_ids)} rollouts ({sampled_problem_ids=}) within difficulty range [{self.config.min_reward=}, {self.config.max_reward=}]"
+            f"Sampled {len(sampled_problem_ids)} problem(s) within difficulty range [{self.config.min_reward}, {self.config.max_reward}] ({sampled_problem_ids=})"
         )
 
         if len(sampled_problem_ids) < n:
             self.logger.warning(
-                f"Only {len(sampled_problem_ids)} (<{n}) valid problems with rollouts available ({num_too_easy=}, {num_too_hard=})"
+                f"Only {len(sampled_problem_ids)} (<{n}) valid problem(s) available ({num_too_easy=}, {num_too_hard=})"
             )
 
         return sampled_rollouts
