@@ -159,19 +159,15 @@ class EvalSaveHFConfig(BaseConfig):
     ] = False
 
 
-class EvalSaveHubConfig(BaseConfig):
-    """Configures how to save eval results to Prime Environment Hub."""
-
-    env: Annotated[
-        str,
-        Field(description="Environment name or owner/name format (e.g., 'gsm8k' or 'primeintellect/aime2024')."),
-    ]
-
-
 class EvalSaveConfig(BaseConfig):
     disk: EvalSaveDiskConfig | None = None
     hf: EvalSaveHFConfig | None = None
-    hub: EvalSaveHubConfig | None = None
+    hub: Annotated[
+        bool,
+        Field(
+            description="Whether to push eval results to Environment Hub. Automatically pushes all evaluated environments."
+        ),
+    ] = False
 
 
 class EnvironmentConfig(BaseConfig):
