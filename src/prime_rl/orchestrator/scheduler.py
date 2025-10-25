@@ -28,11 +28,15 @@ class Scheduler(ABC):
         config: OrchestratorConfig,
     ):
         self.logger = get_logger()
-        self.clients, self.env, self.buffer, self.tokenizer, self.config = clients, env, buffer, tokenizer, config
-        self.problems_per_batch = self.config.batch_size // self.config.rollouts_per_example
-        self.semaphore = (
-            asyncio.Semaphore(self.config.max_concurrent) if self.config.max_concurrent is not None else None
-        )
+        self.clients, self.env, self.buffer, self.tokenizer = clients, env, buffer, tokenizer
+        self.config = config
+        self.oversampling_factor = config.scheduler.oversampling_factor
+        self.batch_size = config.batch_size
+        self.rollouts_per_example = config.rollouts_per_example
+        self.problems_per_batch = int(self.oversampling_factor * self.batch_size // self.rollouts_per_example)
+
+        self.max_concurrent = config.max_concurrent
+        self.semaphore = asyncio.Semaphore(self.max_concurrent) if self.max_concurrent is not None else None
 
         def prepare_sampling_args(sampling_config: SamplingConfig) -> dict:
             sampling_args = dict(sampling_config)
