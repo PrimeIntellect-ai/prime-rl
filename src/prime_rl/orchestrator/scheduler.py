@@ -235,6 +235,7 @@ class ARealScheduler(Scheduler):
         self.max_retention_steps = scheduler_config.max_retention_steps
         self.inflight_group_rollouts: dict[asyncio.Task, int] = {}
         self.cycle_clients = cycle(self.clients)
+        self.update_weights_time = 0
 
     async def schedule_group_rollout(self):
         """Asynchronously schedules a group rollout request."""
@@ -320,6 +321,7 @@ class ARealScheduler(Scheduler):
 
     def metrics(self) -> dict:
         return {
+            "time/update_weights": self.update_weights_time,
             "batch/max_retention_level": self.max_retention_level,
         }
 
