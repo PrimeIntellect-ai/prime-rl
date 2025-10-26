@@ -20,8 +20,8 @@ def setup_clients(client_config: ClientConfig) -> list[AsyncOpenAI]:
         timeout = httpx.Timeout(timeout=client_config.timeout, connect=5.0)
         # We use as many concurrent connections as possible, but lower than available ports
         limits = httpx.Limits(
-            max_connections=1024,  # OAI default: 1000
-            max_keepalive_connections=1024,  # OAI default: 100
+            max_connections=8192,  # OAI default: 1000
+            max_keepalive_connections=8192,  # OAI default: 100
         )
         http_client = httpx.AsyncClient(limits=limits, timeout=timeout)
         return AsyncOpenAI(
