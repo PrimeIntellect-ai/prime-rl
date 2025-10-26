@@ -227,6 +227,7 @@ async def orchestrate(config: OrchestratorConfig):
                 rollouts_per_example=config.rollouts_per_example,
                 sampling_args=sampling_args,
                 semaphore=semaphore,
+                num_threads=config.num_generate_threads,
             )
             generate_completions_time = time.time() - generate_completions_start_time
             problem_requests += problems_to_sample

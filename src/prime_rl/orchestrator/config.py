@@ -440,6 +440,14 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = 1024
 
+    num_generate_threads: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Number of threads to use for generating rollouts. If 1, will use single-threaded behavior.",
+        ),
+    ] = 1
+
     batch_size: Annotated[int, Field(ge=1, description="Number of samples to train on per step.")] = 128
 
     rollouts_per_example: Annotated[
