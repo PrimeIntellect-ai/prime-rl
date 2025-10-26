@@ -114,6 +114,7 @@ async def generate_batch(
     """
     from tqdm import tqdm
 
+    # TODO: replace with rich progress bar to be thread-safe
     pbar = tqdm(total=len(problems) * rollouts_per_example, desc="Generating rollouts")
     lock = threading.Lock()
 
@@ -149,17 +150,21 @@ async def generate_batch(
         clients_per_thread = len(clients) // num_threads
         problems_per_thread = len(problems) // num_threads
 
+        # each thread gets a chunk of clients and problems
+        # each thread holds an event loop and runs the tasks (to avoid congestion)
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
             futures = []
 
             for i in range(num_threads):
                 if i == num_threads - 1:
+                    # last thread gets the rest
                     client_chunk = clients[i * clients_per_thread :]
                     problem_chunk = problems[i * problems_per_thread :]
                 else:
                     client_chunk = clients[i * clients_per_thread : (i + 1) * clients_per_thread]
                     problem_chunk = problems[i * problems_per_thread : (i + 1) * problems_per_thread]
 
+                # run_subset_in_thread has a fraction of the total work & equal fraction of the clients
                 future = executor.submit(run_subset_in_thread, client_chunk, problem_chunk)
                 futures.append(future)
 
