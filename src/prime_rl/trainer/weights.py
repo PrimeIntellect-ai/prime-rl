@@ -182,6 +182,7 @@ def save_state_dict(
     """Save a state dict to a local directory in safetensors or torch format."""
     logger = get_logger()
     weights_name = SAFE_WEIGHTS_NAME if save_format == "safetensors" else WEIGHTS_NAME
+    save_dir.mkdir(parents=True, exist_ok=True)
     if save_sharded:
         filename_pattern = weights_name.replace(".bin", "{suffix}.bin").replace(".safetensors", "{suffix}.safetensors")
         state_dict_split = split_torch_state_dict_into_shards(
