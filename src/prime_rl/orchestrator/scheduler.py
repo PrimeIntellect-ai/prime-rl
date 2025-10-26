@@ -259,7 +259,7 @@ class ARealScheduler(Scheduler):
         """Loops updating the policy at a fixed interval."""
         while True:
             await self.update_policy()
-            await asyncio.sleep(10)
+            await asyncio.sleep(1)
 
     async def update_policy(self):
         """Updates the policy to the latest available checkpoint. Aborts rollout requests that are older than the max retention steps."""
@@ -285,7 +285,8 @@ class ARealScheduler(Scheduler):
                     num_old_rollout_requests += 1
                 else:
                     self.inflight_group_rollouts[task] = retention_step + 1
-            self.logger.warning(f"Cancelled and re-scheduled {num_old_rollout_requests} old rollout requests.")
+            if num_old_rollout_requests > 0:
+                self.logger.warning(f"Cancelled and re-scheduled {num_old_rollout_requests} old rollout requests.")
             self.ckpt_step = latest_ckpt_step
 
     async def step(self, step: int) -> list[Rollout]:
