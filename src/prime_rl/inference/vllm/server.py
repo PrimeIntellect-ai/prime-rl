@@ -3,12 +3,12 @@ from typing import Any, Callable
 
 import uvloop
 from fastapi import Request
+from prime_rl.inference.config import InferenceConfig
+
 from vllm.config import LogprobsMode
 from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server, run_server
 from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
 from vllm.utils import FlexibleArgumentParser
-
-from prime_rl.inference.config import InferenceConfig
 
 # Platform check: this module relies on fork() semantics for multi-server mode
 if not sys.platform.startswith("linux"):
