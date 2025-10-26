@@ -10,6 +10,7 @@ from verifiers.types import GenerateMetadata, GenerateOutputs
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
+
 def merge_metadata(generate_metadata_list: list[GenerateMetadata]) -> GenerateMetadata:
     """Merge multiple GenerateMetadata into a single GenerateMetadata."""
     num_examples = len(generate_metadata_list)  # Assumes one generate metadata per example
@@ -112,58 +113,61 @@ async def generate_batch(
     Asynchronously generate and score rollouts for a list of problems.
     """
     from tqdm import tqdm
-    
+
     pbar = tqdm(total=len(problems) * rollouts_per_example, desc="Generating rollouts")
     lock = threading.Lock()
-    
+
     def run_subset_in_thread(clients_subset, problems_subset):
         """Run a subset of tasks in a new event loop (in a thread)."""
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        
+
         async def generate_group_with_progress(client, problem):
             """Generate rollouts for one problem and update progress (thread-safe)."""
-            result = await generate_group(client, env, model_name, problem, 
-                                          rollouts_per_example, sampling_args, semaphore)
+            result = await generate_group(
+                client, env, model_name, problem, rollouts_per_example, sampling_args, semaphore
+            )
             with lock:
                 pbar.update(rollouts_per_example)
             return result
-        
+
         async def run_all():
             return await asyncio.gather(
-                *[generate_group_with_progress(client, problem) 
-                  for client, problem in zip(cycle(clients_subset), problems_subset)]
+                *[
+                    generate_group_with_progress(client, problem)
+                    for client, problem in zip(cycle(clients_subset), problems_subset)
+                ]
             )
-        
+
         try:
             return loop.run_until_complete(run_all())
         finally:
             loop.close()
-    
+
     try:
         num_threads = min(num_threads, len(clients))
         clients_per_thread = len(clients) // num_threads
         problems_per_thread = len(problems) // num_threads
-        
+
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
             futures = []
-            
+
             for i in range(num_threads):
                 if i == num_threads - 1:
-                    client_chunk = clients[i * clients_per_thread:]
-                    problem_chunk = problems[i * problems_per_thread:]
+                    client_chunk = clients[i * clients_per_thread :]
+                    problem_chunk = problems[i * problems_per_thread :]
                 else:
-                    client_chunk = clients[i * clients_per_thread:(i + 1) * clients_per_thread]
-                    problem_chunk = problems[i * problems_per_thread:(i + 1) * problems_per_thread]
-                
+                    client_chunk = clients[i * clients_per_thread : (i + 1) * clients_per_thread]
+                    problem_chunk = problems[i * problems_per_thread : (i + 1) * problems_per_thread]
+
                 future = executor.submit(run_subset_in_thread, client_chunk, problem_chunk)
                 futures.append(future)
-            
+
             generate_outputs_list: list[GenerateOutputs] = []
             for future in futures:
                 thread_results = future.result()
                 generate_outputs_list.extend(thread_results)
     finally:
         pbar.close()
-    
+
     return merge_outputs(generate_outputs_list)
