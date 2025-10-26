@@ -164,7 +164,7 @@ async def run_eval(
     monitor.log(eval_metrics)
 
     # Save results
-    if save_config.disk is not None or save_config.hf is not None or save_config.hub:
+    if save_config.disk is not None or save_config.hf is not None or save_config.env_hub:
         dataset = make_dataset(results)
         metadata_dict = sanitize_metadata(results.metadata)
 
@@ -190,7 +190,7 @@ async def run_eval(
                 f"Pushed {'private' if save_config.hf.private else 'public'} eval results for {env_id} to HF Hub (https://huggingface.co/datasets/{repo_name})"
             )
 
-        if save_config.hub:
+        if save_config.env_hub:
             eval_name = f"{env_id}--{model_config.name.replace('/', '--')}"
 
             # Create evaluation for environment
@@ -211,7 +211,7 @@ async def run_eval(
             # Finalize evaluation
             await evals_client.finalize_evaluation(eval_id, metrics=eval_metrics)
 
-            logger.info(f"Pushed eval results for {env_id} to Prime Hub (eval_id: {eval_id})")
+            logger.info(f"Pushed eval results for {env_id} to Environment Hub (eval_id: {eval_id})")
 
 
 async def run_evals(

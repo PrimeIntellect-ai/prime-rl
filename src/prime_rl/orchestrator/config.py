@@ -162,10 +162,10 @@ class EvalSaveHFConfig(BaseConfig):
 class EvalSaveConfig(BaseConfig):
     disk: EvalSaveDiskConfig | None = None
     hf: EvalSaveHFConfig | None = None
-    hub: Annotated[
+    env_hub: Annotated[
         bool,
         Field(
-            description="Whether to push eval results to Environment Hub. Automatically pushes all evaluated environments."
+            description="Whether to push eval results to Prime Environment Hub. Automatically pushes all evaluated environments. Requires PRIME_API_KEY and authorization for the environments."
         ),
     ] = False
 
