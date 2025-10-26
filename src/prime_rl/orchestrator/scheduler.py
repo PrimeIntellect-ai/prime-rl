@@ -236,6 +236,7 @@ class ARealScheduler(Scheduler):
         self.inflight_group_rollouts: dict[asyncio.Task, int] = {}
         self.cycle_clients = cycle(self.clients)
         self.update_weights_time = 0
+        asyncio.create_task(self.update_policy_loop())
 
     async def schedule_group_rollout(self):
         """Asynchronously schedules a group rollout request."""
@@ -254,7 +255,13 @@ class ARealScheduler(Scheduler):
         await asyncio.sleep(0)
         self.inflight_group_rollouts[group_rollout_request] = 0
 
-    async def update_policy(self, step: int):
+    async def update_policy_loop(self):
+        """Loops updating the policy at a fixed interval."""
+        while True:
+            await self.update_policy()
+            await asyncio.sleep(10)
+
+    async def update_policy(self):
         """Updates the policy to the latest available checkpoint. Aborts rollout requests that are older than the max retention steps."""
         latest_ckpt_step = get_latest_ckpt_step(get_weights_dir(self.config.output_dir)) or 0
         if latest_ckpt_step > self.ckpt_step:
@@ -306,8 +313,6 @@ class ARealScheduler(Scheduler):
                 batch_rollouts.extend(accepted_rollouts)
 
                 await self.schedule_group_rollout()
-
-            await self.update_policy(step=step)
 
             self.logger.debug(
                 f"Got {len(batch_rollouts)} rollout(s) in batch. Need {self.config.batch_size - len(batch_rollouts)} more."
