@@ -1,14 +1,13 @@
 import asyncio
+import threading
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from itertools import cycle
 
 from datasets import Dataset
 from openai import AsyncOpenAI
 from verifiers import Environment
 from verifiers.types import GenerateMetadata, GenerateOutputs
-
-import threading
-from concurrent.futures import ThreadPoolExecutor
 
 
 def merge_metadata(generate_metadata_list: list[GenerateMetadata]) -> GenerateMetadata:
