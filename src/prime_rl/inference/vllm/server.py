@@ -81,6 +81,7 @@ def server(config: InferenceConfig, vllm_args: list[str]):
             # Force fork so child processes inherit the monkey patches
             # (spawn would create fresh interpreters without patches)
             import multiprocessing as mp
+
             try:
                 if mp.get_start_method(allow_none=True) != "fork":
                     mp.set_start_method("fork")
