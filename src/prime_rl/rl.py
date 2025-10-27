@@ -33,6 +33,7 @@ from prime_rl.utils.utils import (
 )
 from prime_rl.utils.validation import (
     validate_shared_ckpt_config,
+    validate_shared_max_off_policy_steps,
     validate_shared_max_steps,
     validate_shared_model_name,
     validate_shared_output_dir,
@@ -157,6 +158,14 @@ class RLConfig(BaseSettings):
         int | None,
         Field(
             description="The maximum model length to use. If None, will fallback to the max model length specified on submodule configs."
+        ),
+    ] = None
+
+    max_off_policy_steps: Annotated[
+        int | None,
+        Field(
+            description="The maximum number of steps that inference can be ahead of training. Determines how 'off-policy' the inference engines can be. Higher values yield better throughput through async execution, but may yield lower performance. If 0, will be fully synchronous.",
+            ge=0,
         ),
     ] = None
 
@@ -303,6 +312,17 @@ class RLConfig(BaseSettings):
             self.orchestrator.max_steps = self.max_steps
 
         validate_shared_max_steps(self.trainer, self.orchestrator)
+
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_max_off_policy_steps(self):
+        # If specified, use the same async level for trainer and orchestrator
+        if self.max_off_policy_steps:
+            self.trainer.max_off_policy_steps = self.max_off_policy_steps
+            self.orchestrator.scheduler.max_off_policy_steps = self.max_off_policy_steps
+
+        validate_shared_max_off_policy_steps(self.trainer, self.orchestrator)
 
         return self
 

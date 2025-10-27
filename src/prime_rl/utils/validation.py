@@ -78,15 +78,11 @@ def validate_shared_max_steps(
         )
 
 
-def validate_shared_async_level(
+def validate_shared_max_off_policy_steps(
     trainer: RLTrainerConfig,
     orchestrator: OrchestratorConfig,
 ) -> None:
-    if orchestrator.scheduler.type == "default":
-        if trainer.max_off_policy_steps != orchestrator.scheduler.max_off_policy_steps:
-            raise ValueError(
-                f"Trainer max off policy steps ({trainer.max_off_policy_steps}) and orchestrator max off policy steps ({orchestrator.scheduler.max_off_policy_steps}) are not the same. Please specify the same max off policy steps for both."
-            )
-    elif orchestrator.scheduler.type == "areal":
-        if trainer.max_off_policy_steps != 0:
-            raise ValueError("Trainer max off policy steps should be set to 0 for AReal scheduler.")
+    if trainer.max_off_policy_steps != orchestrator.scheduler.max_off_policy_steps:
+        raise ValueError(
+            f"Trainer max off policy steps ({trainer.max_off_policy_steps}) and scheduler max off policy steps ({orchestrator.scheduler.max_off_policy_steps}) are not the same. Please specify the same max off policy steps for both."
+        )
