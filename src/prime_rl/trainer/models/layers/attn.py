@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-
+from typing import Optional
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -58,9 +58,10 @@ class FlashAttention(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+        cos_sin_cache: torch.Tensor,
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
+        position_ids: Optional[torch.LongTensor] = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
@@ -77,8 +78,7 @@ class FlashAttention(nn.Module):
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
 
-        cos, sin = position_embeddings
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos_sin_cache, position_ids)
 
         # TODO: Can we optimize the rotary applicaiton instead of double transpose?
         query_states = query_states.transpose(1, 2)
@@ -131,9 +131,10 @@ class SDPAAttention(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+        cos_sin_cache: torch.Tensor,
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
+        position_ids: Optional[torch.LongTensor] = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
@@ -150,8 +151,7 @@ class SDPAAttention(nn.Module):
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
 
-        cos, sin = position_embeddings
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos_sin_cache, position_ids)
 
         # TODO: Can we optimize the rotary applicaiton instead of double transpose?
         key_states = key_states.repeat_interleave(self.num_key_value_groups, dim=1)

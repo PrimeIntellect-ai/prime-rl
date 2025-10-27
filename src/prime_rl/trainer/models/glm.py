@@ -296,10 +296,11 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
+        cos_sin_cache: torch.Tensor,
         cu_seqlens: Optional[torch.LongTensor] = None,
         max_seqlen: Optional[int] = None,
         residual: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
     ) -> torch.Tensor:
         if residual is None:
             residual = hidden_states
@@ -309,9 +310,10 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
         # Self Attention
         hidden_states, _ = self.self_attn(
             hidden_states=hidden_states,
-            position_embeddings=position_embeddings,
+            cos_sin_cache=cos_sin_cache,
             cu_seqlens=cu_seqlens,
             max_seqlen=max_seqlen,
+            position_ids=position_ids,
         )
         hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
         hidden_states = self.mlp(hidden_states)
@@ -398,16 +400,17 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
             cu_seqlens = None
 
         hidden_states = inputs_embeds
-        position_embeddings = self.rotary_emb(hidden_states, position_ids)
+        cos_sin_cache = self.rotary_emb.cos_sin_cache
         residual = None
 
         for decoder_layer in self.layers[: self.config.num_hidden_layers]:
             hidden_states, residual = decoder_layer(
                 hidden_states,
-                position_embeddings=position_embeddings,
+                cos_sin_cache=cos_sin_cache,
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
                 residual=residual,
+                position_ids=position_ids,
             )
 
         hidden_states, _ = self.norm(hidden_states, residual)
