@@ -5,11 +5,12 @@ from pathlib import Path
 import uvloop
 
 from prime_rl.inference.config import InferenceConfig
+from prime_rl.inference.vllm.patch import apply_patches
 from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server, run_server
 from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
 from vllm.utils import FlexibleArgumentParser
 
-# Ensure .pth file is installed in site-packages (for editable installs)
+# Ensure .pth file is installed in site-packages (for editable installs and child workers)
 _pth_installed = False
 for _site_path in sys.path:
     _site_path = Path(_site_path)
@@ -22,6 +23,10 @@ for _site_path in sys.path:
                 shutil.copy2(_pth_source, _pth_dest)
         _pth_installed = True
         break
+
+# Apply patches for current process (source checkouts / first run)
+# Child workers will get patches via .pth file above
+apply_patches()
 
 
 def server(config: InferenceConfig, vllm_args: list[str]):
