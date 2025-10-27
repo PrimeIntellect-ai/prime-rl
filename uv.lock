@@ -2109,6 +2109,18 @@ wheels = [
 ]
 
 [[package]]
+name = "prime-evals"
+version = "0.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/79/e3/c67184ddb7efeff077c11a8f152b11dadd425a53af34a4a87af4b0b854a5/prime_evals-0.1.1-py3-none-any.whl", hash = "sha256:a02955e464e4683a5f08ca59ff82b4fab415c4176bb99c0a6fbcd66c0c04eeb6", size = 12743, upload-time = "2025-10-25T10:35:02.193Z" },
+]
+
+[[package]]
 name = "prime-rl"
 version = "0.1.0"
 source = { editable = "." }
@@ -2127,6 +2139,7 @@ dependencies = [
     { name = "nltk" },
     { name = "numpy" },
     { name = "openai" },
+    { name = "prime-evals" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pylatexenc" },
@@ -2176,6 +2189,7 @@ requires-dist = [
     { name = "nltk", specifier = ">=3.9.1" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "openai", specifier = ">=1.106.1" },
+    { name = "prime-evals", specifier = ">=0.1.1" },
     { name = "pydantic", specifier = ">=1.10.13" },
     { name = "pydantic-settings", specifier = ">=2.10.1" },
     { name = "pylatexenc", specifier = ">=2.10" },
