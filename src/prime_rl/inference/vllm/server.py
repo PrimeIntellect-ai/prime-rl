@@ -1,6 +1,23 @@
 import sys
 from typing import Any, Callable
 
+# Platform check: this module relies on fork() semantics for multi-server mode
+if not sys.platform.startswith("linux"):
+    raise SystemExit("[prime-rl] Linux-only: this patch relies on fork() semantics")
+
+# Set fork mode BEFORE importing any vLLM modules to ensure child processes inherit patches
+import multiprocessing as mp
+
+try:
+    if mp.get_start_method(allow_none=True) != "fork":
+        mp.set_start_method("fork")
+except RuntimeError:
+    # If already set to something else, warn that multi-API mode may not work
+    import logging
+
+    logging.warning("Multiprocessing start method already set, multi-API mode may not work correctly")
+
+# Now import vLLM modules AFTER fork mode is configured
 import uvloop
 from fastapi import Request
 
@@ -9,10 +26,6 @@ from vllm.config import LogprobsMode
 from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server, run_server
 from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
 from vllm.utils import FlexibleArgumentParser
-
-# Platform check: this module relies on fork() semantics for multi-server mode
-if not sys.platform.startswith("linux"):
-    raise SystemExit("[prime-rl] Linux-only: this patch relies on fork() semantics")
 
 
 # Apply patches at module import time to inject custom endpoints
@@ -63,7 +76,8 @@ def server(config: InferenceConfig, vllm_args: list[str]):
     Start vLLM API server with custom patches.
 
     Custom functionality (worker extension, custom endpoints) is injected via
-    monkey-patching applied at module import time.
+    monkey-patching applied at module import time. Fork mode is set at import
+    time to ensure child processes inherit patches.
     """
     parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")
     parser = make_arg_parser(parser)
@@ -78,17 +92,7 @@ def server(config: InferenceConfig, vllm_args: list[str]):
         run_headless(args)
     else:
         if args.api_server_count > 1:
-            # Force fork so child processes inherit the monkey patches
-            # (spawn would create fresh interpreters without patches)
-            import multiprocessing as mp
-
-            try:
-                if mp.get_start_method(allow_none=True) != "fork":
-                    mp.set_start_method("fork")
-            except RuntimeError:
-                # Start method already set; ignore
-                pass
-
+            # Fork mode already set at module import time
             run_multi_api_server(args)
         else:
             # Single API server (this process)
