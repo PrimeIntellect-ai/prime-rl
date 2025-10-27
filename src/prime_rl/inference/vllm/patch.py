@@ -8,22 +8,21 @@ from vllm.config import LogprobsMode
 def apply_patches() -> None:
     """Apply monkey patches to vLLM API server for custom endpoints and worker config."""
     import vllm.entrypoints.openai.api_server as api_mod
-    from vllm.engine.arg_utils import AsyncEngineArgs
 
     # Idempotent: only patch once
     if getattr(api_mod, "_prime_rl_patched", False):
         return
 
-    # Patch AsyncEngineArgs.create_engine_config to inject worker_extension_cls
-    _orig_create_engine_config = AsyncEngineArgs.create_engine_config
+    # Patch build_async_engine_client_from_engine_args to inject worker extension
+    # This is called for EVERY engine client created, ensuring all API servers get the extension
+    _orig_build_engine_client = api_mod.build_async_engine_client_from_engine_args
 
-    def _patched_create_engine_config(self, *args, **kwargs):
-        # Set worker_extension_cls before creating config
-        self.worker_extension_cls = "prime_rl.inference.vllm.worker.CheckpointWorker"
-        self.logprobs_mode = LogprobsMode.PROCESSED_LOGPROBS
-        return _orig_create_engine_config(self, *args, **kwargs)
+    def _patched_build_engine_client(engine_args, **kwargs):
+        engine_args.worker_extension_cls = "prime_rl.inference.vllm.worker.CheckpointWorker"
+        engine_args.logprobs_mode = LogprobsMode.PROCESSED_LOGPROBS
+        return _orig_build_engine_client(engine_args, **kwargs)
 
-    AsyncEngineArgs.create_engine_config = _patched_create_engine_config
+    api_mod.build_async_engine_client_from_engine_args = _patched_build_engine_client
 
     _orig_build_app: Callable = api_mod.build_app
 
