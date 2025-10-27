@@ -142,12 +142,13 @@ VLLM_SERVER_CMD = ["uv", "run", "inference", "@", "configs/reverse_text/rl/infer
 
 
 def cleanup_process(process: subprocess.Popen):
+    process.terminate()
+
+    # Wait for the process to terminate (with timeout)
     try:
-        if process.poll() is None:
-            pgid = os.getpgid(process.pid)
-            os.killpg(pgid, signal.SIGTERM)
-            process.wait(timeout=5)
-    except Exception:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        # If it doesn't terminate gracefully, kill it
         process.kill()
         process.wait()
 
