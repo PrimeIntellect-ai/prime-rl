@@ -3,7 +3,6 @@ from typing import Optional
 
 import torch
 from torch import nn
-from transformers.integrations import use_kernel_forward_from_hub
 
 
 @dataclass

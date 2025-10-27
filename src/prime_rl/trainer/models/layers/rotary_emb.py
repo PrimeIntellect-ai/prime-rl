@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import torch
 from torch import nn
-from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
+from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 
 
 @dataclass
