@@ -1,1 +1,1 @@
-import os; exec("if os.getenv('PRIME_RL_VLLM_PATCH','1')=='1':\n    import prime_rl.inference.vllm.patch as _p; _p.apply_patches()")
+import prime_rl.inference.vllm.patch; prime_rl.inference.vllm.patch.apply_patches()
