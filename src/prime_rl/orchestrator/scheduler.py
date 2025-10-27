@@ -18,7 +18,7 @@ from prime_rl.orchestrator.config import (
     SamplingConfig,
 )
 from prime_rl.orchestrator.utils import parse_is_truncated_completions
-from prime_rl.utils.client import OAI_PRIORITY, update_weights
+from prime_rl.utils.client import update_weights
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import get_latest_ckpt_step, get_step_path, get_weights_dir, wait_for_path
 from prime_rl.utils.vf import generate_batch, generate_group
@@ -67,7 +67,6 @@ class Scheduler(ABC):
             }
             sampling_args["extra_body"]["min_tokens"] = sampling_args.pop("min_tokens")
             sampling_args["extra_body"]["repetition_penalty"] = sampling_args.pop("repetition_penalty")
-            sampling_args["extra_body"]["priority"] = OAI_PRIORITY
             return sampling_args
 
         self.sampling_args = prepare_sampling_args(config.sampling)
