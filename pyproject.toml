@@ -94,8 +94,17 @@ markers = [
 ]
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
 
-[tool.hatch.metadata]
-allow-direct-references = true
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+prime_rl = ["data/prime_rl_vllm_patch.pth"]
+
+[tool.setuptools.data-files]
+"" = ["src/prime_rl/data/prime_rl_vllm_patch.pth"]
