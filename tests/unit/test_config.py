@@ -11,8 +11,8 @@ from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.sft.config import SFTTrainerConfig
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.validation import (
-    validate_shared_async_level,
     validate_shared_ckpt_config,
+    validate_shared_max_off_policy_steps,
     validate_shared_max_steps,
     validate_shared_model_name,
     validate_shared_output_dir,
@@ -108,5 +108,5 @@ def test_rl_configs(config_dir: Path, monkeypatch: pytest.MonkeyPatch):
     validate_shared_model_name(trainer, orchestrator, inference)
     validate_shared_output_dir(trainer, orchestrator)
     validate_shared_wandb_config(trainer, orchestrator)
-    validate_shared_async_level(trainer, orchestrator)
+    validate_shared_max_off_policy_steps(trainer, orchestrator)
     validate_shared_max_steps(trainer, orchestrator)
