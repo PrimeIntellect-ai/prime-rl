@@ -126,7 +126,7 @@ class ModelConfig(BaseConfig):
     compile: Annotated[
         CompileConfig | None,
         Field(
-            description="Whether to compile the model using `torch.compile`. Currently discouraged because it was found to destabilize training.",
+            description="Whether to compile the model using `torch.compile`.",
         ),
     ] = None
 

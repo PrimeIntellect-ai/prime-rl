@@ -234,8 +234,6 @@ async def orchestrate(config: OrchestratorConfig):
             rollouts=accepted_rollouts,
             temperature=config.sampling.temperature,
             tokenizer=tokenizer,
-            batch_size=config.batch_size,
-            micro_batch_size=config.micro_batch_size,
             num_train_workers=config.num_train_workers,
             seq_len=config.seq_len,
         )

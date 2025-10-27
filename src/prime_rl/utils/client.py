@@ -88,7 +88,9 @@ async def check_health(
                 return
             except Exception as e:
                 if wait_time % log_interval == 0 and wait_time > 0:
-                    logger.warning(f"Inference server was not reached after {wait_time} seconds (Error: {e})")
+                    logger.warning(
+                        f"Inference server was not reached after {wait_time} seconds (Error: {e}) on {admin_client.base_url}"
+                    )
                 await asyncio.sleep(interval)
                 wait_time += interval
         msg = f"Inference server is not ready after {wait_time} (>{timeout}) seconds. Aborting..."

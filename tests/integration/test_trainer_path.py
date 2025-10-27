@@ -32,21 +32,19 @@ def create_dummy_batch(batch_size: int, seq_len: int) -> MicroBatch:
     for key in ["input_ids", "advantages", "loss_mask", "inference_logprobs", "position_ids"]:
         micro_batch[key] = torch.cat([sample[key] for sample in samples]).unsqueeze(0)
     micro_batch["temperature"] = 1.0
-    micro_batch["total_tokens"] = batch_size * seq_len
     return micro_batch
 
 
 @pytest.fixture(scope="module")
 def fake_rollout_dir(
     tmp_path_factory: pytest.TempPathFactory,
-) -> Callable[[list[int], int, int, int], Path]:
+) -> Callable[[list[int], int, int], Path]:
     """Create a temporary directory with dummy batches."""
     output_dir = tmp_path_factory.mktemp("outputs")
 
     def write_dummy_batches(
         steps: list[int] = [1],
         batch_size: int = 1,
-        micro_batch_size: int = 1,
         seq_len: int = 10,
     ) -> Path:
         for step in steps:
@@ -55,9 +53,8 @@ def fake_rollout_dir(
             batch_path = step_path / "rank_0.pt"
             tmp_path = batch_path.with_suffix(".tmp")
             batches = []
-            assert batch_size % micro_batch_size == 0, "Batch size must be divisible by micro batch size"
-            for _ in range(batch_size // micro_batch_size):
-                micro_batch = create_dummy_batch(micro_batch_size, seq_len)
+            for _ in range(batch_size):
+                micro_batch = create_dummy_batch(batch_size, seq_len)
                 batches.append(micro_batch)
             torch.save(batches, tmp_path)
             tmp_path.rename(batch_path)
@@ -70,9 +67,9 @@ def fake_rollout_dir(
 @pytest.fixture(scope="module")
 def train_process(
     run_process: Callable[[Command, Environment], ProcessResult],
-    fake_rollout_dir: Callable[[list[int], int, int, int], Path],
+    fake_rollout_dir: Callable[[list[int], int, int], Path],
 ):
-    output_dir = fake_rollout_dir(list(range(5)), 16, 8, 16)
+    output_dir = fake_rollout_dir(list(range(5)), 2, 1024)
     return run_process(
         CMD + ["--output-dir", output_dir.as_posix(), "--data.fake", "None", "--log.level", "debug"], ENV
     )
