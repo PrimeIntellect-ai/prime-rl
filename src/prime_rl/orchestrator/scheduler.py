@@ -182,7 +182,6 @@ class DefaultScheduler(Scheduler):
 
         batch_rollouts: list[Rollout] = []
         problems_left = self.problems_per_batch
-        pbar = tqdm(total=self.config.batch_size, desc="Generating rollouts")
         while True:
             # Generate a batch of rollouts
             oversampled_problems_left = int(self.oversampling_factor * problems_left)
@@ -194,13 +193,12 @@ class DefaultScheduler(Scheduler):
                 rollouts_per_example=self.config.rollouts_per_example,
                 sampling_args=self.sampling_args,
                 semaphore=self.semaphore,
-                use_tqdm=False,
+                use_tqdm=True,
             )
 
             # Process outputs and update accepted rollouts
             accepted_rollouts = self.process_generate_outputs(generate_outputs=generate_outputs)
             batch_rollouts.extend(accepted_rollouts)
-            pbar.update(len(accepted_rollouts))
 
             # Break if we have enough rollouts to fill the batch
             if len(batch_rollouts) >= self.config.batch_size:
