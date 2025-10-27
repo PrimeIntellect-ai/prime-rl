@@ -120,7 +120,7 @@ class Scheduler(ABC):
         return accepted_rollouts
 
     @abstractmethod
-    async def step(self, step: int) -> list[Rollout]:
+    async def generate_batch(self, step: int) -> list[Rollout]:
         """Orchestrates rollout and update weight requests until a batch of rollouts is ready."""
         pass
 
@@ -144,9 +144,9 @@ class DefaultScheduler(Scheduler):
         scheduler_config: DefaultSchedulerConfig,
     ):
         super().__init__(clients, admin_clients, env, buffer, tokenizer, config)
+        self.step = 0
         self.max_off_policy_steps = scheduler_config.max_off_policy_steps
         # Metrics
-        self.off_policy_level = 0
         self.wait_for_weight_ckpt_time = 0
         self.update_weights_time = 0
 
@@ -172,9 +172,7 @@ class DefaultScheduler(Scheduler):
             self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
             self.ckpt_step = next_ckpt_step
 
-        self.off_policy_level = step - self.ckpt_step
-
-    async def generate_batch(self) -> list[Rollout]:
+    async def _generate_batch(self) -> list[Rollout]:
         """Schedules and awaits all batch rollout requests synchronously."""
         batch_rollouts: list[Rollout] = []
         problems_left = self.problems_per_batch
@@ -204,10 +202,15 @@ class DefaultScheduler(Scheduler):
 
         return batch_rollouts
 
-    async def step(self, step: int) -> list[Rollout]:
+    async def generate_batch(self, step: int) -> list[Rollout]:
         """Updates the policy at the beginning of the step and synchronously generates a batch of rollouts."""
+        self.step = step
         await self.update_policy(step=step)
-        return await self.generate_batch()
+        return await self._generate_batch()
+
+    @property
+    def off_policy_level(self) -> int:
+        return max(self.step - self.ckpt_step, 0)
 
     def metrics(self) -> dict:
         return {
@@ -231,10 +234,13 @@ class ARealScheduler(Scheduler):
         scheduler_config: ARealSchedulerConfig,
     ):
         super().__init__(clients, admin_clients, env, buffer, tokenizer, config)
+        self.step = 0
+        self.max_off_policy_steps = scheduler_config.max_off_policy_steps
         self.max_retention_steps = scheduler_config.max_retention_steps
         self.inflight_group_rollouts: dict[asyncio.Task, int] = {}
         self.cycle_clients = cycle(self.clients)
         self.update_weights_time = 0
+        self.wait_for_weight_ckpt_time = 0
         asyncio.create_task(self.update_policy_loop())
 
     async def schedule_group_rollout(self):
@@ -263,16 +269,30 @@ class ARealScheduler(Scheduler):
     async def update_policy(self):
         """Updates the policy to the latest available checkpoint. Aborts rollout requests that are older than the max retention steps."""
         latest_ckpt_step = get_latest_ckpt_step(get_weights_dir(self.config.output_dir)) or 0
-        if latest_ckpt_step > self.ckpt_step:
+        fixed_off_policy_step = max(self.step - self.max_off_policy_steps, 0)
+        next_ckpt_step = max(fixed_off_policy_step, latest_ckpt_step)
+        if next_ckpt_step > self.ckpt_step:
+            if next_ckpt_step == latest_ckpt_step:
+                self.logger.debug(
+                    f"Found new policy with step {next_ckpt_step}. Updating weights and cancelling old rollout requests."
+                )
+            else:
+                self.logger.debug(
+                    f"Hit async barrier because we are >{self.max_off_policy_steps} steps off-policy. Waiting for weight checkpoint {next_ckpt_step}"
+                )
+            wait_for_weight_ckpt_start_time = time.time()
+            await wait_for_path(get_step_path(get_weights_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
+            self.wait_for_weight_ckpt_time = time.time() - wait_for_weight_ckpt_start_time
             self.logger.debug(
-                f"Found new policy with step {latest_ckpt_step}. Updating weights and cancelling old rollout requests."
+                f"Waited for weight checkpoint {next_ckpt_step} for {self.wait_for_weight_ckpt_time:.2f}s"
             )
+
             update_weights_start_time = time.time()
             await update_weights(
-                self.admin_clients, get_step_path(get_weights_dir(self.config.output_dir), latest_ckpt_step)
+                self.admin_clients, get_step_path(get_weights_dir(self.config.output_dir), next_ckpt_step)
             )
             self.update_weights_time = time.time() - update_weights_start_time
-            self.logger.debug(f"Updated weights to step {latest_ckpt_step} in {self.update_weights_time:.2f}s")
+            self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
 
             # Cancel old rollout requests
             num_old_rollout_requests = 0
@@ -288,8 +308,10 @@ class ARealScheduler(Scheduler):
                 self.logger.warning(f"Cancelled and re-scheduled {num_old_rollout_requests} old rollout requests.")
             self.ckpt_step = latest_ckpt_step
 
-    async def step(self, step: int) -> list[Rollout]:
+    async def generate_batch(self, step: int) -> list[Rollout]:
         """Generates group rollouts continuously until the batch is filled. Updates the policy on the fly."""
+        self.step = step
+
         # Schedule initial tasks
         self.logger.info("Starting to generate batch rollouts")
         while len(self.inflight_group_rollouts) < self.problems_per_batch:
@@ -324,9 +346,15 @@ class ARealScheduler(Scheduler):
     def max_retention_level(self) -> int:
         return max(self.inflight_group_rollouts.values())
 
+    @property
+    def off_policy_level(self) -> int:
+        return max(self.step - self.ckpt_step, 0)
+
     def metrics(self) -> dict:
         return {
+            "time/wait_for_weight_ckpt": self.wait_for_weight_ckpt_time,
             "time/update_weights": self.update_weights_time,
+            "batch/off_policy_level": self.off_policy_level,
             "batch/max_retention_level": self.max_retention_level,
         }
 

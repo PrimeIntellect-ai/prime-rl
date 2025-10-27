@@ -380,12 +380,6 @@ class SchedulerConfig(BaseModel):
         ),
     ] = 1.0
 
-
-class DefaultSchedulerConfig(SchedulerConfig):
-    """Configures the default scheduler."""
-
-    type: Literal["default"] = "default"
-
     max_off_policy_steps: Annotated[
         int,
         Field(
@@ -393,6 +387,12 @@ class DefaultSchedulerConfig(SchedulerConfig):
             description="Maximum number of off-policy steps to allow. If 0, will do synchronous RL. Else, it will allow to go `max_off_policy_steps` steps ahead of training.",
         ),
     ] = 2
+
+
+class DefaultSchedulerConfig(SchedulerConfig):
+    """Configures the default scheduler."""
+
+    type: Literal["default"] = "default"
 
 
 class ARealSchedulerConfig(SchedulerConfig):

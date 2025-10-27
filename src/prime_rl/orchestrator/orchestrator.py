@@ -147,7 +147,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Generate a batch of rollouts
         generate_completions_start_time = time.time()
-        accepted_rollouts = await scheduler.step(step=progress.step)
+        accepted_rollouts = await scheduler.generate_batch(step=progress.step)
         generate_completions_time = time.time() - generate_completions_start_time
 
         # Optionally, run online evals at the specified interval

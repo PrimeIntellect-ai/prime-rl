@@ -237,13 +237,13 @@ class WeightCheckpointManager:
         output_dir: Path,
         config: WeightCheckpointConfig,
         ckpt_config: CheckpointConfig | None,
-        async_level: int,
+        max_off_policy_steps: int = 0,
         lora_config: LoRAConfig | None = None,
     ):
         self.weights_dir = get_weights_dir(output_dir)
         self.config = config
         self.ckpt_config = ckpt_config
-        self.async_level = async_level
+        self.max_off_policy_steps = max_off_policy_steps
         self.lora_config = lora_config
         self._logger = get_logger()
         self._world = get_world()
@@ -411,16 +411,16 @@ class WeightCheckpointManager:
 
     def _maybe_clean(self, step: int):
         """Synchronous helper of `clean`."""
-        step = max(step - (self.async_level + 1), 0)  # Consider deleting async_level + 1 steps ago
+        step = max(step - (self.max_off_policy_steps + 1), 0)  # Consider deleting max_off_policy_steps + 1 steps ago
         candidate_path_to_delete = self._get_step_path(step)
         keep_for_eval = self.config.interval and step % self.config.interval == 0
-        # For checkpointing step x, we need all weight checkpoints in [x-async_level, x] (for logprob model)
+        # For checkpointing step x, we need all weight checkpoints in [x-max_off_policy_steps, x] (for logprob model)
         # To get [n-k, n] with interval n and buffer k over all natural numbers x, we use the condition (n - (x % n)) % n <= k
         keep_for_ckpt = (
             self.ckpt_config
             and self.ckpt_config.interval
             and (self.ckpt_config.interval - (step % self.ckpt_config.interval)) % self.ckpt_config.interval
-            <= self.async_level
+            <= self.max_off_policy_steps
         )
         if not (keep_for_eval or keep_for_ckpt):
             self._logger.debug(
@@ -432,7 +432,7 @@ class WeightCheckpointManager:
         """
         Considers deleting a past weight checkpoint at a given step. There are two reasons not to delete a checkpoint:
         1. The step is an evaluation step (e.g. step % weights.interval == 0)
-        2. The step is a checkpoint step or at most async_level steps earlier
+        2. The step is a checkpoint step or at most max_off_policy_steps steps earlier
         """
         if self.config.save_async:
             thread = threading.Thread(
@@ -449,12 +449,12 @@ def setup_weight_ckpt_manager(
     output_dir: Path,
     weight_ckpt_config: WeightCheckpointConfig | None,
     ckpt_config: CheckpointConfig | None,
-    async_level: int,
+    max_off_policy_steps: int = 0,
     lora_config: LoRAConfig | None = None,
 ) -> WeightCheckpointManager | None:
     if weight_ckpt_config is None:
         return None
 
     return WeightCheckpointManager(
-        output_dir, weight_ckpt_config, ckpt_config, async_level=async_level, lora_config=lora_config
+        output_dir, weight_ckpt_config, ckpt_config, max_off_policy_steps=max_off_policy_steps, lora_config=lora_config
     )

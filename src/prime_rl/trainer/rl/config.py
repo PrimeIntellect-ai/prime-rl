@@ -85,7 +85,7 @@ class RLTrainerConfig(BaseSettings):
         ),
     ] = None
 
-    async_level: Annotated[
+    max_off_policy_steps: Annotated[
         int,
         Field(
             ge=0,
