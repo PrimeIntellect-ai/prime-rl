@@ -1,3 +1,7 @@
+import shutil
+import sys
+from pathlib import Path
+
 import uvloop
 
 from prime_rl.inference.config import InferenceConfig
@@ -5,7 +9,19 @@ from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server, run_s
 from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
 from vllm.utils import FlexibleArgumentParser
 
-# Patches are applied automatically via prime_rl_vllm_patch.pth installed in site-packages
+# Ensure .pth file is installed in site-packages (for editable installs)
+_pth_installed = False
+for _site_path in sys.path:
+    _site_path = Path(_site_path)
+    if _site_path.name == "site-packages" and _site_path.exists():
+        _pth_dest = _site_path / "prime_rl_vllm_patch.pth"
+        if not _pth_dest.exists():
+            # Path(__file__) is src/prime_rl/inference/vllm/server.py, go up to src/prime_rl
+            _pth_source = Path(__file__).parent.parent.parent / "data" / "prime_rl_vllm_patch.pth"
+            if _pth_source.exists():
+                shutil.copy2(_pth_source, _pth_dest)
+        _pth_installed = True
+        break
 
 
 def server(config: InferenceConfig, vllm_args: list[str]):
