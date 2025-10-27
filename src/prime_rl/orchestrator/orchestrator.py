@@ -23,7 +23,6 @@ from prime_rl.utils.client import (
     setup_admin_clients,
     setup_clients,
     update_weights,
-    update_weights_nccl,
 )
 from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.orchestrator.buffer import setup_buffer, make_rollouts, Rollout
@@ -120,7 +119,7 @@ async def orchestrate(config: OrchestratorConfig):
             await update_weights(admin_clients, get_step_path(get_weights_dir(config.output_dir), ckpt_step))
         elif config.broadcast_backend == "nccl":
             logger.info("Resuming training form latest ckpt via NCCL broadcast")
-            await update_weights_nccl(admin_clients)
+            await update_weights(admin_clients)
         else:
             raise ValueError(f"Invalid broadcast backend: {config.broadcast_backend}")
     else:
@@ -180,7 +179,12 @@ async def orchestrate(config: OrchestratorConfig):
             # Update the weights
             logger.info(f"Updating weights to weight checkpoint {ckpt_step}")
             update_weights_start_time = time.time()
-            await update_weights(admin_clients, get_step_path(get_weights_dir(config.output_dir), ckpt_step))
+            if config.broadcast_backend == "filesystem":
+                await update_weights(admin_clients, get_step_path(get_weights_dir(config.output_dir), ckpt_step))
+
+            # todo move this outside of the stable file check
+            elif config.broadcast_backend == "nccl":
+                await update_weights(admin_clients, None)
             update_weights_time = time.time() - update_weights_start_time
             logger.debug(f"Updated weights in {update_weights_time:.2f}s")
 

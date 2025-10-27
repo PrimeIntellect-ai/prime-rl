@@ -94,13 +94,15 @@ async def check_health(
     await asyncio.gather(*[_check_health(admin_client) for admin_client in admin_clients])
 
 
-async def update_weights(admin_clients: list[AsyncClient], weight_dir: Path) -> None:
+async def update_weights(admin_clients: list[AsyncClient], weight_dir: Path | None) -> None:
     """Make a HTTP post request to the vLLM server to update the weights."""
     logger = get_logger()
 
-    async def _update_weights(admin_client: AsyncClient, weight_dir: Path) -> None:
+    weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
+
+    async def _update_weights(admin_client: AsyncClient, weight_dir: str | None) -> None:
         try:
-            response = await admin_client.post("/update_weights", json={"weight_dir": weight_dir.as_posix()})
+            response = await admin_client.post("/update_weights", json={"weight_dir": weight_dir})
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
@@ -108,7 +110,7 @@ async def update_weights(admin_clients: list[AsyncClient], weight_dir: Path) -> 
                 return
             raise
 
-    await asyncio.gather(*[_update_weights(admin_client, weight_dir) for admin_client in admin_clients])
+    await asyncio.gather(*[_update_weights(admin_client, weight_dir_posix) for admin_client in admin_clients])
 
 
 async def reload_weights(admin_clients: list[AsyncClient]) -> None:
@@ -152,19 +154,3 @@ async def init_nccl_broadcast(admin_clients: list[AsyncClient], host: str, port:
             for client_num, admin_client in enumerate(admin_clients)
         ]
     )
-
-
-async def update_weights_nccl(admin_clients: list[AsyncClient]) -> None:
-    """Make a HTTP post request to the vLLM server to update the weights via NCCL broadcast."""
-    logger = get_logger()
-
-    async def _update_weights_nccl(admin_client: AsyncClient) -> None:
-        try:
-            response = await admin_client.post("/update_weights", json={"weight_dir": ""})
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                logger.warning("The route /update_weights does not exist. Skipping weight update via NCCL broadcast.")
-                return
-
-    await asyncio.gather(*[_update_weights_nccl(admin_client) for admin_client in admin_clients])
