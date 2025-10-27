@@ -13,18 +13,19 @@ def apply_patches() -> None:
     if getattr(api_mod, "_prime_rl_patched", False):
         return
 
-    # Patch build_async_engine_client_from_engine_args to inject worker extension
-    # This is called for EVERY engine client created, ensuring all API servers get the extension
-    _orig_build_engine_client = api_mod.build_async_engine_client_from_engine_args
+    # Patch AsyncEngineArgs.create_engine_config to inject worker_extension_cls
+    # This must be done BEFORE the engine config is created
+    from vllm.engine.arg_utils import AsyncEngineArgs
 
-    def _patched_build_engine_client(engine_args, **kwargs):
-        print(f"[prime-rl patch] Setting worker_extension_cls = prime_rl.inference.vllm.worker.CheckpointWorker")
-        engine_args.worker_extension_cls = "prime_rl.inference.vllm.worker.CheckpointWorker"
-        engine_args.logprobs_mode = LogprobsMode.PROCESSED_LOGPROBS
-        print(f"[prime-rl patch] engine_args.worker_extension_cls = {engine_args.worker_extension_cls}")
-        return _orig_build_engine_client(engine_args, **kwargs)
+    _orig_create_engine_config = AsyncEngineArgs.create_engine_config
 
-    api_mod.build_async_engine_client_from_engine_args = _patched_build_engine_client
+    def _patched_create_engine_config(self, *args, **kwargs):
+        # Set worker_extension_cls before creating config
+        self.worker_extension_cls = "prime_rl.inference.vllm.worker.CheckpointWorker"
+        self.logprobs_mode = LogprobsMode.PROCESSED_LOGPROBS
+        return _orig_create_engine_config(self, *args, **kwargs)
+
+    AsyncEngineArgs.create_engine_config = _patched_create_engine_config
 
     _orig_build_app: Callable = api_mod.build_app
 
