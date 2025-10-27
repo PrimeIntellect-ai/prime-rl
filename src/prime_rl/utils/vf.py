@@ -129,33 +129,8 @@ async def generate_batch(
     return merge_outputs(generate_outputs_list)
 
 
-# Non-batched version of vf.GenerateInputs
-class GenerateInput(TypedDict, total=False):
-    example_id: int | None
-    prompt: vf.Messages
-    completion: vf.Messages | None
-    answer: str | None
-    task: str | None
-    info: vf.Info | None
-
-
-# Non-batched version of verifiers.types.GenerateOutputs
-# But: Without metadata field but with advantage field
-class GenerateOutput(TypedDict, total=False):
-    example_id: int
-    prompt: vf.Messages
-    completion: vf.Messages
-    answer: str
-    state: vf.State
-    task: str
-    info: vf.Info
-    reward: float
-    advantage: float
-    metrics: dict[str, list[float]]
-
-
 # Non-batched version of vf.ProcessedOutputs
-# But: Includes advantage and example_id field
+# Also includes advantage and example_id field
 class Rollout(TypedDict):
     example_id: int
     prompt_ids: list[int]
