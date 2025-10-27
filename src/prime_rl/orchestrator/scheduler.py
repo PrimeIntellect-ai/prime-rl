@@ -300,14 +300,25 @@ class ARealScheduler(Scheduler):
 
             # Cancel old rollout requests
             num_old_rollout_requests = 0
+            tasks_to_remove = []
+            tasks_to_update = []
+
             for task, (retention_step, client) in self.inflight_group_rollouts.items():
                 if retention_step > self.max_retention_steps:
                     task.cancel()
-                    self.inflight_group_rollouts.pop(task)
-                    await self.schedule_group_rollout(client)
+                    tasks_to_remove.append((task, client))
                     num_old_rollout_requests += 1
                 else:
-                    self.inflight_group_rollouts[task] = (retention_step + 1, client)
+                    tasks_to_update.append((task, retention_step + 1, client))
+
+            # Remove cancelled tasks
+            for task, client in tasks_to_remove:
+                self.inflight_group_rollouts.pop(task)
+                await self.schedule_group_rollout(client)
+
+            # Update retention steps for remaining tasks
+            for task, new_retention_step, client in tasks_to_update:
+                self.inflight_group_rollouts[task] = (new_retention_step, client)
             if num_old_rollout_requests > 0:
                 self.logger.warning(f"Cancelled and re-scheduled {num_old_rollout_requests} old rollout requests.")
             self.ckpt_step = latest_ckpt_step
@@ -351,6 +362,8 @@ class ARealScheduler(Scheduler):
 
     @property
     def max_retention_level(self) -> int:
+        if not self.inflight_group_rollouts:
+            return 0
         return max(retention_step for retention_step, _ in self.inflight_group_rollouts.values())
 
     def metrics(self) -> dict:
