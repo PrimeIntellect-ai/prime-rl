@@ -28,7 +28,7 @@ class RotaryEmbedding(nn.Module):
 
         cos_sin_cache = self._compute_cos_sin_cache()
         self.register_buffer("cos_sin_cache", cos_sin_cache, persistent=False)
-    
+
     @torch.no_grad()
     def _compute_cos_sin_cache(self) -> torch.Tensor:
         """Compute the cos and sin cache."""
@@ -41,6 +41,7 @@ class RotaryEmbedding(nn.Module):
         cache = torch.cat((cos, sin), dim=-1)
         return cache
 
+
 def apply_rotary_emb_torch(x, cos, sin, unsqueeze_dim=1):
     cos = cos.unsqueeze(unsqueeze_dim).to(x.dtype)
     sin = sin.unsqueeze(unsqueeze_dim).to(x.dtype)
@@ -48,6 +49,7 @@ def apply_rotary_emb_torch(x, cos, sin, unsqueeze_dim=1):
     o1 = x1 * cos - x2 * sin
     o2 = x2 * cos + x1 * sin
     return torch.cat((o1, o2), dim=-1)
+
 
 def apply_rotary_pos_emb(q, k, cos_sin_cache, position_ids=None, unsqueeze_dim=1):
     position_ids = position_ids.flatten()
