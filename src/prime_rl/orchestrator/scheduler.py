@@ -183,11 +183,12 @@ class DefaultScheduler(Scheduler):
         problems_left = self.problems_per_batch
         while True:
             # Generate a batch of rollouts
+            oversampled_problems_left = int(self.oversampling_factor * problems_left)
             generate_outputs = await generate_batch(
                 clients=self.clients,
                 env=self.env,
                 model_name=self.config.model.name,
-                problems=self.buffer.sample_problems(int(self.oversampling_factor * problems_left)),
+                problems=self.buffer.sample_problems(oversampled_problems_left),
                 rollouts_per_example=self.config.rollouts_per_example,
                 sampling_args=self.sampling_args,
                 semaphore=self.semaphore,
@@ -313,7 +314,8 @@ class ARealScheduler(Scheduler):
 
         # Schedule initial tasks
         self.logger.info("Starting to generate batch rollouts")
-        while len(self.inflight_group_rollouts) < self.problems_per_batch:
+        oversampled_problems_per_batch = int(self.problems_per_batch * self.oversampling_factor)
+        while len(self.inflight_group_rollouts) < oversampled_problems_per_batch:
             await self.schedule_group_rollout()
 
         batch_rollouts: list[Rollout] = []
