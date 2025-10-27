@@ -239,18 +239,20 @@ class ARealScheduler(Scheduler):
         super().__init__(clients, admin_clients, env, buffer, tokenizer, config)
         self.max_off_policy_steps = scheduler_config.max_off_policy_steps
         self.max_retention_steps = scheduler_config.max_retention_steps
-        self.inflight_group_rollouts: dict[asyncio.Task, int] = {}
+        self.inflight_group_rollouts: dict[asyncio.Task, tuple[int, AsyncOpenAI]] = {}
         self.cycle_clients = cycle(self.clients)
         self.update_weights_time = 0
         self.wait_for_weight_ckpt_time = 0
         asyncio.create_task(self.update_policy_loop())
 
-    async def schedule_group_rollout(self):
+    async def schedule_group_rollout(self, client: AsyncOpenAI | None = None):
         """Asynchronously schedules a group rollout request."""
         problem = self.buffer.sample_problems(n=1)[0]
+        if client is None:
+            client = next(self.cycle_clients)
         group_rollout_request = asyncio.create_task(
             generate_group(
-                client=next(self.cycle_clients),
+                client=client,
                 env=self.env,
                 model_name=self.config.model.name,
                 problem=problem,
@@ -260,7 +262,7 @@ class ARealScheduler(Scheduler):
             )
         )
         await asyncio.sleep(0)
-        self.inflight_group_rollouts[group_rollout_request] = 0
+        self.inflight_group_rollouts[group_rollout_request] = (0, client)
 
     async def update_policy_loop(self):
         """Continuously checks for new policy checkpoints."""
@@ -298,14 +300,14 @@ class ARealScheduler(Scheduler):
 
             # Cancel old rollout requests
             num_old_rollout_requests = 0
-            for task, retention_step in self.inflight_group_rollouts.items():
+            for task, (retention_step, client) in self.inflight_group_rollouts.items():
                 if retention_step > self.max_retention_steps:
                     task.cancel()
                     self.inflight_group_rollouts.pop(task)
-                    await self.schedule_group_rollout()
+                    await self.schedule_group_rollout(client)
                     num_old_rollout_requests += 1
                 else:
-                    self.inflight_group_rollouts[task] = retention_step + 1
+                    self.inflight_group_rollouts[task] = (retention_step + 1, client)
             if num_old_rollout_requests > 0:
                 self.logger.warning(f"Cancelled and re-scheduled {num_old_rollout_requests} old rollout requests.")
             self.ckpt_step = latest_ckpt_step
@@ -318,7 +320,7 @@ class ARealScheduler(Scheduler):
         self.logger.info("Starting to generate batch rollouts")
         oversampled_problems_per_batch = int(self.problems_per_batch * self.oversampling_factor)
         while len(self.inflight_group_rollouts) < oversampled_problems_per_batch:
-            await self.schedule_group_rollout()
+            await self.schedule_group_rollout()  # Schedule requests in round-robin fashion
 
         batch_rollouts: list[Rollout] = []
         pbar = tqdm(total=self.config.batch_size, desc="Generating rollouts")
@@ -332,14 +334,14 @@ class ARealScheduler(Scheduler):
                     batch_rollouts = batch_rollouts[: self.config.batch_size]
                     break
 
-                self.inflight_group_rollouts.pop(finished_group_rollout)
+                _, client = self.inflight_group_rollouts.pop(finished_group_rollout)
                 generate_outputs: GenerateOutputs = finished_group_rollout.result()
 
                 accepted_rollouts = self.process_generate_outputs(generate_outputs=generate_outputs)
                 batch_rollouts.extend(accepted_rollouts)
                 pbar.update(len(accepted_rollouts))
 
-                await self.schedule_group_rollout()
+                await self.schedule_group_rollout(client)
 
             self.logger.debug(
                 f"Got {len(batch_rollouts)} rollout(s) in batch. Need {self.config.batch_size - len(batch_rollouts)} more."
