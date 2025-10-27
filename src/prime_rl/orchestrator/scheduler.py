@@ -5,6 +5,7 @@ from itertools import cycle
 
 from httpx import AsyncClient
 from openai import AsyncOpenAI
+from tqdm import tqdm
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from verifiers import Environment
 from verifiers.types import GenerateOutputs, ProcessedOutputs
@@ -154,7 +155,7 @@ class DefaultScheduler(Scheduler):
         """Updates the policy such that it is exactly off-policy steps away."""
         next_ckpt_step = max(self.step - self.max_off_policy_steps, 0)
         if self.step - self.ckpt_step > self.max_off_policy_steps:
-            self.logger.debug(
+            self.logger.info(
                 f"Hit async barrier because we are >{self.max_off_policy_steps} steps off-policy. Waiting for weight checkpoint {next_ckpt_step}"
             )
             wait_for_weight_ckpt_start_time = time.time()
@@ -181,6 +182,7 @@ class DefaultScheduler(Scheduler):
 
         batch_rollouts: list[Rollout] = []
         problems_left = self.problems_per_batch
+        pbar = tqdm(total=self.config.batch_size, desc="Generating rollouts")
         while True:
             # Generate a batch of rollouts
             oversampled_problems_left = int(self.oversampling_factor * problems_left)
@@ -192,11 +194,13 @@ class DefaultScheduler(Scheduler):
                 rollouts_per_example=self.config.rollouts_per_example,
                 sampling_args=self.sampling_args,
                 semaphore=self.semaphore,
+                use_tqdm=False,
             )
 
             # Process outputs and update accepted rollouts
             accepted_rollouts = self.process_generate_outputs(generate_outputs=generate_outputs)
             batch_rollouts.extend(accepted_rollouts)
+            pbar.update(len(accepted_rollouts))
 
             # Break if we have enough rollouts to fill the batch
             if len(batch_rollouts) >= self.config.batch_size:
@@ -319,6 +323,7 @@ class ARealScheduler(Scheduler):
             await self.schedule_group_rollout()
 
         batch_rollouts: list[Rollout] = []
+        pbar = tqdm(total=self.config.batch_size, desc="Generating rollouts")
         while len(batch_rollouts) < self.config.batch_size:
             finished_group_rollouts, _ = await asyncio.wait(
                 self.inflight_group_rollouts, return_when=asyncio.FIRST_COMPLETED
@@ -334,6 +339,7 @@ class ARealScheduler(Scheduler):
 
                 accepted_rollouts = self.process_generate_outputs(generate_outputs=generate_outputs)
                 batch_rollouts.extend(accepted_rollouts)
+                pbar.update(len(accepted_rollouts))
 
                 await self.schedule_group_rollout()
 
