@@ -1,5 +1,4 @@
 import asyncio
-import uvloop
 import time
 from loguru import logger
 
@@ -407,7 +406,6 @@ async def orchestrate(config: OrchestratorConfig):
 def main():
     """Main entry-point for orchestrator. Run using `uv run orchestrator`"""
 
-    uvloop.install()
     asyncio.run(orchestrate(parse_argv(OrchestratorConfig)))
 
 
