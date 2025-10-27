@@ -237,7 +237,7 @@ class WeightCheckpointManager:
         output_dir: Path,
         config: WeightCheckpointConfig,
         ckpt_config: CheckpointConfig | None,
-        max_off_policy_steps: int = 0,
+        max_off_policy_steps: int,
         lora_config: LoRAConfig | None = None,
     ):
         self.weights_dir = get_weights_dir(output_dir)
@@ -449,7 +449,7 @@ def setup_weight_ckpt_manager(
     output_dir: Path,
     weight_ckpt_config: WeightCheckpointConfig | None,
     ckpt_config: CheckpointConfig | None,
-    max_off_policy_steps: int = 0,
+    max_off_policy_steps: int,
     lora_config: LoRAConfig | None = None,
 ) -> WeightCheckpointManager | None:
     if weight_ckpt_config is None:
