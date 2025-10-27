@@ -18,8 +18,10 @@ def apply_patches() -> None:
     _orig_build_engine_client = api_mod.build_async_engine_client_from_engine_args
 
     def _patched_build_engine_client(engine_args, **kwargs):
+        print(f"[prime-rl patch] Setting worker_extension_cls = prime_rl.inference.vllm.worker.CheckpointWorker")
         engine_args.worker_extension_cls = "prime_rl.inference.vllm.worker.CheckpointWorker"
         engine_args.logprobs_mode = LogprobsMode.PROCESSED_LOGPROBS
+        print(f"[prime-rl patch] engine_args.worker_extension_cls = {engine_args.worker_extension_cls}")
         return _orig_build_engine_client(engine_args, **kwargs)
 
     api_mod.build_async_engine_client_from_engine_args = _patched_build_engine_client
