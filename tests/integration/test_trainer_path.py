@@ -69,7 +69,7 @@ def train_process(
     run_process: Callable[[Command, Environment], ProcessResult],
     fake_rollout_dir: Callable[[list[int], int, int], Path],
 ):
-    output_dir = fake_rollout_dir(list(range(5)), 16, 16)
+    output_dir = fake_rollout_dir(list(range(5)), 2, 1024)
     return run_process(
         CMD + ["--output-dir", output_dir.as_posix(), "--data.fake", "None", "--log.level", "debug"], ENV
     )
