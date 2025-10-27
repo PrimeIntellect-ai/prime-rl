@@ -11,6 +11,6 @@ load_using_meta = true
 
 [data]
 type = "fake"
-batch_size = 16
-seq_len = 128
+batch_size = 2
+seq_len = 1024
 fake = "fixed"
