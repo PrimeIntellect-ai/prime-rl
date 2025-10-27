@@ -103,6 +103,3 @@ allow-direct-references = true
 
 [tool.hatch.build.targets.wheel.shared-data]
 "src/prime_rl/data/prime_rl_vllm_patch.pth" = "prime_rl_vllm_patch.pth"
-
-[tool.hatch.build.hooks.custom]
-path = "hatch_build.py"
