@@ -5,5 +5,5 @@ name = "PrimeIntellect/Qwen3-0.6B"
 
 [data]
 type = "fake"
-batch_size = 16
-seq_len = 128
+batch_size = 2
+seq_len = 1024
