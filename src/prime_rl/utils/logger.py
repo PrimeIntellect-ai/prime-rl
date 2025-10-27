@@ -1,8 +1,6 @@
 import sys
 from pathlib import Path
 
-from loguru import logger
-
 # Global logger instance
 _LOGGER = None
 
@@ -31,8 +29,23 @@ def setup_logger(log_level: str, log_file: Path | None = None):
         debug = "".join([f"<level>{NO_BOLD}", " [{file}::{line}]", f"{RESET}</level>"])
     format = time + message + debug
 
-    # Remove all default handlers
-    logger.remove()
+    # NOTE: We are creating a new "module-level" logger instance for prime-rl so that third-party code cannot "hijack" our logger
+    # This is a bit hacky because loguru does not publicly expose the logger class, but oh well, it works
+    from loguru._logger import Core as _Core
+    from loguru._logger import Logger as _Logger
+
+    logger = _Logger(
+        core=_Core(),
+        exception=None,
+        depth=0,
+        record=False,
+        lazy=False,
+        colors=False,
+        raw=False,
+        capture=True,
+        patchers=[],
+        extra={},
+    )
 
     # Install console handler
     logger.add(sys.stdout, format=format, level=log_level.upper(), colorize=True)

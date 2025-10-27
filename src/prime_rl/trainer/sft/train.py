@@ -104,12 +104,12 @@ def train(config: SFTTrainerConfig):
     dataiter = iter(dataloader)
 
     # Check that the world size and batch configuration is compatible
-    num_micro_batches = config.data.batch_size // config.data.micro_batch_size
-    if world.world_size > num_micro_batches:
+    batch_size = config.data.batch_size
+    if world.world_size > batch_size:
         raise ValueError(
-            f"There must be at least one micro batch per rank, but only have {num_micro_batches} micro batches for {world.world_size} ranks."
+            f"There must be at least one micro batch per rank, but only have {batch_size} micro batches for {world.world_size} ranks."
         )
-    if num_micro_batches % world.world_size != 0:
+    if batch_size % world.world_size != 0:
         raise ValueError(
             f"The number of micro batches ({num_micro_batches}) must be divisible by the world size ({world.world_size})."
         )
@@ -156,13 +156,7 @@ def train(config: SFTTrainerConfig):
         ):
             logger.info(f"Saving weight checkpoint at step {progress.step}")
             save_weights_start_time = time.time()
-            weight_ckpt_manager.save(
-                model,
-                tokenizer,
-                save_format=config.weights.save_format,
-                save_sharded=config.weights.save_sharded,
-                step=progress.step,
-            )
+            weight_ckpt_manager.save(model, tokenizer, step=progress.step)
             save_weights_time = time.time() - save_weights_start_time
 
         # Save the full checkpoint (if we are at an interval step and not at the first or last step)
@@ -197,13 +191,15 @@ def train(config: SFTTrainerConfig):
             config.data.batch_size
             * config.model.cp
             * config.model.tp
-            // (config.data.micro_batch_size * world.world_size)
+            // world.world_size
         )
 
         batch_loss = torch.tensor(0.0).to("cuda")
         nan_loss_count = torch.tensor(0).to("cuda")
         batch_max_vio, max_vio = torch.tensor(0.0).to("cuda"), None
         for micro_step in range(grad_accum_steps):
+            model.set_requires_all_reduce(micro_step == grad_accum_steps - 1)
+
             micro_batch = next(dataiter)
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
@@ -240,16 +236,15 @@ def train(config: SFTTrainerConfig):
                 loss = loss[loss_mask].mean()
 
                 # Accumulate average loss over gradient accumulation steps
-                
+
                 current_loss = loss.detach() / grad_accum_steps
-                
+
                 # only add if the loss is not nan
                 if not torch.isnan(current_loss):
                     batch_loss += current_loss
                 else:
                     nan_loss_count += 1
                     logger.warning("Loss is nan, not taking into account in the batch loss calculation")
-
 
                 # Delete logits before backward pass to avoid memory spike
                 del logits
@@ -395,13 +390,7 @@ def train(config: SFTTrainerConfig):
     if weight_ckpt_manager is not None:
         assert config.weights is not None
         logger.info("Writing final weight checkpoint")
-        weight_ckpt_manager.save(
-            model,
-            tokenizer,
-            save_format=config.weights.save_format,
-            save_sharded=config.weights.save_sharded,
-            step=progress.step,
-        )
+        weight_ckpt_manager.save(model, tokenizer, step=progress.step)
 
     # Write final checkpoint
     if ckpt_manager is not None:

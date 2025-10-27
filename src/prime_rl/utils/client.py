@@ -17,8 +17,8 @@ def setup_clients(client_config: ClientConfig) -> list[AsyncOpenAI]:
         timeout = httpx.Timeout(timeout=client_config.timeout, connect=5.0)
         # We use as many concurrent connections as possible, but lower than available ports
         limits = httpx.Limits(
-            max_connections=28000,  # OAI default: 1000
-            max_keepalive_connections=28000,  # OAI default: 100
+            max_connections=8192,  # OAI default: 1000
+            max_keepalive_connections=8192,  # OAI default: 100
         )
         http_client = httpx.AsyncClient(limits=limits, timeout=timeout)
         return AsyncOpenAI(
@@ -89,7 +89,9 @@ async def check_health(
                 return
             except Exception as e:
                 if wait_time % log_interval == 0 and wait_time > 0:
-                    logger.warning(f"Inference server was not reached after {wait_time} seconds (Error: {e})")
+                    logger.warning(
+                        f"Inference server was not reached after {wait_time} seconds (Error: {e}) on {admin_client.base_url}"
+                    )
                 await asyncio.sleep(interval)
                 wait_time += interval
         msg = f"Inference server is not ready after {wait_time} (>{timeout}) seconds. Aborting..."

@@ -8,6 +8,7 @@ from typing import Literal
 
 import torch
 from huggingface_hub import split_torch_state_dict_into_shards
+from safetensors import safe_open
 from safetensors.torch import save_file
 from torch import Tensor, nn
 from torch.distributed.checkpoint.state_dict import _get_fqns as get_fqns
@@ -29,16 +30,76 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import get_step_path, get_weight_ckpt_model_path, get_weights_dir
 
 
-def _has_tt_moe_layers(state_dict: dict[str, Tensor]) -> bool:
-    return any("mlp.router.gate" in i for i in state_dict.keys())
+def has_hf_moe_layers(state_dict: dict[str, Tensor]) -> bool:
+    """Whether the model contains MoE layers in HF format."""
+    return any("mlp.experts.1.up_proj" in module_name for module_name in state_dict.keys())
 
 
-def _get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
+def has_tt_moe_layers(state_dict: dict[str, Tensor]) -> bool:
+    """Whether the model contains MoE layers in TT format."""
+    return any("mlp.experts.w1" in module_name for module_name in state_dict.keys())
+
+
+def get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
+    """Get the maximum number of layers in the model."""
     return max(int(i.split(".")[2]) for i in state_dict.keys() if "model.layers." in i) + 1
 
 
-def _convert_tt_moe_to_hf_(state_dict: dict[str, Tensor]):
-    num_layers = _get_max_layer_num(state_dict)
+def convert_hf_to_tt_moe(state_dict: dict[str, Tensor]):
+    """Convert MoE weights from HF to TT format in-place."""
+    num_layers = len(list(i for i in state_dict.keys() if "mlp.gate.weight" in i))
+    num_experts = len(list(i for i in state_dict.keys() if "model.layers.2.mlp.experts" in i)) // 3
+
+    for i in range(1, num_layers + 1):
+        state_dict[f"model.layers.{i}.mlp.router.gate.weight"] = state_dict[f"model.layers.{i}.mlp.gate.weight"]
+        del state_dict[f"model.layers.{i}.mlp.gate.weight"]
+
+        dim, moe_dim = state_dict[f"model.layers.{i}.mlp.experts.0.down_proj.weight"].shape
+        w1 = torch.empty(
+            (num_experts, moe_dim, dim), dtype=state_dict[f"model.layers.{i}.mlp.experts.1.down_proj.weight"].dtype
+        )  # Gate
+        w2 = torch.empty(
+            (num_experts, dim, moe_dim), dtype=state_dict[f"model.layers.{i}.mlp.experts.1.down_proj.weight"].dtype
+        )  # Down
+        w3 = torch.empty(
+            (num_experts, moe_dim, dim), dtype=state_dict[f"model.layers.{i}.mlp.experts.1.down_proj.weight"].dtype
+        )  # Up
+        for j in range(num_experts):
+            w1[j].copy_(state_dict[f"model.layers.{i}.mlp.experts.{j}.gate_proj.weight"])
+            w2[j].copy_(state_dict[f"model.layers.{i}.mlp.experts.{j}.down_proj.weight"])
+            w3[j].copy_(state_dict[f"model.layers.{i}.mlp.experts.{j}.up_proj.weight"])
+
+            del state_dict[f"model.layers.{i}.mlp.experts.{j}.gate_proj.weight"]
+            del state_dict[f"model.layers.{i}.mlp.experts.{j}.down_proj.weight"]
+            del state_dict[f"model.layers.{i}.mlp.experts.{j}.up_proj.weight"]
+
+        state_dict[f"model.layers.{i}.mlp.experts.w1"] = w1
+        state_dict[f"model.layers.{i}.mlp.experts.w2"] = w2
+        state_dict[f"model.layers.{i}.mlp.experts.w3"] = w3
+
+        state_dict[f"model.layers.{i}.mlp.shared_expert.w1"] = state_dict[
+            f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"
+        ]
+        state_dict[f"model.layers.{i}.mlp.shared_expert.w2"] = state_dict[
+            f"model.layers.{i}.mlp.shared_experts.down_proj.weight"
+        ]
+        state_dict[f"model.layers.{i}.mlp.shared_expert.w3"] = state_dict[
+            f"model.layers.{i}.mlp.shared_experts.up_proj.weight"
+        ]
+
+        del state_dict[f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"]
+        del state_dict[f"model.layers.{i}.mlp.shared_experts.down_proj.weight"]
+        del state_dict[f"model.layers.{i}.mlp.shared_experts.up_proj.weight"]
+
+        state_dict[f"model.layers.{i}.mlp.expert_bias"] = state_dict[
+            f"model.layers.{i}.mlp.gate.e_score_correction_bias"
+        ]
+        del state_dict[f"model.layers.{i}.mlp.gate.e_score_correction_bias"]
+
+
+def convert_tt_to_hf_moe(state_dict: dict[str, Tensor]):
+    """Convert MoE weights from TT to HF format in-place."""
+    num_layers = get_max_layer_num(state_dict)
     for i in range(num_layers):
         if not f"model.layers.{i}.mlp.router.gate.weight" in state_dict:
             continue  # Not a TT-MoE layer
@@ -97,6 +158,75 @@ def _convert_tt_moe_to_hf_(state_dict: dict[str, Tensor]):
         del state_dict[f"model.layers.{i}.mlp.experts.w1"]
         del state_dict[f"model.layers.{i}.mlp.experts.w2"]
         del state_dict[f"model.layers.{i}.mlp.experts.w3"]
+
+
+def load_state_dict(save_dir: Path) -> dict[str, Tensor]:
+    """Load a state dict from a local directory with safetensor files."""
+    safetensors_paths = list(save_dir.glob("*.safetensors"))
+    if len(safetensors_paths) > 1:
+        safetensors_paths.sort(key=lambda x: int(x.stem.split("-")[1].split("of")[0]))
+    state_dict = {}
+    for safetensor_path in safetensors_paths:
+        with safe_open(safetensor_path, framework="pt", device="cpu") as f:
+            for key in f.keys():
+                state_dict[key] = f.get_tensor(key)
+    return state_dict
+
+
+def save_state_dict(
+    state_dict: dict[str, Tensor],
+    save_dir: Path,
+    save_format: Literal["torch", "safetensors"] = "safetensors",
+    save_sharded: bool = True,
+):
+    """Save a state dict to a local directory in safetensors or torch format."""
+    logger = get_logger()
+    weights_name = SAFE_WEIGHTS_NAME if save_format == "safetensors" else WEIGHTS_NAME
+    save_dir.mkdir(parents=True, exist_ok=True)
+    if save_sharded:
+        filename_pattern = weights_name.replace(".bin", "{suffix}.bin").replace(".safetensors", "{suffix}.safetensors")
+        state_dict_split = split_torch_state_dict_into_shards(
+            state_dict,
+            filename_pattern=filename_pattern,
+        )
+        if state_dict_split.is_sharded:
+            filenames = state_dict_split.filename_to_tensors.keys()
+            logger.debug(f"Saving sharded weights to {len(filenames)} files: ({', '.join(filenames)})")
+        else:
+            logger.debug(f"Saving unsharded weights to {weights_name}")
+
+        # Save weights (https://github.com/huggingface/transformers/blob/cd74917ffc3e8f84e4a886052c5ab32b7ac623cc/src/transformers/modeling_utils.py#L4252)
+        filename_to_tensors = state_dict_split.filename_to_tensors.items()
+        for shard_file, tensors in filename_to_tensors:
+            shard = {}
+            for tensor in tensors:
+                assert isinstance(state_dict[tensor], Tensor)
+                shard[tensor] = state_dict[tensor].contiguous()
+                # delete reference, see https://github.com/huggingface/transformers/pull/34890
+                del state_dict[tensor]
+            if save_format == "safetensors":
+                save_file(shard, save_dir / shard_file, metadata={"format": "pt"})
+            else:
+                torch.save(shard, save_dir / shard_file)
+        del state_dict
+
+        # Save index (https://github.com/huggingface/transformers/blob/cd74917ffc3e8f84e4a886052c5ab32b7ac623cc/src/transformers/modeling_utils.py#L4301)
+        if state_dict_split.is_sharded:
+            index = {
+                "metadata": {**state_dict_split.metadata},
+                "weight_map": state_dict_split.tensor_to_filename,
+            }
+            save_index_file = SAFE_WEIGHTS_INDEX_NAME if save_format == "safetensors" else WEIGHTS_INDEX_NAME
+            save_index_file = save_dir / save_index_file
+            # Save the index as well
+            with open(save_index_file, "w", encoding="utf-8") as f:
+                content = json.dumps(index, indent=2, sort_keys=True) + "\n"
+                f.write(content)
+    else:
+        if save_format == "safetensors":
+            save_file(state_dict, save_dir / weights_name, metadata={"format": "pt"})
+        else:
+            torch.save(state_dict, save_dir / weights_name)
 
 
 class WeightCheckpointManager:
@@ -212,54 +342,7 @@ class WeightCheckpointManager:
         save_format: Literal["safetensors", "torch"],
         save_sharded: bool,
     ):
-        """Utility function to save sharded weights to a directory. Inspired by `save_pretrained` from transformers."""
-        weights_name = SAFE_WEIGHTS_NAME if save_format == "safetensors" else WEIGHTS_NAME
-        if save_sharded:
-            filename_pattern = weights_name.replace(".bin", "{suffix}.bin").replace(
-                ".safetensors", "{suffix}.safetensors"
-            )
-            state_dict_split = split_torch_state_dict_into_shards(
-                state_dict,
-                filename_pattern=filename_pattern,
-            )
-            if state_dict_split.is_sharded:
-                filenames = state_dict_split.filename_to_tensors.keys()
-                self._logger.debug(f"Saving sharded weights to {len(filenames)} files: ({', '.join(filenames)})")
-            else:
-                self._logger.debug(f"Saving unsharded weights to {weights_name}")
-
-            # Save weights (https://github.com/huggingface/transformers/blob/cd74917ffc3e8f84e4a886052c5ab32b7ac623cc/src/transformers/modeling_utils.py#L4252)
-            filename_to_tensors = state_dict_split.filename_to_tensors.items()
-            for shard_file, tensors in filename_to_tensors:
-                shard = {}
-                for tensor in tensors:
-                    assert isinstance(state_dict[tensor], Tensor)
-                    shard[tensor] = state_dict[tensor].contiguous()
-                    # delete reference, see https://github.com/huggingface/transformers/pull/34890
-                    del state_dict[tensor]
-                if save_format == "safetensors":
-                    save_file(shard, save_dir / shard_file, metadata={"format": "pt"})
-                else:
-                    torch.save(shard, save_dir / shard_file)
-            del state_dict
-
-            # Save index (https://github.com/huggingface/transformers/blob/cd74917ffc3e8f84e4a886052c5ab32b7ac623cc/src/transformers/modeling_utils.py#L4301)
-            if state_dict_split.is_sharded:
-                index = {
-                    "metadata": {**state_dict_split.metadata},
-                    "weight_map": state_dict_split.tensor_to_filename,
-                }
-                save_index_file = SAFE_WEIGHTS_INDEX_NAME if save_format == "safetensors" else WEIGHTS_INDEX_NAME
-                save_index_file = save_dir / save_index_file
-                # Save the index as well
-                with open(save_index_file, "w", encoding="utf-8") as f:
-                    content = json.dumps(index, indent=2, sort_keys=True) + "\n"
-                    f.write(content)
-        else:
-            if save_format == "safetensors":
-                save_file(state_dict, save_dir / weights_name, metadata={"format": "pt"})
-            else:
-                torch.save(state_dict, save_dir / weights_name)
+        return save_state_dict(state_dict, save_dir, save_format, save_sharded)
 
     def _save_to_path(
         self,
@@ -267,8 +350,6 @@ class WeightCheckpointManager:
         model,
         tokenizer,
         step: int,
-        save_format: Literal["safetensors", "torch"],
-        save_sharded: bool,
     ):
         """Save weight checkpoint for given step."""
         # Save weight checkpoint temporary dir to avoid race condition
@@ -283,7 +364,7 @@ class WeightCheckpointManager:
             warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
 
             # Save weights
-            self._save_weights(state_dict, step_path, save_format, save_sharded)
+            self._save_weights(state_dict, step_path, self.config.save_format, self.config.save_sharded)
 
             # Save model config, generation arguments and tokenizer
             model.config.save_pretrained(step_path)
@@ -299,8 +380,6 @@ class WeightCheckpointManager:
         model: nn.Module,
         tokenizer: PreTrainedTokenizer,
         step: int,
-        save_format: Literal["safetensors", "torch"],
-        save_sharded: bool,
         dtype: torch.dtype = torch.bfloat16,
     ):
         """Save a HF-compatible weight-only checkpoint for a given step."""
@@ -314,19 +393,19 @@ class WeightCheckpointManager:
             torch.distributed.barrier()
 
         cpu_state = self._gather_weights(model, dtype, has_lora_layers=has_lora)
-        if _has_tt_moe_layers(cpu_state):
-            _convert_tt_moe_to_hf_(cpu_state)
+        if has_tt_moe_layers(cpu_state):
+            convert_tt_to_hf_moe(cpu_state)
 
         if self._is_master:
             if self.config.save_async:
                 thread = threading.Thread(
                     target=self._save_to_path,
-                    args=(cpu_state, model, tokenizer, step, save_format, save_sharded),
+                    args=(cpu_state, model, tokenizer, step),
                     name=f"weight-checkpoint-save-{step}",
                 )
                 thread.start()
             else:
-                self._save_to_path(cpu_state, model, tokenizer, step, save_format, save_sharded)
+                self._save_to_path(cpu_state, model, tokenizer, step)
 
         return self._get_model_path(step)
 

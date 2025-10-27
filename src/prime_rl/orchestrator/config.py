@@ -209,11 +209,11 @@ class EvalConfig(BaseConfig):
     ] = []
 
     max_concurrent: Annotated[
-        list[int],
+        int | None,
         Field(
-            description="Maximum number of concurrent rollouts to generate and score. If empty, will default to -1 for all environments.",
+            description="Maximum number of concurrent rollouts to generate and score. Will create a global semaphore and pass to verifiers Environment. If None, will not limit concurrency.",
         ),
-    ] = []
+    ] = None
 
     sampling: EvalSamplingConfig = Field(
         default_factory=EvalSamplingConfig,
@@ -244,15 +244,6 @@ class EvalConfig(BaseConfig):
 
         if len(self.num_examples) != len(self.environment_ids):
             raise ValueError("Number of num_examples entries must match number of ids")
-
-        # max_concurrent: if empty/unspecified, default to -1 for all; else length must match ids
-        if len(self.max_concurrent) == 0:
-            self.max_concurrent = [-1 for _ in self.environment_ids]
-        elif len(self.max_concurrent) == 1:
-            self.max_concurrent = [self.max_concurrent[0] for _ in self.environment_ids]
-
-        elif len(self.max_concurrent) != len(self.environment_ids):
-            raise ValueError("Number of max_concurrent entries must match number of ids")
 
         return self
 
@@ -307,6 +298,13 @@ class BufferConfig(BaseModel):
             description="Whether to initialize the metadata and rollout buffer from scratch. Defaults to True, which means we will initialize empty metadata and rollout buffers. If False, we expect columns `metadata` and `rollouts` to be present in the environment dataset to initialize the buffer from.",
         ),
     ] = True
+
+    seed: Annotated[
+        int | None,
+        Field(
+            description="Random seed to use for the buffer. If set, the sampling from the buffer will be deterministic.",
+        ),
+    ] = 0
 
 
 class SimpleBufferConfig(BufferConfig):
@@ -435,15 +433,14 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = Path("outputs")
 
-    batch_size: Annotated[int, Field(ge=1, description="Number of samples to train on per step.")] = 128
-
-    micro_batch_size: Annotated[
-        int,
+    max_concurrent: Annotated[
+        int | None,
         Field(
-            ge=1,
-            description="Number of samples to train on per micro batch. This value should be tuned based on the hardware available. Usually, to the largest value divisble by the training batch size.",
+            description="Maximum number of concurrent rollouts to generate and score. Will create a global semaphore and pass to verifiers Environment. If None, will not limit concurrency.",
         ),
-    ] = 1
+    ] = 1024
+
+    batch_size: Annotated[int, Field(ge=1, description="Number of samples to train on per step.")] = 128
 
     rollouts_per_example: Annotated[
         int,
@@ -522,10 +519,6 @@ class OrchestratorConfig(BaseSettings):
     def validate_batch_size(self):
         if self.batch_size % self.rollouts_per_example != 0:
             raise ValueError("Batch size must be divisible by the number of samples per problem")
-        if self.batch_size % self.micro_batch_size != 0:
-            raise ValueError("Batch size must be divisible by micro batch size")
-        if self.batch_size < self.micro_batch_size:
-            raise ValueError("Batch size must be greater than or equal to micro batch size")
         return self
 
     @model_validator(mode="after")
