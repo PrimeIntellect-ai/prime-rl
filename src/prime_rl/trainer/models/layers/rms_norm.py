@@ -20,7 +20,7 @@ class RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(config.hidden_size))
         self.variance_epsilon = config.eps
 
-    def forward(self, hidden_states: torch.Tensor, residual: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor, residual: torch.Tensor | None = None) -> torch.Tensor:
         input_dtype = hidden_states.dtype
         hidden_states = hidden_states.to(torch.float32)
         if residual is not None:
