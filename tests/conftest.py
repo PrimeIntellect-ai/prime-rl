@@ -1,6 +1,8 @@
+import atexit
 import concurrent.futures
 import os
 import shutil
+import signal
 import subprocess
 from pathlib import Path
 from typing import Callable, Generator
@@ -139,6 +141,17 @@ VLLM_SERVER_ENV = {"CUDA_VISIBLE_DEVICES": "0"}
 VLLM_SERVER_CMD = ["uv", "run", "inference", "@", "configs/reverse_text/rl/infer.toml", "--max-model-len", "2048"]
 
 
+def cleanup_process(process: subprocess.Popen):
+    try:
+        if process.poll() is None:
+            pgid = os.getpgid(process.pid)
+            os.killpg(pgid, signal.SIGTERM)
+            process.wait(timeout=5)
+    except Exception:
+        process.kill()
+        process.wait()
+
+
 @pytest.fixture(scope="session")
 def vllm_server() -> Generator[None, None, None]:
     """Start a vLLM server for integration and e2e tests"""
@@ -149,7 +162,12 @@ def vllm_server() -> Generator[None, None, None]:
 
     # Start the server as a subprocess
     env = {**os.environ, **VLLM_SERVER_ENV}
-    process = subprocess.Popen(VLLM_SERVER_CMD, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    vllm_process = subprocess.Popen(VLLM_SERVER_CMD, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    # Register cleanup on unexpected termination
+    atexit.register(cleanup_process, vllm_process)
+    signal.signal(signal.SIGTERM, lambda signum, frame: cleanup_process(vllm_process))
+    signal.signal(signal.SIGINT, lambda signum, frame: cleanup_process(vllm_process))
 
     # Default vLLM server URL
     base_url = "http://localhost:8000"
@@ -180,13 +198,4 @@ def vllm_server() -> Generator[None, None, None]:
         # Yield to signal that the server is ready (can be used in tests that depend on it)
         yield
     finally:
-        # Shut down the server gracefully
-        process.terminate()
-
-        # Wait for the process to terminate (with timeout)
-        try:
-            process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            # If it doesn't terminate gracefully, kill it
-            process.kill()
-            process.wait()
+        cleanup_process(vllm_process)
