@@ -254,11 +254,9 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Log step metrics
         step_time = time.time() - step_start_time
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {rewards.mean().item():.4f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {seq_lens.mean().item():.1f} tokens/sample"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {rewards.mean().item():.4f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {seq_lens.mean().item():.1f} tokens/sample | Off-Policy Level: {scheduler.off_policy_level}"
         if isinstance(scheduler, ARealScheduler):
             step_message += f" | Max Retention Level: {scheduler.max_retention_level}"
-        elif isinstance(scheduler, DefaultScheduler):
-            step_message += f" | Off-Policy Level: {scheduler.off_policy_level}"
         logger.success(step_message)
 
         # Log progress metrics to monitor

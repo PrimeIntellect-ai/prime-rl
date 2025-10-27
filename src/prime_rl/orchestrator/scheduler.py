@@ -122,6 +122,10 @@ class Scheduler(ABC):
 
         return accepted_rollouts
 
+    @property
+    def off_policy_level(self) -> int:
+        return max(self.step - self.ckpt_step, 0)
+
     @abstractmethod
     async def generate_batch(self, step: int) -> list[Rollout]:
         """Orchestrates rollout and update weight requests until a batch of rollouts is ready."""
@@ -210,10 +214,6 @@ class DefaultScheduler(Scheduler):
             problems_left = self.problems_per_batch - problems_sampled
 
         return batch_rollouts
-
-    @property
-    def off_policy_level(self) -> int:
-        return max(self.step - self.ckpt_step, 0)
 
     def metrics(self) -> dict:
         return {
@@ -351,11 +351,7 @@ class ARealScheduler(Scheduler):
 
     @property
     def max_retention_level(self) -> int:
-        return max(self.inflight_group_rollouts.values())
-
-    @property
-    def off_policy_level(self) -> int:
-        return max(self.step - self.ckpt_step, 0)
+        return max(retention_step for retention_step, _ in self.inflight_group_rollouts.values())
 
     def metrics(self) -> dict:
         return {
