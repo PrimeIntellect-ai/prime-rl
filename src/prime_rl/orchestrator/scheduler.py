@@ -10,18 +10,17 @@ from verifiers import Environment
 from verifiers.types import GenerateOutputs, ProcessedOutputs
 
 from prime_rl.orchestrator.advantage import compute_advantages
-from prime_rl.orchestrator.buffer import Buffer, Rollout, make_rollouts
+from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.config import (
     ARealSchedulerConfig,
     DefaultSchedulerConfig,
     OrchestratorConfig,
     SamplingConfig,
 )
-from prime_rl.orchestrator.utils import parse_is_truncated_completions
 from prime_rl.utils.client import update_weights
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import get_latest_ckpt_step, get_step_path, get_weights_dir, wait_for_path
-from prime_rl.utils.vf import generate_batch, generate_group
+from prime_rl.utils.vf import Rollout, generate_batch, generate_group, make_rollouts
 
 
 class Scheduler(ABC):
@@ -97,22 +96,8 @@ class Scheduler(ABC):
             advantage_config=self.config.advantage,
         )
 
-        # Parse whether the completions were truncated
-        responses = [state["responses"] for state in generate_outputs.state]
-        is_truncated = parse_is_truncated_completions(responses=responses)
-
         # Make rollouts
-        rollouts = make_rollouts(
-            problem_ids=generate_outputs.example_id,
-            prompt_tokens=processed_outputs.prompt_ids,
-            prompt_masks=processed_outputs.prompt_mask,
-            completion_tokens=processed_outputs.completion_ids,
-            completion_masks=processed_outputs.completion_mask,
-            completion_logprobs=processed_outputs.completion_logprobs,
-            is_truncated=is_truncated,
-            rewards=processed_outputs.rewards,
-            advantages=advantages,
-        )
+        rollouts = make_rollouts(processed_outputs, generate_outputs.example_id, advantages)
 
         # Update and sample rollouts from the buffer
         self.buffer.update(rollouts)

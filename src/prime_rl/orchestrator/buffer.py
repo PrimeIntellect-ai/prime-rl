@@ -3,7 +3,6 @@ import random
 import uuid
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
-from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from datasets import Dataset, load_from_disk
@@ -15,69 +14,7 @@ from prime_rl.orchestrator.config import (
     SimpleBufferConfig,
 )
 from prime_rl.utils.logger import get_logger
-
-
-@dataclass
-class Rollout:
-    problem_id: int
-    prompt_tokens: list[int]
-    prompt_mask: list[int]
-    completion_tokens: list[int]
-    completion_mask: list[int]
-    completion_logprobs: list[float]
-    is_truncated: bool
-    reward: float
-    advantage: float
-
-
-def make_rollouts(
-    problem_ids: list[int],
-    prompt_tokens: list[list[int]],
-    prompt_masks: list[list[int]],
-    completion_tokens: list[list[int]],
-    completion_masks: list[list[int]],
-    completion_logprobs: list[list[float]],
-    is_truncated: list[bool],
-    rewards: list[float],
-    advantages: list[float],
-) -> list[Rollout]:
-    assert (
-        len(problem_ids)
-        == len(prompt_tokens)
-        == len(prompt_masks)
-        == len(completion_tokens)
-        == len(completion_masks)
-        == len(completion_logprobs)
-        == len(is_truncated)
-        == len(rewards)
-        == len(advantages)
-    ), (
-        f"The number of problem_ids, prompt_tokens, prompt_masks, completion_tokens, completion_masks, completion_logprobs, is_truncated, rewards, and advantages must be equal, but got ({len(problem_ids)=}, {len(prompt_tokens)=}, {len(prompt_masks)=}, {len(completion_tokens)=}, {len(completion_masks)=}, {len(completion_logprobs)=}, {len(is_truncated)=}, {len(rewards)=}, {len(advantages)=})"
-    )
-    return [
-        Rollout(
-            problem_id=problem_id,
-            prompt_tokens=prompt_tokens,
-            prompt_mask=prompt_mask,
-            completion_tokens=completion_tokens,
-            completion_mask=completion_mask,
-            completion_logprobs=completion_logprobs,
-            is_truncated=is_truncated,
-            reward=reward,
-            advantage=advantage,
-        )
-        for problem_id, prompt_tokens, prompt_mask, completion_tokens, completion_mask, completion_logprobs, is_truncated, reward, advantage in zip(
-            problem_ids,
-            prompt_tokens,
-            prompt_masks,
-            completion_tokens,
-            completion_masks,
-            completion_logprobs,
-            is_truncated,
-            rewards,
-            advantages,
-        )
-    ]
+from prime_rl.utils.vf import Rollout
 
 
 class Buffer(ABC):
@@ -137,7 +74,7 @@ class Buffer(ABC):
         # Put empty list for problems without rollouts
         rollout_buffer = {problem_id: [] for problem_id in self.problem_ids}
         for problem_id, rollouts in self.rollout_buffer.items():
-            rollout_buffer[problem_id] = [asdict(rollout) for rollout in rollouts]
+            rollout_buffer[problem_id] = rollouts
 
         # Serialize metadata and rollouts into columns
         assert len(dataset) == len(self.metadata) == len(rollout_buffer), (
@@ -237,7 +174,7 @@ class SimpleBuffer(Buffer):
         # Group rollouts by problem_id
         rollouts_by_problem_id = defaultdict(list)
         for rollout in rollouts:
-            rollouts_by_problem_id[rollout.problem_id].append(rollout)
+            rollouts_by_problem_id[rollout["example_id"]].append(rollout)
 
         # Add grouped rollouts to the buffer
         self.rollout_buffer.update(rollouts_by_problem_id)
@@ -347,7 +284,7 @@ class DifficultyPoolBuffer(Buffer):
         # Group rollouts by problem_id
         rollouts_by_problem_id = defaultdict(list)
         for rollout in rollouts:
-            rollouts_by_problem_id[rollout.problem_id].append(rollout)
+            rollouts_by_problem_id[rollout["example_id"]].append(rollout)
 
         # Add grouped rollouts to the buffer
         self.rollout_buffer.update(rollouts_by_problem_id)
@@ -355,7 +292,7 @@ class DifficultyPoolBuffer(Buffer):
         # Update metadata with priority information
         stats = Counter()
         for problem_id, rollouts in rollouts_by_problem_id.items():
-            reward = sum([rollout.reward for rollout in rollouts]) / len(rollouts)
+            reward = sum([rollout["reward"] for rollout in rollouts]) / len(rollouts)
             # TODO(Justus): Should we also have rules based on advantages here?
             # TODO(Justus): Should we move samples between pools based on average reward or all(r > threshold for r in rewards)?
             if reward > self.config.easy_border:
@@ -420,7 +357,7 @@ class OnlineDifficultyBuffer(Buffer):
         # Group rollouts by problem_id
         rollouts_by_problem_id = defaultdict(list)
         for rollout in rollouts:
-            rollouts_by_problem_id[rollout.problem_id].append(rollout)
+            rollouts_by_problem_id[rollout["example_id"]].append(rollout)
 
         # Do not keep rollouts from older weight checkpoints
         # TODO: Can we lift this constraint? Maybe, instead of clearing we mark
@@ -433,7 +370,7 @@ class OnlineDifficultyBuffer(Buffer):
 
         # Update metadata with difficulty information
         for problem_id, rollouts in rollouts_by_problem_id.items():
-            reward = sum(rollout.reward for rollout in rollouts) / len(rollouts)
+            reward = sum(rollout["reward"] for rollout in rollouts) / len(rollouts)
             self.metadata[problem_id].update({"reward": reward})
 
     def sample_rollouts(self, n: int) -> list[Rollout]:

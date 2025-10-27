@@ -1,14 +1,14 @@
 import asyncio
 from collections import defaultdict
 from itertools import cycle
+from typing import TypedDict
 
+import verifiers as vf
 from datasets import Dataset
 from openai import AsyncOpenAI
-from verifiers import Environment
-from verifiers.types import GenerateMetadata, GenerateOutputs
 
 
-def merge_metadata(generate_metadata_list: list[GenerateMetadata]) -> GenerateMetadata:
+def merge_metadata(generate_metadata_list: list[vf.GenerateMetadata]) -> vf.GenerateMetadata:
     """Merge multiple GenerateMetadata into a single GenerateMetadata."""
     num_examples = len(generate_metadata_list)  # Assumes one generate metadata per example
     time_ms = max(metadata.time_ms for metadata in generate_metadata_list)
@@ -20,7 +20,7 @@ def merge_metadata(generate_metadata_list: list[GenerateMetadata]) -> GenerateMe
     state_columns = []
     for metadata in generate_metadata_list:
         state_columns.extend(metadata.state_columns)
-    return GenerateMetadata(
+    return vf.GenerateMetadata(
         env_id=generate_metadata_list[0].env_id,
         env_args=generate_metadata_list[0].env_args,
         model=generate_metadata_list[0].model,
@@ -37,7 +37,7 @@ def merge_metadata(generate_metadata_list: list[GenerateMetadata]) -> GenerateMe
     )
 
 
-def merge_outputs(generate_outputs_list: list[GenerateOutputs]) -> GenerateOutputs:
+def merge_outputs(generate_outputs_list: list[vf.GenerateOutputs]) -> vf.GenerateOutputs:
     """Merge multiple GenerateOutputs into a single GenerateOutputs."""
     example_id, prompt, completion, answer, state, reward, info, task, metrics = (
         [],
@@ -62,7 +62,7 @@ def merge_outputs(generate_outputs_list: list[GenerateOutputs]) -> GenerateOutpu
         for key, value in generate_output.metrics.items():
             metrics[key].extend(value)
     metadata = merge_metadata([generate_output.metadata for generate_output in generate_outputs_list])
-    return GenerateOutputs(
+    return vf.GenerateOutputs(
         prompt=prompt,
         completion=completion,
         answer=answer,
@@ -78,14 +78,14 @@ def merge_outputs(generate_outputs_list: list[GenerateOutputs]) -> GenerateOutpu
 
 async def generate_group(
     client: AsyncOpenAI,
-    env: Environment,
+    env: vf.Environment,
     model_name: str,
     problem: dict,
     rollouts_per_example: int,
     sampling_args: dict,
     semaphore: asyncio.Semaphore | None,
     use_tqdm: bool = False,
-) -> GenerateOutputs:
+) -> vf.GenerateOutputs:
     """Asynchronously generate and score rollouts for one problem."""
     return await env.generate(
         inputs=Dataset.from_list([problem] * rollouts_per_example),
@@ -99,13 +99,13 @@ async def generate_group(
 
 async def generate_batch(
     clients: list[AsyncOpenAI],
-    env: Environment,
+    env: vf.Environment,
     model_name: str,
     problems: list[dict],
     rollouts_per_example: int,
     sampling_args: dict,
     semaphore: asyncio.Semaphore | None,
-) -> GenerateOutputs:
+) -> vf.GenerateOutputs:
     """Asynchronously generate and score rollouts for a list of problems."""
     from tqdm import tqdm
 
@@ -120,10 +120,93 @@ async def generate_batch(
         return result
 
     try:
-        generate_outputs_list: list[GenerateOutputs] = await asyncio.gather(
+        generate_outputs_list: list[vf.GenerateOutputs] = await asyncio.gather(
             *[generate_group_with_progress(client, problem) for client, problem in zip(cycle(clients), problems)]
         )
     finally:
         pbar.close()
 
     return merge_outputs(generate_outputs_list)
+
+
+# Non-batched version of vf.GenerateInputs
+class GenerateInput(TypedDict, total=False):
+    example_id: int | None
+    prompt: vf.Messages
+    completion: vf.Messages | None
+    answer: str | None
+    task: str | None
+    info: vf.Info | None
+
+
+# Non-batched version of verifiers.types.GenerateOutputs
+# But: Without metadata field but with advantage field
+class GenerateOutput(TypedDict, total=False):
+    example_id: int
+    prompt: vf.Messages
+    completion: vf.Messages
+    answer: str
+    state: vf.State
+    task: str
+    info: vf.Info
+    reward: float
+    advantage: float
+    metrics: dict[str, list[float]]
+
+
+# Non-batched version of vf.ProcessedOutputs
+# But: Includes advantage and example_id field
+class Rollout(TypedDict):
+    example_id: int
+    prompt_ids: list[int]
+    prompt_mask: list[int]
+    completion_ids: list[int]
+    completion_mask: list[int]
+    completion_logprobs: list[float]
+    reward: float
+    advantage: float
+    is_truncated: bool
+
+
+def make_rollouts(
+    processed_outputs: vf.ProcessedOutputs, example_ids: list[int], advantages: list[float]
+) -> list[Rollout]:
+    """Processs vf.ProcessedOutputs to a list of rollouts."""
+    assert len(advantages) == len(example_ids) == len(processed_outputs.prompt_ids)
+    rollouts = []
+    for (
+        example_id,
+        prompt_ids,
+        prompt_mask,
+        completion_ids,
+        completion_mask,
+        completion_logprobs,
+        reward,
+        advantage,
+        is_truncated,
+    ) in zip(
+        example_ids,
+        processed_outputs.prompt_ids,
+        processed_outputs.prompt_mask,
+        processed_outputs.completion_ids,
+        processed_outputs.completion_mask,
+        processed_outputs.completion_logprobs,
+        processed_outputs.rewards,
+        advantages,
+        processed_outputs.is_truncated,
+    ):
+        rollouts.append(
+            Rollout(
+                example_id=example_id,
+                prompt_ids=prompt_ids,
+                prompt_mask=prompt_mask,
+                completion_ids=completion_ids,
+                completion_mask=completion_mask,
+                completion_logprobs=completion_logprobs,
+                reward=reward,
+                advantage=advantage,
+                is_truncated=is_truncated,
+            )
+        )
+
+    return rollouts

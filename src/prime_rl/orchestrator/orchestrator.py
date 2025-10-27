@@ -75,8 +75,8 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Load environment and extract dataset
     logger.info(f"Loading environment {config.environment.id} with args {config.environment.args}")
-    vf_env = load_environment(config.environment.id, **config.environment.args)
-    dataset = vf_env.get_dataset(seed=config.seed)
+    env = load_environment(config.environment.id, **config.environment.args)
+    dataset = env.get_dataset(seed=config.seed)
 
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
@@ -84,7 +84,7 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup scheduler
     logger.info(f"Setting up scheduler ({config.scheduler})")
-    scheduler = setup_scheduler(clients, admin_clients, vf_env, buffer, tokenizer, config)
+    scheduler = setup_scheduler(clients, admin_clients, env, buffer, tokenizer, config)
 
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")
@@ -176,17 +176,17 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Unpack accepted rollouts
         rewards = (
-            torch.tensor([rollout.reward for rollout in accepted_rollouts])
+            torch.tensor([rollout["reward"] for rollout in accepted_rollouts])
             .reshape(-1, config.rollouts_per_example)
             .float()
         )
         advantages = (
-            torch.tensor([rollout.advantage for rollout in accepted_rollouts])
+            torch.tensor([rollout["advantage"] for rollout in accepted_rollouts])
             .reshape(-1, config.rollouts_per_example)
             .float()
         )
         is_truncated = (
-            torch.tensor([rollout.is_truncated for rollout in accepted_rollouts])
+            torch.tensor([rollout["is_truncated"] for rollout in accepted_rollouts])
             .reshape(-1, config.rollouts_per_example)
             .float()
         )
@@ -194,11 +194,11 @@ async def orchestrate(config: OrchestratorConfig):
             rewards.shape == advantages.shape == is_truncated.shape == (problems_per_batch, config.rollouts_per_example)
         )
         assert rewards.numel() == advantages.numel() == is_truncated.numel() == config.batch_size
-        prompt_tokens = [rollout.prompt_tokens for rollout in accepted_rollouts]
-        completion_tokens = [rollout.completion_tokens for rollout in accepted_rollouts]
-        prompt_lens = torch.tensor([len(p) for p in prompt_tokens]).float().reshape(-1, config.rollouts_per_example)
+        prompt_ids = [rollout["prompt_ids"] for rollout in accepted_rollouts]
+        completion_ids = [rollout["completion_ids"] for rollout in accepted_rollouts]
+        prompt_lens = torch.tensor([len(p) for p in prompt_ids]).float().reshape(-1, config.rollouts_per_example)
         completion_lens = (
-            torch.tensor([len(c) for c in completion_tokens]).float().reshape(-1, config.rollouts_per_example)
+            torch.tensor([len(c) for c in completion_ids]).float().reshape(-1, config.rollouts_per_example)
         )
         seq_lens = prompt_lens + completion_lens
         assert (
@@ -349,8 +349,8 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Log samples and distributions to W&B table if enabled
         monitor.log_samples(
-            input_tokens=prompt_tokens,
-            output_tokens=completion_tokens,
+            input_tokens=prompt_ids,
+            output_tokens=completion_ids,
             rewards=rewards.flatten().tolist(),
             advantages=advantages.flatten().tolist(),
             rollouts_per_problem=config.rollouts_per_example,
