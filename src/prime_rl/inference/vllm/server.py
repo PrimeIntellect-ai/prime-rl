@@ -1,7 +1,8 @@
 import shutil
 import sys
-import uvloop
 from pathlib import Path
+
+import uvloop
 
 from prime_rl.inference.config import InferenceConfig
 from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server, run_server
