@@ -17,8 +17,8 @@ for _site_path in sys.path:
     if _site_path.name == "site-packages" and _site_path.exists():
         _pth_dest = _site_path / "prime_rl_vllm_patch.pth"
         if not _pth_dest.exists():
-            # Path(__file__) is src/prime_rl/inference/vllm/server.py, go up to src/prime_rl
-            _pth_source = Path(__file__).parent.parent.parent / "data" / "prime_rl_vllm_patch.pth"
+            # Path(__file__) is src/prime_rl/inference/vllm/server.py, .pth is in same dir
+            _pth_source = Path(__file__).parent / "prime_rl_vllm_patch.pth"
             if _pth_source.exists():
                 shutil.copy2(_pth_source, _pth_dest)
         _pth_installed = True

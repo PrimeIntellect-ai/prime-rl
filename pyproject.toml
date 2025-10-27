@@ -102,4 +102,4 @@ build-backend = "hatchling.build"
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel.shared-data]
-"src/prime_rl/data/prime_rl_vllm_patch.pth" = "prime_rl_vllm_patch.pth"
+"src/prime_rl/inference/vllm/prime_rl_vllm_patch.pth" = "prime_rl_vllm_patch.pth"
