@@ -26,7 +26,7 @@ from prime_rl.utils.vf import generate_batch, generate_group
 
 class Scheduler(ABC):
     """
-    Abstract base class for schedulers. They are responsible for scheduling rollout and weight update requests.
+    Schedulers orchestrate the scheduling of rollout and weight update requests.
     """
 
     def __init__(
@@ -49,9 +49,11 @@ class Scheduler(ABC):
         self.batch_size = config.batch_size
         self.seq_len = config.seq_len
         self.rollouts_per_example = config.rollouts_per_example
-        self.problems_per_batch = int(self.oversampling_factor * self.batch_size // self.rollouts_per_example)
+        self.oversampling_factor = config.scheduler.oversampling_factor
+        self.problems_per_batch = int(self.batch_size // self.rollouts_per_example)
         self.max_concurrent = config.max_concurrent
         self.semaphore = asyncio.Semaphore(self.max_concurrent) if self.max_concurrent is not None else None
+        self.step = 0
         self.ckpt_step = 0
 
         def prepare_sampling_args(sampling_config: SamplingConfig) -> dict:
@@ -144,16 +146,14 @@ class DefaultScheduler(Scheduler):
         scheduler_config: DefaultSchedulerConfig,
     ):
         super().__init__(clients, admin_clients, env, buffer, tokenizer, config)
-        self.step = 0
         self.max_off_policy_steps = scheduler_config.max_off_policy_steps
-        # Metrics
         self.wait_for_weight_ckpt_time = 0
         self.update_weights_time = 0
 
-    async def update_policy(self, step: int):
-        """Updates the policy to be exactly off-policy step away."""
-        next_ckpt_step = max(step - self.max_off_policy_steps, 0)
-        if step - self.ckpt_step > self.max_off_policy_steps:
+    async def update_policy(self):
+        """Updates the policy such that it is exactly off-policy steps away."""
+        next_ckpt_step = max(self.step - self.max_off_policy_steps, 0)
+        if self.step - self.ckpt_step > self.max_off_policy_steps:
             self.logger.debug(
                 f"Hit async barrier because we are >{self.max_off_policy_steps} steps off-policy. Waiting for weight checkpoint {next_ckpt_step}"
             )
@@ -172,16 +172,22 @@ class DefaultScheduler(Scheduler):
             self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
             self.ckpt_step = next_ckpt_step
 
-    async def _generate_batch(self) -> list[Rollout]:
-        """Schedules and awaits all batch rollout requests synchronously."""
+    async def generate_batch(self, step: int) -> list[Rollout]:
+        """Updates the policy at the beginning of the step and synchronously generates a batch of rollouts."""
+        self.step = step
+
+        # Update the policy and the beginning of the step
+        await self.update_policy()
+
         batch_rollouts: list[Rollout] = []
         problems_left = self.problems_per_batch
         while True:
+            # Generate a batch of rollouts
             generate_outputs = await generate_batch(
                 clients=self.clients,
                 env=self.env,
                 model_name=self.config.model.name,
-                problems=self.buffer.sample_problems(problems_left),
+                problems=self.buffer.sample_problems(int(self.oversampling_factor * problems_left)),
                 rollouts_per_example=self.config.rollouts_per_example,
                 sampling_args=self.sampling_args,
                 semaphore=self.semaphore,
@@ -201,12 +207,6 @@ class DefaultScheduler(Scheduler):
             problems_left = self.problems_per_batch - problems_sampled
 
         return batch_rollouts
-
-    async def generate_batch(self, step: int) -> list[Rollout]:
-        """Updates the policy at the beginning of the step and synchronously generates a batch of rollouts."""
-        self.step = step
-        await self.update_policy(step=step)
-        return await self._generate_batch()
 
     @property
     def off_policy_level(self) -> int:
@@ -234,7 +234,6 @@ class ARealScheduler(Scheduler):
         scheduler_config: ARealSchedulerConfig,
     ):
         super().__init__(clients, admin_clients, env, buffer, tokenizer, config)
-        self.step = 0
         self.max_off_policy_steps = scheduler_config.max_off_policy_steps
         self.max_retention_steps = scheduler_config.max_retention_steps
         self.inflight_group_rollouts: dict[asyncio.Task, int] = {}
@@ -261,7 +260,7 @@ class ARealScheduler(Scheduler):
         self.inflight_group_rollouts[group_rollout_request] = 0
 
     async def update_policy_loop(self):
-        """Loops updating the policy at a fixed interval."""
+        """Continuously checks for new policy checkpoints."""
         while True:
             await self.update_policy()
             await asyncio.sleep(1)
