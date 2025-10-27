@@ -345,7 +345,7 @@ async def orchestrate(config: OrchestratorConfig):
         }
         monitor.log(time_metrics)
 
-        monitor.log(scheduler.metrics())
+        monitor.log({**scheduler.metrics(), "step": progress.step})
 
         # Log samples and distributions to W&B table if enabled
         monitor.log_samples(
