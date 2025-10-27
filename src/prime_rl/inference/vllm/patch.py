@@ -1,8 +1,13 @@
+import os
 from typing import Any, Callable
 
 from fastapi import Request
 
 from vllm.config import LogprobsMode
+
+# Force V0 engine which supports worker_extension_cls
+# V1 engine in vLLM 0.10+ doesn't support worker extensions
+os.environ.setdefault("VLLM_USE_V1", "0")
 
 
 def apply_patches() -> None:
