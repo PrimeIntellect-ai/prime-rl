@@ -4,7 +4,6 @@ import torch
 from beartype import beartype as typechecker
 from jaxtyping import Float, Int, jaxtyped
 from torch import Tensor
-from torch.nn import functional as F
 
 from prime_rl.trainer.rl.config import LossConfig
 
