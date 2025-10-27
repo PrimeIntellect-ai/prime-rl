@@ -3,7 +3,7 @@ name = "prime-rl"
 version = "0.1.0"
 description = ""
 readme = "README.md"
-requires-python = "~=3.12.0"
+requires-python = ">=3.10"
 dependencies = [
     "beartype>=0.21.0",
     "cydifflib>=1.2.0",
@@ -100,3 +100,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.metadata]
 allow-direct-references = true
+
+[tool.hatch.build.targets.wheel.shared-data]
+"src/prime_rl/data/prime_rl_vllm_patch.pth" = "prime_rl_vllm_patch.pth"
