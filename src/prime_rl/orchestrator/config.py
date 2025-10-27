@@ -207,7 +207,7 @@ class EvalConfig(BaseConfig):
         Field(
             description="Maximum number of concurrent rollouts to generate and score. Will create a global semaphore and pass to verifiers Environment. If None, will not limit concurrency.",
         ),
-    ] = 1024
+    ] = None
 
     sampling: EvalSamplingConfig = Field(
         default_factory=EvalSamplingConfig,
