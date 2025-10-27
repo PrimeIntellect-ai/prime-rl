@@ -88,6 +88,7 @@ def compute_loss(
     total_is_masked = []
     total_is_masked_low = []
     total_is_masked_high = []
+    total_sequence_masked_low = []
 
     for trainer_logprobs, inference_logprobs, advantages, loss_mask in zip(
         trainer_logprobs, inference_logprobs, advantages, loss_mask
@@ -108,6 +109,9 @@ def compute_loss(
         is_masked_low = importance_ratio < loss_config.mask_ratio_low
         is_masked_high = importance_ratio > loss_config.mask_ratio_high
         is_masked = is_masked_low | is_masked_high
+        seq_min_ratio = importance_ratio.masked_fill(~loss_mask, torch.inf).min()
+        seq_should_mask = seq_min_ratio < loss_config.sequence_mask_ratio_low
+        is_masked = is_masked | seq_should_mask
         keep_mask = loss_mask & ~is_masked
         loss = (-importance_ratio * advantages)[keep_mask].sum()
 
@@ -130,6 +134,7 @@ def compute_loss(
         total_is_masked.append(is_masked[loss_mask].float())
         total_is_masked_low.append(is_masked_low[loss_mask].float())
         total_is_masked_high.append(is_masked_high[loss_mask].float())
+        total_sequence_masked_low.append(seq_should_mask.float())
 
     # Apply loss scaling
     scaled_loss = total_loss / loss_scale
@@ -141,4 +146,5 @@ def compute_loss(
         "is_masked": torch.cat(total_is_masked),
         "is_masked_low": torch.cat(total_is_masked_low),
         "is_masked_high": torch.cat(total_is_masked_high),
+        "sequence_masked_low": torch.stack(total_sequence_masked_low),
     }

@@ -26,6 +26,15 @@ class LossConfig(BaseModel):
 
     mask_ratio_high: Annotated[float, Field(ge=0)] = 8.0
     mask_ratio_low: Annotated[float, Field(ge=0)] = 0.125
+    sequence_mask_ratio_low: Annotated[
+        float,
+        Field(
+            ge=0,
+            description=(
+                "If set, masks entire sequences when any loss-masked token has an importance ratio below this value."
+            ),
+        ),
+    ] = 1e-4
 
 
 class FakeDataLoaderConfig(BaseConfig):
