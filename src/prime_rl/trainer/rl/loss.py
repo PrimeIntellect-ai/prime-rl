@@ -10,6 +10,24 @@ from prime_rl.trainer.rl.config import LossConfig
 
 @jaxtyped(typechecker=typechecker)
 @torch.compile(dynamic=True)
+def compute_kl(
+    logprobs: Float[Tensor, "batch seq"],
+    reference_logprobs: Float[Tensor, "batch seq"],
+    kl_type: str,
+) -> Float[Tensor, "batch seq"]:
+
+    log_prob_difference = reference_logprobs - logprobs
+
+    if kl_type == "k1":
+        return -log_prob_difference
+    if kl_type == "k3":
+        return torch.exp(log_prob_difference) - log_prob_difference - 1
+    msg = f"Unsupported kl_type {kl_type!r}. Supported values are 'k1' and 'k3'."
+    raise ValueError(msg)
+
+
+@jaxtyped(typechecker=typechecker)
+@torch.compile(dynamic=True)
 def selective_log_softmax(
     logits: Float[Tensor, "batch seq vocab"], index: Int[Tensor, "batch seq"]
 ) -> Float[Tensor, "batch seq"]:
@@ -43,6 +61,7 @@ def compute_loss(
     loss_mask: Any,  # list of Bool[Tensor, "seq_i"] with potentially different seq_i lengths
     loss_config: LossConfig,
     loss_scale: int,
+    ref_logprobs: Any | None = None,  # list of Float[Tensor, "seq_i"] with potentially different seq_i lengths
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
@@ -50,6 +69,7 @@ def compute_loss(
     Args:
         trainer_logprobs: Log probabilities tensor for packed sequences
         inference_logprobs: Old log probabilities tensor for packed sequences
+        ref_logprobs: Reference log probabilities tensor for packed sequences
         advantages: Advantages tensor for packed sequences
         loss_mask: Loss mask tensor for packed sequences
         loss_config: Loss configuration object
@@ -87,6 +107,12 @@ def compute_loss(
         is_masked_high = importance_ratio > loss_config.mask_ratio_high
         is_masked = is_masked_low | is_masked_high
         keep_mask = loss_mask & ~is_masked
+
+        advantages = loss_config.rl_coeff * advantages
+        if ref_logprobs is not None and loss_config.kl_coeff > 0:
+            ref_kl = compute_kl(trainer_logprobs, ref_logprobs, loss_config.kl_type)
+            advantages = advantages - loss_config.kl_coeff * ref_kl
+
         loss = (-importance_ratio * advantages)[keep_mask].sum()
 
         # Apply sequence-level normalization if configured
