@@ -46,7 +46,7 @@ class NCCLBroadcastWorker(Worker):
         )
 
     def update_weights(self, weight_dir: str) -> None:
-        """Update weights from a specified path pointing to a .pt file."""
+        """Update weights with the nccl communicator."""
         model_runner = self.model_runner
         model = model_runner.model
 
