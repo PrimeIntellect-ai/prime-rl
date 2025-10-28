@@ -11,7 +11,7 @@ from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
-from prime_rl.trainer.rl.broadcast.nccl_broadcast import NCCLBroadcastTrainer
+from prime_rl.trainer.rl.broadcast.nccl_broadcast import NCCLBroadcastSender
 from prime_rl.trainer.weights import setup_weight_ckpt_manager
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
@@ -100,7 +100,7 @@ def train(config: RLTrainerConfig):
     # Set up NCCL broadcast
     if config.broadcast_backend == "nccl":
         # we do inferece world size + 1 because we have the trainer broadcaster as rank 0
-        nccl_broadcast = NCCLBroadcastTrainer(
+        nccl_broadcast = NCCLBroadcastSender(
             host=config.nccl_broadcast.host,
             port=config.nccl_broadcast.port,
             rank=0,

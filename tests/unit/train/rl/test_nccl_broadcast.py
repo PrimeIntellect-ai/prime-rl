@@ -3,7 +3,7 @@ import multiprocessing as mp
 import pytest
 import torch
 
-from prime_rl.trainer.rl.broadcast.nccl_broadcast import NCCLBroadcastInference, NCCLBroadcastTrainer
+from prime_rl.trainer.rl.broadcast.nccl_broadcast import NCCLBroadcastReceiver, NCCLBroadcastSender
 from prime_rl.utils.logger import get_logger
 
 pytestmark = [pytest.mark.gpu]
@@ -18,7 +18,7 @@ def test_nccl_broadcast(free_port):
         device = torch.device(f"cuda:{0}")
 
         logger.info("Sending weights")
-        nccl_broadcast = NCCLBroadcastTrainer(
+        nccl_broadcast = NCCLBroadcastSender(
             host=host, port=free_port, rank=0, world_size=2, device=device, logger=logger
         )
 
@@ -44,7 +44,7 @@ def test_nccl_broadcast(free_port):
     def receive():
         device = torch.device(f"cuda:{1}")
         logger.info("Receiving weights")
-        nccl_broadcast = NCCLBroadcastInference(
+        nccl_broadcast = NCCLBroadcastReceiver(
             host=host, port=free_port, rank=1, world_size=2, device=device, logger=logger
         )
 

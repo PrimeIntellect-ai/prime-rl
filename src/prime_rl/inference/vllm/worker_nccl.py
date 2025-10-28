@@ -4,7 +4,7 @@ from vllm.distributed.parallel_state import get_tp_group
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader.utils import process_weights_after_loading
 
-from prime_rl.trainer.rl.broadcast.nccl_broadcast import NCCLBroadcastInference
+from prime_rl.trainer.rl.broadcast.nccl_broadcast import NCCLBroadcastReceiver
 
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
 if TYPE_CHECKING:
@@ -36,7 +36,7 @@ class NCCLBroadcastWorker(Worker):
             f"Worker [tp={tp_rank} server_rank={server_rank}] -> [global_rank={global_rank_inference} global_world_size={global_inference_world_size}]"
         )
 
-        self.nccl_broadcast = NCCLBroadcastInference(
+        self.nccl_broadcast = NCCLBroadcastReceiver(
             host=host,
             port=port,
             rank=global_rank_inference + 1,  # +1 as the trainer broadcaster is rank 0

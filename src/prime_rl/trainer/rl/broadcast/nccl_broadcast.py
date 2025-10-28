@@ -8,7 +8,7 @@ from prime_rl.trainer.utils import get_world
 from prime_rl.trainer.weights import convert_tt_to_hf_moe, has_tt_moe_layers
 
 
-class NCCLBroadcastTrainer:
+class NCCLBroadcastSender:
     def __init__(
         self, host: str, port: int, rank: int, world_size: int, device, logger, dtype: torch.dtype = torch.bfloat16
     ):
@@ -65,7 +65,7 @@ class NCCLBroadcastTrainer:
         self.logger.info("Weights broadcasted to inference pool")
 
 
-class NCCLBroadcastInference:
+class NCCLBroadcastReceiver:
     def __init__(
         self, host: str, port: int, rank: int, world_size: int, device, logger, dtype: torch.dtype = torch.bfloat16
     ):
