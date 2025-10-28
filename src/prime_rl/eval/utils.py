@@ -7,7 +7,6 @@ import numpy as np
 import pandas as pd
 from huggingface_hub import whoami
 from openai import AsyncOpenAI
-from prime_evals import AsyncEvalsClient
 from verifiers import load_environment
 from verifiers.types import GenerateOutputs
 from verifiers.utils.eval_utils import get_hf_hub_dataset_name, make_dataset, sanitize_metadata, save_to_disk
@@ -15,6 +14,7 @@ from verifiers.utils.eval_utils import get_hf_hub_dataset_name, make_dataset, sa
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.orchestrator.config import ClientConfig, EvalConfig, EvalSamplingConfig, EvalSaveConfig, ModelConfig
 from prime_rl.orchestrator.utils import parse_is_truncated_completions, parse_num_completion_tokens
+from prime_rl.utils.client import setup_evals_client
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor import get_monitor
 from prime_rl.utils.utils import capitalize, get_eval_dir, get_step_path
@@ -87,7 +87,6 @@ async def run_eval(
     sampling_config: EvalSamplingConfig,
     client_config: ClientConfig,
     save_config: EvalSaveConfig,
-    evals_client: AsyncEvalsClient,
     step: int | None = None,
 ) -> None:
     # Get the logger
@@ -194,6 +193,7 @@ async def run_eval(
             eval_name = f"{env_id}--{model_config.name.replace('/', '--')}"
 
             # Create evaluation for environment
+            evals_client = setup_evals_client()
             create_response = await evals_client.create_evaluation(
                 name=eval_name,
                 environments=[{"id": env_id}],
@@ -220,7 +220,6 @@ async def run_evals(
     model_config: ModelConfig,
     sampling_config: EvalSamplingConfig,
     client_config: ClientConfig,
-    evals_client: AsyncEvalsClient,
     output_dir: Path,
     ckpt_step: int,
     step: int | None = None,
@@ -240,7 +239,6 @@ async def run_evals(
                 sampling_config=sampling_config,
                 client_config=client_config,
                 save_config=eval_config.save,
-                evals_client=evals_client,
                 ckpt_step=ckpt_step,
                 step=step,
             )
