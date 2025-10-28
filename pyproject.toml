@@ -36,7 +36,7 @@ dependencies = [
     "dion",
     "reverse-text",
     "verifiers>=0.1.5",
-    "prime-evals>=0.1.1",
+    "prime-evals>=0.1.2",
 ]
 
 [project.scripts]
