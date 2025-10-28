@@ -31,7 +31,7 @@ class LossConfig(BaseModel):
         Field(
             ge=0,
             description=(
-                "If set, masks entire sequences when any loss-masked token has an importance ratio below this value."
+                "If set, masks entire sequences when any generated token has an importance ratio below this value."
             ),
         ),
     ] = 1e-4
