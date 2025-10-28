@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 
-from vllm.distributed.parallel_state import get_dp_group, get_tensor_model_parallel_rank
+from vllm.distributed.parallel_state import get_tp_group
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader.utils import process_weights_after_loading
 
@@ -21,36 +21,38 @@ class NCCLBroadcastWorker(Worker):
     using NCCL across multiple GPUs.
     """
 
-    def init_broadcaster(self, host: str, port: int, rank: int, world_size: int) -> None:
+    def init_broadcaster(self, host: str, port: int, server_rank: int, num_inference_server: int) -> None:
         """Initialize the process group for NCCL broadcast."""
         logger = init_logger("vllm.inference.vllm.worker_nccl")
-        self.tp_rank = get_tensor_model_parallel_rank()
-        self.dp_rank = get_dp_group().rank
-        self.dp_world_size = get_dp_group().world_size
+        self.tp_rank = get_tp_group().rank
 
-        logger.info(f"Worker TP rank: {self.tp_rank}")
+        tp_size = get_tp_group().world_size
+        tp_rank = get_tp_group().rank
 
-        if self.tp_rank == 0:
-            self.nccl_broadcast = NCCLBroadcastInference(
-                host=host,
-                port=port,
-                rank=rank + self.dp_rank,
-                world_size=(world_size - 1) * self.dp_world_size + 1,
-                device=self.device,
-                logger=logger,
-            )
+        global_rank_inference = (server_rank * tp_size) + tp_rank
+        global_inference_world_size = num_inference_server * tp_size
+
+        logger.info(
+            f"Worker [tp={tp_rank} server_rank={server_rank}] -> [global_rank={global_rank_inference} global_world_size={global_inference_world_size}]"
+        )
+
+        self.nccl_broadcast = NCCLBroadcastInference(
+            host=host,
+            port=port,
+            rank=global_rank_inference + 1,  # +1 as the trainer broadcaster is rank 0
+            world_size=global_inference_world_size + 1,  # +1 for the trainer broadcaster
+            device=self.device,
+            logger=logger,
+        )
 
     def update_weights(self, weight_dir: str) -> None:
         """Update weights from a specified path pointing to a .pt file."""
-        ...
-        if self.tp_rank == 0:
-            model_runner = self.model_runner
-            model = model_runner.model
+        model_runner = self.model_runner
+        model = model_runner.model
 
-            self.nccl_broadcast.receive_state_dict()
+        state_iter = self.nccl_broadcast.receive_state_dict()
+        model.load_weights(state_iter)
 
-            model.load_weights(self.nccl_broadcast.receive_state_dict())
-
-            # # Process weights after loading (important for some models)
-            device = next(model.parameters()).device
-            process_weights_after_loading(model, self.model_runner.model_config, device)
+        # # Process weights after loading (important for some models)
+        device = next(model.parameters()).device
+        process_weights_after_loading(model, self.model_runner.model_config, device)

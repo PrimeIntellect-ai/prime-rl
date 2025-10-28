@@ -86,9 +86,13 @@ async def custom_run_server_worker(listen_address, sock, args, client_config=Non
             data = await request.json()
             host = data.get("host")
             port = data.get("port")
-            rank = data.get("rank")
-            world_size = data.get("world_size")
-            await engine_client.collective_rpc("init_broadcaster", args=(host, port, rank, world_size))
+            # Support both legacy and new field names
+            server_rank = data.get("server_rank")
+            num_inference_server = data.get("num_inference_server")
+            await engine_client.collective_rpc(
+                "init_broadcaster",
+                args=(host, port, server_rank, num_inference_server),
+            )
             return {"status": "ok"}
 
         vllm_config = await engine_client.get_vllm_config()

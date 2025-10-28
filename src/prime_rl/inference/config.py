@@ -121,6 +121,12 @@ class InferenceConfig(BaseSettings):
         Literal["nccl", "filesystem"], Field(description="The backend to use for broadcast.")
     ] = "filesystem"
 
+    @model_validator(mode="after")
+    def nccl_and_dp(self) -> bool:
+        if self.broadcast_backend == "nccl" and self.parallel.dp != 1:
+            raise ValueError("NCCL broadcast backend requires data parallel size to be 1")
+        return self
+
     def to_vllm(self) -> Namespace:
         """Convert InferenceConfig to vLLM-compatible Namespace."""
         namespace = Namespace()

@@ -371,9 +371,10 @@ class RLConfig(BaseSettings):
 
         return self
 
-    def auto_dp_inference_world_size(self):
+    @model_validator(mode="after")
+    def auto_setup_nccl_inference_world_size(self):
         if self.inference and self.broadcast_backend == "nccl":
-            self.inference.trainer.nccl_broadcast.dp_inference_world_size = len(self.inference_gpu_ids)
+            self.trainer.nccl_broadcast.inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp
         return self
 
 

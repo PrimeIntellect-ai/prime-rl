@@ -137,10 +137,14 @@ async def init_nccl_broadcast(admin_clients: list[AsyncClient], host: str, port:
 
     async def _init_nccl_broadcast(admin_client: AsyncClient, host: str, port: int, client_num: int) -> None:
         try:
-            world_size = len(admin_clients) + 1  # n client for each dp + 1 for the trainer broadcaster
-            rank = client_num + 1  # +1 because the trainer broadcaster is rank 0
             response = await admin_client.post(
-                "/init_broadcaster", json={"host": host, "port": port, "world_size": world_size, "rank": rank}
+                "/init_broadcaster",
+                json={
+                    "host": host,
+                    "port": port,
+                    "server_rank": client_num,
+                    "num_inference_server": len(admin_clients),
+                },
             )
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
