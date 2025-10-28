@@ -18,10 +18,11 @@ def selective_log_softmax(
 
 
 @jaxtyped(typechecker=typechecker)
+@torch.compile(dynamic=True)
 def compute_entropy(shifted_logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq"]:
-    pd = torch.nn.functional.softmax(shifted_logits, dim=-1)
-    entropy = torch.logsumexp(shifted_logits, dim=-1) - torch.sum(pd * shifted_logits, dim=-1)
-
+    with torch.no_grad():
+        pd = torch.nn.functional.softmax(shifted_logits, dim=-1)
+        entropy = torch.logsumexp(shifted_logits, dim=-1) - torch.sum(pd * shifted_logits, dim=-1)
     return entropy
 
 
