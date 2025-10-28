@@ -116,16 +116,12 @@ async def orchestrate(config: OrchestratorConfig):
     progress = Progress()
     ckpt_step = 0
     if config.ckpt and ckpt_manager and config.ckpt.resume_step:
+        ckpt_manager.load(progress, buffer, step=config.ckpt.resume_step)
+        logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
         if config.broadcast_backend == "filesystem":
-            logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
-            ckpt_manager.load(progress, buffer, step=config.ckpt.resume_step)
             ckpt_step = max(progress.step - config.async_level, 0)
             await update_weights(admin_clients, get_step_path(get_weights_dir(config.output_dir), ckpt_step))
-        elif config.broadcast_backend == "nccl":
-            logger.info("Resuming training form latest ckpt via NCCL broadcast")
-            await update_weights(admin_clients)
-        else:
-            raise ValueError(f"Invalid broadcast backend: {config.broadcast_backend}")
+
     else:
         logger.info("Training from scratch. Resetting weights to base model")
         await reload_weights(admin_clients)
@@ -162,35 +158,40 @@ async def orchestrate(config: OrchestratorConfig):
         logger.info(f"Starting orchestrator step {progress.step} ({ckpt_step=})")
         step_start_time = time.time()
 
-        # Optionally, wait for the next checkpoint to be available
         wait_for_weight_ckpt_time, update_weights_time = 0, 0
-        if progress.step - ckpt_step > config.async_level:
-            logger.debug(
-                f"Hit async barrier because step {progress.step} is {progress.step - ckpt_step} (>{config.async_level}) steps ahead of checkpoint step {ckpt_step}."
-            )
 
-            # Wait for the checkpoint to be available
-            ckpt_step = progress.step - config.async_level
-            logger.info(f"Waiting for weight checkpoint {ckpt_step}")
-            wait_for_weight_ckpt_start_time = time.time()
+        if config.broadcast_backend == "filesystem":
+            # Optionally, wait for the next checkpoint to be available
+            if progress.step - ckpt_step > config.async_level:
+                logger.debug(
+                    f"Hit async barrier because step {progress.step} is {progress.step - ckpt_step} (>{config.async_level}) steps ahead of checkpoint step {ckpt_step}."
+                )
 
-            # if config.broadcast_backend == "filesystem":
-            await wait_for_path(get_step_path(get_weights_dir(config.output_dir), ckpt_step) / "STABLE")
+                # Wait for the checkpoint to be available
+                ckpt_step = progress.step - config.async_level
+                logger.info(f"Waiting for weight checkpoint {ckpt_step}")
+                wait_for_weight_ckpt_start_time = time.time()
 
-            wait_for_weight_ckpt_time = time.time() - wait_for_weight_ckpt_start_time
-            logger.debug(f"Waited {wait_for_weight_ckpt_time:.2f}s for weight checkpoint")
+                await wait_for_path(get_step_path(get_weights_dir(config.output_dir), ckpt_step) / "STABLE")
 
-            # Update the weights
-            logger.info(f"Updating weights to weight checkpoint {ckpt_step}")
-            update_weights_start_time = time.time()
-            if config.broadcast_backend == "filesystem":
+                wait_for_weight_ckpt_time = time.time() - wait_for_weight_ckpt_start_time
+                logger.debug(f"Waited {wait_for_weight_ckpt_time:.2f}s for weight checkpoint")
+
+                # Update the weights
+                logger.info(f"Updating weights to weight checkpoint {ckpt_step}")
+                update_weights_start_time = time.time()
                 await update_weights(admin_clients, get_step_path(get_weights_dir(config.output_dir), ckpt_step))
+                update_weights_time = time.time() - update_weights_start_time
+                logger.debug(f"Updated weights in {update_weights_time:.2f}s")
 
-            # todo move this outside of the stable file check
-            elif config.broadcast_backend == "nccl":
-                await update_weights(admin_clients, None)
+        elif config.broadcast_backend == "nccl":
+            logger.info("Getting latest weights from NCCL broadcast")
+            update_weights_start_time = time.time()
+            await update_weights(admin_clients, None)
             update_weights_time = time.time() - update_weights_start_time
             logger.debug(f"Updated weights in {update_weights_time:.2f}s")
+        else:
+            raise ValueError(f"Invalid broadcast backend: {config.broadcast_backend}")
 
         # Optionally, run online evals at the specified interval
         eval_time = 0

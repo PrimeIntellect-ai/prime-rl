@@ -155,7 +155,8 @@ def train(config: RLTrainerConfig):
             save_weights_time = time.time() - save_weights_start_time
             broadcast_weights_time = save_weights_time
 
-        if config.broadcast_backend == "nccl" and progress.step > 0:
+        if config.broadcast_backend == "nccl":
+            # with nccl broadcast we always broadcast the weights first
             broadcast_weights_start_time = time.time()
             nccl_broadcast.broadcast_state_dict(model)
             broadcast_weights_time = time.time() - broadcast_weights_start_time
