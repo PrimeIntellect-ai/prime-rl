@@ -162,6 +162,12 @@ class EvalSaveHFConfig(BaseConfig):
 class EvalSaveConfig(BaseConfig):
     disk: EvalSaveDiskConfig | None = None
     hf: EvalSaveHFConfig | None = None
+    env_hub: Annotated[
+        bool,
+        Field(
+            description="Whether to push eval results to Prime Environment Hub. Automatically pushes all evaluated environments. Requires PRIME_API_KEY and authorization for the environments."
+        ),
+    ] = False
 
 
 class EnvironmentConfig(BaseConfig):
@@ -293,6 +299,13 @@ class BufferConfig(BaseModel):
         ),
     ] = True
 
+    seed: Annotated[
+        int | None,
+        Field(
+            description="Random seed to use for the buffer. If set, the sampling from the buffer will be deterministic.",
+        ),
+    ] = 0
+
 
 class SimpleBufferConfig(BufferConfig):
     type: Literal["simple"] = "simple"
@@ -373,8 +386,7 @@ DataBufferConfigType: TypeAlias = SimpleBufferConfig | DifficultyPoolBufferConfi
 
 
 class AdvantageConfig(BaseConfig):
-    global_std_norm: bool = False
-    local_std_norm: bool = False
+    std_norm: Literal["local", "global"] | None = None
     length_weighted_mean: bool = False
     leave_one_out: bool = False
     neg_clipped: bool = False
@@ -410,7 +422,7 @@ class OrchestratorConfig(BaseSettings):
     buffer: Annotated[DataBufferConfigType, Field(discriminator="type")] = SimpleBufferConfig()
 
     # The advantage configuration
-    advantage: AdvantageConfig = AdvantageConfig()
+    advantage: AdvantageConfig | None = AdvantageConfig()
 
     # The logging configuration
     log: LogConfig = LogConfig()
@@ -436,14 +448,6 @@ class OrchestratorConfig(BaseSettings):
     ] = 1024
 
     batch_size: Annotated[int, Field(ge=1, description="Number of samples to train on per step.")] = 128
-
-    micro_batch_size: Annotated[
-        int,
-        Field(
-            ge=1,
-            description="Number of samples to train on per micro batch. This value should be tuned based on the hardware available. Usually, to the largest value divisble by the training batch size.",
-        ),
-    ] = 1
 
     rollouts_per_example: Annotated[
         int,
@@ -535,10 +539,6 @@ class OrchestratorConfig(BaseSettings):
     def validate_batch_size(self):
         if self.batch_size % self.rollouts_per_example != 0:
             raise ValueError("Batch size must be divisible by the number of samples per problem")
-        if self.batch_size % self.micro_batch_size != 0:
-            raise ValueError("Batch size must be divisible by micro batch size")
-        if self.batch_size < self.micro_batch_size:
-            raise ValueError("Batch size must be greater than or equal to micro batch size")
         return self
 
     @model_validator(mode="after")

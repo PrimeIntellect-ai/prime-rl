@@ -5,6 +5,7 @@ from pathlib import Path
 import httpx
 from httpx import AsyncClient
 from openai import AsyncOpenAI, NotFoundError
+from prime_evals import AsyncEvalsClient
 
 from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.logger import get_logger
@@ -28,6 +29,10 @@ def setup_clients(client_config: ClientConfig) -> list[AsyncOpenAI]:
         )
 
     return [_setup_client(base_url) for base_url in client_config.base_url]
+
+
+def setup_evals_client() -> AsyncEvalsClient:
+    return AsyncEvalsClient()
 
 
 def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:

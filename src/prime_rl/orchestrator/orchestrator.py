@@ -22,6 +22,7 @@ from prime_rl.utils.client import (
     reload_weights,
     setup_admin_clients,
     setup_clients,
+    setup_evals_client,
     update_weights,
 )
 from prime_rl.orchestrator.config import OrchestratorConfig
@@ -69,6 +70,7 @@ async def orchestrate(config: OrchestratorConfig):
     )
     clients = setup_clients(config.client)
     admin_clients = setup_admin_clients(config.client)
+    evals_client = setup_evals_client()
 
     # Load tokenizer
     logger.info(f"Initializing tokenizer for {config.model.name}")
@@ -208,6 +210,7 @@ async def orchestrate(config: OrchestratorConfig):
                 model_config=config.model,
                 sampling_config=config.eval.sampling,
                 client_config=config.client,
+                evals_client=evals_client,
                 output_dir=config.output_dir,
                 ckpt_step=ckpt_step,
                 step=progress.step,
@@ -365,8 +368,6 @@ async def orchestrate(config: OrchestratorConfig):
             rollouts=rollouts,
             temperature=config.sampling.temperature,
             tokenizer=tokenizer,
-            batch_size=config.batch_size,
-            micro_batch_size=config.micro_batch_size,
             num_train_workers=config.num_train_workers,
             seq_len=config.seq_len,
         )
@@ -508,6 +509,7 @@ async def orchestrate(config: OrchestratorConfig):
             model_config=config.model,
             sampling_config=config.eval.sampling,
             client_config=config.client,
+            evals_client=evals_client,
             output_dir=config.output_dir,
             ckpt_step=ckpt_step,
             step=progress.step,

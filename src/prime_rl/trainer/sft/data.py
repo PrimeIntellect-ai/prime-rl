@@ -597,7 +597,7 @@ def setup_dataset(
 
 
 def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfigType) -> StatefulDataLoader:
-    seq_len = config.micro_batch_size * config.seq_len
+    seq_len = config.seq_len
     if config.pack_function == "stack":
         stacking_dataset = StackDataset(dataset, seq_len)
         return StatefulDataLoader(stacking_dataset, batch_size=1, collate_fn=stack_collate)
