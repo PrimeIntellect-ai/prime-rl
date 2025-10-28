@@ -82,7 +82,7 @@ class RLTrainerConfig(BaseSettings):
     ckpt: CheckpointConfig | None = None
 
     # The weight checkpoint configuration
-    weights: WeightCheckpointConfig = WeightCheckpointConfig()
+    weights: WeightCheckpointConfig = WeightCheckpointConfig(interval=1)
 
     nccl_broadcast: NCCLBroadcastConfig = NCCLBroadcastConfig()
 
@@ -187,5 +187,14 @@ class RLTrainerConfig(BaseSettings):
                 raise ValueError(
                     "save_adapter_separately=True requires LoRA to be enabled. "
                     "Set model.experimental.lora or disable save_adapter_separately."
+                )
+        return self
+
+    @model_validator(mode="after")
+    def validate_filesystem_weights_interval(self):
+        if self.broadcast_backend == "filesystem":
+            if self.weights.interval != 1:
+                raise ValueError(
+                    "Filesystem broadcast backend does not support weight checkpointing with interval != 1. Please set the weights.interval to 1."
                 )
         return self

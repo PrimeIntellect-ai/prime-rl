@@ -374,6 +374,11 @@ class WeightCheckpointManager:
         (step_path / "STABLE").touch()  # Signal to the orchestrator that the weight checkpoint is ready
         self._logger.debug(f"Saved weight checkpoint to {step_path} in {time.time() - start_time:.2f} seconds")
 
+    def create_stable_file(self, step: int):
+        step_path = self._get_step_path(step)
+        step_path.mkdir(parents=True, exist_ok=True)
+        (step_path / "STABLE").touch()
+
     def save(
         self,
         model: nn.Module,
