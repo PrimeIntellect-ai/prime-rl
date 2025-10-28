@@ -1,6 +1,5 @@
 import shutil
 import site
-import sys
 from pathlib import Path
 
 import uvloop
