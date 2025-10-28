@@ -32,7 +32,7 @@ class NCCLBroadcastTrainer:
         self.dtype = dtype
 
     def broadcast_state_dict(self, model: torch.nn.Module) -> None:
-        self.logger.info("Broadcasting weights to inference pool")
+        self.logger.debug("Broadcasting weights to inference pool")
 
         state_dict = model.state_dict()
 
