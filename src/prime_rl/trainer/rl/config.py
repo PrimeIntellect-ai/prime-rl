@@ -26,6 +26,9 @@ class LossConfig(BaseModel):
 
     mask_ratio_high: Annotated[float, Field(ge=0)] = 8.0
     mask_ratio_low: Annotated[float, Field(ge=0)] = 0.125
+    kl_type: Annotated[Literal["k1", "k3"], Field(description="KL divergence formulation to use for ref model.")] = "k3"
+    kl_coeff: Annotated[float, Field(ge=0)] = 0.0
+    rl_coeff: Annotated[float, Field(ge=0)] = 1.0
 
 
 class FakeDataLoaderConfig(BaseConfig):

@@ -6,6 +6,7 @@ from datetime import timedelta
 # ruff: noqa: I001
 
 import torch
+import torch.nn as nn
 import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
@@ -15,12 +16,7 @@ from prime_rl.trainer.weights import setup_weight_ckpt_manager
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.logger import setup_logger
-from prime_rl.trainer.rl.loss import (
-    shift_logits,
-    selective_log_softmax,
-    compute_entropy,
-    compute_loss,
-)
+from prime_rl.trainer.rl.loss import shift_logits, selective_log_softmax, compute_entropy, compute_loss
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
@@ -28,13 +24,17 @@ from prime_rl.trainer.model import (
     setup_model,
     is_tt_moe_model,
     get_load_balance_stats,
+    reshard_module,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     MemoryProfiler,
+    OffloadedTensor,
     Tensors,
     setup_torch_distributed,
+    offload_model_to_cpu,
+    wake_up_model_from_cpu,
     print_benchmark,
     get_response_lengths,
 )
@@ -109,6 +109,16 @@ def train(config: RLTrainerConfig):
         f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
     )
 
+    # Optionally, initialize a reference model to compute logprobs
+    reference_model: nn.Module | None = None
+    reference_weights: OffloadedTensor | None = None
+    if config.loss.kl_coeff > 0:
+        logger.info(f"Initializing reference model ({config.model})")
+        reference_model = setup_model(config.model, parallel_dims)
+        reshard_module(reference_model)
+        reference_weights = offload_model_to_cpu(reference_model)
+
+
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
     dataloader = DataLoader(config.output_dir, progress.step)
@@ -170,8 +180,36 @@ def train(config: RLTrainerConfig):
         micro_batches = dataloader.get_batch()
         load_data_time = time.time() - load_data_start_time
         logger.debug(f"Loaded batch in {load_data_time:.2f} seconds")
-
         batch_size = len(micro_batches)
+        
+        # Optionally, compute the logprobs for the training batch
+        compute_logprobs_time = 0
+        if reference_model is not None and reference_weights is not None:
+            compute_logprobs_start_time = time.time()
+            logger.info("Computing reference logprobs")
+
+            # Wake up the reference model from CPU
+            wake_up_model_from_cpu(reference_model, reference_weights)
+
+            with torch.no_grad():
+                for micro_step, micro_batch in enumerate(micro_batches):
+                    input_ids = micro_batch["input_ids"].to("cuda")
+                    position_ids = micro_batch["position_ids"].to("cuda")
+                    temperature = micro_batch["temperature"]
+
+                    # Compute the logprobs
+                    logits = forward(reference_model, input_ids, position_ids).float().contiguous()
+                    shifted_logits = shift_logits(logits) / temperature
+                    micro_batch["ref_logprobs"] = selective_log_softmax(shifted_logits, input_ids).cpu()
+
+            # here we sepcifically don't save the tensor offloaded, they are alreay consumed and we will never use it again.
+            # this avoid having to make sure we don't keep too much tensor offloaded in cpu memory
+            reshard_module(reference_model)
+            reference_weights = offload_model_to_cpu(reference_model)
+
+            compute_logprobs_time = time.time() - compute_logprobs_start_time
+            logger.debug(f"Reference logprobs computed in {compute_logprobs_time:.2f} seconds")
+
         memory_profiler = None
         if config.memory_profiler_path is not None:
             memory_profiler = MemoryProfiler(progress.step, config.memory_profiler_path)
@@ -208,11 +246,17 @@ def train(config: RLTrainerConfig):
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
+            if reference_model is not None and reference_weights is not None:
+                ref_logprobs = micro_batch["ref_logprobs"].to("cuda")
+                ref_logprobs = ref_logprobs.squeeze().split(response_lengths)
+            else:
+                ref_logprobs = None
             loss, loss_tensors = compute_loss(
                 trainer_logprobs=trainer_logprobs.squeeze().split(response_lengths),
                 inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
                 advantages=advantages.squeeze().split(response_lengths),
                 loss_mask=loss_mask.squeeze().split(response_lengths),
+                ref_logprobs=ref_logprobs,
                 loss_config=config.loss,
                 loss_scale=loss_scale,
             )
