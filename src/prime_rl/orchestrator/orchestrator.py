@@ -100,7 +100,9 @@ async def orchestrate(config: OrchestratorConfig):
     # Set up NCCL broadcast
     if config.broadcast_backend == "nccl":
         logger.info(f"Initializing NCCL broadcast ({config.broadcast_backend})")
-        await init_nccl_broadcast(admin_clients, config.nccl_broadcast.host, config.nccl_broadcast.port)
+        await init_nccl_broadcast(
+            admin_clients, config.nccl_broadcast.host, config.nccl_broadcast.port, config.nccl_broadcast.timeout
+        )
 
     logger.success("Inference pool ready")
 

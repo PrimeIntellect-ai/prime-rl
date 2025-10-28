@@ -86,12 +86,13 @@ async def custom_run_server_worker(listen_address, sock, args, client_config=Non
             data = await request.json()
             host = data.get("host")
             port = data.get("port")
+            timeout = data.get("timeout")
             # Support both legacy and new field names
             server_rank = data.get("server_rank")
             num_inference_server = data.get("num_inference_server")
             await engine_client.collective_rpc(
                 "init_broadcaster",
-                args=(host, port, server_rank, num_inference_server),
+                args=(host, port, server_rank, num_inference_server, timeout),
             )
             return {"status": "ok"}
 

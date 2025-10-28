@@ -21,7 +21,7 @@ class NCCLBroadcastWorker(Worker):
     using NCCL across multiple GPUs.
     """
 
-    def init_broadcaster(self, host: str, port: int, server_rank: int, num_inference_server: int) -> None:
+    def init_broadcaster(self, host: str, port: int, server_rank: int, num_inference_server: int, timeout: int) -> None:
         """Initialize the process group for NCCL broadcast."""
         logger = init_logger("vllm.inference.vllm.worker_nccl")
         self.tp_rank = get_tp_group().rank
@@ -43,6 +43,7 @@ class NCCLBroadcastWorker(Worker):
             world_size=global_inference_world_size + 1,  # +1 for the trainer broadcaster
             device=self.device,
             logger=logger,
+            timeout=timeout,
         )
 
     def update_weights(self, weight_dir: str) -> None:

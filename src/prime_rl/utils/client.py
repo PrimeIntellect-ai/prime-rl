@@ -133,11 +133,13 @@ async def reload_weights(admin_clients: list[AsyncClient]) -> None:
     await asyncio.gather(*[_reload_weights(admin_client) for admin_client in admin_clients])
 
 
-async def init_nccl_broadcast(admin_clients: list[AsyncClient], host: str, port: int) -> None:
+async def init_nccl_broadcast(admin_clients: list[AsyncClient], host: str, port: int, timeout: int) -> None:
     """Make a HTTP post request to the vLLM server to initialize the NCCL broadcast."""
     logger = get_logger()
 
-    async def _init_nccl_broadcast(admin_client: AsyncClient, host: str, port: int, client_num: int) -> None:
+    async def _init_nccl_broadcast(
+        admin_client: AsyncClient, host: str, port: int, client_num: int, timeout: int
+    ) -> None:
         try:
             response = await admin_client.post(
                 "/init_broadcaster",
@@ -146,6 +148,7 @@ async def init_nccl_broadcast(admin_clients: list[AsyncClient], host: str, port:
                     "port": port,
                     "server_rank": client_num,
                     "num_inference_server": len(admin_clients),
+                    "timeout": timeout,
                 },
             )
             response.raise_for_status()
@@ -156,7 +159,7 @@ async def init_nccl_broadcast(admin_clients: list[AsyncClient], host: str, port:
 
     await asyncio.gather(
         *[
-            _init_nccl_broadcast(admin_client, host, port, client_num)
+            _init_nccl_broadcast(admin_client, host, port, client_num, timeout)
             for client_num, admin_client in enumerate(admin_clients)
         ]
     )

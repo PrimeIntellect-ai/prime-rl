@@ -107,6 +107,7 @@ def train(config: RLTrainerConfig):
             world_size=config.nccl_broadcast.inference_world_size + 1,
             device=torch.cuda.current_device(),
             logger=logger,
+            timeout=config.nccl_broadcast.timeout,
         )
 
     # Set up checkpoint manager

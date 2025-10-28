@@ -2,15 +2,32 @@ import pickle
 
 import torch
 from torch.distributed.tensor import DTensor
+from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
+from vllm.distributed.utils import StatelessProcessGroup
 
 from prime_rl.trainer.rl.broadcast.utils import init_tensor_from_string_description, tensor_string_description
 from prime_rl.trainer.utils import get_world
 from prime_rl.trainer.weights import convert_tt_to_hf_moe, has_tt_moe_layers
 
 
+def create_nccl_communicator(
+    host: str, port: int, rank: int, world_size: int, device: torch.device, timeout: int
+) -> PyNcclCommunicator:
+    pg = StatelessProcessGroup.create(host=host, port=port, rank=rank, world_size=world_size, store_timeout=timeout)
+    return PyNcclCommunicator(pg, device=device)
+
+
 class NCCLBroadcastSender:
     def __init__(
-        self, host: str, port: int, rank: int, world_size: int, device, logger, dtype: torch.dtype = torch.bfloat16
+        self,
+        host: str,
+        port: int,
+        rank: int,
+        world_size: int,
+        device,
+        logger,
+        timeout: int,
+        dtype: torch.dtype = torch.bfloat16,
     ):
         self.logger = logger
 
@@ -20,11 +37,7 @@ class NCCLBroadcastSender:
             self.logger.info(
                 f"Initializing NCCL broadcast ({host}:{port}, rank={get_world().rank}, world_size={world_size})"
             )
-            from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
-            from vllm.distributed.utils import StatelessProcessGroup
-
-            pg = StatelessProcessGroup.create(host=host, port=port, rank=rank, world_size=world_size)
-            self.communicator = PyNcclCommunicator(pg, device=device)
+            self.communicator = create_nccl_communicator(host, port, rank, world_size, device, timeout)
 
             self.logger.info(f"NCCL broadcast initialized for rank {rank} and world size {world_size}")
 
@@ -67,16 +80,20 @@ class NCCLBroadcastSender:
 
 class NCCLBroadcastReceiver:
     def __init__(
-        self, host: str, port: int, rank: int, world_size: int, device, logger, dtype: torch.dtype = torch.bfloat16
+        self,
+        host: str,
+        port: int,
+        rank: int,
+        world_size: int,
+        device,
+        logger,
+        timeout: int,
+        dtype: torch.dtype = torch.bfloat16,
     ):
         self.logger = logger
 
         self.logger.info(f"Initializing NCCL broadcast ({host}:{port}, rank={rank}, world_size={world_size})")
-        from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
-        from vllm.distributed.utils import StatelessProcessGroup
-
-        pg = StatelessProcessGroup.create(host=host, port=port, rank=rank, world_size=world_size)
-        self.communicator = PyNcclCommunicator(pg, device=device)
+        self.communicator = create_nccl_communicator(host, port, rank, world_size, device, timeout)
 
         self.device = device
         self.dtype = dtype

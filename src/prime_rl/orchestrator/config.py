@@ -385,6 +385,7 @@ class NCCLBroadcastConfig(BaseConfig):
 
     host: Annotated[str, Field(description="The host to use for the NCCL broadcast.")] = "localhost"
     port: Annotated[int, Field(description="The port to use for the NCCL broadcast.")] = 29501
+    timeout: Annotated[int, Field(description="The timeout  in seconds to use for the NCCL broadcast.")] = 1200
 
 
 class OrchestratorConfig(BaseSettings):
