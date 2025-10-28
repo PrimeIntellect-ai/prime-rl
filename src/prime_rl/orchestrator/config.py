@@ -415,7 +415,7 @@ class OrchestratorConfig(BaseSettings):
     buffer: Annotated[DataBufferConfigType, Field(discriminator="type")] = SimpleBufferConfig()
 
     # The advantage configuration
-    advantage: AdvantageConfig = AdvantageConfig()
+    advantage: AdvantageConfig | None = AdvantageConfig()
 
     # The logging configuration
     log: LogConfig = LogConfig()
