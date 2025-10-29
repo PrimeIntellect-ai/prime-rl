@@ -50,14 +50,8 @@ class NCCLBroadcastSender:
 
         state_dict = model.state_dict()
 
-        self.logger.debug(
-            f"peak memory before converting to HF MoE: {torch.cuda.max_memory_reserved() / 1024**3:.1f} GiB"
-        )
         if has_tt_moe_layers(state_dict):
             convert_tt_to_hf_moe(state_dict)
-        self.logger.debug(
-            f"peak memory after converting to HF MoE: {torch.cuda.max_memory_reserved() / 1024**3:.1f} GiB"
-        )
 
         if self.training_rank == 0:
             state = pickle.dumps({key: tensor_string_description(value) for key, value in state_dict.items()})
