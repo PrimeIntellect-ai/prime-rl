@@ -15,19 +15,31 @@ from prime_rl.utils.utils import (
 
 
 def monkey_patch_chat_completion_logprobs():
+    """
+    At large batch sizes and context, constructing OAI's Pydantic model
+    ChatCompletion with logprobs is causing heavy CPU overhead (~200ms per
+    object at 32K context, which translates to >10min overhead at 4K batch
+    size). This function monkey-patches the OAI type and verifiers'
+    post-processing utils to avoid validating the complex logprobs field.
+    """
+
     class ChoiceAny(Choice):
+        """Same as openai.types.chat.chat_completion.Choice, but without type validation for logprobs field."""
+
         logprobs: Optional[Any] = None
 
     class ChatCompletionAny(ChatCompletion):
+        """Same as openai.types.chat.chat_completion.ChatCompletion, but but using ChoiceAny instead of Choice."""
+
         choices: List[ChoiceAny]  # type: ignore
 
-    # Patch the logprob field which is causing CPU overhead
+    # Patch OAI types
     openai.types.chat.chat_completion.Choice = ChoiceAny
     openai.types.chat.chat_completion.ChatCompletion = ChatCompletionAny
 
     # Patch verifiers parse_chat_completion_logprobs
     def patched_parse_chat_completion_logprobs(chat_completion: ChatCompletionAny) -> list[float]:
-        """Parses the completion logprobs from a vLLM chat completion"""
+        """Same as verifiers.utils.processing_utils.parse_chat_completion_logprobs, but using arbitrary logprobs type."""
         assert len(chat_completion.choices) == 1, "Response should always have one choice"
         assert chat_completion.choices[0].logprobs is not None, (
             "Logprobs should not be None. Make sure to set logprobs=True in the extra body when making the request to /v1/chat/completions"
@@ -40,7 +52,7 @@ def monkey_patch_chat_completion_logprobs():
 
     # Patch verifiers parse_chat_completion_logprobs
     def patched_parse_chat_completion_tokens(chat_completion: ChatCompletionAny) -> list[int]:
-        """Parses the output token ids from a list of chat completions returned by vLLM OAI server."""
+        """Same as verifiers.utils.processing_utils.parse_chat_completion_tokens, but using arbitrary logprobs type."""
         assert len(chat_completion.choices) == 1, "Response should always have one choice"
         assert chat_completion.choices[0].logprobs is not None, (
             "Logprobs should not be None. Make sure to set logprobs=True in the extra body when making the request to /v1/chat/completions"
