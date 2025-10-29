@@ -5,6 +5,10 @@ from loguru import logger
 # Import environment before any other imports
 # ruff: noqa: I001,F401
 from prime_rl.orchestrator import envs
+from prime_rl.orchestrator.utils import monkey_patch_chat_completion_logprobs
+
+# This monkey patch is necessary to avoid heavy CPU overhead from constructing the OAI ChatCompletion Pydantic model with logprobs
+monkey_patch_chat_completion_logprobs()
 
 import lovely_tensors as lt
 import torch
@@ -51,9 +55,6 @@ import numpy as np
 @clean_exit
 @logger.catch(reraise=True)
 async def orchestrate(config: OrchestratorConfig):
-    # This monkey patch is necessary to avoid heavy CPU overhead from constructing the OAI ChatCompletion Pydantic model with logprobs
-    monkey_patch_chat_completion_logprobs()
-
     # Initialize the logger
     logger = setup_logger(
         config.log.level, log_file=config.output_dir / "logs" / "orchestrator.log" if config.log.file else None
