@@ -1,8 +1,9 @@
-from typing import Any
+from typing import Any, List, Optional
 
+import openai.types.chat
 import pandas as pd
-from openai.types.chat import ChatCompletion
-from openai.types.chat.chat_completion import Choice
+import verifiers as vf
+from openai.types.chat.chat_completion import ChatCompletion, Choice
 from openai.types.completion_usage import CompletionUsage
 from rich.console import Console
 from rich.table import Table
@@ -11,6 +12,33 @@ from prime_rl.utils.utils import (
     format_num,
     format_time,
 )
+
+
+def monkey_patch_chat_completion_logprobs():
+    class ChoiceAny(Choice):
+        logprobs: Optional[Any] = None
+
+    class ChatCompletionAny(ChatCompletion):
+        choices: List[ChoiceAny]  # type: ignore
+
+    # Patch the logprob field which is causing CPU overhead
+    openai.types.chat.chat_completion.Choice = ChoiceAny
+    openai.types.chat.ChatCompletion = ChatCompletionAny
+
+    # Patch verifiers parse_chat_completion_logprobs
+    def patched_parse_chat_completion_logprobs(chat_completion: ChatCompletionAny) -> list[float]:
+        """Parses the completion logprobs from a vLLM chat completion"""
+        assert len(chat_completion.choices) == 1, "Response should always have one choice"
+        assert chat_completion.choices[0].logprobs is not None, (
+            "Logprobs should not be None. Make sure to set logprobs=True in the extra body when making the request to /v1/chat/completions"
+        )
+        assert chat_completion.choices[0].logprobs["content"] is not None, (
+            "Logprob content should not be None. Make sure to set logprobs=True in the extra body when making the request to /v1/chat/completions"
+        )
+        logprobs = [logprob["logprob"] for logprob in chat_completion.choices[0].logprobs["content"]]
+        return logprobs
+
+    vf.utils.processing_utils.parse_chat_completion_logprobs = patched_parse_chat_completion_logprobs
 
 
 def parse_num_completion_tokens(responses: list[list[ChatCompletion]]) -> list[int]:
