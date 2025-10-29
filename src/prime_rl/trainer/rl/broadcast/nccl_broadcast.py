@@ -44,6 +44,7 @@ class NCCLBroadcastSender:
         self.device = device
         self.dtype = dtype
 
+    @torch.no_grad()
     def broadcast_state_dict(self, model: torch.nn.Module) -> None:
         self.logger.debug("Broadcasting weights to inference pool")
 
@@ -100,6 +101,7 @@ class NCCLBroadcastReceiver:
         self.device = device
         self.dtype = dtype
 
+    @torch.no_grad()
     def receive_state_dict(self):
         size_tensor = torch.tensor([10], dtype=torch.long).to(self.device)
         self.communicator.broadcast(size_tensor, src=0)
