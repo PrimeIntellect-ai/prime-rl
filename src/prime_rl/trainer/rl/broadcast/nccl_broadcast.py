@@ -64,7 +64,11 @@ class NCCLBroadcastSender:
         # 1. we should bucket more tensor into one broadcast call
         # 2. we should make sure both gather and broadcast are done in parallel
 
-        for key, value in state_dict.items():
+        items = list(state_dict.items())
+
+        for i, (key, value) in enumerate(items):
+            peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
+            self.logger.debug(f"Broadcasting weight {key} ({i}/{len(items)}) | Peak Mem.: {peak_memory:.1f} GiB")
             if isinstance(value, DTensor):
                 value = value.to(self.dtype)
                 # only gather after the downcast to dtype as it will be faster
