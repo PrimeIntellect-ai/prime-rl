@@ -38,7 +38,25 @@ def monkey_patch_chat_completion_logprobs():
         logprobs = [logprob["logprob"] for logprob in chat_completion.choices[0].logprobs["content"]]
         return logprobs
 
+    # Patch verifiers parse_chat_completion_logprobs
+    def patched_parse_chat_completion_tokens(chat_completion: ChatCompletionAny) -> list[int]:
+        """Parses the output token ids from a list of chat completions returned by vLLM OAI server."""
+        assert len(chat_completion.choices) == 1, "Response should always have one choice"
+        assert chat_completion.choices[0].logprobs is not None, (
+            "Logprobs should not be None. Make sure to set logprobs=True in the extra body when making the request to /v1/chat/completions"
+        )
+        assert chat_completion.choices[0].logprobs["content"] is not None, (
+            "Logprob content should not be None. Make sure to set logprobs=True in the extra body when making the request to /v1/chat/completions"
+        )
+        tokens = [
+            # tokens are token_id:<int> because we request `return_tokens_as_token_ids` from vllm in GRPOTrainer
+            int(token["token"].split(":")[-1])
+            for token in chat_completion.choices[0].logprobs["content"]
+        ]
+        return tokens
+
     vf.utils.processing_utils.parse_chat_completion_logprobs = patched_parse_chat_completion_logprobs
+    vf.utils.processing_utils.parse_chat_completion_tokens = patched_parse_chat_completion_tokens
 
 
 def parse_num_completion_tokens(responses: list[list[ChatCompletion]]) -> list[int]:
