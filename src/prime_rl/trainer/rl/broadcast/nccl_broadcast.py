@@ -75,6 +75,8 @@ class NCCLBroadcastSender:
                 value = value.to(self.dtype)
                 self.communicator.broadcast(value, src=0)
 
+            del value
+
         self.logger.info("Weights broadcasted to inference pool")
 
 
