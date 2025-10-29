@@ -23,7 +23,7 @@ def monkey_patch_chat_completion_logprobs():
 
     # Patch the logprob field which is causing CPU overhead
     openai.types.chat.chat_completion.Choice = ChoiceAny
-    openai.types.chat.ChatCompletion = ChatCompletionAny
+    openai.types.chat.chat_completion.ChatCompletion = ChatCompletionAny
 
     # Patch verifiers parse_chat_completion_logprobs
     def patched_parse_chat_completion_logprobs(chat_completion: ChatCompletionAny) -> list[float]:
