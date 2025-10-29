@@ -30,6 +30,7 @@ from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.utils.logger import setup_logger
 from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.utils import (
+    monkey_patch_chat_completion_logprobs,
     print_benchmark,
     parse_is_truncated_completions,
 )
@@ -50,6 +51,9 @@ import numpy as np
 @clean_exit
 @logger.catch(reraise=True)
 async def orchestrate(config: OrchestratorConfig):
+    # This monkey patch is necessary to avoid heavy CPU overhead from constructing the OAI ChatCompletion Pydantic model with logprobs
+    monkey_patch_chat_completion_logprobs()
+
     # Initialize the logger
     logger = setup_logger(
         config.log.level, log_file=config.output_dir / "logs" / "orchestrator.log" if config.log.file else None
