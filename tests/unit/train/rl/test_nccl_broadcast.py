@@ -19,7 +19,7 @@ def test_nccl_broadcast(free_port):
 
         logger.info("Sending weights")
         nccl_broadcast = NCCLBroadcastSender(
-            host=host, port=free_port, rank=0, world_size=2, device=device, logger=logger
+            host=host, port=free_port, rank=0, world_size=2, device=device, logger=logger, timeout=10
         )
 
         class Model(torch.nn.Module):
@@ -45,7 +45,7 @@ def test_nccl_broadcast(free_port):
         device = torch.device(f"cuda:{1}")
         logger.info("Receiving weights")
         nccl_broadcast = NCCLBroadcastReceiver(
-            host=host, port=free_port, rank=1, world_size=2, device=device, logger=logger
+            host=host, port=free_port, rank=1, world_size=2, device=device, logger=logger, timeout=10
         )
 
         for key, value in nccl_broadcast.receive_state_dict():
