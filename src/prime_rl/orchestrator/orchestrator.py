@@ -107,8 +107,11 @@ async def orchestrate(config: OrchestratorConfig):
     progress = Progress()
     ckpt_step = 0
     if config.ckpt and ckpt_manager and config.ckpt.resume_step:
-        logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
-        ckpt_manager.load(progress, buffer, step=config.ckpt.resume_step)
+        resolved_step = config.ckpt.resume_step
+        if resolved_step == -1:
+            resolved_step = ckpt_manager.get_latest_step()
+        logger.info(f"Resuming training from checkpoint step `{resolved_step}`")
+        ckpt_manager.load(progress, buffer, step=resolved_step)
         ckpt_step = max(progress.step - config.async_level, 0)
         await update_weights(admin_clients, get_step_path(get_weights_dir(config.output_dir), ckpt_step))
     else:
