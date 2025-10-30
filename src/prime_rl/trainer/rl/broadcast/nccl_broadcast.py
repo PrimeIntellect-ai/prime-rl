@@ -86,10 +86,10 @@ def filter_state_dict_by_layers(
     Yield a generator of state dicts for each layer as well as the remaining weights.
     """
 
-    for i in range(num_layers):
-        yield i, {key: value for key, value in state_dict.items() if f"model.layers.{i}" in key}
+    yield 0, {key: value for key, value in state_dict.items() if "model.layers" not in key}
 
-    yield -1, {key: value for key, value in state_dict.items() if "model.layers" not in key}
+    for i in range(1, num_layers + 1):  # +1 because layer indices start from 1
+        yield i, {key: value for key, value in state_dict.items() if f"model.layers.{i}" in key}
 
 
 class NCCLBroadcastSender:
