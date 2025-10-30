@@ -19,9 +19,7 @@ def create_nccl_communicator(
     return PyNcclCommunicator(pg, device=device)
 
 
-def send_state_dict(
-    state_dict: dict[str, torch.Tensor], communicator: PyNcclCommunicator | dist.ProcessGroup, dtype: torch.dtype
-) -> None:
+def send_state_dict(state_dict: dict[str, torch.Tensor], communicator: PyNcclCommunicator | dist.ProcessGroup) -> None:
     """
     Get a state dict of tensor and broadcast it to the other ranks using NCCL.
     """
@@ -39,8 +37,6 @@ def send_state_dict(
         assert not isinstance(value, DTensor), (
             "DTensor is not supported for broadcast, should have been converted to tensor already"
         )
-
-        value = value.to(dtype)
         communicator.broadcast(value, src=0)
 
         del value
@@ -142,14 +138,16 @@ class NCCLBroadcastSender:
             self.logger.debug(f"sending layer {i}/{num_state_dict_to_send} state dict")
             for key, value in list(state_dict.items()):
                 if isinstance(value, DTensor):
-                    value = value.full_tensor()
-                    state_dict[key] = value
+                    value = value.to(self.dtype).full_tensor()
+                else:
+                    value = value.to(self.dtype)
+                state_dict[key] = value
 
             if has_tt_moe_layers(state_dict):
                 convert_tt_layer_to_hf(state_dict, i)
 
             if self.training_rank == 0:
-                send_state_dict(state_dict, self.communicator, self.dtype)
+                send_state_dict(state_dict, self.communicator)
 
         self.logger.info("Weights broadcasted to inference pool")
 
