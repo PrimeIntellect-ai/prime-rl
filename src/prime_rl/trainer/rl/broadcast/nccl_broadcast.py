@@ -48,11 +48,8 @@ def send_state_dict(
 
 def receive_state_dict(
     communicator: PyNcclCommunicator | dist.ProcessGroup, dtype: torch.dtype
-) -> dict[str, torch.Tensor]:
-    """
-    Receive a state dict of tensor and broadcast it from the other ranks using NCCL.
-    """
-    state_dict = {}
+) -> Generator[tuple[str, torch.Tensor], None, None]:
+    """Stream tensors in a state dict broadcasted over NCCL."""
     size_tensor = torch.tensor([10], dtype=torch.long).to(communicator.device)
     communicator.broadcast(size_tensor, src=0)
     state_tensor = torch.empty(size_tensor.item(), dtype=torch.uint8).to(communicator.device)
@@ -63,8 +60,10 @@ def receive_state_dict(
     for key, value in state.items():
         tensor = init_tensor_from_string_description(value, communicator.device, dtype)
         communicator.broadcast(tensor, src=0)
-        state_dict[key] = tensor
-    return state_dict
+        try:
+            yield key, tensor
+        finally:
+            del tensor
 
 
 def send_integer(integer: int, communicator: PyNcclCommunicator | dist.ProcessGroup) -> None:
@@ -179,9 +178,10 @@ class NCCLBroadcastReceiver:
     def receive_state_dict(self):
         num_state_dict_to_receive = receive_integer(self.communicator)
 
-        self.logger.debug(f"Receiving {num_state_dict_to_receive} state dicts")
+        self.logger.info(f"Receiving {num_state_dict_to_receive} state dicts")
         for i in range(num_state_dict_to_receive):
-            self.logger.debug(f"Receiving state dict {i}/{num_state_dict_to_receive}")
-            state_dict = receive_state_dict(self.communicator, self.dtype)
-            for key, value in state_dict.items():
+            self.logger.info(
+                f"Receiving state dict {i}/{num_state_dict_to_receive}, peak memory: {torch.cuda.max_memory_allocated() / 1024**2:.2f} MB"
+            )
+            for key, value in receive_state_dict(self.communicator, self.dtype):
                 yield key, value
