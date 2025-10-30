@@ -9,7 +9,7 @@ from vllm.distributed.utils import StatelessProcessGroup
 
 from prime_rl.trainer.rl.broadcast.utils import init_tensor_from_string_description, tensor_string_description
 from prime_rl.trainer.utils import get_world
-from prime_rl.trainer.weights import get_max_layer_num
+from prime_rl.trainer.weights import convert_hf_layer_to_tt_layer, get_max_layer_num, has_tt_moe_layers
 
 
 def create_nccl_communicator(
@@ -86,15 +86,15 @@ def receive_integer(communicator: PyNcclCommunicator | dist.ProcessGroup) -> int
 
 def filter_state_dict_by_layers(
     state_dict: dict[str, torch.Tensor], num_layers: int
-) -> Generator[dict[str, torch.Tensor], None, None]:
+) -> Generator[tuple[int, dict[str, torch.Tensor]], None, None]:
     """
     Yield a generator of state dicts for each layer as well as the remaining weights.
     """
 
     for i in range(num_layers):
-        yield {key: value for key, value in state_dict.items() if f"model.layers.{i}" in key}
+        yield i, {key: value for key, value in state_dict.items() if f"model.layers.{i}" in key}
 
-    yield {key: value for key, value in state_dict.items() if "model.layers" not in key}
+    yield -1, {key: value for key, value in state_dict.items() if "model.layers" not in key}
 
 
 class NCCLBroadcastSender:
@@ -139,11 +139,15 @@ class NCCLBroadcastSender:
 
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
 
-        for state_dict in filter_state_dict_by_layers(state_dict, num_layers):
+        for i, state_dict in filter_state_dict_by_layers(state_dict, num_layers):
             for key, value in list(state_dict.items()):
                 if isinstance(value, DTensor):
                     value = value.full_tensor()
                     state_dict[key] = value
+
+            if has_tt_moe_layers(state_dict):
+                convert_hf_layer_to_tt_layer(state_dict, i)
+
             if self.training_rank == 0:
                 send_state_dict(state_dict, self.communicator, self.dtype)
 
