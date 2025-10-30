@@ -140,6 +140,7 @@ class NCCLBroadcastSender:
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
 
         for i, state_dict in filter_state_dict_by_layers(state_dict, num_layers):
+            self.logger.debug(f"sending layer {i}/{num_state_dict_to_send} state dict")
             for key, value in list(state_dict.items()):
                 if isinstance(value, DTensor):
                     value = value.full_tensor()
@@ -180,6 +181,8 @@ class NCCLBroadcastReceiver:
 
         self.logger.debug(f"Receiving {num_state_dict_to_receive} state dicts")
         for i in range(num_state_dict_to_receive):
+            self.logger.debug(f"Receiving state dict {i}/{num_state_dict_to_receive}")
             state_dict = receive_state_dict(self.communicator, self.dtype)
             for key, value in state_dict.items():
-                yield key, value
+                cpu_value = value.to("cpu", non_blocking=True)
+                yield key, cpu_value
