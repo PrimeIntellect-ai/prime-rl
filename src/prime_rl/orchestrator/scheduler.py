@@ -21,7 +21,7 @@ from prime_rl.orchestrator.config import (
 from prime_rl.orchestrator.utils import parse_is_truncated_completions
 from prime_rl.utils.client import update_weights
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.utils import get_latest_ckpt_step, get_step_path, get_weights_dir, wait_for_path
+from prime_rl.utils.utils import get_latest_ckpt_step, get_step_path, get_weights_dir, sync_wait_for_path
 from prime_rl.utils.vf import generate_batch, generate_group
 
 
@@ -163,7 +163,7 @@ class DefaultScheduler(Scheduler):
                 f"Hit async barrier because we are >{self.max_off_policy_steps} steps off-policy. Waiting for weight checkpoint {next_ckpt_step}"
             )
             wait_for_weight_ckpt_start_time = time.time()
-            await wait_for_path(get_step_path(get_weights_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
+            sync_wait_for_path(get_step_path(get_weights_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
             self.wait_for_weight_ckpt_time = time.time() - wait_for_weight_ckpt_start_time
             self.logger.debug(
                 f"Waited for weight checkpoint {next_ckpt_step} for {self.wait_for_weight_ckpt_time:.2f}s"
@@ -276,19 +276,18 @@ class ARealScheduler(Scheduler):
         fixed_off_policy_step = max(self.step - self.max_off_policy_steps, 0)
         next_ckpt_step = max(fixed_off_policy_step, latest_ckpt_step)
         if next_ckpt_step > self.ckpt_step:
-            if next_ckpt_step == latest_ckpt_step:
-                self.logger.debug(
-                    f"Found new policy with step {next_ckpt_step}. Updating weights and cancelling old rollout requests."
-                )
-            else:
+            if next_ckpt_step == fixed_off_policy_step:
                 self.logger.debug(
                     f"Hit async barrier because we are >{self.max_off_policy_steps} steps off-policy. Waiting for weight checkpoint {next_ckpt_step}"
                 )
-            wait_for_weight_ckpt_start_time = time.time()
-            await wait_for_path(get_step_path(get_weights_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
-            self.wait_for_weight_ckpt_time = time.time() - wait_for_weight_ckpt_start_time
+                wait_for_weight_ckpt_start_time = time.time()
+                sync_wait_for_path(get_step_path(get_weights_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
+                self.wait_for_weight_ckpt_time = time.time() - wait_for_weight_ckpt_start_time
+                self.logger.debug(
+                    f"Waited for weight checkpoint {next_ckpt_step} for {self.wait_for_weight_ckpt_time:.2f}s"
+                )
             self.logger.debug(
-                f"Waited for weight checkpoint {next_ckpt_step} for {self.wait_for_weight_ckpt_time:.2f}s"
+                f"Got new policy with step {next_ckpt_step}. Updating weights and cancelling old rollout requests."
             )
 
             update_weights_start_time = time.time()
