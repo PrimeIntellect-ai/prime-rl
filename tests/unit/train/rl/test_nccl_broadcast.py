@@ -22,18 +22,24 @@ def test_nccl_broadcast(free_port):
             host=host, port=free_port, rank=0, world_size=2, device=device, logger=logger, timeout=10
         )
 
+        class SubModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+
+                self.layers = torch.nn.ModuleList([torch.nn.Linear(10, 10) for _ in range(10)])
+
+            def forward(self, x):
+                for layer in self.layers:
+                    x = layer(x)
+                return x
+
         class Model(torch.nn.Module):
             def __init__(self):
                 super().__init__()
-                self.linear = torch.nn.Linear(10, 10)
-                self.linear2 = torch.nn.Linear(10, 10)
-                self.linear3 = torch.nn.Linear(10, 10)
+                self.model = SubModel()
 
             def forward(self, x):
-                x = self.linear(x)
-                x = self.linear2(x)
-                x = self.linear3(x)
-                return x
+                return self.model(x)
 
         model = Model().to(device)
         for param in model.parameters():

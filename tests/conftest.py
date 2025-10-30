@@ -26,7 +26,7 @@ def setup_logging():
     """
     Fixture to set and reset the logger after each test.
     """
-    setup_logger("info")
+    setup_logger("debug")
     yield
     reset_logger()
 
