@@ -34,7 +34,7 @@ class LossConfig(BaseModel):
                 "If set, masks entire sequences when any generated token has an importance ratio below this value."
             ),
         ),
-    ] = 1e-4
+    ] = 0.0
 
 
 class FakeDataLoaderConfig(BaseConfig):
