@@ -34,7 +34,7 @@ class LossConfig(BaseModel):
                 "If set, masks entire sequences when any generated token has an importance ratio below this value."
             ),
         ),
-    ] = 1e-4
+    ] = 0.0
 
 
 class FakeDataLoaderConfig(BaseConfig):
@@ -118,13 +118,6 @@ class RLTrainerConfig(BaseSettings):
     ] = 1
 
     memory_profiler_path: Annotated[Path | None, Field(description="Path to write memory profile to.")] = None
-
-    log_recomputed_logprob_error: Annotated[
-        bool,
-        Field(
-            description="Whether to log the recomputed logprobs error. If True, recomputes logprobs using the reference model to compute an error w.r.t. the original inference_logprobs and logs it",
-        ),
-    ] = False
 
     bench: Annotated[
         bool,
