@@ -89,7 +89,14 @@ def filter_state_dict_by_layers(
     yield 0, {key: value for key, value in state_dict.items() if "model.layers" not in key}
 
     for i in range(1, num_layers + 1):  # +1 because layer indices start from 1
-        yield i, {key: value for key, value in state_dict.items() if f"model.layers.{i}" in key}
+        yield (
+            i,
+            {
+                key: value
+                for key, value in state_dict.items()
+                if key.startswith(f"model.layers.{i}.") or key == f"model.layers.{i}"
+            },
+        )
 
 
 class NCCLBroadcastSender:
