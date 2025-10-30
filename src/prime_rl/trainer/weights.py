@@ -97,8 +97,8 @@ def convert_hf_to_tt_moe(state_dict: dict[str, Tensor]):
         del state_dict[f"model.layers.{i}.mlp.gate.e_score_correction_bias"]
 
 
-def convert_hf_layer_to_tt_layer(state_dict: dict[str, Tensor], layer_index: int):
-    """Convert a layer from HF to TT format in-place."""
+def convert_tt_layer_to_hf(state_dict: dict[str, Tensor], layer_index: int):
+    """Convert a layer from TT to HF format in-place."""
 
     i = layer_index
 
@@ -166,7 +166,7 @@ def convert_tt_to_hf_moe(state_dict: dict[str, Tensor]):
         # if not f"model.layers.{i}.mlp.router.gate.weight" in state_dict:
         #     continue  # Not a TT-MoE layer
 
-        convert_hf_layer_to_tt_layer(state_dict, i)
+        convert_tt_layer_to_hf(state_dict, i)
 
 
 def load_state_dict(save_dir: Path) -> dict[str, Tensor]:

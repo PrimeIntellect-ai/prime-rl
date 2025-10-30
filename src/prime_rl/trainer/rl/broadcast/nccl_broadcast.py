@@ -9,7 +9,7 @@ from vllm.distributed.utils import StatelessProcessGroup
 
 from prime_rl.trainer.rl.broadcast.utils import init_tensor_from_string_description, tensor_string_description
 from prime_rl.trainer.utils import get_world
-from prime_rl.trainer.weights import convert_hf_layer_to_tt_layer, get_max_layer_num, has_tt_moe_layers
+from prime_rl.trainer.weights import convert_tt_layer_to_hf, get_max_layer_num, has_tt_moe_layers
 
 
 def create_nccl_communicator(
@@ -146,7 +146,7 @@ class NCCLBroadcastSender:
                     state_dict[key] = value
 
             if has_tt_moe_layers(state_dict):
-                convert_hf_layer_to_tt_layer(state_dict, i)
+                convert_tt_layer_to_hf(state_dict, i)
 
             if self.training_rank == 0:
                 send_state_dict(state_dict, self.communicator, self.dtype)
