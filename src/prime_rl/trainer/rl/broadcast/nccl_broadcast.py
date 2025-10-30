@@ -134,16 +134,17 @@ class NCCLBroadcastSender:
 
         num_state_dict_to_send = num_layers + 1  # we send all layer plus the remaining weights
 
-        send_integer(num_state_dict_to_send, self.communicator)
+        if self.training_rank == 0:
+            send_integer(num_state_dict_to_send, self.communicator)
 
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
 
         for state_dict in filter_state_dict_by_layers(state_dict, num_layers):
+            for key, value in list(state_dict.items()):
+                if isinstance(value, DTensor):
+                    value = value.full_tensor()
+                    state_dict[key] = value
             if self.training_rank == 0:
-                for key, value in list(state_dict.items()):
-                    if isinstance(value, DTensor):
-                        value = value.full_tensor()
-                        state_dict[key] = value
                 send_state_dict(state_dict, self.communicator, self.dtype)
 
         self.logger.info("Weights broadcasted to inference pool")
