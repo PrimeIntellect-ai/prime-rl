@@ -31,7 +31,7 @@ def send_state_dict(state_dict: dict[str, torch.Tensor], communicator: PyNcclCom
 
     # TODO(SAMI): there are two performance optimization we should do here:
     # 1. we should bucket more tensor into one broadcast call
-    # 2. we should make sure both gather and broadcast are done in parallel
+    # 2. we should make sure both full_tensor gather that is performed before the broadcast are done in parallel
 
     for key, value in state_dict.items():
         assert not isinstance(value, DTensor), (
