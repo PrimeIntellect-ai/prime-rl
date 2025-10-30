@@ -161,7 +161,7 @@ def convert_tt_layer_to_hf(state_dict: dict[str, Tensor], layer_index: int):
 def convert_tt_to_hf_moe(state_dict: dict[str, Tensor]):
     """Convert MoE weights from TT to HF format in-place."""
     num_layers = get_max_layer_num(state_dict)
-    for i in range(num_layers):
+    for i in range(1, num_layers + 1):
         # todo(sami): delete this after testing that it never called
         # if not f"model.layers.{i}.mlp.router.gate.weight" in state_dict:
         #     continue  # Not a TT-MoE layer
