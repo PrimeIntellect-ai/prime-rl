@@ -184,5 +184,4 @@ class NCCLBroadcastReceiver:
             self.logger.debug(f"Receiving state dict {i}/{num_state_dict_to_receive}")
             state_dict = receive_state_dict(self.communicator, self.dtype)
             for key, value in state_dict.items():
-                cpu_value = value.to("cpu", non_blocking=True)
                 yield key, cpu_value
