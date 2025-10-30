@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from huggingface_hub import whoami
 from openai import AsyncOpenAI
+from prime_evals import AsyncEvalsClient
 from verifiers import load_environment
 from verifiers.types import GenerateOutputs
 from verifiers.utils.eval_utils import get_hf_hub_dataset_name, make_dataset, sanitize_metadata, save_to_disk
@@ -86,6 +87,7 @@ async def run_eval(
     sampling_config: EvalSamplingConfig,
     client_config: ClientConfig,
     save_config: EvalSaveConfig,
+    evals_client: AsyncEvalsClient,
     step: int | None = None,
 ) -> None:
     # Get the logger
@@ -162,8 +164,9 @@ async def run_eval(
     monitor.log(eval_metrics)
 
     # Save results
-    if save_config.disk is not None or save_config.hf is not None:
+    if save_config.disk is not None or save_config.hf is not None or save_config.env_hub:
         dataset = make_dataset(results)
+        metadata_dict = sanitize_metadata(results.metadata)
 
         if save_config.disk is not None:
             is_online = step is not None
@@ -173,7 +176,6 @@ async def run_eval(
                 else results.metadata.path_to_save
             )
             save_path = save_config.disk.path or default_save_path
-            metadata_dict = sanitize_metadata(results.metadata)
             save_to_disk(dataset, metadata_dict, save_path)
             logger.info(f"Saved eval results for {env_id} to disk ({save_path})")
 
@@ -188,6 +190,29 @@ async def run_eval(
                 f"Pushed {'private' if save_config.hf.private else 'public'} eval results for {env_id} to HF Hub (https://huggingface.co/datasets/{repo_name})"
             )
 
+        if save_config.env_hub:
+            eval_name = f"{env_id}--{model_config.name.replace('/', '--')}"
+
+            # Create evaluation for environment
+            create_response = await evals_client.create_evaluation(
+                name=eval_name,
+                environments=[{"id": env_id}],
+                model_name=model_config.name,
+                framework="verifiers",
+                metadata=metadata_dict,
+                metrics=eval_metrics,
+            )
+
+            eval_id = create_response.get("evaluation_id")
+
+            # Push samples
+            await evals_client.push_samples(eval_id, dataset.to_list())
+
+            # Finalize evaluation
+            await evals_client.finalize_evaluation(eval_id, metrics=eval_metrics)
+
+            logger.info(f"Pushed eval results for {env_id} to Environment Hub (eval_id: {eval_id})")
+
 
 async def run_evals(
     clients: list[AsyncOpenAI],
@@ -195,6 +220,7 @@ async def run_evals(
     model_config: ModelConfig,
     sampling_config: EvalSamplingConfig,
     client_config: ClientConfig,
+    evals_client: AsyncEvalsClient,
     output_dir: Path,
     ckpt_step: int,
     step: int | None = None,
@@ -214,6 +240,7 @@ async def run_evals(
                 sampling_config=sampling_config,
                 client_config=client_config,
                 save_config=eval_config.save,
+                evals_client=evals_client,
                 ckpt_step=ckpt_step,
                 step=step,
             )

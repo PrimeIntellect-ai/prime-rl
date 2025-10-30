@@ -162,6 +162,12 @@ class EvalSaveHFConfig(BaseConfig):
 class EvalSaveConfig(BaseConfig):
     disk: EvalSaveDiskConfig | None = None
     hf: EvalSaveHFConfig | None = None
+    env_hub: Annotated[
+        bool,
+        Field(
+            description="Whether to push eval results to Prime Environment Hub. Automatically pushes all evaluated environments. Requires PRIME_API_KEY and authorization for the environments."
+        ),
+    ] = False
 
 
 class EnvironmentConfig(BaseConfig):
@@ -413,8 +419,7 @@ SchedulerConfigType: TypeAlias = DefaultSchedulerConfig | ARealSchedulerConfig
 
 
 class AdvantageConfig(BaseConfig):
-    global_std_norm: bool = False
-    local_std_norm: bool = False
+    std_norm: Literal["local", "global"] | None = None
     length_weighted_mean: bool = False
     leave_one_out: bool = False
     neg_clipped: bool = False
@@ -442,7 +447,7 @@ class OrchestratorConfig(BaseSettings):
     buffer: Annotated[DataBufferConfigType, Field(discriminator="type")] = SimpleBufferConfig()
 
     # The advantage configuration
-    advantage: AdvantageConfig = AdvantageConfig()
+    advantage: AdvantageConfig | None = AdvantageConfig()
 
     # The logging configuration
     log: LogConfig = LogConfig()
