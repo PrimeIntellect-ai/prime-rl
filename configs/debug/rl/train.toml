@@ -1,6 +1,8 @@
 max_steps = 5
-async_level = 5
 
 [data.fake]
 batch_size = 2
 seq_len = 1024
+
+[scheduler]
+max_off_policy_steps = 5

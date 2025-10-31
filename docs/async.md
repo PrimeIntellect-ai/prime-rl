@@ -1,6 +1,6 @@
 # Asynchronous Training
 
-PRIME-RL implements asynchronous off-policy training, instead of the traditional synchronous on-policy training. This means that we allow inference to generate rollouts from a stale policy up to $k$ (in the code we call this `async_level`) steps ahead of the trainer. With `k=1` and trainer and inference step timings being equal, this allows to run without any idle time on either the trainer or inference. By default, we set `k=2` to allow overlap with a weight broadcast over the Internet, which is needed for decentralized training.
+By default, PRIME-RL implements asynchronous off-policy training, instead of the traditional synchronous on-policy training. This means that we allow inference to generate rollouts from a stale policy up to $k$ (in the code we call this `max_off_policy_steps`) steps ahead of the trainer. With `k=1` and trainer and inference step timings being equal, this allows to run without any idle time on either the trainer or inference. By default, we set `k=2` to allow overlap with a weight broadcast over the Internet, which is needed for decentralized training.
 
 ![Two-Step Off-Policy Training](assets/two-step-off-policy.png)
 
@@ -36,4 +36,4 @@ PRIME-RL uses a global training step $n=1,2,3,\dots$ that is used to tag artifac
 - **Trainer**: Produces policy $\pi_n$ with weights $\theta_n$ from rollouts $(x_n, y_n)$
 - **Inference**: Produces rollouts $(x_n, y_n)$ from policy $\pi_{max(0, n-k)}$
 
-Here, $k$ is the `async_level` parameter, which defaults to 2. Note, that we use 0-indexed steps to cleanly indicate that at each step the divergence off-policy gap is at most $k$ steps.
+Here, $k$ is the `max_off_policy_steps` parameter, which defaults to 2. Note, that we use 0-indexed steps to cleanly indicate that at each step the divergence off-policy gap is at most $k$ steps.

@@ -187,12 +187,7 @@ def train(config: SFTTrainerConfig):
 
         step_start_time = time.time()
         forward_backward_start_time = time.time()
-        grad_accum_steps = (
-            config.data.batch_size
-            * config.model.cp
-            * config.model.tp
-            // world.world_size
-        )
+        grad_accum_steps = config.data.batch_size * config.model.cp * config.model.tp // world.world_size
 
         batch_loss = torch.tensor(0.0).to("cuda")
         nan_loss_count = torch.tensor(0).to("cuda")
