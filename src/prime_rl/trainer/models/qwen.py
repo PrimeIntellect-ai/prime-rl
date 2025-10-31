@@ -299,6 +299,7 @@ class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
+        mask=None,
     ) -> torch.FloatTensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
@@ -308,6 +309,7 @@ class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
             position_embeddings=position_embeddings,
             cu_seqlens=cu_seqlens,
             max_seqlen=max_seqlen,
+            mask=mask,
         )
         hidden_states = residual + hidden_states
 

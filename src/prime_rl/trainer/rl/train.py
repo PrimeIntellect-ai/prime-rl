@@ -42,7 +42,47 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format
+from torch.nn.attention.flex_attention import BlockMask
 
+from torch.distributed.tensor.experimental._attention import _context_parallel_shard
+
+def cp_shard(
+    cp_mesh,
+    inputs: torch.Tensor,
+    labels: torch.Tensor,
+    attention_masks: BlockMask,
+):
+    from torch.distributed.tensor.experimental._load_balancer import (
+        _PTRRLoadBalancer,
+    )
+
+    load_balancer = _PTRRLoadBalancer(attention_masks, cp_mesh.size(0))
+
+    inputs, labels = _context_parallel_shard(
+        mesh=cp_mesh,
+        buffers=(inputs, labels),
+        seq_dims=(1, 1),
+        load_balancer=load_balancer,
+    )
+
+    masks = (
+        [attention_masks]
+        if isinstance(attention_masks, BlockMask)
+        else list(attention_masks.values())
+    )
+    masks = _context_parallel_shard(
+        mesh=cp_mesh,
+        buffers=masks,
+        seq_dims=(2,) * len(masks),
+        load_balancer=load_balancer,
+    )
+    attention_masks = (
+        masks[0]
+        if isinstance(attention_masks, BlockMask)
+        else {k: v for k, v in zip(attention_masks.keys(), masks)}
+    )
+
+    return inputs, labels, attention_masks, load_balancer
 
 @clean_exit
 @logger.catch(reraise=True)
@@ -69,15 +109,25 @@ def train(config: RLTrainerConfig):
 
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
-    if config.model.cp > 1:
-        raise ValueError(
-            "CP is not supported for RL. No reason it shouldn't, we just didn't test it. If you need it, please open an issue."
-        )
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model and tokenizer ({config.model})")
     model = setup_model(config.model, parallel_dims)
     tokenizer = setup_tokenizer(config.model)
+
+    if config.model.cp > 1:
+        from torch.distributed.tensor.parallel import parallelize_module
+        from torch.distributed.tensor.experimental._attention import _ContextParallel
+
+        cp_plan = _ContextParallel(seq_dim=2, attention_type=_ContextParallel.AttentionType.FLEX)
+        for l in model.model.layers:
+            module = l.self_attn._flex_attention_kernel
+
+            parallelize_module(
+                module,
+                device_mesh=parallel_dims.world_mesh["cp"],
+                parallelize_plan=cp_plan,
+            )
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -128,10 +178,10 @@ def train(config: RLTrainerConfig):
 
         # Save the weight checkpoint (if we are not at the first step, because no updates to the model have been made yet)
         save_weights_time = 0
-        if progress.step > 0:
-            save_weights_start_time = time.time()
-            weight_ckpt_manager.save(model, tokenizer, step=progress.step)
-            save_weights_time = time.time() - save_weights_start_time
+        # if progress.step > 0:
+        #     save_weights_start_time = time.time()
+        #     weight_ckpt_manager.save(model, tokenizer, step=progress.step)
+        #     save_weights_time = time.time() - save_weights_start_time
 
         # Save the full checkpoint (if we are at an interval step and not at the first or last step)
         is_last_step = config.max_steps is not None and progress.step == config.max_steps
@@ -199,15 +249,50 @@ def train(config: RLTrainerConfig):
             inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
             temperature = micro_batch["temperature"]
 
+            from torch.nn.attention.flex_attention import create_block_mask
+
+            def mask_mod(b, h, q_idx, kv_idx):
+                return q_idx >= kv_idx
+
+            mask = create_block_mask(
+                mask_mod,
+                B=None,
+                H=None,
+                Q_LEN=input_ids.shape[1],
+                KV_LEN=input_ids.shape[1],
+                device=input_ids.device,
+            )
+
+            if config.model.cp > 1:
+                input_ids, position_ids, mask, load_balancer = cp_shard(
+                    parallel_dims.world_mesh["cp"],
+                    input_ids,
+                    position_ids,
+                    mask,
+                )
+
             # Forward pass
             with maybe_record_function("forward"):
-                logits = forward(model, input_ids, position_ids).float().contiguous()
-            shifted_logits = shift_logits(logits)
+                logits = forward(model, input_ids, position_ids, mask).float().contiguous()
+
+            # Compute trainer logprobs on the FULL context (not just shard)
+            shifted_logits = shift_logits(logits)  # shift along sequence dim
             shifted_logits = shifted_logits / temperature
             trainer_logprobs = selective_log_softmax(shifted_logits, input_ids)
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
+
+            if config.model.cp > 1:
+                from functools import partial
+
+                fn = partial(_context_parallel_shard, mesh=parallel_dims.world_mesh["cp"], seq_dims=(1,))
+
+                inference_logprobs = fn(buffers=(inference_logprobs,))[0]
+                advantages = fn(buffers=(advantages,))[0]
+                loss_mask = fn(buffers=(loss_mask,))[0]
+
+
             loss, loss_tensors = compute_loss(
                 trainer_logprobs=trainer_logprobs.squeeze().split(response_lengths),
                 inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
@@ -217,21 +302,26 @@ def train(config: RLTrainerConfig):
                 loss_scale=loss_scale,
             )
 
-            # Compute entropy
+            # Compute entropy (full context)
             entropy = compute_entropy(shifted_logits)
 
-            # Delete logits and shifted_logits before backward pass to avoid memory spike
-            del logits, shifted_logits
+            # At this point we don't need the big activations anymore
+            del logits
+            del shifted_logits
 
-            # Backward pass
+            # with torch.no_grad():
+            #     loss_for_backward = loss.clone()
+            #     dist.all_reduce(loss_for_backward, op=dist.ReduceOp.AVG, group=cp_group)
+
             with maybe_record_function("backward"):
                 loss.backward()
 
-            # Add relevant tensors to tensor dict for logging purposes
-            tensors["trainer_probs"].append(torch.exp(trainer_logprobs)[loss_mask].detach().to("cpu"))
-            tensors["inference_probs"].append(torch.exp(inference_logprobs)[loss_mask].detach().to("cpu"))
-            tensors["entropy"].append(entropy[loss_mask].detach().to("cpu"))
-            tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
+            tensors["entropy"].append(
+                entropy[loss_mask].detach().to("cpu")
+            )
+            tensors["loss"].append(
+                loss.detach().to("cpu").unsqueeze(0)
+            )
 
             if is_tt_moe_model(model):
                 load_balance_stats = get_load_balance_stats(model)
@@ -239,7 +329,6 @@ def train(config: RLTrainerConfig):
                     if v is not None:
                         tensors[k].append(v)
 
-            # Add loss tensors to tensor dict for logging purposes
             for key, loss_tensor in loss_tensors.items():
                 loss_tensor = loss_tensor.detach().to("cpu")
                 tensors[key].append(loss_tensor)
