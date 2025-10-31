@@ -126,7 +126,9 @@ async def orchestrate(config: OrchestratorConfig):
         if config.broadcast_backend == "filesystem":
             ckpt_step = max(progress.step - config.async_level, 0)
             await update_weights(admin_clients, get_step_path(get_weights_dir(config.output_dir), ckpt_step))
-
+        if config.broadcast_backend == "nccl":
+            ckpt_step = progress.step
+            await update_weights(admin_clients, None)
     else:
         logger.info("Training from scratch. Resetting weights to base model")
         await reload_weights(admin_clients)
@@ -134,7 +136,6 @@ async def orchestrate(config: OrchestratorConfig):
     # Iterate over dataset in batches
     max_steps = config.max_steps or int(1e9)
     logger.info(f"Starting orchestrator loop ({max_steps=}")
-    ckpt_step = 0
     last_eval_step = -1
     is_first_step = True
 
@@ -190,10 +191,10 @@ async def orchestrate(config: OrchestratorConfig):
                 logger.debug(f"Updated weights in {update_weights_time:.2f}s")
 
         elif config.broadcast_backend == "nccl":
-            if progress.step - ckpt_step > config.async_level:
-                ckpt_step = progress.step - config.async_level
+            if progress.step - ckpt_step > 1:
                 logger.info("Getting latest weights from NCCL broadcast")
                 update_weights_start_time = time.time()
+                ckpt_step = progress.step - 1
                 await update_weights(admin_clients, None)
                 update_weights_time = time.time() - update_weights_start_time
                 logger.debug(f"Updated weights in {update_weights_time:.2f}s")
