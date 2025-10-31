@@ -7,7 +7,7 @@ max_steps = 500
 name = "Qwen/Qwen3-4B-Instruct-2507"
 
 [wandb]
-project = "prime-rl"
+project = "will-test"
 name = "wiki-search-4b"
 
 [trainer.model]
