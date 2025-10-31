@@ -278,6 +278,21 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
     get_logger().info(f"Applied activation checkpointing (freq={ac_config.freq})")
 
 
+def setup_cp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
+    from torch.distributed.tensor.experimental._attention import _ContextParallel
+    from torch.distributed.tensor.parallel import parallelize_module
+
+    cp_plan = _ContextParallel(seq_dim=2, attention_type=_ContextParallel.AttentionType.FLEX)
+    for layer in model.model.layers:
+        module = layer.self_attn._flex_attention_kernel
+
+        parallelize_module(
+            module,
+            device_mesh=parallel_dims.world_mesh["cp"],
+            parallelize_plan=cp_plan,
+        )
+
+
 def apply_compile(model: nn.Module, compile_config: CompileConfig):
     torch._dynamo.config.capture_scalar_outputs = True
     for layer_id in range(len(model.model.layers)):
@@ -311,6 +326,9 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
         apply_compile(model, config.compile)
 
     setup_fsdp(model, config, parallel_dims)
+
+    if config.cp > 1:
+        setup_cp(model, config, parallel_dims)
 
     if config.load_using_meta and can_load_dcp_from_hf(model):
         load_dcp_from_hf(model, config)

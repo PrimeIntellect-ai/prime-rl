@@ -10,6 +10,7 @@ import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
+from prime_rl.trainer.cp_utils import setup_cp_sharder
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.weights import setup_weight_ckpt_manager
 from prime_rl.trainer.rl.config import RLTrainerConfig
@@ -42,47 +43,7 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format
-from torch.nn.attention.flex_attention import BlockMask
 
-from torch.distributed.tensor.experimental._attention import _context_parallel_shard
-
-def cp_shard(
-    cp_mesh,
-    inputs: torch.Tensor,
-    labels: torch.Tensor,
-    attention_masks: BlockMask,
-):
-    from torch.distributed.tensor.experimental._load_balancer import (
-        _PTRRLoadBalancer,
-    )
-
-    load_balancer = _PTRRLoadBalancer(attention_masks, cp_mesh.size(0))
-
-    inputs, labels = _context_parallel_shard(
-        mesh=cp_mesh,
-        buffers=(inputs, labels),
-        seq_dims=(1, 1),
-        load_balancer=load_balancer,
-    )
-
-    masks = (
-        [attention_masks]
-        if isinstance(attention_masks, BlockMask)
-        else list(attention_masks.values())
-    )
-    masks = _context_parallel_shard(
-        mesh=cp_mesh,
-        buffers=masks,
-        seq_dims=(2,) * len(masks),
-        load_balancer=load_balancer,
-    )
-    attention_masks = (
-        masks[0]
-        if isinstance(attention_masks, BlockMask)
-        else {k: v for k, v in zip(attention_masks.keys(), masks)}
-    )
-
-    return inputs, labels, attention_masks, load_balancer
 
 @clean_exit
 @logger.catch(reraise=True)
@@ -115,20 +76,6 @@ def train(config: RLTrainerConfig):
     model = setup_model(config.model, parallel_dims)
     tokenizer = setup_tokenizer(config.model)
 
-    if config.model.cp > 1:
-        from torch.distributed.tensor.parallel import parallelize_module
-        from torch.distributed.tensor.experimental._attention import _ContextParallel
-
-        cp_plan = _ContextParallel(seq_dim=2, attention_type=_ContextParallel.AttentionType.FLEX)
-        for l in model.model.layers:
-            module = l.self_attn._flex_attention_kernel
-
-            parallelize_module(
-                module,
-                device_mesh=parallel_dims.world_mesh["cp"],
-                parallelize_plan=cp_plan,
-            )
-
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
     logger.info(f"Using `{config.loss.ratio_type}` importance ratio ({config.loss})")
@@ -149,6 +96,8 @@ def train(config: RLTrainerConfig):
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
     ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
+
+    cp_sharder = setup_cp_sharder(parallel_dims, config.model.attn_mask_type)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -178,10 +127,10 @@ def train(config: RLTrainerConfig):
 
         # Save the weight checkpoint (if we are not at the first step, because no updates to the model have been made yet)
         save_weights_time = 0
-        # if progress.step > 0:
-        #     save_weights_start_time = time.time()
-        #     weight_ckpt_manager.save(model, tokenizer, step=progress.step)
-        #     save_weights_time = time.time() - save_weights_start_time
+        if progress.step > 0:
+            save_weights_start_time = time.time()
+            weight_ckpt_manager.save(model, tokenizer, step=progress.step)
+            save_weights_time = time.time() - save_weights_start_time
 
         # Save the full checkpoint (if we are at an interval step and not at the first or last step)
         is_last_step = config.max_steps is not None and progress.step == config.max_steps
@@ -262,14 +211,12 @@ def train(config: RLTrainerConfig):
                 KV_LEN=input_ids.shape[1],
                 device=input_ids.device,
             )
+            seq_length = input_ids.shape[1]
+            input_ids, position_ids, mask = cp_sharder.shard(input_ids, position_ids, mask, seq_length=seq_length)
 
-            if config.model.cp > 1:
-                input_ids, position_ids, mask, load_balancer = cp_shard(
-                    parallel_dims.world_mesh["cp"],
-                    input_ids,
-                    position_ids,
-                    mask,
-                )
+            inference_logprobs, advantages, loss_mask = cp_sharder.shard(
+                inference_logprobs, advantages, loss_mask, seq_length=seq_length
+            )
 
             # Forward pass
             with maybe_record_function("forward"):
@@ -282,16 +229,6 @@ def train(config: RLTrainerConfig):
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
-
-            if config.model.cp > 1:
-                from functools import partial
-
-                fn = partial(_context_parallel_shard, mesh=parallel_dims.world_mesh["cp"], seq_dims=(1,))
-
-                inference_logprobs = fn(buffers=(inference_logprobs,))[0]
-                advantages = fn(buffers=(advantages,))[0]
-                loss_mask = fn(buffers=(loss_mask,))[0]
-
 
             loss, loss_tensors = compute_loss(
                 trainer_logprobs=trainer_logprobs.squeeze().split(response_lengths),
@@ -316,12 +253,8 @@ def train(config: RLTrainerConfig):
             with maybe_record_function("backward"):
                 loss.backward()
 
-            tensors["entropy"].append(
-                entropy[loss_mask].detach().to("cpu")
-            )
-            tensors["loss"].append(
-                loss.detach().to("cpu").unsqueeze(0)
-            )
+            tensors["entropy"].append(entropy[loss_mask].detach().to("cpu"))
+            tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
 
             if is_tt_moe_model(model):
                 load_balance_stats = get_load_balance_stats(model)
