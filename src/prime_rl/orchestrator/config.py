@@ -304,7 +304,7 @@ class BufferConfig(BaseModel):
         Field(
             description="Random seed to use for the buffer. If set, the sampling from the buffer will be deterministic.",
         ),
-    ] = 0
+    ] = None
 
 
 class SimpleBufferConfig(BufferConfig):
