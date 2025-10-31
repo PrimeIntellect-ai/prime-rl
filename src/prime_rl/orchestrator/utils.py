@@ -7,6 +7,7 @@ from openai.types.chat.chat_completion import ChatCompletion, Choice
 from openai.types.completion_usage import CompletionUsage
 from rich.console import Console
 from rich.table import Table
+from verifiers.types import Messages
 
 from prime_rl.utils.utils import (
     format_num,
@@ -103,6 +104,38 @@ def parse_is_truncated_completions(responses: list[list[ChatCompletion]]) -> lis
                 is_truncated = True
         all_is_truncated.append(is_truncated)
     return all_is_truncated
+
+
+def convert_tool_calls_to_dicts(messages: Messages) -> Messages:
+    """Convert Pydantic tool_calls models to dictionaries.
+
+    When Pydantic validation is skipped at the OpenAI client level, tool_calls
+    may come back as Pydantic model instances instead of dictionaries. This
+    function converts them to dictionaries so they can be processed by verifiers.
+    """
+    if not isinstance(messages, list):
+        return messages
+
+    normalized_messages = []
+    for message in messages:
+        if not isinstance(message, dict):
+            normalized_messages.append(message)
+            continue
+
+        normalized_message = dict(message)
+        tool_calls = message.get("tool_calls")
+        if tool_calls:
+            normalized_tool_calls = []
+            for tool_call in tool_calls:
+                model_dump = getattr(tool_call, "model_dump", None)
+                if model_dump is not None:
+                    normalized_tool_calls.append(model_dump())
+                else:
+                    normalized_tool_calls.append(tool_call)
+            normalized_message["tool_calls"] = normalized_tool_calls
+        normalized_messages.append(normalized_message)
+
+    return normalized_messages
 
 
 def print_benchmark(history: dict[str, list[Any]]) -> None:

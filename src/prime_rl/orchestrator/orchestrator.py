@@ -37,6 +37,7 @@ from prime_rl.orchestrator.utils import (
     monkey_patch_chat_completion_logprobs,
     print_benchmark,
     parse_is_truncated_completions,
+    convert_tool_calls_to_dicts,
 )
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
@@ -238,9 +239,14 @@ async def orchestrate(config: OrchestratorConfig):
             completion_requests += problems_to_sample * config.rollouts_per_example
             calls_to_generate += 1
 
+            normalized_completions = [
+                convert_tool_calls_to_dicts(completion) for completion in generate_outputs.completion
+            ]
+            normalized_prompts = [convert_tool_calls_to_dicts(prompt) for prompt in generate_outputs.prompt]
+
             processed_outputs: ProcessedOutputs = vf_env.process_env_results_vllm(
-                prompts=generate_outputs.prompt,
-                completions=generate_outputs.completion,
+                prompts=normalized_prompts,
+                completions=normalized_completions,
                 states=generate_outputs.state,
                 rewards=generate_outputs.reward,
                 processing_class=tokenizer,
