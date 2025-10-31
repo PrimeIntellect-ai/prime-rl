@@ -1,0 +1,15 @@
+batch_size = 128
+micro_batch_size = 4
+rollouts_per_example = 8
+seq_len = 4096
+max_steps = 200
+mask_truncated_completions = false
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[sampling]
+max_tokens = 512
+
+[environment]
+id = "wiki-search"

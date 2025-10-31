@@ -1,0 +1,32 @@
+max_steps = 200
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+impl = "liger_kernel"
+
+[model.ac]
+freq = 1
+
+[model.experimental.lora]
+rank = 8
+alpha = 32
+dropout = 0.0
+target_modules = [
+    ".*\\.q_proj$",
+    ".*\\.k_proj$",
+    ".*\\.v_proj$",
+    ".*\\.o_proj$",
+    ".*\\.gate_proj$",
+    ".*\\.up_proj$",
+    ".*\\.down_proj$"
+]
+modules_to_save = [
+    ".*embed_tokens$",
+    ".*norm$",
+    ".*layernorm$",
+    "lm_head$"
+]
+
+[optim]
+lr = 1e-5
+weight_decay = 0.0
