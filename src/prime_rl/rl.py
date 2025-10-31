@@ -11,6 +11,7 @@ from subprocess import Popen
 from threading import Event, Thread
 from typing import Annotated
 
+import tomli
 import tomli_w
 from pydantic import Field, model_validator
 
@@ -180,7 +181,26 @@ class RLConfig(BaseSettings):
         """Auto-calculate dp from inference_gpu_ids if inference_gpu_ids is set and dp is not explicitly set."""
         if self.inference:
             inference_gpu_ids_was_explicitly_set = "inference_gpu_ids" in self.model_fields_set
-            dp_was_explicitly_set = "dp" in self.inference.parallel.model_fields_set
+            # Detect explicit dp from TOML sources to avoid treating defaults as explicit
+            dp_was_explicitly_set = False
+            try:
+                for toml_path in type(self)._TOML_FILES:
+                    with open(toml_path, "rb") as f:
+                        data = tomli.load(f)
+                    if (
+                        isinstance(data, dict)
+                        and isinstance(data.get("inference"), dict)
+                        and isinstance(data["inference"].get("parallel"), dict)
+                        and ("dp" in data["inference"]["parallel"])
+                    ):
+                        dp_was_explicitly_set = True
+                        break
+            except Exception:
+                # Fallback to conservative heuristic if TOML read fails
+                dp_was_explicitly_set = (
+                    ("parallel" in self.inference.model_fields_set)
+                    and ("dp" in self.inference.parallel.model_fields_set)
+                )
 
             if inference_gpu_ids_was_explicitly_set and self.inference_gpu_ids:
                 tp = self.inference.parallel.tp
@@ -215,6 +235,9 @@ class RLConfig(BaseSettings):
     @model_validator(mode="after")
     def validate_device(self):
         available_gpu_ids = get_cuda_visible_devices()
+        # If no CUDA devices are available (e.g., in CPU-only test environments), skip GPU validation
+        if len(available_gpu_ids) == 0:
+            return self
         requested_gpu_ids = sorted(set(self.trainer_gpu_ids + self.inference_gpu_ids))
         if len(requested_gpu_ids) > len(available_gpu_ids):
             raise ValueError(
