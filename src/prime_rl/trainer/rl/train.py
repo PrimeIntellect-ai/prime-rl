@@ -10,7 +10,6 @@ import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
-from prime_rl.trainer.cp_utils import setup_cp_sharder
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.weights import setup_weight_ckpt_manager
 from prime_rl.trainer.rl.config import RLTrainerConfig
@@ -97,7 +96,10 @@ def train(config: RLTrainerConfig):
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
     ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
 
-    cp_sharder = setup_cp_sharder(parallel_dims, config.model.attn_mask_type)
+    if config.model.cp > 1:
+        from prime_rl.trainer.cp_utils import setup_cp_sharder
+
+        cp_sharder = setup_cp_sharder(parallel_dims, config.model.attn_mask_type)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -198,6 +200,9 @@ def train(config: RLTrainerConfig):
             inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
             temperature = micro_batch["temperature"]
 
+            logger.debug(f"Input IDs: {input_ids.shape}")
+            logger.debug(f"Position IDs: {position_ids.shape}")
+
             from torch.nn.attention.flex_attention import create_block_mask, and_masks
 
             def causal_mask_mod(b, h, q_idx, kv_idx):
@@ -233,13 +238,16 @@ def train(config: RLTrainerConfig):
                     [doc_starts, torch.tensor([total_tokens], device=position_ids.device, dtype=doc_starts.dtype)]
                 )
                 lengths = doc_starts_with_end[1:] - doc_starts_with_end[:-1]
+                logger.debug(f"Document lengths: {lengths}")
                 sharder_kwargs["seq_length_per_doc"] = lengths.unsqueeze(0)
 
-            input_ids, position_ids, mask = cp_sharder.shard(input_ids, position_ids, mask, **sharder_kwargs)
+            if config.model.cp > 1:
+                input_ids, position_ids, mask = cp_sharder.shard(input_ids, position_ids, mask, **sharder_kwargs)
+                torch._dynamo.mark_dynamic(mask, (1, 2))
 
-            inference_logprobs, advantages, loss_mask = cp_sharder.shard(
-                inference_logprobs, advantages, loss_mask, **sharder_kwargs
-            )
+                inference_logprobs, advantages, loss_mask = cp_sharder.shard(
+                    inference_logprobs, advantages, loss_mask, **sharder_kwargs
+                )
 
             # Forward pass
             with maybe_record_function("forward"):
@@ -268,10 +276,6 @@ def train(config: RLTrainerConfig):
             # At this point we don't need the big activations anymore
             del logits
             del shifted_logits
-
-            # with torch.no_grad():
-            #     loss_for_backward = loss.clone()
-            #     dist.all_reduce(loss_for_backward, op=dist.ReduceOp.AVG, group=cp_group)
 
             with maybe_record_function("backward"):
                 loss.backward()

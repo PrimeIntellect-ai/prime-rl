@@ -42,6 +42,7 @@ class FakeDataLoaderConfig(BaseConfig):
 
     batch_size: Annotated[int, Field(ge=1)] = 2
     seq_len: Annotated[int, Field(ge=1)] = 128
+    generate_documents: Annotated[bool, Field(description="Whether to generate documents for the fake data loader.")] = False
 
 
 class DataLoaderConfig(BaseConfig):

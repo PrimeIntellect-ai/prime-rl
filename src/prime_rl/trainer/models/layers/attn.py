@@ -66,6 +66,7 @@ class FlashAttention(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
+        mask: BlockMask | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
