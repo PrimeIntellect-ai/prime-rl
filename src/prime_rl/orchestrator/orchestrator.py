@@ -190,11 +190,13 @@ async def orchestrate(config: OrchestratorConfig):
                 logger.debug(f"Updated weights in {update_weights_time:.2f}s")
 
         elif config.broadcast_backend == "nccl":
-            logger.info("Getting latest weights from NCCL broadcast")
-            update_weights_start_time = time.time()
-            await update_weights(admin_clients, None)
-            update_weights_time = time.time() - update_weights_start_time
-            logger.debug(f"Updated weights in {update_weights_time:.2f}s")
+            if progress.step - ckpt_step > config.async_level:
+                ckpt_step = progress.step - config.async_level
+                logger.info("Getting latest weights from NCCL broadcast")
+                update_weights_start_time = time.time()
+                await update_weights(admin_clients, None)
+                update_weights_time = time.time() - update_weights_start_time
+                logger.debug(f"Updated weights in {update_weights_time:.2f}s")
         else:
             raise ValueError(f"Invalid broadcast backend: {config.broadcast_backend}")
 
