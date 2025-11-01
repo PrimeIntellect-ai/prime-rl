@@ -27,12 +27,50 @@ class FakeDataLoader:
         self.batch_size = config.batch_size
         self.num_micro_batches = self.batch_size // get_world().world_size
         self.seq_len = config.seq_len
+        self.generate_documents = config.generate_documents
 
     def wait_for_batch(self) -> None:
         return
 
     def get_batch(self) -> list[MicroBatch]:
-        return [self._get_micro_batch() for _ in range(self.num_micro_batches)]
+        fn = self._get_micro_batch if not self.generate_documents else self._get_document_micro_batch
+        return [fn() for _ in range(self.num_micro_batches)]
+    
+    def _get_document_micro_batch(self) -> MicroBatch:
+        max_len = self.seq_len // 8
+        total_len = 0
+
+        input_ids = []
+        position_ids = []
+        advantages = []
+        inference_logprobs = []
+        loss_mask = []
+        temperature = 1.0
+
+        while total_len < self.seq_len - max_len:
+            len = torch.randint(1, max_len // 4, (1,)).item() * 4
+            total_len += len
+            input_ids.append(torch.randint(0, 100, (len,)))
+            position_ids.append(torch.arange(len))
+            advantages.append(torch.randn(len))
+            inference_logprobs.append(torch.randn(len))
+            loss_mask.append(torch.ones(len, dtype=torch.bool))
+
+        remaining_len = self.seq_len - total_len
+        input_ids.append(torch.randint(0, 100, (remaining_len,)))
+        position_ids.append(torch.arange(remaining_len))
+        advantages.append(torch.randn(remaining_len))
+        inference_logprobs.append(torch.randn(remaining_len))
+        loss_mask.append(torch.ones(remaining_len, dtype=torch.bool))
+
+        return {
+            "input_ids": torch.cat(input_ids).unsqueeze(0),
+            "position_ids": torch.cat(position_ids).unsqueeze(0),
+            "advantages": torch.cat(advantages).unsqueeze(0),
+            "inference_logprobs": torch.cat(inference_logprobs).unsqueeze(0),
+            "loss_mask": torch.cat(loss_mask).unsqueeze(0),
+            "temperature": temperature,
+        }
 
     def _get_micro_batch(self) -> MicroBatch:
         return {

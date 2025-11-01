@@ -69,10 +69,6 @@ def train(config: RLTrainerConfig):
 
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
-    if config.model.cp > 1:
-        raise ValueError(
-            "CP is not supported for RL. No reason it shouldn't, we just didn't test it. If you need it, please open an issue."
-        )
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model and tokenizer ({config.model})")
@@ -99,6 +95,11 @@ def train(config: RLTrainerConfig):
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
     ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
+
+    if config.model.cp > 1:
+        from prime_rl.trainer.cp_utils import setup_cp_sharder
+
+        cp_sharder = setup_cp_sharder(parallel_dims, config.model.attn_mask_type)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -128,10 +129,10 @@ def train(config: RLTrainerConfig):
 
         # Save the weight checkpoint (if we are not at the first step, because no updates to the model have been made yet)
         save_weights_time = 0
-        if progress.step > 0:
-            save_weights_start_time = time.time()
-            weight_ckpt_manager.save(model, tokenizer, step=progress.step)
-            save_weights_time = time.time() - save_weights_start_time
+        # if progress.step > 0:
+        #     save_weights_start_time = time.time()
+        #     weight_ckpt_manager.save(model, tokenizer, step=progress.step)
+        #     save_weights_time = time.time() - save_weights_start_time
 
         # Save the full checkpoint (if we are at an interval step and not at the first or last step)
         is_last_step = config.max_steps is not None and progress.step == config.max_steps
@@ -199,15 +200,67 @@ def train(config: RLTrainerConfig):
             inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
             temperature = micro_batch["temperature"]
 
+            logger.debug(f"Input IDs: {input_ids.shape}")
+            logger.debug(f"Position IDs: {position_ids.shape}")
+
+            from torch.nn.attention.flex_attention import create_block_mask, and_masks
+
+            def causal_mask_mod(b, h, q_idx, kv_idx):
+                return q_idx >= kv_idx
+
+            mask_mods = [causal_mask_mod]
+
+            if config.model.attn_mask_type == "doc_causal":
+                flat_position_ids = position_ids.flatten()
+                is_start = (flat_position_ids == 0).to(torch.int32)
+                document_ids = torch.cumsum(is_start, dim=0) - 1
+
+                def document_id_mask_mod(b, h, q_idx, kv_idx):
+                    return document_ids[q_idx] == document_ids[kv_idx]
+
+                mask_mods.append(document_id_mask_mod)
+
+            mask = create_block_mask(
+                and_masks(*mask_mods),
+                B=None,
+                H=None,
+                Q_LEN=input_ids.shape[1],
+                KV_LEN=input_ids.shape[1],
+                device=input_ids.device,
+            )
+            sharder_kwargs = {}
+            if config.model.attn_mask_type == "causal":
+                sharder_kwargs["seq_length"] = input_ids.shape[1]
+            elif config.model.attn_mask_type == "doc_causal":
+                total_tokens = flat_position_ids.numel()
+                doc_starts = (flat_position_ids == 0).nonzero(as_tuple=False).flatten()
+                doc_starts_with_end = torch.cat(
+                    [doc_starts, torch.tensor([total_tokens], device=position_ids.device, dtype=doc_starts.dtype)]
+                )
+                lengths = doc_starts_with_end[1:] - doc_starts_with_end[:-1]
+                logger.debug(f"Document lengths: {lengths}")
+                sharder_kwargs["seq_length_per_doc"] = lengths.unsqueeze(0)
+
+            if config.model.cp > 1:
+                input_ids, position_ids, mask = cp_sharder.shard(input_ids, position_ids, mask, **sharder_kwargs)
+                torch._dynamo.mark_dynamic(mask, (1, 2))
+
+                inference_logprobs, advantages, loss_mask = cp_sharder.shard(
+                    inference_logprobs, advantages, loss_mask, **sharder_kwargs
+                )
+
             # Forward pass
             with maybe_record_function("forward"):
-                logits = forward(model, input_ids, position_ids).float().contiguous()
-            shifted_logits = shift_logits(logits)
+                logits = forward(model, input_ids, position_ids, mask).float().contiguous()
+
+            # Compute trainer logprobs on the FULL context (not just shard)
+            shifted_logits = shift_logits(logits)  # shift along sequence dim
             shifted_logits = shifted_logits / temperature
             trainer_logprobs = selective_log_softmax(shifted_logits, input_ids)
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
+
             loss, loss_tensors = compute_loss(
                 trainer_logprobs=trainer_logprobs.squeeze().split(response_lengths),
                 inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
@@ -217,19 +270,16 @@ def train(config: RLTrainerConfig):
                 loss_scale=loss_scale,
             )
 
-            # Compute entropy
+            # Compute entropy (full context)
             entropy = compute_entropy(shifted_logits)
 
-            # Delete logits and shifted_logits before backward pass to avoid memory spike
-            del logits, shifted_logits
+            # At this point we don't need the big activations anymore
+            del logits
+            del shifted_logits
 
-            # Backward pass
             with maybe_record_function("backward"):
                 loss.backward()
 
-            # Add relevant tensors to tensor dict for logging purposes
-            tensors["trainer_probs"].append(torch.exp(trainer_logprobs)[loss_mask].detach().to("cpu"))
-            tensors["inference_probs"].append(torch.exp(inference_logprobs)[loss_mask].detach().to("cpu"))
             tensors["entropy"].append(entropy[loss_mask].detach().to("cpu"))
             tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
 
@@ -239,7 +289,6 @@ def train(config: RLTrainerConfig):
                     if v is not None:
                         tensors[k].append(v)
 
-            # Add loss tensors to tensor dict for logging purposes
             for key, loss_tensor in loss_tensors.items():
                 loss_tensor = loss_tensor.detach().to("cpu")
                 tensors[key].append(loss_tensor)

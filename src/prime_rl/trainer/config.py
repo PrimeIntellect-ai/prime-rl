@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from prime_rl.utils.pydantic_config import BaseConfig
 
-AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2"]
+AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2", "flex_attention"]
 
 MOE_MODEL_MAPS = {
     "Qwen/Qwen3-30B-A3B": "Jackmin108/Qwen3-30B-A3B-Fast",
@@ -122,6 +122,13 @@ class ModelConfig(BaseConfig):
     ] = "Qwen/Qwen3-0.6B"
 
     attn: Annotated[AttnImplementation, Field(description="The attention implementation to use.")] = "flash_attention_2"
+
+    attn_mask_type: Annotated[
+        Literal["doc_causal", "causal", "none"],
+        Field(
+            description="The attention mask type to use.",
+        ),
+    ] = "causal"
 
     compile: Annotated[
         CompileConfig | None,
@@ -245,6 +252,26 @@ class ModelConfig(BaseConfig):
         """Random initialize is only supported with the custom implementation."""
         if self.debug.random_init and not self.load_using_meta:
             raise ValueError("Random initialize is only supported when loading with meta.")
+        return self
+
+    @model_validator(mode="after")
+    def cp_only_with_torch_2_10_0(self):
+        """Context parallelism is only supported with torch >= 2.10.0."""
+        if self.cp > 1:
+            import torch
+            from torch.torch_version import TorchVersion
+
+            if torch.__version__ < TorchVersion("2.9.0"):
+                raise ValueError(f"Context parallelism is only supported with torch >= 2.9.0. Got {torch.__version__}")
+
+        return self
+
+    @model_validator(mode="after")
+    def cp_only_with_flex_attn(self):
+        """Context parallelism is only supported with flex attention."""
+
+        if self.cp > 1 and self.attn != "flex_attention":
+            raise ValueError("Context parallelism is only supported with flex attention. Got {self.attn}")
         return self
 
 
