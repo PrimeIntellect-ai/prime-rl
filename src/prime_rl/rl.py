@@ -11,7 +11,6 @@ from subprocess import Popen
 from threading import Event, Thread
 from typing import Annotated
 
-import tomli
 import tomli_w
 from pydantic import Field, model_validator
 
@@ -177,62 +176,6 @@ class RLConfig(BaseSettings):
     ] = False
 
     @model_validator(mode="after")
-    def auto_setup_dp_from_gpu_ids(self):
-        """Auto-calculate dp from inference_gpu_ids if inference_gpu_ids is set and dp is not explicitly set."""
-        if self.inference:
-            inference_gpu_ids_was_explicitly_set = "inference_gpu_ids" in self.model_fields_set
-            # Detect explicit dp from TOML sources to avoid treating defaults as explicit
-            dp_was_explicitly_set = False
-            try:
-                for toml_path in type(self)._TOML_FILES:
-                    with open(toml_path, "rb") as f:
-                        data = tomli.load(f)
-                    if (
-                        isinstance(data, dict)
-                        and isinstance(data.get("inference"), dict)
-                        and isinstance(data["inference"].get("parallel"), dict)
-                        and ("dp" in data["inference"]["parallel"])
-                    ):
-                        dp_was_explicitly_set = True
-                        break
-            except Exception:
-                # Fallback to conservative heuristic if TOML read fails
-                dp_was_explicitly_set = (
-                    ("parallel" in self.inference.model_fields_set)
-                    and ("dp" in self.inference.parallel.model_fields_set)
-                )
-
-            if inference_gpu_ids_was_explicitly_set and self.inference_gpu_ids:
-                tp = self.inference.parallel.tp
-                num_gpus = len(self.inference_gpu_ids)
-
-                if num_gpus % tp != 0:
-                    raise ValueError(
-                        f"Number of inference GPUs ({num_gpus}) must be divisible by tensor parallel size ({tp})"
-                    )
-
-                calculated_dp = num_gpus // tp
-
-                if dp_was_explicitly_set:
-                    if self.inference.parallel.dp != calculated_dp:
-                        raise ValueError(
-                            f"Explicitly set dp ({self.inference.parallel.dp}) conflicts with calculated dp from inference_gpu_ids "
-                            f"({calculated_dp} = {num_gpus} GPUs / {tp} TP)"
-                        )
-                else:
-                    self.inference.parallel.dp = calculated_dp
-            elif dp_was_explicitly_set and not inference_gpu_ids_was_explicitly_set:
-                required_gpus = self.inference.parallel.dp * self.inference.parallel.tp
-                if len(self.inference_gpu_ids) != required_gpus:
-                    raise ValueError(
-                        f"dp is explicitly set to {self.inference.parallel.dp} (with tp={self.inference.parallel.tp}), "
-                        f"requiring {required_gpus} GPUs, but inference_gpu_ids is not set and defaults to "
-                        f"{len(self.inference_gpu_ids)} GPU(s). Please explicitly set inference_gpu_ids to {required_gpus} GPU(s)."
-                    )
-
-        return self
-
-    @model_validator(mode="after")
     def validate_device(self):
         available_gpu_ids = get_cuda_visible_devices()
         # If no CUDA devices are available (e.g., in CPU-only test environments), skip GPU validation
@@ -248,9 +191,10 @@ class RLConfig(BaseSettings):
                 f"Some requested GPU IDs are not available. Available GPUs: {available_gpu_ids}, Requested GPUs: {requested_gpu_ids}"
             )
         if self.inference and len(self.inference_gpu_ids) != self.inference.parallel.dp * self.inference.parallel.tp:
-            raise ValueError(
-                f"Total number of inference GPUs ({len(self.inference_gpu_ids)}) does not match the local sharding strategy (DP={self.inference.parallel.dp}, TP={self.inference.parallel.tp})"
+            assert len(self.inference_gpu_ids) % self.inference.parallel.tp == 0, (
+                "Number of inference GPUs must be divisible by the tensor parallel size"
             )
+            self.inference.parallel.dp = len(self.inference_gpu_ids) // self.inference.parallel.tp
         return self
 
     @model_validator(mode="after")
