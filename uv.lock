@@ -2131,7 +2131,6 @@ dependencies = [
     { name = "cydifflib" },
     { name = "datasets" },
     { name = "dion" },
-    { name = "flash-attn" },
     { name = "jaxtyping" },
     { name = "liger-kernel" },
     { name = "loguru" },
@@ -2159,6 +2158,11 @@ dependencies = [
     { name = "wandb" },
 ]
 
+[package.optional-dependencies]
+flash-attn = [
+    { name = "flash-attn" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "ipykernel" },
@@ -2176,7 +2180,7 @@ requires-dist = [
     { name = "cydifflib", specifier = ">=1.2.0" },
     { name = "datasets", specifier = ">=4.0.0" },
     { name = "dion", git = "https://github.com/samsja/dion.git?rev=main" },
-    { name = "flash-attn", specifier = ">=2.8.3" },
+    { name = "flash-attn", marker = "extra == 'flash-attn'", specifier = ">=2.8.3" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "liger-kernel", specifier = ">=0.5.10" },
     { name = "loguru", specifier = ">=0.7.3" },
@@ -2200,10 +2204,11 @@ requires-dist = [
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e43694bbfeff5d6ad8ac738c067bb90d41" },
     { name = "transformers", specifier = ">=4.56.0" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=main" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=a793bf6deb3896d2844bcae6de4dcddb6436fac1" },
     { name = "vllm", specifier = "==0.10.2" },
     { name = "wandb", specifier = ">=0.20.1" },
 ]
+provides-extras = ["flash-attn"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -3510,7 +3515,7 @@ wheels = [
 [[package]]
 name = "verifiers"
 version = "0.1.6.post0"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=main#6a4465f2cfef94843dc353a4abde663086ee267d" }
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=a793bf6deb3896d2844bcae6de4dcddb6436fac1#a793bf6deb3896d2844bcae6de4dcddb6436fac1" }
 dependencies = [
     { name = "datasets" },
     { name = "jinja2" },
