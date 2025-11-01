@@ -2,11 +2,13 @@ from typing import Any, List, Optional
 
 import openai.types.chat
 import pandas as pd
+import pydantic_core
 import verifiers as vf
 from openai.types.chat.chat_completion import ChatCompletion, Choice
 from openai.types.completion_usage import CompletionUsage
 from rich.console import Console
 from rich.table import Table
+from verifiers.types import Messages
 
 from prime_rl.utils.utils import (
     format_num,
@@ -103,6 +105,69 @@ def parse_is_truncated_completions(responses: list[list[ChatCompletion]]) -> lis
                 is_truncated = True
         all_is_truncated.append(is_truncated)
     return all_is_truncated
+
+
+def convert_tool_calls_to_dicts(messages: Messages) -> Messages:
+    """Convert Pydantic tool_calls models to dictionaries.
+
+    When Pydantic validation is skipped at the OpenAI client level, tool_calls
+    may come back as Pydantic model instances instead of dictionaries. This
+    function converts them to dictionaries so they can be processed by verifiers.
+    """
+    if not isinstance(messages, list):
+        return messages
+
+    normalized_messages = []
+    for message in messages:
+        if not isinstance(message, dict):
+            normalized_messages.append(message)
+            continue
+
+        normalized_message = dict(message)
+        tool_calls = message.get("tool_calls")
+        if tool_calls:
+            normalized_tool_calls = []
+            if isinstance(tool_calls, list):
+                tool_calls_list = tool_calls
+            else:
+                tool_calls_list = []
+                tool_calls_type = type(tool_calls).__name__
+                if "ValidatorIterator" in tool_calls_type:
+                    iterator_obj = iter(tool_calls)
+                    tool_call = None
+                    while True:
+                        try:
+                            tool_call = next(iterator_obj)
+                            if hasattr(tool_call, "model_dump"):
+                                tool_calls_list.append(tool_call.model_dump())
+                            elif isinstance(tool_call, dict):
+                                tool_calls_list.append(tool_call)
+                            else:
+                                tool_calls_list.append(tool_call)
+                        except StopIteration:
+                            break
+                        except (pydantic_core.ValidationError, Exception):
+                            if tool_call is not None and hasattr(tool_call, "model_dump"):
+                                tool_calls_list.append(tool_call.model_dump())
+                            elif tool_call is not None and isinstance(tool_call, dict):
+                                tool_calls_list.append(tool_call)
+                            elif tool_call is not None:
+                                tool_calls_list.append(tool_call)
+                else:
+                    tool_calls_list = list(tool_calls) if tool_calls else []
+            for tool_call in tool_calls_list:
+                if isinstance(tool_call, dict):
+                    normalized_tool_calls.append(tool_call)
+                else:
+                    model_dump = getattr(tool_call, "model_dump", None)
+                    if model_dump is not None:
+                        normalized_tool_calls.append(model_dump())
+                    else:
+                        normalized_tool_calls.append(tool_call)
+            normalized_message["tool_calls"] = normalized_tool_calls
+        normalized_messages.append(normalized_message)
+
+    return normalized_messages
 
 
 def print_benchmark(history: dict[str, list[Any]]) -> None:
