@@ -42,7 +42,6 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format
-from prime_rl.trainer.model import DTYPE_MAP
 
 
 @clean_exit
@@ -82,6 +81,7 @@ def train(config: RLTrainerConfig):
 
     if config.model.param_dtype == "float16":
         from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
+
         scaler = ShardedGradScaler(growth_interval=400)
     else:
         scaler = None
@@ -199,69 +199,66 @@ def train(config: RLTrainerConfig):
             # we only all reduce at the last grad acc step
             model.set_requires_all_reduce(micro_step == len(micro_batches) - 1)
 
-            with torch.autocast(device_type="cuda", dtype=DTYPE_MAP[config.model.param_dtype]):
+            input_ids = micro_batch["input_ids"].to("cuda")
+            position_ids = micro_batch["position_ids"].to("cuda")
+            advantages = micro_batch["advantages"].to("cuda")
+            loss_mask = micro_batch["loss_mask"].to("cuda")
+            inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
+            temperature = micro_batch["temperature"]
 
-                input_ids = micro_batch["input_ids"].to("cuda")
-                position_ids = micro_batch["position_ids"].to("cuda")
-                advantages = micro_batch["advantages"].to("cuda")
-                loss_mask = micro_batch["loss_mask"].to("cuda")
-                inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
-                temperature = micro_batch["temperature"]
+            # Forward pass
+            with maybe_record_function("forward"):
+                logits = forward(model, input_ids, position_ids).float().contiguous()
+            shifted_logits = shift_logits(logits)
+            shifted_logits = shifted_logits / temperature
+            trainer_logprobs = selective_log_softmax(shifted_logits, input_ids)
 
-                # Forward pass
-                with maybe_record_function("forward"):
-                    logits = forward(model, input_ids, position_ids).float().contiguous()
-                shifted_logits = shift_logits(logits)
-                shifted_logits = shifted_logits / temperature
-                trainer_logprobs = selective_log_softmax(shifted_logits, input_ids)
+            # Compute loss
+            response_lengths = get_response_lengths(position_ids)
+            loss, loss_tensors = compute_loss(
+                trainer_logprobs=trainer_logprobs.squeeze().split(response_lengths),
+                inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
+                advantages=advantages.squeeze().split(response_lengths),
+                loss_mask=loss_mask.squeeze().split(response_lengths),
+                loss_config=config.loss,
+                loss_scale=loss_scale,
+            )
 
-                # Compute loss
-                response_lengths = get_response_lengths(position_ids)
-                loss, loss_tensors = compute_loss(
-                    trainer_logprobs=trainer_logprobs.squeeze().split(response_lengths),
-                    inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
-                    advantages=advantages.squeeze().split(response_lengths),
-                    loss_mask=loss_mask.squeeze().split(response_lengths),
-                    loss_config=config.loss,
-                    loss_scale=loss_scale,
-                )
+            # Compute entropy
+            entropy = compute_entropy(shifted_logits)
 
-                # Compute entropy
-                entropy = compute_entropy(shifted_logits)
+            # Delete logits and shifted_logits before backward pass to avoid memory spike
+            del logits, shifted_logits
 
-                # Delete logits and shifted_logits before backward pass to avoid memory spike
-                del logits, shifted_logits
+            # Backward pass
+            with maybe_record_function("backward"):
+                if scaler is not None:
+                    scaler.scale(loss).backward()
+                else:
+                    loss.backward()
 
-                # Backward pass
-                with maybe_record_function("backward"):
-                    if scaler is not None:  
-                        scaler.scale(loss).backward()
-                    else:
-                        loss.backward()
+            # Add relevant tensors to tensor dict for logging purposes
+            tensors["trainer_probs"].append(torch.exp(trainer_logprobs)[loss_mask].detach().to("cpu"))
+            tensors["inference_probs"].append(torch.exp(inference_logprobs)[loss_mask].detach().to("cpu"))
+            tensors["entropy"].append(entropy[loss_mask].detach().to("cpu"))
+            tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
 
-                # Add relevant tensors to tensor dict for logging purposes
-                tensors["trainer_probs"].append(torch.exp(trainer_logprobs)[loss_mask].detach().to("cpu"))
-                tensors["inference_probs"].append(torch.exp(inference_logprobs)[loss_mask].detach().to("cpu"))
-                tensors["entropy"].append(entropy[loss_mask].detach().to("cpu"))
-                tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
+            if is_tt_moe_model(model):
+                load_balance_stats = get_load_balance_stats(model)
+                for k, v in load_balance_stats.items():
+                    if v is not None:
+                        tensors[k].append(v)
 
-                if is_tt_moe_model(model):
-                    load_balance_stats = get_load_balance_stats(model)
-                    for k, v in load_balance_stats.items():
-                        if v is not None:
-                            tensors[k].append(v)
+            # Add loss tensors to tensor dict for logging purposes
+            for key, loss_tensor in loss_tensors.items():
+                loss_tensor = loss_tensor.detach().to("cpu")
+                tensors[key].append(loss_tensor)
 
-                # Add loss tensors to tensor dict for logging purposes
-                for key, loss_tensor in loss_tensors.items():
-                    loss_tensor = loss_tensor.detach().to("cpu")
-                    tensors[key].append(loss_tensor)
-
-                # Debug log with *local, micro step* stats
-                micro_step_message = f"Micro Step {micro_step}/{len(micro_batches)} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy'][-1].mean().item():.4f} | Mismatch KL: {tensors['mismatch_kl'][-1].mean().item():.4f}"
-                if "max_vio" in tensors:
-                    micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
-                logger.debug(micro_step_message)
-
+            # Debug log with *local, micro step* stats
+            micro_step_message = f"Micro Step {micro_step}/{len(micro_batches)} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy'][-1].mean().item():.4f} | Mismatch KL: {tensors['mismatch_kl'][-1].mean().item():.4f}"
+            if "max_vio" in tensors:
+                micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
+            logger.debug(micro_step_message)
 
         if scaler is not None:
             scaler.unscale_(optimizer)
