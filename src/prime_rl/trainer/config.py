@@ -80,24 +80,24 @@ class LoRAConfig(BaseModel):
     target_modules: Annotated[
         list[str],
         Field(
-            description="Regex patterns for modules to apply LoRA to.",
+            description="Module names or regex patterns for modules to apply LoRA to. Simple names (e.g., 'q_proj') match any component in the module path. Regex patterns match anywhere in the name.",
         ),
     ] = [
-        r".*\.q_proj$",
-        r".*\.k_proj$",
-        r".*\.v_proj$",
-        r".*\.o_proj$",
-        r".*\.gate_proj$",
-        r".*\.up_proj$",
-        r".*\.down_proj$",
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
     ]
 
     modules_to_save: Annotated[
         list[str],
         Field(
-            description="Regex patterns for modules to keep fully trainable (not freeze).",
+            description="Module names or regex patterns for modules to keep fully trainable (not freeze). Simple names match any component in the module path. Regex patterns match anywhere in the name.",
         ),
-    ] = [r".*embed_tokens$", r".*norm$", r".*layernorm$", r"lm_head$"]
+    ] = []
 
 
 class ExperimentalConfig(BaseModel):
