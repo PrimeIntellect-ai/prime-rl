@@ -76,7 +76,7 @@ source $HOME/.local/bin/env
 3. Install dependencies from the lock file
 
 ```bash
-uv sync && uv sync --all-extras
+uv sync
 ```
 
 </details>

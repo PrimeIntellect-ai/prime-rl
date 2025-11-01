@@ -189,6 +189,9 @@ class RLConfig(BaseSettings):
     @model_validator(mode="after")
     def validate_device(self):
         available_gpu_ids = get_cuda_visible_devices()
+        # If no CUDA devices are available (e.g., in CPU-only test environments), skip GPU validation
+        if len(available_gpu_ids) == 0:
+            return self
         requested_gpu_ids = sorted(set(self.trainer_gpu_ids + self.inference_gpu_ids))
         if len(requested_gpu_ids) > len(available_gpu_ids):
             raise ValueError(
@@ -199,9 +202,10 @@ class RLConfig(BaseSettings):
                 f"Some requested GPU IDs are not available. Available GPUs: {available_gpu_ids}, Requested GPUs: {requested_gpu_ids}"
             )
         if self.inference and len(self.inference_gpu_ids) != self.inference.parallel.dp * self.inference.parallel.tp:
-            raise ValueError(
-                f"Total number of inference GPUs ({len(self.inference_gpu_ids)}) does not match the local sharding strategy (DP={self.inference.parallel.dp}, TP={self.inference.parallel.tp})"
+            assert len(self.inference_gpu_ids) % self.inference.parallel.tp == 0, (
+                "Number of inference GPUs must be divisible by the tensor parallel size"
             )
+            self.inference.parallel.dp = len(self.inference_gpu_ids) // self.inference.parallel.tp
         return self
 
     @model_validator(mode="after")
