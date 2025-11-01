@@ -9,7 +9,7 @@ import warnings
 from pathlib import Path
 from subprocess import Popen
 from threading import Event, Thread
-from typing import Annotated
+from typing import Annotated, Literal
 
 import tomli_w
 from pydantic import Field, model_validator
@@ -174,6 +174,17 @@ class RLConfig(BaseSettings):
             description="Whether to run in benchmark mode. It will automatically set the trainer and orchestrator to benchmark mode and, if present, configure the W&B project by suffixing the project with `-bench`.",
         ),
     ] = False
+
+    broadcast_backend: Annotated[
+        Literal["nccl", "filesystem"], Field(description="The backend to use for broadcast.")
+    ] = "filesystem"
+
+    @model_validator(mode="after")
+    def ascyn_nccl(self):
+        if self.broadcast_backend == "nccl" and self.async_level is not None:
+            if not self.async_level == 1:
+                raise ValueError("Async level must be 1 for NCCL broadcast")
+        return self
 
     @model_validator(mode="after")
     def validate_device(self):
@@ -352,6 +363,21 @@ class RLConfig(BaseSettings):
                 warnings.warn(
                     "W&B run ID is not set for orchestrator even though resuming training. The current run will be created as a new run."
                 )
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_broadcast_backend(self):
+        self.trainer.broadcast_backend = self.broadcast_backend
+        self.orchestrator.broadcast_backend = self.broadcast_backend
+        if self.inference:
+            self.inference.broadcast_backend = self.broadcast_backend
+
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_nccl_inference_world_size(self):
+        if self.inference and self.broadcast_backend == "nccl":
+            self.trainer.nccl_broadcast.inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp
         return self
 
 

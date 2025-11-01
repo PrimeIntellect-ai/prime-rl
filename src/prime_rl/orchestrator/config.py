@@ -392,6 +392,14 @@ class AdvantageConfig(BaseConfig):
     neg_clipped: bool = False
 
 
+class NCCLBroadcastConfig(BaseConfig):
+    """Configures the NCCL broadcast."""
+
+    host: Annotated[str, Field(description="The host to use for the NCCL broadcast.")] = "localhost"
+    port: Annotated[int, Field(description="The port to use for the NCCL broadcast.")] = 29501
+    timeout: Annotated[int, Field(description="The timeout  in seconds to use for the NCCL broadcast.")] = 1200
+
+
 class OrchestratorConfig(BaseSettings):
     """Configures the orchestrator for RL training."""
 
@@ -496,7 +504,7 @@ class OrchestratorConfig(BaseSettings):
             ge=0,
             description="Maximum number of async levels to use. If 0, will do synchronous RL. Else, it will allow to go `async_level` steps ahead of training.",
         ),
-    ] = 2
+    ] = 1
 
     bench: Annotated[
         bool,
@@ -506,6 +514,19 @@ class OrchestratorConfig(BaseSettings):
     ] = False
 
     seed: Annotated[int | None, Field(description="Random seed for the orchestrator.")] = 42
+
+    nccl_broadcast: NCCLBroadcastConfig = NCCLBroadcastConfig()
+
+    broadcast_backend: Annotated[
+        Literal["nccl", "filesystem"], Field(description="The backend to use for broadcast.")
+    ] = "filesystem"
+
+    @model_validator(mode="after")
+    def ascyn_nccl(self):
+        if self.broadcast_backend == "nccl":
+            if not self.async_level == 1:
+                raise ValueError("Async level must be 1 for NCCL broadcast")
+        return self
 
     @model_validator(mode="after")
     def validate_batch_size(self):

@@ -21,6 +21,10 @@ class CheckpointWorker(Worker):
     recent policy model from a checkpoint directory.
     """
 
+    def init_broadcaster(self) -> None:
+        """Initialize the broadcaster."""
+        ...
+
     def update_weights(self, weight_path: str) -> None:
         """Update weights from a specified path pointing to a .pt file."""
         # Get vLLM model runner and model

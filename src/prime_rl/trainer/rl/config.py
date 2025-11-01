@@ -50,6 +50,15 @@ class DataLoaderConfig(BaseConfig):
     fake: Annotated[FakeDataLoaderConfig | None, Field(description="Whether to use a fake data loader.")] = None
 
 
+class NCCLBroadcastConfig(BaseConfig):
+    """Configures the NCCL broadcast."""
+
+    host: Annotated[str, Field(description="The host to use for the NCCL broadcast.")] = "localhost"
+    port: Annotated[int, Field(description="The port to use for the NCCL broadcast.")] = 29501
+    timeout: Annotated[int, Field(description="The timeout  in seconds to use for the NCCL broadcast.")] = 1200
+    inference_world_size: Annotated[int, Field(description="The world size to use for the NCCL broadcast.")] = 1
+
+
 class RLTrainerConfig(BaseSettings):
     """Configures the RL trainer"""
 
@@ -72,7 +81,13 @@ class RLTrainerConfig(BaseSettings):
     ckpt: CheckpointConfig | None = None
 
     # The weight checkpoint configuration
-    weights: WeightCheckpointConfig = WeightCheckpointConfig()
+    weights: WeightCheckpointConfig = WeightCheckpointConfig(interval=1)
+
+    nccl_broadcast: NCCLBroadcastConfig = NCCLBroadcastConfig()
+
+    broadcast_backend: Annotated[
+        Literal["nccl", "filesystem"], Field(description="The backend to use for broadcast.")
+    ] = "filesystem"
 
     # The logging configuration
     log: LogConfig = LogConfig()
@@ -100,7 +115,7 @@ class RLTrainerConfig(BaseSettings):
             ge=0,
             description="Maximum number of steps that inference can be ahead of training. Determines how 'off-policy' the inference engines can be. Higher values yield better throughput through async execution, but may yield lower powerofrmance. If 0, will be fully synchronous.",
         ),
-    ] = 2
+    ] = 1
 
     memory_profiler_path: Annotated[Path | None, Field(description="Path to write memory profile to.")] = None
 
@@ -119,6 +134,13 @@ class RLTrainerConfig(BaseSettings):
             description="Timeout in seconds for torch distributed ops. Defaults to 600 seconds.",
         ),
     ] = 600
+
+    @model_validator(mode="after")
+    def ascyn_nccl(self):
+        if self.broadcast_backend == "nccl":
+            if not self.async_level == 1:
+                raise ValueError("Async level must be 1 for NCCL broadcast")
+        return self
 
     @model_validator(mode="after")
     def auto_setup_bench(self):
@@ -157,5 +179,14 @@ class RLTrainerConfig(BaseSettings):
                 raise ValueError(
                     "save_adapter_separately=True requires LoRA to be enabled. "
                     "Set model.experimental.lora or disable save_adapter_separately."
+                )
+        return self
+
+    @model_validator(mode="after")
+    def validate_filesystem_weights_interval(self):
+        if self.broadcast_backend == "filesystem":
+            if self.weights.interval != 1:
+                raise ValueError(
+                    "Filesystem broadcast backend does not support weight checkpointing with interval != 1. Please set the weights.interval to 1."
                 )
         return self

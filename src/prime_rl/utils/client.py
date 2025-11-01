@@ -101,13 +101,15 @@ async def check_health(
     await asyncio.gather(*[_check_health(admin_client) for admin_client in admin_clients])
 
 
-async def update_weights(admin_clients: list[AsyncClient], weight_dir: Path) -> None:
+async def update_weights(admin_clients: list[AsyncClient], weight_dir: Path | None) -> None:
     """Make a HTTP post request to the vLLM server to update the weights."""
     logger = get_logger()
 
-    async def _update_weights(admin_client: AsyncClient, weight_dir: Path) -> None:
+    weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
+
+    async def _update_weights(admin_client: AsyncClient, weight_dir: str | None) -> None:
         try:
-            response = await admin_client.post("/update_weights", json={"weight_dir": weight_dir.as_posix()})
+            response = await admin_client.post("/update_weights", json={"weight_dir": weight_dir})
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
@@ -115,7 +117,7 @@ async def update_weights(admin_clients: list[AsyncClient], weight_dir: Path) -> 
                 return
             raise
 
-    await asyncio.gather(*[_update_weights(admin_client, weight_dir) for admin_client in admin_clients])
+    await asyncio.gather(*[_update_weights(admin_client, weight_dir_posix) for admin_client in admin_clients])
 
 
 async def reload_weights(admin_clients: list[AsyncClient]) -> None:
@@ -134,3 +136,35 @@ async def reload_weights(admin_clients: list[AsyncClient]) -> None:
             raise
 
     await asyncio.gather(*[_reload_weights(admin_client) for admin_client in admin_clients])
+
+
+async def init_nccl_broadcast(admin_clients: list[AsyncClient], host: str, port: int, timeout: int) -> None:
+    """Make a HTTP post request to the vLLM server to initialize the NCCL broadcast."""
+    logger = get_logger()
+
+    async def _init_nccl_broadcast(
+        admin_client: AsyncClient, host: str, port: int, client_num: int, timeout: int
+    ) -> None:
+        try:
+            response = await admin_client.post(
+                "/init_broadcaster",
+                json={
+                    "host": host,
+                    "port": port,
+                    "server_rank": client_num,
+                    "num_inference_server": len(admin_clients),
+                    "timeout": timeout,
+                },
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                logger.warning("The route /init_broadcaster does not exist. Skipping NCCL broadcast initialization.")
+                return
+
+    await asyncio.gather(
+        *[
+            _init_nccl_broadcast(admin_client, host, port, client_num, timeout)
+            for client_num, admin_client in enumerate(admin_clients)
+        ]
+    )

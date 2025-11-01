@@ -3,6 +3,7 @@ import concurrent.futures
 import os
 import shutil
 import signal
+import socket
 import subprocess
 from pathlib import Path
 from typing import Callable, Generator
@@ -25,7 +26,7 @@ def setup_logging():
     """
     Fixture to set and reset the logger after each test.
     """
-    setup_logger("info")
+    setup_logger("debug")
     yield
     reset_logger()
 
@@ -200,3 +201,10 @@ def vllm_server() -> Generator[None, None, None]:
         yield
     finally:
         cleanup_process(vllm_process)
+
+
+@pytest.fixture()
+def free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
