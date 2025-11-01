@@ -8,10 +8,7 @@ name = "Qwen/Qwen3-4B-Instruct-2507"
 
 [wandb]
 project = "will-test"
-name = "wiki-search-4b"
-
-[trainer.model]
-impl = "liger_kernel"
+name = "wiki-search-4b-wd0.01-mn0.1-dataset"
 
 [trainer.model.experimental.lora]
 rank = 8
@@ -26,20 +23,14 @@ target_modules = [
     ".*\\.up_proj$",
     ".*\\.down_proj$"
 ]
-modules_to_save = [
-    ".*embed_tokens$",
-    ".*norm$",
-    ".*layernorm$",
-    "lm_head$"
-]
 
 [trainer.optim]
 lr = 1e-5
-weight_decay = 0.0
+max_norm = 0.1
 
 [orchestrator]
-batch_size = 1024
-rollouts_per_example = 16
+batch_size = 2048
+rollouts_per_example = 32
 seq_len = 4096
 mask_truncated_completions = false
 
