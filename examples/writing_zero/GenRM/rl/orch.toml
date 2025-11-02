@@ -1,0 +1,18 @@
+max_steps = 30
+seq_len = 2048
+batch_size = 1024
+micro_batch_size = 1
+rollouts_per_example = 16
+
+[model]
+name = "dmnsh/Qwen3-4B-W0-LitBench-SFT"
+
+[environment]
+id = "dmnsh001/LitBench"
+args={indices = [[700, 100], [4600, 100], [10750, 50], [101,40], [10500, 100], [35000, 100]], interleaving_score = 1}
+
+[advantage]
+std_norm="local"
+
+[sampling]
+max_tokens = 2048

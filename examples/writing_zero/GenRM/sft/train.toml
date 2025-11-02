@@ -1,0 +1,13 @@
+max_steps = 500
+
+[model]
+name = "PrimeIntellect/Qwen3-4B"
+
+[data]
+name = "dmnsh/w0_sft"
+seq_len = 2048
+batch_size = 8
+micro-batch-size = 2
+
+[optim]
+lr = 1e-5
