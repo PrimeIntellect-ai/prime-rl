@@ -391,6 +391,14 @@ class RLConfig(BaseSettings):
                 )
         return self
 
+    @model_validator(mode="after")
+    def validate_enough_devices_for_nccl(self):
+        if self.trainer.weight_broadcast.type == "nccl":
+            num_gpus = len(set(self.trainer_gpu_ids + self.inference_gpu_ids))
+            if num_gpus < 2:
+                raise ValueError("NCCL weight broadcast requires at least 2 GPUs to build the broadcast process group.")
+        return self
+
 
 def cleanup_threads(threads: list[Thread]):
     for thread in threads:
