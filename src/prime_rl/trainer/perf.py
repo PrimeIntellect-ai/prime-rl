@@ -4,7 +4,7 @@ import torch
 from torch import nn
 from transformers import PretrainedConfig
 
-from prime_rl.trainer.lora import has_lora_layers
+from prime_rl.trainer.lora import LoRALinear, has_lora_layers
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
@@ -155,13 +155,24 @@ class PerfCounter:
         attention_flops = 12 * l * h * q * t
 
         if has_lora_layers(self.model):
-            # LoRA case: forward uses base params (2×) + trainable params (2×), backward only uses trainable params (4×)
-            # trainable params include LoRA adapters + modules_to_save (fully trainable modules)
+            # LoRA case:
+            # - Frozen base matmuls still incur dX in backward: 2×, plus forward: 2× => 4× active_mm
+            # - Fully trainable non-LoRA params (modules_to_save) cost 6×
+            # - LoRA adapter params cost 6×
+            # Combined (to avoid double counting): 4*active_mm + 2*fully_trainable + 6*lora_adapters + attention
             try:
-                trainable_params = self._count_trainable_params()
-                flop_per_token = 2 * self.get_active_mm_params(model_config) + 6 * trainable_params + attention_flops
+                active_mm_params = self.get_active_mm_params(model_config)
+                lora_adapter_params = self._count_lora_adapter_params()
+                fully_trainable_params = self._count_fully_trainable_params_excluding_lora()
+
+                flop_per_token = (
+                    4 * active_mm_params
+                    + 2 * fully_trainable_params
+                    + 6 * lora_adapter_params
+                    + attention_flops
+                )
             except Exception as e:
-                self._logger.warning(f"Error calculating flop_per_token using get_active_mm_params: {e}")
+                self._logger.warning(f"Error calculating flop_per_token (LoRA path): {e}")
                 flop_per_token = 6 * self.num_params + attention_flops
         else:
             # standard case: full fine-tuning, all params participate in forward (2×) and backward (4×)
@@ -189,6 +200,26 @@ class PerfCounter:
             if param.requires_grad:
                 trainable_params += param.numel()
         return trainable_params
+
+    def _count_lora_adapter_params(self) -> int:
+        """Count LoRA adapter parameters (sum of lora_A and lora_B across all LoRALinear modules)."""
+        params = 0
+        for module in self.model.modules():
+            if isinstance(module, LoRALinear):
+                params += module.lora_A.numel() + module.lora_B.numel()
+        return params
+
+    def _count_fully_trainable_params_excluding_lora(self) -> int:
+        """Count trainable parameters excluding LoRA adapter tensors.
+
+        Approximates trainable matmul params in modules_to_save by subtracting LoRA adapter params
+        from all trainable params.
+        """
+        total_trainable = 0
+        for name, param in self.model.named_parameters():
+            if param.requires_grad and ("lora_A" not in name and "lora_B" not in name):
+                total_trainable += param.numel()
+        return total_trainable
 
 
 _PERF_COUNTER: PerfCounter | None = None
