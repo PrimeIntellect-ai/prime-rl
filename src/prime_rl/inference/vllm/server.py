@@ -142,7 +142,7 @@ def server(config: InferenceConfig, vllm_args: list[str]):
     validate_parsed_serve_args(args)
 
     # Set the worker extension class based on the broadcast backend
-    args.worker_extension_cls = WORKER_EXTENSION_CLS[args.broadcast_backend]
+    args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]
 
     # Raise error if logprobs_mode is not set to processed_logprobs
     if args.logprobs_mode != "processed_logprobs":

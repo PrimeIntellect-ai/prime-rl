@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -50,13 +50,24 @@ class DataLoaderConfig(BaseConfig):
     fake: Annotated[FakeDataLoaderConfig | None, Field(description="Whether to use a fake data loader.")] = None
 
 
-class NCCLBroadcastConfig(BaseConfig):
+class FileSystemWeightBroadcastConfig(BaseModel):
+    """Configures the weight broadcast."""
+
+    type: Literal["filesystem"] = "filesystem"
+
+
+class NCCLWeightBroadcastConfig(BaseModel):
     """Configures the NCCL broadcast."""
 
+    type: Literal["nccl"] = "nccl"
     host: Annotated[str, Field(description="The host to use for the NCCL broadcast.")] = "localhost"
     port: Annotated[int, Field(description="The port to use for the NCCL broadcast.")] = 29501
     timeout: Annotated[int, Field(description="The timeout  in seconds to use for the NCCL broadcast.")] = 1200
+    # TODO: Should not be configurable, but auto-inferred
     inference_world_size: Annotated[int, Field(description="The world size to use for the NCCL broadcast.")] = 1
+
+
+WeightBroadcastConfigType: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig
 
 
 class RLTrainerConfig(BaseSettings):
@@ -81,13 +92,11 @@ class RLTrainerConfig(BaseSettings):
     ckpt: CheckpointConfig | None = None
 
     # The weight checkpoint configuration
-    weights: WeightCheckpointConfig = WeightCheckpointConfig(interval=1)
+    weights: WeightCheckpointConfig = WeightCheckpointConfig()
 
-    nccl_broadcast: NCCLBroadcastConfig = NCCLBroadcastConfig()
-
-    broadcast_backend: Annotated[
-        Literal["nccl", "filesystem"], Field(description="The backend to use for broadcast.")
-    ] = "filesystem"
+    weight_broadcast: Annotated[WeightBroadcastConfigType, Field(discriminator="type")] = (
+        FileSystemWeightBroadcastConfig()
+    )
 
     # The logging configuration
     log: LogConfig = LogConfig()
@@ -136,13 +145,6 @@ class RLTrainerConfig(BaseSettings):
     ] = 600
 
     @model_validator(mode="after")
-    def ascyn_nccl(self):
-        if self.broadcast_backend == "nccl":
-            if not self.async_level == 1:
-                raise ValueError("Async level must be 1 for NCCL broadcast")
-        return self
-
-    @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench:
             self.max_steps = 4  # 1 Warmup + 3 Benchmark
@@ -183,10 +185,13 @@ class RLTrainerConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def validate_filesystem_weights_interval(self):
-        if self.broadcast_backend == "filesystem":
-            if self.weights.interval != 1:
-                raise ValueError(
-                    "Filesystem broadcast backend does not support weight checkpointing with interval != 1. Please set the weights.interval to 1."
-                )
+    def validate_weight_broadcast_type(self):
+        if self.weight_broadcast.type == "nccl" and self.async_level != 1:
+            raise ValueError("NCCL weight broadcast only works with async level 1")
+        return self
+
+    @model_validator(mode="after")
+    def ensure_saving_weights_every_step_for_filesystem(self):
+        if self.weight_broadcast.type == "filesystem":
+            self.weights.interval = 1
         return self

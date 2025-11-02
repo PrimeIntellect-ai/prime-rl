@@ -392,12 +392,23 @@ class AdvantageConfig(BaseConfig):
     neg_clipped: bool = False
 
 
-class NCCLBroadcastConfig(BaseConfig):
-    """Configures the NCCL broadcast."""
+class FileSystemWeightBroadcastConfig(BaseModel):
+    """Configures the filesystem weight broadcast."""
+
+    type: Literal["filesystem"] = "filesystem"
+
+
+class NCCLWeightBroadcastConfig(BaseModel):
+    """Configures the NCCL weight broadcast."""
+
+    type: Literal["nccl"] = "nccl"
 
     host: Annotated[str, Field(description="The host to use for the NCCL broadcast.")] = "localhost"
     port: Annotated[int, Field(description="The port to use for the NCCL broadcast.")] = 29501
-    timeout: Annotated[int, Field(description="The timeout  in seconds to use for the NCCL broadcast.")] = 1200
+    timeout: Annotated[int, Field(description="The timeout in seconds to use for the NCCL broadcast.")] = 1200
+
+
+WeightBroadcastConfigType: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig
 
 
 class OrchestratorConfig(BaseSettings):
@@ -432,6 +443,10 @@ class OrchestratorConfig(BaseSettings):
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
+
+    weight_broadcast: Annotated[WeightBroadcastConfigType, Field(discriminator="type")] = (
+        FileSystemWeightBroadcastConfig()
+    )
 
     output_dir: Annotated[
         Path,
@@ -515,15 +530,9 @@ class OrchestratorConfig(BaseSettings):
 
     seed: Annotated[int | None, Field(description="Random seed for the orchestrator.")] = 42
 
-    nccl_broadcast: NCCLBroadcastConfig = NCCLBroadcastConfig()
-
-    broadcast_backend: Annotated[
-        Literal["nccl", "filesystem"], Field(description="The backend to use for broadcast.")
-    ] = "filesystem"
-
     @model_validator(mode="after")
     def ascyn_nccl(self):
-        if self.broadcast_backend == "nccl":
+        if self.weight_broadcast.type == "nccl":
             if not self.async_level == 1:
                 raise ValueError("Async level must be 1 for NCCL broadcast")
         return self
