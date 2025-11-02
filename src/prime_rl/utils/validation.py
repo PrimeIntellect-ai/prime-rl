@@ -86,3 +86,21 @@ def validate_shared_async_level(
         raise ValueError(
             f"Trainer async level ({trainer.async_level}) and orchestrator async level ({orchestrator.async_level}) are not the same. Please specify the same async level for both."
         )
+
+
+def validate_shared_weight_broadcast(
+    trainer: RLTrainerConfig,
+    orchestrator: OrchestratorConfig,
+    inference: Optional[InferenceConfig] = None,
+) -> None:
+    if (
+        inference
+        and trainer.weight_broadcast.type != orchestrator.weight_broadcast.type != inference.weight_broadcast.type
+    ):
+        raise ValueError(
+            f"Inference weight broadcast type ({inference.weight_broadcast.type}) and orchestrator weight broadcast type ({orchestrator.weight_broadcast.type}) are not the same. Please specify the same weight broadcast type for both."
+        )
+    elif trainer.weight_broadcast.type != orchestrator.weight_broadcast.type:
+        raise ValueError(
+            f"Trainer weight broadcast type ({trainer.weight_broadcast.type}) and orchestrator weight broadcast type ({orchestrator.weight_broadcast.type}) are not the same. Please specify the same weight broadcast type for both."
+        )

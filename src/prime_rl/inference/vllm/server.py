@@ -29,8 +29,8 @@ logger = init_logger("vllm.entrypoints.openai.api_server")
 
 
 WORKER_EXTENSION_CLS = {
-    "nccl": "prime_rl.inference.vllm.worker_nccl.NCCLBroadcastWorker",
-    "filesystem": "prime_rl.inference.vllm.worker.CheckpointWorker",
+    "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
+    "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
 }
 
 
@@ -138,9 +138,11 @@ def server(config: InferenceConfig, vllm_args: list[str]):
     parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")
     parser = make_arg_parser(parser)
     args = parser.parse_args(args=vllm_args, namespace=config.to_vllm())
+    assert args is not None
     validate_parsed_serve_args(args)
 
-    args.worker_extension_cls = WORKER_EXTENSION_CLS[args.broadcast_backend]
+    # Set the worker extension class based on the broadcast backend
+    args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]
 
     # Raise error if logprobs_mode is not set to processed_logprobs
     if args.logprobs_mode != "processed_logprobs":

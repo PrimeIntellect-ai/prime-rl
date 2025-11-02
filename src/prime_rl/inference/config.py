@@ -91,6 +91,14 @@ class ModelConfig(BaseConfig):
     ] = "hermes"
 
 
+class WeightBroadcastConfig(BaseSettings):
+    """Configures weight broadcast settings."""
+
+    type: Annotated[Literal["nccl", "filesystem"], Field(description="The type of weight broadcast to use.")] = (
+        "filesystem"
+    )
+
+
 class InferenceConfig(BaseSettings):
     """Configures inference."""
 
@@ -117,13 +125,13 @@ class InferenceConfig(BaseSettings):
         ),
     ] = None
 
-    broadcast_backend: Annotated[
-        Literal["nccl", "filesystem"], Field(description="The backend to use for broadcast.")
-    ] = "filesystem"
+    weight_broadcast: Annotated[WeightBroadcastConfig, Field(description="The weight broadcast config.")] = (
+        WeightBroadcastConfig()
+    )
 
     @model_validator(mode="after")
-    def nccl_and_dp(self) -> bool:
-        if self.broadcast_backend == "nccl" and self.parallel.dp != 1:
+    def nccl_and_dp(self):
+        if self.weight_broadcast.type == "nccl" and self.parallel.dp != 1:
             raise ValueError("NCCL broadcast backend requires data parallel size to be 1")
         return self
 
