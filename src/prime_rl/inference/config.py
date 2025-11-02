@@ -118,11 +118,11 @@ class InferenceConfig(BaseSettings):
     ] = None
 
     broadcast_backend: Annotated[
-        Literal["nccl", "filesystem"], Field(description="The backend to use for broadcast.")
+        Literal["nccl", "filesystem"], Field(description="The backend to use for updating the weights.")
     ] = "filesystem"
 
     @model_validator(mode="after")
-    def nccl_and_dp(self) -> bool:
+    def nccl_and_dp(self):
         if self.broadcast_backend == "nccl" and self.parallel.dp != 1:
             raise ValueError("NCCL broadcast backend requires data parallel size to be 1")
         return self

@@ -1,5 +1,6 @@
 from typing import TYPE_CHECKING
 
+from torch.nn import Module
 from vllm.distributed.parallel_state import get_tp_group
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader.utils import process_weights_after_loading
@@ -15,10 +16,9 @@ else:
     Worker = object
 
 
-class NCCLBroadcastWorker(Worker):
+class NCCLWeightUpdateWorker(Worker):
     """
-    This is an extension of a vLLM worker that allows for broadcasting weights
-    using NCCL across multiple GPUs.
+    This is an vLLM worker extension for updating weights to an updated RL policy model using NCCL.
     """
 
     def init_broadcaster(self, host: str, port: int, server_rank: int, num_inference_server: int, timeout: int) -> None:
@@ -50,9 +50,10 @@ class NCCLBroadcastWorker(Worker):
         """Update weights with the nccl communicator."""
         model_runner = self.model_runner
         model = model_runner.model
+        assert isinstance(model, Module)
 
         state_iter = self.nccl_broadcast.receive_state_dict()
-        model.load_weights(state_iter)
+        model.load_weights(state_iter)  # type: ignore
 
         # # Process weights after loading (important for some models)
         device = next(model.parameters()).device
