@@ -443,7 +443,7 @@ async def orchestrate(config: OrchestratorConfig):
         if isinstance(buffer, OnlineDifficultyBuffer):
             unfiltered_reward_mean = buffer.get_unfiltered_reward_mean()
             if unfiltered_reward_mean is not None:
-                reward_metrics["unfiltered_reward/mean"] = unfiltered_reward_mean
+                reward_metrics["reward/unfiltered_reward/mean"] = unfiltered_reward_mean
 
         monitor.log(reward_metrics)
 
