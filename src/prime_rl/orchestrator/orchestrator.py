@@ -158,7 +158,7 @@ async def orchestrate(config: OrchestratorConfig):
         if config.max_steps and progress.step >= config.max_steps:
             break
 
-        logger.info(f"Starting orchestrator step {progress.step} ({ckpt_step=})")
+        logger.info(f"Starting orchestrator step {progress.step}")
         step_start_time = time.time()
 
         # If we hit the async barrier, update the inference pool weights with the correct policy
