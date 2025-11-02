@@ -403,6 +403,8 @@ class OnlineDifficultyBuffer(Buffer):
     def __init__(self, dataset: Dataset, buffer_config: OnlineDifficultyBufferConfig):
         super().__init__(dataset, buffer_config)
         self.config = buffer_config
+        self._unfiltered_rewards_sum: float = 0.0
+        self._unfiltered_rewards_count: int = 0
 
     def sample_problems(self, n: int) -> list[dict]:
         # Multiply by oversampling factor
@@ -444,6 +446,19 @@ class OnlineDifficultyBuffer(Buffer):
         available_problem_ids = list(self.rollout_buffer.keys())
         sampled_problem_ids, sampled_rollouts = [], []
         num_too_easy, num_too_hard = 0, 0
+
+        # Compute unfiltered reward mean for all available rollouts before filtering
+        if available_problem_ids:
+            # Count rollouts per problem (not just problems)
+            total_rollouts_count = sum(len(self.rollout_buffer[problem_id]) for problem_id in available_problem_ids)
+            # Weight each problem's reward by its number of rollouts
+            unfiltered_reward_sum = sum(
+                self.metadata[problem_id]["reward"] * len(self.rollout_buffer[problem_id])
+                for problem_id in available_problem_ids
+            )
+            self._unfiltered_rewards_sum += unfiltered_reward_sum
+            self._unfiltered_rewards_count += total_rollouts_count
+
         # Take the first n rollouts within the difficulty range
         for problem_id in available_problem_ids:
             reward = self.metadata[problem_id]["reward"]
@@ -473,6 +488,17 @@ class OnlineDifficultyBuffer(Buffer):
             )
 
         return sampled_rollouts
+
+    def get_unfiltered_reward_mean(self) -> float | None:
+        """Returns the mean reward of all rollouts considered before filtering, or None if no rollouts were considered."""
+        if self._unfiltered_rewards_count == 0:
+            return None
+        return self._unfiltered_rewards_sum / self._unfiltered_rewards_count
+
+    def reset_unfiltered_tracking(self) -> None:
+        """Resets the cumulative tracking of unfiltered rewards."""
+        self._unfiltered_rewards_sum = 0.0
+        self._unfiltered_rewards_count = 0
 
 
 def setup_buffer(dataset: Dataset, buffer_config: DataBufferConfigType) -> Buffer:

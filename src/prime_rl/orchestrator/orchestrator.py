@@ -29,7 +29,7 @@ from prime_rl.utils.client import (
     update_weights,
 )
 from prime_rl.orchestrator.config import OrchestratorConfig
-from prime_rl.orchestrator.buffer import setup_buffer, make_rollouts, Rollout
+from prime_rl.orchestrator.buffer import setup_buffer, make_rollouts, Rollout, OnlineDifficultyBuffer
 from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.utils.logger import setup_logger
 from prime_rl.orchestrator.advantage import compute_advantages
@@ -204,6 +204,11 @@ async def orchestrate(config: OrchestratorConfig):
         problem_requests, completion_requests, calls_to_generate = 0, 0, 0
         problems_per_batch = config.batch_size // config.rollouts_per_example
         problems_to_sample = problems_per_batch
+
+        # Reset unfiltered reward tracking if using online difficulty filtering
+        if isinstance(buffer, OnlineDifficultyBuffer):
+            buffer.reset_unfiltered_tracking()
+
         while True:
             # Get the batch
             problems = buffer.sample_problems(problems_to_sample)
@@ -433,6 +438,12 @@ async def orchestrate(config: OrchestratorConfig):
         # Add individual reward function metrics
         for func_name, func_rewards in individual_reward_outputs.items():
             reward_metrics[f"reward/{func_name}/mean"] = func_rewards.mean().item()
+
+        # Add unfiltered reward metric if online difficulty filtering is enabled
+        if isinstance(buffer, OnlineDifficultyBuffer):
+            unfiltered_reward_mean = buffer.get_unfiltered_reward_mean()
+            if unfiltered_reward_mean is not None:
+                reward_metrics["unfiltered_reward/mean"] = unfiltered_reward_mean
 
         monitor.log(reward_metrics)
 
