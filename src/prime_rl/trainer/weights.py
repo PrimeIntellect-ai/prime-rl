@@ -428,13 +428,10 @@ class WeightCheckpointManager:
         step = max(step - (self.async_level + 1), 0)  # Consider deleting async_level + 1 steps ago
         candidate_path_to_delete = self._get_step_path(step)
         keep_for_eval = self.config.interval and step % self.config.interval == 0
-        # For checkpointing step x, we need all weight checkpoints in [x-async_level, x] (for logprob model)
-        # To get [n-k, n] with interval n and buffer k over all natural numbers x, we use the condition (n - (x % n)) % n <= k
         keep_for_ckpt = (
             self.ckpt_config
             and self.ckpt_config.interval
-            and (self.ckpt_config.interval - (step % self.ckpt_config.interval)) % self.ckpt_config.interval
-            <= self.async_level
+            and self.ckpt_config.interval % self.ckpt_config.interval == 0
         )
         if not (keep_for_eval or keep_for_ckpt):
             self._logger.debug(
