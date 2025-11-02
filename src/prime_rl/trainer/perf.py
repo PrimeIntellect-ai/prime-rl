@@ -4,6 +4,7 @@ import torch
 from torch import nn
 from transformers import PretrainedConfig
 
+from prime_rl.trainer.lora import has_lora_layers
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
@@ -32,7 +33,7 @@ class PerfCounter:
         # If not tie_word_embeddings, we exclude the embedding parameters from the total number of parameters
         # If tie_word_embeddings, the embedding parameters are already excluded (shared with the LM head)
         self.num_params = self._get_num_params(model, exclude_embedding=not model.config.tie_word_embeddings)
-        self.num_flop_per_token = self._get_num_flop_per_token(self.num_params, model.config, seq_len=seq_len)
+        self.num_flop_per_token = self._get_num_flop_per_token(model.config, seq_len=seq_len)
 
     def count_tokens(self, tokens: int):
         self.tokens.append(tokens)
@@ -138,7 +139,7 @@ class PerfCounter:
         ## Total
         return q_params + kv_params + o_params + dense_mlp_params + sparse_mlp_params + lm_head_params
 
-    def _get_num_flop_per_token(self, num_params: int, model_config: PretrainedConfig, seq_len: int) -> int:
+    def _get_num_flop_per_token(self, model_config: PretrainedConfig, seq_len: int) -> int:
         l, h, q, t = (  # noqa: E741
             model_config.num_hidden_layers,
             model_config.num_attention_heads,
@@ -151,11 +152,24 @@ class PerfCounter:
         #    but recomputation should not be counted in calculating MFU           (+0)
         # 3. each matmul performs 1 multiplication and 1 addition                 (*2)
         # 4. we follow the convention and do not account for sparsity in causal attention
-        try:
-            flop_per_token = 6 * self.get_active_mm_params(model_config) + 12 * l * h * q * t
-        except Exception as e:
-            self._logger.warning(f"Error calculating flop_per_token using get_active_mm_params: {e}")
-            flop_per_token = 6 * num_params + 12 * l * h * q * t
+        attention_flops = 12 * l * h * q * t
+
+        if has_lora_layers(self.model):
+            # LoRA case: forward uses base params (2×) + trainable params (2×), backward only uses trainable params (4×)
+            # trainable params include LoRA adapters + modules_to_save (fully trainable modules)
+            try:
+                trainable_params = self._count_trainable_params()
+                flop_per_token = 2 * self.get_active_mm_params(model_config) + 6 * trainable_params + attention_flops
+            except Exception as e:
+                self._logger.warning(f"Error calculating flop_per_token using get_active_mm_params: {e}")
+                flop_per_token = 6 * self.num_params + attention_flops
+        else:
+            # standard case: full fine-tuning, all params participate in forward (2×) and backward (4×)
+            try:
+                flop_per_token = 6 * self.get_active_mm_params(model_config) + attention_flops
+            except Exception as e:
+                self._logger.warning(f"Error calculating flop_per_token using get_active_mm_params: {e}")
+                flop_per_token = 6 * self.num_params + attention_flops
 
         return flop_per_token
 
@@ -167,6 +181,14 @@ class PerfCounter:
             elif hasattr(model.lm_head, "base_layer"):  # LoRALinear
                 num_params -= model.lm_head.base_layer.weight.numel()
         return num_params
+
+    def _count_trainable_params(self) -> int:
+        """Count trainable parameters (LoRA adapters + modules_to_save)."""
+        trainable_params = 0
+        for param in self.model.parameters():
+            if param.requires_grad:
+                trainable_params += param.numel()
+        return trainable_params
 
 
 _PERF_COUNTER: PerfCounter | None = None
