@@ -132,6 +132,7 @@ async def orchestrate(config: OrchestratorConfig):
     ckpt_step = 0
     last_eval_step = -1
     is_first_step = True
+    semaphore = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent is not None else None
 
     while True:
         # Save checkpoint (if we are at an interval step and not at the first or last step)
@@ -202,6 +203,7 @@ async def orchestrate(config: OrchestratorConfig):
                 output_dir=config.output_dir,
                 ckpt_step=ckpt_step,
                 step=progress.step,
+                semaphore=semaphore,
             )
             eval_time = time.time() - eval_start_time
             logger.info(f"Evaluated in {eval_time:.2f}s")
@@ -229,7 +231,6 @@ async def orchestrate(config: OrchestratorConfig):
 
             # Generate completions + rewards with verifiers
             generate_completions_start_time = time.time()
-            semaphore = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent is not None else None
             generate_outputs: GenerateOutputs = await generate_batch(
                 clients=clients,
                 env=env,
