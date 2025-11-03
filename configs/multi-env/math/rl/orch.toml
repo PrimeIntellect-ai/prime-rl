@@ -26,7 +26,7 @@ max_tokens = 2048
 [val]
 num_examples = 8
 rollouts_per_example = 8
-interval = 5
+interval = 1
  
 [eval]
 interval = 10
