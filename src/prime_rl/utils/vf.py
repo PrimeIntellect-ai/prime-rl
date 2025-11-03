@@ -133,6 +133,7 @@ async def generate_batch(
 # Also includes advantage and example_id field
 class Rollout(TypedDict):
     example_id: int
+    task: str  # Typically the env name
     prompt_ids: list[int]
     prompt_mask: list[int]
     completion_ids: list[int]
@@ -144,7 +145,7 @@ class Rollout(TypedDict):
 
 
 def make_rollouts(
-    processed_outputs: vf.ProcessedOutputs, example_ids: list[int], advantages: list[float]
+    processed_outputs: vf.ProcessedOutputs, example_ids: list[int], advantages: list[float], tasks: list[str]
 ) -> list[Rollout]:
     """Processs vf.ProcessedOutputs to a list of rollouts."""
     assert len(advantages) == len(example_ids) == len(processed_outputs.prompt_ids)
@@ -159,6 +160,7 @@ def make_rollouts(
         reward,
         advantage,
         is_truncated,
+        task,
     ) in zip(
         example_ids,
         processed_outputs.prompt_ids,
@@ -169,10 +171,12 @@ def make_rollouts(
         processed_outputs.rewards,
         advantages,
         processed_outputs.is_truncated,
+        tasks,
     ):
         rollouts.append(
             Rollout(
                 example_id=example_id,
+                task=task,
                 prompt_ids=prompt_ids,
                 prompt_mask=prompt_mask,
                 completion_ids=completion_ids,

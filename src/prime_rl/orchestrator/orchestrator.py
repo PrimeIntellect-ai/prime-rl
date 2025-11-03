@@ -1,3 +1,4 @@
+import pandas as pd
 import asyncio
 import time
 from loguru import logger
@@ -273,12 +274,13 @@ async def orchestrate(config: OrchestratorConfig):
                 advantage_config=config.advantage,
             )
 
-            # Parse whether the completions were truncated
-            responses = [state["responses"] for state in generate_outputs.state]
-            is_truncated = parse_is_truncated_completions(responses=responses)
-
             # Update pool
-            rollouts = make_rollouts(processed_outputs, generate_outputs.example_id, advantages)
+            rollouts = make_rollouts(
+                processed_outputs,
+                example_ids=generate_outputs.example_id,
+                tasks=generate_outputs.task,
+                advantages=advantages,
+            )
             buffer.update(rollouts)
             accepted_rollouts.extend(buffer.sample_rollouts(problems_to_sample))
 
@@ -291,56 +293,36 @@ async def orchestrate(config: OrchestratorConfig):
             problems_sampled = len(accepted_rollouts) // config.rollouts_per_example
             problems_to_sample = problems_per_batch - problems_sampled
 
-        # Unpack accepted rollouts
-        rewards = (
-            torch.tensor([rollout["reward"] for rollout in accepted_rollouts])
-            .reshape(-1, config.rollouts_per_example)
-            .float()
+        # Gather train batch results
+        results_df = pd.DataFrame(
+            {
+                "example_id": [rollout["example_id"] for rollout in accepted_rollouts],
+                "task": [rollout["task"] for rollout in accepted_rollouts],
+                "reward": [rollout["reward"] for rollout in accepted_rollouts],
+                "advantage": [rollout["advantage"] for rollout in accepted_rollouts],
+                "is_truncated": [rollout["is_truncated"] for rollout in accepted_rollouts],
+                "completion_len": [len(rollout["completion_ids"]) for rollout in accepted_rollouts],
+                "prompt_len": [len(rollout["prompt_ids"]) for rollout in accepted_rollouts],
+                "seq_len": [
+                    len(rollout["prompt_ids"]) + len(rollout["completion_ids"]) for rollout in accepted_rollouts
+                ],
+            }
         )
-        advantages = (
-            torch.tensor([rollout["advantage"] for rollout in accepted_rollouts])
-            .reshape(-1, config.rollouts_per_example)
-            .float()
-        )
-        is_truncated = (
-            torch.tensor([rollout["is_truncated"] for rollout in accepted_rollouts])
-            .reshape(-1, config.rollouts_per_example)
-            .float()
-        )
-        assert (
-            rewards.shape == advantages.shape == is_truncated.shape == (problems_per_batch, config.rollouts_per_example)
-        )
-        assert rewards.numel() == advantages.numel() == is_truncated.numel() == config.batch_size
-        prompt_tokens = [rollout["prompt_ids"] for rollout in accepted_rollouts]
-        completion_tokens = [rollout["completion_ids"] for rollout in accepted_rollouts]
-        prompt_lens = torch.tensor([len(p) for p in prompt_tokens]).float().reshape(-1, config.rollouts_per_example)
-        completion_lens = (
-            torch.tensor([len(c) for c in completion_tokens]).float().reshape(-1, config.rollouts_per_example)
-        )
-        seq_lens = prompt_lens + completion_lens
-        assert (
-            seq_lens.shape
-            == prompt_lens.shape
-            == completion_lens.shape
-            == (problems_per_batch, config.rollouts_per_example)
-        )
-        assert seq_lens.numel() == prompt_lens.numel() == completion_lens.numel() == config.batch_size
-        assert is_truncated.shape == (problems_per_batch, config.rollouts_per_example)
-        assert is_truncated.numel() == config.batch_size
-
-        logger.debug(f"Got rewards: {lt.lovely(rewards)}")
-        logger.debug(f"Got advantages: {lt.lovely(advantages)}")
 
         # Compute progress metrics and throughput
-        num_tokens = int(seq_lens.sum().item())
+        num_tokens = int(results_df.seq_len.sum())
         progress.total_tokens += num_tokens
         progress.total_samples += config.batch_size
         progress.total_problems += config.batch_size // config.rollouts_per_example
         throughput = num_tokens / (generate_completions_time)
 
         # Compute solve all and none tensors
-        solve_all = rewards.sum(-1).eq(config.rollouts_per_example).float().mean().item()
-        solve_none = rewards.sum(-1).eq(0).float().mean().item()
+        solve_all = (
+            results_df.groupby("example_id")
+            .apply(lambda x: x.reward.sum() == config.rollouts_per_example, include_groups=False)
+            .mean()
+        )
+        solve_none = results_df.groupby("example_id").apply(lambda x: x.reward.sum() == 0, include_groups=False).mean()
         effective_batch_size = 1 - solve_none - solve_all
 
         # Write serialized batch to disk for trainer workers to consume
@@ -363,7 +345,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Log step metrics
         step_time = time.time() - step_start_time
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {rewards.mean().item():.4f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {seq_lens.mean().item():.1f} tokens/sample"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.seq_len.mean():.1f} tokens/sample"
         logger.success(step_message)
 
         # Log progress metrics to monitor
@@ -381,33 +363,33 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Log sequence lengths to monitor (first reduce over group dimension, then over problem dimension)
         seq_len_metrics = {
-            "seq_len/mean": seq_lens.mean(-1).mean().item(),
-            "seq_len/max": seq_lens.mean(-1).max().item(),
-            "seq_len/min": seq_lens.mean(-1).min().item(),
+            "seq_len/mean": results_df.groupby("example_id").seq_len.mean(),
+            "seq_len/max": results_df.groupby("example_id").seq_len.max(),
+            "seq_len/min": results_df.groupby("example_id").seq_len.min(),
             "step": progress.step,
         }
         monitor.log(seq_len_metrics)
 
         prompt_len_metrics = {
-            "prompt_len/mean": prompt_lens.mean(-1).mean().item(),
-            "prompt_len/max": prompt_lens.mean(-1).max().item(),
-            "prompt_len/min": prompt_lens.mean(-1).min().item(),
+            "prompt_len/mean": results_df.groupby("example_id").prompt_len.mean(),
+            "prompt_len/max": results_df.groupby("example_id").prompt_len.max(),
+            "prompt_len/min": results_df.groupby("example_id").prompt_len.min(),
             "step": progress.step,
         }
         monitor.log(prompt_len_metrics)
 
         completion_len_metrics = {
-            "completion_len/mean": completion_lens.mean(-1).mean().item(),
-            "completion_len/max": completion_lens.mean(-1).max().item(),
-            "completion_len/min": completion_lens.mean(-1).min().item(),
+            "completion_len/mean": results_df.groupby("example_id").completion_len.mean(),
+            "completion_len/max": results_df.groupby("example_id").completion_len.max(),
+            "completion_len/min": results_df.groupby("example_id").completion_len.min(),
             "step": progress.step,
         }
         monitor.log(completion_len_metrics)
 
         truncated_metrics = {
-            "is_truncated/mean": is_truncated.mean(-1).mean().item(),
-            "is_truncated/max": is_truncated.mean(-1).max().item(),
-            "is_truncated/min": is_truncated.mean(-1).min().item(),
+            "is_truncated/mean": results_df.groupby("example_id").is_truncated.mean(),
+            "is_truncated/max": results_df.groupby("example_id").is_truncated.max(),
+            "is_truncated/min": results_df.groupby("example_id").is_truncated.min(),
             "step": progress.step,
         }
         monitor.log(truncated_metrics)
@@ -424,7 +406,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Log reward metrics to monitor (composite + individual)
         reward_metrics = {
-            "reward/mean": rewards.mean().item(),
+            "reward/mean": results_df.reward.mean(),
             "step": progress.step,
         }
 
@@ -457,19 +439,19 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Log samples and distributions to W&B table if enabled
         monitor.log_samples(
-            input_tokens=prompt_tokens,
-            output_tokens=completion_tokens,
-            rewards=rewards.flatten().tolist(),
-            advantages=advantages.flatten().tolist(),
+            input_tokens=[rollout["prompt_ids"] for rollout in accepted_rollouts],
+            output_tokens=[rollout["completion_ids"] for rollout in accepted_rollouts],
+            rewards=results_df.reward.tolist(),
+            advantages=results_df.advantage.tolist(),
             rollouts_per_problem=config.rollouts_per_example,
             step=progress.step,
         )
 
         distributions = {
-            "rewards": rewards.flatten().tolist(),
-            "advantages": advantages.flatten().tolist(),
-            "problem_rewards": rewards.mean(-1).tolist(),
-            "problem_advantages": advantages.mean(-1).tolist(),
+            "rewards": results_df.reward.tolist(),
+            "advantages": results_df.advantage.tolist(),
+            "problem_rewards": results_df.groupby("example_id").reward.mean().tolist(),
+            "problem_advantages": results_df.groupby("example_id").advantage.mean().tolist(),
         }
 
         for func_name, func_rewards in individual_reward_outputs.items():
