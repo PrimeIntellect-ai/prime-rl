@@ -181,10 +181,18 @@ class EnvConfig(BaseModel):
 class EvalEnvConfig(EnvConfig):
     """Configures an environment for evaluation."""
 
-    num_examples: Annotated[int, Field(description="Number of examples to evaluate per environment.")] = -1
+    num_examples: Annotated[
+        int | None,
+        Field(
+            description="Number of examples to evaluate per environment. If not set, will use 'num_examples' from main config."
+        ),
+    ] = None
     rollouts_per_example: Annotated[
-        int, Field(description="Number of samples to generate per example for each environment.")
-    ] = 1
+        int | None,
+        Field(
+            description="Number of samples to generate per example for each environment. If not set, will use 'rollouts_per_example' from main config."
+        ),
+    ] = None
 
 
 class EvalConfig(BaseConfig):
@@ -199,6 +207,10 @@ class EvalConfig(BaseConfig):
         default_factory=EvalSaveConfig,
         description="Configures how to save the eval results.",
     )
+    num_examples: Annotated[int, Field(description="Number of examples to evaluate per environment.")] = -1
+    rollouts_per_example: Annotated[
+        int, Field(ge=1, description="Number of samples to generate per example for each environment.")
+    ] = 1
 
 
 class OnlineEvalConfig(EvalConfig):
