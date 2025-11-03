@@ -5,3 +5,6 @@ name = "PrimeIntellect/Qwen3-4B"
 
 [optim]
 lr = 3e-6
+
+[weight_broadcast]
+type = "nccl"

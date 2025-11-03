@@ -1,2 +1,5 @@
 [model]
 name = "PrimeIntellect/Qwen3-4B"
+
+[weight_broadcast]
+type = "nccl"

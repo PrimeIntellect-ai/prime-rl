@@ -16,6 +16,9 @@ hard_fraction = 0.0
 easy_border = 1.0
 hard_border = 0.0
 
+[weight_broadcast]
+type = "nccl"
+
 [[env]]
 id = "i3-math"
 
