@@ -1,4 +1,4 @@
-max_steps = 200
+max_steps = 500
 
 [model]
 name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
