@@ -17,6 +17,7 @@ from verifiers.types import GenerateOutputs, ProcessedOutputs
 from transformers import AutoTokenizer
 
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
+from prime_rl.utils.vf import make_rollouts
 from prime_rl.eval.utils import run_evals
 from prime_rl.utils.vf import generate_batch
 from prime_rl.utils.client import (
@@ -29,7 +30,7 @@ from prime_rl.utils.client import (
     update_weights,
 )
 from prime_rl.orchestrator.config import OrchestratorConfig
-from prime_rl.orchestrator.buffer import setup_buffer, make_rollouts, Rollout
+from prime_rl.orchestrator.buffer import setup_buffer, Rollout
 from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.utils.logger import setup_logger
 from prime_rl.orchestrator.advantage import compute_advantages
@@ -92,7 +93,7 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Load environment and extract dataset
     logger.info(
-        f"Loading {len(config.env)} training environment(s) ({' '.join(env.name or env.id for env in config.env)})"
+        f"Loading {len(config.env)} training environment(s) ({', '.join(env.name or env.id for env in config.env)})"
     )
     env = vf.EnvGroup(
         envs=[vf.load_environment(env.id, **env.args) for env in config.env],
@@ -277,17 +278,7 @@ async def orchestrate(config: OrchestratorConfig):
             is_truncated = parse_is_truncated_completions(responses=responses)
 
             # Update pool
-            rollouts = make_rollouts(
-                problem_ids=[problem["id"] for problem in problems for _ in range(config.rollouts_per_example)],
-                prompt_tokens=processed_outputs.prompt_ids,
-                prompt_masks=processed_outputs.prompt_mask,
-                completion_tokens=processed_outputs.completion_ids,
-                completion_masks=processed_outputs.completion_mask,
-                completion_logprobs=processed_outputs.completion_logprobs,
-                is_truncated=is_truncated,
-                rewards=processed_outputs.rewards,
-                advantages=advantages,
-            )
+            rollouts = make_rollouts(processed_outputs, generate_outputs.example_id, advantages)
             buffer.update(rollouts)
             accepted_rollouts.extend(buffer.sample_rollouts(problems_to_sample))
 
@@ -302,17 +293,17 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Unpack accepted rollouts
         rewards = (
-            torch.tensor([rollout.reward for rollout in accepted_rollouts])
+            torch.tensor([rollout["reward"] for rollout in accepted_rollouts])
             .reshape(-1, config.rollouts_per_example)
             .float()
         )
         advantages = (
-            torch.tensor([rollout.advantage for rollout in accepted_rollouts])
+            torch.tensor([rollout["advantage"] for rollout in accepted_rollouts])
             .reshape(-1, config.rollouts_per_example)
             .float()
         )
         is_truncated = (
-            torch.tensor([rollout.is_truncated for rollout in accepted_rollouts])
+            torch.tensor([rollout["is_truncated"] for rollout in accepted_rollouts])
             .reshape(-1, config.rollouts_per_example)
             .float()
         )
@@ -320,8 +311,8 @@ async def orchestrate(config: OrchestratorConfig):
             rewards.shape == advantages.shape == is_truncated.shape == (problems_per_batch, config.rollouts_per_example)
         )
         assert rewards.numel() == advantages.numel() == is_truncated.numel() == config.batch_size
-        prompt_tokens = [rollout.prompt_tokens for rollout in accepted_rollouts]
-        completion_tokens = [rollout.completion_tokens for rollout in accepted_rollouts]
+        prompt_tokens = [rollout["prompt_ids"] for rollout in accepted_rollouts]
+        completion_tokens = [rollout["completion_ids"] for rollout in accepted_rollouts]
         prompt_lens = torch.tensor([len(p) for p in prompt_tokens]).float().reshape(-1, config.rollouts_per_example)
         completion_lens = (
             torch.tensor([len(c) for c in completion_tokens]).float().reshape(-1, config.rollouts_per_example)
