@@ -12,3 +12,7 @@ max_tokens = 128
 
 [[env]]
 id = "reverse-text"
+
+[[env]]
+id = "reverse-text"
+name = "reverse-text-2"
