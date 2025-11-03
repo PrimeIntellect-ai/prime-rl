@@ -28,7 +28,7 @@ from prime_rl.utils.client import (
     setup_evals_client,
     update_weights,
 )
-from prime_rl.orchestrator.config import OrchestratorConfig
+from prime_rl.orchestrator.config import BufferConfig, OrchestratorConfig, SimpleBufferConfig
 from prime_rl.orchestrator.buffer import setup_buffer, make_rollouts, Rollout
 from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.utils.logger import setup_logger
@@ -103,6 +103,7 @@ async def orchestrate(config: OrchestratorConfig):
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
     buffer = setup_buffer(dataset, config.buffer)
+    val_buffer = setup_buffer(val_dataset, SimpleBufferConfig()) if val_dataset else None
 
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")
@@ -210,22 +211,24 @@ async def orchestrate(config: OrchestratorConfig):
         sampling_args = get_train_sampling_args(config.sampling)
 
         if (
-            val_dataset
+            val_buffer
             and config.val
             and ckpt_step % config.val.interval == 0
             and ckpt_step > last_val_step
             and ((ckpt_step == 0 and config.val.eval_base_model) or ckpt_step > 0)
         ):
             logger.info(f"Running validation for checkpoint step {ckpt_step}")
+            val_problems = val_buffer.sample_problems(config.val.num_examples)
             run_val_task = asyncio.create_task(
                 generate_batch(
                     clients=clients,
                     env=env,
                     model_name=config.model.name,
-                    problems=val_dataset.to_list(),
+                    problems=val_problems,
                     rollouts_per_example=config.val.rollouts_per_example,
                     sampling_args=sampling_args,
                     semaphore=semaphore,
+                    pbar_description="Generating rollouts (val)",
                 )
             )
         else:
@@ -249,6 +252,7 @@ async def orchestrate(config: OrchestratorConfig):
                 rollouts_per_example=config.rollouts_per_example,
                 sampling_args=sampling_args,
                 semaphore=semaphore,
+                pbar_description="Generating rollouts (train)",
             )
             generate_completions_time = time.time() - generate_completions_start_time
             problem_requests += problems_to_sample
@@ -310,6 +314,15 @@ async def orchestrate(config: OrchestratorConfig):
             problems_sampled = len(accepted_rollouts) // config.rollouts_per_example
             problems_to_sample = problems_per_batch - problems_sampled
 
+        # Write serialized batch to disk for trainer workers to consume
+        all_data_ranks_batches = prepare_batch(
+            rollouts=accepted_rollouts,
+            temperature=config.sampling.temperature,
+            tokenizer=tokenizer,
+            num_train_workers=config.num_train_workers,
+            seq_len=config.seq_len,
+        )
+
         # Process validation results
         await run_val_task
         val_outputs = run_val_task.result()
@@ -370,15 +383,6 @@ async def orchestrate(config: OrchestratorConfig):
         solve_all = rewards.sum(-1).eq(config.rollouts_per_example).float().mean().item()
         solve_none = rewards.sum(-1).eq(0).float().mean().item()
         effective_batch_size = 1 - solve_none - solve_all
-
-        # Write serialized batch to disk for trainer workers to consume
-        all_data_ranks_batches = prepare_batch(
-            rollouts=rollouts,
-            temperature=config.sampling.temperature,
-            tokenizer=tokenizer,
-            num_train_workers=config.num_train_workers,
-            seq_len=config.seq_len,
-        )
 
         step_path = get_rollout_dir(config.output_dir) / f"step_{progress.step}"
         step_path.mkdir(parents=True, exist_ok=True)
