@@ -483,19 +483,14 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = 2
 
-    seed: Annotated[
-        int | None,
-        Field(
-            description="Random seed to use for the orchestrator. If set, the sampling from the buffer will be deterministic.",
-        ),
-    ] = None
-
     bench: Annotated[
         bool,
         Field(
             description="Whether to run in benchmark mode. It will automatically set the maximum number of steps to run to 5, max async level to ~infinity and disable W&B.",
         ),
     ] = False
+
+    seed: Annotated[int | None, Field(description="Random seed for the orchestrator.")] = 42
 
     @model_validator(mode="after")
     def validate_batch_size(self):
