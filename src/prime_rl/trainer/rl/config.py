@@ -35,6 +35,9 @@ class LossConfig(BaseModel):
             ),
         ),
     ] = 0.0
+    kl_type: Annotated[Literal["k1", "k3"], Field(description="KL divergence formulation to use for ref model.")] = "k3"
+    kl_coeff: Annotated[float, Field(ge=0)] = 0.0
+    rl_coeff: Annotated[float, Field(ge=0)] = 1.0
 
 
 class FakeDataLoaderConfig(BaseConfig):

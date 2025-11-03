@@ -28,6 +28,7 @@ class Rollout:
     is_truncated: bool
     reward: float
     advantage: float
+    ref_logprobs: list[float] | None = None 
 
 
 def make_rollouts(
@@ -40,6 +41,7 @@ def make_rollouts(
     is_truncated: list[bool],
     rewards: list[float],
     advantages: list[float],
+    ref_logprobs: list[list[float]] | None = None,
 ) -> list[Rollout]:
     assert (
         len(problem_ids)
@@ -54,6 +56,10 @@ def make_rollouts(
     ), (
         f"The number of problem_ids, prompt_tokens, prompt_masks, completion_tokens, completion_masks, completion_logprobs, is_truncated, rewards, and advantages must be equal, but got ({len(problem_ids)=}, {len(prompt_tokens)=}, {len(prompt_masks)=}, {len(completion_tokens)=}, {len(completion_masks)=}, {len(completion_logprobs)=}, {len(is_truncated)=}, {len(rewards)=}, {len(advantages)=})"
     )
+    if ref_logprobs is not None:
+        assert len(ref_logprobs) == len(problem_ids), (
+            f"The number of ref_logprobs must match the number of problem_ids, but got {len(ref_logprobs)=} and {len(problem_ids)=}"
+        )
     return [
         Rollout(
             problem_id=problem_id,
@@ -65,8 +71,9 @@ def make_rollouts(
             is_truncated=is_truncated,
             reward=reward,
             advantage=advantage,
+            ref_logprobs=ref_logprobs[i] if ref_logprobs is not None else None,
         )
-        for problem_id, prompt_tokens, prompt_mask, completion_tokens, completion_mask, completion_logprobs, is_truncated, reward, advantage in zip(
+        for i, (problem_id, prompt_tokens, prompt_mask, completion_tokens, completion_mask, completion_logprobs, is_truncated, reward, advantage) in enumerate(zip(
             problem_ids,
             prompt_tokens,
             prompt_masks,
@@ -76,7 +83,7 @@ def make_rollouts(
             is_truncated,
             rewards,
             advantages,
-        )
+        ))
     ]
 
 

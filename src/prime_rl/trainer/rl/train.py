@@ -15,12 +15,7 @@ from prime_rl.trainer.weights import setup_weight_ckpt_manager
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.logger import setup_logger
-from prime_rl.trainer.rl.loss import (
-    shift_logits,
-    selective_log_softmax,
-    compute_entropy,
-    compute_loss,
-)
+from prime_rl.trainer.rl.loss import shift_logits, selective_log_softmax, compute_entropy, compute_loss
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
@@ -170,8 +165,8 @@ def train(config: RLTrainerConfig):
         micro_batches = dataloader.get_batch()
         load_data_time = time.time() - load_data_start_time
         logger.debug(f"Loaded batch in {load_data_time:.2f} seconds")
-
         batch_size = len(micro_batches)
+        
         memory_profiler = None
         if config.memory_profiler_path is not None:
             memory_profiler = MemoryProfiler(progress.step, config.memory_profiler_path)
@@ -208,11 +203,17 @@ def train(config: RLTrainerConfig):
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
+            if micro_batch["ref_logprobs"] is not None:
+                ref_logprobs = micro_batch["ref_logprobs"].to("cuda")
+                ref_logprobs = ref_logprobs.squeeze().split(response_lengths)
+            else:
+                ref_logprobs = None
             loss, loss_tensors = compute_loss(
                 trainer_logprobs=trainer_logprobs.squeeze().split(response_lengths),
                 inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
                 advantages=advantages.squeeze().split(response_lengths),
                 loss_mask=loss_mask.squeeze().split(response_lengths),
+                ref_logprobs=ref_logprobs,
                 loss_config=config.loss,
                 loss_scale=loss_scale,
             )

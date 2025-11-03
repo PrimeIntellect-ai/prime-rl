@@ -16,6 +16,7 @@ class BatchSample(TypedDict):
     loss_mask: Bool[Tensor, "seq"]
     advantages: Float[Tensor, "seq"]
     inference_logprobs: Float[Tensor, "seq"]
+    ref_logprobs: Float[Tensor, "seq"] | None
 
 
 def prepare_sample(
@@ -44,6 +45,11 @@ def prepare_sample(
     ).float()
     position_ids = torch.arange(len(input_ids)).long()
     advantages = torch.tensor(rollout.advantage).repeat(len(input_ids)).float()
+    
+    if rollout.ref_logprobs is not None:
+        ref_logprobs = torch.tensor(rollout.ref_logprobs).float()
+    else:
+        ref_logprobs = None
 
     if len(input_ids) > seq_len:
         # We should never truncate as it would create a really bad learning signal. Instead, always set the maximum sequence length
@@ -55,12 +61,17 @@ def prepare_sample(
     assert len(input_ids) == len(advantages) == len(loss_mask) == len(position_ids) == len(inference_logprobs), (
         f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, inference_logprobs: {len(inference_logprobs)}"
     )
+    if ref_logprobs is not None:
+        assert len(ref_logprobs) == len(input_ids), (
+            f"ref_logprobs length {len(ref_logprobs)} does not match input_ids length {len(input_ids)}"
+        )
     return {
         "input_ids": input_ids,
         "advantages": advantages,
         "loss_mask": loss_mask,
         "position_ids": position_ids,
         "inference_logprobs": inference_logprobs,
+        "ref_logprobs": ref_logprobs,
     }
 
 
@@ -106,7 +117,7 @@ def packed_samples_into_micro_bs(samples: list[BatchSample], max_seq_len: int) -
 
 def prepare_micro_batch_packing(samples: list[BatchSample], max_seq_len: int, temperature: float) -> MicroBatch:
     """
-    Prepare a micro batch for packing mode. take multi sample and return a batch of shape [1, micro_bs * max_seq_len].
+    Prepare a micro batch for packing mode. take multi sample and return a batch of shape [1, max_seq_len].
     Would additionally pad the batch to the max sequence length.
     """
     micro_batch = {}
@@ -116,6 +127,12 @@ def prepare_micro_batch_packing(samples: list[BatchSample], max_seq_len: int, te
 
     for key in ["input_ids", "advantages", "loss_mask", "position_ids", "inference_logprobs"]:
         micro_batch[key] = torch.cat([sample[key] for sample in samples], dim=0).unsqueeze(0)
+
+    ref_logprobs_list = [sample["ref_logprobs"] for sample in samples]
+    if all(rlp is not None for rlp in ref_logprobs_list):
+        micro_batch["ref_logprobs"] = torch.cat([rlp for rlp in ref_logprobs_list], dim=0).unsqueeze(0)
+    else:
+        micro_batch["ref_logprobs"] = None
 
     micro_batch["temperature"] = temperature
 
