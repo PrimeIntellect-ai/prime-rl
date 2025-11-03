@@ -259,13 +259,6 @@ async def orchestrate(config: OrchestratorConfig):
                 mask_truncated_completions=config.mask_truncated_completions,
             )
 
-            # Extract individual reward function metrics from generate_outputs
-            individual_reward_outputs = {}
-            logger.debug(f"Found {len(generate_outputs.metrics)} individual reward functions")
-            for func_name, func_rewards in generate_outputs.metrics.items():
-                individual_reward_outputs[func_name] = torch.tensor(func_rewards)
-                logger.debug(f"Collected {len(func_rewards)} rewards for {func_name}")
-
             # Compute advantages
             advantages = compute_advantages(
                 rewards=processed_outputs.rewards,
@@ -293,38 +286,6 @@ async def orchestrate(config: OrchestratorConfig):
             problems_sampled = len(accepted_rollouts) // config.rollouts_per_example
             problems_to_sample = problems_per_batch - problems_sampled
 
-        # Gather train batch results
-        results_df = pd.DataFrame(
-            {
-                "example_id": [rollout["example_id"] for rollout in accepted_rollouts],
-                "task": [rollout["task"] for rollout in accepted_rollouts],
-                "reward": [rollout["reward"] for rollout in accepted_rollouts],
-                "advantage": [rollout["advantage"] for rollout in accepted_rollouts],
-                "is_truncated": [rollout["is_truncated"] for rollout in accepted_rollouts],
-                "completion_len": [len(rollout["completion_ids"]) for rollout in accepted_rollouts],
-                "prompt_len": [len(rollout["prompt_ids"]) for rollout in accepted_rollouts],
-                "seq_len": [
-                    len(rollout["prompt_ids"]) + len(rollout["completion_ids"]) for rollout in accepted_rollouts
-                ],
-            }
-        )
-
-        # Compute progress metrics and throughput
-        num_tokens = int(results_df.seq_len.sum())
-        progress.total_tokens += num_tokens
-        progress.total_samples += config.batch_size
-        progress.total_problems += config.batch_size // config.rollouts_per_example
-        throughput = num_tokens / (generate_completions_time)
-
-        # Compute solve all and none tensors
-        solve_all = (
-            results_df.groupby("example_id")
-            .apply(lambda x: x.reward.sum() == config.rollouts_per_example, include_groups=False)
-            .mean()
-        )
-        solve_none = results_df.groupby("example_id").apply(lambda x: x.reward.sum() == 0, include_groups=False).mean()
-        effective_batch_size = 1 - solve_none - solve_all
-
         # Write serialized batch to disk for trainer workers to consume
         all_data_ranks_batches = prepare_batch(
             rollouts=rollouts,
@@ -343,13 +304,46 @@ async def orchestrate(config: OrchestratorConfig):
             torch.save(batches, tmp_path)
             tmp_path.rename(batch_path)
 
-        # Log step metrics
-        step_time = time.time() - step_start_time
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.seq_len.mean():.1f} tokens/sample"
-        logger.success(step_message)
+        # Gather train results in a dataframe
+        results_df = pd.DataFrame(
+            {
+                "example_id": [rollout["example_id"] for rollout in accepted_rollouts],
+                "task": [rollout["task"] for rollout in accepted_rollouts],
+                "reward": [rollout["reward"] for rollout in accepted_rollouts],
+                "advantage": [rollout["advantage"] for rollout in accepted_rollouts],
+                "is_truncated": [rollout["is_truncated"] for rollout in accepted_rollouts],
+                "completion_len": [len(rollout["completion_ids"]) for rollout in accepted_rollouts],
+                "prompt_len": [len(rollout["prompt_ids"]) for rollout in accepted_rollouts],
+                "seq_len": [
+                    len(rollout["prompt_ids"]) + len(rollout["completion_ids"]) for rollout in accepted_rollouts
+                ],
+            }
+        )
 
-        # Log progress metrics to monitor
-        progress_metrics = {
+        # Update progress metrics and throughput
+        num_tokens = int(results_df.seq_len.sum())
+        progress.total_tokens += num_tokens
+        progress.total_samples += config.batch_size
+        progress.total_problems += config.batch_size // config.rollouts_per_example
+        throughput = num_tokens / (generate_completions_time)
+
+        # Compute solve all and none tensors
+        solve_all = (
+            results_df.groupby("example_id")
+            .apply(lambda x: x.reward.sum() == config.rollouts_per_example, include_groups=False)
+            .mean()
+        )
+        solve_none = results_df.groupby("example_id").apply(lambda x: x.reward.sum() == 0, include_groups=False).mean()
+        effective_batch_size = 1 - solve_none - solve_all
+
+        # Compute per-env reuslts
+        num_envs_in_batch = results_df.task.nunique()
+        per_env_reward = results_df.groupby("task").reward.mean().to_dict() if num_envs_in_batch > 1 else None
+        per_env_count = results_df.task.value_counts().to_dict() if num_envs_in_batch > 1 else None
+
+        step_time = time.time() - step_start_time
+        metrics = {
+            # Progress metrics
             "progress/tokens": num_tokens,
             "progress/samples": config.batch_size,
             "progress/problems": config.batch_size // config.rollouts_per_example,
@@ -357,85 +351,51 @@ async def orchestrate(config: OrchestratorConfig):
             "progress/total_samples": progress.total_samples,
             "progress/total_problems": progress.total_problems,
             "progress/ckpt_step": ckpt_step,  # Shared W&B axis
-            "step": progress.step,
-        }
-        monitor.log(progress_metrics)
-
-        # Log sequence lengths to monitor (first reduce over group dimension, then over problem dimension)
-        seq_len_metrics = {
-            "seq_len/mean": results_df.groupby("example_id").seq_len.mean(),
-            "seq_len/max": results_df.groupby("example_id").seq_len.max(),
-            "seq_len/min": results_df.groupby("example_id").seq_len.min(),
-            "step": progress.step,
-        }
-        monitor.log(seq_len_metrics)
-
-        prompt_len_metrics = {
-            "prompt_len/mean": results_df.groupby("example_id").prompt_len.mean(),
-            "prompt_len/max": results_df.groupby("example_id").prompt_len.max(),
-            "prompt_len/min": results_df.groupby("example_id").prompt_len.min(),
-            "step": progress.step,
-        }
-        monitor.log(prompt_len_metrics)
-
-        completion_len_metrics = {
-            "completion_len/mean": results_df.groupby("example_id").completion_len.mean(),
-            "completion_len/max": results_df.groupby("example_id").completion_len.max(),
-            "completion_len/min": results_df.groupby("example_id").completion_len.min(),
-            "step": progress.step,
-        }
-        monitor.log(completion_len_metrics)
-
-        truncated_metrics = {
-            "is_truncated/mean": results_df.groupby("example_id").is_truncated.mean(),
-            "is_truncated/max": results_df.groupby("example_id").is_truncated.max(),
-            "is_truncated/min": results_df.groupby("example_id").is_truncated.min(),
-            "step": progress.step,
-        }
-        monitor.log(truncated_metrics)
-
-        # Log performance metrics to monitor
-        perf_metrics = {
+            # Sequence length metrics
+            "seq_len/mean": results_df.groupby("example_id").seq_len.mean().mean(),
+            "seq_len/max": results_df.groupby("example_id").seq_len.max().mean(),
+            "seq_len/min": results_df.groupby("example_id").seq_len.min().mean(),
+            "prompt_len/mean": results_df.groupby("example_id").prompt_len.mean().mean(),
+            "prompt_len/max": results_df.groupby("example_id").prompt_len.max().mean(),
+            "prompt_len/min": results_df.groupby("example_id").prompt_len.min().mean(),
+            "completion_len/mean": results_df.groupby("example_id").completion_len.mean().mean(),
+            "completion_len/max": results_df.groupby("example_id").completion_len.max().mean(),
+            "completion_len/min": results_df.groupby("example_id").completion_len.min().mean(),
+            "is_truncated/mean": results_df.groupby("example_id").is_truncated.mean().mean(),
+            "is_truncated/max": results_df.groupby("example_id").is_truncated.max().mean(),
+            "is_truncated/min": results_df.groupby("example_id").is_truncated.min().mean(),
+            # Performance metrics
             "perf/throughput": throughput,
             "perf/problem_requests": problem_requests,
             "perf/completion_requests": completion_requests,
             "perf/calls_to_generate": calls_to_generate,
-            "step": progress.step,
-        }
-        monitor.log(perf_metrics)
-
-        # Log reward metrics to monitor (composite + individual)
-        reward_metrics = {
             "reward/mean": results_df.reward.mean(),
-            "step": progress.step,
-        }
-
-        # Add individual reward function metrics
-        for func_name, func_rewards in individual_reward_outputs.items():
-            reward_metrics[f"reward/{func_name}/mean"] = func_rewards.mean().item()
-
-        monitor.log(reward_metrics)
-
-        # Log rewards metrics to monitor
-        solve_metrics = {
+            # Batch metrics
             "batch/solve_none": solve_none,
             "batch/solve_all": solve_all,
             "batch/effective_batch_size": effective_batch_size,
-            "step": progress.step,
-        }
-        monitor.log(solve_metrics)
-
-        # Log time metrics to monitor
-        time_metrics = {
+            # Time metrics
             "time/step": step_time,
             "time/wait_for_weight_ckpt": wait_for_weight_ckpt_time,
             "time/generate_completions": generate_completions_time,
             "time/update_weights": update_weights_time,
             "time/save_ckpt": save_ckpt_time,
             "time/eval": eval_time,
+            # W&B axis
+            "ckpt_step": ckpt_step,
             "step": progress.step,
         }
-        monitor.log(time_metrics)
+
+        # Optionally, add per-env metrics
+        if results_df.task.nunique() > 1:
+            per_env_reward = results_df.groupby("task").reward.mean().to_dict()
+            metrics.update({f"reward/{env}": reward for env, reward in per_env_reward.items()})
+
+            per_env_count = results_df.task.value_counts().to_dict()
+            metrics.update({f"batch/{env}": count for env, count in per_env_count.items()})
+
+        # Log metrics to W&B
+        monitor.log(metrics)
 
         # Log samples and distributions to W&B table if enabled
         monitor.log_samples(
@@ -454,12 +414,13 @@ async def orchestrate(config: OrchestratorConfig):
             "problem_advantages": results_df.groupby("example_id").advantage.mean().tolist(),
         }
 
-        for func_name, func_rewards in individual_reward_outputs.items():
-            distributions[f"{func_name}_rewards"] = func_rewards.tolist()
-
+        # Log distributions to W&B table
         monitor.log_distributions(distributions=distributions, step=progress.step)
 
-        # Increment progress
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.seq_len.mean():.1f} tokens/sample"
+        logger.success(step_message)
+
+        # Increment step
         progress.step += 1
         is_first_step = False
 
