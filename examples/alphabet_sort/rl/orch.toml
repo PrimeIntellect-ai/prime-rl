@@ -10,13 +10,6 @@ name = "Qwen/Qwen3-4B-Instruct-2507"
 [sampling]
 max_tokens = 768
 
-[environment]
+[[env]]
 id = "alphabet-sort"
-
-[environment.args]
-min_turns = 3
-max_turns = 3
-min_names_per_turn = 1
-max_names_per_turn = 4
-similarity_power = 8
-power_per_turn = false
+args = { min_turns = 3, max_turns = 3, min_names_per_turn = 1, max_names_per_turn = 4, similarity_power = 8, power_per_turn = false }

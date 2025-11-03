@@ -15,12 +15,9 @@ samples = true
 distributions = true
 interval = 2
 
-[environment]
+[[env]]
 id = "alphabet-sort"
-
-[environment.args]
-min_turns = 2
-max_turns = 2
+args = { min_turns = 2, max_turns = 2 }
 
 [sampling]
 max_tokens = 512
