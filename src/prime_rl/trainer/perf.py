@@ -160,27 +160,16 @@ class PerfCounter:
             # - Fully trainable non-LoRA params (modules_to_save) cost 6×
             # - LoRA adapter params cost 6×
             # Combined (to avoid double counting): 4*active_mm + 2*fully_trainable + 6*lora_adapters + attention
-            try:
-                active_mm_params = self.get_active_mm_params(model_config)
-                lora_adapter_params = self._count_lora_adapter_params()
-                fully_trainable_params = self._count_fully_trainable_params_excluding_lora()
+            active_mm_params = self.get_active_mm_params(model_config)
+            lora_adapter_params = self._count_lora_adapter_params()
+            fully_trainable_params = self._count_fully_trainable_params_excluding_lora()
 
-                flop_per_token = (
-                    4 * active_mm_params
-                    + 2 * fully_trainable_params
-                    + 6 * lora_adapter_params
-                    + attention_flops
-                )
-            except Exception as e:
-                self._logger.warning(f"Error calculating flop_per_token (LoRA path): {e}")
-                flop_per_token = 6 * self.num_params + attention_flops
+            flop_per_token = (
+                4 * active_mm_params + 2 * fully_trainable_params + 6 * lora_adapter_params + attention_flops
+            )
         else:
             # standard case: full fine-tuning, all params participate in forward (2×) and backward (4×)
-            try:
-                flop_per_token = 6 * self.get_active_mm_params(model_config) + attention_flops
-            except Exception as e:
-                self._logger.warning(f"Error calculating flop_per_token using get_active_mm_params: {e}")
-                flop_per_token = 6 * self.num_params + attention_flops
+            flop_per_token = 6 * self.get_active_mm_params(model_config) + attention_flops
 
         return flop_per_token
 
