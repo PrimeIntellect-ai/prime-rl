@@ -17,7 +17,7 @@ from transformers import AutoTokenizer
 
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.eval.utils import run_evals
-from prime_rl.orchestrator.scheduler import ARealScheduler, DefaultScheduler, setup_scheduler
+from prime_rl.orchestrator.scheduler import ARealScheduler
 from prime_rl.utils.client import (
     check_has_model,
     check_health,
@@ -90,7 +90,7 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup scheduler
     logger.info(f"Setting up scheduler ({config.scheduler})")
-    scheduler = setup_scheduler(clients, admin_clients, env, buffer, tokenizer, config)
+    scheduler = ARealScheduler(clients, admin_clients, env, buffer, tokenizer, config, config.scheduler)
 
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")
@@ -261,11 +261,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Log step metrics
         step_time = time.time() - step_start_time
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {rewards.mean().item():.4f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {seq_lens.mean().item():.1f} tokens/sample"
-        if isinstance(scheduler, ARealScheduler):
-            step_message += f" | Max Retention Level: {scheduler.max_retention_level}"
-        elif isinstance(scheduler, DefaultScheduler):
-            step_message += f" | Off-Policy Level: {scheduler.off_policy_level}"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {rewards.mean().item():.4f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {seq_lens.mean().item():.1f} tokens/sample | Off-Policy Level: {scheduler.off_policy_level} | Max Retention Level: {scheduler.max_retention_level}"
         logger.success(step_message)
 
         # Log progress metrics to monitor

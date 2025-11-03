@@ -378,6 +378,8 @@ DataBufferConfigType: TypeAlias = SimpleBufferConfig | DifficultyPoolBufferConfi
 
 
 class SchedulerConfig(BaseModel):
+    """Configures the AREAL scheduler."""
+
     oversampling_factor: Annotated[
         float,
         Field(
@@ -385,6 +387,8 @@ class SchedulerConfig(BaseModel):
             description="Factor by which to oversample the buffer to generate more rollouts than needed for training.",
         ),
     ] = 1.0
+
+    off_policy_type: Literal["fixed", "latest"] = "fixed"
 
     max_off_policy_steps: Annotated[
         int,
@@ -394,18 +398,6 @@ class SchedulerConfig(BaseModel):
         ),
     ] = 2
 
-
-class DefaultSchedulerConfig(SchedulerConfig):
-    """Configures the default scheduler."""
-
-    type: Literal["default"] = "default"
-
-
-class ARealSchedulerConfig(SchedulerConfig):
-    """Configures the AREAL scheduler."""
-
-    type: Literal["areal"] = "areal"
-
     max_retention_steps: Annotated[
         int,
         Field(
@@ -413,9 +405,6 @@ class ARealSchedulerConfig(SchedulerConfig):
             description="Maximum number of steps to allow an in-flight group rollout request to be behind the current policy.",
         ),
     ] = 8
-
-
-SchedulerConfigType: TypeAlias = DefaultSchedulerConfig | ARealSchedulerConfig
 
 
 class AdvantageConfig(BaseConfig):
@@ -459,7 +448,7 @@ class OrchestratorConfig(BaseSettings):
     ckpt: CheckpointConfig | None = None
 
     # The scheduler configuration
-    scheduler: Annotated[SchedulerConfigType, Field(discriminator="type")] = DefaultSchedulerConfig()
+    scheduler: SchedulerConfig = SchedulerConfig()
 
     output_dir: Annotated[
         Path,

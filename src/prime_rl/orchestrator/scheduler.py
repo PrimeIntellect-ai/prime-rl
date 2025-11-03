@@ -12,15 +12,14 @@ from verifiers.types import GenerateOutputs, ProcessedOutputs
 from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.config import (
-    ARealSchedulerConfig,
-    DefaultSchedulerConfig,
     OrchestratorConfig,
-    SamplingConfig,
+    SchedulerConfig,
 )
+from prime_rl.orchestrator.utils import prepare_sampling_args
 from prime_rl.utils.client import update_weights
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.utils import get_latest_ckpt_step, get_step_path, get_weights_dir, wait_for_path
-from prime_rl.utils.vf import Rollout, generate_batch, generate_group, make_rollouts
+from prime_rl.utils.utils import get_latest_ckpt_step, get_step_path, get_weights_dir, sync_wait_for_path
+from prime_rl.utils.vf import Rollout, generate_group, make_rollouts
 
 
 class Scheduler(ABC):
@@ -54,21 +53,6 @@ class Scheduler(ABC):
         self.semaphore = asyncio.Semaphore(self.max_concurrent) if self.max_concurrent is not None else None
         self.step = 0
         self.ckpt_step = 0
-
-        def prepare_sampling_args(sampling_config: SamplingConfig) -> dict:
-            sampling_args = dict(sampling_config)
-            # Convert SamplingConfig to vLLM OAI sampling args
-            # https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#extra-parameters_2
-            sampling_args["top_p"] = 1.0
-            sampling_args["logprobs"] = True
-            sampling_args["extra_body"] = {
-                "return_tokens_as_token_ids": True,
-                "top_k": -1,
-                "min_p": 0.0,
-            }
-            sampling_args["extra_body"]["min_tokens"] = sampling_args.pop("min_tokens")
-            sampling_args["extra_body"]["repetition_penalty"] = sampling_args.pop("repetition_penalty")
-            return sampling_args
 
         self.sampling_args = prepare_sampling_args(config.sampling)
 
@@ -117,94 +101,6 @@ class Scheduler(ABC):
         pass
 
 
-class DefaultScheduler(Scheduler):
-    """Schedules all batch rollout requests, awaits them and loops, if necessary. Updates policy in between training steps."""
-
-    def __init__(
-        self,
-        clients: list[AsyncOpenAI],
-        admin_clients: list[AsyncClient],
-        env: Environment,
-        buffer: Buffer,
-        tokenizer: PreTrainedTokenizerFast,
-        config: OrchestratorConfig,
-        scheduler_config: DefaultSchedulerConfig,
-    ):
-        super().__init__(clients, admin_clients, env, buffer, tokenizer, config)
-        self.max_off_policy_steps = scheduler_config.max_off_policy_steps
-        self.wait_for_weight_ckpt_time = 0
-        self.update_weights_time = 0
-
-    async def update_policy(self):
-        """Updates the policy such that it is exactly off-policy steps away."""
-        next_ckpt_step = max(self.step - self.max_off_policy_steps, 0)
-        if self.step - self.ckpt_step > self.max_off_policy_steps:
-            self.logger.debug(
-                f"Hit async barrier because we are >{self.max_off_policy_steps} steps off-policy. Waiting for weight checkpoint {next_ckpt_step}"
-            )
-            wait_for_weight_ckpt_start_time = time.time()
-            await wait_for_path(get_step_path(get_weights_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
-            self.wait_for_weight_ckpt_time = time.time() - wait_for_weight_ckpt_start_time
-            self.logger.debug(
-                f"Waited for weight checkpoint {next_ckpt_step} for {self.wait_for_weight_ckpt_time:.2f}s"
-            )
-            self.logger.debug(f"Updating weights to step {next_ckpt_step}")
-            update_weights_start_time = time.time()
-            await update_weights(
-                self.admin_clients, get_step_path(get_weights_dir(self.config.output_dir), next_ckpt_step)
-            )
-            self.update_weights_time = time.time() - update_weights_start_time
-            self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
-            self.ckpt_step = next_ckpt_step
-
-    async def generate_batch(self, step: int) -> list[Rollout]:
-        """Updates the policy at the beginning of the step and synchronously generates a batch of rollouts."""
-        self.step = step
-
-        # Update the policy and the beginning of the step
-        await self.update_policy()
-
-        batch_rollouts: list[Rollout] = []
-        problems_left = self.problems_per_batch
-        while True:
-            # Generate a batch of rollouts
-            generate_outputs = await generate_batch(
-                clients=self.clients,
-                env=self.env,
-                model_name=self.config.model.name,
-                problems=self.buffer.sample_problems(int(self.oversampling_factor * problems_left)),
-                rollouts_per_example=self.config.rollouts_per_example,
-                sampling_args=self.sampling_args,
-                semaphore=self.semaphore,
-            )
-
-            # Process outputs and update accepted rollouts
-            accepted_rollouts = self.process_generate_outputs(generate_outputs=generate_outputs)
-            batch_rollouts.extend(accepted_rollouts)
-
-            # Break if we have enough rollouts to fill the batch
-            if len(batch_rollouts) >= self.config.batch_size:
-                batch_rollouts = batch_rollouts[: self.config.batch_size]
-                break
-
-            # On next iteration, sample the remaining problems to fill the batch
-            problems_sampled = len(batch_rollouts) // self.config.rollouts_per_example
-            problems_left = self.problems_per_batch - problems_sampled
-
-        return batch_rollouts
-
-    @property
-    def off_policy_level(self) -> int:
-        return max(self.step - self.ckpt_step, 0)
-
-    def metrics(self) -> dict:
-        return {
-            "batch/off_policy_level": self.off_policy_level,
-            "time/wait_for_weight_ckpt": self.wait_for_weight_ckpt_time,
-            "time/update_weights": self.update_weights_time,
-        }
-
-
 class ARealScheduler(Scheduler):
     """Asynchronously schedules group rollout requests and re-schedules them as they complete (continuous batching). Updates policy in between group rollout requests."""
 
@@ -216,11 +112,12 @@ class ARealScheduler(Scheduler):
         buffer: Buffer,
         tokenizer: PreTrainedTokenizerFast,
         config: OrchestratorConfig,
-        scheduler_config: ARealSchedulerConfig,
+        scheduler_config: SchedulerConfig,
     ):
         super().__init__(clients, admin_clients, env, buffer, tokenizer, config)
         self.max_off_policy_steps = scheduler_config.max_off_policy_steps
         self.max_retention_steps = scheduler_config.max_retention_steps
+        self.off_policy_type = scheduler_config.off_policy_type
         self.inflight_group_rollouts: dict[asyncio.Task, int] = {}
         self.cycle_clients = cycle(self.clients)
         self.update_weights_time = 0
@@ -254,18 +151,22 @@ class ARealScheduler(Scheduler):
         """Updates the policy to the latest available checkpoint. Aborts rollout requests that are older than the max retention steps."""
         latest_ckpt_step = get_latest_ckpt_step(get_weights_dir(self.config.output_dir)) or 0
         fixed_off_policy_step = max(self.step - self.max_off_policy_steps, 0)
-        next_ckpt_step = max(fixed_off_policy_step, latest_ckpt_step)
+        next_ckpt_step = (
+            fixed_off_policy_step
+            if self.off_policy_type == "fixed-step"
+            else max(fixed_off_policy_step, latest_ckpt_step)
+        )
         if next_ckpt_step > self.ckpt_step:
-            if next_ckpt_step == latest_ckpt_step:
-                self.logger.debug(
-                    f"Found new policy with step {next_ckpt_step}. Updating weights and cancelling old rollout requests."
-                )
-            else:
-                self.logger.debug(
+            if self.off_policy_type == "fixed-step" or next_ckpt_step == fixed_off_policy_step:
+                self.logger.info(
                     f"Hit async barrier because we are >{self.max_off_policy_steps} steps off-policy. Waiting for weight checkpoint {next_ckpt_step}"
                 )
+            else:
+                self.logger.info(
+                    f"Found new policy with step {next_ckpt_step}. Updating weights and cancelling old rollout requests."
+                )
             wait_for_weight_ckpt_start_time = time.time()
-            await wait_for_path(get_step_path(get_weights_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
+            sync_wait_for_path(get_step_path(get_weights_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
             self.wait_for_weight_ckpt_time = time.time() - wait_for_weight_ckpt_start_time
             self.logger.debug(
                 f"Waited for weight checkpoint {next_ckpt_step} for {self.wait_for_weight_ckpt_time:.2f}s"
@@ -290,14 +191,13 @@ class ARealScheduler(Scheduler):
                     self.inflight_group_rollouts[task] = retention_step + 1
             if num_old_rollout_requests > 0:
                 self.logger.warning(f"Cancelled and re-scheduled {num_old_rollout_requests} old rollout requests.")
-            self.ckpt_step = latest_ckpt_step
+            self.ckpt_step = next_ckpt_step
 
     async def generate_batch(self, step: int) -> list[Rollout]:
         """Generates group rollouts continuously until the batch is filled. Updates the policy on the fly."""
         self.step = step
 
         # Schedule initial tasks
-        self.logger.info("Starting to generate batch rollouts")
         while len(self.inflight_group_rollouts) < self.problems_per_batch:
             await self.schedule_group_rollout()
 
@@ -341,19 +241,3 @@ class ARealScheduler(Scheduler):
             "batch/off_policy_level": self.off_policy_level,
             "batch/max_retention_level": self.max_retention_level,
         }
-
-
-def setup_scheduler(
-    clients: list[AsyncOpenAI],
-    admin_clients: list[AsyncClient],
-    env: Environment,
-    buffer: Buffer,
-    tokenizer: PreTrainedTokenizerFast,
-    config: OrchestratorConfig,
-) -> Scheduler:
-    if config.scheduler.type == "default":
-        return DefaultScheduler(clients, admin_clients, env, buffer, tokenizer, config, config.scheduler)
-    elif config.scheduler.type == "areal":
-        return ARealScheduler(clients, admin_clients, env, buffer, tokenizer, config, config.scheduler)
-    else:
-        raise ValueError(f"Invalid scheduler type: {config.scheduler}")
