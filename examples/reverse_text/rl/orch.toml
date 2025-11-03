@@ -10,5 +10,9 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 [sampling]
 max_tokens = 128
 
-[environment]
+[[env]]
 id = "reverse-text"
+
+[[env]]
+id = "reverse-text"
+name = "reverse-text-2"
