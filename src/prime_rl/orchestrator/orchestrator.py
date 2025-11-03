@@ -409,7 +409,7 @@ async def orchestrate(config: OrchestratorConfig):
             "perf/completion_requests": completion_requests,
             "perf/calls_to_generate": calls_to_generate,
             # Train reward
-            "train_reward": results_df.reward.mean(),
+            "reward/mean": results_df.reward.mean(),
             # Batch metrics
             "batch/solve_none": solve_none,
             "batch/solve_all": solve_all,
@@ -435,7 +435,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Optionally, add validation reward
         if val_results_df is not None:
-            metrics.update({"val_reward": val_results_df.reward.mean()})
+            metrics.update({"val_reward/mean": val_results_df.reward.mean()})
 
             if val_results_df.task.nunique() > 1:
                 per_env_reward = val_results_df.groupby("task").reward.mean().to_dict()
@@ -467,7 +467,7 @@ async def orchestrate(config: OrchestratorConfig):
         # Log distributions to W&B table
         monitor.log_distributions(distributions=distributions, step=progress.step)
 
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.seq_len.mean():.1f} tokens/sample"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} | Val. Reward: {f'{val_results_df.reward.mean():.4f}' if val_results_df is not None else 'N/A'} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.seq_len.mean():.1f} tokens/sample"
         logger.success(step_message)
 
         # Increment step
