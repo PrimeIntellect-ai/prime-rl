@@ -18,3 +18,4 @@ name = "reverse-text-2"
 
 [val]
 interval = 1
+num_examples = 16
