@@ -90,7 +90,9 @@ async def orchestrate(config: OrchestratorConfig):
     )
 
     # Load environment and extract dataset
-    logger.info(f"Loading {len(config.env)} training environments ({config.env})")
+    logger.info(
+        f"Loading {len(config.env)} training environment(s) ({' '.join(env.name or env.id for env in config.env)})"
+    )
     env = EnvGroup(
         envs=[load_environment(env.id, **env.args) for env in config.env],
         env_names=[env.name or env.id for env in config.env],
