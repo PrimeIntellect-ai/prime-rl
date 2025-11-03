@@ -129,8 +129,7 @@ async def orchestrate(config: OrchestratorConfig):
     # Iterate over dataset in batches
     max_steps = config.max_steps or int(1e9)
     logger.info(f"Starting orchestrator loop ({max_steps=}")
-    ckpt_step = 0
-    last_eval_step = -1
+    last_eval_step, last_val_step = -1, -1
     is_first_step = True
     semaphore = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent is not None else None
 
@@ -210,7 +209,13 @@ async def orchestrate(config: OrchestratorConfig):
         # Get training sampling args
         sampling_args = get_train_sampling_args(config.sampling)
 
-        if val_dataset and config.val and ckpt_step % config.val.interval == 0:
+        if (
+            val_dataset
+            and config.val
+            and ckpt_step % config.val.interval == 0
+            and ckpt_step > last_val_step
+            and ((ckpt_step == 0 and config.val.eval_base_model) or ckpt_step > 0)
+        ):
             logger.info(f"Running validation for checkpoint step {ckpt_step}")
             run_val_task = asyncio.create_task(
                 generate_batch(
