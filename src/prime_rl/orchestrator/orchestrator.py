@@ -272,6 +272,7 @@ async def orchestrate(config: OrchestratorConfig):
             )
 
             # Extract individual reward function metrics from generate_outputs
+            # TODO: This should move outside of this loop and be computed on the accepted rollouts -- will fix this with the AReal scheduler PR
             individual_reward_outputs = {}
             logger.debug(f"Found {len(generate_outputs.metrics)} individual reward functions")
             for func_name, func_rewards in generate_outputs.metrics.items():
