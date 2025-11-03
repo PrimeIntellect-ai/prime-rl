@@ -13,7 +13,6 @@ monkey_patch_chat_completion_logprobs()
 import lovely_tensors as lt
 import torch
 import verifiers as vf
-from verifiers import load_environment
 from verifiers.types import GenerateOutputs, ProcessedOutputs
 from transformers import AutoTokenizer
 
@@ -92,9 +91,12 @@ async def orchestrate(config: OrchestratorConfig):
     )
 
     # Load environment and extract dataset
-    logger.info(f"Loading environment {config.environment.id} with args {config.environment.args}")
-    vf_env = load_environment(config.environment.id, **config.environment.args)
-    dataset = vf_env.get_dataset(seed=config.seed)
+    logger.info(f"Loading {len(config.env)} training environments ({config.env})")
+    env = vf.EnvGroup(
+        envs=[vf.load_environment(env.id, **env.args) for env in config.env],
+        env_names=[env.name or env.id for env in config.env],
+    )
+    dataset = env.get_dataset(seed=config.seed)
 
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
@@ -228,7 +230,7 @@ async def orchestrate(config: OrchestratorConfig):
             semaphore = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent is not None else None
             generate_outputs: GenerateOutputs = await generate_batch(
                 clients=clients,
-                env=vf_env,
+                env=env,
                 model_name=config.model.name,
                 problems=problems,
                 rollouts_per_example=config.rollouts_per_example,
@@ -240,7 +242,7 @@ async def orchestrate(config: OrchestratorConfig):
             completion_requests += problems_to_sample * config.rollouts_per_example
             calls_to_generate += 1
 
-            processed_outputs: ProcessedOutputs = vf_env.process_env_results_vllm(
+            processed_outputs: ProcessedOutputs = env.process_env_results_vllm(
                 prompts=generate_outputs.prompt,
                 completions=generate_outputs.completion,
                 states=generate_outputs.state,
