@@ -205,12 +205,6 @@ class ValConfig(BaseConfig):
         int, Field(description="Number of samples to generate per example for validation.")
     ] = 1
     interval: Annotated[int, Field(description="Interval at which to validate the model.")] = 10
-    eval_base_model: Annotated[
-        bool,
-        Field(
-            description="Whether to evaluate the base model.",
-        ),
-    ] = True
 
 
 class EvalConfig(BaseConfig):
