@@ -386,7 +386,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Log step metrics
         step_time = time.time() - step_start_time
-        step_message = f"Step {progress.step} | Ckpt Step: {ckpt_step} | Time: {step_time:.2f}s | Reward: {rewards.mean().item():.4f} | Val. Reward: {f'{val_rewards.mean().item():.4f}' if val_rewards is not None else 'N/A'} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {seq_lens.mean().item():.1f} tokens/sample"
+        step_message = f"Step {progress.step} | Ckpt Step {ckpt_step} | Time: {step_time:.2f}s | Reward: {rewards.mean().item():.4f} | Val. Reward: {f'{val_rewards.mean().item():.4f}' if val_rewards is not None else 'N/A'} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {seq_lens.mean().item():.1f} tokens/sample"
         logger.success(step_message)
 
         # Log progress metrics to monitor
