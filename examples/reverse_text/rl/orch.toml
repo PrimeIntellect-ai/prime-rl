@@ -11,7 +11,3 @@ max_tokens = 128
 
 [[env]]
 id = "reverse-text"
-
-[val]
-interval = 10
-num_examples = 16
