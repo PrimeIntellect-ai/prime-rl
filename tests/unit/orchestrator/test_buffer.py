@@ -51,10 +51,11 @@ def make_rollouts():
         for i, (reward, advantage) in enumerate(zip(rewards, advantages)):
             problem_rollouts = [
                 Rollout(
-                    problem_id=i,
-                    prompt_tokens=[0],
+                    example_id=i,
+                    task="default",
+                    prompt_ids=[0],
                     prompt_mask=[1],
-                    completion_tokens=[1],
+                    completion_ids=[1],
                     completion_mask=[1],
                     completion_logprobs=[0.0],
                     is_truncated=False,
