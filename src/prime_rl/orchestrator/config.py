@@ -186,6 +186,24 @@ class EnvironmentConfig(BaseConfig):
     ] = 42
 
 
+class ValidationConfig(BaseConfig):
+    """Configures validation of the environment."""
+
+    num_examples: Annotated[
+        int, Field(description="Number of examples to use for validation. If -1, will use all examples.")
+    ] = -1
+    rollouts_per_example: Annotated[
+        int, Field(description="Number of samples to generate per example for validation.")
+    ] = 1
+    interval: Annotated[int, Field(description="Interval at which to validate the model.")] = 10
+    eval_base_model: Annotated[
+        bool,
+        Field(
+            description="Whether to evaluate the base model.",
+        ),
+    ] = True
+
+
 class EvalConfig(BaseConfig):
     """Configures evaluation using verifiers environments."""
 
@@ -263,7 +281,7 @@ class OnlineEvalConfig(EvalConfig):
     interval: Annotated[
         int,
         Field(
-            ge=0,
+            ge=1,
             description="Interval at which to evaluate the model.",
         ),
     ] = 100
@@ -433,6 +451,8 @@ class OrchestratorConfig(BaseSettings):
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
+
+    val: ValidationConfig | None = None
 
     output_dir: Annotated[
         Path,
