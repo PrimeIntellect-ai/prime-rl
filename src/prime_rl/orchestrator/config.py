@@ -195,8 +195,8 @@ class EvalEnvConfig(EnvConfig):
     ] = None
 
 
-class ValidationConfig(BaseConfig):
-    """Configures validation of the environment."""
+class ValConfig(BaseConfig):
+    """Configures the validation of the model."""
 
     num_examples: Annotated[
         int, Field(description="Number of examples to use for validation. If -1, will use all examples.")
@@ -408,7 +408,7 @@ class OrchestratorConfig(BaseSettings):
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
 
-    val: ValidationConfig | None = None
+    val: ValConfig | None = None
 
     output_dir: Annotated[
         Path,
