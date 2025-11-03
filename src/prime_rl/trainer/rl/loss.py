@@ -1,4 +1,3 @@
-from itertools import repeat
 from typing import Any
 
 import torch
@@ -88,10 +87,8 @@ def compute_loss(
     total_is_masked_low = []
     total_is_masked_high = []
 
-    ref_logprobs = ref_logprobs if ref_logprobs is not None else repeat(None)
-
-    for trainer_logprobs, inference_logprobs, advantages, loss_mask, ref_logprobs in zip(
-        trainer_logprobs, inference_logprobs, advantages, loss_mask, ref_logprobs
+    for i, (trainer_logprobs, inference_logprobs, advantages, loss_mask) in enumerate(
+        zip(trainer_logprobs, inference_logprobs, advantages, loss_mask)
     ):
         log_importance_ratio = trainer_logprobs - inference_logprobs
 
@@ -113,7 +110,7 @@ def compute_loss(
 
         advantages = loss_config.rl_coeff * advantages
         if ref_logprobs is not None and loss_config.kl_coeff > 0:
-            ref_kl = compute_kl(trainer_logprobs, ref_logprobs, loss_config.kl_type)
+            ref_kl = compute_kl(trainer_logprobs, ref_logprobs[i], loss_config.kl_type)
             advantages = advantages - loss_config.kl_coeff * ref_kl
 
         loss = (-importance_ratio * advantages)[keep_mask].sum()
