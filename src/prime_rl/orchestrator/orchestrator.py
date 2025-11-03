@@ -460,7 +460,7 @@ async def orchestrate(config: OrchestratorConfig):
         # Log distributions to W&B table
         monitor.log_distributions(distributions=distributions, step=progress.step)
 
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} | Val. Reward: {f'{val_results_df.reward.mean():.4f}' if val_results_df is not None else 'N/A'} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.seq_len.mean():.1f} tokens/sample"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} |{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.seq_len.mean():.1f} tokens/sample"
         logger.success(step_message)
 
         # Increment step
