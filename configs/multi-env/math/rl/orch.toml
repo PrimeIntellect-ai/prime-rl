@@ -31,6 +31,9 @@ interval = 1
 [eval]
 interval = 10
 
+[eval.sampling]
+max_tokens = 8192
+
 [[eval.env]]
 id = "math500"
 num_examples = 30
