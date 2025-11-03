@@ -77,6 +77,7 @@ def prepare_sampling_args(sampling_config: EvalSamplingConfig, client_config: Cl
 async def run_eval(
     clients: list[AsyncOpenAI],
     env_id: str,
+    env_name: str | None,
     env_args: dict,
     num_examples: int,
     rollouts_per_example: int,
@@ -96,12 +97,13 @@ async def run_eval(
     eval_start_time = time.time()
 
     # Load the eval environment
+    env_name_or_id = env_name or env_id
     env = load_environment(env_id, **env_args)
     dataset = env.get_eval_dataset(n=num_examples)
     sampling_args = prepare_sampling_args(sampling_config, client_config)
 
-    logger.debug(
-        f"Evaluating {env_id} (num_examples={len(dataset)}, rollouts_per_example={rollouts_per_example}) with args {env_args}"
+    logger.info(
+        f"Evaluating {env_name_or_id} ({num_examples=}, {rollouts_per_example=}) {'with default args' if env_args == {} else f'with args {env_args}'}"
     )
     # Run async generation and scoring
     results: GenerateOutputs = await generate_batch(
@@ -112,6 +114,7 @@ async def run_eval(
         rollouts_per_example=rollouts_per_example,
         sampling_args=sampling_args,
         semaphore=semaphore,
+        pbar_description=f"Evaluating {env_name_or_id}",
     )
 
     # Parse vLLM responses
@@ -139,7 +142,7 @@ async def run_eval(
 
     # Log statistics to console
     eval_time = time.time() - eval_start_time
-    message = f"Evaluated {env_id} in {eval_time:.2f}s (Avg@{k}={results_df.reward.mean():.4f}"
+    message = f"Evaluated {env_name_or_id} in {eval_time:.2f}s (Avg@{k}={results_df.reward.mean():.4f}"
     if could_be_binary:
         assert pass_at_k is not None
         for pass_rate, pass_rate_score in pd.Series(pass_at_k.mean()).items():
@@ -159,7 +162,7 @@ async def run_eval(
     if could_be_binary:
         assert pass_at_k is not None
         eval_metrics.update(pd.Series(pass_at_k.mean()).to_dict())
-    eval_metrics = {**{f"eval/{env_id}/{k}": v for k, v in eval_metrics.items()}}
+    eval_metrics = {**{f"eval/{env_name_or_id}/{k}": v for k, v in eval_metrics.items()}}
     eval_metrics.update({"progress/ckpt_step": ckpt_step, "step": step or ckpt_step})
     monitor.log(eval_metrics)
 
@@ -171,13 +174,13 @@ async def run_eval(
         if save_config.disk is not None:
             is_online = step is not None
             default_save_path = (
-                get_step_path(get_eval_dir(output_dir), ckpt_step) / env_id
+                get_step_path(get_eval_dir(output_dir), ckpt_step) / env_name_or_id
                 if is_online
                 else results.metadata.path_to_save
             )
             save_path = save_config.disk.path or default_save_path
             save_to_disk(dataset, metadata_dict, save_path)
-            logger.info(f"Saved eval results for {env_id} to disk ({save_path})")
+            logger.info(f"Saved eval results for {env_name_or_id} to disk ({save_path})")
 
         if save_config.hf is not None:
             dataset_name = save_config.hf.dataset_name or get_hf_hub_dataset_name(results)
@@ -187,7 +190,7 @@ async def run_eval(
             default_org = whoami().get("name", "")
             repo_name = dataset_name if "/" in dataset_name else f"{default_org}/{dataset_name}"
             logger.info(
-                f"Pushed {'private' if save_config.hf.private else 'public'} eval results for {env_id} to HF Hub (https://huggingface.co/datasets/{repo_name})"
+                f"Pushed {'private' if save_config.hf.private else 'public'} eval results for {env_name_or_id} to HF Hub (https://huggingface.co/datasets/{repo_name})"
             )
 
         if save_config.env_hub:
@@ -204,6 +207,7 @@ async def run_eval(
             )
 
             eval_id = create_response.get("evaluation_id")
+            assert eval_id is not None
 
             # Push samples
             await evals_client.push_samples(eval_id, dataset.to_list())
@@ -223,17 +227,18 @@ async def run_evals(
     evals_client: AsyncEvalsClient,
     output_dir: Path,
     ckpt_step: int,
+    semaphore: asyncio.Semaphore | None = None,
     step: int | None = None,
 ):
-    semaphore = asyncio.Semaphore(eval_config.max_concurrent) if eval_config.max_concurrent else None
     await asyncio.gather(
         *[
             run_eval(
                 clients=clients,
-                env_id=env_id,
-                env_args=eval_config.environment_args.get(env_id, {}),
-                num_examples=num_examples,
-                rollouts_per_example=rollouts_per_example,
+                env_id=env.id,
+                env_name=env.name,
+                env_args=env.args,
+                num_examples=env.num_examples or eval_config.num_examples,
+                rollouts_per_example=env.rollouts_per_example or eval_config.rollouts_per_example,
                 semaphore=semaphore,
                 output_dir=output_dir,
                 model_config=model_config,
@@ -244,10 +249,6 @@ async def run_evals(
                 ckpt_step=ckpt_step,
                 step=step,
             )
-            for env_id, num_examples, rollouts_per_example in zip(
-                eval_config.environment_ids,
-                eval_config.num_examples,
-                eval_config.rollouts_per_example,
-            )
+            for env in eval_config.env
         ]
     )

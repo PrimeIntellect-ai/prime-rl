@@ -12,21 +12,27 @@ max_tokens = 16384
 
 [wandb]
 
-[environment]
+[[env]]
 id = "skywork-math"
-
-[environment.args]
-solve_rate_field = "solve_rate_qwen_r1_distill_32b"
-min_solve_rate = 0.000001
-max_solve_rate = 0.999999
+args = { solve_rate_field = "solve_rate_qwen_r1_distill_32b", min_solve_rate = 0.000001, max_solve_rate = 0.999999 }
 
 [wandb.log_extras]
 interval = 50
 
 [eval]
 interval = 50
-environment_ids = ["math500", "aime2024", "aime2025"]
-rollouts_per_example = [1, 32, 32]
+
+[[eval.env]]
+id = "math500"
+rollouts_per_example = 1
+
+[[eval.env]]
+id = "aime2024"
+rollouts_per_example = 32
+
+[[eval.env]]
+id = "aime2025"
+rollouts_per_example = 32
 
 [ckpt]
 interval = 200

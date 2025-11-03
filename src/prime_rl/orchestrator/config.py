@@ -170,82 +170,59 @@ class EvalSaveConfig(BaseConfig):
     ] = False
 
 
-class EnvironmentConfig(BaseConfig):
-    """Configures the environment to be used for inference."""
+class EnvConfig(BaseModel):
+    """Configures an environment for training."""
 
     id: Annotated[str, Field(description="ID of the environment to use.")] = "reverse-text"
     args: Annotated[dict, Field(description="Arguments to pass to the environment.")] = {}
+    name: Annotated[str | None, Field(description="Name of the environment to use.")] = None
+
+
+class EvalEnvConfig(EnvConfig):
+    """Configures an environment for evaluation."""
+
+    num_examples: Annotated[
+        int | None,
+        Field(
+            description="Number of examples to evaluate per environment. If not set, will use 'num_examples' from main config."
+        ),
+    ] = None
+    rollouts_per_example: Annotated[
+        int | None,
+        Field(
+            description="Number of samples to generate per example for each environment. If not set, will use 'rollouts_per_example' from main config."
+        ),
+    ] = None
+
+
+class ValConfig(BaseConfig):
+    """Configures the validation of the model."""
+
+    num_examples: Annotated[
+        int, Field(description="Number of examples to use for validation. If -1, will use all examples.")
+    ] = -1
+    rollouts_per_example: Annotated[
+        int, Field(description="Number of samples to generate per example for validation.")
+    ] = 1
+    interval: Annotated[int, Field(description="Interval at which to validate the model.")] = 10
 
 
 class EvalConfig(BaseConfig):
     """Configures evaluation using verifiers environments."""
 
-    environment_ids: Annotated[
-        list[str],
-        Field(
-            description="List of verifiers environment IDs to evaluate on. Each ID also serves as the metric prefix."
-        ),
-    ] = []
-
-    environment_args: Annotated[
-        dict[str, dict],
-        Field(
-            description="Per-environment overrides keyed by ID; forwarded as kwargs to verifiers.load_environment(id, **args)."
-        ),
-    ] = {}
-
-    num_examples: Annotated[
-        list[int],
-        Field(
-            description="Number of examples to evaluate per environment. Set all or none; if None, defaults to -1 for every ID."
-        ),
-    ] = []
-
-    rollouts_per_example: Annotated[
-        list[int],
-        Field(
-            description="Number of samples to generate per example for each environment (length must match eval.environment_ids)."
-        ),
-    ] = []
-
-    max_concurrent: Annotated[
-        int | None,
-        Field(
-            description="Maximum number of concurrent rollouts to generate and score. Will create a global semaphore and pass to verifiers Environment. If None, will not limit concurrency.",
-        ),
-    ] = None
-
+    env: list[EvalEnvConfig] = [EvalEnvConfig()]
     sampling: EvalSamplingConfig = Field(
         default_factory=EvalSamplingConfig,
         description="Shared sampling configuration for evals; can differ from training sampling.",
     )
-
     save: EvalSaveConfig = Field(
         default_factory=EvalSaveConfig,
         description="Configures how to save the eval results.",
     )
-
-    @model_validator(mode="after")
-    def _validate_and_fill_eval_lists(self):
-        # If rollouts_per_example is empty, default to 1 for all ids
-        if len(self.rollouts_per_example) == 0:
-            self.rollouts_per_example = [1 for _ in self.environment_ids]
-        elif len(self.rollouts_per_example) == 1:
-            self.rollouts_per_example = [self.rollouts_per_example[0] for _ in self.environment_ids]
-
-        if len(self.rollouts_per_example) != len(self.environment_ids):
-            raise ValueError("Number of rollouts_per_example entries must match number of ids")
-
-        # num_examples: if empty/unspecified, default to -1 for all; else length must match ids
-        if len(self.num_examples) == 0:
-            self.num_examples = [-1 for _ in self.environment_ids]
-        elif len(self.num_examples) == 1:
-            self.num_examples = [self.num_examples[0] for _ in self.environment_ids]
-
-        if len(self.num_examples) != len(self.environment_ids):
-            raise ValueError("Number of num_examples entries must match number of ids")
-
-        return self
+    num_examples: Annotated[int, Field(description="Number of examples to evaluate per environment.")] = -1
+    rollouts_per_example: Annotated[
+        int, Field(ge=1, description="Number of samples to generate per example for each environment.")
+    ] = 1
 
 
 class OnlineEvalConfig(EvalConfig):
@@ -254,7 +231,7 @@ class OnlineEvalConfig(EvalConfig):
     interval: Annotated[
         int,
         Field(
-            ge=0,
+            ge=1,
             description="Interval at which to evaluate the model.",
         ),
     ] = 100
@@ -424,7 +401,7 @@ class OrchestratorConfig(BaseSettings):
     sampling: SamplingConfig = SamplingConfig()
 
     # The environment configuration
-    environment: EnvironmentConfig = EnvironmentConfig()
+    env: list[EnvConfig] = [EnvConfig()]
 
     # The evaluation configuration
     eval: OnlineEvalConfig | None = None
@@ -444,6 +421,9 @@ class OrchestratorConfig(BaseSettings):
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
 
+    # The validation configuration
+    val: ValConfig | None = None
+
     weight_broadcast: Annotated[WeightBroadcastConfigType, Field(discriminator="type")] = (
         FileSystemWeightBroadcastConfig()
     )
@@ -460,7 +440,7 @@ class OrchestratorConfig(BaseSettings):
         Field(
             description="Maximum number of concurrent rollouts to generate and score. Will create a global semaphore and pass to verifiers Environment. If None, will not limit concurrency.",
         ),
-    ] = 1024
+    ] = None
 
     batch_size: Annotated[int, Field(ge=1, description="Number of samples to train on per step.")] = 128
 

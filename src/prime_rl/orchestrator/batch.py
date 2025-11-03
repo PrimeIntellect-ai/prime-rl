@@ -6,8 +6,8 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.orchestrator.buffer import Rollout
 from prime_rl.trainer.rl.data import MicroBatch
+from prime_rl.utils.vf import Rollout
 
 
 class BatchSample(TypedDict):
@@ -29,21 +29,21 @@ def prepare_sample(
     """
 
     # Prepare prompt tokens
-    prompt_token_ids = torch.tensor(rollout.prompt_tokens).long()
-    prompt_token_mask = torch.tensor(rollout.prompt_mask).long()
+    prompt_token_ids = torch.tensor(rollout["prompt_ids"]).long()
+    prompt_token_mask = torch.tensor(rollout["prompt_mask"]).long()
 
     # Prepare completion tokens
-    completion_token_ids = torch.tensor(rollout.completion_tokens).long()
-    completion_token_mask = torch.tensor(rollout.completion_mask).long()
+    completion_token_ids = torch.tensor(rollout["completion_ids"]).long()
+    completion_token_mask = torch.tensor(rollout["completion_mask"]).long()
 
     # Prepare input_ids, loss_mask, position_ids, inference_logprobs, and advantages
     input_ids = torch.cat([prompt_token_ids, completion_token_ids]).long()
     loss_mask = torch.cat([prompt_token_mask, completion_token_mask]).bool()
     inference_logprobs = torch.cat(
-        [torch.zeros(len(prompt_token_ids)), torch.tensor(rollout.completion_logprobs)]
+        [torch.zeros(len(prompt_token_ids)), torch.tensor(rollout["completion_logprobs"])]
     ).float()
     position_ids = torch.arange(len(input_ids)).long()
-    advantages = torch.tensor(rollout.advantage).repeat(len(input_ids)).float()
+    advantages = torch.tensor(rollout["advantage"]).repeat(len(input_ids)).float()
 
     if len(input_ids) > seq_len:
         # We should never truncate as it would create a really bad learning signal. Instead, always set the maximum sequence length
@@ -134,7 +134,7 @@ def prepare_batch(
     Each micro batch is shape [1, seq_len], the namber of sample is not fixed per micro batch.
     """
     rollouts = copy.deepcopy(rollouts)
-    max_seq_len = seq_len 
+    max_seq_len = seq_len
 
     all_samples = [
         prepare_sample(

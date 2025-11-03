@@ -8,10 +8,27 @@ from openai.types.completion_usage import CompletionUsage
 from rich.console import Console
 from rich.table import Table
 
+from prime_rl.orchestrator.config import SamplingConfig
 from prime_rl.utils.utils import (
     format_num,
     format_time,
 )
+
+
+def get_train_sampling_args(sampling_config: SamplingConfig) -> dict:
+    # Convert SamplingConfig to vLLM OAI sampling args
+    # https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#extra-parameters_2
+    sampling_args = dict(sampling_config)
+    sampling_args["top_p"] = 1.0
+    sampling_args["logprobs"] = True
+    sampling_args["extra_body"] = {
+        "return_tokens_as_token_ids": True,
+        "top_k": -1,
+        "min_p": 0.0,
+    }
+    sampling_args["extra_body"]["min_tokens"] = sampling_args.pop("min_tokens")
+    sampling_args["extra_body"]["repetition_penalty"] = sampling_args.pop("repetition_penalty")
+    return sampling_args
 
 
 def monkey_patch_chat_completion_logprobs():
