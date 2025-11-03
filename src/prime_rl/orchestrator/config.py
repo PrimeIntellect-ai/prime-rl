@@ -162,6 +162,12 @@ class EvalSaveHFConfig(BaseConfig):
 class EvalSaveConfig(BaseConfig):
     disk: EvalSaveDiskConfig | None = None
     hf: EvalSaveHFConfig | None = None
+    env_hub: Annotated[
+        bool,
+        Field(
+            description="Whether to push eval results to Prime Environment Hub. Automatically pushes all evaluated environments. Requires PRIME_API_KEY and authorization for the environments."
+        ),
+    ] = False
 
 
 class EnvironmentConfig(BaseConfig):
@@ -298,7 +304,7 @@ class BufferConfig(BaseModel):
         Field(
             description="Random seed to use for the buffer. If set, the sampling from the buffer will be deterministic.",
         ),
-    ] = 0
+    ] = None
 
 
 class SimpleBufferConfig(BufferConfig):
@@ -413,8 +419,7 @@ SchedulerConfigType: TypeAlias = DefaultSchedulerConfig | ARealSchedulerConfig
 
 
 class AdvantageConfig(BaseConfig):
-    global_std_norm: bool = False
-    local_std_norm: bool = False
+    std_norm: Literal["local", "global"] | None = None
     length_weighted_mean: bool = False
     leave_one_out: bool = False
     neg_clipped: bool = False
@@ -442,7 +447,7 @@ class OrchestratorConfig(BaseSettings):
     buffer: Annotated[DataBufferConfigType, Field(discriminator="type")] = SimpleBufferConfig()
 
     # The advantage configuration
-    advantage: AdvantageConfig = AdvantageConfig()
+    advantage: AdvantageConfig | None = AdvantageConfig()
 
     # The logging configuration
     log: LogConfig = LogConfig()
@@ -507,13 +512,6 @@ class OrchestratorConfig(BaseSettings):
             description="Whether to override reward scores with 0 for truncated completions.",
         ),
     ] = False
-
-    length_bonus: Annotated[
-        float | None,
-        Field(
-            description="Add an extra reward to the shortest correct answer in fully correct rollout groups.",
-        ),
-    ] = 0.0
 
     # TODO(Mika): This should be automatic from the number of ZMQ connections
     num_train_workers: Annotated[

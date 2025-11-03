@@ -5,6 +5,10 @@ from loguru import logger
 # Import environment before any other imports
 # ruff: noqa: I001,F401
 from prime_rl.orchestrator import envs
+from prime_rl.orchestrator.utils import monkey_patch_chat_completion_logprobs
+
+# This monkey patch is necessary to avoid heavy CPU overhead from constructing the OAI ChatCompletion Pydantic model with logprobs
+monkey_patch_chat_completion_logprobs()
 
 import lovely_tensors as lt
 import torch
@@ -20,13 +24,14 @@ from prime_rl.utils.client import (
     reload_weights,
     setup_admin_clients,
     setup_clients,
+    setup_evals_client,
     update_weights,
 )
 from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.orchestrator.buffer import setup_buffer
 from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.utils.logger import setup_logger
-from prime_rl.orchestrator.utils import print_benchmark
+from prime_rl.orchestrator.utils import monkey_patch_chat_completion_logprobs, print_benchmark
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import (
@@ -59,6 +64,7 @@ async def orchestrate(config: OrchestratorConfig):
     )
     clients = setup_clients(config.client)
     admin_clients = setup_admin_clients(config.client)
+    evals_client = setup_evals_client()
 
     # Load tokenizer
     logger.info(f"Initializing tokenizer for {config.model.name}")
@@ -167,6 +173,7 @@ async def orchestrate(config: OrchestratorConfig):
                 model_config=config.model,
                 sampling_config=config.eval.sampling,
                 client_config=config.client,
+                evals_client=evals_client,
                 output_dir=config.output_dir,
                 ckpt_step=ckpt_step,
                 step=progress.step,
@@ -381,6 +388,7 @@ async def orchestrate(config: OrchestratorConfig):
             model_config=config.model,
             sampling_config=config.eval.sampling,
             client_config=config.client,
+            evals_client=evals_client,
             output_dir=config.output_dir,
             ckpt_step=ckpt_step,
             step=progress.step,
