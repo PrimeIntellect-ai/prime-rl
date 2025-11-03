@@ -283,7 +283,7 @@ async def orchestrate(config: OrchestratorConfig):
             # Update pool
             rollouts = make_rollouts(
                 processed_outputs,
-                generate_outputs.example_id,
+                [problem["id"] for problem in problems],
                 advantages,
                 generate_outputs.task,
                 is_truncated,
