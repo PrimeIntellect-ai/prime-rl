@@ -92,7 +92,7 @@ async def orchestrate(config: OrchestratorConfig):
     # Load environment and extract dataset
     logger.info(f"Loading environment {config.environment.id} with args {config.environment.args}")
     env = load_environment(config.environment.id, **config.environment.args)
-    dataset = env.get_dataset(seed=config.seed)
+    dataset = env.get_dataset(config.environment.num_examples, seed=config.environment.seed)
 
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")

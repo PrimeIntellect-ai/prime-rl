@@ -175,6 +175,15 @@ class EnvironmentConfig(BaseConfig):
 
     id: Annotated[str, Field(description="ID of the environment to use.")] = "reverse-text"
     args: Annotated[dict, Field(description="Arguments to pass to the environment.")] = {}
+    num_examples: Annotated[
+        int, Field(description="Number of examples to use for training. If -1, will use all examples.")
+    ] = -1
+    seed: Annotated[
+        int | None,
+        Field(
+            description="Random seed for the environment. If a seed is provided, the dataset will be deterministically shuffled. If no seed is provided, the data will not be shuffled."
+        ),
+    ] = 42
 
 
 class EvalConfig(BaseConfig):
@@ -504,8 +513,6 @@ class OrchestratorConfig(BaseSettings):
             description="Whether to run in benchmark mode. It will automatically set the maximum number of steps to run to 5, max async level to ~infinity and disable W&B.",
         ),
     ] = False
-
-    seed: Annotated[int | None, Field(description="Random seed for the orchestrator.")] = 42
 
     @model_validator(mode="after")
     def validate_batch_size(self):
