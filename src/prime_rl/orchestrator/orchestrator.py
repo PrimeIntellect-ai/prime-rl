@@ -12,6 +12,7 @@ monkey_patch_chat_completion_logprobs()
 
 import lovely_tensors as lt
 import torch
+import verifiers as vf
 from verifiers import load_environment
 from verifiers.types import GenerateOutputs, ProcessedOutputs
 from transformers import AutoTokenizer
@@ -60,6 +61,7 @@ async def orchestrate(config: OrchestratorConfig):
     logger = setup_logger(
         config.log.level, log_file=config.output_dir / "logs" / "orchestrator.log" if config.log.file else None
     )
+    vf.setup_logging(level=config.log.vf_level.upper())
     logger.info("Starting orchestrator")
 
     # Print warning if running in benchmark mode
