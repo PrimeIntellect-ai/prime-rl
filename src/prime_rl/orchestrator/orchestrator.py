@@ -71,6 +71,23 @@ async def orchestrate(config: OrchestratorConfig):
     admin_clients = setup_admin_clients(config.client)
     evals_client = setup_evals_client()
 
+    # Setup reference model client if configured
+    reference_clients = None
+    reference_model_name = None
+    if config.reference_client is not None:
+        assert config.reference_client.server_type == "vllm", "Reference client must use vLLM server type."
+        # Use reference_model.name if provided, otherwise fall back to model.name
+        reference_model_name = (
+            config.reference_model.name if config.reference_model is not None else config.model.name
+        )
+        logger.info(
+            f"Initializing reference model clients (base_url={config.reference_client.base_url}, api_key_var={config.reference_client.api_key_var}, model={reference_model_name})"
+        )
+        reference_clients = setup_clients(config.reference_client)
+        await check_health(setup_admin_clients(config.reference_client))
+        await check_has_model(reference_clients, reference_model_name)
+        logger.success("Reference model inference pool ready")
+
     # Load tokenizer
     logger.info(f"Initializing tokenizer for {config.model.name}")
     tokenizer = AutoTokenizer.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
@@ -264,6 +281,61 @@ async def orchestrate(config: OrchestratorConfig):
             responses = [state["responses"] for state in generate_outputs.state]
             is_truncated = parse_is_truncated_completions(responses=responses)
 
+            # Optionally, compute reference model logprobs
+            ref_logprobs_list = None
+            if reference_clients is not None:
+                compute_ref_logprobs_start_time = time.time()
+                logger.info("Computing reference model logprobs")
+
+                from itertools import cycle
+
+                ref_sampling_args = {
+                    "logprobs": True,
+                    "max_tokens": 0,  # Only prefill, no generation
+                }
+                ref_extra_body = {
+                    "return_tokens_as_token_ids": True,
+                }
+                ref_request_semaphore = asyncio.Semaphore(max(len(reference_clients), 1))
+
+                async def get_ref_logprobs(
+                    client,
+                    prompt: str,
+                    completion: str,
+                    prompt_ids: list[int],
+                    completion_ids: list[int],
+                ) -> list[float]:
+                    async with ref_request_semaphore:
+                        combined_token_ids = prompt_ids + completion_ids
+                        response = await client.chat.completions.create(
+                            model=reference_model_name,
+                            messages=[
+                                {"role": "user", "content": prompt},
+                                {"role": "assistant", "content": completion},
+                            ],
+                            **ref_sampling_args,
+                            extra_body={**ref_extra_body, "token_ids": combined_token_ids},
+                        )
+
+                    token_logprobs = [logprob.logprob for logprob in response.choices[0].logprobs.content]
+                    return token_logprobs
+
+                ref_logprobs_list = await asyncio.gather(
+                    *[
+                        get_ref_logprobs(client, prompt, completion, prompt_ids, completion_ids)
+                        for client, prompt, completion, prompt_ids, completion_ids in zip(
+                            cycle(reference_clients),
+                            generate_outputs.prompt,
+                            generate_outputs.completion,
+                            processed_outputs.prompt_ids,
+                            processed_outputs.completion_ids,
+                        )
+                    ]
+                )
+
+                compute_ref_logprobs_time = time.time() - compute_ref_logprobs_start_time
+                logger.debug(f"Reference logprobs computed in {compute_ref_logprobs_time:.2f} seconds")
+
             # Update pool
             rollouts = make_rollouts(
                 problem_ids=[problem["id"] for problem in problems for _ in range(config.rollouts_per_example)],
@@ -275,6 +347,7 @@ async def orchestrate(config: OrchestratorConfig):
                 is_truncated=is_truncated,
                 rewards=processed_outputs.rewards,
                 advantages=advantages,
+                ref_logprobs=ref_logprobs_list,
             )
             buffer.update(rollouts)
             accepted_rollouts.extend(buffer.sample_rollouts(problems_to_sample))

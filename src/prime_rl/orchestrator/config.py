@@ -402,6 +402,22 @@ class OrchestratorConfig(BaseSettings):
     # The model configuration
     model: ModelConfig = ModelConfig()
 
+    # The reference model client configuration 
+    reference_client: Annotated[
+        ClientConfig | None,
+        Field(
+            description="Optional client configuration for reference model. If None, no reference model logprobs will be computed."
+        ),
+    ] = None
+
+    # The reference model configuration 
+    reference_model: Annotated[
+        ModelConfig | None,
+        Field(
+            description="Optional model configuration for reference model. If None and reference_client is provided, will use the same model name as the main model."
+        ),
+    ] = None
+
     # The sampling configuration
     sampling: SamplingConfig = SamplingConfig()
 

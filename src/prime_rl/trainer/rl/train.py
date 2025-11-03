@@ -109,16 +109,6 @@ def train(config: RLTrainerConfig):
         f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
     )
 
-    # Optionally, initialize a reference model to compute logprobs
-    reference_model: nn.Module | None = None
-    reference_weights: OffloadedTensor | None = None
-    if config.loss.kl_coeff > 0:
-        logger.info(f"Initializing reference model ({config.model})")
-        reference_model = setup_model(config.model, parallel_dims)
-        reshard_module(reference_model)
-        reference_weights = offload_model_to_cpu(reference_model)
-
-
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
     dataloader = DataLoader(config.output_dir, progress.step)
@@ -182,34 +172,6 @@ def train(config: RLTrainerConfig):
         logger.debug(f"Loaded batch in {load_data_time:.2f} seconds")
         batch_size = len(micro_batches)
         
-        # Optionally, compute the logprobs for the training batch
-        compute_logprobs_time = 0
-        if reference_model is not None and reference_weights is not None:
-            compute_logprobs_start_time = time.time()
-            logger.info("Computing reference logprobs")
-
-            # Wake up the reference model from CPU
-            wake_up_model_from_cpu(reference_model, reference_weights)
-
-            with torch.no_grad():
-                for micro_step, micro_batch in enumerate(micro_batches):
-                    input_ids = micro_batch["input_ids"].to("cuda")
-                    position_ids = micro_batch["position_ids"].to("cuda")
-                    temperature = micro_batch["temperature"]
-
-                    # Compute the logprobs
-                    logits = forward(reference_model, input_ids, position_ids).float().contiguous()
-                    shifted_logits = shift_logits(logits) / temperature
-                    micro_batch["ref_logprobs"] = selective_log_softmax(shifted_logits, input_ids).cpu()
-
-            # here we sepcifically don't save the tensor offloaded, they are alreay consumed and we will never use it again.
-            # this avoid having to make sure we don't keep too much tensor offloaded in cpu memory
-            reshard_module(reference_model)
-            reference_weights = offload_model_to_cpu(reference_model)
-
-            compute_logprobs_time = time.time() - compute_logprobs_start_time
-            logger.debug(f"Reference logprobs computed in {compute_logprobs_time:.2f} seconds")
-
         memory_profiler = None
         if config.memory_profiler_path is not None:
             memory_profiler = MemoryProfiler(progress.step, config.memory_profiler_path)
@@ -246,7 +208,7 @@ def train(config: RLTrainerConfig):
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
-            if reference_model is not None and reference_weights is not None:
+            if micro_batch["ref_logprobs"] is not None:
                 ref_logprobs = micro_batch["ref_logprobs"].to("cuda")
                 ref_logprobs = ref_logprobs.squeeze().split(response_lengths)
             else:
