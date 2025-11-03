@@ -267,12 +267,17 @@ async def orchestrate(config: OrchestratorConfig):
                 advantage_config=config.advantage,
             )
 
+            # Parse whether the completions were truncated
+            responses = [state["responses"] for state in generate_outputs.state]
+            is_truncated = parse_is_truncated_completions(responses=responses)
+
             # Update pool
             rollouts = make_rollouts(
                 processed_outputs,
-                example_ids=generate_outputs.example_id,
-                tasks=generate_outputs.task,
-                advantages=advantages,
+                generate_outputs.example_id,
+                advantages,
+                generate_outputs.task,
+                is_truncated,
             )
             buffer.update(rollouts)
             accepted_rollouts.extend(buffer.sample_rollouts(problems_to_sample))

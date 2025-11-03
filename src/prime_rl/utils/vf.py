@@ -145,7 +145,11 @@ class Rollout(TypedDict):
 
 
 def make_rollouts(
-    processed_outputs: vf.ProcessedOutputs, example_ids: list[int], advantages: list[float], tasks: list[str]
+    processed_outputs: vf.ProcessedOutputs,
+    example_ids: list[int],
+    advantages: list[float],
+    tasks: list[str],
+    all_is_truncated: list[bool],
 ) -> list[Rollout]:
     """Processs vf.ProcessedOutputs to a list of rollouts."""
     assert len(advantages) == len(example_ids) == len(processed_outputs.prompt_ids)
@@ -170,7 +174,7 @@ def make_rollouts(
         processed_outputs.completion_logprobs,
         processed_outputs.rewards,
         advantages,
-        processed_outputs.is_truncated,
+        all_is_truncated,
         tasks,
     ):
         rollouts.append(
