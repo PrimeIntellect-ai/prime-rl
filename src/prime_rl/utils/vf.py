@@ -105,11 +105,12 @@ async def generate_batch(
     rollouts_per_example: int,
     sampling_args: dict,
     semaphore: asyncio.Semaphore | None,
+    pbar_description: str = "Generating rollouts",
 ) -> vf.GenerateOutputs:
     """Asynchronously generate and score rollouts for a list of problems."""
     from tqdm import tqdm
 
-    pbar = tqdm(total=len(problems) * rollouts_per_example, desc="Generating rollouts")
+    pbar = tqdm(total=len(problems) * rollouts_per_example, desc=pbar_description)
 
     async def generate_group_with_progress(client, problem):
         """Generate rollouts for one problem and update progress."""

@@ -11,6 +11,7 @@ from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
+from prime_rl.trainer.rl.broadcast.nccl_broadcast import NCCLBroadcastSender
 from prime_rl.trainer.weights import setup_weight_ckpt_manager
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
@@ -96,6 +97,22 @@ def train(config: RLTrainerConfig):
     )
     assert weight_ckpt_manager is not None, "Weight checkpoint manager must be set on RL trainer"
 
+    # Set up NCCL broadcast
+    nccl_broadcast = None
+    if config.weight_broadcast.type == "nccl":
+        # we do inferece world size + 1 because we have the trainer broadcaster as rank 0
+        nccl_broadcast = NCCLBroadcastSender(
+            host=config.weight_broadcast.host,
+            port=config.weight_broadcast.port,
+            world_size=config.weight_broadcast.inference_world_size + 1,
+            timeout=config.weight_broadcast.timeout,
+            rank=0,
+            device=torch.cuda.current_device(),
+            logger=logger,
+        )
+    else:
+        logger.info("Using filesystem for broadcasting weights into the inference pool.")
+
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
     ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
@@ -125,16 +142,27 @@ def train(config: RLTrainerConfig):
     while True:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
+        is_last_step = config.max_steps is not None and progress.step == config.max_steps
 
         # Save the weight checkpoint (if we are not at the first step, because no updates to the model have been made yet)
         save_weights_time = 0
+        broadcast_weights_time = 0
         if progress.step > 0:
             save_weights_start_time = time.time()
-            weight_ckpt_manager.save(model, tokenizer, step=progress.step)
+            if config.weights.interval and progress.step % config.weights.interval == 0:
+                weight_ckpt_manager.save(model, tokenizer, step=progress.step)
+            else:
+                # Always create a stable file to signal to the orchestrator to initialize receiving weights via NCCL
+                weight_ckpt_manager.create_stable_file(progress.step)
             save_weights_time = time.time() - save_weights_start_time
+            broadcast_weights_time = save_weights_time
+
+            if nccl_broadcast is not None and not is_last_step:
+                broadcast_weights_start_time = time.time()
+                nccl_broadcast.broadcast_state_dict(model)
+                broadcast_weights_time = time.time() - broadcast_weights_start_time
 
         # Save the full checkpoint (if we are at an interval step and not at the first or last step)
-        is_last_step = config.max_steps is not None and progress.step == config.max_steps
         save_ckpt_time = 0
         if (
             ckpt_manager is not None
@@ -321,6 +349,7 @@ def train(config: RLTrainerConfig):
             "time/wait_for_batch": wait_for_batch_time,
             "time/load_data": load_data_time,
             "time/save_weights": save_weights_time,
+            "time/broadcast_weights": broadcast_weights_time,
             "time/save_ckpt": save_ckpt_time,
             "time/forward_backward": forward_backward_time,
             "step": progress.step,

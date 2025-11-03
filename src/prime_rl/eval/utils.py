@@ -114,6 +114,7 @@ async def run_eval(
         rollouts_per_example=rollouts_per_example,
         sampling_args=sampling_args,
         semaphore=semaphore,
+        pbar_description=f"Evaluating {env_name_or_id}",
     )
 
     # Parse vLLM responses

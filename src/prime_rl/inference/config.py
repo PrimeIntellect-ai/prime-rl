@@ -1,7 +1,7 @@
 from argparse import Namespace
 from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings, get_all_fields
 from prime_rl.utils.utils import rgetattr, rsetattr
@@ -91,6 +91,14 @@ class ModelConfig(BaseConfig):
     ] = "hermes"
 
 
+class WeightBroadcastConfig(BaseSettings):
+    """Configures weight broadcast settings."""
+
+    type: Annotated[Literal["nccl", "filesystem"], Field(description="The type of weight broadcast to use.")] = (
+        "filesystem"
+    )
+
+
 class InferenceConfig(BaseSettings):
     """Configures inference."""
 
@@ -116,6 +124,16 @@ class InferenceConfig(BaseSettings):
             description="Seed the inference components. If None, no seeding is used. Passed to vLLM as `--seed`",
         ),
     ] = None
+
+    weight_broadcast: Annotated[WeightBroadcastConfig, Field(description="The weight broadcast config.")] = (
+        WeightBroadcastConfig()
+    )
+
+    @model_validator(mode="after")
+    def nccl_and_dp(self):
+        if self.weight_broadcast.type == "nccl" and self.parallel.dp != 1:
+            raise ValueError("NCCL broadcast backend requires data parallel size to be 1")
+        return self
 
     def to_vllm(self) -> Namespace:
         """Convert InferenceConfig to vLLM-compatible Namespace."""

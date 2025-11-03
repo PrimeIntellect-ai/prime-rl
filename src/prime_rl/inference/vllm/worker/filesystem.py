@@ -13,13 +13,14 @@ else:
     Worker = object
 
 
-class CheckpointWorker(Worker):
+class FileSystemWeightUpdateWorker(Worker):
     """
-    This is an extension of a vLLM worker that allows for loading checkpoints
-    from a specified directory via RPC calls from the AsyncLLMEngine class, exposed
-    by the vLLM server. This is useful in RL training, where we want to load the
-    recent policy model from a checkpoint directory.
+    This is an vLLM worker extension for updating weights to an updated RL policy model via filesystem.
     """
+
+    def init_broadcaster(self) -> None:
+        """Initialize the broadcaster."""
+        ...
 
     def update_weights(self, weight_path: str) -> None:
         """Update weights from a specified path pointing to a .pt file."""

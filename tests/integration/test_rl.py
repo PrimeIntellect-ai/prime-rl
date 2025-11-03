@@ -106,3 +106,14 @@ def test_check_reward(output_dir: Path, rl_resume_process: ProcessResult):
     for wandb_summary in wandb_summaries:
         assert "reward/mean" in wandb_summary
         assert wandb_summary["reward/mean"] > 0.65
+
+
+# would need the setup a vllm server with the nccl broadcast enabled to make this work
+@pytest.mark.skip(reason="Skipping NCCL broadcast as it fail only in ci")
+def test_rl_nccl(run_process):
+    process = run_process(
+        RL_CMD + ["--weight-broadcast.type", "nccl"],
+        {},
+        TIMEOUT,
+    )
+    assert process.returncode == 0, f"RL process failed with return code {process.returncode}"

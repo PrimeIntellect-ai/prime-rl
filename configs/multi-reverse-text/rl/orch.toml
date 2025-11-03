@@ -15,3 +15,7 @@ id = "reverse-text"
 [[env]]
 id = "reverse-text"
 name = "reverse-text-2"
+
+[val]
+interval = 1
+num_examples = 16
