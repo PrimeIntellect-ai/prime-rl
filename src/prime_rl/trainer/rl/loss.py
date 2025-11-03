@@ -36,10 +36,11 @@ def selective_log_softmax(
 
 
 @jaxtyped(typechecker=typechecker)
+@torch.compile(dynamic=True)
 def compute_entropy(shifted_logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq"]:
-    pd = torch.nn.functional.softmax(shifted_logits, dim=-1)
-    entropy = torch.logsumexp(shifted_logits, dim=-1) - torch.sum(pd * shifted_logits, dim=-1)
-
+    with torch.no_grad():
+        pd = torch.nn.functional.softmax(shifted_logits, dim=-1)
+        entropy = torch.logsumexp(shifted_logits, dim=-1) - torch.sum(pd * shifted_logits, dim=-1)
     return entropy
 
 
@@ -86,6 +87,7 @@ def compute_loss(
     total_is_masked = []
     total_is_masked_low = []
     total_is_masked_high = []
+    total_sequence_masked_low = []
 
     for i, (trainer_logprobs, inference_logprobs, advantages, loss_mask) in enumerate(
         zip(trainer_logprobs, inference_logprobs, advantages, loss_mask)
@@ -106,6 +108,9 @@ def compute_loss(
         is_masked_low = importance_ratio < loss_config.mask_ratio_low
         is_masked_high = importance_ratio > loss_config.mask_ratio_high
         is_masked = is_masked_low | is_masked_high
+        seq_min_ratio = importance_ratio.masked_fill(~loss_mask, torch.inf).min()
+        seq_should_mask = seq_min_ratio < loss_config.sequence_mask_ratio_low
+        is_masked = is_masked | seq_should_mask
         keep_mask = loss_mask & ~is_masked
 
         advantages = loss_config.rl_coeff * advantages
@@ -134,6 +139,7 @@ def compute_loss(
         total_is_masked.append(is_masked[loss_mask].float())
         total_is_masked_low.append(is_masked_low[loss_mask].float())
         total_is_masked_high.append(is_masked_high[loss_mask].float())
+        total_sequence_masked_low.append(seq_should_mask.float())
 
     # Apply loss scaling
     scaled_loss = total_loss / loss_scale
@@ -145,4 +151,5 @@ def compute_loss(
         "is_masked": torch.cat(total_is_masked),
         "is_masked_low": torch.cat(total_is_masked_low),
         "is_masked_high": torch.cat(total_is_masked_high),
+        "sequence_masked_low": torch.stack(total_sequence_masked_low),
     }

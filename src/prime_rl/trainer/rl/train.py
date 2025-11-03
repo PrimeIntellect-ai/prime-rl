@@ -219,8 +219,7 @@ def train(config: RLTrainerConfig):
             )
 
             # Compute entropy
-            with torch.no_grad():
-                entropy = compute_entropy(shifted_logits)
+            entropy = compute_entropy(shifted_logits)
 
             # Delete logits and shifted_logits before backward pass to avoid memory spike
             del logits, shifted_logits
