@@ -46,7 +46,7 @@ mask_truncated_completions = false
 [orchestrator.sampling]
 max_tokens = 512
 
-[orchestrator.environment]
+[[orchestrator.env]]
 id = "wiki-search"
 
 [inference.model]

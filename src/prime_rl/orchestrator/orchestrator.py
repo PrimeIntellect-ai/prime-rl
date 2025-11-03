@@ -12,7 +12,7 @@ monkey_patch_chat_completion_logprobs()
 
 import lovely_tensors as lt
 import torch
-from verifiers import load_environment
+from verifiers import load_environment, EnvGroup
 from verifiers.types import GenerateOutputs, ProcessedOutputs
 from transformers import AutoTokenizer
 
@@ -90,10 +90,15 @@ async def orchestrate(config: OrchestratorConfig):
     )
 
     # Load environment and extract dataset
-    logger.info(f"Loading environment {config.environment.id} with args {config.environment.args}")
-    env = load_environment(config.environment.id, **config.environment.args)
-    dataset = env.get_dataset(config.environment.num_examples, seed=config.environment.seed)
-    val_dataset = env.get_eval_dataset(config.val.num_examples, seed=config.environment.seed) if config.val else None
+    logger.info(
+        f"Loading {len(config.env)} training environment(s) ({' '.join(env.name or env.id for env in config.env)})"
+    )
+    env = EnvGroup(
+        envs=[load_environment(env.id, **env.args) for env in config.env],
+        env_names=[env.name or env.id for env in config.env],
+    )
+    dataset = env.get_dataset(seed=config.seed)
+    val_dataset = env.get_eval_dataset(config.val.num_examples, seed=config.seed) if config.val else None
 
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
@@ -196,6 +201,7 @@ async def orchestrate(config: OrchestratorConfig):
                     output_dir=config.output_dir,
                     ckpt_step=ckpt_step,
                     step=progress.step,
+                    semaphore=semaphore,
                 )
             )
         else:
