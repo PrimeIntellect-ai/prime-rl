@@ -26,6 +26,15 @@ class LossConfig(BaseModel):
 
     mask_ratio_high: Annotated[float, Field(ge=0)] = 8.0
     mask_ratio_low: Annotated[float, Field(ge=0)] = 0.125
+    sequence_mask_ratio_low: Annotated[
+        float,
+        Field(
+            ge=0,
+            description=(
+                "If set, masks entire sequences when any generated token has an importance ratio below this value."
+            ),
+        ),
+    ] = 0.0
     kl_type: Annotated[Literal["k1", "k3"], Field(description="KL divergence formulation to use for ref model.")] = "k3"
     kl_coeff: Annotated[float, Field(ge=0)] = 0.0
     rl_coeff: Annotated[float, Field(ge=0)] = 1.0
