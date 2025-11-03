@@ -1,5 +1,7 @@
 import asyncio
 
+import verifiers as vf
+
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.eval.utils import run_evals
 from prime_rl.utils.client import (
@@ -23,6 +25,8 @@ async def eval(config: OfflineEvalConfig):
     logger = setup_logger(
         config.log.level, log_file=config.output_dir / "logs" / "eval.log" if config.log.file else None
     )
+    vf.setup_logging(level=config.log.vf_level.upper())
+
     logger.info("Starting evaluation")
     logger.info(f"Model: {config.model}")
     logger.info(f"Environments: {', '.join([env.name or env.id for env in config.env])}")

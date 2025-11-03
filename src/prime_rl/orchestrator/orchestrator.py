@@ -1,3 +1,4 @@
+import pandas as pd
 import asyncio
 import time
 from loguru import logger
@@ -12,11 +13,12 @@ monkey_patch_chat_completion_logprobs()
 
 import lovely_tensors as lt
 import torch
-from verifiers import load_environment, EnvGroup
+import verifiers as vf
 from verifiers.types import GenerateOutputs, ProcessedOutputs
 from transformers import AutoTokenizer
 
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
+from prime_rl.utils.vf import make_rollouts
 from prime_rl.eval.utils import run_evals
 from prime_rl.utils.vf import generate_batch
 from prime_rl.utils.client import (
@@ -28,8 +30,8 @@ from prime_rl.utils.client import (
     setup_evals_client,
     update_weights,
 )
-from prime_rl.orchestrator.config import BufferConfig, OrchestratorConfig, SimpleBufferConfig
-from prime_rl.orchestrator.buffer import setup_buffer, make_rollouts, Rollout
+from prime_rl.orchestrator.config import OrchestratorConfig, SimpleBufferConfig
+from prime_rl.orchestrator.buffer import setup_buffer, Rollout
 from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.utils.logger import setup_logger
 from prime_rl.orchestrator.advantage import compute_advantages
@@ -59,6 +61,7 @@ async def orchestrate(config: OrchestratorConfig):
     logger = setup_logger(
         config.log.level, log_file=config.output_dir / "logs" / "orchestrator.log" if config.log.file else None
     )
+    vf.setup_logging(level=config.log.vf_level.upper())
     logger.info("Starting orchestrator")
 
     # Print warning if running in benchmark mode
@@ -91,10 +94,10 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Load environment and extract dataset
     logger.info(
-        f"Loading {len(config.env)} training environment(s) ({' '.join(env.name or env.id for env in config.env)})"
+        f"Loading {len(config.env)} training environment(s) ({', '.join(env.name or env.id for env in config.env)})"
     )
-    env = EnvGroup(
-        envs=[load_environment(env.id, **env.args) for env in config.env],
+    env = vf.EnvGroup(
+        envs=[vf.load_environment(env.id, **env.args) for env in config.env],
         env_names=[env.name or env.id for env in config.env],
     )
     dataset = env.get_dataset(seed=config.seed)
@@ -191,7 +194,7 @@ async def orchestrate(config: OrchestratorConfig):
             last_eval_step = ckpt_step
             logger.info(f"Running evals for checkpoint step {ckpt_step}")
             run_eval_task = asyncio.create_task(
-                run_evals(
+                await run_evals(
                     clients=clients,
                     eval_config=config.eval,
                     model_config=config.model,
@@ -271,14 +274,6 @@ async def orchestrate(config: OrchestratorConfig):
                 mask_truncated_completions=config.mask_truncated_completions,
             )
 
-            # Extract individual reward function metrics from generate_outputs
-            # TODO: This should move outside of this loop and be computed on the accepted rollouts -- will fix this with the AReal scheduler PR
-            individual_reward_outputs = {}
-            logger.debug(f"Found {len(generate_outputs.metrics)} individual reward functions")
-            for func_name, func_rewards in generate_outputs.metrics.items():
-                individual_reward_outputs[func_name] = torch.tensor(func_rewards)
-                logger.debug(f"Collected {len(func_rewards)} rewards for {func_name}")
-
             # Compute advantages
             advantages = compute_advantages(
                 rewards=processed_outputs.rewards,
@@ -293,15 +288,11 @@ async def orchestrate(config: OrchestratorConfig):
 
             # Update pool
             rollouts = make_rollouts(
-                problem_ids=[problem["id"] for problem in problems for _ in range(config.rollouts_per_example)],
-                prompt_tokens=processed_outputs.prompt_ids,
-                prompt_masks=processed_outputs.prompt_mask,
-                completion_tokens=processed_outputs.completion_ids,
-                completion_masks=processed_outputs.completion_mask,
-                completion_logprobs=processed_outputs.completion_logprobs,
-                is_truncated=is_truncated,
-                rewards=processed_outputs.rewards,
-                advantages=advantages,
+                processed_outputs,
+                generate_outputs.example_id,
+                advantages,
+                generate_outputs.task,
+                is_truncated,
             )
             buffer.update(rollouts)
             accepted_rollouts.extend(buffer.sample_rollouts(problems_to_sample))
@@ -336,71 +327,62 @@ async def orchestrate(config: OrchestratorConfig):
         # Process validation results
         await run_val_task
         val_outputs = run_val_task.result()
-        val_rewards = torch.tensor(val_outputs.reward).float() if val_outputs is not None else None
+        val_results_df = (
+            pd.DataFrame(
+                {
+                    "example_id": val_outputs.example_id,
+                    "task": val_outputs.task,
+                    "reward": val_outputs.reward,
+                }
+            )
+            if val_outputs is not None
+            else None
+        )
 
         # Process evaluation results
         await run_eval_task
         run_eval_task.result()
 
-        # Process training results
-        rewards = (
-            torch.tensor([rollout.reward for rollout in accepted_rollouts])
-            .reshape(-1, config.rollouts_per_example)
-            .float()
+        # Gather train results in a dataframe
+        results_df = pd.DataFrame(
+            {
+                "example_id": [rollout["example_id"] for rollout in accepted_rollouts],
+                "task": [rollout["task"] for rollout in accepted_rollouts],
+                "reward": [rollout["reward"] for rollout in accepted_rollouts],
+                "advantage": [rollout["advantage"] for rollout in accepted_rollouts],
+                "is_truncated": [rollout["is_truncated"] for rollout in accepted_rollouts],
+                "completion_len": [len(rollout["completion_ids"]) for rollout in accepted_rollouts],
+                "prompt_len": [len(rollout["prompt_ids"]) for rollout in accepted_rollouts],
+                "seq_len": [
+                    len(rollout["prompt_ids"]) + len(rollout["completion_ids"]) for rollout in accepted_rollouts
+                ],
+            }
         )
-        advantages = (
-            torch.tensor([rollout.advantage for rollout in accepted_rollouts])
-            .reshape(-1, config.rollouts_per_example)
-            .float()
-        )
-        is_truncated = (
-            torch.tensor([rollout.is_truncated for rollout in accepted_rollouts])
-            .reshape(-1, config.rollouts_per_example)
-            .float()
-        )
-        assert (
-            rewards.shape == advantages.shape == is_truncated.shape == (problems_per_batch, config.rollouts_per_example)
-        )
-        assert rewards.numel() == advantages.numel() == is_truncated.numel() == config.batch_size
-        prompt_tokens = [rollout.prompt_tokens for rollout in accepted_rollouts]
-        completion_tokens = [rollout.completion_tokens for rollout in accepted_rollouts]
-        prompt_lens = torch.tensor([len(p) for p in prompt_tokens]).float().reshape(-1, config.rollouts_per_example)
-        completion_lens = (
-            torch.tensor([len(c) for c in completion_tokens]).float().reshape(-1, config.rollouts_per_example)
-        )
-        seq_lens = prompt_lens + completion_lens
-        assert (
-            seq_lens.shape
-            == prompt_lens.shape
-            == completion_lens.shape
-            == (problems_per_batch, config.rollouts_per_example)
-        )
-        assert seq_lens.numel() == prompt_lens.numel() == completion_lens.numel() == config.batch_size
-        assert is_truncated.shape == (problems_per_batch, config.rollouts_per_example)
-        assert is_truncated.numel() == config.batch_size
 
-        logger.debug(f"Got rewards: {lt.lovely(rewards)}")
-        logger.debug(f"Got advantages: {lt.lovely(advantages)}")
-
-        # Compute progress metrics and throughput
-        num_tokens = int(seq_lens.sum().item())
+        # Update progress metrics and throughput
+        num_tokens = int(results_df.seq_len.sum())
         progress.total_tokens += num_tokens
         progress.total_samples += config.batch_size
         progress.total_problems += config.batch_size // config.rollouts_per_example
         throughput = num_tokens / (generate_completions_time)
 
         # Compute solve all and none tensors
-        solve_all = rewards.sum(-1).eq(config.rollouts_per_example).float().mean().item()
-        solve_none = rewards.sum(-1).eq(0).float().mean().item()
+        solve_all = (
+            results_df.groupby("example_id")
+            .apply(lambda x: x.reward.sum() == config.rollouts_per_example, include_groups=False)
+            .mean()
+        )
+        solve_none = results_df.groupby("example_id").apply(lambda x: x.reward.sum() == 0, include_groups=False).mean()
         effective_batch_size = 1 - solve_none - solve_all
 
-        # Log step metrics
-        step_time = time.time() - step_start_time
-        step_message = f"Step {progress.step} | Ckpt Step {ckpt_step} | Time: {step_time:.2f}s | Reward: {rewards.mean().item():.4f} | Val. Reward: {f'{val_rewards.mean().item():.4f}' if val_rewards is not None else 'N/A'} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {seq_lens.mean().item():.1f} tokens/sample"
-        logger.success(step_message)
+        # Compute per-env reuslts
+        num_envs_in_batch = results_df.task.nunique()
+        per_env_reward = results_df.groupby("task").reward.mean().to_dict() if num_envs_in_batch > 1 else None
+        per_env_count = results_df.task.value_counts().to_dict() if num_envs_in_batch > 1 else None
 
-        # Log progress metrics to monitor
-        progress_metrics = {
+        step_time = time.time() - step_start_time
+        metrics = {
+            # Progress metrics
             "progress/tokens": num_tokens,
             "progress/samples": config.batch_size,
             "progress/problems": config.batch_size // config.rollouts_per_example,
@@ -408,110 +390,87 @@ async def orchestrate(config: OrchestratorConfig):
             "progress/total_samples": progress.total_samples,
             "progress/total_problems": progress.total_problems,
             "progress/ckpt_step": ckpt_step,  # Shared W&B axis
-            "step": progress.step,
-        }
-        monitor.log(progress_metrics)
-
-        # Log sequence lengths to monitor (first reduce over group dimension, then over problem dimension)
-        seq_len_metrics = {
-            "seq_len/mean": seq_lens.mean(-1).mean().item(),
-            "seq_len/max": seq_lens.mean(-1).max().item(),
-            "seq_len/min": seq_lens.mean(-1).min().item(),
-            "step": progress.step,
-        }
-        monitor.log(seq_len_metrics)
-
-        prompt_len_metrics = {
-            "prompt_len/mean": prompt_lens.mean(-1).mean().item(),
-            "prompt_len/max": prompt_lens.mean(-1).max().item(),
-            "prompt_len/min": prompt_lens.mean(-1).min().item(),
-            "step": progress.step,
-        }
-        monitor.log(prompt_len_metrics)
-
-        completion_len_metrics = {
-            "completion_len/mean": completion_lens.mean(-1).mean().item(),
-            "completion_len/max": completion_lens.mean(-1).max().item(),
-            "completion_len/min": completion_lens.mean(-1).min().item(),
-            "step": progress.step,
-        }
-        monitor.log(completion_len_metrics)
-
-        truncated_metrics = {
-            "is_truncated/mean": is_truncated.mean(-1).mean().item(),
-            "is_truncated/max": is_truncated.mean(-1).max().item(),
-            "is_truncated/min": is_truncated.mean(-1).min().item(),
-            "step": progress.step,
-        }
-        monitor.log(truncated_metrics)
-
-        # Log performance metrics to monitor
-        perf_metrics = {
+            # Sequence length metrics
+            "seq_len/mean": results_df.groupby("example_id").seq_len.mean().mean(),
+            "seq_len/max": results_df.groupby("example_id").seq_len.max().mean(),
+            "seq_len/min": results_df.groupby("example_id").seq_len.min().mean(),
+            "prompt_len/mean": results_df.groupby("example_id").prompt_len.mean().mean(),
+            "prompt_len/max": results_df.groupby("example_id").prompt_len.max().mean(),
+            "prompt_len/min": results_df.groupby("example_id").prompt_len.min().mean(),
+            "completion_len/mean": results_df.groupby("example_id").completion_len.mean().mean(),
+            "completion_len/max": results_df.groupby("example_id").completion_len.max().mean(),
+            "completion_len/min": results_df.groupby("example_id").completion_len.min().mean(),
+            "is_truncated/mean": results_df.groupby("example_id").is_truncated.mean().mean(),
+            "is_truncated/max": results_df.groupby("example_id").is_truncated.max().mean(),
+            "is_truncated/min": results_df.groupby("example_id").is_truncated.min().mean(),
+            # Performance metrics
             "perf/throughput": throughput,
             "perf/problem_requests": problem_requests,
             "perf/completion_requests": completion_requests,
             "perf/calls_to_generate": calls_to_generate,
-            "step": progress.step,
-        }
-        monitor.log(perf_metrics)
-
-        # Log reward metrics to monitor (composite + individual)
-        reward_metrics = {
-            "reward/train": rewards.mean().item(),
-            "step": progress.step,
-        }
-        if val_rewards is not None:
-            reward_metrics["reward/val"] = val_rewards.mean().item()
-
-        # Add individual reward function metrics
-        for func_name, func_rewards in individual_reward_outputs.items():
-            reward_metrics[f"reward/{func_name}/mean"] = func_rewards.mean().item()
-
-        monitor.log(reward_metrics)
-
-        # Log rewards metrics to monitor
-        solve_metrics = {
+            # Train reward
+            "train_reward": results_df.reward.mean(),
+            # Batch metrics
             "batch/solve_none": solve_none,
             "batch/solve_all": solve_all,
             "batch/effective_batch_size": effective_batch_size,
-            "step": progress.step,
-        }
-        monitor.log(solve_metrics)
-
-        # Log time metrics to monitor
-        time_metrics = {
+            # Time metrics
             "time/step": step_time,
             "time/wait_for_weight_ckpt": wait_for_weight_ckpt_time,
             "time/generate_completions": generate_completions_time,
             "time/update_weights": update_weights_time,
             "time/save_ckpt": save_ckpt_time,
+            # W&B axis
+            "ckpt_step": ckpt_step,
             "step": progress.step,
         }
-        monitor.log(time_metrics)
+
+        # Optionally, add per-env metrics
+        if results_df.task.nunique() > 1:
+            per_env_reward = results_df.groupby("task").reward.mean().to_dict()
+            metrics.update({f"reward/{env}": reward for env, reward in per_env_reward.items()})
+
+            per_env_count = results_df.task.value_counts().to_dict()
+            metrics.update({f"batch/{env}": count for env, count in per_env_count.items()})
+
+        # Optionally, add validation reward
+        if val_results_df is not None:
+            metrics.update({"val_reward": val_results_df.reward.mean()})
+
+            if val_results_df.task.nunique() > 1:
+                per_env_reward = val_results_df.groupby("task").reward.mean().to_dict()
+                metrics.update({f"val_reward/{env}": reward for env, reward in per_env_reward.items()})
+
+                per_env_count = val_results_df.task.value_counts().to_dict()
+                metrics.update({f"val_batch/{env}": count for env, count in per_env_count.items()})
+
+        # Log metrics to W&B
+        monitor.log(metrics)
 
         # Log samples and distributions to W&B table if enabled
         monitor.log_samples(
-            input_tokens=prompt_tokens,
-            output_tokens=completion_tokens,
-            rewards=rewards.flatten().tolist(),
-            advantages=advantages.flatten().tolist(),
+            input_tokens=[rollout["prompt_ids"] for rollout in accepted_rollouts],
+            output_tokens=[rollout["completion_ids"] for rollout in accepted_rollouts],
+            rewards=results_df.reward.tolist(),
+            advantages=results_df.advantage.tolist(),
             rollouts_per_problem=config.rollouts_per_example,
             step=progress.step,
         )
 
         distributions = {
-            "rewards": rewards.flatten().tolist(),
-            "advantages": advantages.flatten().tolist(),
-            "problem_rewards": rewards.mean(-1).tolist(),
-            "problem_advantages": advantages.mean(-1).tolist(),
+            "rewards": results_df.reward.tolist(),
+            "advantages": results_df.advantage.tolist(),
+            "problem_rewards": results_df.groupby("example_id").reward.mean().tolist(),
+            "problem_advantages": results_df.groupby("example_id").advantage.mean().tolist(),
         }
 
-        for func_name, func_rewards in individual_reward_outputs.items():
-            distributions[f"{func_name}_rewards"] = func_rewards.tolist()
-
+        # Log distributions to W&B table
         monitor.log_distributions(distributions=distributions, step=progress.step)
 
-        # Increment progress
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.seq_len.mean():.1f} tokens/sample"
+        logger.success(step_message)
+
+        # Increment step
         progress.step += 1
         is_first_step = False
 
