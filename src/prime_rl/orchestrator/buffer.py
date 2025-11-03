@@ -97,7 +97,8 @@ class Buffer(ABC):
     def __init__(self, dataset: Dataset, buffer_config: DataBufferConfigType):
         self.logger = get_logger()
         self.config = buffer_config
-        random.seed(self.config.seed)
+        if self.config.seed is not None:
+            random.seed(self.config.seed)
 
         # Initialize buffer
         self._init_buffer(dataset, self.config.from_scratch)
