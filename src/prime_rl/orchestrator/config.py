@@ -199,10 +199,10 @@ class ValConfig(BaseConfig):
     """Configures the validation of the model."""
 
     num_examples: Annotated[
-        int, Field(description="Number of examples to use for validation. If -1, will use all examples.")
-    ] = -1
+        int, Field(ge=1, description="Number of examples to use for validation. If -1, will use all examples.")
+    ] = 16
     rollouts_per_example: Annotated[
-        int, Field(description="Number of samples to generate per example for validation.")
+        int, Field(ge=1, description="Number of samples to generate per example for validation.")
     ] = 1
     interval: Annotated[int, Field(description="Interval at which to validate the model.")] = 10
 
