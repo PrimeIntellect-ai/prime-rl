@@ -1,0 +1,39 @@
+max_steps = 100
+batch_size = 512
+rollouts_per_example = 16
+seq_len = 8192
+
+[model]
+name = "PrimeIntellect/Qwen3-4B"
+
+[sampling]
+max_tokens = 8192
+
+[buffer]
+type = "difficulty-pool"
+easy_fraction = 0.0
+hard_fraction = 0.0
+easy_border = 1.0
+hard_border = 0.0
+
+[[env]]
+id = "i3-math"
+
+[[env]]
+id = "i3-code"
+
+[val]
+interval = 1
+num_examples = 8
+rollouts_per_example = 16
+
+[eval]
+interval = 10
+
+[[eval.env]]
+id = "math500"
+num_examples = 32
+
+[[eval.env]]
+id = "livecodebench"
+num_examples = 32
