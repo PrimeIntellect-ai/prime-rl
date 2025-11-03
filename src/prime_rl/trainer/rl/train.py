@@ -6,7 +6,6 @@ from datetime import timedelta
 # ruff: noqa: I001
 
 import torch
-import torch.nn as nn
 import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
@@ -24,17 +23,13 @@ from prime_rl.trainer.model import (
     setup_model,
     is_tt_moe_model,
     get_load_balance_stats,
-    reshard_module,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     MemoryProfiler,
-    OffloadedTensor,
     Tensors,
     setup_torch_distributed,
-    offload_model_to_cpu,
-    wake_up_model_from_cpu,
     print_benchmark,
     get_response_lengths,
 )
