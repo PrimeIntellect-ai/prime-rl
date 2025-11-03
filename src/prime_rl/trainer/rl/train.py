@@ -157,7 +157,10 @@ def train(config: RLTrainerConfig):
             save_weights_time = time.time() - save_weights_start_time
             broadcast_weights_time = save_weights_time
 
-            if nccl_broadcast is not None and not is_last_step:
+            # Do not NCCL broadcast the last async level steps because the inference server is not receiving anymore
+            if nccl_broadcast is not None and not (
+                config.max_steps is not None and progress.step >= config.async_level - 1
+            ):
                 broadcast_weights_start_time = time.time()
                 nccl_broadcast.broadcast_state_dict(model)
                 broadcast_weights_time = time.time() - broadcast_weights_start_time
