@@ -66,6 +66,7 @@ def get_response_lengths(position_ids: torch.Tensor) -> list[int]:
 
     return lengths
 
+
 def print_sample(input_ids: list[int], loss_mask: list[bool], tokenizer: PreTrainedTokenizer):
     """
     Visualize the loss mask of a tokenized sample using rich.
