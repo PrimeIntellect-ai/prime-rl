@@ -6,7 +6,7 @@ rollouts_per_example = 16
 [model]
 name = "PrimeIntellect/Qwen3-1.7B-Wordle-SFT"
 
-[environment]
+[[env]]
 id = "wordle"
 
 [sampling]

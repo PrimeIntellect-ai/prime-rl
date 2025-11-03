@@ -12,20 +12,26 @@ max_tokens = 8192
 
 [wandb]
 
-[environment]
+[[env]]
 id = "intellect-math"
-
-[environment.args]
-solve_rate_field = "solve_rate_qwen_r1_distill_7b"
-min_solve_rate = 0.4
-max_solve_rate = 0.9
+args = { solve_rate_field = "solve_rate_qwen_r1_distill_7b", min_solve_rate = 0.4, max_solve_rate = 0.9 }
 
 [wandb.log_extras]
 interval = 50
 
 [eval]
 interval = 50
-environment_ids = ["math500", "aime2024", "aime2025"]
-rollouts_per_example = [1, 16, 16]
+
+[[eval.env]]
+id = "math500"
+rollouts_per_example = 1
+
+[[eval.env]]
+id = "aime2024"
+rollouts_per_example = 16
+
+[[eval.env]]
+id = "aime2025"
+rollouts_per_example = 16
 
 [ckpt]

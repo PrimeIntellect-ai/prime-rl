@@ -13,7 +13,7 @@ max_tokens = 2048
 
 [wandb]
 
-[environment]
+[[env]]
 id = "hendrycks-math"
 
 [wandb.log_extras]
@@ -21,5 +21,15 @@ interval = 10
 
 [eval]
 interval = 50
-environment_ids = ["math500", "aime2024", "aime2025"]
-rollouts_per_example = [1, 16, 16]
+
+[[eval.env]]
+id = "math500"
+rollouts_per_example = 1
+
+[[eval.env]]
+id = "aime2024"
+rollouts_per_example = 16
+
+[[eval.env]]
+id = "aime2025"
+rollouts_per_example = 16
