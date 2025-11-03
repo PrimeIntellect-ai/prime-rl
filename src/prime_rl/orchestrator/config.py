@@ -422,7 +422,7 @@ class OrchestratorConfig(BaseSettings):
         Field(
             description="Maximum number of concurrent rollouts to generate and score. Will create a global semaphore and pass to verifiers Environment. If None, will not limit concurrency.",
         ),
-    ] = 1024
+    ] = None
 
     batch_size: Annotated[int, Field(ge=1, description="Number of samples to train on per step.")] = 128
 
