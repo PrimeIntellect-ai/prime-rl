@@ -323,6 +323,15 @@ async def orchestrate(config: OrchestratorConfig):
             seq_len=config.seq_len,
         )
 
+        step_path = get_rollout_dir(config.output_dir) / f"step_{progress.step}"
+        step_path.mkdir(parents=True, exist_ok=True)
+        for i, batches in enumerate(all_data_ranks_batches):
+            batch_path = step_path / f"rank_{i}.pt"
+            tmp_path = batch_path.with_suffix(".tmp")
+            logger.debug(f"Saving rollouts for step {progress.step} for rank {i} to {batch_path}")
+            torch.save(batches, tmp_path)
+            tmp_path.rename(batch_path)
+
         # Process validation results
         await run_val_task
         val_outputs = run_val_task.result()
@@ -383,15 +392,6 @@ async def orchestrate(config: OrchestratorConfig):
         solve_all = rewards.sum(-1).eq(config.rollouts_per_example).float().mean().item()
         solve_none = rewards.sum(-1).eq(0).float().mean().item()
         effective_batch_size = 1 - solve_none - solve_all
-
-        step_path = get_rollout_dir(config.output_dir) / f"step_{progress.step}"
-        step_path.mkdir(parents=True, exist_ok=True)
-        for i, batches in enumerate(all_data_ranks_batches):
-            batch_path = step_path / f"rank_{i}.pt"
-            tmp_path = batch_path.with_suffix(".tmp")
-            logger.debug(f"Saving rollouts for step {progress.step} for rank {i} to {batch_path}")
-            torch.save(batches, tmp_path)
-            tmp_path.rename(batch_path)
 
         # Log step metrics
         step_time = time.time() - step_start_time
