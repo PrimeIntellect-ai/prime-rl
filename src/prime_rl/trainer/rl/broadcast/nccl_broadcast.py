@@ -116,11 +116,7 @@ class NCCLBroadcastSender:
         self.training_rank = get_world().rank
 
         if self.training_rank == 0:
-            self.logger.info(
-                f"Initializing NCCL broadcast ({host}:{port}, rank={get_world().rank}, world_size={world_size})"
-            )
             self.communicator = create_nccl_communicator(host, port, rank, world_size, device, timeout)
-
             self.logger.info(f"NCCL broadcast initialized for rank {rank} and world size {world_size}")
 
         self.device = device
@@ -142,7 +138,7 @@ class NCCLBroadcastSender:
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
 
         for i, state_dict in filter_state_dict_by_layers(state_dict, num_layers):
-            self.logger.debug(f"sending layer {i}/{num_state_dict_to_send} state dict")
+            self.logger.debug(f"Sending layer {i}/{num_state_dict_to_send} state dict")
             for key, value in list(state_dict.items()):
                 if isinstance(value, DTensor):
                     value = value.to(self.dtype).full_tensor()
@@ -173,7 +169,7 @@ class NCCLBroadcastReceiver:
     ):
         self.logger = logger
 
-        self.logger.info(f"Initializing NCCL broadcast ({host}:{port}, rank={rank}, world_size={world_size})")
+        self.logger.info(f"Initializing NCCL broadcast receiver ({host}:{port}, rank={rank}, world_size={world_size})")
         self.communicator = create_nccl_communicator(host, port, rank, world_size, device, timeout)
 
         self.device = self.communicator.device
