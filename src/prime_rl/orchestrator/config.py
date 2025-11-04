@@ -350,14 +350,6 @@ class OnlineDifficultyBufferConfig(BufferConfig):
         ),
     ] = 0.99
 
-    oversampling_factor: Annotated[
-        float,
-        Field(
-            gt=0,
-            description="Factor by which to oversample during filtering to ensure sufficient samples.",
-        ),
-    ] = 1.0
-
 
 DataBufferConfigType: TypeAlias = SimpleBufferConfig | DifficultyPoolBufferConfig | OnlineDifficultyBufferConfig
 

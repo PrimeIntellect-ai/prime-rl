@@ -332,9 +332,7 @@ class OnlineDifficultyBuffer(Buffer):
     """
     The online difficulty buffer ensures that any sampled rollouts are within
     some configurable difficulty range. This means it may not return the
-    specified number of rollouts. It is the orchestrator's task to sample more.
-    An oversampling factor can be specified to increase the chance that at least
-    n problems are within the difficulty range.
+    specified number of rollouts.
     """
 
     def __init__(self, dataset: Dataset, buffer_config: OnlineDifficultyBufferConfig):
