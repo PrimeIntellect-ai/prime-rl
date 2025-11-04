@@ -127,12 +127,12 @@ class Scheduler:
     async def update_policy(self):
         """Updates the policy to the latest available checkpoint. Aborts rollout requests that are older than the max retention steps."""
         latest_ckpt_step = get_latest_ckpt_step(get_weights_dir(self.config.output_dir)) or 0
-        fixed_off_policy_step = max(self.step - self.max_off_policy_steps, 0)
-        next_ckpt_step = max(fixed_off_policy_step, latest_ckpt_step)
+        async_away_ckpt_step = max(self.step - self.max_async_level, 0)
+        next_ckpt_step = max(async_away_ckpt_step, latest_ckpt_step)
         if next_ckpt_step > self.ckpt_step:
-            if next_ckpt_step == fixed_off_policy_step:
+            if next_ckpt_step == async_away_ckpt_step:
                 self.logger.debug(
-                    f"Hit async barrier because we are >{self.max_off_policy_steps} steps off-policy. Waiting for weight checkpoint {next_ckpt_step}"
+                    f"Hit async barrier because we are >{self.max_async_level} steps async. Waiting for weight checkpoint {next_ckpt_step}"
                 )
                 wait_for_weight_ckpt_start_time = time.time()
                 sync_wait_for_path(get_step_path(get_weights_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
@@ -180,7 +180,7 @@ class Scheduler:
         self.step = step
 
         # Schedule initial tasks
-        self.logger.info("Starting to generate batch rollouts")
+        self.logger.debug("Starting to generate batch rollouts")
         while len(self.inflight_group_rollouts) < self.problems_per_batch:
             await self.schedule_group_rollout()  # Schedule requests in round-robin fashion
 
