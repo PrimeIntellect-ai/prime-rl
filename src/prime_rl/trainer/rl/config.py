@@ -189,9 +189,3 @@ class RLTrainerConfig(BaseSettings):
         if self.weight_broadcast.type == "nccl" and self.async_level != 1:
             raise ValueError("NCCL weight broadcast only works with async level 1")
         return self
-
-    @model_validator(mode="after")
-    def ensure_saving_weights_every_step_for_filesystem(self):
-        if self.weight_broadcast.type == "filesystem":
-            self.weights.interval = 1
-        return self
