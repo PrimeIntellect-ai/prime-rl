@@ -33,7 +33,6 @@ class Scheduler:
         oversampling_factor: float,
         max_async_level: int,
         max_off_policy_steps: int,
-        semaphore: asyncio.Semaphore | None,
     ):
         self.logger = get_logger()
         self.clients = clients
@@ -46,7 +45,6 @@ class Scheduler:
         self.rollouts_per_example = config.rollouts_per_example
         self.seq_len = config.seq_len
         self.problems_per_batch = int(oversampling_factor * self.batch_size // self.rollouts_per_example)
-        self.semaphore = semaphore
         self.max_async_level = max_async_level
         self.max_off_policy_steps = max_off_policy_steps
         self.inflight_group_rollouts: dict[asyncio.Task, tuple[int, AsyncOpenAI]] = {}
@@ -99,7 +97,9 @@ class Scheduler:
 
         return accepted_rollouts
 
-    async def schedule_group_rollout(self, client: AsyncOpenAI | None = None):
+    async def schedule_group_rollout(
+        self, client: AsyncOpenAI | None = None, semaphore: asyncio.Semaphore | None = None
+    ):
         """Asynchronously schedules a group rollout request."""
         problem = self.buffer.sample_problems(n=1)[0]
         if client is None:
@@ -112,7 +112,7 @@ class Scheduler:
                 problem=problem,
                 rollouts_per_example=self.config.rollouts_per_example,
                 sampling_args=self.sampling_args,
-                semaphore=self.semaphore,
+                semaphore=semaphore,
             )
         )
         await asyncio.sleep(0)
@@ -175,7 +175,7 @@ class Scheduler:
 
             self.ckpt_step = latest_ckpt_step
 
-    async def generate_batch(self, step: int) -> list[Rollout]:
+    async def generate_batch(self, step: int, semaphore: asyncio.Semaphore | None = None) -> list[Rollout]:
         """Generates group rollouts continuously until the batch is filled. Updates the policy on the fly."""
         self.step = step
 

@@ -541,10 +541,10 @@ class OrchestratorConfig(BaseSettings):
     seed: Annotated[int | None, Field(description="Random seed for the orchestrator.")] = 42
 
     @model_validator(mode="after")
-    def ascyn_nccl(self):
+    def nccl_max_async_level(self):
         if self.weight_broadcast.type == "nccl":
-            if not self.async_level == 1:
-                raise ValueError("Async level must be 1 for NCCL broadcast")
+            if not self.max_async_level == 1:
+                raise ValueError("max_async_level must be 1 for NCCL broadcast")
         return self
 
     @model_validator(mode="after")

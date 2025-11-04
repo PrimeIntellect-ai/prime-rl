@@ -37,8 +37,8 @@ from prime_rl.utils.utils import (
     get_weights_dir,
 )
 from prime_rl.utils.validation import (
-    validate_shared_async_level,
     validate_shared_ckpt_config,
+    validate_shared_max_async_level,
     validate_shared_max_steps,
     validate_shared_model_name,
     validate_shared_output_dir,
@@ -175,7 +175,7 @@ class RLConfig(BaseSettings):
         ),
     ] = None
 
-    async_level: Annotated[
+    max_async_level: Annotated[
         int | None,
         Field(
             description="The async level to use. If None, will fallback to the async level specified on submodule configs."
@@ -337,11 +337,11 @@ class RLConfig(BaseSettings):
     @model_validator(mode="after")
     def auto_setup_async_level(self):
         # If specified, use the same async level for trainer and orchestrator
-        if self.async_level:
-            self.trainer.async_level = self.async_level
-            self.orchestrator.async_level = self.async_level
+        if self.max_async_level:
+            self.trainer.max_async_level = self.max_async_level
+            self.orchestrator.max_async_level = self.max_async_level
 
-        validate_shared_async_level(self.trainer, self.orchestrator)
+        validate_shared_max_async_level(self.trainer, self.orchestrator)
 
         return self
 

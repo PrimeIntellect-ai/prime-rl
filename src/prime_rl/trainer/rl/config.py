@@ -118,7 +118,7 @@ class RLTrainerConfig(BaseSettings):
         ),
     ] = None
 
-    async_level: Annotated[
+    max_async_level: Annotated[
         int,
         Field(
             ge=0,

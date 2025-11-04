@@ -68,9 +68,7 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Print warning if running in benchmark mode
     if config.bench:
-        logger.warning(
-            f"Running in benchmark mode (max_steps={config.max_steps}, async_level={format_num(config.async_level, precision=0)})"
-        )
+        logger.warning(f"Running in benchmark mode (max_steps={config.max_steps})")
 
     # Setup client
     assert config.client.server_type == "vllm", "Orchestrator only supports vLLM server type."
@@ -189,35 +187,30 @@ async def orchestrate(config: OrchestratorConfig):
         logger.info(f"Starting orchestrator step {progress.step}")
         step_start_time = time.time()
 
-        # If we hit the async barrier, update the inference pool weights with the correct policy
-        wait_for_weight_ckpt_time, update_weights_time = 0, 0
-        if progress.step - ckpt_step > config.async_level:
-            logger.debug(
-                f"Hit async barrier because step {progress.step} is {progress.step - ckpt_step} (>{config.async_level}) steps ahead of checkpoint step {ckpt_step}."
-            )
-            ckpt_step = progress.step - config.async_level
-
-            # Wait for the checkpoint to be available on disk
-            if config.weight_broadcast.type == "filesystem":
-                logger.info(f"Waiting for weight checkpoint {ckpt_step}")
-                wait_for_weight_ckpt_start_time = time.time()
-                await wait_for_path(get_step_path(get_weights_dir(config.output_dir), ckpt_step) / "STABLE")
-                wait_for_weight_ckpt_time = time.time() - wait_for_weight_ckpt_start_time
-                logger.debug(f"Waited {wait_for_weight_ckpt_time:.2f}s for weight checkpoint")
-
-            # Update the weights
-            logger.info(f"Updating weights to weight checkpoint {ckpt_step}")
-            update_weights_start_time = time.time()
-            weight_dir = get_step_path(get_weights_dir(config.output_dir), ckpt_step)
-            await update_weights(admin_clients, weight_dir if config.weight_broadcast.type == "filesystem" else None)
-            update_weights_time = time.time() - update_weights_start_time
-            logger.debug(f"Updated weights in {update_weights_time:.2f}s")
-
-        # Generate rollouts for training
+        # Schedule generating the training batch
         generate_completions_start_time = time.time()
-        train_task = asyncio.create_task(scheduler.generate_batch(step=progress.step))
+        train_task = asyncio.create_task(scheduler.generate_batch(step=progress.step, semaphore=semaphore))
 
-        # Optionally, run online evals at the specified interval
+        # Schedule running evals at the specified interval
+        if val_buffer and config.val and progress.step % config.val.interval == 0:
+            logger.info(f"Running validation for step {progress.step}")
+            val_problems = val_buffer.sample_problems(config.val.num_examples)
+            val_task = asyncio.create_task(
+                generate_batch(
+                    clients=clients,
+                    env=env,
+                    model_name=config.model.name,
+                    problems=val_problems,
+                    rollouts_per_example=config.val.rollouts_per_example,
+                    sampling_args=get_sampling_args(config.sampling),
+                    semaphore=semaphore,
+                    pbar_description="Generating rollouts (val)",
+                )
+            )
+        else:
+            val_task = asyncio.create_task(asyncio.sleep(0))  # Dummy task
+
+        # Schedule running evals at the specified interval
         if (
             config.eval
             and ckpt_step % config.eval.interval == 0
@@ -243,25 +236,7 @@ async def orchestrate(config: OrchestratorConfig):
         else:
             eval_task = asyncio.create_task(asyncio.sleep(0))  # Dummy task
 
-        if val_buffer and config.val and progress.step % config.val.interval == 0:
-            logger.info(f"Running validation for step {progress.step}")
-            val_problems = val_buffer.sample_problems(config.val.num_examples)
-            val_task = asyncio.create_task(
-                generate_batch(
-                    clients=clients,
-                    env=env,
-                    model_name=config.model.name,
-                    problems=val_problems,
-                    rollouts_per_example=config.val.rollouts_per_example,
-                    sampling_args=get_sampling_args(config.sampling),
-                    semaphore=semaphore,
-                    pbar_description="Generating rollouts (val)",
-                )
-            )
-        else:
-            val_task = asyncio.create_task(asyncio.sleep(0))  # Dummy task
-
-        # Await and process train results
+        # Await train rollouts, process results and write batch to disk to consume by trainer
         await train_task
         generate_completions_time = time.time() - generate_completions_start_time
         train_rollouts = train_task.result()
@@ -374,9 +349,7 @@ async def orchestrate(config: OrchestratorConfig):
             **{f"metrics/{metric}": metrics_df[metric].mean() for metric in metrics_df.columns},
             # Time metrics
             "time/step": step_time,
-            "time/wait_for_weight_ckpt": wait_for_weight_ckpt_time,
             "time/generate_completions": generate_completions_time,
-            "time/update_weights": update_weights_time,
             "time/save_ckpt": save_ckpt_time,
             # W&B axis
             "step": progress.step,
