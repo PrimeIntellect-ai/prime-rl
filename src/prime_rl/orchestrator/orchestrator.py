@@ -119,6 +119,7 @@ async def orchestrate(config: OrchestratorConfig):
         oversampling_factor=config.oversampling_factor,
         max_async_level=config.max_async_level,
         max_off_policy_steps=config.max_off_policy_steps,
+        strict_async_level=config.strict_async_level,
     )
 
     # Check health of the client
@@ -351,6 +352,8 @@ async def orchestrate(config: OrchestratorConfig):
             "time/step": step_time,
             "time/generate_completions": generate_completions_time,
             "time/save_ckpt": save_ckpt_time,
+            # Scheduler metrics
+            **scheduler.metrics(),
             # W&B axis
             "step": progress.step,
         }
@@ -397,7 +400,7 @@ async def orchestrate(config: OrchestratorConfig):
         # Log distributions to W&B table
         monitor.log_distributions(distributions=distributions, step=progress.step)
 
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} |{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.seq_len.mean():.1f} tokens/sample"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} |{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.seq_len.mean():.1f} tokens/sample | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
         logger.success(step_message)
 
         # Increment step

@@ -33,6 +33,7 @@ class Scheduler:
         oversampling_factor: float,
         max_async_level: int,
         max_off_policy_steps: int,
+        strict_async_level: bool,
     ):
         self.logger = get_logger()
         self.clients = clients
@@ -47,10 +48,11 @@ class Scheduler:
         self.problems_per_batch = int(oversampling_factor * self.batch_size // self.rollouts_per_example)
         self.max_async_level = max_async_level
         self.max_off_policy_steps = max_off_policy_steps
+        self.strict_async_level = strict_async_level
         self.inflight_group_rollouts: dict[asyncio.Task, tuple[int, AsyncOpenAI]] = {}
         self.cycle_clients = cycle(self.clients)
         self.step, self.ckpt_step = 0, 0
-        self.update_weights_time, self.wait_for_weight_ckpt_time = 0, 0
+        self.update_weights_time, self.wait_for_ckpt_time = 0, 0
         self.sampling_args = get_sampling_args(config.sampling)
 
     def process_generate_outputs(
@@ -85,7 +87,7 @@ class Scheduler:
         rollouts = make_rollouts(
             generate_outputs,
             processed_outputs,
-            generate_outputs.example_id,  # TODO: Bring back buffer ID here
+            generate_outputs.example_id,  # TODO: Bring back buffer ID here for multi-env training to work
             advantages,
             is_truncated,
         )
@@ -128,18 +130,18 @@ class Scheduler:
         """Updates the policy to the latest available checkpoint. Aborts rollout requests that are older than the max retention steps."""
         latest_ckpt_step = get_latest_ckpt_step(get_weights_dir(self.config.output_dir)) or 0
         async_away_ckpt_step = max(self.step - self.max_async_level, 0)
-        next_ckpt_step = max(async_away_ckpt_step, latest_ckpt_step)
+        next_ckpt_step = (
+            async_away_ckpt_step if self.strict_async_level else max(async_away_ckpt_step, latest_ckpt_step)
+        )
         if next_ckpt_step > self.ckpt_step:
             if next_ckpt_step == async_away_ckpt_step:
-                self.logger.debug(
-                    f"Hit async barrier because we are >{self.max_async_level} steps async. Waiting for weight checkpoint {next_ckpt_step}"
+                self.logger.info(
+                    f"Hit async barrier because we are >{self.max_async_level} step(s) async. Waiting for checkpoint {next_ckpt_step}"
                 )
-                wait_for_weight_ckpt_start_time = time.time()
+                wait_for_ckpt_start_time = time.time()
                 sync_wait_for_path(get_step_path(get_weights_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
-                self.wait_for_weight_ckpt_time = time.time() - wait_for_weight_ckpt_start_time
-                self.logger.debug(
-                    f"Waited for weight checkpoint {next_ckpt_step} for {self.wait_for_weight_ckpt_time:.2f}s"
-                )
+                self.wait_for_ckpt_time = time.time() - wait_for_ckpt_start_time
+                self.logger.debug(f"Waited for checkpoint {next_ckpt_step} for {self.wait_for_ckpt_time:.2f}s")
             self.logger.debug(
                 f"Got new policy with step {next_ckpt_step}. Updating weights and cancelling old rollout requests."
             )
@@ -173,7 +175,7 @@ class Scheduler:
             if len(tasks_to_remove) > 0:
                 self.logger.warning(f"Cancelled and re-scheduled {len(tasks_to_remove)} old rollout requests.")
 
-            self.ckpt_step = latest_ckpt_step
+            self.ckpt_step = next_ckpt_step
 
     async def generate_batch(self, step: int, semaphore: asyncio.Semaphore | None = None) -> list[Rollout]:
         """Generates group rollouts continuously until the batch is filled. Updates the policy on the fly."""
@@ -236,7 +238,7 @@ class Scheduler:
 
     def metrics(self) -> dict:
         return {
-            "time/wait_for_weight_ckpt": self.wait_for_weight_ckpt_time,
+            "time/wait_for_ckpt": self.wait_for_ckpt_time,
             "time/update_weights": self.update_weights_time,
             "batch/async_level": self.async_level,
             "batch/off_policy_level/max": self.max_off_policy_level,
