@@ -308,6 +308,9 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
         apply_lora_to_model(model, config.experimental.lora)
 
     # the right order is AC -> Compile -> FSDP
+    if config.tp > 1:
+        model._apply_tp(parallel_dims.world_mesh["tp"])
+
     if config.ac is not None:
         apply_ac(model, config.ac)
     if config.compile is not None:

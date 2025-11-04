@@ -18,6 +18,18 @@ from typing import Optional, Union
 
 import torch
 from torch import nn
+from torch.distributed.device_mesh import DeviceMesh
+from torch.distributed.tensor import Partial, distribute_tensor
+from torch.distributed.tensor.parallel import (
+    ColwiseParallel,
+    ParallelStyle,
+    PrepareModuleInput,
+    PrepareModuleInputOutput,
+    RowwiseParallel,
+    SequenceParallel,
+)
+from torch.distributed.tensor.placement_types import Replicate, Shard
+from torchtitan.distributed.expert_parallel import NoParallel, TensorParallel
 from transformers.cache_utils import Cache
 from transformers.configuration_utils import PretrainedConfig
 from transformers.generation import GenerationMixin
@@ -34,6 +46,7 @@ from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
+from prime_rl.utils.logger import get_logger
 
 
 class Glm4MoeConfig(PretrainedConfig):
@@ -155,18 +168,6 @@ class Glm4MoeConfig(PretrainedConfig):
     keys_to_ignore_at_inference = ["past_key_values"]
 
     # Default tensor parallel plan for base model `Glm4Moe`
-    base_model_tp_plan = {
-        "layers.*.self_attn.q_proj": "colwise",
-        "layers.*.self_attn.k_proj": "colwise",
-        "layers.*.self_attn.v_proj": "colwise",
-        "layers.*.self_attn.o_proj": "rowwise",
-        "layers.*.mlp.experts.*.gate_proj": "colwise",
-        "layers.*.mlp.experts.*.up_proj": "colwise",
-        "layers.*.mlp.experts.*.down_proj": "rowwise",
-        "layers.*.mlp.gate_proj": "colwise",
-        "layers.*.mlp.up_proj": "colwise",
-        "layers.*.mlp.down_proj": "rowwise",
-    }
     base_model_pp_plan = {
         "embed_tokens": (["input_ids"], ["inputs_embeds"]),
         "layers": (["hidden_states"], ["hidden_states"]),
@@ -265,6 +266,44 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
             rms_norm_eps=config.rms_norm_eps,
         )
         self.self_attn = ATTN_IMPL2CLASS[config._attn_implementation](attn_config)
+
+        self._non_mlp_tp_plan = {
+            "input_layernorm": SequenceParallel(),
+            "self_attn": PrepareModuleInput(
+                input_kwarg_layouts={"hidden_states": Shard(1)},
+                desired_input_kwarg_layouts={"hidden_states": Replicate()},
+            ),
+            "self_attn.q_proj": ColwiseParallel(),
+            "self_attn.k_proj": ColwiseParallel(),
+            "self_attn.v_proj": ColwiseParallel(),
+            "self_attn.o_proj": RowwiseParallel(output_layouts=Shard(1)),
+            "post_attention_layernorm": SequenceParallel(),
+        }
+
+        self._mlp_tp_plan = {
+            "mlp": PrepareModuleInput(input_layouts=Shard(1), desired_input_layouts=Replicate()),
+            "mlp.gate_proj": ColwiseParallel(),
+            "mlp.up_proj": ColwiseParallel(),
+            "mlp.down_proj": RowwiseParallel(output_layouts=Shard(1)),
+        }
+
+        self._moe_tp_plan = {
+            "mlp": PrepareModuleInputOutput(
+                input_layouts=(Shard(1),),
+                desired_input_layouts=(Replicate(),),
+                use_local_input=True,
+                output_layouts=(Partial(),),
+                desired_output_layouts=(Shard(1),),
+            ),
+            "mlp.router.gate": NoParallel(),
+            "mlp.router.experts": TensorParallel(),
+        }
+
+        self._shared_expert_tp_plan = {
+            "mlp.shared_expert.w1": ColwiseParallel(),
+            "mlp.shared_expert.w2": RowwiseParallel(output_layouts=Partial()),
+            "mlp.shared_expert.w3": ColwiseParallel(),
+        }
 
         moe_args = MoEArgs(
             num_experts=config.n_routed_experts,
@@ -368,6 +407,10 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
 
         # Initialize weights and apply final processing
         self.post_init()
+        self._tp_plan = {
+            "embed_tokens": RowwiseParallel(input_layouts=Replicate(), output_layouts=Shard(1)),
+            "norm": SequenceParallel(),
+        }
 
     @auto_docstring
     def forward(
@@ -416,7 +459,6 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
 @auto_docstring
 class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
     _tied_weights_keys = ["lm_head.weight"]
-    _tp_plan = {"lm_head": "colwise_rep"}
     _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
 
     def __init__(self, config):
@@ -427,6 +469,43 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
 
         # Initialize weights and apply final processing
         self.post_init()
+
+        self._tp_plan = {
+            "lm_head": ColwiseParallel(input_layouts=Shard(1), output_layouts=Replicate(), use_local_output=True)
+        }
+
+    def _apply_tp(self, device_mesh: DeviceMesh):
+        from torch.distributed.tensor.parallel import parallelize_module
+
+        logger = get_logger()
+
+        parallelize_module(
+            self,
+            device_mesh=device_mesh,
+            parallelize_plan=self._tp_plan,
+        )
+        logger.info(f"Parallelized model {self}")
+
+        parallelize_module(
+            self.model,
+            device_mesh=device_mesh,
+            parallelize_plan=self.model._tp_plan,
+        )
+        logger.info(f"Parallelized model {self.model}")
+
+        for layer in self.model.layers:
+            is_expert_layer = hasattr(layer, "mlp") and isinstance(layer.mlp, MoE)
+            _tp_plan = {**layer._non_mlp_tp_plan}
+            if is_expert_layer:
+                _tp_plan.update(layer._moe_tp_plan)
+            else:
+                _tp_plan.update(layer._mlp_tp_plan)
+
+            if is_expert_layer and layer.mlp.shared_expert is not None:
+                _tp_plan.update(layer._shared_expert_tp_plan)
+
+            parallelize_module(layer, device_mesh=device_mesh, parallelize_plan=_tp_plan)
+            logger.info(f"Parallelized layer {layer}")
 
     @auto_docstring
     def forward(

@@ -339,7 +339,7 @@ class MoE(nn.Module):
         self.reorderer = TokenReorderer(num_experts=num_experts, top_k=moe_args.top_k)
         # TODO: Add the s back and use FF when the weights support it
         self.shared_expert = (
-            BCFeedForward(dim=dim, hidden_dim=hidden_dim * moe_args.num_shared_experts)
+            FeedForward(dim=dim, hidden_dim=hidden_dim * moe_args.num_shared_experts)
             if moe_args.num_shared_experts > 0
             else None
         )
