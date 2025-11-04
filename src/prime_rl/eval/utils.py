@@ -83,7 +83,6 @@ async def run_eval(
     rollouts_per_example: int,
     output_dir: Path,
     ckpt_step: int,
-    semaphore: asyncio.Semaphore | None,
     model_config: ModelConfig,
     sampling_config: EvalSamplingConfig,
     client_config: ClientConfig,
@@ -113,7 +112,6 @@ async def run_eval(
         clients=clients,
         rollouts_per_example=rollouts_per_example,
         sampling_args=sampling_args,
-        semaphore=semaphore,
         pbar_description=f"Evaluating {env_name_or_id}",
     )
 
@@ -227,7 +225,6 @@ async def run_evals(
     evals_client: AsyncEvalsClient,
     output_dir: Path,
     ckpt_step: int,
-    semaphore: asyncio.Semaphore | None = None,
     step: int | None = None,
 ):
     await asyncio.gather(
@@ -239,7 +236,6 @@ async def run_evals(
                 env_args=env.args,
                 num_examples=env.num_examples or eval_config.num_examples,
                 rollouts_per_example=env.rollouts_per_example or eval_config.rollouts_per_example,
-                semaphore=semaphore,
                 output_dir=output_dir,
                 model_config=model_config,
                 sampling_config=sampling_config,
