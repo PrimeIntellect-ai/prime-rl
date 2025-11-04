@@ -127,7 +127,6 @@ srun bash -c '
         --local-ranks-filter=0 \
         src/prime_rl/trainer/rl/train.py \
         @ $TRAIN_CONFIG \
-        --model.dp-replicate $((NUM_TRAIN_NODES / 4)) \
         --ckpt.resume_step $CKPT_STEP \
         --output-dir $OUTPUT_DIR \
         2>&1 | tee -a $OUTPUT_DIR/slurm/latest_train_node_rank_${SLURM_PROCID}.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_train_node_rank_${SLURM_PROCID}.log
