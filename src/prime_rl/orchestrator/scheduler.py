@@ -99,9 +99,7 @@ class Scheduler:
 
         return accepted_rollouts
 
-    async def schedule_group_rollout(
-        self, client: AsyncOpenAI | None = None, semaphore: asyncio.Semaphore | None = None
-    ):
+    async def schedule_group_rollout(self, client: AsyncOpenAI | None = None):
         """Asynchronously schedules a group rollout request."""
         problem = self.buffer.sample_problems(n=1)[0]
         if client is None:
@@ -114,7 +112,6 @@ class Scheduler:
                 problem=problem,
                 rollouts_per_example=self.config.rollouts_per_example,
                 sampling_args=self.sampling_args,
-                semaphore=semaphore,
             )
         )
         await asyncio.sleep(0)
@@ -178,7 +175,7 @@ class Scheduler:
             self.ckpt_step = next_ckpt_step
 
     async def generate_batch(self, step: int, semaphore: asyncio.Semaphore | None = None) -> list[Rollout]:
-        """Generates group rollouts continuously until the batch is filled. Updates the policy on the fly."""
+        """Continuously schedules group rollouts, allowing them to be in-flight across steps."""
         self.step = step
 
         # Schedule initial tasks

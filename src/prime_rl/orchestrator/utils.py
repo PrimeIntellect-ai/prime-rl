@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any, List, Optional
 
 import openai.types.chat
@@ -13,6 +14,18 @@ from prime_rl.utils.utils import (
     format_num,
     format_time,
 )
+
+SEMAPHORE: asyncio.Semaphore | None = None
+
+
+def set_semaphore(semaphore: asyncio.Semaphore):
+    global SEMAPHORE
+    SEMAPHORE = semaphore
+
+
+def get_semaphore() -> asyncio.Semaphore | None:
+    global SEMAPHORE
+    return SEMAPHORE
 
 
 def get_sampling_args(sampling_config: SamplingConfig) -> dict:

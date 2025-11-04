@@ -7,7 +7,7 @@ from loguru import logger
 # ruff: noqa: I001,F401
 from prime_rl.orchestrator import envs
 from prime_rl.orchestrator.scheduler import Scheduler
-from prime_rl.orchestrator.utils import get_sampling_args, monkey_patch_chat_completion_logprobs
+from prime_rl.orchestrator.utils import get_sampling_args, monkey_patch_chat_completion_logprobs, set_semaphore
 
 # This monkey patch is necessary to avoid heavy CPU overhead from constructing the OAI ChatCompletion Pydantic model with logprobs
 monkey_patch_chat_completion_logprobs()
@@ -36,11 +36,9 @@ from prime_rl.orchestrator.config import OrchestratorConfig, SimpleBufferConfig
 from prime_rl.orchestrator.buffer import setup_buffer, Rollout
 from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.utils.logger import setup_logger
-from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.utils import (
     monkey_patch_chat_completion_logprobs,
     print_benchmark,
-    parse_is_truncated_completions,
 )
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
@@ -51,7 +49,6 @@ from prime_rl.utils.utils import (
     get_step_path,
     get_weights_dir,
     to_col_format,
-    wait_for_path,
 )
 import numpy as np
 
@@ -158,7 +155,9 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info(f"Starting orchestrator loop ({max_steps=}")
     last_eval_step = -1
     is_first_step = True
-    semaphore = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent is not None else None
+    if config.max_concurrent is not None:
+        semaphore = asyncio.Semaphore(config.max_concurrent)
+        set_semaphore(semaphore)
 
     # Start update policy loop
     asyncio.create_task(scheduler.update_policy_loop())
@@ -190,7 +189,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Schedule generating the training batch
         generate_completions_start_time = time.time()
-        train_task = asyncio.create_task(scheduler.generate_batch(step=progress.step, semaphore=semaphore))
+        train_task = asyncio.create_task(scheduler.generate_batch(step=progress.step))
 
         # Schedule running evals at the specified interval
         if val_buffer and config.val and progress.step % config.val.interval == 0:
@@ -204,7 +203,6 @@ async def orchestrate(config: OrchestratorConfig):
                     problems=val_problems,
                     rollouts_per_example=config.val.rollouts_per_example,
                     sampling_args=get_sampling_args(config.sampling),
-                    semaphore=semaphore,
                     pbar_description="Generating rollouts (val)",
                 )
             )
@@ -231,7 +229,6 @@ async def orchestrate(config: OrchestratorConfig):
                     output_dir=config.output_dir,
                     ckpt_step=ckpt_step,
                     step=progress.step,
-                    semaphore=semaphore,
                 )
             )
         else:
