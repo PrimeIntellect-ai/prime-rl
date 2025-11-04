@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --job-name=qwen32b-int3
-#SBATCH --nodes=6
+#SBATCH --nodes=10
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:8
 #SBATCH --partition=cluster
@@ -11,8 +11,8 @@
 
 # Configs
 export CKPT_STEP=${CKPT_STEP:-"None"}
-export NUM_TRAIN_NODES=${NUM_TRAIN_NODES:-2}
-export NUM_INFER_NODES=${NUM_INFER_NODES:-4}
+export NUM_TRAIN_NODES=${NUM_TRAIN_NODES:-4}
+export NUM_INFER_NODES=${NUM_INFER_NODES:-6}
 export TRAIN_CONFIG=${TRAIN_CONFIG:-"configs/int3/qwen32b/rl/train.toml"}
 export INFER_CONFIG=${INFER_CONFIG:-"configs/int3/qwen32b/rl/infer.toml"}
 export ORCH_CONFIG=${ORCH_CONFIG:-"configs/int3/qwen32b/rl/orch.toml"}
@@ -72,7 +72,7 @@ source .venv/bin/activate
 # Install environment as local package
 uv pip install -e /shared/ablations/prime-environments/environments/i3_math
 uv pip install -e /shared/ablations/prime-environments/environments/i3_code
-prime env install primeintellect/livecodebench
+uv pip install -e /shared/ablations/prime-environments/environments/i3_science
 prime env install primeintellect/aime2025
  
 # Run RL
