@@ -294,10 +294,10 @@ async def orchestrate(config: OrchestratorConfig):
 
             # Update pool
             rollouts = make_rollouts(
+                generate_outputs,
                 processed_outputs,
                 [problem["id"] for problem in problems for _ in range(config.rollouts_per_example)],
                 advantages,
-                generate_outputs.task,
                 is_truncated,
             )
             buffer.update(rollouts)
@@ -365,6 +365,9 @@ async def orchestrate(config: OrchestratorConfig):
             }
         )
 
+        # Gather individual reward function metrics
+        metrics_df = pd.DataFrame([rollout["metrics"] for rollout in accepted_rollouts])
+
         # Update progress metrics and throughput
         num_tokens = int(results_df.seq_len.sum())
         progress.total_tokens += num_tokens
@@ -387,7 +390,7 @@ async def orchestrate(config: OrchestratorConfig):
         per_env_count = results_df.task.value_counts().to_dict() if num_envs_in_batch > 1 else None
 
         step_time = time.time() - step_start_time
-        metrics = {
+        to_log = {
             # Progress metrics
             "progress/tokens": num_tokens,
             "progress/samples": config.batch_size,
@@ -420,6 +423,8 @@ async def orchestrate(config: OrchestratorConfig):
             "batch/solve_none": solve_none,
             "batch/solve_all": solve_all,
             "batch/effective_batch_size": effective_batch_size,
+            # Env metrics
+            **{f"metrics/{metric}": metrics_df[metric].mean() for metric in metrics_df.columns},
             # Time metrics
             "time/step": step_time,
             "time/wait_for_weight_ckpt": wait_for_weight_ckpt_time,
@@ -430,27 +435,27 @@ async def orchestrate(config: OrchestratorConfig):
             "step": progress.step,
         }
 
-        # Optionally, add per-env metrics
+        # If more than one env, add per-env metrics
         if results_df.task.nunique() > 1:
             per_env_reward = results_df.groupby("task").reward.mean().to_dict()
-            metrics.update({f"reward/{env}": reward for env, reward in per_env_reward.items()})
+            to_log.update({f"reward/{env}": reward for env, reward in per_env_reward.items()})
 
             per_env_count = results_df.task.value_counts().to_dict()
-            metrics.update({f"batch/{env}": count for env, count in per_env_count.items()})
+            to_log.update({f"batch/{env}": count for env, count in per_env_count.items()})
 
-        # Optionally, add validation reward
+        # Optionally, add val metrics
         if val_results_df is not None:
-            metrics.update({"val_reward/mean": val_results_df.reward.mean()})
+            to_log.update({"val_reward/mean": val_results_df.reward.mean()})
 
             if val_results_df.task.nunique() > 1:
                 per_env_reward = val_results_df.groupby("task").reward.mean().to_dict()
-                metrics.update({f"val_reward/{env}": reward for env, reward in per_env_reward.items()})
+                to_log.update({f"val_reward/{env}": reward for env, reward in per_env_reward.items()})
 
                 per_env_count = val_results_df.task.value_counts().to_dict()
-                metrics.update({f"val_batch/{env}": count for env, count in per_env_count.items()})
+                to_log.update({f"val_batch/{env}": count for env, count in per_env_count.items()})
 
         # Log metrics to W&B
-        monitor.log(metrics)
+        monitor.log(to_log)
 
         # Log samples and distributions to W&B table if enabled
         monitor.log_samples(

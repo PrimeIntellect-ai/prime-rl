@@ -143,19 +143,20 @@ class Rollout(TypedDict):
     reward: float
     advantage: float
     is_truncated: bool
+    metrics: dict[str, float]
 
 
 def make_rollouts(
+    generate_outputs: vf.GenerateOutputs,
     processed_outputs: vf.ProcessedOutputs,
     example_ids: list[int],
     advantages: list[float],
-    tasks: list[str],
     all_is_truncated: list[bool],
 ) -> list[Rollout]:
     """Processs vf.ProcessedOutputs to a list of rollouts."""
     assert len(advantages) == len(example_ids) == len(processed_outputs.prompt_ids)
     rollouts = []
-    for (
+    for i, (
         example_id,
         prompt_ids,
         prompt_mask,
@@ -166,18 +167,21 @@ def make_rollouts(
         advantage,
         is_truncated,
         task,
-    ) in zip(
-        example_ids,
-        processed_outputs.prompt_ids,
-        processed_outputs.prompt_mask,
-        processed_outputs.completion_ids,
-        processed_outputs.completion_mask,
-        processed_outputs.completion_logprobs,
-        processed_outputs.rewards,
-        advantages,
-        all_is_truncated,
-        tasks,
+    ) in enumerate(
+        zip(
+            example_ids,
+            processed_outputs.prompt_ids,
+            processed_outputs.prompt_mask,
+            processed_outputs.completion_ids,
+            processed_outputs.completion_mask,
+            processed_outputs.completion_logprobs,
+            processed_outputs.rewards,
+            advantages,
+            all_is_truncated,
+            generate_outputs.task,
+        )
     ):
+        metrics = {k: v[i] for k, v in generate_outputs.metrics.items()}
         rollouts.append(
             Rollout(
                 example_id=example_id,
@@ -188,6 +192,7 @@ def make_rollouts(
                 completion_mask=completion_mask,
                 completion_logprobs=completion_logprobs,
                 reward=reward,
+                metrics=metrics,
                 advantage=advantage,
                 is_truncated=is_truncated,
             )
