@@ -1,6 +1,5 @@
 import json
 import random
-import uuid
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -30,15 +29,16 @@ class Buffer(ABC):
         if self.config.seed is not None:
             random.seed(self.config.seed)
 
-        # Initialize buffer
+        # Initialize buffer from verifiers dataset
         self._init_buffer(dataset, self.config.from_scratch)
 
     def _init_buffer(self, dataset: Dataset, from_scratch: bool) -> None:
         """Initializes the buffer state from a dataset."""
-        # Store problem IDs
-        if "id" not in dataset.column_names:
-            dataset = dataset.add_column("id", list(range(len(dataset))), new_fingerprint=str(uuid.uuid4()))
-        self.problem_ids = dataset["id"]
+        # Use example_id column from verifiers
+        assert "example_id" in dataset.column_names, "The dataset must contain a `example_id` column."
+        assert isinstance(dataset["example_id"][0], int), "The `example_id` column must be of type int."
+        assert len(set(dataset["example_id"])) == len(dataset), "The `example_id` column must be unique."
+        self.problem_ids = dataset["example_id"]
 
         if from_scratch:
             self.logger.debug("Initializing metadata and rollouts in buffer from scratch.")
@@ -332,9 +332,7 @@ class OnlineDifficultyBuffer(Buffer):
     """
     The online difficulty buffer ensures that any sampled rollouts are within
     some configurable difficulty range. This means it may not return the
-    specified number of rollouts. It is the orchestrator's task to sample more.
-    An oversampling factor can be specified to increase the chance that at least
-    n problems are within the difficulty range.
+    specified number of rollouts.
     """
 
     def __init__(self, dataset: Dataset, buffer_config: OnlineDifficultyBufferConfig):
