@@ -444,6 +444,14 @@ class OrchestratorConfig(BaseSettings):
 
     batch_size: Annotated[int, Field(ge=1, description="Number of samples to train on per step.")] = 128
 
+    oversampling_factor: Annotated[
+        float,
+        Field(
+            ge=1,
+            description="Factor by which to oversample the batch. Will lead to more in-flight group rollout requests at the same time.",
+        ),
+    ] = 1.0
+
     rollouts_per_example: Annotated[
         int,
         Field(
@@ -493,18 +501,40 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = None
 
-    async_level: Annotated[
+    max_off_policy_steps: Annotated[
         int,
         Field(
             ge=0,
-            description="Maximum number of async levels to use. If 0, will do synchronous RL. Else, it will allow to go `async_level` steps ahead of training.",
+            description="Maximum number of policies that are allowed to generate a single rollout. Rollouts that are generated from more than `max_off_policy_steps` steps ahead of training will be discarded. Higher values yield better throughput, but lead to more off-policyness in training.",
+        ),
+    ] = 8
+
+    max_async_level: Annotated[
+        int,
+        Field(
+            ge=0,
+            description="Maximum number of steps the inference can be ahead of training. If 0, will degenerate to synchronous on-policy RL. If >=1, training and inference will be overlapped.",
         ),
     ] = 1
+
+    strict_async_level: Annotated[
+        bool,
+        Field(
+            description="Whether to strictly enforce the max async level. If True, will always ensure that the policy used for generating rollouts is exactly `max_async_level` steps ahead of training. If False, any policy that is at most `max_async_level` steps ahead of training is allowed, i.e. we always use the latest available policy.",
+        ),
+    ] = True
 
     bench: Annotated[
         bool,
         Field(
             description="Whether to run in benchmark mode. It will automatically set the maximum number of steps to run to 5, max async level to ~infinity and disable W&B.",
+        ),
+    ] = False
+
+    continuous_batching: Annotated[
+        bool,
+        Field(
+            description="Whether to use continuous batching. If True, will use continuous batching to generate rollouts.",
         ),
     ] = False
 

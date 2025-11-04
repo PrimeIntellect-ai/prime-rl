@@ -6,7 +6,8 @@ from loguru import logger
 # Import environment before any other imports
 # ruff: noqa: I001,F401
 from prime_rl.orchestrator import envs
-from prime_rl.orchestrator.utils import get_train_sampling_args, monkey_patch_chat_completion_logprobs
+from prime_rl.orchestrator.scheduler import Scheduler
+from prime_rl.orchestrator.utils import get_sampling_args, monkey_patch_chat_completion_logprobs
 
 # This monkey patch is necessary to avoid heavy CPU overhead from constructing the OAI ChatCompletion Pydantic model with logprobs
 monkey_patch_chat_completion_logprobs()
@@ -109,6 +110,19 @@ async def orchestrate(config: OrchestratorConfig):
     buffer = setup_buffer(dataset, config.buffer)
     val_buffer = setup_buffer(val_dataset, SimpleBufferConfig()) if val_dataset else None
 
+    # Setup scheduler
+    scheduler = Scheduler(
+        clients=clients,
+        admin_clients=admin_clients,
+        env=env,
+        buffer=buffer,
+        tokenizer=tokenizer,
+        config=config,
+        oversampling_factor=config.oversampling_factor,
+        max_async_level=config.max_async_level,
+        max_off_policy_steps=config.max_off_policy_steps,
+    )
+
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")
     await check_health(admin_clients)
@@ -146,6 +160,9 @@ async def orchestrate(config: OrchestratorConfig):
     last_eval_step = -1
     is_first_step = True
     semaphore = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent is not None else None
+
+    # Start update policy loop
+    asyncio.create_task(scheduler.update_policy_loop())
 
     while True:
         # Save checkpoint (if we are at an interval step and not at the first or last step)
@@ -196,6 +213,10 @@ async def orchestrate(config: OrchestratorConfig):
             update_weights_time = time.time() - update_weights_start_time
             logger.debug(f"Updated weights in {update_weights_time:.2f}s")
 
+        # Generate rollouts for training
+        generate_completions_start_time = time.time()
+        train_task = asyncio.create_task(scheduler.generate_batch(step=progress.step))
+
         # Optionally, run online evals at the specified interval
         if (
             config.eval
@@ -205,7 +226,7 @@ async def orchestrate(config: OrchestratorConfig):
         ):
             last_eval_step = ckpt_step
             logger.info(f"Running evals for checkpoint step {ckpt_step}")
-            run_eval_task = asyncio.create_task(
+            eval_task = asyncio.create_task(
                 run_evals(
                     clients=clients,
                     eval_config=config.eval,
@@ -220,101 +241,32 @@ async def orchestrate(config: OrchestratorConfig):
                 )
             )
         else:
-            run_eval_task = asyncio.create_task(asyncio.sleep(0))  # Dummy task
-
-        # Get training sampling args
-        sampling_args = get_train_sampling_args(config.sampling)
+            eval_task = asyncio.create_task(asyncio.sleep(0))  # Dummy task
 
         if val_buffer and config.val and progress.step % config.val.interval == 0:
             logger.info(f"Running validation for step {progress.step}")
             val_problems = val_buffer.sample_problems(config.val.num_examples)
-            run_val_task = asyncio.create_task(
+            val_task = asyncio.create_task(
                 generate_batch(
                     clients=clients,
                     env=env,
                     model_name=config.model.name,
                     problems=val_problems,
                     rollouts_per_example=config.val.rollouts_per_example,
-                    sampling_args=sampling_args,
+                    sampling_args=get_sampling_args(config.sampling),
                     semaphore=semaphore,
                     pbar_description="Generating rollouts (val)",
                 )
             )
         else:
-            run_val_task = asyncio.create_task(asyncio.sleep(0))  # Dummy task
+            val_task = asyncio.create_task(asyncio.sleep(0))  # Dummy task
 
-        accepted_rollouts: list[Rollout] = []
-        problem_requests, completion_requests, calls_to_generate = 0, 0, 0
-        problems_per_batch = config.batch_size // config.rollouts_per_example
-        problems_to_sample = problems_per_batch
-        while True:
-            # Get the batch
-            problems = buffer.sample_problems(problems_to_sample)
-
-            # Generate completions + rewards with verifiers
-            generate_completions_start_time = time.time()
-            generate_outputs: GenerateOutputs = await generate_batch(
-                clients=clients,
-                env=env,
-                model_name=config.model.name,
-                problems=problems,
-                rollouts_per_example=config.rollouts_per_example,
-                sampling_args=sampling_args,
-                semaphore=semaphore,
-                pbar_description="Generating rollouts (train)",
-            )
-            generate_completions_time = time.time() - generate_completions_start_time
-            problem_requests += problems_to_sample
-            completion_requests += problems_to_sample * config.rollouts_per_example
-            calls_to_generate += 1
-
-            processed_outputs: ProcessedOutputs = env.process_env_results_vllm(
-                prompts=generate_outputs.prompt,
-                completions=generate_outputs.completion,
-                states=generate_outputs.state,
-                rewards=generate_outputs.reward,
-                processing_class=tokenizer,
-                max_seq_len=config.seq_len,
-                mask_env_responses=config.mask_env_responses,
-                zero_truncated_completions=config.zero_truncated_completions,
-                mask_truncated_completions=config.mask_truncated_completions,
-            )
-
-            # Compute advantages
-            advantages = compute_advantages(
-                rewards=processed_outputs.rewards,
-                completion_lengths=list(map(len, processed_outputs.completion_ids)),
-                samples_per_problem=config.rollouts_per_example,
-                advantage_config=config.advantage,
-            )
-
-            # Parse whether the completions were truncated
-            responses = [state["responses"] for state in generate_outputs.state]
-            is_truncated = parse_is_truncated_completions(responses=responses)
-
-            # Update pool
-            rollouts = make_rollouts(
-                generate_outputs,
-                processed_outputs,
-                [problem["id"] for problem in problems for _ in range(config.rollouts_per_example)],
-                advantages,
-                is_truncated,
-            )
-            buffer.update(rollouts)
-            accepted_rollouts.extend(buffer.sample_rollouts(problems_to_sample))
-
-            # Break if we have enough rollouts to fill the batch
-            if len(accepted_rollouts) >= config.batch_size:
-                accepted_rollouts = accepted_rollouts[: config.batch_size]
-                break
-
-            # On next iteration, sample the remaining problems to fill the batch
-            problems_sampled = len(accepted_rollouts) // config.rollouts_per_example
-            problems_to_sample = problems_per_batch - problems_sampled
-
-        # Write serialized batch to disk for trainer workers to consume
+        # Await and process train results
+        await train_task
+        generate_completions_time = time.time() - generate_completions_start_time
+        train_rollouts = train_task.result()
         all_data_ranks_batches = prepare_batch(
-            rollouts=accepted_rollouts,
+            rollouts=train_rollouts,
             temperature=config.sampling.temperature,
             tokenizer=tokenizer,
             num_train_workers=config.num_train_workers,
@@ -330,9 +282,30 @@ async def orchestrate(config: OrchestratorConfig):
             torch.save(batches, tmp_path)
             tmp_path.rename(batch_path)
 
-        # Process validation results
-        await run_val_task
-        val_outputs = run_val_task.result()
+        # Await and process val results
+        await val_task
+        val_outputs = val_task.result()
+
+        # Await eval results
+        await eval_task
+
+        # Gather metrics in dataframes
+        results_df = pd.DataFrame(
+            {
+                "example_id": [rollout["example_id"] for rollout in train_rollouts],
+                "task": [rollout["task"] for rollout in train_rollouts],
+                "reward": [rollout["reward"] for rollout in train_rollouts],
+                "advantage": [rollout["advantage"] for rollout in train_rollouts],
+                "is_truncated": [rollout["is_truncated"] for rollout in train_rollouts],
+                "completion_len": [len(rollout["completion_ids"]) for rollout in train_rollouts],
+                "prompt_len": [len(rollout["prompt_ids"]) for rollout in train_rollouts],
+                "seq_len": [len(rollout["prompt_ids"]) + len(rollout["completion_ids"]) for rollout in train_rollouts],
+            }
+        )
+
+        # Gather individual reward function metrics
+        metrics_df = pd.DataFrame([rollout["metrics"] for rollout in train_rollouts])
+
         val_results_df = (
             pd.DataFrame(
                 {
@@ -345,35 +318,12 @@ async def orchestrate(config: OrchestratorConfig):
             else None
         )
 
-        # Process evaluation results
-        await run_eval_task
-        run_eval_task.result()
-
-        # Gather train results in a dataframe
-        results_df = pd.DataFrame(
-            {
-                "example_id": [rollout["example_id"] for rollout in accepted_rollouts],
-                "task": [rollout["task"] for rollout in accepted_rollouts],
-                "reward": [rollout["reward"] for rollout in accepted_rollouts],
-                "advantage": [rollout["advantage"] for rollout in accepted_rollouts],
-                "is_truncated": [rollout["is_truncated"] for rollout in accepted_rollouts],
-                "completion_len": [len(rollout["completion_ids"]) for rollout in accepted_rollouts],
-                "prompt_len": [len(rollout["prompt_ids"]) for rollout in accepted_rollouts],
-                "seq_len": [
-                    len(rollout["prompt_ids"]) + len(rollout["completion_ids"]) for rollout in accepted_rollouts
-                ],
-            }
-        )
-
-        # Gather individual reward function metrics
-        metrics_df = pd.DataFrame([rollout["metrics"] for rollout in accepted_rollouts])
-
         # Update progress metrics and throughput
         num_tokens = int(results_df.seq_len.sum())
         progress.total_tokens += num_tokens
         progress.total_samples += config.batch_size
         progress.total_problems += config.batch_size // config.rollouts_per_example
-        throughput = num_tokens / (generate_completions_time)
+        throughput = num_tokens / generate_completions_time
 
         # Compute solve all and none tensors
         solve_all = (
@@ -414,9 +364,6 @@ async def orchestrate(config: OrchestratorConfig):
             "is_truncated/min": results_df.groupby("example_id").is_truncated.min().mean(),
             # Performance metrics
             "perf/throughput": throughput,
-            "perf/problem_requests": problem_requests,
-            "perf/completion_requests": completion_requests,
-            "perf/calls_to_generate": calls_to_generate,
             # Train reward
             "reward/mean": results_df.reward.mean(),
             # Batch metrics
@@ -459,8 +406,8 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Log samples and distributions to W&B table if enabled
         monitor.log_samples(
-            input_tokens=[rollout["prompt_ids"] for rollout in accepted_rollouts],
-            output_tokens=[rollout["completion_ids"] for rollout in accepted_rollouts],
+            input_tokens=[rollout["prompt_ids"] for rollout in train_rollouts],
+            output_tokens=[rollout["completion_ids"] for rollout in train_rollouts],
             rewards=results_df.reward.tolist(),
             advantages=results_df.advantage.tolist(),
             rollouts_per_problem=config.rollouts_per_example,

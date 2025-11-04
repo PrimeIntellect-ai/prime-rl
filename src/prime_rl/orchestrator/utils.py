@@ -15,7 +15,7 @@ from prime_rl.utils.utils import (
 )
 
 
-def get_train_sampling_args(sampling_config: SamplingConfig) -> dict:
+def get_sampling_args(sampling_config: SamplingConfig) -> dict:
     # Convert SamplingConfig to vLLM OAI sampling args
     # https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#extra-parameters_2
     sampling_args = dict(sampling_config)
