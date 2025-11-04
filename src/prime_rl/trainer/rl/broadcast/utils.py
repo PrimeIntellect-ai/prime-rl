@@ -4,9 +4,9 @@ import torch
 
 
 def tensor_string_description(tensor: torch.Tensor) -> bytes:
-    return pickle.dumps((tensor.shape))
+    return pickle.dumps((tensor.shape, tensor.dtype))
 
 
-def init_tensor_from_string_description(description: bytes, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
-    shape = pickle.loads(description)
-    return torch.empty(shape, dtype=dtype, device=device)
+def init_tensor_from_string_description(description: bytes, device: torch.device) -> torch.Tensor:
+    shape, dtype = pickle.loads(description)
+    return torch.empty(shape, dtype=torch.dtype(dtype), device=device)
