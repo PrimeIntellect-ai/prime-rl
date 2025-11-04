@@ -152,7 +152,7 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Iterate over dataset in batches
     max_steps = config.max_steps or int(1e9)
-    logger.info(f"Starting orchestrator loop ({max_steps=}")
+    logger.info(f"Starting orchestrator loop (max_steps={max_steps or 'infinite'})")
     last_eval_step = -1
     is_first_step = True
     if config.max_concurrent is not None:

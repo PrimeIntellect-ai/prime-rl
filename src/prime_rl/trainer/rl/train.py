@@ -132,7 +132,7 @@ def train(config: RLTrainerConfig):
     if config.data.fake:
         dataloader = FakeDataLoader(config.data.fake)
 
-    logger.info(f"Starting training loop ({config.max_steps=})")
+    logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     is_first_step = True
     maybe_record_function = nullcontext
     if config.trace_path:
