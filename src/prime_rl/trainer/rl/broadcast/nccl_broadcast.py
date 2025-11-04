@@ -43,7 +43,7 @@ def send_state_dict(state_dict: dict[str, torch.Tensor], communicator: PyNcclCom
 
 
 def receive_state_dict(
-    communicator: PyNcclCommunicator | dist.ProcessGroup, dtype: torch.dtype
+    communicator: PyNcclCommunicator | dist.ProcessGroup,
 ) -> Generator[tuple[str, torch.Tensor], None, None]:
     """Stream tensors in a state dict broadcasted over NCCL."""
     size_tensor = torch.tensor([10], dtype=torch.long).to(communicator.device)
@@ -54,7 +54,7 @@ def receive_state_dict(
     state = pickle.loads(bytes(state_tensor.cpu().numpy()))
 
     for key, value in state.items():
-        tensor = init_tensor_from_string_description(value, communicator.device, dtype)
+        tensor = init_tensor_from_string_description(value, communicator.device)
         communicator.broadcast(tensor, src=0)
         try:
             yield key, tensor
@@ -142,8 +142,7 @@ class NCCLBroadcastSender:
             for key, value in list(state_dict.items()):
                 if isinstance(value, DTensor):
                     value = value.to(self.dtype).full_tensor()
-                else:
-                    value = value.to(self.dtype)
+                    
                 state_dict[key] = value
 
             if has_tt_moe_layers(state_dict):
@@ -165,7 +164,6 @@ class NCCLBroadcastReceiver:
         device,
         logger,
         timeout: int,
-        dtype: torch.dtype = torch.bfloat16,
     ):
         self.logger = logger
 
@@ -173,7 +171,6 @@ class NCCLBroadcastReceiver:
         self.communicator = create_nccl_communicator(host, port, rank, world_size, device, timeout)
 
         self.device = self.communicator.device
-        self.dtype = dtype
 
     @torch.no_grad()
     def receive_state_dict(self):
@@ -184,5 +181,5 @@ class NCCLBroadcastReceiver:
             self.logger.info(
                 f"Receiving state dict {i}/{num_state_dict_to_receive}, peak memory: {torch.cuda.max_memory_allocated() / 1024**2:.2f} MB"
             )
-            for key, value in receive_state_dict(self.communicator, self.dtype):
+            for key, value in receive_state_dict(self.communicator):
                 yield key, value
