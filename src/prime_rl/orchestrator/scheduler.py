@@ -87,7 +87,6 @@ class Scheduler:
         rollouts = make_rollouts(
             generate_outputs,
             processed_outputs,
-            generate_outputs.example_id,  # TODO: Bring back buffer ID here for multi-env training to work
             advantages,
             is_truncated,
         )

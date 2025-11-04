@@ -150,12 +150,10 @@ class Rollout(TypedDict):
 def make_rollouts(
     generate_outputs: vf.GenerateOutputs,
     processed_outputs: vf.ProcessedOutputs,
-    example_ids: list[int],
     advantages: list[float],
     all_is_truncated: list[bool],
 ) -> list[Rollout]:
     """Processs vf.ProcessedOutputs to a list of rollouts."""
-    assert len(advantages) == len(example_ids) == len(processed_outputs.prompt_ids)
     rollouts = []
     for i, (
         example_id,
@@ -170,7 +168,7 @@ def make_rollouts(
         task,
     ) in enumerate(
         zip(
-            example_ids,
+            generate_outputs.example_id,
             processed_outputs.prompt_ids,
             processed_outputs.prompt_mask,
             processed_outputs.completion_ids,
