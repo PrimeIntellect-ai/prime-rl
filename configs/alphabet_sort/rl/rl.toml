@@ -7,8 +7,8 @@ max_steps = 500
 name = "Qwen/Qwen3-4B-Instruct-2507"
 
 [wandb]
-project = "wiki-search-debug"
-name = "wiki-search-4b"
+project = "alphabet-sort-debug"
+name = "alphabet-sort-4b"
 
 [trainer.model.experimental.lora]
 rank = 8
@@ -29,20 +29,17 @@ lr = 1e-5
 weight_decay = 0.0
 
 [orchestrator]
-batch_size = 512
+batch_size = 1024
 rollouts_per_example = 16
 seq_len = 4096
 mask_truncated_completions = false
-zero_truncated_completions = true
 
 [orchestrator.sampling]
 max_tokens = 512
 
-[orchestrator.buffer]
-type = "online-difficulty"
-
 [[orchestrator.env]]
-id = "wiki-search"
+id = "alphabet-sort"
+
 
 [inference.model]
 enable_auto_tool_choice = true
