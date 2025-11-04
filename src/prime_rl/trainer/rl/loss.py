@@ -115,7 +115,7 @@ def compute_loss(
 
         advantages = loss_config.rl_coeff * advantages
         if ref_logprobs is not None and loss_config.kl_coeff > 0:
-            ref_kl = compute_kl(trainer_logprobs, ref_logprobs[i], loss_config.kl_type)
+            ref_kl = compute_kl(inference_logprobs, ref_logprobs[i], loss_config.kl_type)
             advantages = advantages - loss_config.kl_coeff * ref_kl
 
         loss = (-importance_ratio * advantages)[keep_mask].sum()
