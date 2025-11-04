@@ -96,6 +96,7 @@ async def orchestrate(config: OrchestratorConfig):
     env = vf.EnvGroup(
         envs=[vf.load_environment(env.id, **env.args) for env in config.env],
         env_names=[env.name or env.id for env in config.env],
+        map_kwargs=dict(writer_batch_size=1),  # Set defensively to not error on map operations on large datasets
     )
     dataset = env.get_dataset(seed=config.seed)
     val_dataset = env.get_eval_dataset(config.val.num_examples, seed=config.seed) if config.val else None
