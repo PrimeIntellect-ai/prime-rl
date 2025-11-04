@@ -99,6 +99,7 @@ def train(config: RLTrainerConfig):
 
     # Set up NCCL broadcast
     nccl_broadcast = None
+    logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
     if config.weight_broadcast.type == "nccl":
         # we do inferece world size + 1 because we have the trainer broadcaster as rank 0
         nccl_broadcast = NCCLBroadcastSender(
@@ -110,8 +111,6 @@ def train(config: RLTrainerConfig):
             device=torch.cuda.current_device(),
             logger=logger,
         )
-    else:
-        logger.info("Using filesystem for broadcasting weights into the inference pool.")
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")

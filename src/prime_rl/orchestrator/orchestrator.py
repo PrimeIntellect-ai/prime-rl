@@ -116,13 +116,11 @@ async def orchestrate(config: OrchestratorConfig):
     logger.success("Inference pool ready")
 
     # Set up weight broadcast backend
+    logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
     if config.weight_broadcast.type == "nccl":
-        logger.info(f"Initializing NCCL broadcast ({config.weight_broadcast})")
         await init_nccl_broadcast(
             admin_clients, config.weight_broadcast.host, config.weight_broadcast.port, config.weight_broadcast.timeout
         )
-    else:
-        logger.info("Using filesystem for broadcasting weights into the inference pool.")
 
     # Get checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
