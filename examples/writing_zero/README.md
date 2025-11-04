@@ -6,7 +6,7 @@ This example explores a multi-stage process of SFT/RFT in order to recreate the 
 2. Run GRPO on the previous model using [LitBench](https://app.primeintellect.ai/dashboard/environments/dmnsh001/litbench) environment to finalize the training of our GenRM.
 3. Lastly, we train a base model ([PrimeIntellect/Qwen3-4B](https://huggingface.co/PrimeIntellect/Qwen3-4B)) on [`w0-brpo`](https://app.primeintellect.ai/dashboard/environments/dmnsh001/w0-brpo) environment with minor tweaks to the existing prime-rl stack.
 
-for more detailed explanation about the background, visit this [blog](https://damoonsh.github.io/w/2025/10/01/w0.html):
+For a more thorough explanation about the background, visit this [blog](https://damoonsh.github.io/w/2025/10/01/w0.html).
 
 > The commands in this example were designed to be run on 2 GPUs each with more than 120GB (one trainer and one inference GPU). It is possible to run on less or more GPUs using different deployment strategies. If you run on a different setup, you may need to adjust the start commands.
 
@@ -54,7 +54,7 @@ Make sure to push the model to huggingface:
 uv run hf upload <user>/<model-name> outputs/weights/<step-num>
 ```
 
-- enter the correct username, pick your model name and step that you would like to push
+- Enter the correct username, pick your model name and step that you would like to push
 
 ### RL
 
@@ -77,7 +77,7 @@ Now our GenRM is ready, save it on huggingface since we will load it for BRPO tr
 
 ## BRPO
 
-Before we running the train, orchestrator or inference scripts, we will need to make a manual to change to prime-rl codebase to accommodate BRPO. Go into `src/prime_rl/utils/vf.py` with the `generate_group` function add the condition where ```python interleave_scoring = False```. The function should look like this:
+Before running BRPO, we will need to make a manual change to `prime-rl` codebase to accommodate BRPO. Go into `src/prime_rl/utils/vf.py` within the `generate_group` function add the argument```python interleave_scoring = False``` to **env.generate**. The function should look like this:
 
 ```python
 async def generate_group(
@@ -107,10 +107,10 @@ Then re-install the library to ensure changes take effect:
 uv pip install -e .
 ```
 
-**Note**: Future changes to the codebase might render this change useless or even erroneous. The logic is that we need on prompt rollouts to generate before running the rubric, recreate that in updated codebase. For more information read this [blog](https://damoonsh.github.io/w/2025/10/01/w0.html).
+**Note**: Future changes to the codebase might render this change useless or even erroneous. The logic is that we need all rollouts for the prompt to be generated before running the rubric, recreate this logic in updated codebase if needed. For more information read this [blog](https://damoonsh.github.io/w/2025/10/01/w0.html).
 
 
-Now that the codebase is ready, we need to run two inferences, one for the model getting trained the other one for GenRM model that we previously trained. Please note that given the specs of your environment, you may have to alter gpu_memory_utilization=0.4 in each .toml file for both to be live at the same time.
+Now that the codebase is ready, we need to run two inferences, one for the model getting trained the other one for GenRM model that we previously trained. Please note that given the specs of your environment, you may have to alter `gpu_memory_utilization` in each .toml file for both to be running at the same time.
 
 **GenRM**:
 ```bash
@@ -121,7 +121,7 @@ uv run inference @ examples/writing_zero/BRPO/env_infer.toml
 uv run inference @ examples/writing_zero/BRPO/infer.toml
 ```
 
-Then we are ready for the actual run: 
+Then we are ready for the actual training: 
 ```bash
 uv run rl \
   --trainer @ examples/writing_zero/BRPO/train.toml \
@@ -133,7 +133,7 @@ uv run rl \
 
 ## Evals
 
-Foe eval, two environment are relevant: [RewardBench](https://app.primeintellect.ai/dashboard/environments/primeintellect/reward-bench) and [WritingBench](https://app.primeintellect.ai/dashboard/environments/primeintellect/writing-bench). First make sure to install them both:
+Foe eval, two environments can be used: [RewardBench](https://app.primeintellect.ai/dashboard/environments/primeintellect/reward-bench) and [WritingBench](https://app.primeintellect.ai/dashboard/environments/primeintellect/writing-bench). First make sure to install them both:
 
 ```bash
 prime env install primeintellect/reward-bench
@@ -146,10 +146,10 @@ Start the server for the BRPO model:
 uv run inference --model.name <user-name>/brpo-model-name>
 ```
 
-The environments are highly adjustable based on the passed arguments, here is an example eval args:
+The environments are highly adjustable based on the passed arguments, here are example eval args:
 
 
-[WritingBench](https://app.primeintellect.ai/dashboard/environments/primeintellect/writing-bench) needs a judge model, in the cmd below grok-4-fast is being used (`OPENROUTER_API_KEY` needs to be passed).
+[WritingBench](https://app.primeintellect.ai/dashboard/environments/primeintellect/writing-bench) needs a judge model, in the cmd below grok-4-fast hosted on **OpenRouter** is being used (`OPENROUTER_API_KEY` needs to be passed).
 
 ```bash
 uv run vf-eval writing_bench \
@@ -178,4 +178,4 @@ The results for those evals can be summarised in table below:
 | RewardBench2       | 0.478 | 0.498  | +4.18%    |
 |  Writing Bench  | 6.864 | 7.012  | +2.16%    |
 
-This run is not the optimal training args, experimentation is encouraged but the results shows that with minimal training the BRPO algorithm seems to be sound. Here is the link to already trained [GenRM](https://huggingface.co/dmnsh/Qwen3-4b-W0-GenRM) and [BRPO-ed-model](https://huggingface.co/dmnsh/Qwen3-4b-W0-BRPO).
+Experimentation for different training arguments and more diverse synthesized data is encouraged but the results shows that with minimum training, the BRPO algorithm works. Here is the link to already trained [GenRM](https://huggingface.co/dmnsh/Qwen3-4b-W0-GenRM) and [BRPO-ed-model](https://huggingface.co/dmnsh/Qwen3-4b-W0-BRPO).
