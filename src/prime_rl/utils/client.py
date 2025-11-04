@@ -14,7 +14,7 @@ from prime_rl.utils.logger import get_logger
 def setup_clients(client_config: ClientConfig) -> list[AsyncOpenAI]:
     def _setup_client(base_url: str) -> AsyncOpenAI:
         # We use a longer request timeout than default, but if more than 20min, we probably need faster inference deployment
-        timeout = httpx.Timeout(timeout=client_config.timeout, connect=5.0)
+        timeout = httpx.Timeout(client_config.timeout)
         # We use as many concurrent connections as possible, but lower than available ports
         limits = httpx.Limits(
             max_connections=8192,  # OAI default: 1000
@@ -54,7 +54,7 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
             base_url=base_url,
             headers=headers,
             limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
-            timeout=httpx.Timeout(client_config.timeout, connect=5.0, pool=None),
+            timeout=httpx.Timeout(client_config.timeout),
         )
 
     return [_setup_admin_client(base_url) for base_url in client_config.base_url]

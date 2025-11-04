@@ -93,7 +93,7 @@ def train(config: RLTrainerConfig):
     # Set up weight checkpoint manager
     logger.info(f"Initializing weight checkpoint manager ({config.weights})")
     weight_ckpt_manager = setup_weight_ckpt_manager(
-        config.output_dir, config.weights, config.ckpt, config.async_level, config.model.experimental.lora
+        config.output_dir, config.weights, config.ckpt, config.max_async_level, config.model.experimental.lora
     )
     assert weight_ckpt_manager is not None, "Weight checkpoint manager must be set on RL trainer"
 
@@ -132,7 +132,7 @@ def train(config: RLTrainerConfig):
     if config.data.fake:
         dataloader = FakeDataLoader(config.data.fake)
 
-    logger.info(f"Starting training loop ({config.max_steps=})")
+    logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     is_first_step = True
     maybe_record_function = nullcontext
     if config.trace_path:

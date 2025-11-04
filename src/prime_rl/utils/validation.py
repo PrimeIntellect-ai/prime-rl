@@ -78,13 +78,13 @@ def validate_shared_max_steps(
         )
 
 
-def validate_shared_async_level(
+def validate_shared_max_async_level(
     trainer: RLTrainerConfig,
     orchestrator: OrchestratorConfig,
 ) -> None:
-    if trainer.async_level != orchestrator.async_level:
+    if trainer.max_async_level != orchestrator.max_async_level:
         raise ValueError(
-            f"Trainer async level ({trainer.async_level}) and orchestrator async level ({orchestrator.async_level}) are not the same. Please specify the same async level for both."
+            f"Trainer max async level ({trainer.max_async_level}) and orchestrator max async level ({orchestrator.max_async_level}) are not the same. Please specify the same max async level for both."
         )
 
 

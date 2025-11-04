@@ -1,5 +1,5 @@
 max_steps = 5
-async_level = 5
+max_async_level = 5
 
 [data.fake]
 batch_size = 2

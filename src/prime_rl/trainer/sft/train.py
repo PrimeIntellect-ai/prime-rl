@@ -133,7 +133,7 @@ def train(config: SFTTrainerConfig):
         f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples}, dataset_state={dataloader.state_dict()['dataset_state']})"
     )
 
-    logger.info(f"Starting training loop ({config.max_steps=})")
+    logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3  # GiB
     is_first_step = True
     maybe_record_function = nullcontext
@@ -187,12 +187,7 @@ def train(config: SFTTrainerConfig):
 
         step_start_time = time.time()
         forward_backward_start_time = time.time()
-        grad_accum_steps = (
-            config.data.batch_size
-            * config.model.cp
-            * config.model.tp
-            // world.world_size
-        )
+        grad_accum_steps = config.data.batch_size * config.model.cp * config.model.tp // world.world_size
 
         batch_loss = torch.tensor(0.0).to("cuda")
         nan_loss_count = torch.tensor(0).to("cuda")
