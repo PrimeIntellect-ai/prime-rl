@@ -132,8 +132,7 @@ async def orchestrate(config: OrchestratorConfig):
     progress = Progress()
     ckpt_step = 0
     if config.ckpt and ckpt_manager and config.ckpt.resume_step:
-        buffer_to_load = buffer if not config.ckpt.skip_buffer else None
-        ckpt_manager.load(progress, buffer_to_load, step=config.ckpt.resume_step)
+        ckpt_manager.load(progress, buffer, step=config.ckpt.resume_step)
         logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
         ckpt_step = progress.step  # Always resume from the latest checkpoint
         await update_weights(admin_clients, get_step_path(get_weights_dir(config.output_dir), ckpt_step))

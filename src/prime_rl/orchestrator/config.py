@@ -265,6 +265,13 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = None
 
+    skip_progress: Annotated[
+        bool,
+        Field(
+            description="Whether to skip loading the progress from checkpoint.",
+        ),
+    ] = False
+
     skip_buffer: Annotated[
         bool,
         Field(
