@@ -65,7 +65,7 @@ class CheckpointManager:
 
         self._logger.debug(f"Orchestrator checkpoint saved in {time.time() - start_time:.2f} seconds")
 
-    def _load_from_path(self, ckpt_path: Path, progress: Progress, buffer: Buffer) -> None:
+    def _load_from_path(self, ckpt_path: Path, progress: Progress, buffer: Buffer | None) -> None:
         """Loads a checkpoint from a given path in-place."""
         self._logger.debug(f"Loading checkpoint from {ckpt_path}")
         start_time = time.time()
@@ -79,11 +79,14 @@ class CheckpointManager:
             setattr(progress, key, value)
 
         # Load buffer
-        buffer.load(ckpt_path / "buffer")
+        if buffer is not None:
+            buffer.load(ckpt_path / "buffer")
+        else:
+            self._logger.info("Skipping buffer loading from checkpoint")
 
         self._logger.debug(f"Orchestrator checkpoint loaded in {time.time() - start_time:.2f} seconds")
 
-    def load(self, progress: Progress, buffer: Buffer, step: int) -> None:
+    def load(self, progress: Progress, buffer: Buffer | None, step: int) -> None:
         """Loads a checkpoint from a given path."""
         if step == -1:
             step = self.get_latest_step()

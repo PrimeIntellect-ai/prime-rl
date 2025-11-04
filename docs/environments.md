@@ -28,3 +28,5 @@ To verify your installation
 ```bash
 uv run python -c "import <name>"
 ```
+
+For more details on environments, see our Environments Hub documentation [here](https://docs.primeintellect.ai/tutorials-environments/environments).
