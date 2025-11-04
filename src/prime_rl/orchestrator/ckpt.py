@@ -71,15 +71,21 @@ class CheckpointManager:
         start_time = time.time()
 
         # Load progress
-        with open(ckpt_path / "progress.pt", "rb") as f:
-            state = torch.load(f, weights_only=False)
+        if self.config.skip_progress:
+            self._logger.info("Skipping progress loading from checkpoint")
+        else:
+            with open(ckpt_path / "progress.pt", "rb") as f:
+                state = torch.load(f, weights_only=False)
 
-        # Set progress in-place
-        for key, value in asdict(state["progress"]).items():
-            setattr(progress, key, value)
+            # Set progress in-place
+            for key, value in asdict(state["progress"]).items():
+                setattr(progress, key, value)
 
         # Load buffer
-        buffer.load(ckpt_path / "buffer")
+        if self.config.skip_buffer:
+            self._logger.info("Skipping buffer loading from checkpoint")
+        else:
+            buffer.load(ckpt_path / "buffer")
 
         self._logger.debug(f"Orchestrator checkpoint loaded in {time.time() - start_time:.2f} seconds")
 
