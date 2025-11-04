@@ -197,6 +197,9 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
                 )
                 convert_hf_to_tt_moe(snapshot_state_dict)
                 save_state_dict(snapshot_state_dict, snapshot_path)
+
+        # All ranks wait for master rank to finish conversion
+        torch.distributed.barrier()
     elif has_tt_moe_layers(snapshot_state_dict) and has_hf_moe_layers(model_state_dict):
         logger.warning(
             "Found TT weight format in snapshot state dict and HF weight format in model state dict. Trying to auto-convert..."
