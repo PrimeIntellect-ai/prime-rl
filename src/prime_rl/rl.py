@@ -222,11 +222,11 @@ class RLConfig(BaseSettings):
     @model_validator(mode="after")
     def auto_setup_logs(self):
         # Copy log level
-        if self.log:
-            if self.log.level:
+        if self.log is not None:
+            if self.log.level is not None:
                 self.trainer.log.level = self.log.level
                 self.orchestrator.log.level = self.log.level
-            if self.log.file:
+            if self.log.file is not None:
                 self.trainer.log.file = self.log.file
                 self.orchestrator.log.file = self.log.file
 
@@ -237,25 +237,25 @@ class RLConfig(BaseSettings):
     @model_validator(mode="after")
     def auto_setup_ckpt(self):
         # If specified, automatically setup checkpoint configs for trainer and orchestrator
-        if self.ckpt:
+        if self.ckpt is not None:
             # Create checkpoint configs if not specified
-            if not self.trainer.ckpt:
+            if self.trainer.ckpt is None:
                 self.trainer.ckpt = TrainerCheckpointConfig()
-            if not self.orchestrator.ckpt:
+            if self.orchestrator.ckpt is None:
                 self.orchestrator.ckpt = OrchestratorCheckpointConfig()
 
             # If specified, use the same ckpt interval
-            if self.ckpt.interval:
+            if self.ckpt.interval is not None:
                 self.trainer.ckpt.interval = self.ckpt.interval
                 self.orchestrator.ckpt.interval = self.ckpt.interval
 
             # If resuming training, ensure orchestrator resume from the same step
-            if self.ckpt.resume_step:
+            if self.ckpt.resume_step is not None:
                 self.trainer.ckpt.resume_step = self.ckpt.resume_step
                 self.orchestrator.ckpt.resume_step = self.ckpt.resume_step
 
             # If specified, propagate keep policy
-            if self.ckpt.keep:
+            if self.ckpt.keep is not None:
                 self.trainer.ckpt.keep = self.ckpt.keep
                 self.orchestrator.ckpt.keep = self.ckpt.keep
 
@@ -266,7 +266,7 @@ class RLConfig(BaseSettings):
     @model_validator(mode="after")
     def auto_setup_wandb(self):
         # If specified, automatically use shared W&B project for orchestrator and trainer
-        if self.wandb:
+        if self.wandb is not None:
             if not self.trainer.wandb:
                 self.trainer.wandb = WandbMonitorConfig()
             if not self.orchestrator.wandb:
@@ -313,10 +313,10 @@ class RLConfig(BaseSettings):
     @model_validator(mode="after")
     def auto_setup_model(self):
         # Use the same model for trainer, orchestrator and inference
-        if self.model is not None and self.model.name:
+        if self.model is not None:
             self.trainer.model.name = self.model.name
             self.orchestrator.model.name = self.model.name
-            if self.inference:
+            if self.inference is not None:
                 self.inference.model.name = self.model.name
 
         validate_shared_model_name(self.trainer, self.orchestrator, self.inference)
@@ -326,7 +326,7 @@ class RLConfig(BaseSettings):
     @model_validator(mode="after")
     def auto_setup_max_steps(self):
         # If specified, use the same max steps for trainer and orchestrator
-        if self.max_steps:
+        if self.max_steps is not None:
             self.trainer.max_steps = self.max_steps
             self.orchestrator.max_steps = self.max_steps
 
@@ -337,7 +337,7 @@ class RLConfig(BaseSettings):
     @model_validator(mode="after")
     def auto_setup_async_level(self):
         # If specified, use the same async level for trainer and orchestrator
-        if self.max_async_level:
+        if self.max_async_level is not None:
             self.trainer.max_async_level = self.max_async_level
             self.orchestrator.max_async_level = self.max_async_level
 
@@ -348,7 +348,7 @@ class RLConfig(BaseSettings):
     @model_validator(mode="after")
     def auto_setup_output_dir(self):
         # If specified, use the same outputs directory for trainer and orchestrator
-        if self.output_dir:
+        if self.output_dir is not None:
             self.trainer.output_dir = self.output_dir
             self.orchestrator.output_dir = self.output_dir
 
@@ -358,7 +358,7 @@ class RLConfig(BaseSettings):
 
     @model_validator(mode="after")
     def auto_setup_weight_broadcast(self):
-        if self.weight_broadcast:
+        if self.weight_broadcast is not None:
             if self.weight_broadcast.type == "nccl":
                 inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp if self.inference else 1
                 self.trainer.weight_broadcast = TrainerNCCLWeightBroadcastConfig(
@@ -370,7 +370,7 @@ class RLConfig(BaseSettings):
             elif self.weight_broadcast.type == "filesystem":
                 self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
                 self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig()
-            if self.inference:
+            if self.inference is not None:
                 self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
 
         validate_shared_weight_broadcast(self.trainer, self.orchestrator, self.inference)
@@ -379,12 +379,12 @@ class RLConfig(BaseSettings):
 
     @model_validator(mode="after")
     def warn_wandb_resume_id_missing(self):
-        if self.trainer.ckpt and self.trainer.ckpt.resume_step:
+        if self.trainer.ckpt is not None and self.trainer.ckpt.resume_step is not None:
             if self.trainer.wandb and not self.trainer.wandb.id:
                 warnings.warn(
                     "W&B run ID is not set for trainer even though resuming training. The current run will be created as a new run."
                 )
-        if self.orchestrator.ckpt and self.orchestrator.ckpt.resume_step:
+        if self.orchestrator.ckpt is not None and self.orchestrator.ckpt.resume_step is not None:
             if self.orchestrator.wandb and not self.orchestrator.wandb.id:
                 warnings.warn(
                     "W&B run ID is not set for orchestrator even though resuming training. The current run will be created as a new run."
