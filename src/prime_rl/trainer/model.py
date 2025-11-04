@@ -42,6 +42,7 @@ transformers_modeling_utils_logger.addFilter(
 
 DTYPE_MAP = {
     "bfloat16": torch.bfloat16,
+    "float16": torch.float16,
     "float32": torch.float32,
 }
 
@@ -127,7 +128,7 @@ def setup_tokenizer(config: ModelConfig) -> PreTrainedTokenizer:
 
 
 def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
-    mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=DTYPE_MAP[config.reduce_dtype])
+    mp_policy = MixedPrecisionPolicy(param_dtype=DTYPE_MAP[config.param_dtype], reduce_dtype=DTYPE_MAP[config.reduce_dtype])
     # TODO: Support dp_replicate
     if config.dp_replicate > 1:
         hsdp_mesh = parallel_dims.world_mesh["dp_replicate", "dp_shard_cp"]

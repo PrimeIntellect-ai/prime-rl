@@ -80,6 +80,13 @@ def train(config: RLTrainerConfig):
     model = setup_model(config.model, parallel_dims)
     tokenizer = setup_tokenizer(config.model)
 
+    if config.model.param_dtype == "float16":
+        from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
+
+        scaler = ShardedGradScaler(growth_interval=400)
+    else:
+        scaler = None
+
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
     logger.info(f"Using `{config.loss.ratio_type}` importance ratio ({config.loss})")
@@ -255,7 +262,10 @@ def train(config: RLTrainerConfig):
 
             # Backward pass
             with maybe_record_function("backward"):
-                loss.backward()
+                if scaler is not None:
+                    scaler.scale(loss).backward()
+                else:
+                    loss.backward()
 
             # Add relevant tensors to tensor dict for logging purposes
             tensors["trainer_probs"].append(torch.exp(trainer_logprobs)[loss_mask].detach().to("cpu"))
@@ -280,11 +290,17 @@ def train(config: RLTrainerConfig):
                 micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
 
+        if scaler is not None:
+            scaler.unscale_(optimizer)
         # Optionally, clip the gradients
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.optim.max_norm).full_tensor()
 
         # Update the model parameters
-        optimizer.step()
+        if scaler is not None:
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            optimizer.step()
         optimizer.zero_grad()
 
         # Update learning rate scheduler
