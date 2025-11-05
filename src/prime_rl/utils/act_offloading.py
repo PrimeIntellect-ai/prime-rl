@@ -63,12 +63,8 @@ class OffloadActivations(saved_tensors_hooks):
     ) -> None:
         self.use_streams: bool = use_streams
 
-        self.min_tensor_size_bytes = (
-            min_offload_size  # we don't want to bother with small tensors
-        )
-        self.tracker = (
-            {}
-        )  # tensor_id => (new_tensor, if_modified)  ---> track what saved/offloaded tensors are where
+        self.min_tensor_size_bytes = min_offload_size  # we don't want to bother with small tensors
+        self.tracker = {}  # tensor_id => (new_tensor, if_modified)  ---> track what saved/offloaded tensors are where
         self.tensor_id: int = 0
         self.is_first_forward_call = True
         self.is_first_backward_call = True
@@ -76,25 +72,19 @@ class OffloadActivations(saved_tensors_hooks):
 
         # managing cpu memory
         self.use_pin_memory: bool = use_pin_memory
-        self.virtual_memory_safe_pct = (
-            60  # we should not exceed this percentage of memory
-        )
+        self.virtual_memory_safe_pct = 60  # we should not exceed this percentage of memory
         # comp stream
         if torch.accelerator.is_available():
             self.s0 = torch.accelerator.current_stream()
         else:
-            raise ValueError(
-                "enable_activation_offloading should only be True when training on CUDA or XPU"
-            )
+            raise ValueError("enable_activation_offloading should only be True when training on CUDA or XPU")
 
         # for streaming
         if self.use_streams:
             self.s1 = torch.Stream()  # comms stream
             self.fwd_stash = {}  # tensor_id => (activation, ev1)
             if max_fwd_stash_size < 1:
-                raise ValueError(
-                    f"max_fwd_stash_size should be at least 1 but is {max_fwd_stash_size}"
-                )
+                raise ValueError(f"max_fwd_stash_size should be at least 1 but is {max_fwd_stash_size}")
             self.max_fwd_stash_size = max_fwd_stash_size
             self.bwd_tensor_stash = {}  # tensor_id => activation
             self.bwd_ev_stash = {}  # tensor_id => ev0
@@ -120,17 +110,13 @@ class OffloadActivations(saved_tensors_hooks):
 
         def get_num_bytes_tensor(x: torch.Tensor) -> int:
             # get the number of bytes in a tensor, for memory management purposes
-            return (
-                x.element_size() * x.nelement()
-            )  # x.element_size() * x._base_storage().nbytes()
+            return x.element_size() * x.nelement()  # x.element_size() * x._base_storage().nbytes()
 
         # -------- core pack / unpack work -------- #
         def pack_tensor(activation: torch.Tensor) -> int:
             # activations are passed in during forward pass - from here we take over and return a unique id
             if self.is_first_forward_call:
-                assert (
-                    len(self.tracker) == 0
-                ), "backward pass should have cleared tracker of all tensors"
+                assert len(self.tracker) == 0, "backward pass should have cleared tracker of all tensors"
 
                 # set training phase trackers
                 self.is_first_forward_call = False
@@ -147,10 +133,7 @@ class OffloadActivations(saved_tensors_hooks):
                 and num_bytes >= self.min_tensor_size_bytes
                 and (
                     not isinstance(activation, torch.nn.Parameter)
-                    and not (
-                        hasattr(torch.nn, "Buffer")
-                        and isinstance(activation, torch.nn.Buffer)
-                    )
+                    and not (hasattr(torch.nn, "Buffer") and isinstance(activation, torch.nn.Buffer))
                 )
             ):
                 if self.use_streams:
@@ -170,9 +153,7 @@ class OffloadActivations(saved_tensors_hooks):
                 stream = self.s1 if self.use_streams else self.s0
                 with stream:
                     try:
-                        cpu_tensor = torch.empty_like(
-                            activation, pin_memory=self.use_pin_memory, device="cpu"
-                        )
+                        cpu_tensor = torch.empty_like(activation, pin_memory=self.use_pin_memory, device="cpu")
                     except NotImplementedError as e:
                         raise e
                     cpu_tensor.copy_(activation, non_blocking=True)
@@ -206,15 +187,11 @@ class OffloadActivations(saved_tensors_hooks):
                 self.is_first_backward_call = False
                 self.is_first_forward_call = True
 
-            assert (
-                unpack_tensor_id in self.tracker
-            ), f"untracked tensor with id {unpack_tensor_id}"
+            assert unpack_tensor_id in self.tracker, f"untracked tensor with id {unpack_tensor_id}"
 
             maybe_gpu_tensor, modified = self.tracker[unpack_tensor_id]
             if modified:
-                gpu_tensor = maybe_gpu_tensor.to(
-                    torch.accelerator.current_accelerator(), non_blocking=True
-                )
+                gpu_tensor = maybe_gpu_tensor.to(torch.accelerator.current_accelerator(), non_blocking=True)
                 maybe_gpu_tensor = gpu_tensor
 
             # clear tensor from tracking
@@ -234,9 +211,7 @@ class OffloadActivations(saved_tensors_hooks):
                         del self.bwd_tensor_stash[id]
 
                 # Register a callback to the end of autograd to clean everything up
-                torch.autograd.variable.Variable._execution_engine.queue_callback(
-                    wait_and_del_remaining_references
-                )
+                torch.autograd.variable.Variable._execution_engine.queue_callback(wait_and_del_remaining_references)
 
                 if self.is_first_forward_pass:
                     self.is_first_forward_pass = False
@@ -246,9 +221,7 @@ class OffloadActivations(saved_tensors_hooks):
                 self.is_first_backward_call = False
                 self.is_first_forward_call = True
 
-            assert (
-                unpack_tensor_id in self.tracker
-            ), f"untracked tensor with id {unpack_tensor_id}"
+            assert unpack_tensor_id in self.tracker, f"untracked tensor with id {unpack_tensor_id}"
 
             maybe_gpu_tensor, modified = self.tracker[unpack_tensor_id]
             if modified:
@@ -269,9 +242,7 @@ class OffloadActivations(saved_tensors_hooks):
                 else:
                     # Kick off the process to bring tensors back
                     with self.s1:
-                        gpu_tensor = maybe_gpu_tensor.to(
-                            torch.accelerator.current_accelerator(), non_blocking=True
-                        )
+                        gpu_tensor = maybe_gpu_tensor.to(torch.accelerator.current_accelerator(), non_blocking=True)
                         maybe_gpu_tensor = gpu_tensor
 
                     # Tell comp stream to wait for the info to be loaded before executing
@@ -293,9 +264,7 @@ class OffloadActivations(saved_tensors_hooks):
                     #    up as a view of the unpacked tensor.
                     # 3. The user abuses the system somehow and manually relies on the
                     #    unpacked tensor to exist after the backward node has executed.
-                    storage_refcount = torch._C._storage_Use_Count(
-                        maybe_gpu_tensor.untyped_storage()._cdata
-                    )
+                    storage_refcount = torch._C._storage_Use_Count(maybe_gpu_tensor.untyped_storage()._cdata)
 
                 def hook(outputs, inputs):
                     # create events for the current node inputs/outputs if they were streamed in
@@ -312,12 +281,7 @@ class OffloadActivations(saved_tensors_hooks):
                         # non-deterministic (thus higher) memory usage, but this case
                         # should not happen often.
                         unpacked_tensor = self.bwd_tensor_stash[unpack_tensor_id]
-                        if (
-                            torch._C._storage_Use_Count(
-                                unpacked_tensor.untyped_storage()._cdata
-                            )
-                            > storage_refcount
-                        ):
+                        if torch._C._storage_Use_Count(unpacked_tensor.untyped_storage()._cdata) > storage_refcount:
                             unpacked_tensor.record_stream(self.s0)
                             del self.bwd_tensor_stash[unpack_tensor_id]
                         else:
@@ -344,33 +308,24 @@ class OffloadActivations(saved_tensors_hooks):
             del self.tracker[unpack_tensor_id]
             return maybe_gpu_tensor
 
-        unpack_tensor = (
-            unpack_tensor_with_streams
-            if self.use_streams
-            else unpack_tensor_single_stream
-        )
+        unpack_tensor = unpack_tensor_with_streams if self.use_streams else unpack_tensor_single_stream
         super().__init__(pack_tensor, unpack_tensor)
 
 
-
-
-@contextmanager
-def maybe_activation_offloading(config: ActivationOffloadingConfig) -> ContextManager:
-    """Context manager under which activation tensors created in the forward pass will be offloaded.
+def maybe_activation_offloading(config: ActivationOffloadingConfig) -> OffloadActivations | nullcontext:
+    """Returns an OffloadActivations object if activation offloading is enabled, otherwise returns a nullcontext.
 
     Args:
         config: The activation offloading configuration.
 
     Returns:
-        A context manager under which activation tensors will be offloaded.
+        An OffloadActivations object if activation offloading is enabled, otherwise a nullcontext object.
     """
     if not config.enabled:
-        yield nullcontext()
-    else:
-        with OffloadActivations(
-            use_pin_memory=config.pin_memory,
-            use_streams=config.use_cuda_streams,
-            max_fwd_stash_size=config.max_inflight_activations,
-        ):
-            yield
+        return nullcontext()
 
+    return OffloadActivations(
+        use_pin_memory=config.pin_memory,
+        use_streams=config.use_cuda_streams,
+        max_fwd_stash_size=config.max_inflight_activations,
+    )

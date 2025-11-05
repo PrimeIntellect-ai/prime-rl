@@ -235,6 +235,7 @@ def train(config: RLTrainerConfig):
             # Forward pass
             with maybe_record_function("forward"), maybe_activation_offloading(config.activation_offloading):
                 logits = forward(model, input_ids, position_ids).float().contiguous()
+
             shifted_logits = shift_logits(logits)
             shifted_logits = shifted_logits / temperature
             trainer_logprobs = selective_log_softmax(shifted_logits, input_ids)
