@@ -45,16 +45,16 @@ hard_fraction = 0.0
 easy_border = 1.0
 hard_border = 0.0
 
-[orchestrator.eval]
-interval = 50
-
-[[orchestrator.eval.env]]
-id = "math500"
-rollouts_per_example = 1
-
-[[orchestrator.eval.env]]
-id = "aime2025"
-rollouts_per_example = 32
+# [orchestrator.eval]
+# interval = 50
+# 
+# [[orchestrator.eval.env]]
+# id = "math500"
+# rollouts_per_example = 1
+# 
+# [[orchestrator.eval.env]]
+# id = "aime2025"
+# rollouts_per_example = 32
 
 [inference.parallel]
 dp = 3
