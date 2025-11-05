@@ -1,7 +1,6 @@
 # Adapted/copied from https://github.com/meta-pytorch/torchtune/blob/10c31c0abadf51dfa2bf606637cd81e812e3f8c9/torchtune/training/_activation_offloading.py
 
-from contextlib import contextmanager, nullcontext
-from typing import ContextManager
+from contextlib import nullcontext
 
 import psutil
 import torch
