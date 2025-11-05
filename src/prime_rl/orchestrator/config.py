@@ -376,6 +376,44 @@ class OnlineDifficultyBufferConfig(BufferConfig):
 class OnlineDifficultyPoolBufferConfig(BufferConfig):
     type: Literal["online-difficulty-pool"] = "online-difficulty-pool"
 
+    # Difficulty pool parameters (from DifficultyPoolBufferConfig)
+    easy_border: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            description="If a problem has more than `easy_border` average reward across rollouts, it will be moved to the easy pool.",
+        ),
+    ] = 0.8
+
+    hard_border: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            description="If a problem has less than `hard_border` average reward across rollouts, it will be moved to the hard pool.",
+        ),
+    ] = 0.2
+
+    easy_fraction: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            description="Fraction of the batch that should consist of easy samples.",
+        ),
+    ] = 0.1
+
+    hard_fraction: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            description="Fraction of the batch that should consist of hard samples.",
+        ),
+    ] = 0.1
+
+    # Online difficulty filtering parameters (from OnlineDifficultyBufferConfig)
     min_reward: Annotated[
         float | None,
         Field(
@@ -394,14 +432,13 @@ class OnlineDifficultyPoolBufferConfig(BufferConfig):
         ),
     ] = 0.99
 
-    solved_threshold: Annotated[
+    oversampling_factor: Annotated[
         float,
         Field(
-            ge=0,
-            le=1,
-            description="If a problem has rollouts with average reward above this threshold, it will be marked as solved and excluded from future sampling.",
+            gt=0,
+            description="Factor by which to oversample during filtering to ensure sufficient samples.",
         ),
-    ] = 0.95
+    ] = 1.0
 
 
 DataBufferConfigType: TypeAlias = SimpleBufferConfig | DifficultyPoolBufferConfig | OnlineDifficultyBufferConfig | OnlineDifficultyPoolBufferConfig

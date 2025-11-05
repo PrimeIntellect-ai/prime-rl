@@ -412,29 +412,85 @@ class OnlineDifficultyBuffer(Buffer):
 
 class OnlineDifficultyPoolBuffer(Buffer):
     """
-    The online difficulty pool buffer samples problems randomly, but excludes problems
-    that have been marked as "solved" (where rollouts exceeded a threshold).
-    Rollouts are filtered by reward range before being released to the trainer.
+    The online difficulty pool buffer combines the functionality of both DifficultyPoolBuffer
+    and OnlineDifficultyBuffer. It maintains difficulty pools (easy/normal/hard) and samples
+    proportionally from them, while also filtering rollouts by reward range before releasing
+    them.
     """
 
     def __init__(self, dataset: Dataset, buffer_config: OnlineDifficultyPoolBufferConfig):
         super().__init__(dataset, buffer_config)
         self.config = buffer_config
 
+        # Initialize difficulty pools (like DifficultyPoolBuffer)
+        for problem_id in self.problem_ids:
+            if self.metadata[problem_id].get("difficulty") is None:
+                self.metadata[problem_id].update({"difficulty": "normal"})
+            if self.metadata[problem_id]["difficulty"] not in ["easy", "normal", "hard"]:
+                raise ValueError(
+                    f"Invalid difficulty {self.metadata[problem_id]['difficulty']} for problem {problem_id}. Should be one of `easy`, `normal` or `hard`."
+                )
+
     def sample_problems(self, n: int) -> list[dict]:
-        # Get unsolved problem IDs (those not marked as solved in metadata)
-        unsolved_problem_ids = [
+        # Compute number of easy, normal and hard problems to sample (like DifficultyPoolBuffer)
+        n_easy = int(n * self.config.easy_fraction)
+        n_hard = int(n * self.config.hard_fraction)
+        n_normal = n - n_easy - n_hard
+        self.logger.debug(f"Sampling {n_easy=}, {n_normal=}, {n_hard=}")
+
+        # Get problem IDs by difficulty
+        easy_problem_ids = [
             problem_id
-            for problem_id in self.problem_ids
-            if not self.metadata[problem_id].get("solved", False)
+            for problem_id, metadata in self.metadata.items()
+            if metadata["difficulty"] == "easy"
         ]
-        
-        assert len(unsolved_problem_ids) >= n, (
-            f"There should be at least {n} unsolved problem(s) in the buffer, but found only {len(unsolved_problem_ids)}"
+        normal_problem_ids = [
+            problem_id
+            for problem_id, metadata in self.metadata.items()
+            if metadata["difficulty"] == "normal"
+        ]
+        hard_problem_ids = [
+            problem_id
+            for problem_id, metadata in self.metadata.items()
+            if metadata["difficulty"] == "hard"
+        ]
+        self.logger.debug(
+            f"Found {len(easy_problem_ids)} easy, {len(normal_problem_ids)} normal and {len(hard_problem_ids)} hard problems"
         )
-        
-        sampled_problem_ids = random.sample(unsolved_problem_ids, n)
-        self.logger.debug(f"Sampled {n} problem(s) from {len(unsolved_problem_ids)} unsolved problems ({sampled_problem_ids=})")
+
+        # Sample easy problems
+        n_easy_sampled = min(n_easy, len(easy_problem_ids))
+        sampled_easy_problem_ids = random.sample(easy_problem_ids, n_easy_sampled) if n_easy_sampled > 0 else []
+        assert len(sampled_easy_problem_ids) == n_easy_sampled
+        if n_easy_sampled < n_easy:
+            self.logger.warning(
+                f"Only {n_easy_sampled} easy problem(s) available, sampling {n_easy - n_easy_sampled} normal problem(s) more"
+            )
+            n_normal += n_easy - n_easy_sampled
+
+        # Sample hard problems
+        n_hard_sampled = min(n_hard, len(hard_problem_ids))
+        sampled_hard_problem_ids = random.sample(hard_problem_ids, n_hard_sampled) if n_hard_sampled > 0 else []
+        assert len(sampled_hard_problem_ids) == n_hard_sampled
+        if n_hard_sampled < n_hard:
+            self.logger.warning(
+                f"Only {n_hard_sampled} hard problem(s) available, sampling {n_hard - n_hard_sampled} normal problem(s) more"
+            )
+            n_normal += n_hard - n_hard_sampled
+
+        # Sample normal problems
+        assert len(normal_problem_ids) >= n_normal, (
+            f"Not enough normal problems available. Need {n_normal}, but only {len(normal_problem_ids)} available."
+        )
+        n_normal_sampled = min(n_normal, len(normal_problem_ids))
+        sampled_normal_problem_ids = random.sample(normal_problem_ids, n_normal_sampled) if n_normal_sampled > 0 else []
+        assert len(sampled_normal_problem_ids) == n_normal_sampled
+
+        sampled_problem_ids = sampled_easy_problem_ids + sampled_normal_problem_ids + sampled_hard_problem_ids
+        assert len(sampled_problem_ids) == n
+        self.logger.debug(
+            f"Sampled {n} problem(s) (easy={len(sampled_easy_problem_ids)}, normal={len(sampled_normal_problem_ids)}, hard={len(sampled_hard_problem_ids)}, {sampled_problem_ids=})"
+        )
 
         # Sample problems
         sampled_problems = [self.problem_buffer[problem_id] for problem_id in sampled_problem_ids]
@@ -447,30 +503,40 @@ class OnlineDifficultyPoolBuffer(Buffer):
         for rollout in rollouts:
             rollouts_by_problem_id[rollout["example_id"]].append(rollout)
 
+        # Clear old rollouts (like OnlineDifficultyBuffer)
+        # Do not keep rollouts from older weight checkpoints
+        self.rollout_buffer.clear()
+
         # Add grouped rollouts to the buffer
         self.rollout_buffer.update(rollouts_by_problem_id)
 
-        # Update metadata: mark problems as solved if average reward exceeds threshold
-        solved_count = 0
+        # Update metadata with difficulty information (combining both buffers)
+        stats = Counter()
         for problem_id, rollouts in rollouts_by_problem_id.items():
             reward = sum(rollout["reward"] for rollout in rollouts) / len(rollouts)
             self.metadata[problem_id].update({"reward": reward})
-            
-            # Mark as solved if reward exceeds threshold
-            if reward > self.config.solved_threshold:
-                if not self.metadata[problem_id].get("solved", False):
-                    solved_count += 1
-                self.metadata[problem_id].update({"solved": True})
-                self.logger.debug(f"Problem {problem_id} marked as solved (reward={reward:.3f} > {self.config.solved_threshold})")
-        
-        if solved_count > 0:
-            self.logger.info(f"Marked {solved_count} problem(s) as solved (will be excluded from future sampling)")
+
+            # Update difficulty based on reward (like DifficultyPoolBuffer)
+            if reward > self.config.easy_border:
+                new_difficulty = "easy"
+            elif reward < self.config.hard_border:
+                new_difficulty = "hard"
+            else:
+                new_difficulty = "normal"
+            old_difficulty = self.metadata[problem_id]["difficulty"]
+            stats[(old_difficulty, new_difficulty)] += 1
+            self.metadata[problem_id].update({"difficulty": new_difficulty})
+
+        stats_str = ", ".join([f"{v} problem(s) moved from `{k[0]}` to `{k[1]}`" for k, v in stats.items()])
+        if stats_str:
+            self.logger.debug(f"Updated difficulty information ({stats_str})")
 
     def sample_rollouts(self, n: int) -> list[Rollout]:
+        # Filter rollouts by reward range (like OnlineDifficultyBuffer)
         available_problem_ids = list(self.rollout_buffer.keys())
         sampled_problem_ids, sampled_rollouts = [], []
         num_too_easy, num_too_hard = 0, 0
-        
+
         # Take rollouts within the difficulty range
         for problem_id in available_problem_ids:
             reward = self.metadata[problem_id].get("reward")
