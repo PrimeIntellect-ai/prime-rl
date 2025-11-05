@@ -316,6 +316,11 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
 
     if config.load_using_meta and can_load_dcp_from_hf(model):
         load_dcp_from_hf(model, config)
+        # Reshard all FSDP modules after weight loading to ensure DTensors are in consistent state
+        # This is especially important for Muon optimizer which expects consistent mesh placement
+        reshard_module(model)
+        # Synchronize all ranks after resharding to ensure DTensors are consistent
+        torch.distributed.barrier()
 
     logger.debug(f"Model signature: {get_module_signature(model, compress=True)}")
     return model
