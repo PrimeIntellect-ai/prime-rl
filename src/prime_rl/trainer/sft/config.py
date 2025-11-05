@@ -4,6 +4,7 @@ from typing import Annotated, Literal, TypeAlias
 from pydantic import BaseModel, Field, model_validator
 
 from prime_rl.trainer.config import (
+    ActivationOffloadingConfig,
     AdamWConfig,
     CheckpointConfig,
     ConstantSchedulerConfig,
@@ -108,6 +109,9 @@ class SFTTrainerConfig(BaseSettings):
 
     # The learning rate scheduler configuration
     scheduler: Annotated[SchedulerConfigType, Field(discriminator="type")] = ConstantSchedulerConfig()
+
+    # The activation offloading configuration
+    activation_offloading: ActivationOffloadingConfig = ActivationOffloadingConfig()
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None

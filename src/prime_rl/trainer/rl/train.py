@@ -5,6 +5,7 @@ from datetime import timedelta
 # Import environment before any other imports
 # ruff: noqa: I001
 
+from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
@@ -232,7 +233,7 @@ def train(config: RLTrainerConfig):
             temperature = micro_batch["temperature"]
 
             # Forward pass
-            with maybe_record_function("forward"):
+            with maybe_record_function("forward"), maybe_activation_offloading(config.activation_offloading):
                 logits = forward(model, input_ids, position_ids).float().contiguous()
             shifted_logits = shift_logits(logits)
             shifted_logits = shifted_logits / temperature
