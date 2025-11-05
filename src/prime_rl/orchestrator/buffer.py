@@ -11,6 +11,7 @@ from prime_rl.orchestrator.config import (
     DataBufferConfigType,
     DifficultyPoolBufferConfig,
     OnlineDifficultyBufferConfig,
+    OnlineDifficultyPoolBufferConfig,
     SimpleBufferConfig,
 )
 from prime_rl.utils.logger import get_logger
@@ -409,6 +410,101 @@ class OnlineDifficultyBuffer(Buffer):
         return sampled_rollouts
 
 
+class OnlineDifficultyPoolBuffer(Buffer):
+    """
+    The online difficulty pool buffer samples problems randomly, but excludes problems
+    that have been marked as "solved" (where rollouts exceeded a threshold).
+    Rollouts are filtered by reward range before being released to the trainer.
+    """
+
+    def __init__(self, dataset: Dataset, buffer_config: OnlineDifficultyPoolBufferConfig):
+        super().__init__(dataset, buffer_config)
+        self.config = buffer_config
+
+    def sample_problems(self, n: int) -> list[dict]:
+        # Get unsolved problem IDs (those not marked as solved in metadata)
+        unsolved_problem_ids = [
+            problem_id
+            for problem_id in self.problem_ids
+            if not self.metadata[problem_id].get("solved", False)
+        ]
+        
+        assert len(unsolved_problem_ids) >= n, (
+            f"There should be at least {n} unsolved problem(s) in the buffer, but found only {len(unsolved_problem_ids)}"
+        )
+        
+        sampled_problem_ids = random.sample(unsolved_problem_ids, n)
+        self.logger.debug(f"Sampled {n} problem(s) from {len(unsolved_problem_ids)} unsolved problems ({sampled_problem_ids=})")
+
+        # Sample problems
+        sampled_problems = [self.problem_buffer[problem_id] for problem_id in sampled_problem_ids]
+
+        return sampled_problems
+
+    def update(self, rollouts: list[Rollout]):
+        # Group rollouts by problem_id
+        rollouts_by_problem_id = defaultdict(list)
+        for rollout in rollouts:
+            rollouts_by_problem_id[rollout["example_id"]].append(rollout)
+
+        # Add grouped rollouts to the buffer
+        self.rollout_buffer.update(rollouts_by_problem_id)
+
+        # Update metadata: mark problems as solved if average reward exceeds threshold
+        solved_count = 0
+        for problem_id, rollouts in rollouts_by_problem_id.items():
+            reward = sum(rollout["reward"] for rollout in rollouts) / len(rollouts)
+            self.metadata[problem_id].update({"reward": reward})
+            
+            # Mark as solved if reward exceeds threshold
+            if reward > self.config.solved_threshold:
+                if not self.metadata[problem_id].get("solved", False):
+                    solved_count += 1
+                self.metadata[problem_id].update({"solved": True})
+                self.logger.debug(f"Problem {problem_id} marked as solved (reward={reward:.3f} > {self.config.solved_threshold})")
+        
+        if solved_count > 0:
+            self.logger.info(f"Marked {solved_count} problem(s) as solved (will be excluded from future sampling)")
+
+    def sample_rollouts(self, n: int) -> list[Rollout]:
+        available_problem_ids = list(self.rollout_buffer.keys())
+        sampled_problem_ids, sampled_rollouts = [], []
+        num_too_easy, num_too_hard = 0, 0
+        
+        # Take rollouts within the difficulty range
+        for problem_id in available_problem_ids:
+            reward = self.metadata[problem_id].get("reward")
+            if reward is None:
+                self.logger.warning(f"Problem {problem_id} has no reward in metadata, skipping")
+                continue
+            if self.config.min_reward is not None and reward < self.config.min_reward:
+                num_too_hard += 1
+                continue
+            if self.config.max_reward is not None and reward > self.config.max_reward:
+                num_too_easy += 1
+                continue
+            sampled_rollout = self.rollout_buffer.pop(problem_id)
+            sampled_rollouts.extend(sampled_rollout)
+            sampled_problem_ids.append(problem_id)
+
+        assert all(
+            [
+                self.config.min_reward or -1e9 <= self.metadata[problem_id]["reward"] <= self.config.max_reward or 1e9
+                for problem_id in sampled_problem_ids
+            ]
+        )
+        self.logger.debug(
+            f"Sampled {len(sampled_problem_ids)} problem(s) within reward range [{self.config.min_reward}, {self.config.max_reward}] ({sampled_problem_ids=})"
+        )
+
+        if len(sampled_problem_ids) < n:
+            self.logger.warning(
+                f"Only {len(sampled_problem_ids)} (<{n}) valid problem(s) available ({num_too_easy=}, {num_too_hard=})"
+            )
+
+        return sampled_rollouts
+
+
 def setup_buffer(dataset: Dataset, buffer_config: DataBufferConfigType) -> Buffer:
     if buffer_config.type == "simple":
         return SimpleBuffer(dataset, buffer_config)
@@ -416,3 +512,5 @@ def setup_buffer(dataset: Dataset, buffer_config: DataBufferConfigType) -> Buffe
         return DifficultyPoolBuffer(dataset, buffer_config)
     elif buffer_config.type == "online-difficulty":
         return OnlineDifficultyBuffer(dataset, buffer_config)
+    elif buffer_config.type == "online-difficulty-pool":
+        return OnlineDifficultyPoolBuffer(dataset, buffer_config)

@@ -373,7 +373,38 @@ class OnlineDifficultyBufferConfig(BufferConfig):
     ] = 1.0
 
 
-DataBufferConfigType: TypeAlias = SimpleBufferConfig | DifficultyPoolBufferConfig | OnlineDifficultyBufferConfig
+class OnlineDifficultyPoolBufferConfig(BufferConfig):
+    type: Literal["online-difficulty-pool"] = "online-difficulty-pool"
+
+    min_reward: Annotated[
+        float | None,
+        Field(
+            ge=0,
+            le=1,
+            description="Minimum reward to include the rollout in a batch.",
+        ),
+    ] = 0.01
+
+    max_reward: Annotated[
+        float | None,
+        Field(
+            ge=0,
+            le=1,
+            description="Maximum reward to include the rollout in a batch.",
+        ),
+    ] = 0.99
+
+    solved_threshold: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            description="If a problem has rollouts with average reward above this threshold, it will be marked as solved and excluded from future sampling.",
+        ),
+    ] = 0.95
+
+
+DataBufferConfigType: TypeAlias = SimpleBufferConfig | DifficultyPoolBufferConfig | OnlineDifficultyBufferConfig | OnlineDifficultyPoolBufferConfig
 
 
 class AdvantageConfig(BaseConfig):
