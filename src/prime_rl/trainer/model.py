@@ -164,6 +164,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     model.to_empty(device="cuda")
+    torch.distributed.barrier()
 
     logger = get_logger()
     if config.debug.random_init:
