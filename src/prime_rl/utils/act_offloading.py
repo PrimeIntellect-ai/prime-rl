@@ -311,7 +311,7 @@ class OffloadActivations(saved_tensors_hooks):
         super().__init__(pack_tensor, unpack_tensor)
 
 
-def maybe_activation_offloading(config: ActivationOffloadingConfig) -> OffloadActivations | nullcontext:
+def maybe_activation_offloading(config: ActivationOffloadingConfig | None) -> OffloadActivations | nullcontext:
     """Returns an OffloadActivations object if activation offloading is enabled, otherwise returns a nullcontext.
 
     Args:
@@ -320,11 +320,11 @@ def maybe_activation_offloading(config: ActivationOffloadingConfig) -> OffloadAc
     Returns:
         An OffloadActivations object if activation offloading is enabled, otherwise a nullcontext object.
     """
-    if not config.enabled:
+    if config is None:
         return nullcontext()
 
     return OffloadActivations(
         use_pin_memory=config.pin_memory,
-        use_streams=config.use_cuda_streams,
+        use_streams=True,
         max_fwd_stash_size=config.max_inflight_activations,
     )

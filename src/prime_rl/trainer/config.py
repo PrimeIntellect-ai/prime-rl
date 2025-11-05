@@ -27,13 +27,7 @@ class ActivationCheckpointConfig(BaseModel):
 class ActivationOffloadingConfig(BaseModel):
     """Configures the activation offloading."""
 
-    enabled: Annotated[bool, Field(description="Whether to enable activation offloading.")] = False
-
     pin_memory: Annotated[bool, Field(description="Whether to pin the offloaded activations to CPU memory.")] = True
-
-    use_cuda_streams: Annotated[
-        bool, Field(description="Whether to use CUDA streams for communication/computation overlap.")
-    ] = True
 
     max_inflight_activations: Annotated[
         int,

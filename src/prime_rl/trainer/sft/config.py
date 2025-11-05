@@ -111,7 +111,7 @@ class SFTTrainerConfig(BaseSettings):
     scheduler: Annotated[SchedulerConfigType, Field(discriminator="type")] = ConstantSchedulerConfig()
 
     # The activation offloading configuration
-    activation_offloading: ActivationOffloadingConfig = ActivationOffloadingConfig()
+    activation_offloading: ActivationOffloadingConfig | None = None
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
