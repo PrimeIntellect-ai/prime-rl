@@ -145,6 +145,8 @@ async def orchestrate(config: OrchestratorConfig):
         logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
         ckpt_step = progress.step  # Always resume from the latest checkpoint
         await update_weights(admin_clients, get_step_path(get_weights_dir(config.output_dir), ckpt_step))
+        # Sync scheduler's ckpt_step with orchestrator's ckpt_step
+        scheduler.ckpt_step = ckpt_step
     else:
         logger.info("Training from scratch. Resetting weights to base model")
         await reload_weights(admin_clients)
