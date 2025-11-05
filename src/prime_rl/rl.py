@@ -21,7 +21,7 @@ from prime_rl.trainer.config import CheckpointConfig as TrainerCheckpointConfig
 from prime_rl.trainer.rl.config import FakeDataLoaderConfig
 from prime_rl.trainer.rl.config import RLTrainerConfig as TrainerConfig
 from prime_rl.utils.config import WandbMonitorConfig
-from prime_rl.utils.logger import setup_logger
+from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pydantic_config import BaseSettings, get_temp_toml_file, parse_argv
 from prime_rl.utils.utils import (
     get_ckpt_dir,
@@ -195,8 +195,14 @@ class RLConfig(BaseSettings):
 
     @model_validator(mode="after")
     def auto_setup_num_train_workers(self):
+        num_non_data_parallel_ranks = self.trainer.model.cp * self.trainer.model.tp
+        logger = get_logger()
+
+        logger.debug(f"Number of non-data parallel ranks: {num_non_data_parallel_ranks}")
+        logger.debug(f"Number of trainer GPUs: {len(self.trainer_gpu_ids)}")
+
         if len(self.trainer_gpu_ids) > 1:
-            self.orchestrator.num_train_workers = len(self.trainer_gpu_ids)
+            self.orchestrator.num_train_workers = len(self.trainer_gpu_ids) // num_non_data_parallel_ranks
         return self
 
     @model_validator(mode="after")

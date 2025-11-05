@@ -113,7 +113,7 @@ def train(config: RLTrainerConfig):
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
-    dataloader = DataLoader(config.output_dir, progress.step)
+    dataloader = DataLoader(config.output_dir, progress.step, parallel_dims.non_data_parallel_size)
     if config.data.fake:
         dataloader = FakeDataLoader(config.data.fake)
 
@@ -201,7 +201,7 @@ def train(config: RLTrainerConfig):
             inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
             temperature = micro_batch["temperature"]
 
-            if config.model.attn_implementation == "flex_attention":
+            if config.model.attn == "flex_attention":
                 mask = get_flex_attn_mask(config.model.attn_mask_type, position_ids)
             else:
                 mask = None

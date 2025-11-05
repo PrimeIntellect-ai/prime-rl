@@ -8,6 +8,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.orchestrator.buffer import Rollout
 from prime_rl.trainer.rl.data import MicroBatch
+from prime_rl.utils.logger import get_logger
 
 
 class BatchSample(TypedDict):
@@ -22,6 +23,7 @@ def prepare_sample(
     rollout: Rollout,
     seq_len: int,
     tokenizer: PreTrainedTokenizer,
+    pad_to_multiple_of: int = 256,
 ) -> BatchSample:
     """
     Prepare a problem for sequence packing training.
@@ -38,10 +40,23 @@ def prepare_sample(
 
     # Prepare input_ids, loss_mask, position_ids, inference_logprobs, and advantages
     input_ids = torch.cat([prompt_token_ids, completion_token_ids]).long()
+
+    next_padding_len = pad_to_multiple_of - len(input_ids) % pad_to_multiple_of
+
+    if pad_to_multiple_of is not None:
+        input_ids = torch.nn.functional.pad(input_ids, (0, next_padding_len), value=tokenizer.pad_token_id)
+
     loss_mask = torch.cat([prompt_token_mask, completion_token_mask]).bool()
+    if pad_to_multiple_of is not None:
+        loss_mask = torch.nn.functional.pad(loss_mask, (0, next_padding_len), value=False)
+
     inference_logprobs = torch.cat(
         [torch.zeros(len(prompt_token_ids)), torch.tensor(rollout.completion_logprobs)]
     ).float()
+
+    if pad_to_multiple_of is not None:
+        inference_logprobs = torch.nn.functional.pad(inference_logprobs, (0, next_padding_len), value=0.0)
+
     position_ids = torch.arange(len(input_ids)).long()
     advantages = torch.tensor(rollout.advantage).repeat(len(input_ids)).float()
 
@@ -134,7 +149,7 @@ def prepare_batch(
     Each micro batch is shape [1, seq_len], the namber of sample is not fixed per micro batch.
     """
     rollouts = copy.deepcopy(rollouts)
-    max_seq_len = seq_len 
+    max_seq_len = seq_len
 
     all_samples = [
         prepare_sample(

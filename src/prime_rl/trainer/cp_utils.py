@@ -2,7 +2,10 @@ from typing import Literal, Sequence
 
 import torch
 from torch.distributed.tensor.experimental._attention import _context_parallel_shard, context_parallel_unshard
-from torch.distributed.tensor.experimental._load_balancer import _HeadTailLoadBalancer, _PerDocumentHeadTailLoadBalancer
+from torch.distributed.tensor.experimental._context_parallel._load_balancer import (
+    _HeadTailLoadBalancer,
+    _PerDocumentHeadTailLoadBalancer,
+)
 from torch.nn.attention.flex_attention import BlockMask
 
 from prime_rl.trainer.parallel_dims import ParallelDims

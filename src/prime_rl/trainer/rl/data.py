@@ -7,6 +7,7 @@ from torch import Tensor
 
 from prime_rl.trainer.rl.config import FakeDataLoaderConfig
 from prime_rl.trainer.world import get_world
+from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import get_rollout_dir, sync_wait_for_path
 
 
@@ -35,7 +36,7 @@ class FakeDataLoader:
     def get_batch(self) -> list[MicroBatch]:
         fn = self._get_micro_batch if not self.generate_documents else self._get_document_micro_batch
         return [fn() for _ in range(self.num_micro_batches)]
-    
+
     def _get_document_micro_batch(self) -> MicroBatch:
         max_len = self.seq_len // 8
         total_len = 0
@@ -93,13 +94,16 @@ class FakeDataLoader:
 class DataLoader:
     """Loads serialized data from a data path written by the orchestrator."""
 
-    def __init__(self, output_dir: Path, start_step: int):
+    def __init__(self, output_dir: Path, start_step: int, num_non_data_parallel_ranks: int):
         self.rollout_dir = get_rollout_dir(output_dir)
         self.current_step = start_step
         self.world = get_world()
 
+        self.dp_rank = self.world.rank // num_non_data_parallel_ranks
+
     def get_rollout_path(self) -> Path:
-        return self.rollout_dir / f"step_{self.current_step}" / f"rank_{self.world.rank}.pt"
+        get_logger().debug(f"Getting rollout path for step {self.current_step} and rank {self.dp_rank}")
+        return self.rollout_dir / f"step_{self.current_step}" / f"rank_{self.dp_rank}.pt"
 
     def wait_for_batch(self) -> None:
         sync_wait_for_path(self.get_rollout_path())
