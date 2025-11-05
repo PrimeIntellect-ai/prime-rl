@@ -99,6 +99,7 @@ def train(config: RLTrainerConfig):
 
     # Set up NCCL broadcast
     nccl_broadcast = None
+    logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
     if config.weight_broadcast.type == "nccl":
         # we do inferece world size + 1 because we have the trainer broadcaster as rank 0
         nccl_broadcast = NCCLBroadcastSender(
@@ -110,8 +111,6 @@ def train(config: RLTrainerConfig):
             device=torch.cuda.current_device(),
             logger=logger,
         )
-    else:
-        logger.info("Using filesystem for broadcasting weights into the inference pool.")
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
@@ -149,11 +148,11 @@ def train(config: RLTrainerConfig):
         broadcast_weights_time = 0
         if progress.step > 0:
             save_weights_start_time = time.time()
-            if config.weights.interval and progress.step % config.weights.interval == 0:
+            # Save weights to disk if using filesystem weight broadcast or at interval step
+            if config.weight_broadcast.type == "filesystem" or (
+                config.weights.interval and progress.step % config.weights.interval == 0
+            ):
                 weight_ckpt_manager.save(model, tokenizer, step=progress.step)
-            else:
-                # Always create a stable file to signal to the orchestrator to initialize receiving weights via NCCL
-                weight_ckpt_manager.create_stable_file(progress.step)
             save_weights_time = time.time() - save_weights_start_time
             broadcast_weights_time = save_weights_time
 

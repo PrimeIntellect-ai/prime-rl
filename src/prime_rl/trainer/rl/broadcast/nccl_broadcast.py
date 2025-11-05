@@ -7,7 +7,6 @@ from torch.distributed.tensor import DTensor
 from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 
-from prime_rl.trainer.rl.broadcast.utils import init_tensor_from_string_description, tensor_string_description
 from prime_rl.trainer.utils import get_world
 from prime_rl.trainer.weights import convert_tt_layer_to_hf, get_max_layer_num, has_tt_moe_layers
 
@@ -23,27 +22,43 @@ def send_state_dict(state_dict: dict[str, torch.Tensor], communicator: PyNcclCom
     """
     Get a state dict of tensor and broadcast it to the other ranks using NCCL.
     """
-    state = pickle.dumps({key: tensor_string_description(value) for key, value in state_dict.items()})
+    # Group tensors by dtype
+    dtype_groups: dict[torch.dtype, list[tuple[str, torch.Tensor]]] = {}
+    for key, value in state_dict.items():
+        assert not isinstance(value, DTensor), (
+            "DTensor is not supported for broadcast, should have been converted to tensor already"
+        )
+        dtype = value.dtype
+        if dtype not in dtype_groups:
+            dtype_groups[dtype] = []
+        dtype_groups[dtype].append((key, value))
+
+    # Build metadata: for each dtype group, store keys and shapes
+    metadata = {}
+    for dtype, items in dtype_groups.items():
+        metadata[dtype] = [(key, value.shape, value.numel()) for key, value in items]
+
+    # Send metadata
+    state = pickle.dumps(metadata)
     size_tensor = torch.tensor([len(state)], dtype=torch.long).cuda()
     communicator.broadcast(size_tensor, src=0)
     state_tensor = torch.ByteTensor(list(state)).cuda()
     communicator.broadcast(state_tensor, src=0)
 
-    # TODO(SAMI): there are two performance optimization we should do here:
-    # 1. we should bucket more tensor into one broadcast call
-    # 2. we should make sure both full_tensor gather that is performed before the broadcast are done in parallel
-
-    for key, value in state_dict.items():
-        assert not isinstance(value, DTensor), (
-            "DTensor is not supported for broadcast, should have been converted to tensor already"
-        )
-        communicator.broadcast(value, src=0)
-
-        del value
+    # Concatenate and broadcast tensors grouped by dtype
+    for dtype, items in dtype_groups.items():
+        # Flatten all tensors and concatenate
+        flat_tensors = [value.flatten() for _, value in items]
+        concatenated = torch.cat(flat_tensors)
+        communicator.broadcast(concatenated, src=0)
+        del concatenated
+        # Clean up individual tensors
+        for _, value in items:
+            del value
 
 
 def receive_state_dict(
-    communicator: PyNcclCommunicator | dist.ProcessGroup, dtype: torch.dtype
+    communicator: PyNcclCommunicator | dist.ProcessGroup,
 ) -> Generator[tuple[str, torch.Tensor], None, None]:
     """Stream tensors in a state dict broadcasted over NCCL."""
     size_tensor = torch.tensor([10], dtype=torch.long).to(communicator.device)
@@ -51,15 +66,26 @@ def receive_state_dict(
     state_tensor = torch.empty(size_tensor.item(), dtype=torch.uint8).to(communicator.device)
     communicator.broadcast(state_tensor, src=0)
 
-    state = pickle.loads(bytes(state_tensor.cpu().numpy()))
+    metadata = pickle.loads(bytes(state_tensor.cpu().numpy()))
 
-    for key, value in state.items():
-        tensor = init_tensor_from_string_description(value, communicator.device, dtype)
-        communicator.broadcast(tensor, src=0)
-        try:
-            yield key, tensor
-        finally:
-            del tensor
+    # Receive concatenated tensors per dtype and split them back
+    for dtype, tensor_info_list in metadata.items():
+        # Receive concatenated tensor for this dtype
+        total_elements = sum(numel for _, _, numel in tensor_info_list)
+        concatenated = torch.empty(total_elements, dtype=dtype, device=communicator.device)
+        communicator.broadcast(concatenated, src=0)
+
+        # Split concatenated tensor back into individual tensors
+        offset = 0
+        for key, shape, numel in tensor_info_list:
+            tensor = concatenated[offset : offset + numel].view(shape).clone()
+            offset += numel
+            try:
+                yield key, tensor
+            finally:
+                del tensor
+
+        del concatenated
 
 
 def send_integer(integer: int, communicator: PyNcclCommunicator | dist.ProcessGroup) -> None:
@@ -116,11 +142,7 @@ class NCCLBroadcastSender:
         self.training_rank = get_world().rank
 
         if self.training_rank == 0:
-            self.logger.info(
-                f"Initializing NCCL broadcast ({host}:{port}, rank={get_world().rank}, world_size={world_size})"
-            )
             self.communicator = create_nccl_communicator(host, port, rank, world_size, device, timeout)
-
             self.logger.info(f"NCCL broadcast initialized for rank {rank} and world size {world_size}")
 
         self.device = device
@@ -142,12 +164,11 @@ class NCCLBroadcastSender:
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
 
         for i, state_dict in filter_state_dict_by_layers(state_dict, num_layers):
-            self.logger.debug(f"sending layer {i}/{num_state_dict_to_send} state dict")
+            self.logger.debug(f"Sending layer {i}/{num_state_dict_to_send} state dict")
             for key, value in list(state_dict.items()):
                 if isinstance(value, DTensor):
                     value = value.to(self.dtype).full_tensor()
-                else:
-                    value = value.to(self.dtype)
+
                 state_dict[key] = value
 
             if has_tt_moe_layers(state_dict):
@@ -169,15 +190,13 @@ class NCCLBroadcastReceiver:
         device,
         logger,
         timeout: int,
-        dtype: torch.dtype = torch.bfloat16,
     ):
         self.logger = logger
 
-        self.logger.info(f"Initializing NCCL broadcast ({host}:{port}, rank={rank}, world_size={world_size})")
+        self.logger.info(f"Initializing NCCL broadcast receiver ({host}:{port}, rank={rank}, world_size={world_size})")
         self.communicator = create_nccl_communicator(host, port, rank, world_size, device, timeout)
 
         self.device = self.communicator.device
-        self.dtype = dtype
 
     @torch.no_grad()
     def receive_state_dict(self):
@@ -188,5 +207,5 @@ class NCCLBroadcastReceiver:
             self.logger.info(
                 f"Receiving state dict {i}/{num_state_dict_to_receive}, peak memory: {torch.cuda.max_memory_allocated() / 1024**2:.2f} MB"
             )
-            for key, value in receive_state_dict(self.communicator, self.dtype):
+            for key, value in receive_state_dict(self.communicator):
                 yield key, value

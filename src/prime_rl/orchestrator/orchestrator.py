@@ -96,6 +96,7 @@ async def orchestrate(config: OrchestratorConfig):
     env = vf.EnvGroup(
         envs=[vf.load_environment(env.id, **env.args) for env in config.env],
         env_names=[env.name or env.id for env in config.env],
+        map_kwargs=dict(writer_batch_size=1),  # Set defensively to not error on map operations on large datasets
     )
     dataset = env.get_dataset(seed=config.seed)
     val_dataset = env.get_eval_dataset(config.val.num_examples, seed=config.seed) if config.val else None
@@ -126,13 +127,11 @@ async def orchestrate(config: OrchestratorConfig):
     logger.success("Inference pool ready")
 
     # Set up weight broadcast backend
+    logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
     if config.weight_broadcast.type == "nccl":
-        logger.info(f"Initializing NCCL broadcast ({config.weight_broadcast})")
         await init_nccl_broadcast(
             admin_clients, config.weight_broadcast.host, config.weight_broadcast.port, config.weight_broadcast.timeout
         )
-    else:
-        logger.info("Using filesystem for broadcasting weights into the inference pool.")
 
     # Get checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
@@ -324,17 +323,17 @@ async def orchestrate(config: OrchestratorConfig):
             "progress/ckpt_step": ckpt_step,  # Shared W&B axis
             # Sequence length metrics
             "seq_len/mean": results_df.groupby("example_id").seq_len.mean().mean(),
-            "seq_len/max": results_df.groupby("example_id").seq_len.max().mean(),
-            "seq_len/min": results_df.groupby("example_id").seq_len.min().mean(),
+            "seq_len/max": results_df.groupby("example_id").seq_len.mean().max(),
+            "seq_len/min": results_df.groupby("example_id").seq_len.mean().min(),
             "prompt_len/mean": results_df.groupby("example_id").prompt_len.mean().mean(),
-            "prompt_len/max": results_df.groupby("example_id").prompt_len.max().mean(),
-            "prompt_len/min": results_df.groupby("example_id").prompt_len.min().mean(),
+            "prompt_len/max": results_df.groupby("example_id").prompt_len.mean().max(),
+            "prompt_len/min": results_df.groupby("example_id").prompt_len.mean().min(),
             "completion_len/mean": results_df.groupby("example_id").completion_len.mean().mean(),
-            "completion_len/max": results_df.groupby("example_id").completion_len.max().mean(),
-            "completion_len/min": results_df.groupby("example_id").completion_len.min().mean(),
+            "completion_len/max": results_df.groupby("example_id").completion_len.mean().max(),
+            "completion_len/min": results_df.groupby("example_id").completion_len.mean().min(),
             "is_truncated/mean": results_df.groupby("example_id").is_truncated.mean().mean(),
-            "is_truncated/max": results_df.groupby("example_id").is_truncated.max().mean(),
-            "is_truncated/min": results_df.groupby("example_id").is_truncated.min().mean(),
+            "is_truncated/max": results_df.groupby("example_id").is_truncated.mean().max(),
+            "is_truncated/min": results_df.groupby("example_id").is_truncated.mean().min(),
             # Performance metrics
             "perf/throughput": throughput,
             # Train reward

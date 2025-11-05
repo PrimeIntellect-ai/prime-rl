@@ -265,6 +265,20 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = None
 
+    skip_progress: Annotated[
+        bool,
+        Field(
+            description="Whether to skip loading the progress from checkpoint.",
+        ),
+    ] = False
+
+    skip_buffer: Annotated[
+        bool,
+        Field(
+            description="Whether to skip loading the buffer from checkpoint.",
+        ),
+    ] = False
+
 
 class BufferConfig(BaseModel):
     """Base config for all buffer types."""

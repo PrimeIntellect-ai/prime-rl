@@ -381,7 +381,7 @@ class WeightCheckpointManager:
                 model.generation_config.save_pretrained(step_path)
             tokenizer.save_pretrained(step_path)
 
-        (step_path / "STABLE").touch()  # Signal to the orchestrator that the weight checkpoint is ready
+        (step_path / "STABLE").touch()
         self._logger.debug(f"Saved weight checkpoint to {step_path} in {time.time() - start_time:.2f} seconds")
 
     def create_stable_file(self, step: int):
