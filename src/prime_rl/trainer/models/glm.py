@@ -19,10 +19,9 @@ from typing import Optional, Union
 import torch
 from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
-from torch.distributed.tensor import Partial, distribute_tensor
+from torch.distributed.tensor import Partial
 from torch.distributed.tensor.parallel import (
     ColwiseParallel,
-    ParallelStyle,
     PrepareModuleInput,
     PrepareModuleInputOutput,
     RowwiseParallel,
@@ -477,21 +476,17 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
     def _apply_tp(self, device_mesh: DeviceMesh):
         from torch.distributed.tensor.parallel import parallelize_module
 
-        logger = get_logger()
-
         parallelize_module(
             self,
             device_mesh=device_mesh,
             parallelize_plan=self._tp_plan,
         )
-        logger.info(f"Parallelized model {self}")
 
         parallelize_module(
             self.model,
             device_mesh=device_mesh,
             parallelize_plan=self.model._tp_plan,
         )
-        logger.info(f"Parallelized model {self.model}")
 
         for layer in self.model.layers:
             is_expert_layer = hasattr(layer, "mlp") and isinstance(layer.mlp, MoE)
@@ -505,7 +500,6 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
                 _tp_plan.update(layer._shared_expert_tp_plan)
 
             parallelize_module(layer, device_mesh=device_mesh, parallelize_plan=_tp_plan)
-            logger.info(f"Parallelized layer {layer}")
 
     @auto_docstring
     def forward(
