@@ -10,6 +10,7 @@ import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
+from prime_rl.trainer.models.layers.attn import get_flex_attn_mask, get_flex_attn_sharder_kwargs
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.weights import setup_weight_ckpt_manager
 from prime_rl.trainer.rl.config import RLTrainerConfig
@@ -200,54 +201,17 @@ def train(config: RLTrainerConfig):
             inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
             temperature = micro_batch["temperature"]
 
-            logger.debug(f"Input IDs: {input_ids.shape}")
-            logger.debug(f"Position IDs: {position_ids.shape}")
-
-            from torch.nn.attention.flex_attention import create_block_mask, and_masks
-
-            def causal_mask_mod(b, h, q_idx, kv_idx):
-                return q_idx >= kv_idx
-
-            mask_mods = [causal_mask_mod]
-
-            if config.model.attn_mask_type == "doc_causal":
-                flat_position_ids = position_ids.flatten()
-                is_start = (flat_position_ids == 0).to(torch.int32)
-                document_ids = torch.cumsum(is_start, dim=0) - 1
-
-                def document_id_mask_mod(b, h, q_idx, kv_idx):
-                    return document_ids[q_idx] == document_ids[kv_idx]
-
-                mask_mods.append(document_id_mask_mod)
-
-            mask = create_block_mask(
-                and_masks(*mask_mods),
-                B=None,
-                H=None,
-                Q_LEN=input_ids.shape[1],
-                KV_LEN=input_ids.shape[1],
-                device=input_ids.device,
-            )
-            sharder_kwargs = {}
-            if config.model.attn_mask_type == "causal":
-                sharder_kwargs["seq_length"] = input_ids.shape[1]
-            elif config.model.attn_mask_type == "doc_causal":
-                total_tokens = flat_position_ids.numel()
-                doc_starts = (flat_position_ids == 0).nonzero(as_tuple=False).flatten()
-                doc_starts_with_end = torch.cat(
-                    [doc_starts, torch.tensor([total_tokens], device=position_ids.device, dtype=doc_starts.dtype)]
-                )
-                lengths = doc_starts_with_end[1:] - doc_starts_with_end[:-1]
-                logger.debug(f"Document lengths: {lengths}")
-                sharder_kwargs["seq_length_per_doc"] = lengths.unsqueeze(0)
-
+            if config.model.attn_implementation == "flex_attention":
+                mask = get_flex_attn_mask(config.model.attn_mask_type, position_ids)
+            else:
+                mask = None
+            
             if config.model.cp > 1:
-                input_ids, position_ids, mask = cp_sharder.shard(input_ids, position_ids, mask, **sharder_kwargs)
-                torch._dynamo.mark_dynamic(mask, (1, 2))
-
-                inference_logprobs, advantages, loss_mask = cp_sharder.shard(
-                    inference_logprobs, advantages, loss_mask, **sharder_kwargs
+                sharder_kwargs = get_flex_attn_sharder_kwargs(config.model.attn_mask_type, position_ids)
+                input_ids, position_ids, mask, inference_logprobs, advantages, loss_mask = cp_sharder.shard(
+                    input_ids, position_ids, mask, inference_logprobs, advantages, loss_mask, **sharder_kwargs
                 )
+                torch._dynamo.mark_dynamic(mask, (1, 2))
 
             # Forward pass
             with maybe_record_function("forward"):

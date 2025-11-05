@@ -1,11 +1,14 @@
 import os
 from dataclasses import dataclass
+from typing import Literal
 
 import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.nn.attention.flex_attention import (
     BlockMask,
+    and_masks,
+    create_block_mask,
     flex_attention,
 )
 
@@ -272,3 +275,42 @@ ATTN_IMPL2CLASS = {
     "sdpa": SDPAAttention,
     "flex_attention": FlexAttention,
 }
+
+
+def get_flex_attn_mask(attn_mask_type: Literal["causal", "doc_causal"], position_ids: torch.Tensor) -> BlockMask:
+    flat_position_ids = position_ids.flatten()
+    is_start = (flat_position_ids == 0).to(torch.int32)
+    document_ids = torch.cumsum(is_start, dim=0) - 1
+
+    def causal_mask_mod(b, h, q_idx, kv_idx):
+        return q_idx >= kv_idx
+
+    def document_mask_mod(b, h, q_idx, kv_idx):
+        return document_ids[q_idx] == document_ids[kv_idx]
+
+    attn_mask_mods = [causal_mask_mod]
+
+    if attn_mask_type == "doc_causal":
+        attn_mask_mods.append(document_mask_mod)
+
+    return create_block_mask(
+        and_masks(*attn_mask_mods),
+        B=None,
+        H=None,
+        Q_LEN=position_ids.shape[1],
+        KV_LEN=position_ids.shape[1],
+        device=position_ids.device,
+    )
+
+
+def get_flex_attn_sharder_kwargs(attn_mask_type: Literal["causal", "doc_causal"], position_ids: torch.Tensor) -> dict:
+    flat_position_ids = position_ids.flatten()
+    if attn_mask_type == "causal":
+        return {"seq_length": position_ids.shape[1]}
+    elif attn_mask_type == "doc_causal":
+        doc_starts = (flat_position_ids == 0).nonzero(as_tuple=False).flatten()
+        doc_starts_with_end = torch.cat(
+            [doc_starts, torch.tensor([flat_position_ids.shape[0]], device=position_ids.device, dtype=doc_starts.dtype)]
+        )
+        lengths = doc_starts_with_end[1:] - doc_starts_with_end[:-1]
+        return {"seq_length_per_doc": lengths.unsqueeze(0)}
