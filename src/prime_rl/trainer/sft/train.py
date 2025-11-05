@@ -226,7 +226,7 @@ def train(config: SFTTrainerConfig):
             with maybe_context_parallel:
                 # Forward pass
                 logger.debug("Starting forward pass")
-                with maybe_record_function("forward"), maybe_activation_offloading(config.activation_offloading):
+                with maybe_record_function("forward"), maybe_activation_offloading(config.ac_offloading):
                     logits = forward(model, input_ids, position_ids)
                 B, L, V = logits.shape
 

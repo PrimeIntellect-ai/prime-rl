@@ -233,7 +233,7 @@ def train(config: RLTrainerConfig):
             temperature = micro_batch["temperature"]
 
             # Forward pass
-            with maybe_record_function("forward"), maybe_activation_offloading(config.activation_offloading):
+            with maybe_record_function("forward"), maybe_activation_offloading(config.ac_offloading):
                 logits = forward(model, input_ids, position_ids).float().contiguous()
 
             shifted_logits = shift_logits(logits)
