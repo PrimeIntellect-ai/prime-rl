@@ -1,3 +1,5 @@
+trainer_gpu_ids = [0, 1]
+inference_gpu_ids = [2, 3, 4, 5, 6, 7]
 max_steps = 500
 
 [model]
@@ -17,34 +19,34 @@ max_tokens = 2048
 [[orchestrator.env]]
 id = "hendrycks-math"
 
-[buffer]
+[orchestrator.buffer]
 type = "difficulty-pool"
 easy_fraction = 0.0
 hard_fraction = 0.0
 easy_border = 1.0
 hard_border = 0.0
 
-[val]
+[orchestrator.val]
 interval = 1
 num_examples = 8
 rollouts_per_example = 16
 
-[eval]
+[orchestrator.eval]
 interval = 10
 
-[eval.sampling]
+[orchestrator.eval.sampling]
 max_tokens = 2048
 
-[[eval.env]]
+[[orchestrator.eval.env]]
 id = "math500"
 num_examples = 30
 rollouts_per_example = 4
 
-[[eval.env]]
+[[orchestrator.eval.env]]
 id = "aime2024"
 rollouts_per_example = 4
 
-[[eval.env]]
+[[orchestrator.eval.env]]
 id = "aime2025"
 rollouts_per_example = 4
 
