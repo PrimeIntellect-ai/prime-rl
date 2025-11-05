@@ -13,10 +13,13 @@ lr = 1e-6
 weight_decay = 0.01
 
 [orchestrator]
-max_steps = 500
-batch_size = 512
+batch_size = 1024
 rollouts_per_example = 16
-seq_len = 2048
+seq_len = 16384
+
+[orchestrator.sampling]
+max_tokens = 16384
+temperature = 0.7
 
 [orchestrator.env_mix]
 probabilities = [0.5, 0.5]
@@ -54,4 +57,5 @@ id = "aime2025"
 rollouts_per_example = 32
 
 [inference.parallel]
-dp = 6
+dp = 3
+tp = 2
