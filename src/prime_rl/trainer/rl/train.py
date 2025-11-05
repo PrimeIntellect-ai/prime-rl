@@ -149,11 +149,14 @@ def train(config: RLTrainerConfig):
         broadcast_weights_time = 0
         if progress.step > 0:
             save_weights_start_time = time.time()
-            # Save weights to disk if using filesystem weight broadcast or at interval step
+            # Save weights to disk at every if using filesystem weight broadcast or at interval step
             if config.weight_broadcast.type == "filesystem" or (
                 config.weights.interval and progress.step % config.weights.interval == 0
             ):
                 weight_ckpt_manager.save(model, tokenizer, step=progress.step)
+            else:
+                # Always create a stable file to signal to the orchestrator to initialize receiving weights via NCCL
+                weight_ckpt_manager.create_stable_file(progress.step)
             save_weights_time = time.time() - save_weights_start_time
             broadcast_weights_time = save_weights_time
 
