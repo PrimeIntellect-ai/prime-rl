@@ -109,7 +109,7 @@ async def orchestrate(config: OrchestratorConfig):
         ),
     )
     dataset = env.get_dataset(seed=config.seed)
-    val_dataset = env.get_eval_dataset(config.val.num_examples, seed=config.seed) if config.val else None
+    val_dataset = env.get_eval_dataset(seed=config.seed) if config.val else None
 
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
