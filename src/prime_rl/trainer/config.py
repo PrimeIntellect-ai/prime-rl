@@ -151,6 +151,13 @@ class ModelConfig(BaseConfig):
         ),
     ] = None
 
+    ac_offloading: Annotated[
+        ActivationOffloadingConfig | None,
+        Field(
+            description="Whether to apply activation offloading to the model. If None, will not apply activation offloading.",
+        ),
+    ] = None
+
     reshard_after_forward: Annotated[
         bool, Field(description="Whether to reshard the model after each forward pass.")
     ] = True
