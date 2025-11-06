@@ -1,9 +1,18 @@
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Union
 
 import openai.types.chat
 import pandas as pd
 import verifiers as vf
 from openai.types.chat.chat_completion import ChatCompletion, Choice
+from openai.types.chat.chat_completion_assistant_message_param import (
+    ChatCompletionAssistantMessageParam,
+    ContentArrayOfContentPart,
+)
+from openai.types.chat.chat_completion_developer_message_param import ChatCompletionDeveloperMessageParam
+from openai.types.chat.chat_completion_message_tool_call_union_param import ChatCompletionMessageToolCallUnionParam
+from openai.types.chat.chat_completion_system_message_param import ChatCompletionSystemMessageParam
+from openai.types.chat.chat_completion_tool_message_param import ChatCompletionToolMessageParam
+from openai.types.chat.chat_completion_user_message_param import ChatCompletionUserMessageParam
 from openai.types.completion_usage import CompletionUsage
 from rich.console import Console
 from rich.table import Table
@@ -31,6 +40,52 @@ def get_train_sampling_args(sampling_config: SamplingConfig) -> dict:
     return sampling_args
 
 
+def monkey_patch_oai_iterable_types():
+    class ModdedChatCompletionDeveloperMessageParam(ChatCompletionDeveloperMessageParam):
+        """Same as openai.types.chat.chat_completion_developer_message_param.ChatCompletionDeveloperMessageParam, but replacing typing.Iterable with list to not mess up Pydantic."""
+
+        content: Union[str, list[ContentArrayOfContentPart], None]  # type: ignore[incompatible-variable-override]
+
+    class ModdedChatCompletionSystemMessageParam(ChatCompletionSystemMessageParam):
+        """Same as openai.types.chat.chat_completion_system_message_param.ChatCompletionSystemMessageParam, but replacing typing.Iterable with list to not mess up Pydantic."""
+
+        content: Union[str, list[ContentArrayOfContentPart], None]  # type: ignore[incompatible-variable-override]
+
+    class ModdedChatCompletionUserMessageParam(ChatCompletionUserMessageParam):
+        """Same as openai.types.chat.chat_completion_user_message_param.ChatCompletionUserMessageParam, but replacing typing.Iterable with list to not mess up Pydantic."""
+
+        content: Union[str, list[ContentArrayOfContentPart], None]  # type: ignore[incompatible-variable-override]
+
+    class ModdedChatCompletionAssistantMessageParam(ChatCompletionAssistantMessageParam):
+        """Same as openai.types.chat.chat_completion_assistant_message_param.ChatCompletionAssistantMessageParam, but replacing typing.Iterable with list to not mess up Pydantic."""
+
+        content: Union[str, list[ContentArrayOfContentPart], None]  # type: ignore[incompatible-variable-override]
+
+        tool_calls: list[ChatCompletionMessageToolCallUnionParam]  # type: ignore[incompatible-variable-override]
+
+    class ModdedChatCompletionToolMessageParam(ChatCompletionToolMessageParam):
+        """Same as openai.types.chat.chat_completion_tool_message_param.ChatCompletionToolMessageParam, but replacing typing.Iterable with list to not mess up Pydantic."""
+
+        tool_calls: list[ChatCompletionMessageToolCallUnionParam]  # type: ignore[incompatible-variable-override]
+
+    # Patch OAI types
+    openai.types.chat.chat_completion_developer_message_param.ChatCompletionDeveloperMessageParam = (
+        ModdedChatCompletionDeveloperMessageParam
+    )
+    openai.types.chat.chat_completion_system_message_param.ChatCompletionSystemMessageParam = (
+        ModdedChatCompletionSystemMessageParam
+    )
+    openai.types.chat.chat_completion_user_message_param.ChatCompletionUserMessageParam = (
+        ModdedChatCompletionUserMessageParam
+    )
+    openai.types.chat.chat_completion_assistant_message_param.ChatCompletionAssistantMessageParam = (
+        ModdedChatCompletionAssistantMessageParam
+    )
+    openai.types.chat.chat_completion_tool_message_param.ChatCompletionToolMessageParam = (
+        ModdedChatCompletionToolMessageParam
+    )
+
+
 def monkey_patch_chat_completion_logprobs():
     """
     At large batch sizes and context, constructing OAI's Pydantic model
@@ -45,17 +100,17 @@ def monkey_patch_chat_completion_logprobs():
 
         logprobs: Optional[Any] = None
 
-    class ChatCompletionAny(ChatCompletion):
+    class ModdedChatCompletion(ChatCompletion):
         """Same as openai.types.chat.chat_completion.ChatCompletion, but but using ChoiceAny instead of Choice."""
 
         choices: List[ChoiceAny]  # type: ignore
 
     # Patch OAI types
     openai.types.chat.chat_completion.Choice = ChoiceAny
-    openai.types.chat.chat_completion.ChatCompletion = ChatCompletionAny
+    openai.types.chat.chat_completion.ChatCompletion = ModdedChatCompletion
 
     # Patch verifiers parse_chat_completion_logprobs
-    def patched_parse_chat_completion_logprobs(chat_completion: ChatCompletionAny) -> list[float]:
+    def patched_parse_chat_completion_logprobs(chat_completion: ModdedChatCompletion) -> list[float]:
         """Same as verifiers.utils.processing_utils.parse_chat_completion_logprobs, but using arbitrary logprobs type."""
         assert len(chat_completion.choices) == 1, "Response should always have one choice"
         assert chat_completion.choices[0].logprobs is not None, (
@@ -68,7 +123,7 @@ def monkey_patch_chat_completion_logprobs():
         return logprobs
 
     # Patch verifiers parse_chat_completion_logprobs
-    def patched_parse_chat_completion_tokens(chat_completion: ChatCompletionAny) -> list[int]:
+    def patched_parse_chat_completion_tokens(chat_completion: ModdedChatCompletion) -> list[int]:
         """Same as verifiers.utils.processing_utils.parse_chat_completion_tokens, but using arbitrary logprobs type."""
         assert len(chat_completion.choices) == 1, "Response should always have one choice"
         assert chat_completion.choices[0].logprobs is not None, (

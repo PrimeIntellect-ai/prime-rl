@@ -6,10 +6,17 @@ from loguru import logger
 # Import environment before any other imports
 # ruff: noqa: I001,F401
 from prime_rl.orchestrator import envs
-from prime_rl.orchestrator.utils import get_train_sampling_args, monkey_patch_chat_completion_logprobs
+from prime_rl.orchestrator.utils import (
+    get_train_sampling_args,
+    monkey_patch_chat_completion_logprobs,
+    monkey_patch_oai_iterable_types,
+)
 
 # This monkey patch is necessary to avoid heavy CPU overhead from constructing the OAI ChatCompletion Pydantic model with logprobs
 monkey_patch_chat_completion_logprobs()
+
+# This monkey patch is necessary to avoid Pydantic validating iterable fields (e.g. in multimodal or tool call messages) lazily because they are typed as typing.Iterable, leading to tokenization errors
+monkey_patch_oai_iterable_types()
 
 import lovely_tensors as lt
 import torch
@@ -37,7 +44,6 @@ from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.utils.logger import setup_logger
 from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.utils import (
-    monkey_patch_chat_completion_logprobs,
     print_benchmark,
     parse_is_truncated_completions,
 )
