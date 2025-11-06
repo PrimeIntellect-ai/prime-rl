@@ -8,7 +8,7 @@ name = "dmnsh/Qwen3-4B-W0-LitBench-SFT"
 
 [environment]
 id = "dmnsh001/LitBench"
-args={indices = [[700, 100], [4600, 100], [10750, 50], [101,40], [10500, 100], [35000, 100]]}
+args={"indices"=[[700, 100], [4600, 100], [10750, 50], [101,40], [10500, 100], [35000, 100]]}
 
 [advantage]
 std_norm="local"
