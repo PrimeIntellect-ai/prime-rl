@@ -309,7 +309,7 @@ class DifficultyPoolBuffer(Buffer):
                 new_difficulty = "normal"
             old_difficulty = self.metadata[problem_id]["difficulty"]
             stats[(old_difficulty, new_difficulty)] += 1
-            self.metadata[problem_id].update({"difficulty": new_difficulty})
+            self.metadata[problem_id].update({"reward": reward, "difficulty": new_difficulty})
         stats_str = ", ".join([f"{v} problem(s) moved from `{k[0]}` to `{k[1]}`" for k, v in stats.items()])
         self.logger.debug(f"Updated difficulty information ({stats_str})")
 
