@@ -207,6 +207,7 @@ def train(config: RLTrainerConfig):
                 mask = None
 
             if config.model.cp > 1:
+                full_position_ids = position_ids.clone()
                 sharder_kwargs = get_flex_attn_sharder_kwargs(config.model.attn_mask_type, position_ids)
                 input_ids, position_ids, mask, inference_logprobs, advantages, loss_mask = cp_sharder.shard(
                     input_ids, position_ids, mask, inference_logprobs, advantages, loss_mask, **sharder_kwargs
@@ -217,7 +218,6 @@ def train(config: RLTrainerConfig):
             with maybe_record_function("forward"):
                 logits = forward(model, input_ids, position_ids, mask).float().contiguous()
 
-            # Compute trainer logprobs on the FULL context (not just shard)
             shifted_logits = shift_logits(logits)  # shift along sequence dim
             shifted_logits = shifted_logits / temperature
             trainer_logprobs = selective_log_softmax(shifted_logits, input_ids)
@@ -234,7 +234,6 @@ def train(config: RLTrainerConfig):
                 loss_scale=loss_scale,
             )
 
-            # Compute entropy (full context)
             entropy = compute_entropy(shifted_logits)
 
             # At this point we don't need the big activations anymore

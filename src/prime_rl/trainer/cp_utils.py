@@ -37,7 +37,7 @@ class CPSharder:
             mesh=self.cp_mesh,
             buffers=[arg],
             seq_dims=shard_dim,
-            load_balancer=self._load_balancer,
+            load_balancer=None
         )[0]
     
     def _unshard_arg(
@@ -49,7 +49,7 @@ class CPSharder:
             mesh=self.cp_mesh,
             buffers=[arg],
             seq_dims=shard_dim,
-            load_balancer=self._load_balancer,
+            load_balancer=None
         )[0]
 
     def _shard_or_unshard_args(self, args: Sequence[t_shardable], buffer_seq_dims: Sequence[int], unshard: bool = False) -> Sequence[t_shardable]:

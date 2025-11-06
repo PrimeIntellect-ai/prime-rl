@@ -347,7 +347,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Write serialized batch to disk for trainer workers to consume
         all_data_ranks_batches = prepare_batch(
-            rollouts=rollouts,
+            rollouts=accepted_rollouts,
             temperature=config.sampling.temperature,
             tokenizer=tokenizer,
             num_train_workers=config.num_train_workers,
