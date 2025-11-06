@@ -6,10 +6,6 @@ max_steps = 500
 [model]
 name = "Qwen/Qwen3-4B-Instruct-2507"
 
-[wandb]
-project = "wiki-search-debug"
-name = "wiki-search-4b"
-
 [trainer.optim]
 lr = 1e-6
 weight_decay = 0.0
@@ -23,9 +19,6 @@ zero_truncated_completions = true
 
 [orchestrator.sampling]
 max_tokens = 512
-
-[orchestrator.buffer]
-type = "online-difficulty"
 
 [[orchestrator.env]]
 id = "wiki-search"
