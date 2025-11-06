@@ -84,7 +84,7 @@ class PerfCounter:
         vocab_size = config.vocab_size
         hidden_size = config.hidden_size
         intermediate_size = config.intermediate_size
-        head_dim = config.head_dim
+        head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
         num_attention_heads = config.num_attention_heads
         num_hidden_layers = config.num_hidden_layers
 
