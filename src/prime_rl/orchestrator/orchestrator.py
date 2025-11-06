@@ -15,9 +15,7 @@ monkey_patch_chat_completion_logprobs()
 # Import environment before any other imports
 # ruff: noqa: I001,F401
 from prime_rl.orchestrator import envs
-from prime_rl.orchestrator.utils import (
-    get_train_sampling_args,
-)
+from prime_rl.orchestrator.utils import get_train_sampling_args
 
 import lovely_tensors as lt
 import torch
