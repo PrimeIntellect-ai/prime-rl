@@ -305,8 +305,10 @@ def get_flex_attn_mask(attn_mask_type: Literal["causal", "doc_causal"], position
 
 def get_flex_attn_sharder_kwargs(attn_mask_type: Literal["causal", "doc_causal"], position_ids: torch.Tensor) -> dict:
     flat_position_ids = position_ids.flatten()
-    if attn_mask_type == "causal":
+    if attn_mask_type == "causal" or attn_mask_type == "doc_causal":
         return {"seq_length": position_ids.shape[1]}
+
+    # TODO: doc causal load balancer is a bit broken
     elif attn_mask_type == "doc_causal":
         doc_starts = (flat_position_ids == 0).nonzero(as_tuple=False).flatten()
         doc_starts_with_end = torch.cat(

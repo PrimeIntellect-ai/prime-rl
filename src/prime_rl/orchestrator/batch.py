@@ -8,7 +8,6 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.orchestrator.buffer import Rollout
 from prime_rl.trainer.rl.data import MicroBatch
-from prime_rl.utils.logger import get_logger
 
 
 class BatchSample(TypedDict):
@@ -23,7 +22,7 @@ def prepare_sample(
     rollout: Rollout,
     seq_len: int,
     tokenizer: PreTrainedTokenizer,
-    pad_to_multiple_of: int = 256,
+    pad_document_to_multiple_of: int | None = 4,
 ) -> BatchSample:
     """
     Prepare a problem for sequence packing training.
@@ -41,21 +40,21 @@ def prepare_sample(
     # Prepare input_ids, loss_mask, position_ids, inference_logprobs, and advantages
     input_ids = torch.cat([prompt_token_ids, completion_token_ids]).long()
 
-    next_padding_len = pad_to_multiple_of - len(input_ids) % pad_to_multiple_of
-
-    if pad_to_multiple_of is not None:
-        input_ids = torch.nn.functional.pad(input_ids, (0, next_padding_len), value=tokenizer.pad_token_id)
-
     loss_mask = torch.cat([prompt_token_mask, completion_token_mask]).bool()
-    if pad_to_multiple_of is not None:
-        loss_mask = torch.nn.functional.pad(loss_mask, (0, next_padding_len), value=False)
 
     inference_logprobs = torch.cat(
         [torch.zeros(len(prompt_token_ids)), torch.tensor(rollout.completion_logprobs)]
     ).float()
 
-    if pad_to_multiple_of is not None:
-        inference_logprobs = torch.nn.functional.pad(inference_logprobs, (0, next_padding_len), value=0.0)
+    if pad_document_to_multiple_of is not None:
+        next_padding_len = pad_document_to_multiple_of - len(input_ids) % pad_document_to_multiple_of
+        input_ids = torch.nn.functional.pad(input_ids, (0, next_padding_len), value=tokenizer.pad_token_id)
+        loss_mask = torch.nn.functional.pad(loss_mask, (0, next_padding_len), value=False)
+        inference_logprobs = torch.nn.functional.pad(
+            inference_logprobs,
+            (0, pad_document_to_multiple_of - len(inference_logprobs) % pad_document_to_multiple_of),
+            value=0.0,
+        )
 
     position_ids = torch.arange(len(input_ids)).long()
     advantages = torch.tensor(rollout.advantage).repeat(len(input_ids)).float()
@@ -119,7 +118,13 @@ def packed_samples_into_micro_bs(samples: list[BatchSample], max_seq_len: int) -
     return micro_batches
 
 
-def prepare_micro_batch_packing(samples: list[BatchSample], max_seq_len: int, temperature: float) -> MicroBatch:
+def prepare_micro_batch_packing(
+    samples: list[BatchSample],
+    max_seq_len: int,
+    temperature: float,
+    pad_batch_to_multiple_of: int | None,
+    padding_token_id: int,
+) -> MicroBatch:
     """
     Prepare a micro batch for packing mode. take multi sample and return a batch of shape [1, micro_bs * max_seq_len].
     Would additionally pad the batch to the max sequence length.
@@ -129,8 +134,27 @@ def prepare_micro_batch_packing(samples: list[BatchSample], max_seq_len: int, te
         "Total tokens of samples is greater than max sequence length"
     )
 
+    pad_values = {
+        "input_ids": padding_token_id,
+        "loss_mask": False,
+        "inference_logprobs": 0.0,
+        "advantages": 0.0,
+    }
+
     for key in ["input_ids", "advantages", "loss_mask", "position_ids", "inference_logprobs"]:
-        micro_batch[key] = torch.cat([sample[key] for sample in samples], dim=0).unsqueeze(0)
+        cat_samples = torch.cat([sample[key] for sample in samples], dim=0)
+        if pad_batch_to_multiple_of is not None and key != "position_ids":
+            next_padding_len = pad_batch_to_multiple_of - len(cat_samples) % pad_batch_to_multiple_of
+            cat_samples = torch.nn.functional.pad(cat_samples, (0, next_padding_len), value=pad_values[key])
+
+            print(f"Padding {key} with {next_padding_len} tokens")
+
+        micro_batch[key] = cat_samples.unsqueeze(0)
+
+    if pad_batch_to_multiple_of is not None:
+        pad_position_ids = torch.arange(next_padding_len).unsqueeze(0)
+        micro_batch["position_ids"] = torch.cat([micro_batch["position_ids"], pad_position_ids], dim=1)
+        print(f"Padding position_ids: {pad_position_ids.shape}")
 
     micro_batch["temperature"] = temperature
 
@@ -143,6 +167,8 @@ def prepare_batch(
     tokenizer: PreTrainedTokenizer,
     seq_len: int,
     num_train_workers: int,
+    pad_document_to_multiple_of: int | None = None,
+    pad_batch_to_multiple_of: int | None = 256,
 ) -> list[list[MicroBatch]]:
     """
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
@@ -156,13 +182,17 @@ def prepare_batch(
             rollout,
             max_seq_len,
             tokenizer,
+            pad_document_to_multiple_of,
         )
         for rollout in rollouts
     ]
 
     micro_batches_list = packed_samples_into_micro_bs(all_samples, max_seq_len)
     micro_batches = [
-        prepare_micro_batch_packing(micro_batch, max_seq_len, temperature) for micro_batch in micro_batches_list
+        prepare_micro_batch_packing(
+            micro_batch, max_seq_len, temperature, pad_batch_to_multiple_of, padding_token_id=tokenizer.pad_token_id
+        )
+        for micro_batch in micro_batches_list
     ]
 
     num_padding_batch = num_train_workers - len(micro_batches) % num_train_workers

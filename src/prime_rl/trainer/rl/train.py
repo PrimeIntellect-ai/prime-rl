@@ -205,7 +205,7 @@ def train(config: RLTrainerConfig):
                 mask = get_flex_attn_mask(config.model.attn_mask_type, position_ids)
             else:
                 mask = None
-            
+
             if config.model.cp > 1:
                 sharder_kwargs = get_flex_attn_sharder_kwargs(config.model.attn_mask_type, position_ids)
                 input_ids, position_ids, mask, inference_logprobs, advantages, loss_mask = cp_sharder.shard(

@@ -118,7 +118,7 @@ def setup_cp_sharder(parallel_dims: ParallelDims, attn_mask_type: attn_type) -> 
     if parallel_dims.cp <= 1:
         return CPSharder(parallel_dims)
     if attn_mask_type == "doc_causal":
-        return DocCausalCPSharder(parallel_dims)
+        return CausalCPSharder(parallel_dims)
     elif attn_mask_type == "causal":
         return CausalCPSharder(parallel_dims)
     else:
