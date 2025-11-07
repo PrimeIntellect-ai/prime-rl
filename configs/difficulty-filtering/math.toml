@@ -1,0 +1,20 @@
+num_examples = 1024
+rollouts_per_example = 8
+max_concurrent = 1024
+
+[sampling]
+max_tokens = 8192
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[save.hf]
+dataset_name = "PrimeIntellect/INTELLECT-3-RL-Math-Difficulty-Filtering"
+dataset_subset = "qwen3_4b_instruct_2507"
+private = true
+
+[save.disk]
+
+[[env]]
+id = "i3-math"
+args = { judge_model = "opencompass/CompassVerifier-3B", judge_base_url = "http://10.20.0.27:8000/v1" }
