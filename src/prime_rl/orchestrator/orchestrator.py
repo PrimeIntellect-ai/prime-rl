@@ -145,14 +145,11 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Reset weights to base model if starting from scratch
     progress = Progress()
-    ckpt_step = 0
     if config.ckpt and ckpt_manager and config.ckpt.resume_step:
         ckpt_manager.load(progress, buffer, step=config.ckpt.resume_step)
         logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
-        ckpt_step = progress.step  # Always resume from the latest checkpoint
-        await update_weights(admin_clients, get_step_path(get_weights_dir(config.output_dir), ckpt_step))
-        # Sync scheduler's ckpt_step with orchestrator's ckpt_step
-        scheduler.ckpt_step = ckpt_step
+        scheduler.ckpt_step = progress.step  # Always resume from the latest checkpoint
+        await update_weights(admin_clients, get_step_path(get_weights_dir(config.output_dir), scheduler.ckpt_step))
     else:
         logger.info("Training from scratch. Resetting weights to base model")
         await reload_weights(admin_clients)
@@ -219,12 +216,12 @@ async def orchestrate(config: OrchestratorConfig):
         # Schedule running evals at the specified interval
         if (
             config.eval
-            and ckpt_step % config.eval.interval == 0
-            and ckpt_step > last_eval_step
-            and ((ckpt_step == 0 and config.eval.eval_base_model) or ckpt_step > 0)
+            and scheduler.ckpt_step % config.eval.interval == 0
+            and scheduler.ckpt_step > last_eval_step
+            and ((scheduler.ckpt_step == 0 and config.eval.eval_base_model) or scheduler.ckpt_step > 0)
         ):
-            last_eval_step = ckpt_step
-            logger.info(f"Running evals for checkpoint step {ckpt_step}")
+            last_eval_step = scheduler.ckpt_step
+            logger.info(f"Running evals for checkpoint step {scheduler.ckpt_step}")
             eval_task = asyncio.create_task(
                 run_evals(
                     clients=clients,
@@ -234,7 +231,7 @@ async def orchestrate(config: OrchestratorConfig):
                     client_config=config.client,
                     evals_client=evals_client,
                     output_dir=config.output_dir,
-                    ckpt_step=ckpt_step,
+                    ckpt_step=scheduler.ckpt_step,
                     step=progress.step,
                 )
             )
@@ -328,7 +325,7 @@ async def orchestrate(config: OrchestratorConfig):
             "progress/total_tokens": progress.total_tokens,
             "progress/total_samples": progress.total_samples,
             "progress/total_problems": progress.total_problems,
-            "progress/ckpt_step": ckpt_step,  # Shared W&B axis
+            "progress/ckpt_step": scheduler.ckpt_step,  # Shared W&B axis
             # Sequence length metrics
             "seq_len/mean": results_df.groupby("example_id").seq_len.mean().mean(),
             "seq_len/max": results_df.groupby("example_id").seq_len.mean().max(),
@@ -421,7 +418,7 @@ async def orchestrate(config: OrchestratorConfig):
             client_config=config.client,
             evals_client=evals_client,
             output_dir=config.output_dir,
-            ckpt_step=ckpt_step,
+            ckpt_step=scheduler.ckpt_step,
             step=progress.step,
         )
 
