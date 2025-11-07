@@ -7,6 +7,8 @@ import verifiers as vf
 from datasets import Dataset
 from openai import AsyncOpenAI
 
+from prime_rl.orchestrator.utils import get_semaphore
+
 
 def merge_metadata(generate_metadata_list: list[vf.GenerateMetadata]) -> vf.GenerateMetadata:
     """Merge multiple GenerateMetadata into a single GenerateMetadata."""
@@ -83,10 +85,10 @@ async def generate_group(
     problem: dict,
     rollouts_per_example: int,
     sampling_args: dict,
-    semaphore: asyncio.Semaphore | None,
     use_tqdm: bool = False,
 ) -> vf.GenerateOutputs:
     """Asynchronously generate and score rollouts for one problem."""
+    semaphore = get_semaphore()
     return await env.generate(
         inputs=Dataset.from_list([problem] * rollouts_per_example),
         client=client,
@@ -104,7 +106,6 @@ async def generate_batch(
     problems: list[dict],
     rollouts_per_example: int,
     sampling_args: dict,
-    semaphore: asyncio.Semaphore | None,
     pbar_description: str = "Generating rollouts",
 ) -> vf.GenerateOutputs:
     """Asynchronously generate and score rollouts for a list of problems."""
@@ -115,7 +116,7 @@ async def generate_batch(
     async def generate_group_with_progress(client, problem):
         """Generate rollouts for one problem and update progress."""
         result = await generate_group(
-            client, env, model_name, problem, rollouts_per_example, sampling_args, semaphore, use_tqdm=False
+            client, env, model_name, problem, rollouts_per_example, sampling_args, use_tqdm=False
         )
         pbar.update(rollouts_per_example)
         return result
@@ -149,12 +150,10 @@ class Rollout(TypedDict):
 def make_rollouts(
     generate_outputs: vf.GenerateOutputs,
     processed_outputs: vf.ProcessedOutputs,
-    example_ids: list[int],
     advantages: list[float],
     all_is_truncated: list[bool],
 ) -> list[Rollout]:
     """Processs vf.ProcessedOutputs to a list of rollouts."""
-    assert len(advantages) == len(example_ids) == len(processed_outputs.prompt_ids)
     rollouts = []
     for i, (
         example_id,
@@ -169,7 +168,7 @@ def make_rollouts(
         task,
     ) in enumerate(
         zip(
-            example_ids,
+            generate_outputs.example_id,
             processed_outputs.prompt_ids,
             processed_outputs.prompt_mask,
             processed_outputs.completion_ids,

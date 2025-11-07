@@ -4,6 +4,7 @@ import verifiers as vf
 
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.eval.utils import run_evals
+from prime_rl.orchestrator.utils import set_semaphore
 from prime_rl.utils.client import (
     check_has_model,
     check_health,
@@ -59,7 +60,9 @@ async def eval(config: OfflineEvalConfig):
     await reload_weights(admin_clients)
 
     # Run benchmarks on base model
-    semaphore = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
+    if config.max_concurrent is not None:
+        semaphore = asyncio.Semaphore(config.max_concurrent)
+        set_semaphore(semaphore)
     if config.eval_base:
         logger.info(f"Evaluating model {config.model.name}")
         await run_evals(
@@ -70,7 +73,6 @@ async def eval(config: OfflineEvalConfig):
             client_config=config.client,
             evals_client=evals_client,
             output_dir=config.output_dir,
-            semaphore=semaphore,
             ckpt_step=0,
         )
 
@@ -100,7 +102,6 @@ async def eval(config: OfflineEvalConfig):
                 evals_client=evals_client,
                 output_dir=config.output_dir,
                 ckpt_step=ckpt_step,
-                semaphore=semaphore,
             )
 
     logger.success("Eval finished!")

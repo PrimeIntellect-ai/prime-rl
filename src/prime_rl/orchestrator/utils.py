@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any
 
 import pandas as pd
@@ -12,8 +13,20 @@ from prime_rl.utils.utils import (
     format_time,
 )
 
+SEMAPHORE: asyncio.Semaphore | None = None
 
-def get_train_sampling_args(sampling_config: SamplingConfig) -> dict:
+
+def set_semaphore(semaphore: asyncio.Semaphore):
+    global SEMAPHORE
+    SEMAPHORE = semaphore
+
+
+def get_semaphore() -> asyncio.Semaphore | None:
+    global SEMAPHORE
+    return SEMAPHORE
+
+
+def get_sampling_args(sampling_config: SamplingConfig) -> dict:
     # Convert SamplingConfig to vLLM OAI sampling args
     # https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#extra-parameters_2
     sampling_args = dict(sampling_config)
