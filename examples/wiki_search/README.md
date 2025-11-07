@@ -1,6 +1,6 @@
 # Wiki Search
 
-In this example, we demonstrate how to train `Qwen3-4B-Instruct-2507` to answer trivia questions by searching through a Wikipedia corpus using multi-turn tool use. This example highlights several key features of PRIME-RL:
+In this example, we demonstrate how to train `Qwen3-4B-Instruct-2507` to answer trivia questions by searching through a Wikipedia corpus using multi-turn tool use. This example highlights several key features of PRIME-RL and verifiers environment features:
 
 - **Single-file configuration**: All training settings (trainer, orchestrator, and inference) are specified in a single `rl.toml` file
 - **LoRA training**: Efficient fine-tuning using LoRA (Low-Rank Adaptation) on attention and MLP layers
