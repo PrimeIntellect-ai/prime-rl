@@ -5,6 +5,7 @@ from datetime import timedelta
 # Import environment before any other imports
 # ruff: noqa: I001
 
+from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
@@ -148,11 +149,14 @@ def train(config: RLTrainerConfig):
         broadcast_weights_time = 0
         if progress.step > 0:
             save_weights_start_time = time.time()
-            # Save weights to disk if using filesystem weight broadcast or at interval step
+            # Save weights to disk at every if using filesystem weight broadcast or at interval step
             if config.weight_broadcast.type == "filesystem" or (
                 config.weights.interval and progress.step % config.weights.interval == 0
             ):
                 weight_ckpt_manager.save(model, tokenizer, step=progress.step)
+            else:
+                # Always create a stable file to signal to the orchestrator to initialize receiving weights via NCCL
+                weight_ckpt_manager.create_stable_file(progress.step)
             save_weights_time = time.time() - save_weights_start_time
             broadcast_weights_time = save_weights_time
 
@@ -229,8 +233,9 @@ def train(config: RLTrainerConfig):
             temperature = micro_batch["temperature"]
 
             # Forward pass
-            with maybe_record_function("forward"):
+            with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
                 logits = forward(model, input_ids, position_ids).float().contiguous()
+
             shifted_logits = shift_logits(logits)
             shifted_logits = shifted_logits / temperature
             trainer_logprobs = selective_log_softmax(shifted_logits, input_ids)

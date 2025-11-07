@@ -97,9 +97,15 @@ async def orchestrate(config: OrchestratorConfig):
         envs=[vf.load_environment(env.id, **env.args) for env in config.env],
         env_names=[env.name or env.id for env in config.env],
         map_kwargs=dict(writer_batch_size=1),  # Set defensively to not error on map operations on large datasets
+        env_mix_strategy=config.env_mix.strategy,
+        env_mix_kwargs=dict(
+            probabilities=config.env_mix.probabilities,
+            stopping_strategy=config.env_mix.stopping_strategy,
+            seed=config.env_mix.seed,
+        ),
     )
     dataset = env.get_dataset(seed=config.seed)
-    val_dataset = env.get_eval_dataset(config.val.num_examples, seed=config.seed) if config.val else None
+    val_dataset = env.get_eval_dataset(seed=config.seed) if config.val else None
 
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")

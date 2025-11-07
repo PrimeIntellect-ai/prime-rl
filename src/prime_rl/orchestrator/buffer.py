@@ -180,6 +180,11 @@ class SimpleBuffer(Buffer):
         # Add grouped rollouts to the buffer
         self.rollout_buffer.update(rollouts_by_problem_id)
 
+        # Update metadata with reward information
+        for problem_id, rollouts in rollouts_by_problem_id.items():
+            reward = sum(rollout["reward"] for rollout in rollouts) / len(rollouts)
+            self.metadata[problem_id].update({"reward": reward})
+
     def sample_rollouts(self, n: int) -> list[Rollout]:
         # Take the first n problems from the rollout buffer
         available_problem_ids = list(self.rollout_buffer.keys())
@@ -304,7 +309,7 @@ class DifficultyPoolBuffer(Buffer):
                 new_difficulty = "normal"
             old_difficulty = self.metadata[problem_id]["difficulty"]
             stats[(old_difficulty, new_difficulty)] += 1
-            self.metadata[problem_id].update({"difficulty": new_difficulty})
+            self.metadata[problem_id].update({"reward": reward, "difficulty": new_difficulty})
         stats_str = ", ".join([f"{v} problem(s) moved from `{k[0]}` to `{k[1]}`" for k, v in stats.items()])
         self.logger.debug(f"Updated difficulty information ({stats_str})")
 

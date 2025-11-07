@@ -394,6 +394,18 @@ class NCCLWeightBroadcastConfig(BaseModel):
 WeightBroadcastConfigType: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig
 
 
+class EnvMixConfig(BaseModel):
+    """Configures the mixing of environments."""
+
+    strategy: Literal["interleave", "concatenate"] = "interleave"
+    probabilities: Annotated[list[float] | None, Field(description="Probabilities to use for each environment.")] = None
+    stopping_strategy: Annotated[
+        Literal["first_exhausted", "all_exhausted"],
+        Field(description="Stopping strategy to use for interleaving environment datasets."),
+    ] = "all_exhausted"
+    seed: Annotated[int | None, Field(description="Random seed to use for the environment mixing.")] = None
+
+
 class OrchestratorConfig(BaseSettings):
     """Configures the orchestrator for RL training."""
 
@@ -405,6 +417,9 @@ class OrchestratorConfig(BaseSettings):
 
     # The sampling configuration
     sampling: SamplingConfig = SamplingConfig()
+
+    # The environment mixing configuration
+    env_mix: EnvMixConfig = EnvMixConfig()
 
     # The environment configuration
     env: list[EnvConfig] = [EnvConfig()]

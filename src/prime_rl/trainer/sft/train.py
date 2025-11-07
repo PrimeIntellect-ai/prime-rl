@@ -5,6 +5,7 @@ from datetime import timedelta
 # Import environment before any other imports
 # ruff: noqa: I001
 
+from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.nn.functional import cross_entropy
 from torch.distributed.tensor.experimental import context_parallel
@@ -220,7 +221,7 @@ def train(config: SFTTrainerConfig):
             with maybe_context_parallel:
                 # Forward pass
                 logger.debug("Starting forward pass")
-                with maybe_record_function("forward"):
+                with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
                     logits = forward(model, input_ids, position_ids)
                 B, L, V = logits.shape
 
