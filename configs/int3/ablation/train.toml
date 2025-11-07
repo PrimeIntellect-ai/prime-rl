@@ -1,0 +1,27 @@
+max_steps = 1000
+
+[model]
+name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"
+
+[model.ac]
+freq = 1
+
+[model.compile]
+
+[optim]
+lr = 1e-6
+weight-decay = 0.01
+
+[loss]
+mask_ratio_high = 5
+mask_ratio_low = 0.5
+
+[ckpt]
+interval = 10
+keep = 1
+
+[wandb]
+project = "intellect-3-rl-ablations"
+
+[log]
+level = "debug"

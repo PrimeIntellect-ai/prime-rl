@@ -1,0 +1,54 @@
+max_steps = 10000
+batch_size = 4096
+rollouts_per_example = 16
+seq_len = 51200
+max_concurrent = 4096
+
+[model]
+name = "PrimeIntellect/INTELLECT-3-SFT-Stage-2-v3-800"
+
+[env_mix]
+probabilities = [0.65, 0.35]
+
+[[env]]
+id = "i3-math"
+args = {min_solve_rate = 0.0, max_solve_rate = 0.874, judge_model = "gpt-5-nano", judge_api_key_var = "OPENAI_API_KEY"}
+name = "math"
+
+[[env]]
+id = "i3-code"
+name = "code"
+
+[sampling]
+temperature = 1
+max_tokens = 51200
+
+# [val]
+# interval = 5
+# num_examples = 64
+# rollouts_per_example = 16
+
+# [buffer]
+# type = "difficulty-pool"
+# easy_border = 0.9
+# hard_border = 0.0
+# easy_fraction = 0.0
+# hard_fraction = 0.0
+
+[eval]
+interval = 30
+
+[[eval.env]]
+id = "aime2025"
+rollouts_per_example = 16
+
+[ckpt]
+interval = 30
+keep = 5
+
+[wandb]
+project = "intellect-3-rl"
+name = "int3-orch"
+
+[log]
+level = "debug"

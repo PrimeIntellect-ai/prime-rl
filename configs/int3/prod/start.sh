@@ -1,0 +1,1 @@
+sbatch --exclude=ltc-idc-hgx8-h200-1,ltc-idc3-hgx8-h200-[2-9],ltc-idc3-hgx8-h200-23 configs/int3/prod/run.sh

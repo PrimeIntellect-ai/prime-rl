@@ -1,0 +1,6 @@
+
+[model]
+name = "PrimeIntellect/INTELLECT-3-SFT-Stage-2-v3-800"
+
+[parallel]
+tp = 8

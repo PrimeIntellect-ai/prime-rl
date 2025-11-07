@@ -1,0 +1,1 @@
+sbatch --exclude=ltc-idc3-hgx8-h200-23,ltc-idc3-hgx8-h200-7,ltc-idc3-hgx8-h200-9,ltc-idc3-hgx8-h200-8 configs/int3/ablation/run.sh
