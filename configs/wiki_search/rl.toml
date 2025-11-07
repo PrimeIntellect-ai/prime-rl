@@ -11,8 +11,22 @@ project = "wiki-search-debug"
 name = "wiki-search-4b"
 
 [trainer.optim]
-lr = 1e-6
+lr = 1e-5
 weight_decay = 0.0
+
+[trainer.model.experimental.lora]
+rank = 8
+alpha = 32
+dropout = 0.0
+target_modules = [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj"
+]
 
 [orchestrator]
 batch_size = 512
@@ -26,9 +40,10 @@ max_tokens = 512
 
 [orchestrator.buffer]
 type = "online-difficulty"
+oversampling_factor = 2.0
 
 [[orchestrator.env]]
-id = "wiki-search"
+id = "primeintellect/wiki-search"
 
 [inference.model]
 enable_auto_tool_choice = true
