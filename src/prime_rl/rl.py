@@ -458,7 +458,7 @@ def rl(config: RLConfig):
     # Install each environment
     for env_id in env_ids_to_install:
         logger.info(f"Installing environment: {env_id}")
-        install_cmd = ["uv", "run", "prime", "env", "install", env_id]
+        install_cmd = ["uv", "run", "--no-sync", "prime", "env", "install", env_id]
         result = subprocess.run(install_cmd, capture_output=True, text=True)
         if result.returncode != 0:
             logger.error(f"Failed to install environment {env_id}: {result.stderr}")
