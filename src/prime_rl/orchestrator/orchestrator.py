@@ -145,14 +145,11 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Reset weights to base model if starting from scratch
     progress = Progress()
-    ckpt_step = 0
     if config.ckpt and ckpt_manager and config.ckpt.resume_step:
         ckpt_manager.load(progress, buffer, step=config.ckpt.resume_step)
         logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
-        ckpt_step = progress.step  # Always resume from the latest checkpoint
-        await update_weights(admin_clients, get_step_path(get_weights_dir(config.output_dir), ckpt_step))
-        # Sync scheduler's ckpt_step with orchestrator's ckpt_step
-        scheduler.ckpt_step = ckpt_step
+        scheduler.ckpt_step = progress.step  # Always resume from the latest checkpoint
+        await update_weights(admin_clients, get_step_path(get_weights_dir(config.output_dir), scheduler.ckpt_step))
     else:
         logger.info("Training from scratch. Resetting weights to base model")
         await reload_weights(admin_clients)
@@ -170,6 +167,9 @@ async def orchestrate(config: OrchestratorConfig):
     asyncio.create_task(scheduler.update_policy_loop())
 
     while True:
+        # Capture ckpt_step once for consistency (it's updated by update_policy_loop concurrently)
+        ckpt_step = scheduler.ckpt_step
+
         # Save checkpoint (if we are at an interval step and not at the first or last step)
         is_last_step = config.max_steps is not None and progress.step == config.max_steps - 1
         save_ckpt_time = 0
@@ -421,7 +421,7 @@ async def orchestrate(config: OrchestratorConfig):
             client_config=config.client,
             evals_client=evals_client,
             output_dir=config.output_dir,
-            ckpt_step=ckpt_step,
+            ckpt_step=scheduler.ckpt_step,
             step=progress.step,
         )
 
