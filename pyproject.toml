@@ -36,7 +36,8 @@ dependencies = [
     "dion",
     "reverse-text",
     "verifiers>=0.1.7",
-    "prime-evals>=0.1.2",
+    "prime-evals>=0.1.3",
+    "prime-sandboxes>=0.2.2",
     "flash-attn>=2.8.3",
 ]
 

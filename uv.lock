@@ -37,6 +37,15 @@ wheels = [
 ]
 
 [[package]]
+name = "aiofiles"
+version = "25.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/41/c3/534eac40372d8ee36ef40df62ec129bee4fdb5ad9706e58a29be53b2c970/aiofiles-25.1.0.tar.gz", hash = "sha256:a8d728f0a29de45dc521f18f07297428d56992a742f0cd2701ba86e44d23d5b2", size = 46354, upload-time = "2025-10-09T20:51:04.358Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bc/8a/340a1555ae33d7354dbca4faa54948d76d89a27ceef032c8c3bc661d003e/aiofiles-25.1.0-py3-none-any.whl", hash = "sha256:abe311e527c862958650f9438e859c1fa7568a141b22abcd015e120e86a85695", size = 14668, upload-time = "2025-10-09T20:51:03.174Z" },
+]
+
+[[package]]
 name = "aiohappyeyeballs"
 version = "2.6.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2110,14 +2119,14 @@ wheels = [
 
 [[package]]
 name = "prime-evals"
-version = "0.1.2"
+version = "0.1.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6b/1e/433bde0e8f8de1d9ed35d30f96422fba9e30efdee16db584eaa3ec0aa4e7/prime_evals-0.1.2-py3-none-any.whl", hash = "sha256:f6e164b19beea7b5b5f2bec6bbcb9c8e371477e9ea698f09d88e907f7f253be3", size = 12795, upload-time = "2025-10-28T10:55:42.102Z" },
+    { url = "https://files.pythonhosted.org/packages/45/2c/b206bd94d29c9a8d3932c9596e2700c593e9a00e92ec04ab884052060fc1/prime_evals-0.1.3-py3-none-any.whl", hash = "sha256:345a4a25ac449b19d46acd68defcb6374b4344dc972eacb15903788c3a626092", size = 12876, upload-time = "2025-10-31T21:34:29.408Z" },
 ]
 
 [[package]]
@@ -2141,6 +2150,7 @@ dependencies = [
     { name = "numpy" },
     { name = "openai" },
     { name = "prime-evals" },
+    { name = "prime-sandboxes" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pylatexenc" },
@@ -2185,7 +2195,8 @@ requires-dist = [
     { name = "nltk", specifier = ">=3.9.1" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "openai", specifier = ">=1.106.1" },
-    { name = "prime-evals", specifier = ">=0.1.2" },
+    { name = "prime-evals", specifier = ">=0.1.3" },
+    { name = "prime-sandboxes", specifier = ">=0.2.2" },
     { name = "pydantic", specifier = ">=1.10.13" },
     { name = "pydantic-settings", specifier = ">=2.10.1" },
     { name = "pylatexenc", specifier = ">=2.10" },
@@ -2216,15 +2227,15 @@ dev = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.1.0"
+version = "0.2.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
+    { name = "aiofiles" },
     { name = "httpx" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4d/bb/f7c8b0f3dd73651b456a6e2dbb6b7154c19aa7ed699b1faacd88dd82b9fa/prime_sandboxes-0.1.0.tar.gz", hash = "sha256:99d7c0a799aba8685a9583446886eb258a579be2b741066708a9afab6737212e", size = 34581, upload-time = "2025-10-09T01:06:50.71Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e7/6b/bfaa9d100a398c227e6af790452fd818f210a2f070e62391e7648da77009/prime_sandboxes-0.1.0-py3-none-any.whl", hash = "sha256:67a408d2bc4f96d73f8266f01582ab402d566b96ad941f031d4c37bf95753767", size = 14798, upload-time = "2025-10-09T01:06:49.403Z" },
+    { url = "https://files.pythonhosted.org/packages/82/a7/a142b9ac2b691ba1ac0d9b68da66da37be9b10a3c6dbc0a9b82e87e62352/prime_sandboxes-0.2.2-py3-none-any.whl", hash = "sha256:7d59ae22bfb6cf3ef1bef062a66778c5597b29a08141d91d07a35985907cb985", size = 16532, upload-time = "2025-11-07T03:34:23.459Z" },
 ]
 
 [[package]]
