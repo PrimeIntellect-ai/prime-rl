@@ -3,15 +3,18 @@ import asyncio
 import time
 from loguru import logger
 
-# Import environment before any other imports
-# ruff: noqa: I001,F401
-from prime_rl.orchestrator import envs
+from prime_rl.orchestrator.patches import monkey_patch_oai_iterable_types, monkey_patch_chat_completion_logprobs
 from prime_rl.orchestrator.scheduler import Scheduler
-from prime_rl.orchestrator.utils import get_sampling_args, monkey_patch_chat_completion_logprobs, set_semaphore
+from prime_rl.orchestrator.utils import get_sampling_args, set_semaphore
 
-# This monkey patch is necessary to avoid heavy CPU overhead from constructing the OAI ChatCompletion Pydantic model with logprobs
+# This monkey patch is necessary to avoid Pydantic validating fields using typing.Iterable (e.g. in multimodal or tool call messages) lazily which leads to tokenization errors, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1249
+monkey_patch_oai_iterable_types()
+
+
+# This monkey patch is necessary to avoid heavy CPU overhead from constructing the OAI ChatCompletion Pydantic model with logprobs, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1189
 monkey_patch_chat_completion_logprobs()
 
+# ruff: noqa: I001,F401
 import lovely_tensors as lt
 import torch
 import verifiers as vf
@@ -37,7 +40,6 @@ from prime_rl.orchestrator.buffer import setup_buffer, Rollout
 from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.utils.logger import setup_logger
 from prime_rl.orchestrator.utils import (
-    monkey_patch_chat_completion_logprobs,
     print_benchmark,
 )
 from prime_rl.utils.monitor import setup_monitor
