@@ -1,0 +1,18 @@
+# Evaluates ~2000 rollouts per environment at 80k context (no truncation)
+
+num_examples = 2000
+
+[sampling]
+max_tokens = 81920
+
+[[env]]
+id = "math500"
+rollouts_per_example = 4
+
+[[env]]
+id = "aime2024"
+rollouts_per_example = 64
+
+[[env]]
+id = "aime2025"
+rollouts_per_example = 64

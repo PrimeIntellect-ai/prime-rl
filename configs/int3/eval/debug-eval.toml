@@ -1,0 +1,9 @@
+# Evaluates ~50 rollouts per environment at truncated 2k context
+
+num_examples = 50
+
+[sampling]
+max_tokens = 2048
+
+[[env]]
+id = "math500"

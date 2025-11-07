@@ -1,0 +1,44 @@
+# Evaluates ~50 rollouts per environment at truncated 2k context
+
+num_examples = 50
+
+[sampling]
+max_tokens = 2048
+
+[[env]]
+id = "math500"
+
+[[env]]
+id = "aime2024"
+
+[[env]]
+id = "aime2025"
+
+[[env]]
+id = "gpqa"
+
+[[env]]
+id = "simpleqa-verified"
+
+[[env]]
+id = "mmlu-pro"
+
+[[env]]
+id = "hle"
+
+[[env]]
+id = "livecodebench"
+args = { version = "v6" }
+
+[[env]]
+id = "ifeval"
+
+[[env]]
+id = "tau2-bench"
+name = "tau2-bench-retail"
+args = { task = "retail"}
+
+[[env]]
+id = "tau2-bench"
+name = "tau2-bench-airline"
+args = { task = "airline"}

@@ -1,0 +1,55 @@
+# Evaluates ~2000 rollouts per environment at 80k context (no truncation)
+
+num_examples = 2000
+
+[sampling]
+max_tokens = 81920
+
+[[env]]
+id = "math500"
+rollouts_per_example = 4
+
+[[env]]
+id = "aime2024"
+rollouts_per_example = 64
+
+[[env]]
+id = "aime2025"
+rollouts_per_example = 64
+
+[[env]]
+id = "gpqa"
+rollouts_per_example = 8
+
+[[env]]
+id = "simpleqa-verified"
+rollouts_per_example = 2
+
+[[env]]
+id = "mmlu-pro"
+rollouts_per_example = 1
+
+[[env]]
+id = "hle"
+rollouts_per_example = 1
+
+[[env]]
+id = "livecodebench"
+args = { version = "v6" }
+rollouts_per_example = 2
+
+[[env]]
+id = "ifeval"
+rollouts_per_example = 4
+
+[[env]]
+id = "tau2-bench"
+name = "tau2-bench-retail"
+args = { task = "retail"}
+rollouts_per_example = 32
+
+[[env]]
+id = "tau2-bench"
+name = "tau2-bench-airline"
+args = { task = "airline"}
+rollouts_per_example = 32
