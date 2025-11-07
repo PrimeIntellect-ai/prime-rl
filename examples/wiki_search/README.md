@@ -108,7 +108,7 @@ uv run rl @ examples/wiki_search/rl.toml \
 The unified config file automatically configures:
 - **Trainer**: LoRA fine-tuning with specified hyperparameters
 - **Orchestrator**: Rollout generation with tool calling enabled
-- **Inference**: vLLM server with auto tool choice and Hermes parser
+- **Inference**: vLLM server for Qwen3-4B-Instruct-2507 with tool parsing enabled
 
 This will write weight checkpoints in `outputs/weights/step_*`. Upload the final checkpoint to HuggingFace:
 
