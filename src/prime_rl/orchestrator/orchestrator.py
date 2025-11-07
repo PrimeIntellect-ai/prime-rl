@@ -167,6 +167,9 @@ async def orchestrate(config: OrchestratorConfig):
     asyncio.create_task(scheduler.update_policy_loop())
 
     while True:
+        # Capture ckpt_step once for consistency (it's updated by update_policy_loop concurrently)
+        ckpt_step = scheduler.ckpt_step
+
         # Save checkpoint (if we are at an interval step and not at the first or last step)
         is_last_step = config.max_steps is not None and progress.step == config.max_steps - 1
         save_ckpt_time = 0
@@ -216,12 +219,12 @@ async def orchestrate(config: OrchestratorConfig):
         # Schedule running evals at the specified interval
         if (
             config.eval
-            and scheduler.ckpt_step % config.eval.interval == 0
-            and scheduler.ckpt_step > last_eval_step
-            and ((scheduler.ckpt_step == 0 and config.eval.eval_base_model) or scheduler.ckpt_step > 0)
+            and ckpt_step % config.eval.interval == 0
+            and ckpt_step > last_eval_step
+            and ((ckpt_step == 0 and config.eval.eval_base_model) or ckpt_step > 0)
         ):
-            last_eval_step = scheduler.ckpt_step
-            logger.info(f"Running evals for checkpoint step {scheduler.ckpt_step}")
+            last_eval_step = ckpt_step
+            logger.info(f"Running evals for checkpoint step {ckpt_step}")
             eval_task = asyncio.create_task(
                 run_evals(
                     clients=clients,
@@ -231,7 +234,7 @@ async def orchestrate(config: OrchestratorConfig):
                     client_config=config.client,
                     evals_client=evals_client,
                     output_dir=config.output_dir,
-                    ckpt_step=scheduler.ckpt_step,
+                    ckpt_step=ckpt_step,
                     step=progress.step,
                 )
             )
@@ -325,7 +328,7 @@ async def orchestrate(config: OrchestratorConfig):
             "progress/total_tokens": progress.total_tokens,
             "progress/total_samples": progress.total_samples,
             "progress/total_problems": progress.total_problems,
-            "progress/ckpt_step": scheduler.ckpt_step,  # Shared W&B axis
+            "progress/ckpt_step": ckpt_step,  # Shared W&B axis
             # Sequence length metrics
             "seq_len/mean": results_df.groupby("example_id").seq_len.mean().mean(),
             "seq_len/max": results_df.groupby("example_id").seq_len.mean().max(),
