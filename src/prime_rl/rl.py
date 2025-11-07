@@ -441,6 +441,30 @@ def rl(config: RLConfig):
     logger.info("Starting RL run")
     logger.debug(f"RL start command: {' '.join(start_command)}")
 
+    # Install any environments given in user/env-id format
+    env_ids_to_install = set()
+
+    # Collect training environment IDs
+    for env_config in config.orchestrator.env:
+        if "/" in env_config.id:
+            env_ids_to_install.add(env_config.id)
+
+    # Collect evaluation environment IDs
+    if config.orchestrator.eval:
+        for eval_env_config in config.orchestrator.eval.env:
+            if "/" in eval_env_config.id:
+                env_ids_to_install.add(eval_env_config.id)
+
+    # Install each environment
+    for env_id in env_ids_to_install:
+        logger.info(f"Installing environment: {env_id}")
+        install_cmd = ["uv", "run", "--no-sync", "prime", "env", "install", env_id]
+        result = subprocess.run(install_cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            logger.error(f"Failed to install environment {env_id}: {result.stderr}")
+            raise RuntimeError(f"Failed to install environment {env_id}")
+        logger.info(f"Successfully installed environment: {env_id}")
+
     # Prepare paths to communicate with the trainer
     log_dir = get_log_dir(config.output_dir)
     ckpt_dir = get_ckpt_dir(config.output_dir)
