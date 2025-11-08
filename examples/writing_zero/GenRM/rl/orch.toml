@@ -1,4 +1,4 @@
-max_steps = 30
+max_steps = 100
 seq_len = 2048
 batch_size = 1024
 rollouts_per_example = 16
