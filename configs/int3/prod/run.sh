@@ -101,6 +101,7 @@ srun bash -c '
         INFER_NODE_RANK=$((SLURM_PROCID - NUM_TRAIN_NODES))
         uv run inference \
         @ configs/int3/prod/infer.toml \
+        --weight_broadcast.type nccl \
         --enable-auto-tool-choice \
         --tool-call-parser $TOOL_CALL_PARSER \
         --enable-log-requests \
@@ -112,6 +113,10 @@ srun bash -c '
             uv run orchestrator \
             @ configs/int3/prod/orch.toml \
             --ckpt.resume_step $CKPT_STEP \
+            --weight_broadcast.type nccl \
+            --weight_broadcast.host $MASTER_ADDR \
+            --weight_broadcast.port $BROADCAST_PORT \
+            --weight_broadcast.timeout $BROADCAST_TIMEOUT \
             --client.base-url $INFER_URLS \
             --client.timeout 3600 \
             --num-train-workers $((NUM_TRAIN_NODES * 8)) \
@@ -138,6 +143,11 @@ srun bash -c '
         --local-ranks-filter=0 \
         src/prime_rl/trainer/rl/train.py \
         @ configs/int3/prod/train.toml \
+        --weight_broadcast.type nccl \
+        --weight_broadcast.host 0.0.0.0 \
+        --weight_broadcast.port $BROADCAST_PORT \
+        --weight_broadcast.inference_world_size $((8 * NUM_INFER_NODES))\
+        --weight_broadcast.timeout $BROADCAST_TIMEOUT \
         --dist_timeout_seconds $NCCL_COMM_TIMEOUT \
         --model.dp-replicate $((NUM_TRAIN_NODES / 8)) \
         --ckpt.resume_step $CKPT_STEP \

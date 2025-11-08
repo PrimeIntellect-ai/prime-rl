@@ -8,19 +8,19 @@ max_concurrent = 4096
 name = "PrimeIntellect/INTELLECT-3-SFT-Stage-2-v3-800"
 
 [env_mix]
-probabilities = [0.65, 0.35]
+probabilities = [0.6, 0.4]
 
 [[env]]
 id = "i3-math"
-args = {min_solve_rate = 0.0, max_solve_rate = 0.874, judge_model = "gpt-5-nano", judge_api_key_var = "OPENAI_API_KEY"}
+args = {min_avg_reward = 0.0, max_avg_reward = 0.874}
 name = "math"
 
 [[env]]
 id = "i3-code"
-name = "code"
+args = {pool_size = 1024}
 
 [sampling]
-temperature = 1
+temperature = 1.05
 max_tokens = 51200
 
 # [val]
@@ -43,7 +43,7 @@ id = "aime2025"
 rollouts_per_example = 16
 
 [ckpt]
-interval = 30
+interval = 20
 keep = 5
 
 [wandb]
