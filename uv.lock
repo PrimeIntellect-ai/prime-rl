@@ -2197,10 +2197,10 @@ requires-dist = [
     { name = "tomli-w", specifier = ">=1.2.0" },
     { name = "torch", specifier = ">=2.8.0", index = "https://download.pytorch.org/whl/test/cu128" },
     { name = "torchdata", specifier = ">=0.11.0" },
-    { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e43694bbfeff5d6ad8ac738c067bb90d41" },
+    { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
     { name = "transformers", specifier = ">=4.56.0" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=6429ed7" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=91f436d" },
     { name = "vllm", specifier = "==0.10.2" },
     { name = "wandb", specifier = ">=0.20.1" },
 ]
@@ -3252,7 +3252,7 @@ wheels = [
 [[package]]
 name = "torchtitan"
 version = "0.1.0"
-source = { git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e43694bbfeff5d6ad8ac738c067bb90d41#a1fdd7e43694bbfeff5d6ad8ac738c067bb90d41" }
+source = { git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e#a1fdd7e43694bbfeff5d6ad8ac738c067bb90d41" }
 dependencies = [
     { name = "datasets" },
     { name = "fsspec" },
@@ -3509,8 +3509,8 @@ wheels = [
 
 [[package]]
 name = "verifiers"
-version = "0.1.7"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=6429ed7#6429ed7fb742da0a152626b7b57d6d8f537bfff9" }
+version = "0.1.7.post0"
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=91f436d#91f436d4ca36263646c432ab34e1bd0af8fa5d7d" }
 dependencies = [
     { name = "datasets" },
     { name = "jinja2" },
