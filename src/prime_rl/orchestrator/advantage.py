@@ -27,9 +27,9 @@ def compute_advantage(
             advantages = advantages * group_size / (group_size - 1)
     if advantage_config.neg_clipped:
         advantages = torch.maximum(advantages, torch.zeros_like(advantages))
-    if advantage_config.std_norm == 'local':
+    if advantage_config.std_norm == "global":
         advantages = advantages / global_std
-    elif advantage_config.std_norm == 'global':
+    elif advantage_config.std_norm == "local":
         advantages = advantages / (rewards.std() + 1e-8)
     return advantages
 

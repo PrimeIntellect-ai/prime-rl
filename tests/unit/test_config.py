@@ -7,6 +7,7 @@ import pytest
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.inference.config import InferenceConfig
 from prime_rl.orchestrator.config import OrchestratorConfig
+from prime_rl.rl import RLConfig
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.sft.config import SFTTrainerConfig
 from prime_rl.utils.pydantic_config import parse_argv
@@ -19,10 +20,11 @@ from prime_rl.utils.validation import (
     validate_shared_wandb_config,
 )
 
-ConfigType: TypeAlias = Literal["rl/train", "sft/train", "orch", "infer", "eval"]
+ConfigType: TypeAlias = Literal["rl", "rl/train", "sft/train", "orch", "infer", "eval"]
 
 # Map config type to its corresponding settings class
 CONFIG_MAP: dict[ConfigType, Any] = {
+    "rl": RLConfig,
     "rl/train": RLTrainerConfig,
     "sft/train": SFTTrainerConfig,
     "orch": OrchestratorConfig,

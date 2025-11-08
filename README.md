@@ -33,7 +33,7 @@ PRIME-RL is a framework for large-scale asynchronous reinforcement learning. It 
 
 1. Integrates natively with [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) environments via the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars)
 2. Supports end-to-end post-training, including SFT and RL training and evals
-3. Rayless multi-node deployment with [FSDP2](https://docs.pytorch.org/tutorials/intermediate/FSDP_tutorial.html) training and [vLLM](https://github.com/vllm-project/vllm) inference backend
+3. Multi-node deployment with [FSDP2](https://docs.pytorch.org/tutorials/intermediate/FSDP_tutorial.html) training and [vLLM](https://github.com/vllm-project/vllm) inference backend
 4. Designed for asynchronous training in decentralized settings
 5. Hackable, modular and extensible by nature
 
@@ -76,7 +76,7 @@ source $HOME/.local/bin/env
 3. Install dependencies from the lock file
 
 ```bash
-uv sync && uv sync --all-extras
+uv sync
 ```
 
 </details>
@@ -159,6 +159,16 @@ We provide end-to-end training examples in the [`examples`](examples) directory 
 ## Docs
 
 Check out the [docs](docs) directory for in-depth guides on how to use PRIME-RL.
+
+- [**Entrypoints**](docs/entrypoints.md) - Overview of the main components (orchestrator, trainer, inference) and how to run SFT, RL, and evals
+- [**Configs**](docs/configs.md) - Configuration system using TOML files, CLI arguments, and environment variables
+- [**Environments**](docs/environments.md) - Installing and using verifiers environments from the Environments Hub
+- [**Async Training**](docs/async.md) - Understanding asynchronous off-policy training and step semantics
+- [**Logging**](docs/logging.md) - Logging with loguru, torchrun, and Weights & Biases
+- [**Checkpointing**](docs/checkpointing.md) - Saving and resuming training from checkpoints
+- [**Benchmarking**](docs/benchmarking.md) - Performance benchmarking and throughput measurement
+- [**Deployment**](docs/deployment.md) - Training deployment on single-GPU, multi-GPU, and multi-node clusters
+- [**Troubleshooting**](docs/troubleshooting.md) - Common issues and their solutions
 
 ## Contributing
 

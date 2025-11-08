@@ -1,6 +1,0 @@
-[model]
-name = "Qwen/Qwen3-30B-A3B"
-
-[parallel]
-dp = 4
-tp = 2

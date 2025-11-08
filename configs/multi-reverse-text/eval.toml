@@ -1,0 +1,10 @@
+num_examples = 3
+rollouts_per_example = 4
+
+[[env]]
+id = "math500"
+
+[[env]]
+id = "math500"
+name = "math500-2"
+num_examples = 1

@@ -1,5 +1,7 @@
 import asyncio
 
+import verifiers as vf
+
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.eval.utils import run_evals
 from prime_rl.utils.client import (
@@ -23,10 +25,12 @@ async def eval(config: OfflineEvalConfig):
     logger = setup_logger(
         config.log.level, log_file=config.output_dir / "logs" / "eval.log" if config.log.file else None
     )
+    vf.setup_logging(level=config.log.vf_level.upper())
+
     logger.info("Starting evaluation")
     logger.info(f"Model: {config.model}")
+    logger.info(f"Environments: {', '.join([env.name or env.id for env in config.env])}")
     logger.info(f"Sampling: {config.sampling}")
-    logger.info(f"Eval IDs: {config.environment_ids}")
 
     # Initialize the monitor
     logger.info(f"Initializing monitor ({config.wandb})")
@@ -55,6 +59,7 @@ async def eval(config: OfflineEvalConfig):
     await reload_weights(admin_clients)
 
     # Run benchmarks on base model
+    semaphore = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     if config.eval_base:
         logger.info(f"Evaluating model {config.model.name}")
         await run_evals(
@@ -65,6 +70,7 @@ async def eval(config: OfflineEvalConfig):
             client_config=config.client,
             evals_client=evals_client,
             output_dir=config.output_dir,
+            semaphore=semaphore,
             ckpt_step=0,
         )
 
@@ -94,6 +100,7 @@ async def eval(config: OfflineEvalConfig):
                 evals_client=evals_client,
                 output_dir=config.output_dir,
                 ckpt_step=ckpt_step,
+                semaphore=semaphore,
             )
 
     logger.success("Eval finished!")

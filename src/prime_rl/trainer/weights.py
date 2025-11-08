@@ -97,47 +97,45 @@ def convert_hf_to_tt_moe(state_dict: dict[str, Tensor]):
         del state_dict[f"model.layers.{i}.mlp.gate.e_score_correction_bias"]
 
 
-def convert_tt_to_hf_moe(state_dict: dict[str, Tensor]):
-    """Convert MoE weights from TT to HF format in-place."""
-    num_layers = get_max_layer_num(state_dict)
-    for i in range(num_layers):
-        if not f"model.layers.{i}.mlp.router.gate.weight" in state_dict:
-            continue  # Not a TT-MoE layer
+def convert_tt_layer_to_hf(state_dict: dict[str, Tensor], layer_index: int):
+    """Convert a layer from TT to HF format in-place."""
 
-        # Load balancing terms
-        if f"model.layers.{i}.mlp.expert_bias" in state_dict:
-            state_dict[f"model.layers.{i}.mlp.gate.e_score_correction_bias"] = state_dict[
-                f"model.layers.{i}.mlp.expert_bias"
-            ]
-            del state_dict[f"model.layers.{i}.mlp.expert_bias"]
-        if f"model.layers.{i}.mlp.tokens_per_expert" in state_dict:
-            del state_dict[f"model.layers.{i}.mlp.tokens_per_expert"]
+    i = layer_index
 
-        # Shared experts
-        if f"model.layers.{i}.mlp.shared_expert.w1" in state_dict:
-            state_dict[f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"] = state_dict[
-                f"model.layers.{i}.mlp.shared_expert.w1"
-            ]
-            state_dict[f"model.layers.{i}.mlp.shared_experts.down_proj.weight"] = state_dict[
-                f"model.layers.{i}.mlp.shared_expert.w2"
-            ]
+    # Load balancing terms
+    if f"model.layers.{i}.mlp.expert_bias" in state_dict:
+        state_dict[f"model.layers.{i}.mlp.gate.e_score_correction_bias"] = state_dict[
+            f"model.layers.{i}.mlp.expert_bias"
+        ]
+        del state_dict[f"model.layers.{i}.mlp.expert_bias"]
+    if f"model.layers.{i}.mlp.tokens_per_expert" in state_dict:
+        del state_dict[f"model.layers.{i}.mlp.tokens_per_expert"]
+
+    # Shared experts
+    if f"model.layers.{i}.mlp.shared_expert.w1" in state_dict:
+        state_dict[f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"] = state_dict[
+            f"model.layers.{i}.mlp.shared_expert.w1"
+        ]
+        state_dict[f"model.layers.{i}.mlp.shared_experts.down_proj.weight"] = state_dict[
+            f"model.layers.{i}.mlp.shared_expert.w2"
+        ]
+        state_dict[f"model.layers.{i}.mlp.shared_experts.up_proj.weight"] = state_dict[
+            f"model.layers.{i}.mlp.shared_expert.w3"
+        ]
+
+        if state_dict[f"model.layers.{i}.mlp.shared_experts.up_proj.weight"].shape[0] == 1:
             state_dict[f"model.layers.{i}.mlp.shared_experts.up_proj.weight"] = state_dict[
-                f"model.layers.{i}.mlp.shared_expert.w3"
-            ]
-
-            if state_dict[f"model.layers.{i}.mlp.shared_experts.up_proj.weight"].shape[0] == 1:
-                state_dict[f"model.layers.{i}.mlp.shared_experts.up_proj.weight"] = state_dict[
-                    f"model.layers.{i}.mlp.shared_experts.up_proj.weight"
-                ][0]
-                state_dict[f"model.layers.{i}.mlp.shared_experts.down_proj.weight"] = state_dict[
-                    f"model.layers.{i}.mlp.shared_experts.down_proj.weight"
-                ][0]
-                state_dict[f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"] = state_dict[
-                    f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"
-                ][0]
-            del state_dict[f"model.layers.{i}.mlp.shared_expert.w1"]
-            del state_dict[f"model.layers.{i}.mlp.shared_expert.w2"]
-            del state_dict[f"model.layers.{i}.mlp.shared_expert.w3"]
+                f"model.layers.{i}.mlp.shared_experts.up_proj.weight"
+            ][0]
+            state_dict[f"model.layers.{i}.mlp.shared_experts.down_proj.weight"] = state_dict[
+                f"model.layers.{i}.mlp.shared_experts.down_proj.weight"
+            ][0]
+            state_dict[f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"] = state_dict[
+                f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"
+            ][0]
+        del state_dict[f"model.layers.{i}.mlp.shared_expert.w1"]
+        del state_dict[f"model.layers.{i}.mlp.shared_expert.w2"]
+        del state_dict[f"model.layers.{i}.mlp.shared_expert.w3"]
 
         # Gate / Router
         state_dict[f"model.layers.{i}.mlp.gate.weight"] = state_dict[f"model.layers.{i}.mlp.router.gate.weight"]
@@ -158,6 +156,17 @@ def convert_tt_to_hf_moe(state_dict: dict[str, Tensor]):
         del state_dict[f"model.layers.{i}.mlp.experts.w1"]
         del state_dict[f"model.layers.{i}.mlp.experts.w2"]
         del state_dict[f"model.layers.{i}.mlp.experts.w3"]
+
+
+def convert_tt_to_hf_moe(state_dict: dict[str, Tensor]):
+    """Convert MoE weights from TT to HF format in-place."""
+    num_layers = get_max_layer_num(state_dict)
+    for i in range(1, num_layers + 1):
+        # todo(sami): delete this after testing that it never called
+        # if not f"model.layers.{i}.mlp.router.gate.weight" in state_dict:
+        #     continue  # Not a TT-MoE layer
+
+        convert_tt_layer_to_hf(state_dict, i)
 
 
 def load_state_dict(save_dir: Path) -> dict[str, Tensor]:
@@ -372,8 +381,13 @@ class WeightCheckpointManager:
                 model.generation_config.save_pretrained(step_path)
             tokenizer.save_pretrained(step_path)
 
-        (step_path / "STABLE").touch()  # Signal to the orchestrator that the weight checkpoint is ready
+        (step_path / "STABLE").touch()
         self._logger.debug(f"Saved weight checkpoint to {step_path} in {time.time() - start_time:.2f} seconds")
+
+    def create_stable_file(self, step: int):
+        step_path = self._get_step_path(step)
+        step_path.mkdir(parents=True, exist_ok=True)
+        (step_path / "STABLE").touch()
 
     def save(
         self,
@@ -414,13 +428,10 @@ class WeightCheckpointManager:
         step = max(step - (self.async_level + 1), 0)  # Consider deleting async_level + 1 steps ago
         candidate_path_to_delete = self._get_step_path(step)
         keep_for_eval = self.config.interval and step % self.config.interval == 0
-        # For checkpointing step x, we need all weight checkpoints in [x-async_level, x] (for logprob model)
-        # To get [n-k, n] with interval n and buffer k over all natural numbers x, we use the condition (n - (x % n)) % n <= k
         keep_for_ckpt = (
             self.ckpt_config
             and self.ckpt_config.interval
-            and (self.ckpt_config.interval - (step % self.ckpt_config.interval)) % self.ckpt_config.interval
-            <= self.async_level
+            and self.ckpt_config.interval % self.ckpt_config.interval == 0
         )
         if not (keep_for_eval or keep_for_ckpt):
             self._logger.debug(

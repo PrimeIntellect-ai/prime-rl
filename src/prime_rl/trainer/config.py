@@ -24,6 +24,20 @@ class ActivationCheckpointConfig(BaseModel):
     ] = 1
 
 
+class ActivationOffloadingConfig(BaseModel):
+    """Configures the activation offloading."""
+
+    pin_memory: Annotated[bool, Field(description="Whether to pin the offloaded activations to CPU memory.")] = True
+
+    max_inflight_activations: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="The maximum number of activations to keep in while offloading further. (More activations means smoother overlap, but more gpu memory usage)",
+        ),
+    ] = 5
+
+
 class CompileConfig(BaseModel):
     """Configures model compilation."""
 
@@ -80,24 +94,24 @@ class LoRAConfig(BaseModel):
     target_modules: Annotated[
         list[str],
         Field(
-            description="Regex patterns for modules to apply LoRA to.",
+            description="Module names or regex patterns for modules to apply LoRA to. Simple names (e.g., 'q_proj') match any component in the module path. Regex patterns match anywhere in the name.",
         ),
     ] = [
-        r".*\.q_proj$",
-        r".*\.k_proj$",
-        r".*\.v_proj$",
-        r".*\.o_proj$",
-        r".*\.gate_proj$",
-        r".*\.up_proj$",
-        r".*\.down_proj$",
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
     ]
 
     modules_to_save: Annotated[
         list[str],
         Field(
-            description="Regex patterns for modules to keep fully trainable (not freeze).",
+            description="Module names or regex patterns for modules to keep fully trainable (not freeze). Simple names match any component in the module path. Regex patterns match anywhere in the name.",
         ),
-    ] = [r".*embed_tokens$", r".*norm$", r".*layernorm$", r"lm_head$"]
+    ] = []
 
 
 class ExperimentalConfig(BaseModel):
@@ -134,6 +148,13 @@ class ModelConfig(BaseConfig):
         ActivationCheckpointConfig | None,
         Field(
             description="Whether to apply activation checkpointing to the model. If None, will not apply activation checkpointing.",
+        ),
+    ] = None
+
+    ac_offloading: Annotated[
+        ActivationOffloadingConfig | None,
+        Field(
+            description="Whether to apply activation offloading to the model. If None, will not apply activation offloading.",
         ),
     ] = None
 

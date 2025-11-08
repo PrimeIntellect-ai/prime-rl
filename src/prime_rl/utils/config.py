@@ -67,6 +67,11 @@ class LogConfig(BaseConfig):
         Field(description="Logging level for the process. Will determine the logging verbosity and format."),
     ] = "info"
 
+    vf_level: Annotated[
+        str,
+        Field(description="Logging level for the verifiers package. Will determine the logging verbosity and format."),
+    ] = "warn"
+
     file: Annotated[
         bool,
         Field(
@@ -136,4 +141,4 @@ class WandbMonitorConfig(BaseConfig):
         Field(
             description="Configuration for logging extras to W&B tables. If None, no extras are logged.",
         ),
-    ] = LogExtrasConfig()
+    ] = None

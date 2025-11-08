@@ -58,6 +58,13 @@ class OfflineEvalConfig(EvalConfig, BaseSettings):
         ),
     ] = False
 
+    max_concurrent: Annotated[
+        int | None,
+        Field(
+            description="Maximum number of concurrent rollouts to generate and score. Will create a global semaphore and pass to verifiers Environment. If None, will not limit concurrency.",
+        ),
+    ] = None
+
     @model_validator(mode="after")
     def validate_steps(self):
         if self.steps is not None and self.weights_dir is not None:

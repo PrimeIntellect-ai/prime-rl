@@ -9,16 +9,21 @@ import warnings
 from pathlib import Path
 from subprocess import Popen
 from threading import Event, Thread
-from typing import Annotated
+from typing import Annotated, Literal
 
 import tomli_w
 from pydantic import Field, model_validator
 
 from prime_rl.inference.config import InferenceConfig
+from prime_rl.inference.config import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.orchestrator.config import CheckpointConfig as OrchestratorCheckpointConfig
+from prime_rl.orchestrator.config import FileSystemWeightBroadcastConfig as OrchestratorFileSystemWeightBroadcastConfig
+from prime_rl.orchestrator.config import NCCLWeightBroadcastConfig as OrchestratorNCCLWeightBroadcastConfig
 from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.trainer.config import CheckpointConfig as TrainerCheckpointConfig
 from prime_rl.trainer.rl.config import FakeDataLoaderConfig
+from prime_rl.trainer.rl.config import FileSystemWeightBroadcastConfig as TrainerFileSystemWeightBroadcastConfig
+from prime_rl.trainer.rl.config import NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig
 from prime_rl.trainer.rl.config import RLTrainerConfig as TrainerConfig
 from prime_rl.utils.config import WandbMonitorConfig
 from prime_rl.utils.logger import setup_logger
@@ -38,6 +43,7 @@ from prime_rl.utils.validation import (
     validate_shared_model_name,
     validate_shared_output_dir,
     validate_shared_wandb_config,
+    validate_shared_weight_broadcast,
 )
 
 
@@ -84,6 +90,14 @@ class ModelConfig(BaseSettings):
         str,
         Field(description="The name of the model to use."),
     ] = "Qwen/Qwen3-0.6B"
+
+
+class WeightBroadcastConfig(BaseSettings):
+    """Configures shared weight broadcast settings."""
+
+    type: Annotated[Literal["nccl", "filesystem"], Field(description="The type of weight broadcast to use.")] = (
+        "filesystem"
+    )
 
 
 class RLConfig(BaseSettings):
@@ -175,9 +189,14 @@ class RLConfig(BaseSettings):
         ),
     ] = False
 
+    weight_broadcast: Annotated[WeightBroadcastConfig | None, Field(description="The weight broadcast config.")] = None
+
     @model_validator(mode="after")
     def validate_device(self):
         available_gpu_ids = get_cuda_visible_devices()
+        # If no CUDA devices are available (e.g., in CPU-only test environments), skip GPU validation
+        if len(available_gpu_ids) == 0:
+            return self
         requested_gpu_ids = sorted(set(self.trainer_gpu_ids + self.inference_gpu_ids))
         if len(requested_gpu_ids) > len(available_gpu_ids):
             raise ValueError(
@@ -188,9 +207,10 @@ class RLConfig(BaseSettings):
                 f"Some requested GPU IDs are not available. Available GPUs: {available_gpu_ids}, Requested GPUs: {requested_gpu_ids}"
             )
         if self.inference and len(self.inference_gpu_ids) != self.inference.parallel.dp * self.inference.parallel.tp:
-            raise ValueError(
-                f"Total number of inference GPUs ({len(self.inference_gpu_ids)}) does not match the local sharding strategy (DP={self.inference.parallel.dp}, TP={self.inference.parallel.tp})"
+            assert len(self.inference_gpu_ids) % self.inference.parallel.tp == 0, (
+                "Number of inference GPUs must be divisible by the tensor parallel size"
             )
+            self.inference.parallel.dp = len(self.inference_gpu_ids) // self.inference.parallel.tp
         return self
 
     @model_validator(mode="after")
@@ -337,6 +357,27 @@ class RLConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_weight_broadcast(self):
+        if self.weight_broadcast:
+            if self.weight_broadcast.type == "nccl":
+                inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp if self.inference else 1
+                self.trainer.weight_broadcast = TrainerNCCLWeightBroadcastConfig(
+                    type=self.weight_broadcast.type, inference_world_size=inference_world_size
+                )
+                self.orchestrator.weight_broadcast = OrchestratorNCCLWeightBroadcastConfig(
+                    type=self.weight_broadcast.type
+                )
+            elif self.weight_broadcast.type == "filesystem":
+                self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
+                self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig()
+            if self.inference:
+                self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
+
+        validate_shared_weight_broadcast(self.trainer, self.orchestrator, self.inference)
+
+        return self
+
+    @model_validator(mode="after")
     def warn_wandb_resume_id_missing(self):
         if self.trainer.ckpt and self.trainer.ckpt.resume_step:
             if self.trainer.wandb and not self.trainer.wandb.id:
@@ -348,6 +389,14 @@ class RLConfig(BaseSettings):
                 warnings.warn(
                     "W&B run ID is not set for orchestrator even though resuming training. The current run will be created as a new run."
                 )
+        return self
+
+    @model_validator(mode="after")
+    def validate_enough_devices_for_nccl(self):
+        if self.trainer.weight_broadcast.type == "nccl":
+            num_gpus = len(set(self.trainer_gpu_ids + self.inference_gpu_ids))
+            if num_gpus < 2:
+                raise ValueError("NCCL weight broadcast requires at least 2 GPUs to build the broadcast process group.")
         return self
 
 
@@ -391,6 +440,30 @@ def rl(config: RLConfig):
     start_command = sys.argv
     logger.info("Starting RL run")
     logger.debug(f"RL start command: {' '.join(start_command)}")
+
+    # Install any environments given in user/env-id format
+    env_ids_to_install = set()
+
+    # Collect training environment IDs
+    for env_config in config.orchestrator.env:
+        if "/" in env_config.id:
+            env_ids_to_install.add(env_config.id)
+
+    # Collect evaluation environment IDs
+    if config.orchestrator.eval:
+        for eval_env_config in config.orchestrator.eval.env:
+            if "/" in eval_env_config.id:
+                env_ids_to_install.add(eval_env_config.id)
+
+    # Install each environment
+    for env_id in env_ids_to_install:
+        logger.info(f"Installing environment: {env_id}")
+        install_cmd = ["uv", "run", "--no-sync", "prime", "env", "install", env_id]
+        result = subprocess.run(install_cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            logger.error(f"Failed to install environment {env_id}: {result.stderr}")
+            raise RuntimeError(f"Failed to install environment {env_id}")
+        logger.info(f"Successfully installed environment: {env_id}")
 
     # Prepare paths to communicate with the trainer
     log_dir = get_log_dir(config.output_dir)
