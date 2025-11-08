@@ -114,7 +114,7 @@ Now that the codebase is ready, we need to run two inferences, one for the model
 
 **GenRM**:
 ```bash
-uv run inference @ examples/writing_zero/BRPO/rl/env_infer.toml
+uv run inference @ examples/writing_zero/BRPO/infer.toml
 ```
 **Model** to be trained:
 ```bash
