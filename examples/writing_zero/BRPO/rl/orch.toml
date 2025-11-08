@@ -8,7 +8,7 @@ advantage="None"
 [model]
 name = "PrimeIntellect/Qwen3-4B"
 
-[environment]
+[[env]]
 id = "dmnsh001/w0-brpo"
 args = {judge_model="dmnsh/Qwen3-4b-W0-GenRM", judge_base_url='http://localhost:8001/v1', group_size=4, curators=['llama_3.3_8b_instruct', 'grok_4_fast', 'mai_ds_r1', 'glm_4.5_air', 'qwen3_30b_a3b', 'llama_4_scout', 'nemotron_nano_9b_v2', 'gpt_oss_20b']}
 
