@@ -36,4 +36,4 @@ PRIME-RL uses a global training step $n=1,2,3,\dots$ that is used to tag artifac
 - **Trainer**: Produces policy $\pi_n$ with weights $\theta_n$ from rollouts $(x_n, y_n)$
 - **Inference**: Produces rollouts $(x_n, y_n)$ from policy $\pi_{max(0, n-k)}$
 
-Here, $k$ is the `async_level` parameter, which defaults to 2. Note, that we use 0-indexed steps to cleanly indicate that at each step the divergence off-policy gap is at most $k$ steps.
+Here, $k$ is the `async_level` parameter, which defaults to 2. Note that we use 0-indexed steps to cleanly indicate that at each step, the divergence off-policy gap is at most $k$ steps.

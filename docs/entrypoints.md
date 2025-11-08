@@ -16,11 +16,11 @@ The trainer is responsible for producing an updated policy model given rollouts 
 
 ### Inference
 
-The inference service in its simplest form is a standard OpenAI-compatible server with a vLLM backend. The API specification is extended with two custom endpoints to enable updating the server with the latest policy: `update_weights` is used to reload model weights from a HF-compatible checkpoint on disk, and `reload_weights is used to reset the weights to the base model in between experiments. Otherwise, we rely on vLLM's optimized kernels, parallelism strategies, and scheduling for fast rollout generation. Given the disaggregated nature of the service architecture, it can be directly extended to include multiple engines with a shared request pool, allowing operation across multiple clusters and straightforward integration of alternative inference engines (e.g. SGLang, Tokasaurus). We also heavily rely on native data parallelism in vLLM (also available in SGLang) for orchestrating the fleet of nodes dedicated to inference. 
+The inference service in its simplest form is a standard OpenAI-compatible server with a vLLM backend. The API specification is extended with two custom endpoints to enable updating the server with the latest policy: `update_weights` is used to reload model weights from a HF-compatible checkpoint on disk, and `reload_weights` is used to reset the weights to the base model in between experiments. Otherwise, we rely on vLLM's optimized kernels, parallelism strategies, and scheduling for fast rollout generation. Given the disaggregated nature of the service architecture, it can be directly extended to include multiple engines with a shared request pool, allowing operation across multiple clusters and straightforward integration of alternative inference engines (e.g. SGLang, Tokasaurus). We also heavily rely on native data parallelism in vLLM (also available in SGLang) for orchestrating the fleet of nodes dedicated to inference. 
 
 ### RL
 
-For doing RL training all components need to be started. One can do this manually,
+For doing RL training all components need to be started. One can do this manually:
 
 ```bash
 uv run inference ...
@@ -70,7 +70,7 @@ For more details on multi-node deployment options, see the [deployment](deployme
 
 You can eval any [verifiers](https://github.com/willccbb/verifiers) environment against API models, local models and checkpoints from an SFT or RL training using the `eval` entrypoint.
 
-> We recommned using the `vf-eval` entrypoint for evaluating a *single* environment against API models or local models. This is often useful whne bulding an environment. However, if want to evaluate multiple environments in parallel and/ or evaluate a training checkpoint, the PRIME-RL `eval` entrypoint is likely more convenient.
+> We recommned using the `vf-eval` entrypoint for evaluating a *single* environment against API models or local models. This is often useful when bulding an environment. However, if you want to evaluate multiple environments in parallel and/ or evaluate a training checkpoint, the PRIME-RL `eval` entrypoint is likely more convenient.
 
 We demonstrate evals by evaluating two common benchmarks [`gpqa`](https://app.primeintellect.ai/dashboard/environments/primeintellect/gpqa) and [`math500`](https://app.primeintellect.ai/dashboard/environments/primeintellect/math500).
 
@@ -118,7 +118,7 @@ uv run eval \
 
 ### API Models
 
-To evaluate API models, you need to set the API base URL and API key. We will exemplify this with the OpenAI API, but the same principles apply to other inference providers.
+We will exemplify using API models with the OpenAI API, but the same principles apply to other inference providers.
 
 First, set the API key as an environment variable.
 
