@@ -1,0 +1,8 @@
+max_steps = 1000
+
+[model]
+name = "Qwen/Qwen3-0.6B"
+
+[optim]
+lr = 3e-6
+

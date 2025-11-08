@@ -1,0 +1,15 @@
+batch_size = 128
+rollouts_per_example = 16
+seq_len = 2048
+max_steps = 1000
+mask_truncated_completions = false
+
+[model]
+name = "Qwen/Qwen3-0.6B"
+
+[sampling]
+max_tokens = 2048
+
+[[env]]
+id = "harleycooper/dakota1890"
+
