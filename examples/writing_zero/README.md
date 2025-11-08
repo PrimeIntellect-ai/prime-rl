@@ -114,18 +114,18 @@ Now that the codebase is ready, we need to run two inferences, one for the model
 
 **GenRM**:
 ```bash
-uv run inference @ examples/writing_zero/BRPO/env_infer.toml
+uv run inference @ examples/writing_zero/BRPO/rl/env_infer.toml
 ```
 **Model** to be trained:
 ```bash
-uv run inference @ examples/writing_zero/BRPO/infer.toml
+uv run inference @ examples/writing_zero/BRPO/rl/infer.toml
 ```
 
 Then we are ready for the actual training: 
 ```bash
 uv run rl \
-  --trainer @ examples/writing_zero/BRPO/train.toml \
-  --orchestrator @ examples/writing_zero/BRPO/orch.toml \
+  --trainer @ examples/writing_zero/BRPO/rl/train.toml \
+  --orchestrator @ examples/writing_zero/BRPO/rl/orch.toml \
   --wandb.project .... \
   --wandb.name ....
 ```
