@@ -150,7 +150,7 @@ def prepare_batch(
         prepare_micro_batch_packing(micro_batch, max_seq_len, temperature) for micro_batch in micro_batches_list
     ]
 
-    num_padding_batch = num_train_workers - len(micro_batches) % num_train_workers
+    num_padding_batch = -len(micro_batches) % num_train_workers
 
     # because of fsdp we need to make sure that each data ran has the same number of micro batches otherwise training will hang.
     # We create fake micro batches to fill the gap with real data but zero advantages, they would not contribute to the loss.
