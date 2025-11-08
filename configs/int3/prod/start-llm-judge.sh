@@ -1,0 +1,1 @@
+sbatch --nodelist=ltc-idc3-hgx8-h200-65 configs/int3/prod/llm-judge.sh

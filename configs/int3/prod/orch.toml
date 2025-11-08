@@ -12,12 +12,12 @@ probabilities = [0.6, 0.4]
 
 [[env]]
 id = "i3-math"
-args = {min_avg_reward = 0.0, max_avg_reward = 0.874}
+args = { min_avg_reward = 0.0, max_avg_reward = 0.874, judge_model = "opencompass/CompassVerifier-7B", judge_base_url = "http://ltc-idc3-hgx8-h200-65:8000/v1" }
 name = "math"
 
 [[env]]
 id = "i3-code"
-args = {pool_size = 1024}
+args = { pool_size = 1024 }
 
 [sampling]
 temperature = 1.05
