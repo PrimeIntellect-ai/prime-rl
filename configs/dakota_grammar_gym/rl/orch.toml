@@ -3,6 +3,7 @@ rollouts_per_example = 16
 seq_len = 2048
 max_steps = 1000
 mask_truncated_completions = false
+zero_truncated_completions = true
 
 [model]
 name = "Qwen/Qwen3-0.6B"
@@ -12,4 +13,12 @@ max_tokens = 2048
 
 [[env]]
 id = "harleycooper/dakota1890"
+
+[wandb]
+project = "dakota-grammar-gym"
+name = "dakota-v12-1000steps-orchestrator"
+
+[ckpt]
+interval = 10
+keep = 3
 

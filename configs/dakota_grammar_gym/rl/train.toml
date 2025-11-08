@@ -6,3 +6,14 @@ name = "Qwen/Qwen3-0.6B"
 [optim]
 lr = 3e-6
 
+[wandb]
+project = "dakota-grammar-gym"
+name = "dakota-v12-1000steps-trainer"
+
+[ckpt]
+interval = 10
+keep = 3
+
+[weights]
+interval = 10
+

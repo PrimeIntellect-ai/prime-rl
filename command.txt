@@ -1,0 +1,9 @@
+ssh -i C:\Users\chris\.ssh\prime_rl_key root@65.108.33.109 -p 1234
+
+
+
+Run this in your SSH session:
+cd /workspace/prime-rltail -f outputs/dakota-v12-1000steps/logs/orchestrator.stdout
+This streams the orchestrator logs and shows steps as they complete.
+Alternative options:
+# If orchestrator.stdout doesn't exist, try the log file:tail -f outputs/dakota-v12-1000steps/logs/orchestrator.log# Or follow both files:tail -f outputs/dakota-v12-1000steps/logs/orchestrator.*# Or filter for just SUCCESS lines:tail -f outputs/dakota-v12-1000steps/logs/orchestrator.stdout | grep --line-buffered "SUCCESS"# Or see last 50 lines and then follow:tail -50 outputs/dakota-v12-1000steps/logs/orchestrator.stdout && tail -f outputs/dakota-v12-1000steps/logs/orchestrator.stdout
