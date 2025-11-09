@@ -37,6 +37,15 @@ wheels = [
 ]
 
 [[package]]
+name = "aime2025"
+version = "0.1.13"
+source = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Faime2025&rev=62c356d#62c356d82ed14f5dac92de1b19be474736dc8f73" }
+dependencies = [
+    { name = "math-verify" },
+    { name = "verifiers" },
+]
+
+[[package]]
 name = "aiofiles"
 version = "25.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -917,6 +926,45 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/3c/6b/d2234ceb0842fb36345e0c36290662f30429cfca3e9726e705f6f079e7ee/huggingface_hub-0.35.0rc0.tar.gz", hash = "sha256:1a8d599a28f8071d45e82f94b5e3437880afda153934198b91ce2d7eea724722", size = 456850, upload-time = "2025-07-24T14:02:10.538Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e4/56/4d882ae1577879616e620bc5a4c20c05bd8e4a2367ca630331c48b3193ed/huggingface_hub-0.35.0rc0-py3-none-any.whl", hash = "sha256:812de58926a5ff57b1a1393fff26f26ea8e5aa9de126da62607094018d811296", size = 558670, upload-time = "2025-07-24T14:02:08.744Z" },
+]
+
+[[package]]
+name = "i3-code"
+version = "0.1.0"
+source = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fi3_code&rev=62c356d#62c356d82ed14f5dac92de1b19be474736dc8f73" }
+dependencies = [
+    { name = "datasets" },
+    { name = "prime-sandboxes" },
+    { name = "verifiers" },
+]
+
+[[package]]
+name = "i3-logic"
+version = "0.1.0"
+source = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fi3_logic&rev=62c356d#62c356d82ed14f5dac92de1b19be474736dc8f73" }
+dependencies = [
+    { name = "markdown" },
+    { name = "math-verify" },
+    { name = "sympy" },
+    { name = "verifiers" },
+]
+
+[[package]]
+name = "i3-math"
+version = "0.1.0"
+source = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fi3_math&rev=62c356d#62c356d82ed14f5dac92de1b19be474736dc8f73" }
+dependencies = [
+    { name = "math-verify" },
+    { name = "verifiers" },
+]
+
+[[package]]
+name = "i3-science"
+version = "0.1.0"
+source = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fi3_science&rev=62c356d#62c356d82ed14f5dac92de1b19be474736dc8f73" }
+dependencies = [
+    { name = "math-verify" },
+    { name = "verifiers" },
 ]
 
 [[package]]
@@ -2135,12 +2183,17 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "accelerate" },
+    { name = "aime2025" },
     { name = "beartype" },
     { name = "blobfile" },
     { name = "cydifflib" },
     { name = "datasets" },
     { name = "dion" },
     { name = "flash-attn" },
+    { name = "i3-code" },
+    { name = "i3-logic" },
+    { name = "i3-math" },
+    { name = "i3-science" },
     { name = "jaxtyping" },
     { name = "liger-kernel" },
     { name = "loguru" },
@@ -2181,12 +2234,17 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "accelerate", specifier = ">=1.10.1" },
+    { name = "aime2025", git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Faime2025&rev=62c356d" },
     { name = "beartype", specifier = ">=0.21.0" },
     { name = "blobfile", specifier = ">=3.0.0" },
     { name = "cydifflib", specifier = ">=1.2.0" },
     { name = "datasets", specifier = ">=4.0.0" },
     { name = "dion", git = "https://github.com/samsja/dion.git?rev=main" },
     { name = "flash-attn", specifier = ">=2.8.3" },
+    { name = "i3-code", git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fi3_code&rev=62c356d" },
+    { name = "i3-logic", git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fi3_logic&rev=62c356d" },
+    { name = "i3-math", git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fi3_math&rev=62c356d" },
+    { name = "i3-science", git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fi3_science&rev=62c356d" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "liger-kernel", specifier = ">=0.5.10" },
     { name = "loguru", specifier = ">=0.7.3" },
@@ -2227,7 +2285,7 @@ dev = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.2.2"
+version = "0.2.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -2235,7 +2293,7 @@ dependencies = [
     { name = "pydantic" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/82/a7/a142b9ac2b691ba1ac0d9b68da66da37be9b10a3c6dbc0a9b82e87e62352/prime_sandboxes-0.2.2-py3-none-any.whl", hash = "sha256:7d59ae22bfb6cf3ef1bef062a66778c5597b29a08141d91d07a35985907cb985", size = 16532, upload-time = "2025-11-07T03:34:23.459Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/c1/497242b9a532d6b9bfa9110b7906e0959739280016e6d4ba4cc8711d55e0/prime_sandboxes-0.2.3-py3-none-any.whl", hash = "sha256:7c7148b7df5c59701e7d2e8bf9f5a0c71365940cb2548547ee2bbba0010aac42", size = 16623, upload-time = "2025-11-07T21:20:06.148Z" },
 ]
 
 [[package]]

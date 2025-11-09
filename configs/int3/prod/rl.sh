@@ -74,9 +74,7 @@ source .env
 source .venv/bin/activate
 
 # Install environment as local package
-uv pip install -e /shared/prime-environments/environments/i3_math
-uv pip install -e /shared/prime-environments/environments/i3_code
-prime env install primeintellect/aime2025
+GIT_LFS_SKIP_SMUDGE=1 uv sync
 
 # Run RL
 srun bash -c '
@@ -86,10 +84,10 @@ srun bash -c '
     source .venv/bin/activate
 
     # Disable sync to avoid conflicts with lockfile
-    export UV_NO_SYNC=1
 
     # Higher ulimit
     ulimit -n 65536
+    export GIT_LFS_SKIP_SMUDGE=1
 
     # Infiniband setup
     IB_HCA=$(ibv_devinfo | sed -n -e '/hca_id/p' -e '/link_layer:/p' | grep -B1 InfiniBand | grep hca_id | sed -e 's/^hca_id://g' | tr -d '[[:blank:]]' |paste -sd,)
