@@ -10,7 +10,7 @@
 #SBATCH --error=/shared/logs/job_%j.log
 
 # Configs
-export CKPT_STEP=${CKPT_STEP:-60}
+export CKPT_STEP=-1
 export TOOL_CALL_PARSER=${TOOL_CALL_PARSER:-"qwen3_coder"}
 
 export NUM_TRAIN_NODES=${NUM_TRAIN_NODES:-16}
