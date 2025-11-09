@@ -952,7 +952,7 @@ dependencies = [
 [[package]]
 name = "i3-math"
 version = "0.1.0"
-source = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fi3_math&rev=62c356d#62c356d82ed14f5dac92de1b19be474736dc8f73" }
+source = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fi3_math&rev=2b8a1164439fba5645212102d1a62a69900719de#2b8a1164439fba5645212102d1a62a69900719de" }
 dependencies = [
     { name = "math-verify" },
     { name = "verifiers" },
@@ -2243,7 +2243,7 @@ requires-dist = [
     { name = "flash-attn", specifier = ">=2.8.3" },
     { name = "i3-code", git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fi3_code&rev=62c356d" },
     { name = "i3-logic", git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fi3_logic&rev=62c356d" },
-    { name = "i3-math", git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fi3_math&rev=62c356d" },
+    { name = "i3-math", git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fi3_math&rev=2b8a1164439fba5645212102d1a62a69900719de" },
     { name = "i3-science", git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fi3_science&rev=62c356d" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "liger-kernel", specifier = ">=0.5.10" },
