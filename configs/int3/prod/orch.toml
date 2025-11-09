@@ -43,7 +43,7 @@ id = "aime2025"
 rollouts_per_example = 16
 
 [ckpt]
-interval = 20
+interval = 30
 keep = 5
 
 [wandb]
