@@ -80,7 +80,7 @@ def test_buffer_init_with_difficulty(difficulty_dataset):
 
 def test_buffer_sample_problems_default(dataset):
     buffer = Buffer(dataset, BufferConfig())
-    sampled_problems = buffer.sample_problems(2)
+    sampled_problems, stats = buffer.sample_problems(2)
     assert len(sampled_problems) == 2
     # All problems start as "normal" difficulty, so we should get normal problems
     assert all("id" in p for p in sampled_problems)
@@ -91,7 +91,7 @@ def test_buffer_sample_problems_mix(difficulty_dataset):
         difficulty_dataset,
         BufferConfig(easy_fraction=0.5, hard_fraction=0.5, from_scratch=False),
     )
-    sampled_problems = buffer.sample_problems(3)
+    sampled_problems, stats = buffer.sample_problems(3)
     assert len(sampled_problems) == 3
     # Should have easy, normal, and hard problems
     problem_ids = [p["id"] for p in sampled_problems]
@@ -103,7 +103,7 @@ def test_buffer_sample_problems_only_easy(difficulty_dataset):
         difficulty_dataset,
         BufferConfig(easy_fraction=1.0, hard_fraction=0.0, from_scratch=False),
     )
-    sampled_problems = buffer.sample_problems(2)
+    sampled_problems, stats = buffer.sample_problems(2)
     assert len(sampled_problems) == 2
     problem_ids = [p["id"] for p in sampled_problems]
     # Should only sample from easy problems (ids 0 and 1)
@@ -115,21 +115,24 @@ def test_buffer_sample_problems_only_hard(difficulty_dataset):
         difficulty_dataset,
         BufferConfig(easy_fraction=0.0, hard_fraction=1.0, from_scratch=False),
     )
-    sampled_problems = buffer.sample_problems(2)
+    sampled_problems, stats = buffer.sample_problems(2)
     assert len(sampled_problems) == 2
     problem_ids = [p["id"] for p in sampled_problems]
     # Should only sample from hard problems (id 4)
-    # Note: only 1 hard problem exists, so we'll get warnings but should still work
-    assert all(pid == 4 for pid in problem_ids) or len(problem_ids) == 1
+    # Note: only 1 hard problem exists, so we'll get warnings and fall back to normal
+    # Should have 1 hard problem (id 4) and 1 normal problem
+    assert 4 in problem_ids
+    assert stats["hard"] == 1
+    assert stats["normal"] == 1
 
 
 def test_buffer_sample_problems_multiple_epochs(dataset):
     buffer = Buffer(dataset, BufferConfig())
-    sampled_problems = buffer.sample_problems(2)
+    sampled_problems, stats = buffer.sample_problems(2)
     assert len(sampled_problems) == 2
-    sampled_problems = buffer.sample_problems(2)
+    sampled_problems, stats = buffer.sample_problems(2)
     assert len(sampled_problems) == 2
-    sampled_problems = buffer.sample_problems(2)
+    sampled_problems, stats = buffer.sample_problems(2)
     assert len(sampled_problems) == 2
 
 
@@ -138,7 +141,7 @@ def test_buffer_sample_rollouts(dataset, make_rollouts):
     rewards = [0.5, 0.5, 0.5, 0.5, 0.5]
     rollouts = make_rollouts(dataset, rewards=rewards)
     buffer.update(rollouts)
-    sampled_rollouts = buffer.sample_rollouts(5)
+    sampled_rollouts, stats = buffer.sample_rollouts(5)
     # All rewards are 0.5, which is within default range [0.01, 0.99]
     assert len(sampled_rollouts) == 10
     assert all(metadata["reward"] == reward for metadata, reward in zip(buffer.metadata.values(), rewards))
@@ -149,7 +152,7 @@ def test_buffer_sample_rollouts_outside_range(dataset, make_rollouts):
     rewards = [0.0, 0.0, 0.0, 1.0, 1.0]
     rollouts = make_rollouts(dataset, rewards=rewards)
     buffer.update(rollouts)
-    sampled_rollouts = buffer.sample_rollouts(5)
+    sampled_rollouts, stats = buffer.sample_rollouts(5)
     # All rewards are outside range [0.1, 0.0] (invalid range, but tests the filtering)
     assert len(sampled_rollouts) == 0
     assert all(metadata["reward"] == reward for metadata, reward in zip(buffer.metadata.values(), rewards))
@@ -160,7 +163,7 @@ def test_buffer_sample_rollouts_within_range(dataset, make_rollouts):
     rewards = [0.2, 0.4, 0.5, 0.6, 0.8]
     rollouts = make_rollouts(dataset, rewards=rewards)
     buffer.update(rollouts)
-    sampled_rollouts = buffer.sample_rollouts(5)
+    sampled_rollouts, stats = buffer.sample_rollouts(5)
     # Only rewards 0.4, 0.5, 0.6 are within range [0.3, 0.7]
     # So we should get 3 problems worth of rollouts = 6 rollouts
     assert len(sampled_rollouts) == 6
@@ -168,7 +171,7 @@ def test_buffer_sample_rollouts_within_range(dataset, make_rollouts):
 
 
 def test_buffer_update_difficulty(difficulty_dataset, make_rollouts):
-    buffer = Buffer(difficulty_dataset, BufferConfig(from_scratch=False))
+    buffer = Buffer(difficulty_dataset, BufferConfig(from_scratch=False, easy_border=0.8, hard_border=0.2))
     # Update with high rewards - should move to easy
     rollouts = make_rollouts(difficulty_dataset, rewards=[0.9, 0.9, 0.9, 0.9, 0.9])
     buffer.update(rollouts)
@@ -177,7 +180,7 @@ def test_buffer_update_difficulty(difficulty_dataset, make_rollouts):
 
 
 def test_buffer_update_difficulty_hard(difficulty_dataset, make_rollouts):
-    buffer = Buffer(difficulty_dataset, BufferConfig(from_scratch=False))
+    buffer = Buffer(difficulty_dataset, BufferConfig(from_scratch=False, easy_border=0.8, hard_border=0.2))
     # Update with low rewards - should move to hard
     rollouts = make_rollouts(difficulty_dataset, rewards=[0.1, 0.1, 0.1, 0.1, 0.1])
     buffer.update(rollouts)
@@ -186,7 +189,7 @@ def test_buffer_update_difficulty_hard(difficulty_dataset, make_rollouts):
 
 
 def test_buffer_update_difficulty_normal(difficulty_dataset, make_rollouts):
-    buffer = Buffer(difficulty_dataset, BufferConfig(from_scratch=False))
+    buffer = Buffer(difficulty_dataset, BufferConfig(from_scratch=False, easy_border=0.8, hard_border=0.2))
     # Update with medium rewards - should stay/move to normal
     rollouts = make_rollouts(difficulty_dataset, rewards=[0.5, 0.5, 0.5, 0.5, 0.5])
     buffer.update(rollouts)

@@ -258,9 +258,14 @@ async def orchestrate(config: OrchestratorConfig):
         problem_requests, completion_requests, calls_to_generate = 0, 0, 0
         problems_per_batch = config.batch_size // config.rollouts_per_example
         problems_to_sample = problems_per_batch
+        # Accumulate buffer sampling statistics
+        buffer_stats = {"easy": 0, "normal": 0, "hard": 0, "too_hard": 0, "too_easy": 0, "rollouts_sampled": 0}
         while True:
             # Get the batch
-            problems = buffer.sample_problems(problems_to_sample)
+            problems, problem_stats = buffer.sample_problems(problems_to_sample)
+            buffer_stats["easy"] += problem_stats["easy"]
+            buffer_stats["normal"] += problem_stats["normal"]
+            buffer_stats["hard"] += problem_stats["hard"]
 
             # Generate completions + rewards with verifiers
             generate_completions_start_time = time.time()
@@ -312,7 +317,12 @@ async def orchestrate(config: OrchestratorConfig):
                 is_truncated,
             )
             buffer.update(rollouts)
-            accepted_rollouts.extend(buffer.sample_rollouts(problems_to_sample))
+            rollouts_sampled, rollout_stats = buffer.sample_rollouts(problems_to_sample)
+            accepted_rollouts.extend(rollouts_sampled)
+            buffer_stats["too_hard"] += rollout_stats["too_hard"]
+            buffer_stats["too_easy"] += rollout_stats["too_easy"]
+            # Track number of problems we successfully sampled rollouts from
+            buffer_stats["rollouts_sampled"] += len(rollouts_sampled) // config.rollouts_per_example
 
             # Break if we have enough rollouts to fill the batch
             if len(accepted_rollouts) >= config.batch_size:
@@ -401,6 +411,14 @@ async def orchestrate(config: OrchestratorConfig):
         per_env_count = results_df.task.value_counts().to_dict() if num_envs_in_batch > 1 else None
 
         step_time = time.time() - step_start_time
+
+        total_problems_sampled = buffer_stats["easy"] + buffer_stats["normal"] + buffer_stats["hard"]
+        total_problems_considered = buffer_stats["rollouts_sampled"] + buffer_stats["too_hard"] + buffer_stats["too_easy"]
+        
+        # Get metadata difficulty distribution
+        metadata_distribution = buffer.get_metadata_difficulty_distribution()
+        total_metadata_problems = metadata_distribution["easy"] + metadata_distribution["normal"] + metadata_distribution["hard"]
+
         to_log = {
             # Progress metrics
             "progress/tokens": num_tokens,
@@ -434,6 +452,17 @@ async def orchestrate(config: OrchestratorConfig):
             "batch/solve_none": solve_none,
             "batch/solve_all": solve_all,
             "batch/effective_batch_size": effective_batch_size,
+            # Buffer sampling metrics
+            "buffer/normal_sampled": buffer_stats["normal"] / total_problems_sampled,
+            "buffer/easy_sampled": buffer_stats["easy"] / total_problems_sampled,
+            "buffer/hard_sampled": buffer_stats["hard"] / total_problems_sampled,
+            "buffer/normal_rollouts": buffer_stats["rollouts_sampled"] / total_problems_considered,
+            "buffer/easy_rollouts": buffer_stats["too_easy"] / total_problems_considered,
+            "buffer/hard_rollouts": buffer_stats["too_hard"] / total_problems_considered,
+            # Metadata difficulty distribution
+            "buffer/easy_pool": metadata_distribution["easy"] / total_metadata_problems,
+            "buffer/normal_pool": metadata_distribution["normal"] / total_metadata_problems,
+            "buffer/hard_pool": metadata_distribution["hard"] / total_metadata_problems,
             # Env metrics
             **{f"metrics/{metric}": metrics_df[metric].mean() for metric in metrics_df.columns},
             # Time metrics
