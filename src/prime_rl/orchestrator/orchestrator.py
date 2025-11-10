@@ -413,11 +413,15 @@ async def orchestrate(config: OrchestratorConfig):
         step_time = time.time() - step_start_time
 
         total_problems_sampled = buffer_stats["easy"] + buffer_stats["normal"] + buffer_stats["hard"]
-        total_problems_considered = buffer_stats["rollouts_sampled"] + buffer_stats["too_hard"] + buffer_stats["too_easy"]
-        
+        total_problems_considered = (
+            buffer_stats["rollouts_sampled"] + buffer_stats["too_hard"] + buffer_stats["too_easy"]
+        )
+
         # Get metadata difficulty distribution
         metadata_distribution = buffer.get_metadata_difficulty_distribution()
-        total_metadata_problems = metadata_distribution["easy"] + metadata_distribution["normal"] + metadata_distribution["hard"]
+        total_metadata_problems = (
+            metadata_distribution["easy"] + metadata_distribution["normal"] + metadata_distribution["hard"]
+        )
 
         to_log = {
             # Progress metrics

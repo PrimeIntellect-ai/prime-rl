@@ -57,8 +57,12 @@ class Buffer:
         """Saves the buffer state to a single HF dataset."""
         dataset = self.dataset.remove_columns([c for c in ("metadata", "rollouts") if c in self.dataset.column_names])
         rollout_buffer = {pid: self.rollout_buffer.get(pid, []) for pid in self.problem_ids}
-        dataset = dataset.add_column("metadata", [json.dumps(self.metadata[pid]) for pid in self.problem_ids], new_fingerprint="metadata-ckpt")
-        dataset = dataset.add_column("rollouts", [json.dumps(rollout_buffer[pid]) for pid in self.problem_ids], new_fingerprint="rollouts-ckpt")
+        dataset = dataset.add_column(
+            "metadata", [json.dumps(self.metadata[pid]) for pid in self.problem_ids], new_fingerprint="metadata-ckpt"
+        )
+        dataset = dataset.add_column(
+            "rollouts", [json.dumps(rollout_buffer[pid]) for pid in self.problem_ids], new_fingerprint="rollouts-ckpt"
+        )
         path.parent.mkdir(parents=True, exist_ok=True)
         dataset.save_to_disk(path)
 
@@ -82,7 +86,9 @@ class Buffer:
         def sample_from_pool(pool_ids: list[int], target: int, pool_name: str) -> tuple[list[int], int]:
             sampled = min(target, len(pool_ids))
             if sampled < target:
-                self.logger.warning(f"Only {sampled} {pool_name} problem(s) available, sampling {target - sampled} normal problem(s) more")
+                self.logger.warning(
+                    f"Only {sampled} {pool_name} problem(s) available, sampling {target - sampled} normal problem(s) more"
+                )
             return (random.sample(pool_ids, sampled) if sampled > 0 else [], target - sampled)
 
         sampled_easy, deficit = sample_from_pool(by_difficulty["easy"], n_easy, "easy")
@@ -106,7 +112,9 @@ class Buffer:
         stats = Counter()
         for problem_id, problem_rollouts in rollouts_by_problem_id.items():
             reward = sum(r["reward"] for r in problem_rollouts) / len(problem_rollouts)
-            new_difficulty = "easy" if reward > self.config.easy_border else "hard" if reward < self.config.hard_border else "normal"
+            new_difficulty = (
+                "easy" if reward > self.config.easy_border else "hard" if reward < self.config.hard_border else "normal"
+            )
             old_difficulty = self.metadata[problem_id].get("difficulty", "normal")
             if old_difficulty != new_difficulty:
                 stats[(old_difficulty, new_difficulty)] += 1

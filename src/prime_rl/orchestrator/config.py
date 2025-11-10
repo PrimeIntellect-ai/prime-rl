@@ -282,6 +282,7 @@ class CheckpointConfig(BaseConfig):
 
 class BufferConfig(BaseModel):
     """Configures the buffer for the orchestrator."""
+
     from_scratch: Annotated[
         bool,
         Field(
