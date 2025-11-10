@@ -6,8 +6,8 @@ import pytest
 from datasets import Dataset
 
 from prime_rl.orchestrator.buffer import Buffer
-from prime_rl.utils.vf import Rollout
 from prime_rl.orchestrator.config import BufferConfig
+from prime_rl.utils.vf import Rollout
 
 
 @pytest.fixture(autouse=True)
