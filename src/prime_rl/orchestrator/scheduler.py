@@ -1,6 +1,7 @@
 import asyncio
 import time
 from itertools import cycle
+from typing import NamedTuple
 
 from httpx import AsyncClient
 from openai import AsyncOpenAI
@@ -17,6 +18,13 @@ from prime_rl.utils.client import update_weights
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import get_latest_ckpt_step, get_step_path, get_weights_dir, sync_wait_for_path
 from prime_rl.utils.vf import generate_group, make_rollouts
+
+
+class InflightRolloutInfo(NamedTuple):
+    """Metadata for an in-flight group rollout request."""
+
+    off_policy_steps: int
+    client: AsyncOpenAI
 
 
 class Scheduler:
@@ -54,7 +62,7 @@ class Scheduler:
         self.max_async_level = max_async_level
         self.max_off_policy_steps = max_off_policy_steps
         self.strict_async_level = strict_async_level
-        self.inflight_group_rollouts: dict[asyncio.Task, tuple[int, AsyncOpenAI]] = {}
+        self.inflight_group_rollouts: dict[asyncio.Task, InflightRolloutInfo] = {}
         self.cycle_clients = cycle(self.clients)
         self.step, self.ckpt_step = 0, 0
         self.update_weights_time, self.wait_for_ckpt_time = 0, 0
@@ -119,7 +127,7 @@ class Scheduler:
             )
         )
         await asyncio.sleep(0)
-        self.inflight_group_rollouts[group_rollout_request] = (0, client)
+        self.inflight_group_rollouts[group_rollout_request] = InflightRolloutInfo(0, client)
 
     async def update_policy_loop(self):
         """Continuously checks for new policy checkpoints."""
@@ -172,7 +180,9 @@ class Scheduler:
 
             # Update retention steps for remaining tasks
             for task, off_policy_steps, client in tasks_to_update:
-                self.inflight_group_rollouts[task] = (off_policy_steps, client)
+                self.inflight_group_rollouts[task] = InflightRolloutInfo(
+                    off_policy_steps=off_policy_steps, client=client
+                )
             if len(tasks_to_remove) > 0:
                 self.logger.warning(f"Cancelled and re-scheduled {len(tasks_to_remove)} old rollout requests.")
 
