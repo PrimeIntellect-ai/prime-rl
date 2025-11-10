@@ -39,11 +39,13 @@ dependencies = [
     "prime-evals>=0.1.3",
     "prime-sandboxes>=0.2.2",
     "flash-attn>=2.8.3",
-    "aime2025",
     "i3-math",
     "i3-code",
     "i3-science",
     "i3-logic",
+    "livecodebench",
+    "aime2025",
+    "hle",
 ]
 
 [project.scripts]
@@ -74,12 +76,13 @@ reverse-text = { index = "primeintellect" }
 verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "6429ed7" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "main" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e43694bbfeff5d6ad8ac738c067bb90d41" }
-
-aime2025 = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git", rev = "62c356d", subdirectory = "environments/aime2025" }
-i3-math = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git", rev = "2b8a1164439fba5645212102d1a62a69900719de", subdirectory = "environments/i3_math" }
-i3-code = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git", rev = "62c356d", subdirectory = "environments/i3_code" }
-i3-science = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git", rev = "62c356d", subdirectory = "environments/i3_science" }
-i3-logic = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git", rev = "62c356d", subdirectory = "environments/i3_logic" }
+i3-math = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git", rev = "9a6a101", subdirectory = "environments/i3_math" }
+i3-code = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git", rev = "9a6a101", subdirectory = "environments/i3_code" }
+i3-science = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git", rev = "9a6a101", subdirectory = "environments/i3_science" }
+i3-logic = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git", rev = "9a6a101", subdirectory = "environments/i3_logic" }
+aime2025 = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git", rev = "e3f7fab", subdirectory = "environments/aime2025" }
+livecodebench = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git", rev = "e3f7fab", subdirectory = "environments/livecodebench" }
+hle = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git", rev = "e3f7fab", subdirectory = "environments/hle" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]

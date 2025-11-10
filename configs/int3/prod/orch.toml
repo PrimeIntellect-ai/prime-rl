@@ -19,6 +19,16 @@ name = "math"
 id = "i3-code"
 args = { pool_size = 512 }
 
+[[env]]
+id = "i3-science"
+args = { min_avg_reward = 0.0, max_avg_reward = 0.874, judge_model = "opencompass/CompassVerifier-7B", judge_base_url = "http://ltc-idc3-hgx8-h200-65:8000/v1" }
+name = "science"
+
+[[env]]
+id = "i3-logic"
+args = { min_avg_reward = 0.0, max_avg_reward = 0.874 }
+name = "logic"
+
 [sampling]
 temperature = 1.05
 max_tokens = 51200
@@ -40,7 +50,15 @@ interval = 30
 
 [[eval.env]]
 id = "aime2025"
-rollouts_per_example = 16
+rollouts_per_example = 32 # 30 examples * 32 rollouts/example = 960 rollouts
+
+[[eval.env]]
+id = "livecodebench"
+rollouts_per_example = 2 # 541 examples * 2 rollouts/example = 1082 rollouts
+
+[[eval.env]]
+id = "hle"
+rollouts_per_example = 1 # 2158 examples * 1 rollouts/example = 2158 rollouts
 
 [ckpt]
 interval = 30
@@ -49,6 +67,11 @@ keep = 5
 [wandb]
 project = "intellect-3-rl"
 name = "int3-orch"
+
+[wandb.log-extras]
+samples = true
+distributions = false
+interval = 1
 
 [log]
 level = "debug"
