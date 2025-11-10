@@ -164,7 +164,6 @@ class SimpleBuffer(Buffer):
         )
         sampled_problem_ids = random.sample(self.problem_ids, n)
         assert len(sampled_problem_ids) == n
-        self.logger.debug(f"Sampled {n} problem(s) ({sampled_problem_ids=})")
 
         # Get problems from indices
         sampled_problems = [self.problem_buffer[problem_id] for problem_id in sampled_problem_ids]
@@ -231,7 +230,6 @@ class DifficultyPoolBuffer(Buffer):
         n_easy = int(n * self.config.easy_fraction)
         n_hard = int(n * self.config.hard_fraction)
         n_normal = n - n_easy - n_hard
-        self.logger.debug(f"Sampling {n_easy=}, {n_normal=}, {n_hard=}")
 
         # Get low and high priority problem
         easy_problem_ids = [
@@ -243,9 +241,6 @@ class DifficultyPoolBuffer(Buffer):
         hard_problem_ids = [
             problem_id for problem_id, metadata in self.metadata.items() if metadata["difficulty"] == "hard"
         ]
-        self.logger.debug(
-            f"Found {len(easy_problem_ids)} easy, {len(normal_problem_ids)} normal and {len(hard_problem_ids)} hard problems"
-        )
 
         # Sample easy problems
         # Cannot sample more than the number of low priority problems available
@@ -277,9 +272,6 @@ class DifficultyPoolBuffer(Buffer):
 
         sampled_problem_ids = sampled_easy_problem_ids + sampled_normal_problem_ids + sampled_hard_problem_ids
         assert len(sampled_problem_ids) == n
-        self.logger.debug(
-            f"Sampled {n} problem(s) (easy={len(sampled_easy_problem_ids)}, normal={len(sampled_normal_problem_ids)}, hard={len(sampled_hard_problem_ids)}, {sampled_problem_ids=})"
-        )
 
         # Sample problems
         sampled_problems = [self.problem_buffer[problem_id] for problem_id in sampled_problem_ids]
@@ -310,8 +302,6 @@ class DifficultyPoolBuffer(Buffer):
             old_difficulty = self.metadata[problem_id]["difficulty"]
             stats[(old_difficulty, new_difficulty)] += 1
             self.metadata[problem_id].update({"reward": reward, "difficulty": new_difficulty})
-        stats_str = ", ".join([f"{v} problem(s) moved from `{k[0]}` to `{k[1]}`" for k, v in stats.items()])
-        self.logger.debug(f"Updated difficulty information ({stats_str})")
 
     def sample_rollouts(self, n: int) -> list[Rollout]:
         # Take the first n rollouts from the rollout buffer
@@ -350,7 +340,6 @@ class OnlineDifficultyBuffer(Buffer):
             f"There should be at least {n} problem(s) in the buffer, but found only {len(self.problem_ids)}"
         )
         sampled_problem_ids = random.sample(self.problem_ids, n)
-        self.logger.debug(f"Sampled {n} problem(s) ({sampled_problem_ids=})")
 
         # Sample problems
         sampled_problems = [self.problem_buffer[problem_id] for problem_id in sampled_problem_ids]
@@ -399,9 +388,6 @@ class OnlineDifficultyBuffer(Buffer):
                 self.config.min_reward or -1e9 <= self.metadata[problem_id]["reward"] <= self.config.max_reward or 1e9
                 for problem_id in sampled_problem_ids
             ]
-        )
-        self.logger.debug(
-            f"Sampled {len(sampled_problem_ids)} problem(s) within difficulty range [{self.config.min_reward}, {self.config.max_reward}] ({sampled_problem_ids=})"
         )
 
         if len(sampled_problem_ids) < n:
