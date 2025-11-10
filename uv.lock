@@ -37,6 +37,15 @@ wheels = [
 ]
 
 [[package]]
+name = "aiofiles"
+version = "25.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/41/c3/534eac40372d8ee36ef40df62ec129bee4fdb5ad9706e58a29be53b2c970/aiofiles-25.1.0.tar.gz", hash = "sha256:a8d728f0a29de45dc521f18f07297428d56992a742f0cd2701ba86e44d23d5b2", size = 46354, upload-time = "2025-10-09T20:51:04.358Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bc/8a/340a1555ae33d7354dbca4faa54948d76d89a27ceef032c8c3bc661d003e/aiofiles-25.1.0-py3-none-any.whl", hash = "sha256:abe311e527c862958650f9438e859c1fa7568a141b22abcd015e120e86a85695", size = 14668, upload-time = "2025-10-09T20:51:03.174Z" },
+]
+
+[[package]]
 name = "aiohappyeyeballs"
 version = "2.6.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2141,6 +2150,7 @@ dependencies = [
     { name = "numpy" },
     { name = "openai" },
     { name = "prime-evals" },
+    { name = "prime-sandboxes" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pylatexenc" },
@@ -2186,6 +2196,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "openai", specifier = ">=1.106.1" },
     { name = "prime-evals", specifier = ">=0.1.2" },
+    { name = "prime-sandboxes", specifier = ">=0.2.3" },
     { name = "pydantic", specifier = ">=1.10.13" },
     { name = "pydantic-settings", specifier = ">=2.10.1" },
     { name = "pylatexenc", specifier = ">=2.10" },
@@ -2197,10 +2208,10 @@ requires-dist = [
     { name = "tomli-w", specifier = ">=1.2.0" },
     { name = "torch", specifier = ">=2.8.0", index = "https://download.pytorch.org/whl/test/cu128" },
     { name = "torchdata", specifier = ">=0.11.0" },
-    { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e43694bbfeff5d6ad8ac738c067bb90d41" },
+    { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
     { name = "transformers", specifier = ">=4.56.0" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=6429ed7" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=91f436d" },
     { name = "vllm", specifier = "==0.10.2" },
     { name = "wandb", specifier = ">=0.20.1" },
 ]
@@ -2216,15 +2227,15 @@ dev = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.1.0"
+version = "0.2.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
+    { name = "aiofiles" },
     { name = "httpx" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4d/bb/f7c8b0f3dd73651b456a6e2dbb6b7154c19aa7ed699b1faacd88dd82b9fa/prime_sandboxes-0.1.0.tar.gz", hash = "sha256:99d7c0a799aba8685a9583446886eb258a579be2b741066708a9afab6737212e", size = 34581, upload-time = "2025-10-09T01:06:50.71Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e7/6b/bfaa9d100a398c227e6af790452fd818f210a2f070e62391e7648da77009/prime_sandboxes-0.1.0-py3-none-any.whl", hash = "sha256:67a408d2bc4f96d73f8266f01582ab402d566b96ad941f031d4c37bf95753767", size = 14798, upload-time = "2025-10-09T01:06:49.403Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/c1/497242b9a532d6b9bfa9110b7906e0959739280016e6d4ba4cc8711d55e0/prime_sandboxes-0.2.3-py3-none-any.whl", hash = "sha256:7c7148b7df5c59701e7d2e8bf9f5a0c71365940cb2548547ee2bbba0010aac42", size = 16623, upload-time = "2025-11-07T21:20:06.148Z" },
 ]
 
 [[package]]
@@ -3252,7 +3263,7 @@ wheels = [
 [[package]]
 name = "torchtitan"
 version = "0.1.0"
-source = { git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e43694bbfeff5d6ad8ac738c067bb90d41#a1fdd7e43694bbfeff5d6ad8ac738c067bb90d41" }
+source = { git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e#a1fdd7e43694bbfeff5d6ad8ac738c067bb90d41" }
 dependencies = [
     { name = "datasets" },
     { name = "fsspec" },
@@ -3509,8 +3520,8 @@ wheels = [
 
 [[package]]
 name = "verifiers"
-version = "0.1.7"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=6429ed7#6429ed7fb742da0a152626b7b57d6d8f537bfff9" }
+version = "0.1.7.post0"
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=91f436d#91f436d4ca36263646c432ab34e1bd0af8fa5d7d" }
 dependencies = [
     { name = "datasets" },
     { name = "jinja2" },
