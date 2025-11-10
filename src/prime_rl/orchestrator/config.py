@@ -552,13 +552,6 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = False
 
-    continuous_batching: Annotated[
-        bool,
-        Field(
-            description="Whether to use continuous batching. If True, will use continuous batching to generate rollouts.",
-        ),
-    ] = False
-
     seed: Annotated[int | None, Field(description="Random seed for the orchestrator.")] = 42
 
     @model_validator(mode="after")
