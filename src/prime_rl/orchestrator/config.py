@@ -281,8 +281,7 @@ class CheckpointConfig(BaseConfig):
 
 
 class BufferConfig(BaseModel):
-    """Base config for all buffer types."""
-
+    """Configures the buffer for the orchestrator."""
     from_scratch: Annotated[
         bool,
         Field(
@@ -297,14 +296,6 @@ class BufferConfig(BaseModel):
         ),
     ] = None
 
-
-class SimpleBufferConfig(BufferConfig):
-    type: Literal["simple"] = "simple"
-
-
-class DifficultyPoolBufferConfig(BufferConfig):
-    type: Literal["difficulty-pool"] = "difficulty-pool"
-
     easy_border: Annotated[
         float,
         Field(
@@ -312,7 +303,7 @@ class DifficultyPoolBufferConfig(BufferConfig):
             le=1,
             description="If a problem has more than `easy_border` average reward across rollouts, it will be moved to the easy pool.",
         ),
-    ] = 0.8
+    ] = 1.0
 
     hard_border: Annotated[
         float,
@@ -321,9 +312,8 @@ class DifficultyPoolBufferConfig(BufferConfig):
             le=1,
             description="If a problem has less than `hard_border` average reward across rollouts, it will be moved to the hard pool.",
         ),
-    ] = 0.2
+    ] = 0.0
 
-    # TODO: Maybe make this float | int to allow for specific numbers of easy/hard samples?
     easy_fraction: Annotated[
         float,
         Field(
@@ -331,7 +321,7 @@ class DifficultyPoolBufferConfig(BufferConfig):
             le=1,
             description="Fraction of the batch that should consist of easy samples.",
         ),
-    ] = 0.1
+    ] = 0.0
 
     hard_fraction: Annotated[
         float,
@@ -340,40 +330,21 @@ class DifficultyPoolBufferConfig(BufferConfig):
             le=1,
             description="Fraction of the batch that should consist of hard samples.",
         ),
-    ] = 0.1
-
-
-class OnlineDifficultyBufferConfig(BufferConfig):
-    type: Literal["online-difficulty"] = "online-difficulty"
+    ] = 0.0
 
     min_reward: Annotated[
         float | None,
         Field(
-            ge=0,
-            le=1,
             description="Minimum reward to include the sample in a batch.",
         ),
-    ] = 0.01
+    ] = None
 
     max_reward: Annotated[
         float | None,
         Field(
-            ge=0,
-            le=1,
             description="Maximum reward to include the sample in a batch.",
         ),
-    ] = 0.99
-
-    oversampling_factor: Annotated[
-        float,
-        Field(
-            gt=0,
-            description="Factor by which to oversample during filtering to ensure sufficient samples.",
-        ),
-    ] = 1.0
-
-
-DataBufferConfigType: TypeAlias = SimpleBufferConfig | DifficultyPoolBufferConfig | OnlineDifficultyBufferConfig
+    ] = None
 
 
 class AdvantageConfig(BaseConfig):
@@ -436,7 +407,7 @@ class OrchestratorConfig(BaseSettings):
     eval: OnlineEvalConfig | None = None
 
     # Data buffer configuration
-    buffer: Annotated[DataBufferConfigType, Field(discriminator="type")] = SimpleBufferConfig()
+    buffer: BufferConfig = Field(default_factory=BufferConfig)
 
     # The advantage configuration
     advantage: AdvantageConfig | None = AdvantageConfig()

@@ -37,8 +37,9 @@ from prime_rl.utils.client import (
     setup_evals_client,
     update_weights,
 )
-from prime_rl.orchestrator.config import OrchestratorConfig, SimpleBufferConfig
-from prime_rl.orchestrator.buffer import setup_buffer, Rollout
+from prime_rl.orchestrator.config import BufferConfig, OrchestratorConfig
+from prime_rl.orchestrator.buffer import Buffer
+from prime_rl.utils.vf import Rollout
 from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.utils.logger import setup_logger
 from prime_rl.orchestrator.advantage import compute_advantages
@@ -118,8 +119,8 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
-    buffer = setup_buffer(dataset, config.buffer)
-    val_buffer = setup_buffer(val_dataset, SimpleBufferConfig()) if val_dataset else None
+    buffer = Buffer(dataset, config.buffer)
+    val_buffer = Buffer(val_dataset, BufferConfig()) if val_dataset else None
 
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")
