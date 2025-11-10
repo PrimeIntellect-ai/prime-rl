@@ -20,13 +20,12 @@ from prime_rl.orchestrator.utils import get_train_sampling_args
 import lovely_tensors as lt
 import torch
 import verifiers as vf
-from verifiers.types import GenerateOutputs, ProcessedOutputs
+from verifiers.types import GenerateOutputs
 from transformers import AutoTokenizer
 
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
-from prime_rl.utils.vf import make_rollouts
 from prime_rl.eval.utils import run_evals
-from prime_rl.utils.vf import generate_batch
+from prime_rl.utils.vf import run_rollouts, state_to_rollout, Rollout
 from prime_rl.utils.client import (
     check_has_model,
     check_health,
@@ -38,13 +37,11 @@ from prime_rl.utils.client import (
     update_weights,
 )
 from prime_rl.orchestrator.config import OrchestratorConfig, SimpleBufferConfig
-from prime_rl.orchestrator.buffer import setup_buffer, Rollout
+from prime_rl.orchestrator.buffer import setup_buffer
 from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.utils.logger import setup_logger
-from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.utils import (
     print_benchmark,
-    parse_is_truncated_completions,
 )
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
@@ -239,20 +236,21 @@ async def orchestrate(config: OrchestratorConfig):
             logger.info(f"Running validation for step {progress.step}")
             val_problems = val_buffer.sample_problems(config.val.num_examples)
             run_val_task = asyncio.create_task(
-                generate_batch(
+                run_rollouts(
                     clients=clients,
                     env=env,
                     model_name=config.model.name,
                     problems=val_problems,
                     rollouts_per_example=config.val.rollouts_per_example,
                     sampling_args=sampling_args,
-                    semaphore=semaphore,
+                    max_concurrent=config.max_concurrent,
                     pbar_description="Generating rollouts (val)",
                 )
             )
         else:
             run_val_task = asyncio.create_task(asyncio.sleep(0))  # Dummy task
 
+        # Accumulate accepted rollouts (one per rollout), then flatten to step-level for batching
         accepted_rollouts: list[Rollout] = []
         problem_requests, completion_requests, calls_to_generate = 0, 0, 0
         problems_per_batch = config.batch_size // config.rollouts_per_example
@@ -263,14 +261,14 @@ async def orchestrate(config: OrchestratorConfig):
 
             # Generate completions + rewards with verifiers
             generate_completions_start_time = time.time()
-            generate_outputs: GenerateOutputs = await generate_batch(
+            generated_states = await run_rollouts(
                 clients=clients,
                 env=env,
                 model_name=config.model.name,
                 problems=problems,
                 rollouts_per_example=config.rollouts_per_example,
                 sampling_args=sampling_args,
-                semaphore=semaphore,
+                max_concurrent=config.max_concurrent,
                 pbar_description="Generating rollouts (train)",
             )
             generate_completions_time = time.time() - generate_completions_start_time
@@ -278,39 +276,9 @@ async def orchestrate(config: OrchestratorConfig):
             completion_requests += problems_to_sample * config.rollouts_per_example
             calls_to_generate += 1
 
-            processed_outputs: ProcessedOutputs = env.process_env_results_vllm(
-                prompts=generate_outputs.prompt,
-                completions=generate_outputs.completion,
-                states=generate_outputs.state,
-                rewards=generate_outputs.reward,
-                processing_class=tokenizer,
-                max_seq_len=config.seq_len,
-                mask_env_responses=config.mask_env_responses,
-                zero_truncated_completions=config.zero_truncated_completions,
-                mask_truncated_completions=config.mask_truncated_completions,
-            )
-
-            # Compute advantages
-            advantages = compute_advantages(
-                rewards=processed_outputs.rewards,
-                completion_lengths=list(map(len, processed_outputs.completion_ids)),
-                samples_per_problem=config.rollouts_per_example,
-                advantage_config=config.advantage,
-            )
-
-            # Parse whether the completions were truncated
-            responses = [state["responses"] for state in generate_outputs.state]
-            is_truncated = parse_is_truncated_completions(responses=responses)
-
-            # Update pool
-            rollouts = make_rollouts(
-                generate_outputs,
-                processed_outputs,
-                [problem["id"] for problem in problems for _ in range(config.rollouts_per_example)],
-                advantages,
-                is_truncated,
-            )
-            buffer.update(rollouts)
+            # Convert to internal rollout objects, update buffer and sample for trainer
+            new_rollouts = [state_to_rollout(s) for s in generated_states]
+            buffer.update(new_rollouts)
             accepted_rollouts.extend(buffer.sample_rollouts(problems_to_sample))
 
             # Break if we have enough rollouts to fill the batch
@@ -323,8 +291,25 @@ async def orchestrate(config: OrchestratorConfig):
             problems_to_sample = problems_per_batch - problems_sampled
 
         # Write serialized batch to disk for trainer workers to consume
+        # Flatten trajectory steps for batching (assert step-level tokens and advantages)
+        steps_for_batch = []
+        for r in accepted_rollouts:
+            for tokens, adv in zip(r["step_tokens"], r["step_advantages"]):
+                steps_for_batch.append({"tokens": tokens, "advantage": adv})
+
+        # Advantage policy: default uses direct per-step advantages from verifiers.
+        # Other legacy modes are not implemented yet under trajectory-based rollouts.
+        adv_cfg = config.advantage
+        if adv_cfg and (
+            adv_cfg.std_norm is not None or adv_cfg.length_weighted_mean or adv_cfg.leave_one_out or adv_cfg.neg_clipped
+        ):
+            raise NotImplementedError(
+                "Non-direct AdvantageConfig options are not implemented with trajectory-based rollouts. "
+                "Use the default AdvantageConfig (all options unset/False) to consume per-step advantages directly."
+            )
+
         all_data_ranks_batches = prepare_batch(
-            rollouts=accepted_rollouts,
+            steps=steps_for_batch,
             temperature=config.sampling.temperature,
             tokenizer=tokenizer,
             num_train_workers=config.num_train_workers,
@@ -342,46 +327,61 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Process validation results
         await run_val_task
-        val_outputs = run_val_task.result()
-        val_results_df = (
-            pd.DataFrame(
+        val_states = run_val_task.result()
+        val_results_df = None
+        if val_states is not None:
+            val_results_df = pd.DataFrame(
                 {
-                    "example_id": val_outputs.example_id,
-                    "task": val_outputs.task,
-                    "reward": val_outputs.reward,
+                    "example_id": [int(s.get("example_id", 0)) for s in val_states],
+                    "task": [s.get("task", "default") for s in val_states],
+                    "reward": [float(s.get("reward", 0.0)) for s in val_states],
                 }
             )
-            if val_outputs is not None
-            else None
-        )
 
         # Process evaluation results
         await run_eval_task
         run_eval_task.result()
 
         # Gather train results in a dataframe
+        def sum_and_longest_tokens_rollout(r: Rollout):
+            total_in, total_out, longest = 0, 0, 0
+            for tokens in r["step_tokens"]:
+                in_len = len(tokens["prompt_ids"])
+                out_len = len(tokens["completion_ids"])
+                total_in += in_len
+                total_out += out_len
+                longest = max(longest, in_len + out_len)
+            return total_in, total_out, longest
+
         results_df = pd.DataFrame(
             {
-                "example_id": [rollout["example_id"] for rollout in accepted_rollouts],
-                "task": [rollout["task"] for rollout in accepted_rollouts],
-                "reward": [rollout["reward"] for rollout in accepted_rollouts],
-                "advantage": [rollout["advantage"] for rollout in accepted_rollouts],
-                "is_truncated": [rollout["is_truncated"] for rollout in accepted_rollouts],
-                "completion_len": [len(rollout["completion_ids"]) for rollout in accepted_rollouts],
-                "prompt_len": [len(rollout["prompt_ids"]) for rollout in accepted_rollouts],
-                "seq_len": [
-                    len(rollout["prompt_ids"]) + len(rollout["completion_ids"]) for rollout in accepted_rollouts
+                "example_id": [int(r["example_id"]) for r in accepted_rollouts],
+                "task": [r["task"] for r in accepted_rollouts],
+                "reward": [float(r["reward"]) for r in accepted_rollouts],
+                # rollout-level advantage: use final step's advantage if present, else 0.0
+                "advantage": [
+                    float(r["step_advantages"][-1]) if r["step_advantages"] else 0.0 for r in accepted_rollouts
                 ],
+                # rollout-level truncation: True if any step truncated
+                "is_truncated": [bool(r["is_truncated"]) for r in accepted_rollouts],
+                # rollout-level token metrics across steps
+                "tokens_in_total": [sum_and_longest_tokens_rollout(r)[0] for r in accepted_rollouts],
+                "tokens_out_total": [sum_and_longest_tokens_rollout(r)[1] for r in accepted_rollouts],
+                "tokens_total": [
+                    sum_and_longest_tokens_rollout(r)[0] + sum_and_longest_tokens_rollout(r)[1]
+                    for r in accepted_rollouts
+                ],
+                "tokens_longest_step": [sum_and_longest_tokens_rollout(r)[2] for r in accepted_rollouts],
             }
         )
 
         # Gather individual reward function metrics
-        metrics_df = pd.DataFrame([rollout["metrics"] for rollout in accepted_rollouts])
+        metrics_df = pd.DataFrame([r["metrics"] or {} for r in accepted_rollouts])
 
         # Update progress metrics and throughput
-        num_tokens = int(results_df.seq_len.sum())
+        num_tokens = int(results_df.tokens_total.sum())
         progress.total_tokens += num_tokens
-        progress.total_samples += config.batch_size
+        progress.total_samples += config.batch_size  # samples = rollouts
         progress.total_problems += config.batch_size // config.rollouts_per_example
         throughput = num_tokens / (generate_completions_time)
 
@@ -409,16 +409,13 @@ async def orchestrate(config: OrchestratorConfig):
             "progress/total_samples": progress.total_samples,
             "progress/total_problems": progress.total_problems,
             "progress/ckpt_step": ckpt_step,  # Shared W&B axis
-            # Sequence length metrics
-            "seq_len/mean": results_df.groupby("example_id").seq_len.mean().mean(),
-            "seq_len/max": results_df.groupby("example_id").seq_len.mean().max(),
-            "seq_len/min": results_df.groupby("example_id").seq_len.mean().min(),
-            "prompt_len/mean": results_df.groupby("example_id").prompt_len.mean().mean(),
-            "prompt_len/max": results_df.groupby("example_id").prompt_len.mean().max(),
-            "prompt_len/min": results_df.groupby("example_id").prompt_len.mean().min(),
-            "completion_len/mean": results_df.groupby("example_id").completion_len.mean().mean(),
-            "completion_len/max": results_df.groupby("example_id").completion_len.mean().max(),
-            "completion_len/min": results_df.groupby("example_id").completion_len.mean().min(),
+            # Token metrics
+            "tokens/total_mean": results_df.groupby("example_id").tokens_total.mean().mean(),
+            "tokens/total_max": results_df.groupby("example_id").tokens_total.mean().max(),
+            "tokens/total_min": results_df.groupby("example_id").tokens_total.mean().min(),
+            "tokens/longest_step_mean": results_df.groupby("example_id").tokens_longest_step.mean().mean(),
+            "tokens/longest_step_max": results_df.groupby("example_id").tokens_longest_step.mean().max(),
+            "tokens/longest_step_min": results_df.groupby("example_id").tokens_longest_step.mean().min(),
             "is_truncated/mean": results_df.groupby("example_id").is_truncated.mean().mean(),
             "is_truncated/max": results_df.groupby("example_id").is_truncated.mean().max(),
             "is_truncated/min": results_df.groupby("example_id").is_truncated.mean().min(),
@@ -469,10 +466,12 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Log samples and distributions to W&B table if enabled
         monitor.log_samples(
-            input_tokens=[rollout["prompt_ids"] for rollout in accepted_rollouts],
-            output_tokens=[rollout["completion_ids"] for rollout in accepted_rollouts],
-            rewards=results_df.reward.tolist(),
-            advantages=results_df.advantage.tolist(),
+            input_tokens=[(r["step_tokens"][-1]["prompt_ids"] if r["step_tokens"] else []) for r in accepted_rollouts],
+            output_tokens=[
+                (r["step_tokens"][-1]["completion_ids"] if r["step_tokens"] else []) for r in accepted_rollouts
+            ],
+            rewards=results_df.reward.astype(float).tolist(),
+            advantages=results_df.advantage.astype(float).tolist(),
             rollouts_per_problem=config.rollouts_per_example,
             step=progress.step,
         )
@@ -487,7 +486,7 @@ async def orchestrate(config: OrchestratorConfig):
         # Log distributions to W&B table
         monitor.log_distributions(distributions=distributions, step=progress.step)
 
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} |{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.seq_len.mean():.1f} tokens/sample"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} |{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} Throughput: {throughput:.1f} tokens/s | Tokens Total: {results_df.tokens_total.mean():.1f}"
         logger.success(step_message)
 
         # Increment step

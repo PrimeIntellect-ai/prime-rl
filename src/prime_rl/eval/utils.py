@@ -5,20 +5,16 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from huggingface_hub import whoami
 from openai import AsyncOpenAI
 from prime_evals import AsyncEvalsClient
 from verifiers import load_environment
-from verifiers.types import GenerateOutputs
-from verifiers.utils.eval_utils import get_hf_hub_dataset_name, make_dataset, sanitize_metadata, save_to_disk
 
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.orchestrator.config import ClientConfig, EvalConfig, EvalSamplingConfig, EvalSaveConfig, ModelConfig
-from prime_rl.orchestrator.utils import parse_is_truncated_completions, parse_num_completion_tokens
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor import get_monitor
-from prime_rl.utils.utils import capitalize, get_eval_dir, get_step_path
-from prime_rl.utils.vf import generate_batch
+from prime_rl.utils.utils import capitalize
+from prime_rl.utils.vf import run_rollouts
 
 
 def compute_pass_at_k(rewards: list[int]) -> dict[str, float]:
@@ -105,27 +101,67 @@ async def run_eval(
     logger.info(
         f"Evaluating {env_name_or_id} ({num_examples=}, {rollouts_per_example=}) {'with default args' if env_args == {} else f'with args {env_args}'}"
     )
-    # Run async generation and scoring
-    results: GenerateOutputs = await generate_batch(
+    # Run async generation and scoring (returns list[State])
+    states = await run_rollouts(
         env=env,
         model_name=model_config.name,
         problems=dataset.to_list(),
         clients=clients,
         rollouts_per_example=rollouts_per_example,
         sampling_args=sampling_args,
-        semaphore=semaphore,
+        max_concurrent=None,
         pbar_description=f"Evaluating {env_name_or_id}",
     )
 
-    # Parse vLLM responses
+    # Build results from trajectory steps per rollout
     k = rollouts_per_example
-    responses = [state["responses"] for state in results.state]
+
+    def sum_and_longest_tokens(s):
+        traj = s.get("trajectory", [])
+        total_in, total_out, longest = 0, 0, 0
+        for step in traj:
+            tokens = step.get("tokens")
+            if not tokens:
+                continue
+            in_len = len(tokens["prompt_ids"])
+            out_len = len(tokens["completion_ids"])
+            total_in += in_len
+            total_out += out_len
+            longest = max(longest, in_len + out_len)
+        return total_in, total_out, longest
+
+    def any_truncated(s):
+        traj = s.get("trajectory", [])
+        for step in traj:
+            resp = step.get("response")
+            try:
+                if (
+                    resp is not None
+                    and len(resp.choices) > 0
+                    and getattr(resp.choices[0], "finish_reason", "") == "length"
+                ):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    total_in_list, total_out_list, longest_step_list, trunc_flags = [], [], [], []
+    for s in states:
+        in_len, out_len, longest = sum_and_longest_tokens(s)
+        total_in_list.append(in_len)
+        total_out_list.append(out_len)
+        longest_step_list.append(longest)
+        trunc_flags.append(any_truncated(s))
+
     results_df = pd.DataFrame(
         {
-            "example_id": results.example_id,
-            "reward": results.reward,
-            "completion_len": parse_num_completion_tokens(responses),
-            "is_truncated": parse_is_truncated_completions(responses),
+            "example_id": [int(s.get("example_id", 0)) for s in states],
+            "reward": [float(s.get("reward", 0.0)) for s in states],
+            "tokens_in_total": total_in_list,
+            "tokens_out_total": total_out_list,
+            "tokens_total": [i + o for i, o in zip(total_in_list, total_out_list)],
+            "tokens_longest_step": longest_step_list,
+            "is_truncated": trunc_flags,
         }
     )
     unique_rewards = results_df.reward.unique()
@@ -147,15 +183,24 @@ async def run_eval(
         assert pass_at_k is not None
         for pass_rate, pass_rate_score in pd.Series(pass_at_k.mean()).items():
             message += f", {capitalize(str(pass_rate))}: {pass_rate_score:.4f}"
-    message += f", Completion Length: {results_df.completion_len.mean():.2f} (±{results_df.completion_len.std():.2f}, ∈[{results_df.completion_len.min():.2f}, {results_df.completion_len.max():.2f}]), Truncated: {results_df.is_truncated.mean() * 100:.1f}%)"
+    message += (
+        f", Tokens Total: {results_df.tokens_total.mean():.2f} "
+        f"(±{results_df.tokens_total.std():.2f}, ∈[{results_df.tokens_total.min():.2f}, {results_df.tokens_total.max():.2f}])"
+        f", Longest Step: {results_df.tokens_longest_step.mean():.2f} "
+        f"(±{results_df.tokens_longest_step.std():.2f}, ∈[{results_df.tokens_longest_step.min():.2f}, {results_df.tokens_longest_step.max():.2f}])"
+        f", Truncated: {results_df.is_truncated.mean() * 100:.1f}%)"
+    )
     logger.success(message)
 
     # Log statistics to monitor
     eval_metrics = {
         f"avg@{k}": results_df.reward.mean(),
-        "completion_len/avg": results_df.completion_len.mean().item(),
-        "completion_len/max": results_df.completion_len.max().item(),
-        "completion_len/min": results_df.completion_len.min().item(),
+        "tokens/total_avg": results_df.tokens_total.mean().item(),
+        "tokens/total_max": results_df.tokens_total.max().item(),
+        "tokens/total_min": results_df.tokens_total.min().item(),
+        "tokens/longest_step_avg": results_df.tokens_longest_step.mean().item(),
+        "tokens/longest_step_max": results_df.tokens_longest_step.max().item(),
+        "tokens/longest_step_min": results_df.tokens_longest_step.min().item(),
         "is_truncated/mean": results_df.is_truncated.mean().item(),
         "time": eval_time,
     }
@@ -166,56 +211,7 @@ async def run_eval(
     eval_metrics.update({"progress/ckpt_step": ckpt_step, "step": step or ckpt_step})
     monitor.log(eval_metrics)
 
-    # Save results
-    if save_config.disk is not None or save_config.hf is not None or save_config.env_hub:
-        dataset = make_dataset(results)
-        metadata_dict = sanitize_metadata(results.metadata)
-
-        if save_config.disk is not None:
-            is_online = step is not None
-            default_save_path = (
-                get_step_path(get_eval_dir(output_dir), ckpt_step) / env_name_or_id
-                if is_online
-                else results.metadata.path_to_save
-            )
-            save_path = save_config.disk.path or default_save_path
-            save_to_disk(dataset, metadata_dict, save_path)
-            logger.info(f"Saved eval results for {env_name_or_id} to disk ({save_path})")
-
-        if save_config.hf is not None:
-            dataset_name = save_config.hf.dataset_name or get_hf_hub_dataset_name(results)
-            dataset_subset = save_config.hf.dataset_subset or env.env_id
-            dataset_split = save_config.hf.dataset_split or "evals"
-            dataset.push_to_hub(dataset_name, dataset_subset, split=dataset_split, private=save_config.hf.private)
-            default_org = whoami().get("name", "")
-            repo_name = dataset_name if "/" in dataset_name else f"{default_org}/{dataset_name}"
-            logger.info(
-                f"Pushed {'private' if save_config.hf.private else 'public'} eval results for {env_name_or_id} to HF Hub (https://huggingface.co/datasets/{repo_name})"
-            )
-
-        if save_config.env_hub:
-            eval_name = f"{env_id}--{model_config.name.replace('/', '--')}"
-
-            # Create evaluation for environment
-            create_response = await evals_client.create_evaluation(
-                name=eval_name,
-                environments=[{"id": env_id}],
-                model_name=model_config.name,
-                framework="verifiers",
-                metadata=metadata_dict,
-                metrics=eval_metrics,
-            )
-
-            eval_id = create_response.get("evaluation_id")
-            assert eval_id is not None
-
-            # Push samples
-            await evals_client.push_samples(eval_id, dataset.to_list())
-
-            # Finalize evaluation
-            await evals_client.finalize_evaluation(eval_id, metrics=eval_metrics)
-
-            logger.info(f"Pushed eval results for {env_id} to Environment Hub (eval_id: {eval_id})")
+    # Skipping persisted saving in State-only mode for now
 
 
 async def run_evals(

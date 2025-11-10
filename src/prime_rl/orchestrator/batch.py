@@ -5,9 +5,9 @@ import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 from transformers.tokenization_utils import PreTrainedTokenizer
+from verifiers.types import TrajectoryStep
 
 from prime_rl.trainer.rl.data import MicroBatch
-from prime_rl.utils.vf import Rollout
 
 
 class BatchSample(TypedDict):
@@ -18,32 +18,35 @@ class BatchSample(TypedDict):
     inference_logprobs: Float[Tensor, "seq"]
 
 
-def prepare_sample(
-    rollout: Rollout,
+def prepare_step_sample(
+    step: TrajectoryStep,
     seq_len: int,
     tokenizer: PreTrainedTokenizer,
 ) -> BatchSample:
     """
-    Prepare a problem for sequence packing training.
-    Tokenize and prepare tensors.
+    Prepare a trajectory step for sequence packing training.
+    Uses token ids and logprobs parsed by verifiers (no re-tokenization).
     """
+    tokens = step.get("tokens", None)
+    assert tokens is not None, "TrajectoryStep tokens must be present"
+    assert step.get("advantage", None) is not None, "TrajectoryStep advantage must be present"
 
     # Prepare prompt tokens
-    prompt_token_ids = torch.tensor(rollout["prompt_ids"]).long()
-    prompt_token_mask = torch.tensor(rollout["prompt_mask"]).long()
+    prompt_token_ids = torch.tensor(tokens["prompt_ids"]).long()
+    prompt_token_mask = torch.tensor(tokens["prompt_mask"]).long()
 
     # Prepare completion tokens
-    completion_token_ids = torch.tensor(rollout["completion_ids"]).long()
-    completion_token_mask = torch.tensor(rollout["completion_mask"]).long()
+    completion_token_ids = torch.tensor(tokens["completion_ids"]).long()
+    completion_token_mask = torch.tensor(tokens["completion_mask"]).long()
 
     # Prepare input_ids, loss_mask, position_ids, inference_logprobs, and advantages
     input_ids = torch.cat([prompt_token_ids, completion_token_ids]).long()
     loss_mask = torch.cat([prompt_token_mask, completion_token_mask]).bool()
     inference_logprobs = torch.cat(
-        [torch.zeros(len(prompt_token_ids)), torch.tensor(rollout["completion_logprobs"])]
+        [torch.zeros(len(prompt_token_ids)), torch.tensor(tokens["completion_logprobs"])]
     ).float()
     position_ids = torch.arange(len(input_ids)).long()
-    advantages = torch.tensor(rollout["advantage"]).repeat(len(input_ids)).float()
+    advantages = torch.tensor(step["advantage"]).repeat(len(input_ids)).float()
 
     if len(input_ids) > seq_len:
         # We should never truncate as it would create a really bad learning signal. Instead, always set the maximum sequence length
@@ -123,26 +126,26 @@ def prepare_micro_batch_packing(samples: list[BatchSample], max_seq_len: int, te
 
 
 def prepare_batch(
-    rollouts: list[Rollout],
+    steps: list[TrajectoryStep],
     temperature: float,
     tokenizer: PreTrainedTokenizer,
     seq_len: int,
     num_train_workers: int,
 ) -> list[list[MicroBatch]]:
     """
-    Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
+    Prepare a batch of trajectory steps for each GPU. Each batch is a list of micro batches.
     Each micro batch is shape [1, seq_len], the namber of sample is not fixed per micro batch.
     """
-    rollouts = copy.deepcopy(rollouts)
+    steps = copy.deepcopy(steps)
     max_seq_len = seq_len
 
     all_samples = [
-        prepare_sample(
-            rollout,
+        prepare_step_sample(
+            step,
             max_seq_len,
             tokenizer,
         )
-        for rollout in rollouts
+        for step in steps
     ]
 
     micro_batches_list = packed_samples_into_micro_bs(all_samples, max_seq_len)

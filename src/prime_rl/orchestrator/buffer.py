@@ -57,7 +57,8 @@ class Buffer(ABC):
             for problem_id, rollouts in zip(self.problem_ids, dataset["rollouts"]):
                 rollouts = json.loads(rollouts)
                 if len(rollouts) > 0:
-                    self.rollout_buffer[problem_id] = [Rollout(**rollout) for rollout in rollouts]
+                    # Stored rollouts are JSON-serializable summaries; treat as State for typing
+                    self.rollout_buffer[problem_id] = [rollout for rollout in rollouts]  # type: ignore[list-item]
             dataset = dataset.remove_columns(["metadata", "rollouts"])
 
         # Store dataset and problem buffer
