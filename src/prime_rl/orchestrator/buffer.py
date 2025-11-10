@@ -11,90 +11,10 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.vf import Rollout
 
 
-class ExampleBuffer:
-    """
-    Example buffer that samples problems from difficulty pools (easy/normal/hard).
-    """
-
-    def __init__(
-        self,
-        problem_ids: list[int],
-        problem_buffer: dict[int, dict],
-        metadata: dict[int, dict],
-        config: BufferConfig,
-    ):
-        self.logger = get_logger()
-        self.problem_ids = problem_ids
-        self.problem_buffer = problem_buffer
-        self.metadata = metadata
-        self.config = config
-
-    def sample_problems(self, n: int) -> list[dict]:
-        """Samples `n` problems from the dataset using difficulty pools."""
-        n_easy = int(n * self.config.easy_fraction)
-        n_hard = int(n * self.config.hard_fraction)
-        n_normal = n - n_easy - n_hard
-
-        # Group problem IDs by difficulty
-        by_difficulty = {"easy": [], "normal": [], "hard": []}
-        for problem_id, metadata in self.metadata.items():
-            by_difficulty[metadata["difficulty"]].append(problem_id)
-
-        # Sample from each pool, falling back to normal if insufficient
-        def sample_from_pool(pool_ids: list[int], target: int, pool_name: str) -> tuple[list[int], int]:
-            sampled = min(target, len(pool_ids))
-            if sampled < target:
-                self.logger.warning(f"Only {sampled} {pool_name} problem(s) available, sampling {target - sampled} normal problem(s) more")
-            return (random.sample(pool_ids, sampled) if pool_ids else [], target - sampled)
-
-        sampled_easy, deficit = sample_from_pool(by_difficulty["easy"], n_easy, "easy")
-        n_normal += deficit
-        sampled_hard, deficit = sample_from_pool(by_difficulty["hard"], n_hard, "hard")
-        n_normal += deficit
-        sampled_normal, _ = sample_from_pool(by_difficulty["normal"], n_normal, "normal")
-
-        sampled_problem_ids = sampled_easy + sampled_normal + sampled_hard
-        return [self.problem_buffer[pid] for pid in sampled_problem_ids]
-
-
-class RolloutBuffer:
-    """
-    Rollout buffer that filters rollouts by reward range.
-    """
-
-    def __init__(
-        self,
-        rollout_buffer: dict[int, list[Rollout]],
-        metadata: dict[int, dict],
-        config: BufferConfig,
-    ):
-        self.logger = get_logger()
-        self.rollout_buffer = rollout_buffer
-        self.metadata = metadata
-        self.config = config
-
-    def sample_rollouts(self, n: int) -> list[Rollout]:
-        """Samples rollouts for `n` problems within the configured reward range."""
-        sampled_rollouts, num_too_easy, num_too_hard, num_sampled = [], 0, 0, 0
-
-        for problem_id, rollouts in list(self.rollout_buffer.items()):
-            if num_sampled >= n:
-                break
-            reward = self.metadata[problem_id]["reward"]
-            if (self.config.min_reward is not None and reward <= self.config.min_reward) or (
-                self.config.max_reward is not None and reward >= self.config.max_reward
-            ):
-                continue
-            sampled_rollouts.extend(self.rollout_buffer.pop(problem_id))
-            num_sampled += 1
-        return sampled_rollouts
-
-
 class Buffer:
     """
-    Buffer that composes an ExampleBuffer for sampling problems and a RolloutBuffer
-    for sampling rollouts. The ExampleBuffer uses difficulty pools (easy/normal/hard)
-    and the RolloutBuffer filters by reward range.
+    Buffer that samples problems from difficulty pools (easy/normal/hard) and filters
+    rollouts by reward range.
     """
 
     def __init__(self, dataset: Dataset, buffer_config: BufferConfig):
@@ -105,13 +25,6 @@ class Buffer:
 
         # Initialize buffer
         self._init_buffer(dataset, self.config.from_scratch)
-
-        self._refresh_components()
-
-    def _refresh_components(self):
-        """Refreshes the example and rollout buffer components with current state."""
-        self.example_buffer = ExampleBuffer(self.problem_ids, self.problem_buffer, self.metadata, self.config)
-        self.rollout_buffer_component = RolloutBuffer(self.rollout_buffer, self.metadata, self.config)
 
     def _init_buffer(self, dataset: Dataset, from_scratch: bool) -> None:
         """Initializes the buffer state from a dataset."""
@@ -127,11 +40,11 @@ class Buffer:
             if not all(col in dataset.column_names for col in ("metadata", "rollouts")):
                 raise ValueError("Dataset must contain `metadata` and `rollouts` columns when `from_scratch=False`")
             self.metadata = {pid: json.loads(md) for pid, md in zip(self.problem_ids, dataset["metadata"])}
-            self.rollout_buffer = {
-                pid: [Rollout(**r) for r in json.loads(rollouts)]
-                for pid, rollouts in zip(self.problem_ids, dataset["rollouts"])
-                if json.loads(rollouts)
-            }
+            self.rollout_buffer = {}
+            for pid, rollouts_json in zip(self.problem_ids, dataset["rollouts"]):
+                rollouts_parsed = json.loads(rollouts_json)
+                if rollouts_parsed:
+                    self.rollout_buffer[pid] = [Rollout(**r) for r in rollouts_parsed]
             dataset = dataset.remove_columns(["metadata", "rollouts"])
             for pid, md in self.metadata.items():
                 if md.get("difficulty") not in ["easy", "normal", "hard"]:
@@ -153,11 +66,34 @@ class Buffer:
         """Loads the buffer state from a single HF dataset."""
         self.dataset = load_from_disk(path)
         self._init_buffer(self.dataset, from_scratch=False)
-        self._refresh_components()
 
-    def sample_problems(self, n: int) -> list[dict]:
-        """Samples `n` problems from the dataset using the example buffer."""
-        return self.example_buffer.sample_problems(n)
+    def sample_problems(self, n: int) -> tuple[list[dict], dict[str, int]]:
+        """Samples `n` problems from the dataset using difficulty pools. Returns problems and stats."""
+        n_easy = int(n * self.config.easy_fraction)
+        n_hard = int(n * self.config.hard_fraction)
+        n_normal = n - n_easy - n_hard
+
+        # Group problem IDs by difficulty
+        by_difficulty = {"easy": [], "normal": [], "hard": []}
+        for problem_id, metadata in self.metadata.items():
+            by_difficulty[metadata["difficulty"]].append(problem_id)
+
+        # Sample from each pool, falling back to normal if insufficient
+        def sample_from_pool(pool_ids: list[int], target: int, pool_name: str) -> tuple[list[int], int]:
+            sampled = min(target, len(pool_ids))
+            if sampled < target:
+                self.logger.warning(f"Only {sampled} {pool_name} problem(s) available, sampling {target - sampled} normal problem(s) more")
+            return (random.sample(pool_ids, sampled) if sampled > 0 else [], target - sampled)
+
+        sampled_easy, deficit = sample_from_pool(by_difficulty["easy"], n_easy, "easy")
+        n_normal += deficit
+        sampled_hard, deficit = sample_from_pool(by_difficulty["hard"], n_hard, "hard")
+        n_normal += deficit
+        sampled_normal, _ = sample_from_pool(by_difficulty["normal"], n_normal, "normal")
+
+        sampled_problem_ids = sampled_easy + sampled_normal + sampled_hard
+        stats = {"easy": len(sampled_easy), "normal": len(sampled_normal), "hard": len(sampled_hard)}
+        return [self.problem_buffer[pid] for pid in sampled_problem_ids], stats
 
     def update(self, rollouts: list[Rollout]):
         """Updates the buffer state with completed rollouts."""
@@ -165,8 +101,7 @@ class Buffer:
         for rollout in rollouts:
             rollouts_by_problem_id[rollout["example_id"]].append(rollout)
 
-        self.rollout_buffer.clear()
-        self.rollout_buffer.update(rollouts_by_problem_id)
+        self.rollout_buffer = rollouts_by_problem_id
 
         stats = Counter()
         for problem_id, problem_rollouts in rollouts_by_problem_id.items():
@@ -180,8 +115,34 @@ class Buffer:
         if stats:
             self.logger.debug(", ".join([f"{v} problem(s) moved from `{k[0]}` to `{k[1]}`" for k, v in stats.items()]))
 
-        self._refresh_components()
+    def sample_rollouts(self, n: int) -> tuple[list[Rollout], dict[str, int]]:
+        """Samples rollouts for `n` problems within the configured reward range. Returns rollouts and stats."""
+        sampled_rollouts, num_sampled = [], 0
+        num_too_hard, num_too_easy = 0, 0
 
-    def sample_rollouts(self, n: int) -> list[Rollout]:
-        """Samples rollouts for `n` problems from the rollout buffer."""
-        return self.rollout_buffer_component.sample_rollouts(n)
+        for problem_id, rollouts in list(self.rollout_buffer.items()):
+            if num_sampled >= n:
+                break
+            reward = self.metadata[problem_id]["reward"]
+            if (self.config.min_reward is not None and reward <= self.config.min_reward) or (
+                self.config.max_reward is not None and reward >= self.config.max_reward
+            ):
+                if self.config.min_reward is not None and reward <= self.config.min_reward:
+                    num_too_hard += 1
+                else:
+                    num_too_easy += 1
+                continue
+            sampled_rollouts.extend(self.rollout_buffer.pop(problem_id))
+            num_sampled += 1
+
+        stats = {"too_hard": num_too_hard, "too_easy": num_too_easy}
+        return sampled_rollouts, stats
+
+    def get_metadata_difficulty_distribution(self) -> dict[str, int]:
+        """Returns the difficulty distribution of all problems in the metadata."""
+        distribution = {"easy": 0, "normal": 0, "hard": 0}
+        for metadata in self.metadata.values():
+            difficulty = metadata.get("difficulty", "normal")
+            if difficulty in distribution:
+                distribution[difficulty] += 1
+        return distribution
