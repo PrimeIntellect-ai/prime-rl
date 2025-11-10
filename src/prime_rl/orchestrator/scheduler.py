@@ -20,7 +20,12 @@ from prime_rl.utils.vf import generate_group, make_rollouts
 
 
 class Scheduler:
-    """Asynchronously schedules group rollout requests and re-schedules them as they complete (continuous batching). Updates policy in between group rollout requests."""
+    """Asynchronously schedules group rollout requests and re-schedules them as they complete (continuous batching). Updates policy in between group rollout requests.
+
+    References:
+    - AReal: https://arxiv.org/abs/2505.24298v1
+    - PipelineRL: https://arxiv.org/abs/2509.19128v1
+    """
 
     def __init__(
         self,
