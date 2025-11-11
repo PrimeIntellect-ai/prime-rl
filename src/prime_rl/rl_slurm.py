@@ -139,7 +139,7 @@ class SlurmConfig(BaseConfig):
     job_name: Annotated[str, Field(description="The name of the job.")] = "prime-rl"
     log_dir: Annotated[Path, Field(description="The directory to store the slrum logs.")] = Path("outputs/logs")
 
-    call_slrum: Annotated[bool, Field(description="Whether to call slrum.")] = True
+    call_sbatch: Annotated[bool, Field(description="Whether to call slrum.")] = True
 
 
 class RLSLURMConfig(BaseRLLauncherConfig):
@@ -159,6 +159,8 @@ class RLSLURMConfig(BaseRLLauncherConfig):
     ] = Path("outputs")
 
     slurm: SlurmConfig = SlurmConfig()
+
+    start_tmux: Annotated[bool, Field(description="Whether to start a tmux session with the logs.")] = False
 
 
 def rl_slurm(config: RLSLURMConfig):
@@ -191,7 +193,7 @@ def rl_slurm(config: RLSLURMConfig):
     with open(config.output_dir / "slurm.sh", "w") as f:
         f.write(slurm_script)
 
-    if config.call_slrum:
+    if config.slurm.call_sbatch:
         result = subprocess.run(["sbatch", config.output_dir / "slurm.sh"], capture_output=True, text=True, check=True)
         job_id = result.stdout.strip().split()[-1]
         print(f"Submitted batch job {job_id}")
@@ -209,6 +211,82 @@ def rl_slurm(config: RLSLURMConfig):
         print(f"to view trainer logs: tail -f {config.output_dir / 'slurm/latest_train_node_rank_0.log'}")
         print(f"to view orchestrator logs: tail -f {config.output_dir / 'slurm/latest_orchestrator.log'}")
         print(f"to view inference logs: tail -f {config.output_dir / 'slurm/latest_infer_node_rank_0.log'}")
+
+    if config.start_tmux:
+        session_name = config.slurm.job_name
+        output_dir = config.output_dir
+        slurm_log_dir = output_dir / "slurm"
+
+        # Check if session already exists
+        result = subprocess.run(["tmux", "has-session", "-t", session_name], capture_output=True, text=True)
+
+        if result.returncode == 0:
+            print(f"Attaching to existing tmux session: {session_name}")
+            subprocess.run(["tmux", "attach-session", "-t", session_name])
+        else:
+            print(f"Creating new tmux session: {session_name}")
+
+            # Create new session with first window
+            subprocess.run(["tmux", "new-session", "-d", "-s", session_name, "-n", "RL"])
+
+            # Split into 3 vertical panes (top to bottom)
+            subprocess.run(["tmux", "split-window", "-v", "-t", f"{session_name}:RL.0"])
+            subprocess.run(["tmux", "split-window", "-v", "-t", f"{session_name}:RL.1"])
+            subprocess.run(["tmux", "select-layout", "-t", f"{session_name}:RL", "even-vertical"])
+
+            # Set pane titles
+            subprocess.run(["tmux", "select-pane", "-t", f"{session_name}:RL.0", "-T", "Trainer"])
+            subprocess.run(["tmux", "select-pane", "-t", f"{session_name}:RL.1", "-T", "Orchestrator"])
+            subprocess.run(["tmux", "select-pane", "-t", f"{session_name}:RL.2", "-T", "Inference"])
+
+            # Trainer log (top pane)
+            trainer_log = slurm_log_dir / "latest_train_node_rank_0.log"
+            subprocess.run(
+                [
+                    "tmux",
+                    "send-keys",
+                    "-t",
+                    f"{session_name}:RL.0",
+                    f"while true; do echo 'Waiting for trainer log file...'; while [ ! -f '{trainer_log}' ]; do sleep 1; done; echo 'Following trainer log...'; tail -F '{trainer_log}'; done",
+                    "C-m",
+                ]
+            )
+
+            # Orchestrator log (middle pane)
+            orch_log = slurm_log_dir / "latest_orchestrator.log"
+            subprocess.run(
+                [
+                    "tmux",
+                    "send-keys",
+                    "-t",
+                    f"{session_name}:RL.1",
+                    f"while true; do echo 'Waiting for orchestrator log file...'; while [ ! -f '{orch_log}' ]; do sleep 1; done; echo 'Following orchestrator log...'; tail -F '{orch_log}'; done",
+                    "C-m",
+                ]
+            )
+
+            # Inference log (bottom pane)
+            infer_log = slurm_log_dir / "latest_infer_node_rank_0.log"
+            subprocess.run(
+                [
+                    "tmux",
+                    "send-keys",
+                    "-t",
+                    f"{session_name}:RL.2",
+                    f"while true; do echo 'Waiting for inference log file...'; while [ ! -f '{infer_log}' ]; do sleep 1; done; echo 'Following inference log...'; tail -F '{infer_log}'; done",
+                    "C-m",
+                ]
+            )
+
+            # Set pane border status
+            subprocess.run(["tmux", "set-option", "-t", session_name, "-g", "pane-border-status", "top"])
+            subprocess.run(["tmux", "set-option", "-t", session_name, "-g", "pane-border-format", " #{pane_title} "])
+            subprocess.run(["tmux", "set-window-option", "-t", f"{session_name}:RL", "pane-border-status", "top"])
+
+            # Focus trainer pane and attach
+            subprocess.run(["tmux", "select-window", "-t", f"{session_name}:RL"])
+            subprocess.run(["tmux", "select-pane", "-t", f"{session_name}:RL.0"])
+            subprocess.run(["tmux", "attach-session", "-t", session_name])
 
 
 def main():
