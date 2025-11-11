@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import threading
 import time
@@ -31,39 +32,71 @@ from prime_rl.utils.utils import get_step_path, get_weight_ckpt_model_path, get_
 
 
 def has_hf_moe_layers(state_dict: dict[str, Tensor]) -> bool:
-    """Whether the model contains MoE layers in HF format."""
-    return any("mlp.experts.1.up_proj" in module_name for module_name in state_dict.keys())
+    """Heuristic: HF-format MoE uses per-expert gate/up/down projection tensors."""
+    for k in state_dict.keys():
+        if re.search(r"^model\.layers\.\d+\.mlp\.experts\.\d+\.(up_proj|down_proj|gate_proj)\.weight$", k):
+            return True
+    # Fallback for small checkpoints that only carry router params
+    return any(re.search(r"^model\.layers\.\d+\.mlp\.gate\.weight$", k) for k in state_dict.keys())
 
 
 def has_tt_moe_layers(state_dict: dict[str, Tensor]) -> bool:
     """Whether the model contains MoE layers in TT format."""
-    return any("mlp.experts.w1" in module_name for module_name in state_dict.keys())
+    return any(
+        re.search(r"^model\.layers\.\d+\.mlp\.experts\.w[123]$", k)
+        or re.search(r"^model\.layers\.\d+\.mlp\.router\.gate\.weight$", k)
+        or re.search(r"^model\.layers\.\d+\.mlp\.expert_bias$", k)
+        for k in state_dict.keys()
+    )
+
+
+def _layer_indices(state_dict: dict[str, Tensor]) -> list[int]:
+    """Return sorted unique layer indices discovered in state dict keys."""
+    layers = set()
+    for k in state_dict.keys():
+        m = re.match(r"^model\.layers\.(\d+)\.", k)
+        if m:
+            layers.add(int(m.group(1)))
+    return sorted(layers)
 
 
 def get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
-    """Get the maximum number of layers in the model."""
-    return max(int(i.split(".")[2]) for i in state_dict.keys() if "model.layers." in i) + 1
+    """Get the maximum number of layers in the model (1-indexed count)."""
+    indices = _layer_indices(state_dict)
+    return (indices[-1] + 1) if indices else 0
 
 
 def convert_hf_to_tt_moe(state_dict: dict[str, Tensor]):
-    """Convert MoE weights from HF to TT format in-place."""
-    num_layers = len(list(i for i in state_dict.keys() if "mlp.gate.weight" in i))
-    num_experts = len(list(i for i in state_dict.keys() if "model.layers.2.mlp.experts" in i)) // 3
+    """Convert MoE weights from HF to TT format in-place. Robust to 0/1-indexed layers and AFMoE variants."""
+    for i in _layer_indices(state_dict):
+        router_src_candidates = [
+            f"model.layers.{i}.mlp.gate.weight",
+            f"model.layers.{i}.mlp.router.gate.weight",
+            f"model.layers.{i}.router.gate.weight",
+        ]
+        for cand in router_src_candidates:
+            if cand in state_dict:
+                target = f"model.layers.{i}.mlp.router.gate.weight"
+                state_dict[target] = state_dict[cand]
+                if cand != target:
+                    del state_dict[cand]
+                break
 
-    for i in range(1, num_layers + 1):
-        state_dict[f"model.layers.{i}.mlp.router.gate.weight"] = state_dict[f"model.layers.{i}.mlp.gate.weight"]
-        del state_dict[f"model.layers.{i}.mlp.gate.weight"]
+        expert_keys = [
+            k
+            for k in list(state_dict.keys())
+            if re.match(rf"^model\.layers\.{i}\.mlp\.experts\.\d+\.up_proj\.weight$", k)
+        ]
+        if not expert_keys:
+            continue
+        num_experts = len(expert_keys)
 
-        dim, moe_dim = state_dict[f"model.layers.{i}.mlp.experts.0.down_proj.weight"].shape
-        w1 = torch.empty(
-            (num_experts, moe_dim, dim), dtype=state_dict[f"model.layers.{i}.mlp.experts.1.down_proj.weight"].dtype
-        )  # Gate
-        w2 = torch.empty(
-            (num_experts, dim, moe_dim), dtype=state_dict[f"model.layers.{i}.mlp.experts.1.down_proj.weight"].dtype
-        )  # Down
-        w3 = torch.empty(
-            (num_experts, moe_dim, dim), dtype=state_dict[f"model.layers.{i}.mlp.experts.1.down_proj.weight"].dtype
-        )  # Up
+        down_weight = state_dict[f"model.layers.{i}.mlp.experts.0.down_proj.weight"]
+        dim, moe_dim = down_weight.shape
+        dtype = down_weight.dtype
+        w1 = torch.empty((num_experts, moe_dim, dim), dtype=dtype)
+        w2 = torch.empty((num_experts, dim, moe_dim), dtype=dtype)
+        w3 = torch.empty((num_experts, moe_dim, dim), dtype=dtype)
         for j in range(num_experts):
             w1[j].copy_(state_dict[f"model.layers.{i}.mlp.experts.{j}.gate_proj.weight"])
             w2[j].copy_(state_dict[f"model.layers.{i}.mlp.experts.{j}.down_proj.weight"])
@@ -77,24 +110,27 @@ def convert_hf_to_tt_moe(state_dict: dict[str, Tensor]):
         state_dict[f"model.layers.{i}.mlp.experts.w2"] = w2
         state_dict[f"model.layers.{i}.mlp.experts.w3"] = w3
 
-        state_dict[f"model.layers.{i}.mlp.shared_expert.w1"] = state_dict[
-            f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"
-        ]
-        state_dict[f"model.layers.{i}.mlp.shared_expert.w2"] = state_dict[
-            f"model.layers.{i}.mlp.shared_experts.down_proj.weight"
-        ]
-        state_dict[f"model.layers.{i}.mlp.shared_expert.w3"] = state_dict[
-            f"model.layers.{i}.mlp.shared_experts.up_proj.weight"
-        ]
+        if f"model.layers.{i}.mlp.expert_bias" not in state_dict:
+            state_dict[f"model.layers.{i}.mlp.expert_bias"] = torch.zeros(num_experts, dtype=torch.float32)
 
-        del state_dict[f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"]
-        del state_dict[f"model.layers.{i}.mlp.shared_experts.down_proj.weight"]
-        del state_dict[f"model.layers.{i}.mlp.shared_experts.up_proj.weight"]
+        se_prefix = f"model.layers.{i}.mlp.shared_experts"
+        if f"{se_prefix}.up_proj.weight" in state_dict:
+            state_dict[f"model.layers.{i}.mlp.shared_expert.w1"] = state_dict[f"{se_prefix}.gate_proj.weight"]
+            state_dict[f"model.layers.{i}.mlp.shared_expert.w2"] = state_dict[f"{se_prefix}.down_proj.weight"]
+            state_dict[f"model.layers.{i}.mlp.shared_expert.w3"] = state_dict[f"{se_prefix}.up_proj.weight"]
 
-        state_dict[f"model.layers.{i}.mlp.expert_bias"] = state_dict[
-            f"model.layers.{i}.mlp.gate.e_score_correction_bias"
-        ]
-        del state_dict[f"model.layers.{i}.mlp.gate.e_score_correction_bias"]
+            del state_dict[f"{se_prefix}.gate_proj.weight"]
+            del state_dict[f"{se_prefix}.down_proj.weight"]
+            del state_dict[f"{se_prefix}.up_proj.weight"]
+
+        for bias_src in (
+            f"model.layers.{i}.mlp.gate.e_score_correction_bias",
+            f"model.layers.{i}.mlp.router.e_score_correction_bias",
+        ):
+            if bias_src in state_dict:
+                state_dict[f"model.layers.{i}.mlp.expert_bias"] = state_dict[bias_src]
+                del state_dict[bias_src]
+                break
 
 
 def convert_tt_layer_to_hf(state_dict: dict[str, Tensor], layer_index: int):
@@ -137,11 +173,13 @@ def convert_tt_layer_to_hf(state_dict: dict[str, Tensor], layer_index: int):
         del state_dict[f"model.layers.{i}.mlp.shared_expert.w2"]
         del state_dict[f"model.layers.{i}.mlp.shared_expert.w3"]
 
-        # Gate / Router
+    # Router
+    if f"model.layers.{i}.mlp.router.gate.weight" in state_dict:
         state_dict[f"model.layers.{i}.mlp.gate.weight"] = state_dict[f"model.layers.{i}.mlp.router.gate.weight"]
         del state_dict[f"model.layers.{i}.mlp.router.gate.weight"]
 
-        # Routed experts
+    # Routed experts
+    if f"model.layers.{i}.mlp.experts.w1" in state_dict:
         num_experts, moe_dim, dim = state_dict[f"model.layers.{i}.mlp.experts.w1"].shape
         for j in range(num_experts):
             state_dict[f"model.layers.{i}.mlp.experts.{j}.gate_proj.weight"] = state_dict[
@@ -160,12 +198,7 @@ def convert_tt_layer_to_hf(state_dict: dict[str, Tensor], layer_index: int):
 
 def convert_tt_to_hf_moe(state_dict: dict[str, Tensor]):
     """Convert MoE weights from TT to HF format in-place."""
-    num_layers = get_max_layer_num(state_dict)
-    for i in range(1, num_layers + 1):
-        # todo(sami): delete this after testing that it never called
-        # if not f"model.layers.{i}.mlp.router.gate.weight" in state_dict:
-        #     continue  # Not a TT-MoE layer
-
+    for i in _layer_indices(state_dict):
         convert_tt_layer_to_hf(state_dict, i)
 
 
