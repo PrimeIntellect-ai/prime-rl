@@ -38,7 +38,7 @@ max_tokens = 8192
 [[orchestrator.env]]
 id = "acereason-math"
 
-[orchestratorwandb.log_extras]
+[orchestrator.wandb.log_extras]
 interval = 50
 
 [orchestrator.eval]
