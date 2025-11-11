@@ -150,9 +150,10 @@ def train(config: RLTrainerConfig):
         if progress.step > 0:
             save_weights_start_time = time.time()
             # Save weights to disk at every if using filesystem weight broadcast or at interval step
-            if config.weight_broadcast.type == "filesystem" or (
-                config.weights.interval and progress.step % config.weights.interval == 0
-            ):
+            if (
+                config.weight_broadcast.type == "filesystem"
+                or (config.weights.interval and progress.step % config.weights.interval == 0)
+            ) and not (is_first_step or is_last_step):
                 weight_ckpt_manager.save(model, tokenizer, step=progress.step)
             else:
                 # Always create a stable file to signal to the orchestrator to initialize receiving weights via NCCL
@@ -389,6 +390,10 @@ def train(config: RLTrainerConfig):
         logger.info("Writing final checkpoint")
         ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step)
         ckpt_manager.maybe_clean()
+
+    # Save final weight checkpoint
+    logger.info("Writing final weight checkpoint")
+    weight_ckpt_manager.save(model, tokenizer, step=progress.step)
 
     logger.info(f"Peak memory: {max(to_col_format(monitor.history)['perf/peak_memory']):.1f} GiB")
     logger.success("RL trainer finished!")
