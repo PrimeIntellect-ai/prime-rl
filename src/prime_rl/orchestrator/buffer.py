@@ -6,7 +6,6 @@ from pathlib import Path
 from datasets import Dataset, load_from_disk
 
 from prime_rl.orchestrator.config import BufferConfig
-from prime_rl.utils.logger import get_logger
 from prime_rl.utils.vf import Rollout
 
 
@@ -23,34 +22,37 @@ class Buffer:
     """
 
     def __init__(self, dataset: Dataset, buffer_config: BufferConfig):
-        self.logger = get_logger()
         self.config = buffer_config
         if self.config.seed is not None:
             random.seed(self.config.seed)
 
         # Initialize buffer
-        self._init_buffer(dataset, self.config.from_scratch)
+        self._init_buffer(dataset, self.config.dataset_path)
         self.problem_metrics = defaultdict(int)
         self.rollout_metrics = defaultdict(int)
 
-    def _init_buffer(self, dataset: Dataset, from_scratch: bool, dataset_path: Path | None = None) -> None:
+    def _init_buffer(self, dataset: Dataset, dataset_path: Path | None = None) -> None:
         """Initializes the buffer state from datasets."""
         if "id" not in dataset.column_names:
             dataset = dataset.add_column("id", list(range(len(dataset))), new_fingerprint=str(uuid.uuid4()))
         self.problem_ids = dataset["id"]
 
-        if from_scratch:
+        if not dataset_path:
             self.rollout_buffer: list[Rollout] = []
             self.metadata = {pid: {"difficulty": "normal"} for pid in self.problem_ids}
         else:
-            if not dataset_path:
-                raise ValueError("dataset_path is required when loading from checkpoint")
-            
             metadata_path = dataset_path.parent / "metadata"
             if not metadata_path.exists():
                 raise ValueError(f"Metadata dataset not found at {metadata_path}")
             metadata_dataset = load_from_disk(metadata_path)
-            self.metadata = {row["problem_id"]: {k: v for k, v in row.items() if k != "problem_id"} for row in metadata_dataset}
+            loaded_metadata = {row["problem_id"]: {k: v for k, v in row.items() if k != "problem_id"} for row in metadata_dataset}
+            
+            self.metadata = {}
+            for pid in self.problem_ids:
+                if pid in loaded_metadata:
+                    self.metadata[pid] = loaded_metadata[pid]
+                else:
+                    self.metadata[pid] = {"difficulty": "normal"}
             
             rollouts_path = dataset_path.parent / "rollouts"
             if rollouts_path.exists():
@@ -58,10 +60,6 @@ class Buffer:
                 self.rollout_buffer = [Rollout(**row) for row in rollouts_dataset]
             else:
                 self.rollout_buffer = []
-            
-            for pid, md in self.metadata.items():
-                if md.get("difficulty") not in ["easy", "normal", "hard"]:
-                    raise ValueError(f"Invalid difficulty {md.get('difficulty')} for problem {pid}")
 
         self.dataset = dataset
         self.problem_buffer = {pid: dict(problem) for pid, problem in zip(self.problem_ids, dataset)}
@@ -80,7 +78,7 @@ class Buffer:
 
     def load(self, path: Path) -> None:
         """Loads metadata and rollouts from separate HF datasets. Uses the existing dataset stored in the buffer."""
-        self._init_buffer(self.dataset, from_scratch=False, dataset_path=path)
+        self._init_buffer(self.dataset, dataset_path=path)
 
     def sample_problems(self, n: int) -> list[dict]:
         """Samples `n` problems from the dataset using difficulty pools."""
@@ -111,6 +109,8 @@ class Buffer:
         """Updates the buffer state with completed rollouts."""
         for rollout in rollouts:
             problem_id = rollout["example_id"]
+            if problem_id not in self.metadata:
+                continue
             if rollout["advantage"] == 0:
                 new_difficulty = "easy" if rollout["reward"] == 1.0 else "hard"
             else:
@@ -121,8 +121,6 @@ class Buffer:
 
     def sample_rollouts(self, n: int) -> list[Rollout]:
         """Samples the latest `n` rollouts from the buffer."""
-        if not self.rollout_buffer or n <= 0:
-            return []
         n = min(n, len(self.rollout_buffer))
         sampled = self.rollout_buffer[-n:]
         self.rollout_buffer = self.rollout_buffer[:-n]

@@ -283,12 +283,12 @@ class CheckpointConfig(BaseConfig):
 class BufferConfig(BaseModel):
     """Configures the buffer for the orchestrator."""
 
-    from_scratch: Annotated[
-        bool,
+    dataset_path: Annotated[
+        Path | None,
         Field(
-            description="Whether to initialize the metadata and rollout buffer from scratch. Defaults to True, which means we will initialize empty metadata and rollout buffers. If False, we expect columns `metadata` and `rollouts` to be present in the environment dataset to initialize the buffer from.",
+            description="The path to the dataset to initialize the buffer from. If None, will default to <output_dir>/datasets/<env_id>/<step_path>/<env_id>.",
         ),
-    ] = True
+    ] = None
 
     seed: Annotated[
         int | None,
