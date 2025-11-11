@@ -37,8 +37,8 @@ from prime_rl.utils.client import (
     setup_evals_client,
     update_weights,
 )
-from prime_rl.orchestrator.config import OrchestratorConfig, SimpleBufferConfig
-from prime_rl.orchestrator.buffer import setup_buffer
+from prime_rl.orchestrator.config import OrchestratorConfig, BufferConfig
+from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.utils.logger import setup_logger
 from prime_rl.orchestrator.utils import (
@@ -113,8 +113,9 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
-    buffer = setup_buffer(dataset, config.buffer)
-    val_buffer = setup_buffer(val_dataset, SimpleBufferConfig()) if val_dataset else None
+    buffer_path = config.ckpt.buffer_path if config.ckpt else None
+    buffer = Buffer(dataset, config.buffer, buffer_path=buffer_path)
+    val_buffer = Buffer(val_dataset, BufferConfig(), buffer_path=buffer_path) if val_dataset else None
 
     # Setup scheduler
     scheduler = Scheduler(
@@ -362,6 +363,8 @@ async def orchestrate(config: OrchestratorConfig):
             "time/save_ckpt": save_ckpt_time,
             # Scheduler metrics
             **scheduler.metrics(),
+            # Buffer metrics
+            **buffer.get_metrics(),
             # W&B axis
             "step": progress.step,
         }

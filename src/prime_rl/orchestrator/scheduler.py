@@ -107,7 +107,7 @@ class Scheduler:
         # Update and sample rollouts from the buffer
         self.buffer.update(rollouts)
         num_problems = len(set(generate_outputs.example_id))
-        accepted_rollouts = self.buffer.sample_rollouts(n=num_problems)
+        accepted_rollouts = self.buffer.sample_rollouts(n=num_problems * self.config.rollouts_per_example)
 
         return accepted_rollouts
 

@@ -1,407 +1,156 @@
-import json
 import random
-from abc import ABC, abstractmethod
+import shutil
 from collections import Counter, defaultdict
 from pathlib import Path
 
 from datasets import Dataset, load_from_disk
 
-from prime_rl.orchestrator.config import (
-    DataBufferConfigType,
-    DifficultyPoolBufferConfig,
-    OnlineDifficultyBufferConfig,
-    SimpleBufferConfig,
-)
-from prime_rl.utils.logger import get_logger
+from prime_rl.orchestrator.config import BufferConfig
 from prime_rl.utils.vf import Rollout
 
 
-class Buffer(ABC):
-    """
-    Abstract base class for buffers. A buffer is a stateful class storing raw
-    dataset samples and completed rollouts. Crucially, any instance of this
-    class defines a strategy for sampling from the dataset and the rollouts.
-    """
+class Buffer:
+    """A buffer for storing rollouts and metadata."""
 
-    def __init__(self, dataset: Dataset, buffer_config: DataBufferConfigType):
-        self.logger = get_logger()
+    def __init__(self, dataset: Dataset, buffer_config: BufferConfig, buffer_path: Path | None = None):
         self.config = buffer_config
         if self.config.seed is not None:
             random.seed(self.config.seed)
 
-        # Initialize buffer from verifiers dataset
-        self._init_buffer(dataset, self.config.from_scratch)
+        self._init_buffer(dataset, buffer_path)
+        self.problem_metrics = defaultdict(int)
+        self.rollout_metrics = defaultdict(int)
 
-    def _init_buffer(self, dataset: Dataset, from_scratch: bool) -> None:
-        """Initializes the buffer state from a dataset."""
+    def _init_buffer(self, dataset: Dataset, buffer_path: Path | None = None) -> None:
+        """Initializes the buffer state from datasets."""
         # Use example_id column from verifiers
         assert "example_id" in dataset.column_names, "The dataset must contain a `example_id` column."
         assert isinstance(dataset["example_id"][0], int), "The `example_id` column must be of type int."
         assert len(set(dataset["example_id"])) == len(dataset), "The `example_id` column must be unique."
         self.problem_ids = dataset["example_id"]
 
-        if from_scratch:
-            self.logger.debug("Initializing metadata and rollouts in buffer from scratch.")
-            self.rollout_buffer: dict[int, list[Rollout]] = {}
-            self.metadata: dict[int, dict] = {problem_id: {} for problem_id in self.problem_ids}
+        if not buffer_path:
+            self.rollout_buffer: list[Rollout] = []
+            self.metadata = {pid: {"difficulty": "normal"} for pid in self.problem_ids}
         else:
-            self.logger.debug("Initializing metadata and rollouts in buffer from dataset columns.")
-            if not all(column in dataset.column_names for column in ("metadata", "rollouts")):
-                raise ValueError(
-                    "The dataset must contain columns `metadata` and `rollouts` to initialize the buffer, because `from_scratch` is False."
-                )
-            self.metadata = {
-                problem_id: json.loads(metadata) for problem_id, metadata in zip(self.problem_ids, dataset["metadata"])
-            }
-            self.rollout_buffer = {}
-            for problem_id, rollouts in zip(self.problem_ids, dataset["rollouts"]):
-                rollouts = json.loads(rollouts)
-                if len(rollouts) > 0:
-                    self.rollout_buffer[problem_id] = [Rollout(**rollout) for rollout in rollouts]
-            dataset = dataset.remove_columns(["metadata", "rollouts"])
+            metadata_path = buffer_path.parent / "metadata"
+            if not metadata_path.exists():
+                raise ValueError(f"Metadata dataset not found at {metadata_path}")
+            metadata_dataset = load_from_disk(metadata_path)
+            loaded_metadata = {row["problem_id"]: {k: v for k, v in row.items() if k != "problem_id"} for row in metadata_dataset}
+            
+            self.metadata = {}
+            for pid in self.problem_ids:
+                if pid in loaded_metadata:
+                    self.metadata[pid] = loaded_metadata[pid]
+                else:
+                    self.metadata[pid] = {"difficulty": "normal"}
+            
+            rollouts_path = buffer_path.parent / "rollouts"
+            if rollouts_path.exists():
+                rollouts_dataset = load_from_disk(rollouts_path)
+                self.rollout_buffer = [Rollout(**row) for row in rollouts_dataset]
+            else:
+                self.rollout_buffer = []
 
-        # Store dataset and problem buffer
         self.dataset = dataset
-        self.problem_buffer: dict[int, dict] = {
-            problem_id: dict(problem) for problem_id, problem in zip(self.problem_ids, dataset)
-        }
+        self.problem_buffer = {pid: dict(problem) for pid, problem in zip(self.problem_ids, dataset)}
 
     def save(self, path: Path) -> None:
-        """Saves the buffer state to a single HF dataset."""
-
-        # Remove stale columns if present before proceding.
-        dataset = self.dataset.remove_columns([c for c in ("metadata", "rollouts") if c in self.dataset.column_names])
-
-        # Put empty list for problems without rollouts
-        rollout_buffer = {problem_id: [] for problem_id in self.problem_ids}
-        for problem_id, rollouts in self.rollout_buffer.items():
-            rollout_buffer[problem_id] = rollouts
-
-        # Serialize metadata and rollouts into columns
-        assert len(dataset) == len(self.metadata) == len(rollout_buffer), (
-            f"The dataset, metadata and rollout buffer must have the same length, but got ({len(dataset)=}, {len(self.metadata)=}, {len(self.rollout_buffer)=})"
-        )
-        assert isinstance(dataset, Dataset)
-        dataset = dataset.add_column(
-            name="metadata", column=list(map(json.dumps, self.metadata.values())), new_fingerprint="metadata-ckpt"
-        )
-        dataset = dataset.add_column(
-            name="rollouts",
-            column=list(map(json.dumps, rollout_buffer.values())),
-            new_fingerprint="rollouts-ckpt",
-        )
-
-        # Write to disk
+        """Saves metadata and rollouts as separate HF datasets."""
         path.parent.mkdir(parents=True, exist_ok=True)
-        dataset.save_to_disk(path)
+        
+        metadata_path = path.parent / "metadata"
+        metadata_data = [{"problem_id": pid, **self.metadata[pid]} for pid in self.problem_ids]
+        Dataset.from_list(metadata_data).save_to_disk(metadata_path)
+        
+        rollouts_path = path.parent / "rollouts"
+        if self.rollout_buffer:
+            Dataset.from_list(self.rollout_buffer).save_to_disk(rollouts_path)
+        elif rollouts_path.exists():
+            shutil.rmtree(rollouts_path)
 
     def load(self, path: Path) -> None:
-        """Loads the buffer state from a single HF dataset."""
-        # Load dataset from disk
-        self.dataset = load_from_disk(path)
-        assert isinstance(self.dataset, Dataset)
-        self._init_buffer(self.dataset, from_scratch=False)
-
-    @abstractmethod
-    def sample_problems(self, n: int) -> list[dict]:
-        """
-        Samples `n` problems from the dataset. Returns a list of problem IDs
-        and a list of dictionaries representing the problems. The dictionary keys
-        correspond to the fields of the dataset used for initializing the pool.
-
-        Args:
-            n: The number of problems to sample.
-
-        Returns:
-            A tuple of two lists. The first list contains the problem IDs of the
-            sampled problems. The second list contains the problems themselves.
-        """
-        pass
-
-    @abstractmethod
-    def update(self, rollouts: list[Rollout]):
-        """
-        Updates the buffer state with the completed rollouts. Should store
-        rollouts in the rollout buffer and update metadata about problems
-        relevant for sampling.
-
-        Args:
-            rollouts: A list of rollouts to update the pool with.
-        """
-        pass
-
-    @abstractmethod
-    def sample_rollouts(self, n: int) -> list[Rollout]:
-        """
-        Samples rollouts for `n` problems from the rollout buffer which are
-        ready for training. Thus, the length of the list returned is equal to
-        `n` * `rollouts_per_example`.  Logs a warning if there are less than `n`
-        samples available.
-
-        Args:
-            n: The number of problems to return rollouts for.
-
-        Returns:
-            A list of rollouts that are ready to be used by the trainer.
-        """
-        pass
-
-
-class SimpleBuffer(Buffer):
-    """
-    Simple buffer that samples problems from the dataset in chronological order
-    and immediately returns all generated rollouts to the trainer.
-    """
-
-    def __init__(self, dataset: Dataset, buffer_config: SimpleBufferConfig):
-        super().__init__(dataset, buffer_config)
-        self.config = buffer_config
+        """Loads metadata and rollouts from separate HF datasets. Uses the existing dataset stored in the buffer."""
+        self._init_buffer(self.dataset, buffer_path=path)
 
     def sample_problems(self, n: int) -> list[dict]:
-        # Get indices to sample
-        assert len(self.problem_ids) >= n, (
-            f"There should be at least {n} problems in the buffer, but found only {len(self.problem_ids)}"
-        )
-        sampled_problem_ids = random.sample(self.problem_ids, n)
-        assert len(sampled_problem_ids) == n
-
-        # Get problems from indices
-        sampled_problems = [self.problem_buffer[problem_id] for problem_id in sampled_problem_ids]
-
-        return sampled_problems
-
-    def update(self, rollouts: list[Rollout]):
-        # Group rollouts by problem_id
-        rollouts_by_problem_id = defaultdict(list)
-        for rollout in rollouts:
-            rollouts_by_problem_id[rollout["example_id"]].append(rollout)
-
-        # Add grouped rollouts to the buffer
-        self.rollout_buffer.update(rollouts_by_problem_id)
-
-        # Update metadata with reward information
-        for problem_id, rollouts in rollouts_by_problem_id.items():
-            reward = sum(rollout["reward"] for rollout in rollouts) / len(rollouts)
-            self.metadata[problem_id].update({"reward": reward})
-
-    def sample_rollouts(self, n: int) -> list[Rollout]:
-        # Take the first n problems from the rollout buffer
-        available_problem_ids = list(self.rollout_buffer.keys())
-        assert len(available_problem_ids) == n, (
-            "The number of available problems should always be equal to the requested number of problems"
-        )
-        sampled_problem_ids = available_problem_ids[:n]
-        assert len(sampled_problem_ids) == n, (
-            "The number of sampled problems should always be equal to the requested number of problems"
-        )
-
-        # Build (flattened) list of rollouts
-        sampled_rollouts: list[Rollout] = []
-        for problem_id in sampled_problem_ids:
-            sampled_rollout = self.rollout_buffer.pop(problem_id)
-            sampled_rollouts.extend(sampled_rollout)
-
-        return sampled_rollouts
-
-
-class DifficultyPoolBuffer(Buffer):
-    """
-    The difficulty pool buffer ensures that a specified fraction of problems are
-    sampled from an "easy", "normal" and "hard" difficulty pool. Updates
-    difficulty information based on the rollout rewards and advantages. Releases
-    all rollouts to the trainer.
-    """
-
-    def __init__(self, dataset: Dataset, buffer_config: DifficultyPoolBufferConfig):
-        super().__init__(dataset, buffer_config)
-        self.config = buffer_config
-
-        # If not difficulty field is provided, initialize all problems as `normal` difficulty
-        for problem_id in self.problem_ids:
-            if self.metadata[problem_id].get("difficulty") is None:
-                self.metadata[problem_id].update({"difficulty": "normal"})
-            if self.metadata[problem_id]["difficulty"] not in ["easy", "normal", "hard"]:
-                raise ValueError(
-                    f"Invalid difficulty {self.metadata[problem_id]['difficulty']} for problem {problem_id}. Should be one of `easy`, `normal` or `hard`."
-                )
-
-    def sample_problems(self, n: int) -> list[dict]:
-        # Compute number of easy, normal and hard problems to sample
+        """Samples `n` problems from the dataset using difficulty pools."""
         n_easy = int(n * self.config.easy_fraction)
         n_hard = int(n * self.config.hard_fraction)
         n_normal = n - n_easy - n_hard
 
-        # Get low and high priority problem
-        easy_problem_ids = [
-            problem_id for problem_id, metadata in self.metadata.items() if metadata["difficulty"] == "easy"
-        ]
-        normal_problem_ids = [
-            problem_id for problem_id, metadata in self.metadata.items() if metadata["difficulty"] == "normal"
-        ]
-        hard_problem_ids = [
-            problem_id for problem_id, metadata in self.metadata.items() if metadata["difficulty"] == "hard"
-        ]
+        by_difficulty = defaultdict(list)
+        for problem_id, metadata in self.metadata.items():
+            by_difficulty[metadata["difficulty"]].append(problem_id)
 
-        # Sample easy problems
-        # Cannot sample more than the number of low priority problems available
-        n_easy_sampled = min(n_easy, len(easy_problem_ids))
-        sampled_easy_problem_ids = random.sample(easy_problem_ids, n_easy_sampled)
-        assert len(sampled_easy_problem_ids) == n_easy_sampled
-        if n_easy_sampled < n_easy:
-            self.logger.warning(
-                f"Only {n_easy_sampled} easy problem(s) available, sampling {n_easy - n_easy_sampled} normal problem(s) more"
-            )
-            n_normal += n_easy - n_easy_sampled
+        def sample_pool(pool_ids: list[int], target: int, pool_name: str) -> tuple[list[int], int]:
+            sampled_count = min(target, len(pool_ids))
+            sampled_ids = random.sample(pool_ids, sampled_count) if sampled_count > 0 else []
+            self.problem_metrics[pool_name] += sampled_count
+            return sampled_ids, target - sampled_count
 
-        # Sample hard problems
-        n_hard_sampled = min(n_hard, len(hard_problem_ids))
-        sampled_hard_problem_ids = random.sample(hard_problem_ids, n_hard_sampled)
-        assert len(sampled_hard_problem_ids) == n_hard_sampled
-        if n_hard_sampled < n_hard:
-            self.logger.warning(
-                f"Only {n_hard_sampled} hard problem(s) available, sampling {n_hard - n_hard_sampled} normal problem(s) more"
-            )
-            n_normal += n_hard - n_hard_sampled
-
-        # Sample normal problems
-        # TODO: This is not entirely safe - runs may crash once all samples become easy and not enough samples are in normal pool
-        assert len(normal_problem_ids) >= n_normal
-        n_normal_sampled = min(n_normal, len(normal_problem_ids))
-        sampled_normal_problem_ids = random.sample(normal_problem_ids, n_normal_sampled)
-        assert len(sampled_normal_problem_ids) == n_normal_sampled
-
-        sampled_problem_ids = sampled_easy_problem_ids + sampled_normal_problem_ids + sampled_hard_problem_ids
-        assert len(sampled_problem_ids) == n
-
-        # Sample problems
-        sampled_problems = [self.problem_buffer[problem_id] for problem_id in sampled_problem_ids]
-
-        return sampled_problems
+        sampled_easy, easy_deficit = sample_pool(by_difficulty["easy"], n_easy, "easy")
+        sampled_hard, hard_deficit = sample_pool(by_difficulty["hard"], n_hard, "hard")
+        sampled_normal, _ = sample_pool(by_difficulty["normal"], n_normal + easy_deficit + hard_deficit, "normal")
+        
+        sampled_ids = sampled_easy + sampled_normal + sampled_hard
+        return [self.problem_buffer[pid] for pid in sampled_ids]
 
     def update(self, rollouts: list[Rollout]):
-        # Group rollouts by problem_id
-        rollouts_by_problem_id = defaultdict(list)
+        """Updates the buffer state with completed rollouts."""
+        rollouts_by_example = defaultdict(list)
         for rollout in rollouts:
-            rollouts_by_problem_id[rollout["example_id"]].append(rollout)
-
-        # Add grouped rollouts to the buffer
-        self.rollout_buffer.update(rollouts_by_problem_id)
-
-        # Update metadata with priority information
-        stats = Counter()
-        for problem_id, rollouts in rollouts_by_problem_id.items():
-            reward = sum([rollout["reward"] for rollout in rollouts]) / len(rollouts)
-            # TODO(Justus): Should we also have rules based on advantages here?
-            # TODO(Justus): Should we move samples between pools based on average reward or all(r > threshold for r in rewards)?
-            if reward > self.config.easy_border:
+            problem_id = rollout["example_id"]
+            rollouts_by_example[problem_id].append(rollout)
+        
+        for problem_id, example_rollouts in rollouts_by_example.items():
+            avg_reward = sum(rollout["reward"] for rollout in example_rollouts) / len(example_rollouts)
+            has_zero_advantage = all(rollout["advantage"] == 0.0 for rollout in example_rollouts)
+            
+            if self.config.easy_threshold is not None and avg_reward >= self.config.easy_threshold:
                 new_difficulty = "easy"
-            elif reward < self.config.hard_border:
+            elif self.config.hard_threshold is not None and avg_reward <= self.config.hard_threshold:
                 new_difficulty = "hard"
             else:
                 new_difficulty = "normal"
-            old_difficulty = self.metadata[problem_id]["difficulty"]
-            stats[(old_difficulty, new_difficulty)] += 1
-            self.metadata[problem_id].update({"reward": reward, "difficulty": new_difficulty})
+
+            self.metadata[problem_id]["difficulty"] = new_difficulty
+            self.rollout_metrics[new_difficulty] += len(example_rollouts)
+            
+            if (has_zero_advantage
+                or (self.config.filter_min_threshold is not None and avg_reward <= self.config.filter_min_threshold)
+                or (self.config.filter_max_threshold is not None and avg_reward >= self.config.filter_max_threshold)):
+                continue
+
+            self.rollout_buffer.extend(example_rollouts)
 
     def sample_rollouts(self, n: int) -> list[Rollout]:
-        # Take the first n rollouts from the rollout buffer
-        available_problem_ids = list(self.rollout_buffer.keys())
-        assert len(available_problem_ids) == n, (
-            "The number of available problems should always be equal to the requested number of problems"
-        )
-        sampled_problem_ids = available_problem_ids[:n]
-        assert len(sampled_problem_ids) == n, (
-            "The number of sampled problems should always be equal to the requested number of problems"
-        )
+        """Samples the latest `n` rollouts from the buffer."""
+        n = min(n, len(self.rollout_buffer))
+        sampled = self.rollout_buffer[-n:]
+        self.rollout_buffer = self.rollout_buffer[:-n]
+        return sampled
 
-        # Build (flattened) list of rollouts
-        sampled_rollouts: list[Rollout] = []
-        for problem_id in sampled_problem_ids:
-            sampled_rollout = self.rollout_buffer.pop(problem_id)
-            sampled_rollouts.extend(sampled_rollout)
+    def _get_normalized_metrics(self, metrics: dict[str, int], prefix: str) -> dict[str, float]:
+        """Helper method to normalize metrics and format them for logging."""
+        count_total = sum(metrics.values())
+        return {
+            f"{prefix}/{key}": count / count_total if count_total > 0 else 0
+            for key, count in metrics.items()
+        }
 
-        return sampled_rollouts
-
-
-class OnlineDifficultyBuffer(Buffer):
-    """
-    The online difficulty buffer ensures that any sampled rollouts are within
-    some configurable difficulty range. This means it may not return the
-    specified number of rollouts.
-    """
-
-    def __init__(self, dataset: Dataset, buffer_config: OnlineDifficultyBufferConfig):
-        super().__init__(dataset, buffer_config)
-        self.config = buffer_config
-
-    def sample_problems(self, n: int) -> list[dict]:
-        # Get indices to sample
-        assert len(self.problem_ids) >= n, (
-            f"There should be at least {n} problem(s) in the buffer, but found only {len(self.problem_ids)}"
-        )
-        sampled_problem_ids = random.sample(self.problem_ids, n)
-
-        # Sample problems
-        sampled_problems = [self.problem_buffer[problem_id] for problem_id in sampled_problem_ids]
-
-        return sampled_problems
-
-    def update(self, rollouts: list[Rollout]):
-        # Group rollouts by problem_id
-        rollouts_by_problem_id = defaultdict(list)
-        for rollout in rollouts:
-            rollouts_by_problem_id[rollout["example_id"]].append(rollout)
-
-        # Do not keep rollouts from older weight checkpoints
-        # TODO: Can we lift this constraint? Maybe, instead of clearing we mark
-        # the out of range samples as discarded and remove them from the list of
-        # problem IDs that can be sampled
-        self.rollout_buffer.clear()
-
-        # Add grouped rollouts to the buffer
-        self.rollout_buffer.update(rollouts_by_problem_id)
-
-        # Update metadata with difficulty information
-        for problem_id, rollouts in rollouts_by_problem_id.items():
-            reward = sum(rollout["reward"] for rollout in rollouts) / len(rollouts)
-            self.metadata[problem_id].update({"reward": reward})
-
-    def sample_rollouts(self, n: int) -> list[Rollout]:
-        available_problem_ids = list(self.rollout_buffer.keys())
-        sampled_problem_ids, sampled_rollouts = [], []
-        num_too_easy, num_too_hard = 0, 0
-        # Take the first n rollouts within the difficulty range
-        for problem_id in available_problem_ids:
-            reward = self.metadata[problem_id]["reward"]
-            if self.config.min_reward is not None and reward < self.config.min_reward:
-                num_too_hard += 1
-                continue
-            if self.config.max_reward is not None and reward > self.config.max_reward:
-                num_too_easy += 1
-                continue
-            sampled_rollout = self.rollout_buffer.pop(problem_id)
-            sampled_rollouts.extend(sampled_rollout)
-            sampled_problem_ids.append(problem_id)
-
-        assert all(
-            [
-                self.config.min_reward or -1e9 <= self.metadata[problem_id]["reward"] <= self.config.max_reward or 1e9
-                for problem_id in sampled_problem_ids
-            ]
-        )
-
-        if len(sampled_problem_ids) < n:
-            self.logger.warning(
-                f"Only {len(sampled_problem_ids)} (<{n}) valid problem(s) available ({num_too_easy=}, {num_too_hard=})"
-            )
-
-        return sampled_rollouts
-
-
-def setup_buffer(dataset: Dataset, buffer_config: DataBufferConfigType) -> Buffer:
-    if buffer_config.type == "simple":
-        return SimpleBuffer(dataset, buffer_config)
-    elif buffer_config.type == "difficulty-pool":
-        return DifficultyPoolBuffer(dataset, buffer_config)
-    elif buffer_config.type == "online-difficulty":
-        return OnlineDifficultyBuffer(dataset, buffer_config)
+    def get_metrics(self) -> dict[str, float]:
+        """Returns normalized metrics for problems, rollouts, and data distribution."""
+        metrics = {
+            **self._get_normalized_metrics(self.problem_metrics, "problem_metrics"),
+            **self._get_normalized_metrics(self.rollout_metrics, "rollout_metrics"),
+        }
+        
+        difficulty_counts = Counter(md.get("difficulty", "normal") for md in self.metadata.values())
+        total = sum(difficulty_counts.values())
+        for difficulty in ["easy", "normal", "hard"]:
+            metrics[f"data_metrics/{difficulty}"] = difficulty_counts[difficulty] / total if total > 0 else 0.0
+        
+        return metrics
+    
