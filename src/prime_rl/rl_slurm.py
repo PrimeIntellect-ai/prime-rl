@@ -31,7 +31,7 @@ fi
 
 # Paths
 export BASE_DIR="{{ base_dir }}"
-export OUTPUT_DIR="{{ output_dir }}/$SLURM_JOB_NAME"
+export OUTPUT_DIR="{{ output_dir }}"
 
 
 mkdir -p $OUTPUT_DIR/slurm
