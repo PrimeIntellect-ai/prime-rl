@@ -186,6 +186,13 @@ def rl_slurm(config: RLSLURMConfig):
     with open(config.output_dir / "slurm.sh", "w") as f:
         f.write(slurm_script)
 
+    print(f"Slurm script written to {config.output_dir / 'slurm.sh'}")
+    print(f"run with: sbatch {config.output_dir / 'slurm.sh'}")
+
+    print(f"to view trainer logs: tail -f {config.output_dir / 'slurm/latest_train_node_rank_0.log'}")
+    print(f"to view orchestrator logs: tail -f {config.output_dir / 'slurm/latest_orchestrator.log'}")
+    print(f"to view inference logs: tail -f {config.output_dir / 'slurm/latest_infer_node_rank_0.log'}")
+
 
 def main():
     rl_slurm(parse_argv(RLSLURMConfig))
