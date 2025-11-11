@@ -427,11 +427,10 @@ class WeightCheckpointManager:
         """Synchronous helper of `clean`."""
         step = max(step - (self.async_level + 1), 0)  # Consider deleting async_level + 1 steps ago
         candidate_path_to_delete = self._get_step_path(step)
-        keep_for_eval = self.config.interval and step % self.config.interval == 0
-        keep_for_ckpt = (
-            self.ckpt_config
-            and self.ckpt_config.interval
-            and self.ckpt_config.interval % self.ckpt_config.interval == 0
+        keep_for_eval = bool(self.config.interval and step % self.config.interval == 0)
+        keep_for_ckpt = bool(self.ckpt_config and self.ckpt_config.interval and step % self.ckpt_config.interval == 0)
+        self._logger.debug(
+            f"Considering deleting weight checkpoint {candidate_path_to_delete} ({keep_for_eval=}, {keep_for_ckpt=})"
         )
         if not (keep_for_eval or keep_for_ckpt):
             self._logger.debug(
