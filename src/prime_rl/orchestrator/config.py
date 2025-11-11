@@ -333,6 +333,34 @@ class BufferConfig(BaseModel):
         ),
     ] = 0.0
 
+    use_replay_buffer: Annotated[
+        bool,
+        Field(
+            description="If True, rollouts removed from rollout_buffer are added to replay_buffer, and replay_buffer is used to fill when rollout_buffer doesn't have enough rollouts.",
+        ),
+    ] = False
+
+    refresh_rollout_buffer: Annotated[
+        bool,
+        Field(
+            description="If True, ignore existing rollout buffer when loading from dataset_path and start with an empty rollout buffer.",
+        ),
+    ] = False
+
+    refresh_metadata: Annotated[
+        bool,
+        Field(
+            description="If True, ignore existing metadata when loading from dataset_path and start with default metadata (all problems set to 'normal' difficulty).",
+        ),
+    ] = False
+
+    take_all_rollouts: Annotated[
+        bool,
+        Field(
+            description="If True, when sampling rollouts, take all rollouts from rollout_buffer if it has at least n rollouts. Otherwise, only take n rollouts from rollout_buffer and fill remaining from replay_buffer.",
+        ),
+    ] = False
+
     min_reward: Annotated[
         float | None,
         Field(
