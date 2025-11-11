@@ -176,11 +176,11 @@ def rl_slurm(config: RLSLURMConfig):
 
     (config.output_dir / "configs").mkdir(parents=True, exist_ok=True)
 
-    with open(config.output_dir / "configs/inference.toml", "wb") as f:
+    with open(config.output_dir / "configs/infer.toml", "wb") as f:
         tomli_w.dump(config.inference.model_dump(exclude_none=True, mode="json"), f)
-    with open(config.output_dir / "configs/orchestrator.toml", "wb") as f:
+    with open(config.output_dir / "configs/orch.toml", "wb") as f:
         tomli_w.dump(config.orchestrator.model_dump(exclude_none=True, mode="json"), f)
-    with open(config.output_dir / "configs/trainer.toml", "wb") as f:
+    with open(config.output_dir / "configs/train.toml", "wb") as f:
         tomli_w.dump(config.trainer.model_dump(exclude_none=True, mode="json"), f)
 
     config.output_dir.mkdir(parents=True, exist_ok=True)
