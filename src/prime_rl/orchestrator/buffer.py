@@ -39,41 +39,27 @@ class Buffer:
 
         if not dataset_path:
             self.rollout_buffer: list[Rollout] = []
-            self.replay_buffer: list[Rollout] = []
             self.metadata = {pid: {"difficulty": "normal"} for pid in self.problem_ids}
         else:
-            if self.config.refresh_metadata:
-                self.metadata = {pid: {"difficulty": "normal"} for pid in self.problem_ids}
-            else:
-                metadata_path = dataset_path.parent / "metadata"
-                if not metadata_path.exists():
-                    raise ValueError(f"Metadata dataset not found at {metadata_path}")
-                metadata_dataset = load_from_disk(metadata_path)
-                loaded_metadata = {row["problem_id"]: {k: v for k, v in row.items() if k != "problem_id"} for row in metadata_dataset}
-                
-                self.metadata = {}
-                for pid in self.problem_ids:
-                    if pid in loaded_metadata:
-                        self.metadata[pid] = loaded_metadata[pid]
-                    else:
-                        self.metadata[pid] = {"difficulty": "normal"}
+            metadata_path = dataset_path.parent / "metadata"
+            if not metadata_path.exists():
+                raise ValueError(f"Metadata dataset not found at {metadata_path}")
+            metadata_dataset = load_from_disk(metadata_path)
+            loaded_metadata = {row["problem_id"]: {k: v for k, v in row.items() if k != "problem_id"} for row in metadata_dataset}
             
-            if self.config.refresh_rollout_buffer:
-                self.rollout_buffer = []
-            else:
-                rollouts_path = dataset_path.parent / "rollouts"
-                if rollouts_path.exists():
-                    rollouts_dataset = load_from_disk(rollouts_path)
-                    self.rollout_buffer = [Rollout(**row) for row in rollouts_dataset]
+            self.metadata = {}
+            for pid in self.problem_ids:
+                if pid in loaded_metadata:
+                    self.metadata[pid] = loaded_metadata[pid]
                 else:
-                    self.rollout_buffer = []
+                    self.metadata[pid] = {"difficulty": "normal"}
             
-            replay_path = dataset_path.parent / "replay"
-            if self.config.use_replay_buffer and not self.config.refresh_rollout_buffer and replay_path.exists():
-                replay_dataset = load_from_disk(replay_path)
-                self.replay_buffer = [Rollout(**row) for row in replay_dataset]
+            rollouts_path = dataset_path.parent / "rollouts"
+            if rollouts_path.exists():
+                rollouts_dataset = load_from_disk(rollouts_path)
+                self.rollout_buffer = [Rollout(**row) for row in rollouts_dataset]
             else:
-                self.replay_buffer = []
+                self.rollout_buffer = []
 
         self.dataset = dataset
         self.problem_buffer = {pid: dict(problem) for pid, problem in zip(self.problem_ids, dataset)}
@@ -89,10 +75,6 @@ class Buffer:
         rollouts_path = path.parent / "rollouts"
         if self.rollout_buffer:
             Dataset.from_list(self.rollout_buffer).save_to_disk(rollouts_path)
-        
-        replay_path = path.parent / "replay"
-        if self.replay_buffer:
-            Dataset.from_list(self.replay_buffer).save_to_disk(replay_path)
 
     def load(self, path: Path) -> None:
         """Loads metadata and rollouts from separate HF datasets. Uses the existing dataset stored in the buffer."""
@@ -138,31 +120,10 @@ class Buffer:
             self.rollout_metrics[new_difficulty] += 1
 
     def sample_rollouts(self, n: int) -> list[Rollout]:
-        """Samples `n` rollouts from the rollout and replay buffers (if enabled)."""
-        sampled = []
-        sampled_from_rollout = []
-
-        if self.config.take_all_rollouts:
-            n_from_rollout = len(self.rollout_buffer)
-        else:
-            n_from_rollout = min(n, len(self.rollout_buffer))
-
-        if n_from_rollout > 0:
-            sampled_from_rollout = self.rollout_buffer[-n_from_rollout:]
-            self.rollout_buffer = self.rollout_buffer[:-n_from_rollout]
-            sampled.extend(sampled_from_rollout)
-    
-        n_remaining = n - len(sampled)
-        if self.config.use_replay_buffer and n_remaining > 0 and len(self.replay_buffer) > 0:
-            n_from_replay = min(n_remaining, len(self.replay_buffer))
-            selected_items = self.replay_buffer[-n_from_replay:]
-            self.replay_buffer = self.replay_buffer[:-n_from_replay]
-            sampled.extend(selected_items)
-            self.replay_buffer = selected_items + self.replay_buffer
-            
-        if self.config.use_replay_buffer:
-            self.replay_buffer.extend(sampled_from_rollout)
-            
+        """Samples the latest `n` rollouts from the buffer."""
+        n = min(n, len(self.rollout_buffer))
+        sampled = self.rollout_buffer[-n:]
+        self.rollout_buffer = self.rollout_buffer[:-n]
         return sampled
 
     def _get_normalized_metrics(self, metrics: dict[str, int], prefix: str) -> dict[str, float]:
