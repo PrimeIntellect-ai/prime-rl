@@ -35,6 +35,7 @@ class LossConfig(BaseModel):
             ),
         ),
     ] = 0.0
+    kl_tau: Annotated[float, Field(ge=0)] = 0.0
 
 
 class FakeDataLoaderConfig(BaseConfig):
