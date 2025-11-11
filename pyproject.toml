@@ -9,6 +9,7 @@ dependencies = [
     "cydifflib>=1.2.0",
     "datasets>=4.0.0",
     "jaxtyping>=0.3.2",
+    "jinja2>=3.1.0",
     "liger-kernel>=0.5.10",
     "loguru>=0.7.3",
     "numpy>=2.2.6",
@@ -48,6 +49,7 @@ orchestrator = "prime_rl.orchestrator.orchestrator:main"
 inference = "prime_rl.inference.server:main"
 sft = "prime_rl.trainer.sft.train:main"
 eval = "prime_rl.eval.eval:main"
+rl_slurm = "prime_rl.rl_slurm:main"
 
 [dependency-groups]
 dev = [
