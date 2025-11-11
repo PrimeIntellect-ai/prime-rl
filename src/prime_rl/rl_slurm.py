@@ -155,7 +155,7 @@ class RLSLURMConfig(BaseRLLauncherConfig):
         Field(description="The directory to store the outputs. Should typically be set to an experiment identifier."),
     ] = Path("outputs")
 
-    slrum: SlurmConfig = SlurmConfig()
+    slurm: SlurmConfig = SlurmConfig()
 
 
 def rl_slurm(config: RLSLURMConfig):
@@ -165,11 +165,11 @@ def rl_slurm(config: RLSLURMConfig):
     template = Template(SLURM_TEMPLATE)
     base_dir = config.base_dir or Path.cwd()
     slurm_script = template.render(
-        job_name=config.slrum.job_name,
+        job_name=config.slurm.job_name,
         num_nodes=config.num_training_nodes + config.num_inference_nodes,
         num_train_nodes=config.num_training_nodes,
         num_infer_nodes=config.num_inference_nodes,
-        slurm_log_dir=str(config.slrum.log_dir),
+        slurm_log_dir=str(config.slurm.log_dir),
         base_dir=str(base_dir),
         output_dir=str(config.output_dir),
     )
