@@ -159,7 +159,7 @@ class RLSLURMConfig(BaseRLLauncherConfig):
 
 
 def rl_slurm(config: RLSLURMConfig):
-    if config.weight_broadcast.type == "nccl":
+    if config.weight_broadcast and config.weight_broadcast.type == "nccl":
         raise NotImplementedError("NCCL weight broadcast is not supported for SLURM.")
 
     template = Template(SLURM_TEMPLATE)
