@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 from typing import Annotated
 
@@ -138,6 +139,8 @@ class SlurmConfig(BaseConfig):
     job_name: Annotated[str, Field(description="The name of the job.")] = "prime-rl"
     log_dir: Annotated[Path, Field(description="The directory to store the slrum logs.")] = Path("outputs/logs")
 
+    call_slrum: Annotated[bool, Field(description="Whether to call slrum.")] = True
+
 
 class RLSLURMConfig(BaseRLLauncherConfig):
     """Configures an RL training run using SLURM."""
@@ -188,12 +191,24 @@ def rl_slurm(config: RLSLURMConfig):
     with open(config.output_dir / "slurm.sh", "w") as f:
         f.write(slurm_script)
 
-    print(f"Slurm script written to {config.output_dir / 'slurm.sh'}")
-    print(f"run with: sbatch {config.output_dir / 'slurm.sh'}")
+    if config.call_slrum:
+        result = subprocess.run(["sbatch", config.output_dir / "slurm.sh"], capture_output=True, text=True, check=True)
+        job_id = result.stdout.strip().split()[-1]
+        print(f"Submitted batch job {job_id}")
 
-    print(f"to view trainer logs: tail -f {config.output_dir / 'slurm/latest_train_node_rank_0.log'}")
-    print(f"to view orchestrator logs: tail -f {config.output_dir / 'slurm/latest_orchestrator.log'}")
-    print(f"to view inference logs: tail -f {config.output_dir / 'slurm/latest_infer_node_rank_0.log'}")
+        log_file = config.slurm.log_dir / f"job_{job_id}.log"
+        config.slurm.log_dir.mkdir(parents=True, exist_ok=True)
+        log_file.touch()
+        print(f"Tailing logs to {log_file}")
+        subprocess.run(["tail", "-f", str(log_file)])
+
+    else:
+        print(f"Slurm script written to {config.output_dir / 'slurm.sh'}")
+        print(f"run with: sbatch {config.output_dir / 'slurm.sh'}")
+
+        print(f"to view trainer logs: tail -f {config.output_dir / 'slurm/latest_train_node_rank_0.log'}")
+        print(f"to view orchestrator logs: tail -f {config.output_dir / 'slurm/latest_orchestrator.log'}")
+        print(f"to view inference logs: tail -f {config.output_dir / 'slurm/latest_infer_node_rank_0.log'}")
 
 
 def main():
