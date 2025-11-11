@@ -21,27 +21,27 @@ class Buffer:
     Sampling returns the latest n rollouts from the buffer.
     """
 
-    def __init__(self, dataset: Dataset, buffer_config: BufferConfig):
+    def __init__(self, dataset: Dataset, buffer_config: BufferConfig, buffer_path: Path | None = None):
         self.config = buffer_config
         if self.config.seed is not None:
             random.seed(self.config.seed)
 
         # Initialize buffer
-        self._init_buffer(dataset, self.config.dataset_path)
+        self._init_buffer(dataset, buffer_path)
         self.problem_metrics = defaultdict(int)
         self.rollout_metrics = defaultdict(int)
 
-    def _init_buffer(self, dataset: Dataset, dataset_path: Path | None = None) -> None:
+    def _init_buffer(self, dataset: Dataset, buffer_path: Path | None = None) -> None:
         """Initializes the buffer state from datasets."""
         if "id" not in dataset.column_names:
             dataset = dataset.add_column("id", list(range(len(dataset))), new_fingerprint=str(uuid.uuid4()))
         self.problem_ids = dataset["id"]
 
-        if not dataset_path:
+        if not buffer_path:
             self.rollout_buffer: list[Rollout] = []
             self.metadata = {pid: {"difficulty": "normal"} for pid in self.problem_ids}
         else:
-            metadata_path = dataset_path.parent / "metadata"
+            metadata_path = buffer_path.parent / "metadata"
             if not metadata_path.exists():
                 raise ValueError(f"Metadata dataset not found at {metadata_path}")
             metadata_dataset = load_from_disk(metadata_path)
@@ -54,7 +54,7 @@ class Buffer:
                 else:
                     self.metadata[pid] = {"difficulty": "normal"}
             
-            rollouts_path = dataset_path.parent / "rollouts"
+            rollouts_path = buffer_path.parent / "rollouts"
             if rollouts_path.exists():
                 rollouts_dataset = load_from_disk(rollouts_path)
                 self.rollout_buffer = [Rollout(**row) for row in rollouts_dataset]
@@ -78,7 +78,7 @@ class Buffer:
 
     def load(self, path: Path) -> None:
         """Loads metadata and rollouts from separate HF datasets. Uses the existing dataset stored in the buffer."""
-        self._init_buffer(self.dataset, dataset_path=path)
+        self._init_buffer(self.dataset, buffer_path=path)
 
     def sample_problems(self, n: int) -> list[dict]:
         """Samples `n` problems from the dataset using difficulty pools."""

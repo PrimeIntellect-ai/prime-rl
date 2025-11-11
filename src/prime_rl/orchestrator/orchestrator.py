@@ -119,7 +119,8 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
-    buffer = Buffer(dataset, config.buffer)
+    buffer_path = config.ckpt.buffer_path if config.ckpt else None
+    buffer = Buffer(dataset, config.buffer, buffer_path=buffer_path)
     val_buffer = Buffer(val_dataset, BufferConfig()) if val_dataset else None
 
     # Check health of the client

@@ -279,16 +279,16 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = False
 
+    buffer_path: Annotated[
+        Path | None,
+        Field(
+            description="The path to load buffer state (metadata and rollouts) from. If None, will start with an empty buffer. The buffer state is saved at <ckpt_dir>/step_<step>/orchestrator/buffer.",
+        ),
+    ] = None
+
 
 class BufferConfig(BaseModel):
     """Configures the buffer for the orchestrator."""
-
-    dataset_path: Annotated[
-        Path | None,
-        Field(
-            description="The path to the dataset to initialize the buffer from. If None, will default to <output_dir>/datasets/<env_id>/<step_path>/<env_id>.",
-        ),
-    ] = None
 
     seed: Annotated[
         int | None,
@@ -408,7 +408,7 @@ class OrchestratorConfig(BaseSettings):
     eval: OnlineEvalConfig | None = None
 
     # Data buffer configuration
-    buffer: BufferConfig = Field(default_factory=BufferConfig)
+    buffer: BufferConfig = BufferConfig()
 
     # The advantage configuration
     advantage: AdvantageConfig | None = AdvantageConfig()
