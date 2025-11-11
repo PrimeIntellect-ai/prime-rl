@@ -109,6 +109,7 @@ srun bash -c '
 
         if [ "$SLURM_PROCID" -eq 0 ]; then
             uv run orchestrator \
+            --client.base-url $INFER_URLS \
             @ $OUTPUT_DIR/configs/${SLURM_JOB_ID}/orch.toml 2>&1 | tee $OUTPUT_DIR/slurm/latest_orchestrator.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_orchestrator.log & disown
         fi
 
@@ -158,6 +159,9 @@ class RLSLURMConfig(BaseRLLauncherConfig):
 
 
 def rl_slurm(config: RLSLURMConfig):
+    if config.weight_broadcast.type == "nccl":
+        raise NotImplementedError("NCCL weight broadcast is not supported for SLURM.")
+
     template = Template(SLURM_TEMPLATE)
     base_dir = config.base_dir or Path.cwd()
     slurm_script = template.render(
