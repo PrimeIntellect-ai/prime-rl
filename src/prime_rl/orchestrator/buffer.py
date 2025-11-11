@@ -25,6 +25,8 @@ class Buffer:
 
         # Initialize buffer
         self._init_buffer(dataset, self.config.from_scratch)
+        self.problem_metrics = {"easy": 0, "normal": 0, "hard": 0}
+        self.rollout_metrics = {"too_easy": 0, "rollouts_sampled": 0, "too_hard": 0}
 
     def _init_buffer(self, dataset: Dataset, from_scratch: bool) -> None:
         """Initializes the buffer state from a dataset."""
@@ -98,8 +100,10 @@ class Buffer:
         sampled_normal, _ = sample_from_pool(by_difficulty["normal"], n_normal, "normal")
 
         sampled_problem_ids = sampled_easy + sampled_normal + sampled_hard
-        stats = {"easy": len(sampled_easy), "normal": len(sampled_normal), "hard": len(sampled_hard)}
-        return [self.problem_buffer[pid] for pid in sampled_problem_ids], stats
+        self.problem_metrics["easy"] += len(sampled_easy)
+        self.problem_metrics["normal"] += len(sampled_normal)
+        self.problem_metrics["hard"] += len(sampled_hard)
+        return [self.problem_buffer[pid] for pid in sampled_problem_ids]
 
     def update(self, rollouts: list[Rollout]):
         """Updates the buffer state with completed rollouts."""
@@ -143,14 +147,31 @@ class Buffer:
             sampled_rollouts.extend(self.rollout_buffer.pop(problem_id))
             num_sampled += 1
 
-        stats = {"too_hard": num_too_hard, "too_easy": num_too_easy}
-        return sampled_rollouts, stats
+        self.rollout_metrics["too_hard"] += num_too_hard
+        self.rollout_metrics["too_easy"] += num_too_easy
+        self.rollout_metrics["rollouts_sampled"] += num_sampled
+        return sampled_rollouts
 
-    def get_metadata_difficulty_distribution(self) -> dict[str, int]:
-        """Returns the difficulty distribution of all problems in the metadata."""
-        distribution = {"easy": 0, "normal": 0, "hard": 0}
-        for metadata in self.metadata.values():
-            difficulty = metadata.get("difficulty", "normal")
-            if difficulty in distribution:
-                distribution[difficulty] += 1
-        return distribution
+    def get_problem_metrics(self) -> dict[str, float]:
+        """Returns the problem metrics formatted for logging."""
+        count_total = sum(self.problem_metrics.values())
+        return {
+            f"problem_metrics/{difficulty}": count / count_total if count_total > 0 else 0
+            for difficulty, count in self.problem_metrics.items()
+        }
+    
+    def get_rollout_metrics(self) -> dict[str, float]:
+        """Returns the rollout metrics formatted for logging."""
+        count_total = sum(self.rollout_metrics.values())
+        return {
+            f"rollout_metrics/{metric}": count / count_total if count_total > 0 else 0
+            for metric, count in self.rollout_metrics.items()
+        }
+
+    def get_metadata_metrics(self) -> dict[str, float]:
+        """Returns the metadata metrics formatted for logging."""
+        count_total = sum(self.metadata.values())
+        return {
+            f"metadata_metrics/{metadata_key}": metadata_value / count_total if count_total > 0 else 0
+            for metadata_key, metadata_value in self.metadata.items()
+        }
