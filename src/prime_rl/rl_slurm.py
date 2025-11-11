@@ -104,13 +104,13 @@ srun bash -c '
         export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
         INFER_NODE_RANK=$((SLURM_PROCID - NUM_TRAIN_NODES))
         uv run inference \
-        @ $OUTPUT_DIR/configs/${SLURM_JOB_ID}/infer.toml 2>&1 | tee $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log $OUTPUT_DIR/slurm/job_${INFER_NODE_RANK}_infer_node_rank_${INFER_NODE_RANK}.log
+        @ $OUTPUT_DIR/configs/infer.toml 2>&1 | tee $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log $OUTPUT_DIR/slurm/job_${INFER_NODE_RANK}_infer_node_rank_${INFER_NODE_RANK}.log
     else
 
         if [ "$SLURM_PROCID" -eq 0 ]; then
             uv run orchestrator \
             --client.base-url $INFER_URLS \
-            @ $OUTPUT_DIR/configs/${SLURM_JOB_ID}/orch.toml 2>&1 | tee $OUTPUT_DIR/slurm/latest_orchestrator.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_orchestrator.log & disown
+            @ $OUTPUT_DIR/configs/orch.toml 2>&1 | tee $OUTPUT_DIR/slurm/latest_orchestrator.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_orchestrator.log & disown
         fi
 
         # This is required for compilation to work correctly
@@ -128,7 +128,7 @@ srun bash -c '
         --redirects=3 \
         --local-ranks-filter=0 \
         src/prime_rl/trainer/rl/train.py \
-        @ /tmp/job_id/train.toml 2>&1 | tee -a $OUTPUT_DIR/slurm/latest_train_node_rank_${SLURM_PROCID}.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_train_node_rank_${SLURM_PROCID}.log
+        @ $OUTPUT_DIR/configs/train.toml 2>&1 | tee -a $OUTPUT_DIR/slurm/latest_train_node_rank_${SLURM_PROCID}.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_train_node_rank_${SLURM_PROCID}.log
     fi
 '
 """
