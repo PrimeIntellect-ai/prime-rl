@@ -436,10 +436,8 @@ async def orchestrate(config: OrchestratorConfig):
             "batch/solve_none": solve_none,
             "batch/solve_all": solve_all,
             "batch/effective_batch_size": effective_batch_size,
-            # Problem metrics
-            **buffer.get_problem_metrics(),
-            # Rollout metrics
-            **buffer.get_rollout_metrics(),
+            # Buffer metrics
+            **buffer.get_metrics(),
             # Env metrics
             **{f"metrics/{metric}": metrics_df[metric].mean() for metric in metrics_df.columns},
             # Time metrics

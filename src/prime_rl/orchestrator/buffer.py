@@ -152,26 +152,18 @@ class Buffer:
         self.rollout_metrics["rollouts_sampled"] += num_sampled
         return sampled_rollouts
 
-    def get_problem_metrics(self) -> dict[str, float]:
-        """Returns the problem metrics formatted for logging."""
-        count_total = sum(self.problem_metrics.values())
+    def _get_normalized_metrics(self, metrics: dict[str, int], prefix: str) -> dict[str, float]:
+        """Helper method to normalize metrics and format them for logging."""
+        count_total = sum(metrics.values())
         return {
-            f"problem_metrics/{difficulty}": count / count_total if count_total > 0 else 0
-            for difficulty, count in self.problem_metrics.items()
-        }
-    
-    def get_rollout_metrics(self) -> dict[str, float]:
-        """Returns the rollout metrics formatted for logging."""
-        count_total = sum(self.rollout_metrics.values())
-        return {
-            f"rollout_metrics/{metric}": count / count_total if count_total > 0 else 0
-            for metric, count in self.rollout_metrics.items()
+            f"{prefix}/{key}": count / count_total if count_total > 0 else 0
+            for key, count in metrics.items()
         }
 
-    def get_metadata_metrics(self) -> dict[str, float]:
-        """Returns the metadata metrics formatted for logging."""
-        count_total = sum(self.metadata.values())
+    def get_metrics(self) -> dict[str, float]:
         return {
-            f"metadata_metrics/{metadata_key}": metadata_value / count_total if count_total > 0 else 0
-            for metadata_key, metadata_value in self.metadata.items()
+            **self._get_normalized_metrics(self.problem_metrics, "problem_metrics"),
+            **self._get_normalized_metrics(self.rollout_metrics, "rollout_metrics"),
+            **self._get_normalized_metrics(self.metadata, "metadata_metrics"),
         }
+    
