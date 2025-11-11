@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+import torch.distributed as dist
 from torch import nn
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
@@ -85,8 +86,19 @@ class CheckpointManager:
         self._is_master = self._world.is_master
         self.ckpt_steps: list[int] = []  # Sorted list of steps that have been checkpointed, only used on master rank
 
+    def get_step_path(self, step: int) -> Path:
+        """Returns the path to the step directory (containing both orchestrator and trainer checkpoints)."""
+        return self.ckpt_dir / f"step_{step}"
+
     def get_ckpt_path(self, step: int) -> Path:
         return self.ckpt_dir / f"step_{step}" / "trainer"
+
+    def _is_complete_checkpoint(self, step: int) -> bool:
+        """Checks if a checkpoint step is complete (both orchestrator and trainer checkpoints exist)."""
+        step_path = self.get_step_path(step)
+        orchestrator_path = step_path / "orchestrator"
+        trainer_path = step_path / "trainer"
+        return orchestrator_path.exists() and trainer_path.exists()
 
     def get_latest_step(self) -> int:
         step_dirs = list(self.ckpt_dir.glob("step_*"))
@@ -201,22 +213,106 @@ class CheckpointManager:
         self._save_to_path(ckpt_path, step, model, optimizers, scheduler, progress, dataloader)
 
     def maybe_clean(self) -> None:
-        """Deletes past local checkpoints beyond the most recent `config.keep` steps. No-op if `config.keep` is None."""
+        """
+        Deletes past checkpoints beyond the most recent `config.keep` complete checkpoints.
+        The trainer checkpoint manager is responsible for cleanup since it lags behind the orchestrator.
+        This ensures we always have complete checkpoints (both orchestrator and trainer).
+        No-op if `config.keep` is None.
+        """
         if self.config.keep is None:
             return
 
-        # Get all the checkpoint steps to delete
-        assert list(self.ckpt_steps) == sorted(self.ckpt_steps)
-        ckpt_steps_to_delete = self.ckpt_steps[: -self.config.keep]
+        # Only master rank maintains the list of checkpoint steps and determines what to delete
+        if not self._is_master:
+            # Non-master ranks need to know which steps to delete
+            # We'll broadcast this information so all ranks can participate in cleanup
+            ckpt_steps_to_delete = []
+        else:
+            assert self.ckpt_steps == sorted(self.ckpt_steps)
+
+            # Get the last `config.keep` steps (these are the "kept" steps)
+            kept_steps = (
+                self.ckpt_steps[-self.config.keep :] if len(self.ckpt_steps) >= self.config.keep else self.ckpt_steps
+            )
+
+            # Find the newest complete checkpoint among the kept steps
+            newest_complete_step = None
+            for step in reversed(kept_steps):
+                if self._is_complete_checkpoint(step):
+                    newest_complete_step = step
+                    break
+
+            # If there's no complete checkpoint in the kept steps, don't delete anything
+            # This prevents deleting checkpoints when we don't have a complete one to keep
+            if newest_complete_step is None:
+                if self.ckpt_steps:
+                    self._logger.debug(
+                        f"Skipping cleanup: no complete checkpoint found in kept steps {kept_steps}. "
+                        "Waiting for a complete checkpoint before cleaning up."
+                    )
+                return
+
+            # Find all steps older than the newest complete checkpoint
+            steps_older_than_complete = [step for step in self.ckpt_steps if step < newest_complete_step]
+
+            # Among those older steps, find the complete ones and keep the last `config.keep` of them
+            older_complete_steps = [step for step in steps_older_than_complete if self._is_complete_checkpoint(step)]
+            if len(older_complete_steps) > self.config.keep:
+                kept_older_complete_steps = older_complete_steps[-self.config.keep :]
+            else:
+                kept_older_complete_steps = older_complete_steps
+
+            # Steps to keep: newest_complete_step + kept_older_complete_steps
+            steps_to_keep = {newest_complete_step} | set(kept_older_complete_steps)
+
+            # Delete all steps that are not in steps_to_keep
+            ckpt_steps_to_delete = [step for step in self.ckpt_steps if step not in steps_to_keep]
+
+        # Broadcast the list of steps to delete to all ranks
+        # Note: broadcast_object_list mutates the list in-place and returns None
+        if dist.is_initialized():
+            ckpt_steps_to_delete_list = [ckpt_steps_to_delete]
+            dist.broadcast_object_list(ckpt_steps_to_delete_list, src=0)
+            ckpt_steps_to_delete = ckpt_steps_to_delete_list[0]
+        # If distributed is not initialized, only master will have the list (single-process case)
+
+        if not ckpt_steps_to_delete:
+            # Update checkpoint steps (only on master) before returning
+            if self._is_master:
+                self.ckpt_steps = self.ckpt_steps[-self.config.keep :]
+            return
+
+        # Each rank deletes its own dataloader checkpoint files
         for ckpt_step in ckpt_steps_to_delete:
             ckpt_path = self.get_ckpt_path(ckpt_step)
-            if ckpt_path.exists():
-                self._logger.debug(f"Removing past trainer checkpoint for step {ckpt_step} ({ckpt_path})")
-                # TODO: Handle this more gracefully, e.g. each rank should only delete its own checkpoint
-                shutil.rmtree(ckpt_path)
+            dataloader_file = ckpt_path / "dataloader" / f"rank_{self._world.rank}.pt"
+            if dataloader_file.exists():
+                self._logger.debug(
+                    f"Removing past dataloader checkpoint for step {ckpt_step}, rank {self._world.rank} ({dataloader_file})"
+                )
+                dataloader_file.unlink()
 
-        # Update checkpoint steps
-        self.ckpt_steps = self.ckpt_steps[-self.config.keep :]
+        # Synchronize all ranks before master deletes the rest
+        if dist.is_initialized():
+            dist.barrier()
+
+        # Master rank deletes the entire step directory (including orchestrator checkpoint if it exists)
+        # This is safe because the trainer lags behind, so if we're deleting a step, the orchestrator
+        # has already moved on to newer steps
+        if self._is_master:
+            for ckpt_step in ckpt_steps_to_delete:
+                step_path = self.get_step_path(ckpt_step)
+                if step_path.exists():
+                    self._logger.debug(
+                        f"Removing past checkpoint step {ckpt_step} (including orchestrator and trainer) ({step_path})"
+                    )
+                    # Remove the entire step directory (orchestrator + trainer)
+                    shutil.rmtree(step_path, ignore_errors=True)
+
+        # Update checkpoint steps (only on master)
+        if self._is_master:
+            # Remove deleted steps from the list
+            self.ckpt_steps = [step for step in self.ckpt_steps if step not in ckpt_steps_to_delete]
 
 
 def setup_ckpt_manager(output_dir: Path, config: CheckpointConfig | None) -> CheckpointManager | None:
