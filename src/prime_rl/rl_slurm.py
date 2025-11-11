@@ -174,7 +174,7 @@ def rl_slurm(config: RLSLURMConfig):
         output_dir=str(config.output_dir),
     )
 
-    config.output_dir.mkdir(parents=True, exist_ok=True)
+    (config.output_dir / "configs").mkdir(parents=True, exist_ok=True)
 
     with open(config.output_dir / "configs/inference.toml", "wb") as f:
         tomli_w.dump(config.inference.model_dump(exclude_none=True, mode="json"), f)
