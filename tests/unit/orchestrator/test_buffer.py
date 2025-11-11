@@ -141,7 +141,7 @@ def test_buffer_sample_rollouts(dataset, make_rollouts):
     rewards = [0.5, 0.5, 0.5, 0.5, 0.5]
     rollouts = make_rollouts(dataset, rewards=rewards)
     buffer.update(rollouts)
-    sampled_rollouts, stats = buffer.sample_rollouts(5)
+    sampled_rollouts, stats = buffer.sample_rollouts(10)
     # All rewards are 0.5, which is within default range [0.01, 0.99]
     assert len(sampled_rollouts) == 10
     assert all(metadata["reward"] == reward for metadata, reward in zip(buffer.metadata.values(), rewards))
@@ -152,7 +152,7 @@ def test_buffer_sample_rollouts_outside_range(dataset, make_rollouts):
     rewards = [0.0, 0.0, 0.0, 1.0, 1.0]
     rollouts = make_rollouts(dataset, rewards=rewards)
     buffer.update(rollouts)
-    sampled_rollouts, stats = buffer.sample_rollouts(5)
+    sampled_rollouts, stats = buffer.sample_rollouts(10)
     # All rewards are outside range [0.1, 0.0] (invalid range, but tests the filtering)
     assert len(sampled_rollouts) == 0
     assert all(metadata["reward"] == reward for metadata, reward in zip(buffer.metadata.values(), rewards))
@@ -163,7 +163,7 @@ def test_buffer_sample_rollouts_within_range(dataset, make_rollouts):
     rewards = [0.2, 0.4, 0.5, 0.6, 0.8]
     rollouts = make_rollouts(dataset, rewards=rewards)
     buffer.update(rollouts)
-    sampled_rollouts, stats = buffer.sample_rollouts(5)
+    sampled_rollouts, stats = buffer.sample_rollouts(10)
     # Only rewards 0.4, 0.5, 0.6 are within range [0.3, 0.7]
     # So we should get 3 problems worth of rollouts = 6 rollouts
     assert len(sampled_rollouts) == 6

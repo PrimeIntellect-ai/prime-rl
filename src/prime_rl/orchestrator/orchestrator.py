@@ -312,7 +312,7 @@ async def orchestrate(config: OrchestratorConfig):
                 is_truncated,
             )
             buffer.update(rollouts)
-            rollouts_sampled = buffer.sample_rollouts(problems_to_sample)
+            rollouts_sampled = buffer.sample_rollouts(problems_to_sample * config.rollouts_per_example)
             accepted_rollouts.extend(rollouts_sampled)
 
             # Break if we have enough rollouts to fill the batch
