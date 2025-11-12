@@ -154,7 +154,7 @@ class Buffer:
 
         pool_counts = Counter(m.get("difficulty", "normal") for m in self.metadata.values())
         pool_ratio = mean_normalize(list(pool_counts.values()))
-        metrics.update({f"buffer/pool/{key}": value for key, value in zip(self.DIFFICULTY_LEVELS, pool_ratio)})
+        metrics.update({f"buffer/pool/{key}": value for key, value in zip(pool_counts.keys(), pool_ratio)})
 
         # Reset per-step metrics
         self.num_sampled_problems_per_pool = defaultdict(int)
