@@ -116,7 +116,7 @@ class Buffer:
                 new_difficulty = "normal"
 
             self.metadata[problem_id]["difficulty"] = new_difficulty
-            self.rollout_metrics[new_difficulty] += len(example_rollouts)
+            self.rollout_metrics[new_difficulty] += 1
             
             if (has_zero_advantage
                 or (self.config.filter_min_threshold is not None and avg_reward <= self.config.filter_min_threshold)
