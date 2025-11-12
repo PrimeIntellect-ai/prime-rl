@@ -2,6 +2,7 @@ import random
 import shutil
 from collections import Counter, defaultdict
 from pathlib import Path
+from typing import cast
 
 from datasets import Dataset, load_from_disk
 
@@ -20,65 +21,53 @@ class Buffer:
         if self.config.seed is not None:
             random.seed(self.config.seed)
 
-        self._init_buffer(dataset, buffer_path)
-        # The number of problems/ rollouts sampled from each pool at the current step (will reset with every call to get_metrics)
-        self.num_sampled_problems_per_pool = defaultdict(int)
-        self.num_sampled_rollouts_per_pool = defaultdict(int)
-
-    def _init_buffer(self, dataset: Dataset, buffer_path: Path | None = None) -> None:
-        """Initializes the buffer state from datasets."""
-        # Use example_id column from verifiers
+        # Initialize buffer state
         assert "example_id" in dataset.column_names, "The dataset must contain a `example_id` column."
         assert isinstance(dataset["example_id"][0], int), "The `example_id` column must be of type int."
         assert len(set(dataset["example_id"])) == len(dataset), "The `example_id` column must be unique."
-        self.problem_ids = dataset["example_id"]
-
-        if not buffer_path:
-            self.rollout_buffer: list[Rollout] = []
-            self.metadata = {pid: {"difficulty": "normal"} for pid in self.problem_ids}
-        else:
-            metadata_path = buffer_path.parent / "metadata"
-            if not metadata_path.exists():
-                raise ValueError(f"Metadata dataset not found at {metadata_path}")
-            metadata_dataset = load_from_disk(metadata_path)
-            loaded_metadata = {
-                row["problem_id"]: {k: v for k, v in row.items() if k != "problem_id"} for row in metadata_dataset
-            }
-
-            self.metadata = {}
-            for pid in self.problem_ids:
-                if pid in loaded_metadata:
-                    self.metadata[pid] = loaded_metadata[pid]
-                else:
-                    self.metadata[pid] = {"difficulty": "normal"}
-
-            rollouts_path = buffer_path.parent / "rollouts"
-            if rollouts_path.exists():
-                rollouts_dataset = load_from_disk(rollouts_path)
-                self.rollout_buffer = [dict(row) for row in rollouts_dataset]
-            else:
-                self.rollout_buffer = []
-
         self.dataset = dataset
+        self.problem_ids = dataset["example_id"]
         self.problem_buffer = {pid: dict(problem) for pid, problem in zip(self.problem_ids, dataset)}
+        self.rollout_buffer: list[Rollout] = []
+        self.metadata = {pid: {"difficulty": "normal"} for pid in self.problem_ids}
+
+        # The number of problems/ rollouts sampled from each pool at the current step (will reset with every call to get_metrics)
+        self.num_sampled_problems_per_pool = defaultdict(int)  # Will reseet every step
+        self.num_sampled_rollouts_per_pool = defaultdict(int)  # Will reseet every step
 
     def save(self, path: Path) -> None:
         """Saves metadata and rollouts as separate HF datasets."""
-        path.parent.mkdir(parents=True, exist_ok=True)
+        path.mkdir(parents=True, exist_ok=True)
 
-        metadata_path = path.parent / "metadata"
+        metadata_path = path / "metadata"
         metadata_data = [{"problem_id": pid, **self.metadata[pid]} for pid in self.problem_ids]
         Dataset.from_list(metadata_data).save_to_disk(metadata_path)
 
-        rollouts_path = path.parent / "rollouts"
+        rollouts_path = path / "rollouts"
         if self.rollout_buffer:
-            Dataset.from_list(self.rollout_buffer).save_to_disk(rollouts_path)
+            Dataset.from_list(list(map(dict, self.rollout_buffer))).save_to_disk(rollouts_path)
         elif rollouts_path.exists():
             shutil.rmtree(rollouts_path)
 
     def load(self, path: Path) -> None:
         """Loads metadata and rollouts from separate HF datasets. Uses the existing dataset stored in the buffer."""
-        self._init_buffer(self.dataset, buffer_path=path)
+        # Load metadata
+        metadata_path = path / "metadata"
+        if not metadata_path.exists():
+            raise ValueError(f"Metadata dataset not found at {metadata_path}")
+        metadata_dataset = cast(Dataset, load_from_disk(metadata_path))
+        problem_ids = metadata_dataset["problem_id"]
+        metadata_dataset = metadata_dataset.remove_columns("problem_id")
+        self.metadata = {
+            problem_id: {"difficulty": "normal", **cast(dict, metadata)}
+            for problem_id, metadata in zip(problem_ids, metadata_dataset)
+        }
+
+        # Load rollouts
+        rollouts_path = path / "rollouts"
+        if rollouts_path.exists():
+            rollouts_dataset = load_from_disk(rollouts_path)
+            self.rollout_buffer = [Rollout(**cast(dict, row)) for row in rollouts_dataset]
 
     def sample_problems(self, n: int) -> list[dict]:
         """Samples `n` problems from the dataset using difficulty pools."""
