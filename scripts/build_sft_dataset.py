@@ -20,9 +20,30 @@ import json
 from pathlib import Path
 from typing import cast
 
-from datasets import Dataset, load_dataset
+from datasets import Dataset, List, Value, load_dataset
 from huggingface_hub import whoami
 from openai.types.chat import ChatCompletionFunctionToolParam
+
+TOOL_CALL_SCHEMA = {
+    "function": {
+        "arguments": Value("string"),
+        "name": Value("string"),
+        "type": Value("string"),
+    },
+    "id": Value("string"),
+    "type": Value("string"),
+}
+
+MESSAGES_SCHEMA = List(
+    {
+        "content": Value("string"),
+        "role": Value("string"),
+        "reasoning_content": Value("string"),
+        "tool_calls": List(TOOL_CALL_SCHEMA),
+    }
+)
+
+TOOL_SCHEMA = Value("string")  # For now, we JSON-serialize the tool call definition
 
 
 def get_prompt(result: dict) -> list[dict]:
@@ -48,6 +69,9 @@ def get_completion(result: dict) -> list[dict]:
     j = 0
     for i in range(len(completion)):
         if completion[i].get("role") == "assistant":
+            oai_response = oai_responses[j]
+            for tc in oai_response.get("tool_calls") or []:
+                del tc["index"]
             completion[i] = oai_responses[j]
             j += 1
 
@@ -82,16 +106,21 @@ async def main(
     print("Parsing messages...")
     prompt = [get_prompt(cast(dict, result)) for result in results]
     completion = [get_completion(cast(dict, result)) for result in results]
-    oai_tools = [get_oai_tools(cast(dict, result)) for result in results]
+    oai_tools = [json.dumps(get_oai_tools(cast(dict, result))) for result in results]
 
     # Create SFT dataset
     print("Creating SFT dataset...")
-    ds = Dataset.from_dict(
-        {
-            "prompt": prompt,
-            "completion": completion,
-            "tools": oai_tools,
-        }
+    ds = (
+        Dataset.from_dict(
+            {
+                "prompt": prompt,
+                "completion": completion,
+                "tools": oai_tools,
+            }
+        )
+        .cast_column("prompt", MESSAGES_SCHEMA)
+        .cast_column("completion", MESSAGES_SCHEMA)
+        .cast_column("tools", TOOL_SCHEMA)
     )
 
     if dataset_name is not None:
