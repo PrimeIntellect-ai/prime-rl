@@ -42,7 +42,7 @@ async def eval(config: OfflineEvalConfig):
 
     # Setup clients
     logger.info(
-        f"Initializing OpenAI client (base_url={', '.join(config.client.base_url)}, api_key_var={config.client.api_key_var}, server_type={config.client.server_type})"
+        f"Initializing OpenAI client (base_url={', '.join(config.client.base_url)}, api_key_var={config.client.api_key_var}, server_type={config.client.server_type}, headers={config.client.headers})"
     )
     clients = setup_clients(config.client)
     admin_clients = setup_admin_clients(config.client)

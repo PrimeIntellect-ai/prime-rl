@@ -20,7 +20,7 @@ def setup_clients(client_config: ClientConfig) -> list[AsyncOpenAI]:
             max_connections=8192,  # OAI default: 1000
             max_keepalive_connections=8192,  # OAI default: 100
         )
-        http_client = httpx.AsyncClient(limits=limits, timeout=timeout)
+        http_client = httpx.AsyncClient(limits=limits, timeout=timeout, headers=client_config.headers)
         return AsyncOpenAI(
             base_url=base_url,
             api_key=os.getenv(client_config.api_key_var, "EMPTY"),
@@ -42,7 +42,7 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
     """
 
     def _setup_admin_client(base_url: str) -> httpx.AsyncClient:
-        headers = {}
+        headers = client_config.headers
         api_key = os.getenv(client_config.api_key_var, "EMPTY")
         if api_key and api_key != "EMPTY":
             headers["Authorization"] = f"Bearer {api_key}"

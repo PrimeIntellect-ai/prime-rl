@@ -45,6 +45,13 @@ class ClientConfig(BaseConfig):
         ),
     ] = "OPENAI_API_KEY"
 
+    headers: Annotated[
+        dict[str, str],
+        Field(
+            description="Headers to use for the OpenAI API. By default, it is set to an empty dictionary.",
+        ),
+    ] = {}
+
     server_type: Annotated[
         ServerType,
         Field(
