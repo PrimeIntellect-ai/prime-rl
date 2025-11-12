@@ -2,6 +2,7 @@ max_steps = 20
 
 [model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+attn = "sdpa"
 
 [optim]
 lr = 3e-6
