@@ -14,7 +14,7 @@ import vllm.entrypoints.openai.api_server
 import uvloop
 import vllm.envs as envs
 from fastapi import Request
-from vllm.config import LogprobsMode
+from vllm.config.model import LogprobsMode
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server
@@ -30,7 +30,7 @@ from vllm.entrypoints.openai.api_server import (
 from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
 from vllm.entrypoints.openai.tool_parsers import ToolParserManager
 from vllm.logger import init_logger
-from vllm.utils import FlexibleArgumentParser, decorate_logs
+from vllm.utils.argparse_utils import FlexibleArgumentParser, decorate_logs
 
 from prime_rl.inference.config import InferenceConfig
 
