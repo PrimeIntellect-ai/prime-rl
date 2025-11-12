@@ -279,16 +279,16 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = False
 
-    buffer_path: Annotated[
-        Path | None,
-        Field(
-            description="The path to load buffer state (metadata and rollouts) from. If None, will start with an empty buffer. The buffer state is saved at <ckpt_dir>/step_<step>/orchestrator/buffer.",
-        ),
-    ] = None
-
 
 class BufferConfig(BaseModel):
-    """Configures the buffer for the orchestrator."""
+    """Base config for all buffer types."""
+
+    from_scratch: Annotated[
+        bool,
+        Field(
+            description="Whether to initialize the metadata and rollout buffer from scratch. Defaults to True, which means we will initialize empty metadata and rollout buffers. If False, we expect columns `metadata` and `rollouts` to be present in the environment dataset to initialize the buffer from.",
+        ),
+    ] = True
 
     seed: Annotated[
         int | None,
@@ -297,6 +297,33 @@ class BufferConfig(BaseModel):
         ),
     ] = None
 
+
+class SimpleBufferConfig(BufferConfig):
+    type: Literal["simple"] = "simple"
+
+
+class DifficultyPoolBufferConfig(BufferConfig):
+    type: Literal["difficulty-pool"] = "difficulty-pool"
+
+    easy_border: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            description="If a problem has more than `easy_border` average reward across rollouts, it will be moved to the easy pool.",
+        ),
+    ] = 0.8
+
+    hard_border: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            description="If a problem has less than `hard_border` average reward across rollouts, it will be moved to the hard pool.",
+        ),
+    ] = 0.2
+
+    # TODO: Maybe make this float | int to allow for specific numbers of easy/hard samples?
     easy_fraction: Annotated[
         float,
         Field(
@@ -304,7 +331,7 @@ class BufferConfig(BaseModel):
             le=1,
             description="Fraction of the batch that should consist of easy samples.",
         ),
-    ] = 0.0
+    ] = 0.1
 
     hard_fraction: Annotated[
         float,
@@ -313,39 +340,36 @@ class BufferConfig(BaseModel):
             le=1,
             description="Fraction of the batch that should consist of hard samples.",
         ),
-    ] = 0.0
+    ] = 0.1
 
-    easy_threshold: Annotated[
+
+class OnlineDifficultyBufferConfig(BufferConfig):
+    type: Literal["online-difficulty"] = "online-difficulty"
+
+    min_reward: Annotated[
         float | None,
         Field(
-            description="Threshold for easy difficulty classification. If average reward >= this threshold, mark as easy.",
+            ge=0,
+            le=1,
+            description="Minimum reward to include the sample in a batch.",
         ),
-    ] = None
+    ] = 0.01
 
-    hard_threshold: Annotated[
+    max_reward: Annotated[
         float | None,
         Field(
-            description="Threshold for hard difficulty classification. If average reward <= this threshold, mark as hard.",
+            ge=0,
+            le=1,
+            description="Maximum reward to include the sample in a batch.",
         ),
-    ] = None
+    ] = 0.99
 
-    filter_min_threshold: Annotated[
-        float | None,
-        Field(
-            description="Minimum reward threshold for adding rollouts to buffer. If average reward <= this threshold, rollouts are not added to buffer.",
-        ),
-    ] = None
 
-    filter_max_threshold: Annotated[
-        float | None,
-        Field(
-            description="Maximum reward threshold for adding rollouts to buffer. If average reward >= this threshold, rollouts are not added to buffer.",
-        ),
-    ] = None
+DataBufferConfigType: TypeAlias = SimpleBufferConfig | DifficultyPoolBufferConfig | OnlineDifficultyBufferConfig
 
 
 class AdvantageConfig(BaseConfig):
-    std_norm: Literal["local", "global"] | None = None
+    std_norm: bool = False
     length_weighted_mean: bool = False
     leave_one_out: bool = False
     neg_clipped: bool = False
@@ -404,7 +428,7 @@ class OrchestratorConfig(BaseSettings):
     eval: OnlineEvalConfig | None = None
 
     # Data buffer configuration
-    buffer: BufferConfig = BufferConfig()
+    buffer: Annotated[DataBufferConfigType, Field(discriminator="type")] = SimpleBufferConfig()
 
     # The advantage configuration
     advantage: AdvantageConfig | None = AdvantageConfig()
