@@ -56,11 +56,12 @@ class OffloadActivations(saved_tensors_hooks):
     def __init__(
         self,
         use_pin_memory: bool = True,
-        use_streams: bool = True,
         max_fwd_stash_size: int = 5,
         min_offload_size: int = 1024,
     ) -> None:
-        self.use_streams: bool = use_streams
+        # We don't use streams as they can result in memory leaks/non-matching loss curves and other issues, response to this from torchtune repo is:
+        # `if it's related to streams, the fix is gonna be non-trivial...`
+        self.use_streams: bool = False
 
         self.min_tensor_size_bytes = min_offload_size  # we don't want to bother with small tensors
         self.tracker = {}  # tensor_id => (new_tensor, if_modified)  ---> track what saved/offloaded tensors are where
