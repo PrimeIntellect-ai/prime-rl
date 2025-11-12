@@ -106,7 +106,6 @@ class Buffer:
         
         for problem_id, example_rollouts in rollouts_by_example.items():
             avg_reward = sum(rollout["reward"] for rollout in example_rollouts) / len(example_rollouts)
-            has_zero_advantage = all(rollout["advantage"] == 0.0 for rollout in example_rollouts)
             
             if self.config.easy_threshold is not None and avg_reward >= self.config.easy_threshold:
                 new_difficulty = "easy"
@@ -118,8 +117,7 @@ class Buffer:
             self.metadata[problem_id]["difficulty"] = new_difficulty
             self.rollout_metrics[new_difficulty] += 1
             
-            if (has_zero_advantage
-                or (self.config.filter_min_threshold is not None and avg_reward <= self.config.filter_min_threshold)
+            if ((self.config.filter_min_threshold is not None and avg_reward <= self.config.filter_min_threshold)
                 or (self.config.filter_max_threshold is not None and avg_reward >= self.config.filter_max_threshold)):
                 continue
 
