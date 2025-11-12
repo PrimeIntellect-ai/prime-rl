@@ -14,7 +14,7 @@ from prime_rl.utils.vf import Rollout
 class Buffer:
     """A buffer for storing rollouts and metadata."""
 
-    DIFFICULTY_LEVELS = ["easy", "normal", "hard"]
+    POOLS = ["easy", "normal", "hard"]
 
     def __init__(self, dataset: Dataset, buffer_config: BufferConfig, buffer_path: Path | None = None):
         self.config = buffer_config
@@ -130,20 +130,21 @@ class Buffer:
         metrics = {}
 
         # Add ratio of problems sampled from each pool this step
-        problem_pool_counts = [self.num_sampled_problems_per_pool.get(pool, 0.0) for pool in self.DIFFICULTY_LEVELS]
+        problem_pool_counts = [self.num_sampled_problems_per_pool.get(pool, 0.0) for pool in self.POOLS]
         problem_pool_ratio = mean_normalize(problem_pool_counts)
         prefix = "buffer/sampled_problems"
-        metrics.update({f"{prefix}/{key}": value for key, value in zip(self.DIFFICULTY_LEVELS, problem_pool_ratio)})
+        metrics.update({f"{prefix}/{pool}": value for pool, value in zip(self.POOLS, problem_pool_ratio)})
 
         # Add ratio of rollouts sampled from each difficulty level this step
-        rollout_pool_counts = [self.num_sampled_rollouts_per_pool.get(pool, 0.0) for pool in self.DIFFICULTY_LEVELS]
-        prefix = "buffer/sampled_rollouts"
+        rollout_pool_counts = [self.num_sampled_rollouts_per_pool.get(pool, 0.0) for pool in self.POOLS]
         rollout_pool_ratio = mean_normalize(rollout_pool_counts)
-        metrics.update({f"{prefix}/{key}": value for key, value in zip(self.DIFFICULTY_LEVELS, rollout_pool_ratio)})
+        prefix = "buffer/sampled_rollouts"
+        metrics.update({f"{prefix}/{pool}": value for pool, value in zip(self.POOLS, rollout_pool_ratio)})
 
-        pool_counts = Counter(m.get("difficulty", "normal") for m in self.metadata.values())
-        pool_ratio = mean_normalize(list(pool_counts.values()))
-        metrics.update({f"buffer/pool/{key}": value for key, value in zip(pool_counts.keys(), pool_ratio)})
+        pool_counter = Counter(m.get("difficulty", "normal") for m in self.metadata.values())
+        pool_counts = [pool_counter.get(pool, 0.0) for pool in self.POOLS]
+        pool_ratio = mean_normalize(pool_counts)
+        metrics.update({f"buffer/pool/{pool}": value for pool, value in zip(self.POOLS, pool_ratio)})
 
         # Reset per-step metrics
         self.num_sampled_problems_per_pool = defaultdict(int)
