@@ -11,13 +11,13 @@ from verifiers import Environment
 from verifiers.types import GenerateOutputs, ProcessedOutputs
 
 from prime_rl.orchestrator.advantage import compute_advantages
-from prime_rl.orchestrator.buffer import Buffer, Rollout
+from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.orchestrator.utils import get_sampling_args, parse_is_truncated_completions
 from prime_rl.utils.client import update_weights
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import get_latest_ckpt_step, get_step_path, get_weights_dir, sync_wait_for_path
-from prime_rl.utils.vf import generate_group, make_rollouts
+from prime_rl.utils.vf import Rollout, generate_group, make_rollouts
 
 
 class InflightRolloutInfo(NamedTuple):
@@ -107,7 +107,7 @@ class Scheduler:
         # Update and sample rollouts from the buffer
         self.buffer.update(rollouts)
         num_problems = len(set(generate_outputs.example_id))
-        accepted_rollouts = self.buffer.sample_rollouts(n=num_problems)
+        accepted_rollouts = self.buffer.sample_rollouts(n=num_problems * self.config.rollouts_per_example)
 
         return accepted_rollouts
 
