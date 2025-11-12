@@ -37,15 +37,17 @@ class Buffer:
             if not metadata_path.exists():
                 raise ValueError(f"Metadata dataset not found at {metadata_path}")
             metadata_dataset = load_from_disk(metadata_path)
-            loaded_metadata = {row["problem_id"]: {k: v for k, v in row.items() if k != "problem_id"} for row in metadata_dataset}
-            
+            loaded_metadata = {
+                row["problem_id"]: {k: v for k, v in row.items() if k != "problem_id"} for row in metadata_dataset
+            }
+
             self.metadata = {}
             for pid in self.problem_ids:
                 if pid in loaded_metadata:
                     self.metadata[pid] = loaded_metadata[pid]
                 else:
                     self.metadata[pid] = {"difficulty": "normal"}
-            
+
             rollouts_path = buffer_path.parent / "rollouts"
             if rollouts_path.exists():
                 rollouts_dataset = load_from_disk(rollouts_path)
@@ -59,11 +61,11 @@ class Buffer:
     def save(self, path: Path) -> None:
         """Saves metadata and rollouts as separate HF datasets."""
         path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         metadata_path = path.parent / "metadata"
         metadata_data = [{"problem_id": pid, **self.metadata[pid]} for pid in self.problem_ids]
         Dataset.from_list(metadata_data).save_to_disk(metadata_path)
-        
+
         rollouts_path = path.parent / "rollouts"
         if self.rollout_buffer:
             Dataset.from_list(self.rollout_buffer).save_to_disk(rollouts_path)
@@ -93,7 +95,7 @@ class Buffer:
         sampled_easy, easy_deficit = sample_pool(by_difficulty["easy"], n_easy, "easy")
         sampled_hard, hard_deficit = sample_pool(by_difficulty["hard"], n_hard, "hard")
         sampled_normal, _ = sample_pool(by_difficulty["normal"], n_normal + easy_deficit + hard_deficit, "normal")
-        
+
         sampled_ids = sampled_easy + sampled_normal + sampled_hard
         return [self.problem_buffer[pid] for pid in sampled_ids]
 
@@ -103,11 +105,11 @@ class Buffer:
         for rollout in rollouts:
             problem_id = rollout["example_id"]
             rollouts_by_example[problem_id].append(rollout)
-        
+
         for problem_id, example_rollouts in rollouts_by_example.items():
             avg_reward = sum(rollout["reward"] for rollout in example_rollouts) / len(example_rollouts)
             has_zero_advantage = all(rollout["advantage"] == 0.0 for rollout in example_rollouts)
-            
+
             if self.config.easy_threshold is not None and avg_reward >= self.config.easy_threshold:
                 new_difficulty = "easy"
             elif self.config.hard_threshold is not None and avg_reward <= self.config.hard_threshold:
@@ -117,10 +119,12 @@ class Buffer:
 
             self.metadata[problem_id]["difficulty"] = new_difficulty
             self.rollout_metrics[new_difficulty] += 1
-            
-            if (has_zero_advantage
+
+            if (
+                has_zero_advantage
                 or (self.config.filter_min_threshold is not None and avg_reward <= self.config.filter_min_threshold)
-                or (self.config.filter_max_threshold is not None and avg_reward >= self.config.filter_max_threshold)):
+                or (self.config.filter_max_threshold is not None and avg_reward >= self.config.filter_max_threshold)
+            ):
                 continue
 
             self.rollout_buffer.extend(example_rollouts)
@@ -135,22 +139,18 @@ class Buffer:
     def _get_normalized_metrics(self, metrics: dict[str, int], prefix: str) -> dict[str, float]:
         """Helper method to normalize metrics and format them for logging."""
         count_total = sum(metrics.values())
-        return {
-            f"{prefix}/{key}": count / count_total if count_total > 0 else 0
-            for key, count in metrics.items()
-        }
+        return {f"{prefix}/{key}": count / count_total if count_total > 0 else 0 for key, count in metrics.items()}
 
-    def get_metrics(self) -> dict[str, float]:
+    def metrics(self) -> dict[str, float]:
         """Returns normalized metrics for problems, rollouts, and data distribution."""
         metrics = {
             **self._get_normalized_metrics(self.problem_metrics, "problem_metrics"),
             **self._get_normalized_metrics(self.rollout_metrics, "rollout_metrics"),
         }
-        
+
         difficulty_counts = Counter(md.get("difficulty", "normal") for md in self.metadata.values())
         total = sum(difficulty_counts.values())
         for difficulty in ["easy", "normal", "hard"]:
             metrics[f"data_metrics/{difficulty}"] = difficulty_counts[difficulty] / total if total > 0 else 0.0
-        
+
         return metrics
-    
