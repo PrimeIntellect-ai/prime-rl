@@ -66,7 +66,9 @@ def train(config: RLTrainerConfig):
     monitor = setup_monitor(config.wandb, output_dir=config.output_dir, run_config=config)
 
     # Set precision
-    setup_torch_distributed(timeout=timedelta(seconds=config.dist_timeout_seconds))
+    setup_torch_distributed(
+        timeout=timedelta(seconds=config.dist_timeout_seconds), fsdp_cpu_offload=config.model.fsdp_cpu_offload
+    )
     torch.set_float32_matmul_precision("high")
 
     # Initialize parallel dimensions
@@ -285,7 +287,11 @@ def train(config: RLTrainerConfig):
             logger.debug(micro_step_message)
 
         # Optionally, clip the gradients
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.optim.max_norm).full_tensor()
+        grad_norm_dtensor = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.optim.max_norm)
+        # Convert to CUDA if on CPU (needed for FSDP CPU offloading)
+        if grad_norm_dtensor.device.type == "cpu":
+            grad_norm_dtensor = grad_norm_dtensor.to(torch.device("cuda"))
+        grad_norm = grad_norm_dtensor.full_tensor()
 
         # Update the model parameters
         optimizer.step()

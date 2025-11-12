@@ -13,7 +13,7 @@ from torch import Tensor
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
-from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, fully_shard
+from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 
@@ -131,11 +131,14 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     # Always use 2D mesh format for consistency (dp_replicate dimension always present)
     hsdp_mesh = parallel_dims.world_mesh["dp_replicate", "dp_shard_cp"]
 
+    offload_policy: OffloadPolicy = CPUOffloadPolicy(pin_memory=True) if config.fsdp_cpu_offload else OffloadPolicy()
+
     for transformer_block in model.model.layers:
         fully_shard(
             transformer_block,
             mesh=hsdp_mesh,
             mp_policy=mp_policy,
+            offload_policy=offload_policy,
             reshard_after_forward=config.reshard_after_forward,
         )
 
@@ -145,18 +148,26 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             model.model.embed_tokens,
             mesh=hsdp_mesh,
             mp_policy=mp_policy,
+            offload_policy=offload_policy,
             reshard_after_forward=config.reshard_after_forward,
         )
         fully_shard(
             [model.lm_head, model.model.norm],
             mesh=hsdp_mesh,
             mp_policy=mp_policy,
+            offload_policy=offload_policy,
             reshard_after_forward=False,
         )
     else:
         get_logger().warning("Model is tied word embeddings, so not doing the last layer not resharding optimization")
 
-    fully_shard(model, mesh=hsdp_mesh, mp_policy=mp_policy, reshard_after_forward=config.reshard_after_forward)
+    fully_shard(
+        model,
+        mesh=hsdp_mesh,
+        mp_policy=mp_policy,
+        offload_policy=offload_policy,
+        reshard_after_forward=config.reshard_after_forward,
+    )
 
 
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig):

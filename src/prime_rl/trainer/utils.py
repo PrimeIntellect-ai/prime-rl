@@ -22,11 +22,16 @@ from prime_rl.utils.utils import format_num, format_time
 DEFAULT_TIMEOUT = timedelta(seconds=600)
 
 
-def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT):
+def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, fsdp_cpu_offload: bool = False):
     torch.cuda.set_device(get_world().local_rank)
+    # Use Gloo backend when CPU offloading is enabled (Gloo supports both CPU and GPU)
+    # Otherwise use NCCL for better GPU performance
+    backend = "gloo" if fsdp_cpu_offload else "nccl"
+    if fsdp_cpu_offload:
+        get_logger().info("Using Gloo backend for FSDP CPU offloading support")
     dist.init_process_group(
-        backend="nccl",
-        device_id=torch.device("cuda", torch.cuda.current_device()),
+        backend=backend,
+        device_id=torch.device("cuda", torch.cuda.current_device()) if backend == "nccl" else None,
         timeout=timedelta(seconds=1200),
     )
 

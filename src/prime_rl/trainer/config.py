@@ -158,6 +158,13 @@ class ModelConfig(BaseConfig):
         ),
     ] = None
 
+    fsdp_cpu_offload: Annotated[
+        bool,
+        Field(
+            description="Whether to enable FSDP CPU offloading for parameters, gradients, and optimizer states. When enabled, uses pinned memory for efficient CPU-GPU transfers.",
+        ),
+    ] = False
+
     reshard_after_forward: Annotated[
         bool, Field(description="Whether to reshard the model after each forward pass.")
     ] = True
