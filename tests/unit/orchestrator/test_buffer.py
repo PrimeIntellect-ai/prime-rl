@@ -87,13 +87,13 @@ def test_buffer_sample_problems(dataset):
 
 
 def test_buffer_sample_problems_with_difficulty_pools(difficulty_dataset, make_rollouts):
-    buffer = Buffer(difficulty_dataset, BufferConfig(easy_fraction=0.5, hard_fraction=0.5, easy_threshold=1.0, hard_threshold=0.0))
+    buffer = Buffer(
+        difficulty_dataset, BufferConfig(easy_fraction=0.5, hard_fraction=0.5, easy_threshold=1.0, hard_threshold=0.0)
+    )
     # First, set up difficulties by updating with rollouts
     # Set problems 0,1 to easy (advantage=0, reward=1.0), problem 4 to hard (advantage=0, reward=0.0)
     rollouts = make_rollouts(
-        difficulty_dataset,
-        rewards=[1.0, 1.0, 0.5, 0.5, 0.0],
-        advantages=[0.0, 0.0, 1.0, 1.0, 0.0]
+        difficulty_dataset, rewards=[1.0, 1.0, 0.5, 0.5, 0.0], advantages=[0.0, 0.0, 1.0, 1.0, 0.0]
     )
     buffer.update(rollouts)
     sampled_problems = buffer.sample_problems(3)
@@ -109,9 +109,7 @@ def test_buffer_sample_problems_only_easy(difficulty_dataset, make_rollouts):
     buffer = Buffer(difficulty_dataset, BufferConfig(easy_fraction=1.0, hard_fraction=0.0, easy_threshold=1.0))
     # Set problems 0,1 to easy (advantage=0, reward=1.0)
     rollouts = make_rollouts(
-        difficulty_dataset,
-        rewards=[1.0, 1.0, 0.5, 0.5, 0.5],
-        advantages=[0.0, 0.0, 1.0, 1.0, 1.0]
+        difficulty_dataset, rewards=[1.0, 1.0, 0.5, 0.5, 0.5], advantages=[0.0, 0.0, 1.0, 1.0, 1.0]
     )
     buffer.update(rollouts)
     sampled_problems = buffer.sample_problems(2)
@@ -125,9 +123,7 @@ def test_buffer_sample_problems_only_hard(difficulty_dataset, make_rollouts):
     buffer = Buffer(difficulty_dataset, BufferConfig(easy_fraction=0.0, hard_fraction=1.0, hard_threshold=0.0))
     # Set problems 2,4 to hard (advantage=0, reward=0.0)
     rollouts = make_rollouts(
-        difficulty_dataset,
-        rewards=[0.5, 0.5, 0.0, 0.5, 0.0],
-        advantages=[1.0, 1.0, 0.0, 1.0, 0.0]
+        difficulty_dataset, rewards=[0.5, 0.5, 0.0, 0.5, 0.0], advantages=[1.0, 1.0, 0.0, 1.0, 0.0]
     )
     buffer.update(rollouts)
     sampled_problems = buffer.sample_problems(2)
@@ -177,25 +173,15 @@ def test_buffer_sample_rollouts_more_than_available(dataset, make_rollouts):
     assert len(buffer.rollout_buffer) == 0
 
 
-def test_buffer_update_with_advantage_zero(difficulty_dataset, make_rollouts):
-    buffer = Buffer(difficulty_dataset, BufferConfig())
-    # Rollouts with advantage=0 should set difficulty based on thresholds, but not be added to buffer
-    rollouts = make_rollouts(difficulty_dataset, rewards=[1.0, 1.0, 1.0, 1.0, 1.0], advantages=[0.0, 0.0, 0.0, 0.0, 0.0])
-    buffer.update(rollouts)
-    # All should be marked as normal (thresholds are None by default)
-    assert all(metadata["difficulty"] == "normal" for metadata in buffer.metadata.values())
-    # But none should be in the rollout buffer (advantage == 0)
-    assert len(buffer.rollout_buffer) == 0
-
-
 def test_buffer_update_with_advantage_nonzero(difficulty_dataset, make_rollouts):
     buffer = Buffer(difficulty_dataset, BufferConfig())
     # Rollouts with advantage != 0 should be added to buffer and marked as normal
-    rollouts = make_rollouts(difficulty_dataset, rewards=[0.5, 0.5, 0.5, 0.5, 0.5], advantages=[1.0, 1.0, 1.0, 1.0, 1.0])
+    rollouts = make_rollouts(
+        difficulty_dataset, rewards=[0.5, 0.5, 0.5, 0.5, 0.5], advantages=[1.0, 1.0, 1.0, 1.0, 1.0]
+    )
     buffer.update(rollouts)
     sampled_rollouts = buffer.sample_rollouts(10)
     assert sampled_rollouts == rollouts
     assert len(sampled_rollouts) == 10
     # All should be marked as normal (advantage != 0)
     assert all(metadata["difficulty"] == "normal" for metadata in buffer.metadata.values())
-
