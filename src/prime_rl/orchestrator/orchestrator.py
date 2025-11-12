@@ -361,9 +361,9 @@ async def orchestrate(config: OrchestratorConfig):
             "time/generate_completions": generate_completions_time,
             "time/save_ckpt": save_ckpt_time,
             # Scheduler metrics
-            **scheduler.metrics(),
+            **scheduler.get_metrics(),
             # Buffer metrics
-            **buffer.metrics(),
+            **buffer.get_metrics(),
             # W&B axis
             "step": progress.step,
         }
