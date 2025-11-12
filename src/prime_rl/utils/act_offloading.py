@@ -326,6 +326,5 @@ def maybe_activation_offloading(config: ActivationOffloadingConfig | None) -> Of
 
     return OffloadActivations(
         use_pin_memory=config.pin_memory,
-        use_streams=True,
         max_fwd_stash_size=config.max_inflight_activations,
     )
