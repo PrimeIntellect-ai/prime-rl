@@ -185,3 +185,49 @@ def test_buffer_update_with_advantage_nonzero(difficulty_dataset, make_rollouts)
     assert len(sampled_rollouts) == 10
     # All should be marked as normal (advantage != 0)
     assert all(metadata["difficulty"] == "normal" for metadata in buffer.metadata.values())
+
+
+def test_replay_buffer_basic(dataset, make_rollouts):
+    """Test that replay buffer is used when enabled."""
+    buffer = Buffer(dataset, BufferConfig(use_replay_buffer=True))
+    rollouts = make_rollouts(dataset)
+    buffer.update(rollouts)
+    
+    # First sample: should take from rollout_buffer and move to replay_buffer
+    sampled = buffer.sample_rollouts(5)
+    assert len(sampled) == 5
+    assert len(buffer.rollout_buffer) == 5  # Remaining rollouts stay in rollout_buffer
+    assert len(buffer.replay_buffer) == 5  # Sampled rollouts moved to replay_buffer
+
+
+def test_take_all_rollouts(dataset, make_rollouts):
+    """Test that take_all_rollouts takes all rollouts from rollout_buffer."""
+    buffer = Buffer(dataset, BufferConfig(take_all_rollouts=True))
+    rollouts = make_rollouts(dataset)
+    buffer.update(rollouts)
+    
+    # Request 5, but should get all 10 when take_all_rollouts=True
+    sampled = buffer.sample_rollouts(5)
+    assert len(sampled) == 10  # Should take all rollouts
+    assert len(buffer.rollout_buffer) == 0  # All should be taken
+
+
+def test_take_all_rollouts_with_replay_buffer(dataset, make_rollouts):
+    """Test take_all_rollouts combined with replay buffer."""
+    buffer = Buffer(dataset, BufferConfig(take_all_rollouts=True, use_replay_buffer=True))
+    rollouts = make_rollouts(dataset)
+    buffer.update(rollouts)
+    
+    # Should take all rollouts from rollout_buffer
+    sampled = buffer.sample_rollouts(5)
+    assert len(sampled) == 10  # All rollouts taken
+    assert len(buffer.rollout_buffer) == 0
+    assert len(buffer.replay_buffer) == 10  # All moved to replay_buffer
+
+
+def test_take_all_rollouts_empty_buffer(dataset):
+    """Test take_all_rollouts when buffer is empty."""
+    buffer = Buffer(dataset, BufferConfig(take_all_rollouts=True))
+    sampled = buffer.sample_rollouts(10)
+    assert len(sampled) == 0
+    assert len(buffer.rollout_buffer) == 0

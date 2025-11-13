@@ -29,6 +29,7 @@ class Buffer:
         self.problem_ids = dataset["example_id"]
         self.problem_buffer = {pid: dict(problem) for pid, problem in zip(self.problem_ids, dataset)}
         self.rollout_buffer: list[Rollout] = []
+        self.replay_buffer: list[Rollout] = []
         self.metadata = {pid: {"difficulty": "normal"} for pid in self.problem_ids}
 
         # The number of problems/ rollouts sampled from each pool at the current step (will reset with every call to get_metrics)
@@ -48,6 +49,12 @@ class Buffer:
             Dataset.from_list(list(map(dict, self.rollout_buffer))).save_to_disk(rollouts_path)
         elif rollouts_path.exists():
             shutil.rmtree(rollouts_path)
+        
+        replay_buffer_path = path / "replay_buffer"
+        if self.replay_buffer:
+            Dataset.from_list(list(map(dict, self.replay_buffer))).save_to_disk(replay_buffer_path)
+        elif replay_buffer_path.exists():
+            shutil.rmtree(replay_buffer_path)
 
     def load(self, path: Path) -> None:
         """Loads metadata and rollouts from separate HF datasets. Uses the existing dataset stored in the buffer."""
@@ -68,6 +75,11 @@ class Buffer:
         if rollouts_path.exists():
             rollouts_dataset = load_from_disk(rollouts_path)
             self.rollout_buffer = [Rollout(**cast(dict, row)) for row in rollouts_dataset]
+
+        replay_buffer_path = path / "replay_buffer"
+        if replay_buffer_path.exists():
+            replay_buffer_dataset = load_from_disk(replay_buffer_path)
+            self.replay_buffer = [Rollout(**cast(dict, row)) for row in replay_buffer_dataset]
 
     def sample_problems(self, n: int) -> list[dict]:
         """Samples `n` problems from the dataset using difficulty pools."""
@@ -120,9 +132,19 @@ class Buffer:
 
     def sample_rollouts(self, n: int) -> list[Rollout]:
         """Samples the latest `n` rollouts from the buffer."""
-        n = min(n, len(self.rollout_buffer))
+        if self.config.take_all_rollouts:
+            n = len(self.rollout_buffer)
+        else:
+            n = min(n, len(self.rollout_buffer))
+
         sampled = self.rollout_buffer[-n:]
         self.rollout_buffer = self.rollout_buffer[:-n]
+
+        if self.config.use_replay_buffer:
+            n_from_replay = min(n - len(sampled), len(self.replay_buffer))
+            selected_items = self.replay_buffer[-n_from_replay:]
+            self.replay_buffer = self.replay_buffer[:-n_from_replay] + sampled
+            sampled.extend(selected_items)
         return sampled
 
     def get_metrics(self) -> dict[str, float]:

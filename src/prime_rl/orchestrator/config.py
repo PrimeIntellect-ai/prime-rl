@@ -343,6 +343,20 @@ class BufferConfig(BaseModel):
         ),
     ] = None
 
+    use_replay_buffer: Annotated[
+        bool,
+        Field(
+            description="Whether to use a replay buffer to sample rollouts from. If True, will sample rollouts from the replay buffer instead of the rollout buffer if not full",
+        ),
+    ] = False
+
+    take_all_rollouts: Annotated[
+        bool,
+        Field(
+            description="Whether to take all rollouts from the rollout buffer. If True, will take all rollouts from the rollout buffer.",
+        ),
+    ] = False
+
 
 class AdvantageConfig(BaseConfig):
     std_norm: Literal["local", "global"] | None = None
