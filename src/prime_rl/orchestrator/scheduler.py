@@ -162,12 +162,12 @@ class Scheduler:
             await update_weights(
                 self.admin_clients,
                 get_step_path(get_weights_dir(self.config.output_dir), next_ckpt_step),
-                lora_name=self.lora_name,
+                lora_name=self.lora_name + str(next_ckpt_step),
             )
             self.update_weights_time = time.time() - update_weights_start_time
             self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
             if self.lora_name is not None:
-                self.model_name = self.lora_name
+                self.model_name = self.lora_name + str(next_ckpt_step)
 
             # Cancel old rollout requests
             tasks_to_remove = []
