@@ -61,7 +61,7 @@ def train(config: SFTTrainerConfig):
 
     # Set precision
     setup_torch_distributed(
-        timeout=timedelta(seconds=config.dist_timeout_seconds), fsdp_cpu_offload=config.model.fsdp_cpu_offload
+        timeout=timedelta(seconds=config.dist_timeout_seconds), enable_gloo=config.model.fsdp_cpu_offload
     )
     torch.set_float32_matmul_precision("high")
 

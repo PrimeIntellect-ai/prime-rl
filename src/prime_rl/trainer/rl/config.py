@@ -191,3 +191,9 @@ class RLTrainerConfig(BaseSettings):
         if self.weight_broadcast.type == "nccl" and self.async_level != 1:
             raise ValueError("NCCL weight broadcast only works with async level 1")
         return self
+
+    @model_validator(mode="after")
+    def validate_opt_and_fsdp_offload(self):
+        if self.optim.type == "muon" and self.model.fsdp_cpu_offload:
+            raise ValueError("Muon optimizer does not support FSDP CPU offload")
+        return self
