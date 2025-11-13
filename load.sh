@@ -1,6 +1,6 @@
 curl -X POST http://localhost:8000/v1/load_lora_adapter \
 -H "Content-Type: application/json" \
 -d '{
-    "lora_name": "reverse_text_adapter",
-    "lora_path": "/home/ubuntu/prime-rl/meow_adapter"
+    "lora_name": "meow_adapter",
+    "lora_path": "outputs/weights/step_6/lora_adapters"
 }'
