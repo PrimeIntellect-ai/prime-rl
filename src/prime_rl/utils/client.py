@@ -101,23 +101,30 @@ async def check_health(
     await asyncio.gather(*[_check_health(admin_client) for admin_client in admin_clients])
 
 
-async def update_weights(admin_clients: list[AsyncClient], weight_dir: Path | None) -> None:
+async def update_weights(
+    admin_clients: list[AsyncClient], weight_dir: Path | None, lora_name: str | None = None
+) -> None:
     """Make a HTTP post request to the vLLM server to update the weights."""
     logger = get_logger()
 
     weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
-    async def _update_weights(admin_client: AsyncClient, weight_dir: str | None) -> None:
-        try:
-            response = await admin_client.post("/update_weights", json={"weight_dir": weight_dir})
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                logger.warning("The route /update_weights does not exist. Skipping weight update.")
-                return
-            raise
+    if lora_name is not None:
+        await unload_lora_adapter(admin_clients, lora_name)
+        await load_lora_adapter(admin_clients, lora_name, weight_dir / "lora_adapters")
+    else:
 
-    await asyncio.gather(*[_update_weights(admin_client, weight_dir_posix) for admin_client in admin_clients])
+        async def _update_weights(admin_client: AsyncClient, weight_dir: str | None) -> None:
+            try:
+                response = await admin_client.post("/update_weights", json={"weight_dir": weight_dir})
+                response.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 404:
+                    logger.warning("The route /update_weights does not exist. Skipping weight update.")
+                    return
+                raise
+
+        await asyncio.gather(*[_update_weights(admin_client, weight_dir_posix) for admin_client in admin_clients])
 
 
 async def reload_weights(admin_clients: list[AsyncClient]) -> None:
@@ -142,13 +149,15 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
     """Make a HTTP post request to the vLLM server to load a LoRA adapter."""
     logger = get_logger()
 
+    lora_path_posix = lora_path.as_posix()
+
     async def _load_lora_adapter(admin_client: AsyncClient) -> None:
         logger.debug(f"Sending request to load LoRA adapter {lora_name} from {lora_path}")
         response = await admin_client.post(
             "/load_lora_adapter",
             json={
                 "lora_name": lora_name,
-                "lora_path": lora_path,
+                "lora_path": lora_path_posix,
             },
         )
         response.raise_for_status()
@@ -162,8 +171,9 @@ async def unload_lora_adapter(admin_clients: list[AsyncClient], lora_name: str) 
 
     async def _unload_lora_adapter(admin_client: AsyncClient) -> None:
         logger.debug(f"Sending request to unload LoRA adapter {lora_name}")
-        response = await admin_client.post("/unload_lora_adapter", json={"lora_name": lora_name})
-        response.raise_for_status()
+        await admin_client.post("/unload_lora_adapter", json={"lora_name": lora_name})
+        # TODO: The first one can fail, but subsequent ones should succeed.
+        # response.raise_for_status()
 
     await asyncio.gather(*[_unload_lora_adapter(admin_client) for admin_client in admin_clients])
 

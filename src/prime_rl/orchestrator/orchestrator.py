@@ -117,6 +117,7 @@ async def orchestrate(config: OrchestratorConfig):
     val_buffer = setup_buffer(val_dataset, SimpleBufferConfig()) if val_dataset else None
 
     # Setup scheduler
+    lora_name = "lora_name_placeholder_to_change" if config.load_lora else None
     scheduler = Scheduler(
         clients=clients,
         admin_clients=admin_clients,
@@ -128,6 +129,7 @@ async def orchestrate(config: OrchestratorConfig):
         max_async_level=config.max_async_level,
         max_off_policy_steps=config.max_off_policy_steps,
         strict_async_level=config.strict_async_level,
+        lora_name=lora_name,
     )
 
     # Check health of the client
@@ -153,10 +155,15 @@ async def orchestrate(config: OrchestratorConfig):
         ckpt_manager.load(progress, buffer, step=config.ckpt.resume_step)
         logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
         scheduler.ckpt_step = progress.step  # Always resume from the latest checkpoint
-        await update_weights(admin_clients, get_step_path(get_weights_dir(config.output_dir), scheduler.ckpt_step))
+        await update_weights(
+            admin_clients, get_step_path(get_weights_dir(config.output_dir), scheduler.ckpt_step), lora_name=lora_name
+        )
+        if lora_name is not None:
+            scheduler.model_name = lora_name
     else:
         logger.info("Training from scratch. Resetting weights to base model")
-        await reload_weights(admin_clients)
+        if not config.load_lora:
+            await reload_weights(admin_clients)
 
     # Iterate over dataset in batches
     max_steps = config.max_steps or int(1e9)
