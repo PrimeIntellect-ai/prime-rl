@@ -247,7 +247,7 @@ class Scheduler:
     def async_level(self) -> int:
         return self.step - self.ckpt_step
 
-    def metrics(self) -> dict:
+    def get_metrics(self) -> dict[str, float]:
         return {
             "time/wait_for_ckpt": self.wait_for_ckpt_time,
             "time/update_weights": self.update_weights_time,
