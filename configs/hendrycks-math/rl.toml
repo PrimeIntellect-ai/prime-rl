@@ -27,8 +27,7 @@ hard_border = 0.0
 
 [orchestrator.val]
 interval = 1
-num_examples = 8
-rollouts_per_example = 16
+num_examples = 128
 
 [orchestrator.eval]
 interval = 10
