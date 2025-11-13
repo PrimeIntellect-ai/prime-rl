@@ -22,8 +22,8 @@ id = "primeintellect/hendrycks-math"
 [orchestrator.buffer]
 easy_fraction = 0.0
 hard_fraction = 0.0
-easy_border = 1.0
-hard_border = 0.0
+easy_threshold = 1.0
+hard_threshold = 0.0
 
 [orchestrator.val]
 interval = 1
