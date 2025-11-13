@@ -47,6 +47,7 @@ class Scheduler:
         max_async_level: int,
         max_off_policy_steps: int,
         strict_async_level: bool,
+        lora_name: str | None = None,
     ):
         self.logger = get_logger()
         self.clients = clients
@@ -62,11 +63,13 @@ class Scheduler:
         self.max_async_level = max_async_level
         self.max_off_policy_steps = max_off_policy_steps
         self.strict_async_level = strict_async_level
+        self.lora_name = lora_name
         self.inflight_group_rollouts: dict[asyncio.Task, InflightRolloutInfo] = {}
         self.cycle_clients = cycle(self.clients)
         self.step, self.ckpt_step = 0, 0
         self.update_weights_time, self.wait_for_ckpt_time = 0, 0
         self.sampling_args = get_sampling_args(config.sampling)
+        self.model_name = self.config.model.name
 
     def process_generate_outputs(
         self,
@@ -120,7 +123,7 @@ class Scheduler:
             generate_group(
                 client=client,
                 env=self.env,
-                model_name=self.config.model.name,
+                model_name=self.model_name,
                 problem=problem,
                 rollouts_per_example=self.config.rollouts_per_example,
                 sampling_args=self.sampling_args,
@@ -157,10 +160,14 @@ class Scheduler:
 
             update_weights_start_time = time.time()
             await update_weights(
-                self.admin_clients, get_step_path(get_weights_dir(self.config.output_dir), next_ckpt_step)
+                self.admin_clients,
+                get_step_path(get_weights_dir(self.config.output_dir), next_ckpt_step),
+                lora_name=self.lora_name,
             )
             self.update_weights_time = time.time() - update_weights_start_time
             self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
+            if self.lora_name is not None:
+                self.model_name = self.lora_name
 
             # Cancel old rollout requests
             tasks_to_remove = []
