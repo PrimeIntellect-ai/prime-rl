@@ -154,7 +154,7 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
     async def _load_lora_adapter(admin_client: AsyncClient) -> None:
         logger.debug(f"Sending request to load LoRA adapter {lora_name} from {lora_path}")
         response = await admin_client.post(
-            "/load_lora_adapter",
+            "/v1/load_lora_adapter",
             json={
                 "lora_name": lora_name,
                 "lora_path": lora_path_posix,
@@ -171,7 +171,7 @@ async def unload_lora_adapter(admin_clients: list[AsyncClient], lora_name: str) 
 
     async def _unload_lora_adapter(admin_client: AsyncClient) -> None:
         logger.debug(f"Sending request to unload LoRA adapter {lora_name}")
-        await admin_client.post("/unload_lora_adapter", json={"lora_name": lora_name})
+        await admin_client.post("/v1/unload_lora_adapter", json={"lora_name": lora_name})
         # TODO: The first one can fail, but subsequent ones should succeed.
         # response.raise_for_status()
 
