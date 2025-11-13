@@ -138,6 +138,36 @@ async def reload_weights(admin_clients: list[AsyncClient]) -> None:
     await asyncio.gather(*[_reload_weights(admin_client) for admin_client in admin_clients])
 
 
+async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lora_path: Path) -> None:
+    """Make a HTTP post request to the vLLM server to load a LoRA adapter."""
+    logger = get_logger()
+
+    async def _load_lora_adapter(admin_client: AsyncClient) -> None:
+        logger.debug(f"Sending request to load LoRA adapter {lora_name} from {lora_path}")
+        response = await admin_client.post(
+            "/load_lora_adapter",
+            json={
+                "lora_name": lora_name,
+                "lora_path": lora_path,
+            },
+        )
+        response.raise_for_status()
+
+    await asyncio.gather(*[_load_lora_adapter(admin_client) for admin_client in admin_clients])
+
+
+async def unload_lora_adapter(admin_clients: list[AsyncClient], lora_name: str) -> None:
+    """Make a HTTP post request to the vLLM server to unload a LoRA adapter."""
+    logger = get_logger()
+
+    async def _unload_lora_adapter(admin_client: AsyncClient) -> None:
+        logger.debug(f"Sending request to unload LoRA adapter {lora_name}")
+        response = await admin_client.post("/unload_lora_adapter", json={"lora_name": lora_name})
+        response.raise_for_status()
+
+    await asyncio.gather(*[_unload_lora_adapter(admin_client) for admin_client in admin_clients])
+
+
 async def init_nccl_broadcast(admin_clients: list[AsyncClient], host: str, port: int, timeout: int) -> None:
     """Make a HTTP post request to the vLLM server to initialize the NCCL broadcast."""
     logger = get_logger()
