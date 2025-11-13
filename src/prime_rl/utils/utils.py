@@ -8,8 +8,8 @@ from typing import Any
 
 import torch
 import torch.distributed as dist
-import wandb
 
+import wandb
 from prime_rl.utils.logger import get_logger
 
 
@@ -285,12 +285,6 @@ def get_latest_ckpt_step(weights_dir: Path) -> int | None:
         if Path(weights_dir / f"step_{latest_step}" / "STABLE").exists():
             return latest_step
     return None
-
-
-def mean(values: list[float] | list[int]) -> float:
-    """Compute the mean of a list of values."""
-    num_values = len(values)
-    return sum(values) / num_values if num_values > 0 else 0
 
 
 def mean_normalize(values: list[float] | list[int]) -> list[float]:
