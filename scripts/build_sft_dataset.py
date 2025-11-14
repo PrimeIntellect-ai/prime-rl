@@ -72,6 +72,10 @@ def get_completion(result: dict) -> list[dict]:
     j = 0
     for i in range(len(completion)):
         if completion[i].get("role") == "assistant":
+            oai_response = oai_responses[j]
+            for tc in oai_response.get("tool_calls") or []:
+                if "index" in tc:
+                    del tc["index"]
             completion[i] = oai_responses[j]
             j += 1
 
