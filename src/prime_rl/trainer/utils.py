@@ -24,16 +24,14 @@ DEFAULT_TIMEOUT = timedelta(seconds=600)
 
 def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: bool = False):
     torch.cuda.set_device(get_world().local_rank)
-    # Use Gloo backend when CPU offloading is enabled (Gloo supports both CPU and GPU)
+    # Use Gloo backend for CPU and NCCL for GPU when CPU offloading is enabled
     # Otherwise use NCCL for better GPU performance
-    backend = "gloo" if enable_gloo else "nccl"
+    backend = None  # by default nccl
     if enable_gloo:
-        get_logger().info("Using Gloo backend for FSDP CPU offloading support")
-    dist.init_process_group(
-        backend=backend,
-        device_id=torch.device("cuda", torch.cuda.current_device()) if backend == "nccl" else None,
-        timeout=timedelta(seconds=1200),
-    )
+        get_logger().info("Using Gloo backend for CPU and NCCL backend for GPU")
+        backend = "cpu:gloo,cuda:nccl"
+
+    dist.init_process_group(backend=backend, timeout=timeout)
 
 
 def get_response_lengths(position_ids: torch.Tensor) -> list[int]:
