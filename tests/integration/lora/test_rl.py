@@ -22,6 +22,12 @@ RL_CMD = [
     "configs/reverse_text/rl/orch.toml",
     "--orchestrator.sampling.max-tokens",
     "128",
+    "--trainer.model.experimental.lora.rank",
+    "8",
+    "--trainer.weights.save-adapter-separately",
+    "--orchestrator.load-lora",
+    "--trainer.optim.lr",
+    "1e-4",
     "--ckpt",
 ]
 RL_RESUME_CMD = [
@@ -36,6 +42,12 @@ RL_RESUME_CMD = [
     "configs/reverse_text/rl/orch.toml",
     "--orchestrator.sampling.max-tokens",
     "128",
+    "--trainer.model.experimental.lora.rank",
+    "8",
+    "--trainer.weights.save-adapter-separately",
+    "--orchestrator.load-lora",
+    "--trainer.optim.lr",
+    "1e-4",
     "--max-steps",
     "25",
     "--ckpt.resume-step",
@@ -52,8 +64,8 @@ def wandb_project(username: str) -> str:
 
 
 @pytest.fixture(scope="module")
-def full_weight_rl_process(
-    vllm_server,  # Can only run with vLLM server
+def lora_rl_process(
+    vllm_server_dynamic_lora_loading,  # Can only run with vLLM server
     run_process: Callable[[Command, Environment, int], ProcessResult],
     output_dir: Path,
     wandb_project: str,
@@ -70,9 +82,9 @@ def full_weight_rl_process(
 
 
 @pytest.fixture(scope="module")
-def full_weight_rl_resume_process(
+def lora_rl_resume_process(
     vllm_server,  # Can only run with vLLM server
-    full_weight_rl_process,  # Resume training can only start when regular RL process is finished
+    lora_rl_process,  # Resume training can only start when regular RL process is finished
     run_process: Callable[[Command, Environment, int], ProcessResult],
     output_dir: Path,
     wandb_project: str,
@@ -89,19 +101,17 @@ def full_weight_rl_resume_process(
     )
 
 
-def test_no_error(full_weight_rl_process: ProcessResult):
-    assert full_weight_rl_process.returncode == 0, (
-        f"RL process failed with return code {full_weight_rl_process.returncode}"
+def test_no_error(lora_rl_process: ProcessResult):
+    assert lora_rl_process.returncode == 0, f"RL process failed with return code {lora_rl_process.returncode}"
+
+
+def test_no_error_resume(lora_rl_resume_process: ProcessResult):
+    assert lora_rl_resume_process.returncode == 0, (
+        f"RL resume process failed with return code {lora_rl_resume_process.returncode}"
     )
 
 
-def test_no_error_resume(full_weight_rl_resume_process: ProcessResult):
-    assert full_weight_rl_resume_process.returncode == 0, (
-        f"RL resume process failed with return code {full_weight_rl_resume_process.returncode}"
-    )
-
-
-def test_check_reward(output_dir: Path, full_weight_rl_resume_process: ProcessResult):
+def test_check_reward(output_dir: Path, lora_rl_resume_process: ProcessResult):
     wandb_paths = [i for i in output_dir.glob("run-*")]
     wandb_summaries = [json.load(open(i / "final_summary.json")) for i in wandb_paths]
     assert len(wandb_paths) == 2

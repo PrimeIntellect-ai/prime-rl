@@ -203,6 +203,57 @@ def vllm_server() -> Generator[None, None, None]:
         cleanup_process(vllm_process)
 
 
+@pytest.fixture(scope="session")
+def vllm_server_dynamic_lora_loading() -> Generator[None, None, None]:
+    """Start a vLLM server for integration and e2e tests"""
+    import asyncio
+    import time
+    import urllib.error
+    import urllib.request
+
+    # Start the server as a subprocess
+    env = {**os.environ, **VLLM_SERVER_ENV, "VLLM_ALLOW_RUNTIME_LORA_UPDATING": "True"}
+    vllm_process = subprocess.Popen(
+        VLLM_SERVER_CMD + ["--enable-lora"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+
+    # Register cleanup on unexpected termination
+    atexit.register(cleanup_process, vllm_process)
+    signal.signal(signal.SIGTERM, lambda signum, frame: cleanup_process(vllm_process))
+    signal.signal(signal.SIGINT, lambda signum, frame: cleanup_process(vllm_process))
+
+    # Default vLLM server URL
+    base_url = "http://localhost:8000"
+
+    async def wait_for_server_health(timeout: int = 180, interval: int = 1) -> bool:
+        """Wait for the server to be healthy by checking the /health endpoint."""
+        health_url = f"{base_url}/health"
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            try:
+                with urllib.request.urlopen(health_url, timeout=5) as response:
+                    if response.status == 200:
+                        return True
+            except (urllib.error.URLError, urllib.error.HTTPError):
+                pass
+            await asyncio.sleep(interval)
+
+        return False
+
+    try:
+        # Wait for the server to be healthy
+        is_healthy = asyncio.run(wait_for_server_health())
+
+        if not is_healthy:
+            raise RuntimeError("vLLM server did not become healthy within timeout")
+
+        # Yield to signal that the server is ready (can be used in tests that depend on it)
+        yield
+    finally:
+        cleanup_process(vllm_process)
+
+
 @pytest.fixture()
 def free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:

@@ -1,0 +1,12 @@
+uv run rl \
+  --trainer @ configs/reverse_text/rl/train.toml \
+  --orchestrator @ configs/reverse_text/rl/orch.toml \
+  --orchestrator.sampling.max-tokens 128 \
+  --trainer.model.experimental.lora.rank 8 \
+  --trainer.weights.save-adapter-separately \
+  --orchestrator.load-lora \
+  --trainer.optim.lr 1e-4 \
+  --wandb.project multi-tenant-debug \
+  --wandb.name r8-1e-4 \
+  --log.level debug \
+  --ckpt
