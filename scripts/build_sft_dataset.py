@@ -22,7 +22,7 @@ from typing import cast
 
 from datasets import Dataset, List, Value, load_dataset
 from huggingface_hub import whoami
-from openai.types.chat import ChatCompletionFunctionToolParam
+from openai.types.chat import ChatCompletion, ChatCompletionFunctionToolParam
 
 TOOL_CALL_SCHEMA = {
     "function": {
@@ -53,15 +53,11 @@ def get_prompt(result: dict) -> list[dict]:
 def get_completion(result: dict) -> list[dict]:
     assert "completion" in result and "trajectory" in result
     completion, trajectory = result["completion"], result["trajectory"]
-    responses = [trajectory_step["response"] for trajectory_step in trajectory]
+    responses = [ChatCompletion.model_validate_json(trajectory_step["response"]) for trajectory_step in trajectory]
 
     # Get all chat messages from chat completion responses
     oai_responses = [
-        {
-            k: v
-            for k, v in r["choices"][0]["message"].items()
-            if k in ["role", "content", "reasoning_content", "tool_calls"]
-        }
+        {k: v for k, v in r.choices[0].message if k in ["role", "content", "reasoning_content", "tool_calls"]}
         for r in responses
     ]
 
