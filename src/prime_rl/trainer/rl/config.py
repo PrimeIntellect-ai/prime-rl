@@ -23,7 +23,20 @@ class LossConfig(BaseModel):
     ratio_length_norm: Annotated[
         bool, Field(description="Whether to normalize the importance ratio by the sequence length.")
     ] = False
-
+    tis_clip: Annotated[
+        float | None,
+        Field(
+            ge=0,
+            description="If set, applies truncated importance sampling by clamping the importance ratio to this value.",
+        ),
+    ] = None
+    sequence_ratio_clamp: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="Maximum value for clamping the log importance ratio when using sequence-level ratios.",
+        ),
+    ] = 10.0
     mask_ratio_high: Annotated[float, Field(ge=0)] = 8.0
     mask_ratio_low: Annotated[float, Field(ge=0)] = 0.125
     sequence_mask_ratio_low: Annotated[

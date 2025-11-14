@@ -60,6 +60,8 @@ def compute_loss(
         Tuple of (scaled_loss, aggregated_loss_tensors)
     """
 
+    tis_clip = loss_config.tis_clip if loss_config.tis_clip and loss_config.tis_clip > 0 else None
+
     total_loss = 0
     total_mismatch_kl = []
     total_masked_mismatch_kl = []
@@ -68,6 +70,9 @@ def compute_loss(
     total_is_masked_low = []
     total_is_masked_high = []
     total_sequence_masked_low = []
+    total_tis_raw_mean = [] if tis_clip else None
+    total_tis_trunc_mean = [] if tis_clip else None
+    total_tis_clipped_fraction = [] if tis_clip else None
 
     for trainer_logprobs, inference_logprobs, advantages, loss_mask in zip(
         trainer_logprobs, inference_logprobs, advantages, loss_mask
@@ -82,17 +87,23 @@ def compute_loss(
             if loss_config.ratio_length_norm:
                 seq_log_importance_ratio = seq_log_importance_ratio / torch.clamp_min(loss_mask.sum(), 1)
             log_importance_ratio = trainer_logprobs - trainer_logprobs.detach() + seq_log_importance_ratio.detach()
-            log_importance_ratio = torch.clamp(log_importance_ratio, max=10.0)
+            log_importance_ratio = torch.clamp(log_importance_ratio, max=loss_config.sequence_ratio_clamp)
 
         importance_ratio = torch.exp(log_importance_ratio)
+        if tis_clip:
+            truncated_importance_ratio = torch.clamp(importance_ratio, max=tis_clip)
+        else:
+            truncated_importance_ratio = importance_ratio
         is_masked_low = importance_ratio < loss_config.mask_ratio_low
         is_masked_high = importance_ratio > loss_config.mask_ratio_high
-        is_masked = is_masked_low | is_masked_high
+        is_masked = is_masked_low
+        if not tis_clip:
+            is_masked = is_masked | is_masked_high
         seq_min_ratio = importance_ratio.masked_fill(~loss_mask, torch.inf).min()
         seq_should_mask = seq_min_ratio < loss_config.sequence_mask_ratio_low
         is_masked = is_masked | seq_should_mask
         keep_mask = loss_mask & ~is_masked
-        loss = (-importance_ratio * advantages)[keep_mask].sum()
+        loss = (-truncated_importance_ratio * advantages)[keep_mask].sum()
         if loss_config.kl_mask_type == "masked":
             kl_mask = loss_mask & is_masked
         elif loss_config.kl_mask_type == "unmasked":
@@ -123,11 +134,26 @@ def compute_loss(
         total_is_masked_low.append(is_masked_low[loss_mask].float())
         total_is_masked_high.append(is_masked_high[loss_mask].float())
         total_sequence_masked_low.append(seq_should_mask.float())
+        if tis_clip:
+            masked_raw_ratio = importance_ratio[loss_mask]
+            masked_trunc_ratio = truncated_importance_ratio[loss_mask]
+            if masked_raw_ratio.numel() == 0:
+                default_val = importance_ratio.new_zeros(())
+                tis_raw_mean = default_val
+                tis_trunc_mean = default_val
+                tis_clipped_fraction = default_val
+            else:
+                tis_raw_mean = masked_raw_ratio.mean()
+                tis_trunc_mean = masked_trunc_ratio.mean()
+                tis_clipped_fraction = (masked_raw_ratio > masked_trunc_ratio + 1e-12).float().mean()
+            total_tis_raw_mean.append(tis_raw_mean)
+            total_tis_trunc_mean.append(tis_trunc_mean)
+            total_tis_clipped_fraction.append(tis_clipped_fraction)
 
     # Apply loss scaling
     scaled_loss = total_loss / loss_scale
 
-    return scaled_loss, {
+    metrics = {
         "mismatch_kl": torch.stack(total_mismatch_kl),
         "masked_mismatch_kl": torch.stack(total_masked_mismatch_kl),
         "unmasked_mismatch_kl": torch.stack(total_unmasked_mismatch_kl),
@@ -136,3 +162,9 @@ def compute_loss(
         "is_masked_high": torch.cat(total_is_masked_high),
         "sequence_masked_low": torch.stack(total_sequence_masked_low),
     }
+    if tis_clip:
+        metrics["tis_raw_ratio_mean"] = torch.stack(total_tis_raw_mean)
+        metrics["tis_trunc_ratio_mean"] = torch.stack(total_tis_trunc_mean)
+        metrics["tis_clipped_fraction"] = torch.stack(total_tis_clipped_fraction)
+
+    return scaled_loss, metrics
