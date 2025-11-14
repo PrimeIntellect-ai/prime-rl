@@ -104,6 +104,8 @@ async def main(
 
     # Parse messages (w/ reasoning content and tool calls in OAI format) and get OAI tool definitions
     print("Parsing messages...")
+    example_id = [cast(dict, result)["example_id"] for result in results]
+    reward = [cast(dict, result)["reward"] for result in results]
     prompt = [get_prompt(cast(dict, result)) for result in results]
     completion = [get_completion(cast(dict, result)) for result in results]
     oai_tools = [json.dumps(get_oai_tools(cast(dict, result))) for result in results]
@@ -113,6 +115,8 @@ async def main(
     ds = (
         Dataset.from_dict(
             {
+                "example_id": example_id,
+                "reward": reward,
                 "prompt": prompt,
                 "completion": completion,
                 "tools": oai_tools,
