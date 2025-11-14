@@ -3,9 +3,9 @@ A script to build an SFT dataset from rollouts produced by an environment. Inclu
 
 Example Usage:
 
-First, run `uv run vf-eval` (or, alternatively, `uv run eval`) to produce rollouts. Make sure to use the `-C responses` flag to include the responses in the output.
+First, run `uv run vf-eval` (or, alternatively, `uv run eval`) to produce rollouts. Make sure to use the `-C trajectory` flag to include the trajectory in the output.
 ```bash
-uv run vf-eval math500 -s -C responses
+uv run vf-eval math500 -s -C trajectory
 ```
 
 Then, grab the outputs directory (e.g. `outputs/evals/math500--gpt-4.1-mini/53fadd48`) and run this script to build (and push) the SFT dataset:
@@ -51,8 +51,9 @@ def get_prompt(result: dict) -> list[dict]:
 
 
 def get_completion(result: dict) -> list[dict]:
-    assert "completion" in result and "responses" in result
-    completion, responses = result["completion"], result["responses"]
+    assert "completion" in result and "trajectory" in result
+    completion, trajectory = result["completion"], result["trajectory"]
+    responses = [trajectory_step["response"] for trajectory_step in trajectory]
 
     # Get all chat messages from chat completion responses
     oai_responses = [
