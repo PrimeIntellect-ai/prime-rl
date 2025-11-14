@@ -53,11 +53,17 @@ def get_prompt(result: dict) -> list[dict]:
 def get_completion(result: dict) -> list[dict]:
     assert "completion" in result and "trajectory" in result
     completion, trajectory = result["completion"], result["trajectory"]
-    responses = [ChatCompletion.model_validate_json(trajectory_step["response"]) for trajectory_step in trajectory]
+    responses = [
+        ChatCompletion.model_validate_json(trajectory_step["response"]).model_dump() for trajectory_step in trajectory
+    ]
 
     # Get all chat messages from chat completion responses
     oai_responses = [
-        {k: v for k, v in r.choices[0].message if k in ["role", "content", "reasoning_content", "tool_calls"]}
+        {
+            k: v
+            for k, v in r["choices"][0]["message"].items()
+            if k in ["role", "content", "reasoning_content", "tool_calls"]
+        }
         for r in responses
     ]
 
@@ -66,9 +72,6 @@ def get_completion(result: dict) -> list[dict]:
     j = 0
     for i in range(len(completion)):
         if completion[i].get("role") == "assistant":
-            oai_response = oai_responses[j]
-            for tc in oai_response.get("tool_calls") or []:
-                del tc["index"]
             completion[i] = oai_responses[j]
             j += 1
 
@@ -76,7 +79,7 @@ def get_completion(result: dict) -> list[dict]:
 
 
 def get_oai_tools(result: dict) -> list[ChatCompletionFunctionToolParam]:
-    return cast(dict, json.loads(result.get("info", "{}"))).get("oai_tools", [])
+    return json.loads(result.get("oai_tools", "[]"))
 
 
 async def main(
