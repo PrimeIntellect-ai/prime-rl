@@ -52,7 +52,7 @@ def wandb_project(username: str) -> str:
 
 
 @pytest.fixture(scope="module")
-def rl_process(
+def full_weight_rl_process(
     vllm_server,  # Can only run with vLLM server
     run_process: Callable[[Command, Environment, int], ProcessResult],
     output_dir: Path,
@@ -70,9 +70,9 @@ def rl_process(
 
 
 @pytest.fixture(scope="module")
-def rl_resume_process(
+def full_weight_rl_resume_process(
     vllm_server,  # Can only run with vLLM server
-    rl_process,  # Resume training can only start when regular RL process is finished
+    full_weight_rl_process,  # Resume training can only start when regular RL process is finished
     run_process: Callable[[Command, Environment, int], ProcessResult],
     output_dir: Path,
     wandb_project: str,
@@ -89,17 +89,19 @@ def rl_resume_process(
     )
 
 
-def test_no_error(rl_process: ProcessResult):
-    assert rl_process.returncode == 0, f"RL process failed with return code {rl_process.returncode}"
-
-
-def test_no_error_resume(rl_resume_process: ProcessResult):
-    assert rl_resume_process.returncode == 0, (
-        f"RL resume process failed with return code {rl_resume_process.returncode}"
+def test_no_error(full_weight_rl_process: ProcessResult):
+    assert full_weight_rl_process.returncode == 0, (
+        f"RL process failed with return code {full_weight_rl_process.returncode}"
     )
 
 
-def test_check_reward(output_dir: Path, rl_resume_process: ProcessResult):
+def test_no_error_resume(full_weight_rl_resume_process: ProcessResult):
+    assert full_weight_rl_resume_process.returncode == 0, (
+        f"RL resume process failed with return code {full_weight_rl_resume_process.returncode}"
+    )
+
+
+def test_check_reward(output_dir: Path, full_weight_rl_resume_process: ProcessResult):
     wandb_paths = [i for i in output_dir.glob("run-*")]
     wandb_summaries = [json.load(open(i / "final_summary.json")) for i in wandb_paths]
     assert len(wandb_paths) == 2
