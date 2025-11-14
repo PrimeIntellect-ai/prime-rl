@@ -26,7 +26,8 @@ class FileSystemWeightUpdateWorker(Worker):
         """Update weights from a specified path pointing to a .pt file."""
         # Get vLLM model runner and model
         model_runner = self.model_runner
-        model = model_runner.model
+        # TODO: Is model_runner.model always CUDAGraphWrapper? Should we have if isinstance here?
+        model = model_runner.model.runnable
         assert isinstance(model, Module)
 
         # Get vLLM model loader
