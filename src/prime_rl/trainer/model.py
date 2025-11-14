@@ -197,7 +197,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
             "Found HF weight format in snapshot state dict and TT weight format in model state dict. Trying to auto-convert..."
         )
         snapshot_path = snapshot_path / "tt"
-        if snapshot_path.exists():
+        if False:
             logger.debug(f"Conversion found at {snapshot_path}.")
         else:
             if get_world().is_master:
