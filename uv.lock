@@ -2211,7 +2211,7 @@ requires-dist = [
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
     { name = "transformers", specifier = ">=4.56.0" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=0a60f47" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=39faa49" },
     { name = "vllm", specifier = "==0.10.2" },
     { name = "wandb", specifier = ">=0.20.1" },
 ]
@@ -3521,7 +3521,7 @@ wheels = [
 [[package]]
 name = "verifiers"
 version = "0.1.8.dev0"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=0a60f47#0a60f47336700ef9fca3c2a43a1b4b8f0a3f4210" }
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=39faa49#39faa49351e770e619f5249b7d48ff236a7961f7" }
 dependencies = [
     { name = "datasets" },
     { name = "jinja2" },
