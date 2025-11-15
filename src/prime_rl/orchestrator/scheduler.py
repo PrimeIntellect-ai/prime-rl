@@ -132,8 +132,7 @@ class Scheduler:
             tasks_to_update = []
 
             for task, (off_policy_steps, client) in self.inflight_group_rollouts.items():
-                if off_policy_steps > self.max_off_policy_steps:
-                    task.cancel()
+                if off_policy_steps > self.max_off_policy_steps and task.cancel():
                     tasks_to_remove.append((task, client))
                 else:
                     tasks_to_update.append((task, off_policy_steps + 1, client))
@@ -153,7 +152,7 @@ class Scheduler:
 
             self.ckpt_step = next_ckpt_step
 
-    async def generate_batch(self, step: int, semaphore: asyncio.Semaphore | None = None) -> list[vf.State]:
+    async def generate_batch(self, step: int) -> list[vf.State]:
         """Continuously schedules group rollouts, allowing them to be in-flight across steps."""
         self.step = step
 
