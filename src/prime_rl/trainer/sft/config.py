@@ -19,7 +19,14 @@ from prime_rl.utils.pydantic_config import BaseSettings
 class BaseDataConfig(BaseModel):
     """Base config for SFT data."""
 
-    batch_size: Annotated[int, Field(ge=1)] = 128
+    batch_size: Annotated[
+        int,
+        Field(ge=1, description="Global batch size (total samples per step across all ranks)."),
+    ] = 128
+    micro_batch_size: Annotated[
+        int,
+        Field(ge=1, description="Number of micro batches per step (gradient accumulation steps)."),
+    ] = 1
     seq_len: Annotated[int, Field(ge=1)] = 128
     pack_function: Literal["cat", "stack"] = "cat"
 
