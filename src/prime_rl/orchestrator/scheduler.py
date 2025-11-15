@@ -167,8 +167,7 @@ class Scheduler:
             tasks_to_update = []
 
             for task, (off_policy_steps, client) in self.inflight_group_rollouts.items():
-                if off_policy_steps > self.max_off_policy_steps:
-                    task.cancel()
+                if off_policy_steps > self.max_off_policy_steps and task.cancel():
                     tasks_to_remove.append((task, client))
                 else:
                     tasks_to_update.append((task, off_policy_steps + 1, client))
@@ -208,6 +207,15 @@ class Scheduler:
                 if len(batch_rollouts) >= self.config.batch_size:
                     batch_rollouts = batch_rollouts[: self.config.batch_size]
                     break
+
+                # Skip tasks that were cancelled and already removed by update_policy
+                if finished_group_rollout not in self.inflight_group_rollouts:
+                    continue
+
+                # Skip cancelled tasks (they're handled by update_policy)
+                if finished_group_rollout.cancelled():
+                    self.inflight_group_rollouts.pop(finished_group_rollout, None)
+                    continue
 
                 _, client = self.inflight_group_rollouts.pop(finished_group_rollout)
                 generate_outputs: GenerateOutputs = finished_group_rollout.result()
