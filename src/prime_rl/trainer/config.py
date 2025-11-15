@@ -12,7 +12,7 @@ MOE_MODEL_MAPS = {
 }
 
 
-class ActivationCheckpointConfig(BaseModel):
+class ActivationCheckpointConfig(BaseConfig):
     """Configures activation checkpointing."""
 
     freq: Annotated[
@@ -24,7 +24,7 @@ class ActivationCheckpointConfig(BaseModel):
     ] = 1
 
 
-class ActivationOffloadingConfig(BaseModel):
+class ActivationOffloadingConfig(BaseConfig):
     """Configures the activation offloading."""
 
     pin_memory: Annotated[bool, Field(description="Whether to pin the offloaded activations to CPU memory.")] = True
@@ -38,7 +38,7 @@ class ActivationOffloadingConfig(BaseModel):
     ] = 5
 
 
-class CompileConfig(BaseModel):
+class CompileConfig(BaseConfig):
     """Configures model compilation."""
 
     fullgraph: Annotated[
@@ -47,7 +47,7 @@ class CompileConfig(BaseModel):
     ] = False
 
 
-class DebugModelConfig(BaseModel):
+class DebugModelConfig(BaseConfig):
     """Debugging feature around model and distributed training."""
 
     num_layers: Annotated[
@@ -63,7 +63,7 @@ class DebugModelConfig(BaseModel):
     ] = False
 
 
-class LoRAConfig(BaseModel):
+class LoRAConfig(BaseConfig):
     """Configuration for LoRA (Low-Rank Adaptation)."""
 
     rank: Annotated[
@@ -114,7 +114,7 @@ class LoRAConfig(BaseModel):
     ] = []
 
 
-class ExperimentalConfig(BaseModel):
+class ExperimentalConfig(BaseConfig):
     """Experimental modeling features."""
 
     lora: Annotated[

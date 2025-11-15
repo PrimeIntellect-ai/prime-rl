@@ -13,7 +13,7 @@ from prime_rl.trainer.config import (
     WeightCheckpointConfig,
 )
 from prime_rl.utils.config import LogConfig, WandbMonitorConfig
-from prime_rl.utils.pydantic_config import BaseSettings
+from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
 class BaseDataConfig(BaseModel):
@@ -33,7 +33,7 @@ class FakeDataConfig(BaseDataConfig):
     input_ids: Literal["increasing", "random"] = "increasing"
 
 
-class LossMaskConfig(BaseModel):
+class LossMaskConfig(BaseConfig):
     """Configures which message types contribute to the loss. If True, the loss_mask will be True and the message type will contribute to the loss."""
 
     system: Annotated[bool, Field(description="Whether system messages contribute to the loss.")] = False

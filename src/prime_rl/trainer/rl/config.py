@@ -16,7 +16,7 @@ from prime_rl.utils.config import LogConfig, WandbMonitorConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
-class LossConfig(BaseModel):
+class LossConfig(BaseConfig):
     """Base config for loss."""
 
     ratio_type: Annotated[Literal["token", "sequence"], Field(description="Type of importance ratio to use.")] = "token"

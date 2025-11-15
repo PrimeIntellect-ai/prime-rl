@@ -170,7 +170,7 @@ class EvalSaveConfig(BaseConfig):
     ] = False
 
 
-class EnvConfig(BaseModel):
+class EnvConfig(BaseConfig):
     """Configures an environment for training."""
 
     id: Annotated[str, Field(description="ID of the environment to use.")] = "reverse-text"
