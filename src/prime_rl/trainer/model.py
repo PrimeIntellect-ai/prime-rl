@@ -1,4 +1,5 @@
 import logging
+import shutil
 import time
 from pathlib import Path
 from typing import cast
@@ -205,6 +206,9 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
                     f"Converting snapshot state dict to TT format and saving to {snapshot_path} on master rank. This is a one-time operation."
                 )
                 convert_hf_to_tt_moe(snapshot_state_dict)
+
+                if snapshot_path.exists():
+                    shutil.rmtree(snapshot_path)
                 save_state_dict(snapshot_state_dict, snapshot_path)
 
     elif has_tt_moe_layers(snapshot_state_dict) and has_hf_moe_layers(model_state_dict):
