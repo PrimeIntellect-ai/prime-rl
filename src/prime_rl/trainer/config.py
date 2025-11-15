@@ -2,7 +2,7 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
 
-from prime_rl.utils.pydantic_config import BaseConfig
+from prime_rl.utils.pydantic_config import StrictModel
 
 AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2"]
 
@@ -12,7 +12,7 @@ MOE_MODEL_MAPS = {
 }
 
 
-class ActivationCheckpointConfig(BaseModel):
+class ActivationCheckpointConfig(StrictModel):
     """Configures activation checkpointing."""
 
     freq: Annotated[
@@ -24,7 +24,7 @@ class ActivationCheckpointConfig(BaseModel):
     ] = 1
 
 
-class ActivationOffloadingConfig(BaseModel):
+class ActivationOffloadingConfig(StrictModel):
     """Configures the activation offloading."""
 
     pin_memory: Annotated[bool, Field(description="Whether to pin the offloaded activations to CPU memory.")] = True
@@ -38,7 +38,7 @@ class ActivationOffloadingConfig(BaseModel):
     ] = 5
 
 
-class CompileConfig(BaseModel):
+class CompileConfig(StrictModel):
     """Configures model compilation."""
 
     fullgraph: Annotated[
@@ -47,7 +47,7 @@ class CompileConfig(BaseModel):
     ] = False
 
 
-class DebugModelConfig(BaseModel):
+class DebugModelConfig(StrictModel):
     """Debugging feature around model and distributed training."""
 
     num_layers: Annotated[
@@ -63,7 +63,7 @@ class DebugModelConfig(BaseModel):
     ] = False
 
 
-class LoRAConfig(BaseModel):
+class LoRAConfig(StrictModel):
     """Configuration for LoRA (Low-Rank Adaptation)."""
 
     rank: Annotated[
@@ -114,7 +114,7 @@ class LoRAConfig(BaseModel):
     ] = []
 
 
-class ExperimentalConfig(BaseModel):
+class ExperimentalConfig(StrictModel):
     """Experimental modeling features."""
 
     lora: Annotated[
@@ -125,7 +125,7 @@ class ExperimentalConfig(BaseModel):
     ] = None
 
 
-class ModelConfig(BaseConfig):
+class ModelConfig(StrictModel):
     """Configures the model for training."""
 
     name: Annotated[
@@ -346,7 +346,7 @@ class MuonConfig(BaseOptimizerConfig):
 OptimizerConfigType: TypeAlias = SGDConfig | AdamWConfig | MuonConfig
 
 
-class CheckpointConfig(BaseConfig):
+class CheckpointConfig(StrictModel):
     """Configures checkpointing the full model, optimizer and training state for resuming training."""
 
     interval: Annotated[
@@ -395,7 +395,7 @@ class CheckpointConfig(BaseConfig):
     ] = False
 
 
-class WeightCheckpointConfig(BaseConfig):
+class WeightCheckpointConfig(StrictModel):
     """Configures checkpointing the model weights for updating the inference engines (RL trainer) or continued post-training (on SFT trainer)."""
 
     interval: Annotated[
