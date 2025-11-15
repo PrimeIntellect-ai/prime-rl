@@ -287,7 +287,7 @@ class CheckpointConfig(BaseConfig):
     ] = None
 
 
-class BufferConfig(BaseModel):
+class BufferConfig(BaseConfig):
     """Configures the buffer for the orchestrator."""
 
     seed: Annotated[
