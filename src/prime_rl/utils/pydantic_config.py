@@ -15,7 +15,7 @@ from pydantic_settings import (
 )
 
 
-class BaseConfig(BaseModel):
+class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 

@@ -13,10 +13,10 @@ from prime_rl.trainer.config import (
     WeightCheckpointConfig,
 )
 from prime_rl.utils.config import LogConfig, WandbMonitorConfig
-from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
+from prime_rl.utils.pydantic_config import BaseSettings, StrictModel
 
 
-class LossConfig(BaseConfig):
+class LossConfig(StrictModel):
     """Base config for loss."""
 
     ratio_type: Annotated[Literal["token", "sequence"], Field(description="Type of importance ratio to use.")] = "token"
@@ -39,14 +39,14 @@ class LossConfig(BaseConfig):
     kl_mask_type: Annotated[Literal["masked", "unmasked", "all"], Field(description="Type of KL mask to use.")] = "all"
 
 
-class FakeDataLoaderConfig(BaseConfig):
+class FakeDataLoaderConfig(StrictModel):
     """Configures a fake data loader sampling random micro batches for debugging."""
 
     batch_size: Annotated[int, Field(ge=1)] = 2
     seq_len: Annotated[int, Field(ge=1)] = 128
 
 
-class DataLoaderConfig(BaseConfig):
+class DataLoaderConfig(StrictModel):
     """Configures the data loader used for training."""
 
     fake: Annotated[FakeDataLoaderConfig | None, Field(description="Whether to use a fake data loader.")] = None

@@ -3,20 +3,20 @@ from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
-from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings, get_all_fields
+from prime_rl.utils.pydantic_config import BaseSettings, StrictModel, get_all_fields
 from prime_rl.utils.utils import rgetattr, rsetattr
 
 # TODO: Set thinking/ solution budget
 
 
-class ServerConfig(BaseConfig):
+class ServerConfig(StrictModel):
     """Configures the inference server."""
 
     host: Annotated[str | None, Field(description="The host to bind to.")] = None
     port: Annotated[int, Field(description="The port to bind to.")] = 8000
 
 
-class ParallelConfig(BaseConfig):
+class ParallelConfig(StrictModel):
     """Configures multi-node and multi-GPU setups through different types of parallelism (TP, DP, PP)."""
 
     tp: Annotated[
@@ -38,7 +38,7 @@ class ParallelConfig(BaseConfig):
         return f"tp={self.tp} dp={self.dp}"
 
 
-class ModelConfig(BaseConfig):
+class ModelConfig(StrictModel):
     """Configures the inference model. Most arguments are passed directly to the vLLM LLM class (https://docs.vllm.ai/en/latest/api/vllm.LLM.html)."""
 
     name: Annotated[
