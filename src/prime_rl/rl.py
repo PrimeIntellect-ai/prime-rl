@@ -419,9 +419,6 @@ def monitor_process(process: Popen, stop_event: Event, error_queue: list, proces
 
 
 def rl(config: RLConfig):
-    print(config.model_dump_json(indent=2))
-
-    sys.exit(0)
     # Setup logger
     logger = setup_logger(
         config.log.level or "info", log_file=config.output_dir / "logs" / "rl.log" if config.log.file else None
