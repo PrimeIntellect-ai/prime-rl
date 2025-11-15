@@ -25,7 +25,7 @@ class BaseDataConfig(BaseModel):
     ] = 128
     micro_batch_size: Annotated[
         int,
-        Field(ge=1, description="Number of micro batches per step (gradient accumulation steps)."),
+        Field(ge=1, description="Micro batch size per GPU and per gradient accumulation step."),
     ] = 1
     seq_len: Annotated[int, Field(ge=1)] = 128
     pack_function: Literal["cat", "stack"] = "cat"
