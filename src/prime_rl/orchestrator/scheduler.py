@@ -139,14 +139,16 @@ class Scheduler:
 
             # Remove cancelled tasks
             for task, client in tasks_to_remove:
-                self.inflight_group_rollouts.pop(task)
-                await self.schedule_group_rollout(client)
+                if self.inflight_group_rollouts.pop(task, None):
+                    await self.schedule_group_rollout(client)
 
             # Update retention steps for remaining tasks
             for task, off_policy_steps, client in tasks_to_update:
-                self.inflight_group_rollouts[task] = InflightRolloutInfo(
-                    off_policy_steps=off_policy_steps, client=client
-                )
+                if self.inflight_group_rollouts.get(task, None):
+                    self.inflight_group_rollouts[task] = InflightRolloutInfo(
+                        off_policy_steps=off_policy_steps, client=client
+                    )
+
             if len(tasks_to_remove) > 0:
                 self.logger.warning(f"Cancelled and re-scheduled {len(tasks_to_remove)} old rollout requests.")
 
