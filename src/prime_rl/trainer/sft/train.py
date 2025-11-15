@@ -267,7 +267,7 @@ def train(config: SFTTrainerConfig):
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.optim.max_norm).full_tensor()
 
         logger.debug("Optimizer step")
-        optimizer.step()
+        # optimizer.step()
         optimizer.zero_grad()
 
         # Update learning rate scheduler
