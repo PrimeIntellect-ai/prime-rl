@@ -6,6 +6,7 @@ from typing import Any, Optional
 import uvloop
 import vllm.envs as envs
 from fastapi import Request
+from vllm import ModelRegistry
 from vllm.config import LogprobsMode
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.protocol import EngineClient
@@ -24,6 +25,10 @@ from vllm.logger import init_logger
 from vllm.utils import FlexibleArgumentParser
 
 from prime_rl.inference.config import InferenceConfig
+from prime_rl.inference.vllm.models.afmoe import AfmoeForCausalLM
+
+ModelRegistry.register_model("AfmoeForCausalLM", AfmoeForCausalLM)
+
 
 logger = init_logger("vllm.entrypoints.openai.api_server")
 
