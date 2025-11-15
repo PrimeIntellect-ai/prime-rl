@@ -30,7 +30,6 @@ from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pydantic_config import BaseSettings, get_temp_toml_file, parse_argv
 from prime_rl.utils.utils import (
     get_ckpt_dir,
-    get_cuda_visible_devices,
     get_free_port,
     get_log_dir,
     get_rollout_dir,
@@ -192,20 +191,7 @@ class RLConfig(BaseSettings):
     weight_broadcast: Annotated[WeightBroadcastConfig | None, Field(description="The weight broadcast config.")] = None
 
     @model_validator(mode="after")
-    def validate_device(self):
-        available_gpu_ids = get_cuda_visible_devices()
-        # If no CUDA devices are available (e.g., in CPU-only test environments), skip GPU validation
-        if len(available_gpu_ids) == 0:
-            return self
-        requested_gpu_ids = sorted(set(self.trainer_gpu_ids + self.inference_gpu_ids))
-        if len(requested_gpu_ids) > len(available_gpu_ids):
-            raise ValueError(
-                f"The number of requested GPUs ({len(requested_gpu_ids)}) exceeds available GPUs ({len(available_gpu_ids)})"
-            )
-        if any(not (gpu_id in available_gpu_ids) for gpu_id in requested_gpu_ids):
-            raise ValueError(
-                f"Some requested GPU IDs are not available. Available GPUs: {available_gpu_ids}, Requested GPUs: {requested_gpu_ids}"
-            )
+    def auto_setup_dp(self):
         if self.inference and len(self.inference_gpu_ids) != self.inference.parallel.dp * self.inference.parallel.tp:
             assert len(self.inference_gpu_ids) % self.inference.parallel.tp == 0, (
                 "Number of inference GPUs must be divisible by the tensor parallel size"
@@ -433,6 +419,9 @@ def monitor_process(process: Popen, stop_event: Event, error_queue: list, proces
 
 
 def rl(config: RLConfig):
+    print(config.model_dump_json(indent=2))
+
+    sys.exit(0)
     # Setup logger
     logger = setup_logger(
         config.log.level or "info", log_file=config.output_dir / "logs" / "rl.log" if config.log.file else None
