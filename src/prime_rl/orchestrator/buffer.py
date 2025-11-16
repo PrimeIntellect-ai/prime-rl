@@ -16,7 +16,8 @@ class Buffer:
 
     POOLS = ["easy", "normal", "hard"]
     DIFFICULTY_LEVELS = ["easy", "normal", "hard"]
-    def __init__(self, dataset: Dataset, buffer_config: BufferConfig, buffer_path: Path | None = None):
+
+    def __init__(self, dataset: Dataset, buffer_config: BufferConfig):
         self.config = buffer_config
         if self.config.seed is not None:
             random.seed(self.config.seed)
@@ -34,7 +35,7 @@ class Buffer:
         # The number of problems/rollouts sampled from each pool at the current step (will reset with every call to get_metrics)
         self.num_sampled_problems_per_pool = defaultdict(int)  # Will reset every step
         self.num_sampled_rollouts_per_pool = defaultdict(int)  # Will reset every step
-        self.num_sampled_rollouts_per_difficulty = defaultdict(int) # Will reset every step
+        self.num_sampled_rollouts_per_difficulty = defaultdict(int)  # Will reset every step
 
     def save(self, path: Path) -> None:
         """Saves metadata and rollouts as separate HF datasets."""
@@ -145,10 +146,17 @@ class Buffer:
         metrics.update({f"{prefix}/{pool}": value for pool, value in zip(self.POOLS, rollout_pool_ratio)})
 
         # Add ratio of rollouts sampled from each difficulty level this step
-        rollout_difficulty_counts = [self.num_sampled_rollouts_per_difficulty.get(difficulty, 0.0) for difficulty in self.DIFFICULTY_LEVELS]
+        rollout_difficulty_counts = [
+            self.num_sampled_rollouts_per_difficulty.get(difficulty, 0.0) for difficulty in self.DIFFICULTY_LEVELS
+        ]
         rollout_difficulty_ratio = mean_normalize(rollout_difficulty_counts)
         prefix = "buffer/sampled_rollouts_difficulty"
-        metrics.update({f"{prefix}/{difficulty}": value for difficulty, value in zip(self.DIFFICULTY_LEVELS, rollout_difficulty_ratio)})
+        metrics.update(
+            {
+                f"{prefix}/{difficulty}": value
+                for difficulty, value in zip(self.DIFFICULTY_LEVELS, rollout_difficulty_ratio)
+            }
+        )
 
         pool_counter = Counter(m.get("difficulty", "normal") for m in self.metadata.values())
         pool_counts = [pool_counter.get(pool, 0.0) for pool in self.POOLS]
