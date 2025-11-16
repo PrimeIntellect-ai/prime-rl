@@ -1554,6 +1554,15 @@ wheels = [
 ]
 
 [[package]]
+name = "math500"
+version = "0.1.13"
+source = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fmath500&rev=b73bab8#b73bab849986dbbee6d66e60adb11b59b584a9c1" }
+dependencies = [
+    { name = "math-verify" },
+    { name = "verifiers" },
+]
+
+[[package]]
 name = "matplotlib"
 version = "3.10.6"
 source = { registry = "https://pypi.org/simple" }
@@ -2307,6 +2316,7 @@ dependencies = [
     { name = "loguru" },
     { name = "lovely-tensors" },
     { name = "math-verify" },
+    { name = "math500" },
     { name = "nltk" },
     { name = "numpy" },
     { name = "openai" },
@@ -2355,6 +2365,7 @@ requires-dist = [
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "lovely-tensors", specifier = ">=0.1.18" },
     { name = "math-verify", specifier = ">=0.8.0" },
+    { name = "math500", git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fmath500&rev=b73bab8" },
     { name = "nltk", specifier = ">=3.9.1" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "openai", specifier = ">=1.106.1" },
