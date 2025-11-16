@@ -15,7 +15,7 @@ class Buffer:
     """A buffer for storing rollouts and metadata."""
 
     POOLS = ["easy", "normal", "hard"]
-    FILTER_THRESHOLDS = ["easy", "normal", "hard"]
+
     def __init__(self, dataset: Dataset, buffer_config: BufferConfig, buffer_path: Path | None = None):
         self.config = buffer_config
         if self.config.seed is not None:
@@ -34,7 +34,6 @@ class Buffer:
         # The number of problems/ rollouts sampled from each pool at the current step (will reset with every call to get_metrics)
         self.num_sampled_problems_per_pool = defaultdict(int)  # Will reseet every step
         self.num_sampled_rollouts_per_pool = defaultdict(int)  # Will reseet every step
-        self.num_filtered_rollouts_per_threshold = defaultdict(int) # Will reset every step
 
     def save(self, path: Path) -> None:
         """Saves metadata and rollouts as separate HF datasets."""
@@ -112,15 +111,12 @@ class Buffer:
             self.metadata[problem_id]["difficulty"] = new_difficulty
             self.num_sampled_rollouts_per_pool[new_difficulty] += 1
 
-            if self.config.filter_min_threshold is not None and avg_reward <= self.config.filter_min_threshold:
-                self.num_filtered_rollouts_per_threshold["easy"] += 1
+            if (self.config.filter_min_threshold is not None and avg_reward <= self.config.filter_min_threshold) or (
+                self.config.filter_max_threshold is not None and avg_reward >= self.config.filter_max_threshold
+            ):
                 continue
-            elif self.config.filter_max_threshold is not None and avg_reward >= self.config.filter_max_threshold:
-                self.num_filtered_rollouts_per_threshold["hard"] += 1
-                continue
-            else:
-                self.num_filtered_rollouts_per_threshold["normal"] += 1
-                self.rollout_buffer.extend(example_rollouts)
+
+            self.rollout_buffer.extend(example_rollouts)
 
     def sample_rollouts(self, n: int) -> list[Rollout]:
         """Samples the latest `n` rollouts from the buffer."""
@@ -143,12 +139,6 @@ class Buffer:
         rollout_pool_ratio = mean_normalize(rollout_pool_counts)
         prefix = "buffer/sampled_rollouts"
         metrics.update({f"{prefix}/{pool}": value for pool, value in zip(self.POOLS, rollout_pool_ratio)})
-
-        # Add ratio of rollouts filtered by each threshold this step
-        rollout_threshold_counts = [self.num_filtered_rollouts_per_threshold.get(threshold, 0.0) for threshold in self.FILTER_THRESHOLDS]
-        rollout_threshold_ratio = mean_normalize(rollout_threshold_counts)
-        prefix = "buffer/filtered_rollouts"
-        metrics.update({f"{prefix}/{threshold}": value for threshold, value in zip(self.FILTER_THRESHOLDS, rollout_threshold_ratio)})
 
         pool_counter = Counter(m.get("difficulty", "normal") for m in self.metadata.values())
         pool_counts = [pool_counter.get(pool, 0.0) for pool in self.POOLS]
