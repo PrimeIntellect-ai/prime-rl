@@ -15,7 +15,6 @@ class Buffer:
     """A buffer for storing rollouts and metadata."""
 
     POOLS = ["easy", "normal", "hard"]
-    DIFFICULTY_LEVELS = ["easy", "normal", "hard"]
 
     def __init__(self, dataset: Dataset, buffer_config: BufferConfig):
         self.config = buffer_config
@@ -35,7 +34,8 @@ class Buffer:
         # The number of problems/rollouts sampled from each pool at the current step (will reset with every call to get_metrics)
         self.num_sampled_problems_per_pool = defaultdict(int)  # Will reset every step
         self.num_sampled_rollouts_per_pool = defaultdict(int)  # Will reset every step
-        self.num_sampled_rollouts_per_difficulty = defaultdict(int)  # Will reset every step
+        self.num_filtered_rollouts_per_difficulty = defaultdict(int)  # Will reset every step
+        self.num_rollouts = 0  # Will reset every step
 
     def save(self, path: Path) -> None:
         """Saves metadata and rollouts as separate HF datasets."""
@@ -113,15 +113,14 @@ class Buffer:
             self.metadata[problem_id]["difficulty"] = new_difficulty
             self.num_sampled_rollouts_per_pool[new_difficulty] += 1
 
+            self.num_rollouts += len(example_rollouts)
             if self.config.filter_min_threshold is not None and avg_reward <= self.config.filter_min_threshold:
-                self.num_sampled_rollouts_per_difficulty["easy"] += 1
+                self.num_filtered_rollouts_per_difficulty["hard"] += len(example_rollouts)
                 continue
             elif self.config.filter_max_threshold is not None and avg_reward >= self.config.filter_max_threshold:
-                self.num_sampled_rollouts_per_difficulty["hard"] += 1
+                self.num_filtered_rollouts_per_difficulty["easy"] += len(example_rollouts)
                 continue
-            else:
-                self.num_sampled_rollouts_per_difficulty["normal"] += 1
-                self.rollout_buffer.extend(example_rollouts)
+            self.rollout_buffer.extend(example_rollouts)
 
     def sample_rollouts(self, n: int) -> list[Rollout]:
         """Samples the latest `n` rollouts from the buffer."""
@@ -139,25 +138,28 @@ class Buffer:
         prefix = "buffer/sampled_problems"
         metrics.update({f"{prefix}/{pool}": value for pool, value in zip(self.POOLS, problem_pool_ratio)})
 
-        # Add ratio of rollouts sampled from each difficulty level this step
+        # Add ratio of rollouts sampled from each pool this step
         rollout_pool_counts = [self.num_sampled_rollouts_per_pool.get(pool, 0.0) for pool in self.POOLS]
         rollout_pool_ratio = mean_normalize(rollout_pool_counts)
         prefix = "buffer/sampled_rollouts"
         metrics.update({f"{prefix}/{pool}": value for pool, value in zip(self.POOLS, rollout_pool_ratio)})
 
-        # Add ratio of rollouts sampled from each difficulty level this step
-        rollout_difficulty_counts = [
-            self.num_sampled_rollouts_per_difficulty.get(difficulty, 0.0) for difficulty in self.DIFFICULTY_LEVELS
-        ]
-        rollout_difficulty_ratio = mean_normalize(rollout_difficulty_counts)
-        prefix = "buffer/sampled_rollouts_difficulty"
+        # Add ratio of rollouts filtered out this step
+        easy_filtered_ratio = (
+            self.num_filtered_rollouts_per_difficulty["easy"] / self.num_rollouts if self.num_rollouts > 0 else 0.0
+        )
+        hard_filtered_ratio = (
+            self.num_filtered_rollouts_per_difficulty["hard"] / self.num_rollouts if self.num_rollouts > 0 else 0.0
+        )
+        prefix = "buffer/filtered_rollouts"
         metrics.update(
             {
-                f"{prefix}/{difficulty}": value
-                for difficulty, value in zip(self.DIFFICULTY_LEVELS, rollout_difficulty_ratio)
+                f"{prefix}/easy": easy_filtered_ratio,
+                f"{prefix}/hard": hard_filtered_ratio,
             }
         )
 
+        # Add overall ratio of problems over pools
         pool_counter = Counter(m.get("difficulty", "normal") for m in self.metadata.values())
         pool_counts = [pool_counter.get(pool, 0.0) for pool in self.POOLS]
         pool_ratio = mean_normalize(pool_counts)
@@ -166,5 +168,6 @@ class Buffer:
         # Reset per-step metrics
         self.num_sampled_problems_per_pool = defaultdict(int)
         self.num_sampled_rollouts_per_pool = defaultdict(int)
-        self.num_sampled_rollouts_per_difficulty = defaultdict(int)
+        self.num_filtered_rollouts_per_difficulty = defaultdict(int)
+        self.num_rollouts = 0
         return metrics
