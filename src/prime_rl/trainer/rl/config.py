@@ -201,6 +201,18 @@ class RLTrainerConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def validate_filesystem_quantization(self):
+        if (
+            self.weight_broadcast.type == "filesystem"
+            and self.weight_broadcast.inference_quantization
+        ):
+            raise ValueError(
+                "Filesystem weight broadcast does not support inference_quantization. "
+                "Use the NCCL backend or disable inference quantization."
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_opt_and_fsdp_offload(self):
         if self.optim.type == "muon" and self.model.fsdp_cpu_offload:
             raise ValueError("Muon optimizer does not support FSDP CPU offload")

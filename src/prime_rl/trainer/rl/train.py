@@ -137,6 +137,16 @@ def train(config: RLTrainerConfig):
         dataloader = FakeDataLoader(config.data.fake)
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
+    
+    # For NCCL broadcast, wait for orchestrator to initialize broadcaster before starting training
+    # This ensures inference servers are ready to receive when we broadcast at step 0
+    if nccl_broadcast is not None:
+        from prime_rl.utils.utils import sync_wait_for_path, get_weights_dir
+        broadcaster_ready_path = get_weights_dir(config.output_dir) / "broadcaster_ready"
+        logger.info("Waiting for orchestrator to initialize NCCL broadcaster before starting training")
+        sync_wait_for_path(broadcaster_ready_path)
+        logger.info("NCCL broadcaster ready. Starting training loop")
+    
     is_first_step = True
     maybe_record_function = nullcontext
     if config.trace_path:
@@ -148,10 +158,11 @@ def train(config: RLTrainerConfig):
         torch.cuda.reset_peak_memory_stats()
         is_last_step = config.max_steps is not None and progress.step == config.max_steps
 
-        # Save the weight checkpoint (if we are not at the first step, because no updates to the model have been made yet)
+        # Save the weight checkpoint and broadcast weights
+        # At step 0, we create a STABLE file and broadcast initial weights to ensure inference starts with trainer weights
         save_weights_time = 0
         broadcast_weights_time = 0
-        if progress.step > 0:
+        if progress.step >= 0:
             save_weights_start_time = time.time()
             # Save weights to disk at every if using filesystem weight broadcast or at interval step
             if config.weight_broadcast.type == "filesystem" or (

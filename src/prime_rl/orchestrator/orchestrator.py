@@ -38,8 +38,8 @@ from prime_rl.utils.client import (
     update_weights,
 )
 from prime_rl.orchestrator.config import OrchestratorConfig, BufferConfig
-from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.orchestrator.buffer import Buffer
+from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.utils.logger import setup_logger
 from prime_rl.orchestrator.utils import (
     print_benchmark,
@@ -52,6 +52,7 @@ from prime_rl.utils.utils import (
     get_rollout_dir,
     get_step_path,
     get_weights_dir,
+    sync_wait_for_path,
     to_col_format,
 )
 import numpy as np
@@ -74,7 +75,7 @@ async def orchestrate(config: OrchestratorConfig):
     # Setup client
     assert config.client.server_type == "vllm", "Orchestrator only supports vLLM server type."
     logger.info(
-        f"Initializing OpenAI client (base_url={', '.join(config.client.base_url)}, api_key_var={config.client.api_key_var}, server_type={config.client.server_type}, headers={config.client.headers})"
+        f"Initializing clients (base_url={config.client.base_url}, api_key_var={config.client.api_key_var}, server_type={config.client.server_type})"
     )
     clients = setup_clients(config.client)
     admin_clients = setup_admin_clients(config.client)
@@ -113,8 +114,9 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
-    buffer = Buffer(dataset, config.buffer)
-    val_buffer = Buffer(val_dataset, BufferConfig()) if val_dataset else None
+    buffer_path = config.ckpt.buffer_path if config.ckpt else None
+    buffer = Buffer(dataset, config.buffer, buffer_path=buffer_path)
+    val_buffer = Buffer(val_dataset, BufferConfig(), buffer_path=buffer_path) if val_dataset else None
 
     # Setup scheduler
     scheduler = Scheduler(
@@ -142,6 +144,11 @@ async def orchestrate(config: OrchestratorConfig):
         await init_nccl_broadcast(
             admin_clients, config.weight_broadcast.host, config.weight_broadcast.port, config.weight_broadcast.timeout
         )
+        # Create a ready signal file to indicate NCCL broadcaster is initialized and ready to receive
+        # This ensures trainer waits for orchestrator to be ready before broadcasting
+        broadcaster_ready_path = get_weights_dir(config.output_dir) / "broadcaster_ready"
+        broadcaster_ready_path.touch()
+        logger.info("NCCL broadcaster initialized and ready to receive weights")
 
     # Get checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
@@ -156,7 +163,16 @@ async def orchestrate(config: OrchestratorConfig):
         await update_weights(admin_clients, get_step_path(get_weights_dir(config.output_dir), scheduler.ckpt_step))
     else:
         logger.info("Training from scratch. Resetting weights to base model")
-        await reload_weights(admin_clients)
+        # For NCCL broadcast, use update_weights to receive initial weights from trainer
+        # For filesystem broadcast, reload from disk
+        if config.weight_broadcast.type == "nccl":
+            # Wait for trainer to create step 0 STABLE file and broadcast initial weights
+            step_0_path = get_step_path(get_weights_dir(config.output_dir), 0)
+            sync_wait_for_path(step_0_path / "STABLE")
+            logger.info("Step 0 weights available. Receiving initial weights via NCCL broadcast")
+            await update_weights(admin_clients, step_0_path)
+        else:
+            await reload_weights(admin_clients)
 
     # Iterate over dataset in batches
     max_steps = config.max_steps or int(1e9)
@@ -361,7 +377,7 @@ async def orchestrate(config: OrchestratorConfig):
             "time/generate_completions": generate_completions_time,
             "time/save_ckpt": save_ckpt_time,
             # Scheduler metrics
-            **scheduler.get_metrics(),
+            **scheduler.metrics(),
             # Buffer metrics
             **buffer.get_metrics(),
             # W&B axis

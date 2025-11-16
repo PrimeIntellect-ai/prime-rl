@@ -111,18 +111,20 @@ def filter_state_dict_by_layers(
     """
     Yield a generator of state dicts for each layer as well as the remaining weights.
     """
+    buckets: list[dict[str, torch.Tensor]] = [dict() for _ in range(num_layers + 1)]
 
-    yield 0, {key: value for key, value in state_dict.items() if "model.layers" not in key}
+    for key, value in state_dict.items():
+        if key.startswith("model.layers."):
+            parts = key.split(".")
+            if len(parts) > 2 and parts[2].isdigit():
+                layer_idx = int(parts[2])
+                if 1 <= layer_idx <= num_layers:
+                    buckets[layer_idx][key] = value
+                    continue
+        buckets[0][key] = value
 
-    for i in range(1, num_layers + 1):  # +1 because layer indices start from 1
-        yield (
-            i,
-            {
-                key: value
-                for key, value in state_dict.items()
-                if key.startswith(f"model.layers.{i}.") or key == f"model.layers.{i}"
-            },
-        )
+    for idx, bucket in enumerate(buckets):
+        yield idx, bucket
 
 
 class NCCLBroadcastSender:
@@ -152,6 +154,10 @@ class NCCLBroadcastSender:
 
     @torch.no_grad()
     def broadcast_state_dict(self, model: torch.nn.Module) -> None:
+        
+        if self.training_rank != 0:
+            return
+
         self.logger.debug("Broadcasting weights to inference pool")
 
         state_dict = model.state_dict()
@@ -159,9 +165,8 @@ class NCCLBroadcastSender:
         num_layers = get_max_layer_num(state_dict)
 
         num_state_dict_to_send = num_layers + 1  # we send all layer plus the remaining weights
-
-        if self.training_rank == 0:
-            send_integer(num_state_dict_to_send, self.communicator)
+        
+        send_integer(num_state_dict_to_send, self.communicator)
 
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
 
@@ -180,8 +185,7 @@ class NCCLBroadcastSender:
             if self.quantization_config is not None:
                 quantize_layer_params(state_dict, i, self.quantization_config)
 
-            if self.training_rank == 0:
-                send_state_dict(state_dict, self.communicator)
+            send_state_dict(state_dict, self.communicator)
 
         self.logger.info("Weights broadcasted to inference pool")
 

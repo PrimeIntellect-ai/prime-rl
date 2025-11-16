@@ -1,7 +1,6 @@
 import gc
 import json
 import os
-import re
 import shutil
 import threading
 import time
@@ -13,7 +12,6 @@ from typing import Literal
 import safetensors
 import safetensors.torch
 import torch
-import torch.nn.functional as F
 from huggingface_hub import split_torch_state_dict_into_shards
 from safetensors import safe_open
 from safetensors.torch import save_file
@@ -50,9 +48,6 @@ FP8_BLOCK_QUANT_KWARGS = {
     "weight_block_size": list(FP8_BLOCK_SIZE),
 }
 
-def ceildiv(a, b):
-    return -(-a // b)
-
 
 class ConversionResult:
     """Thread-safe result collector for model conversion."""
@@ -72,34 +67,6 @@ class ConversionResult:
             self.modules_to_not_convert.extend(module_names)
 
 
-def _block_fp8(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """Quantize weight using blockwise FP8 quantization with 128x128 blocks."""
-    block_n, block_k = FP8_BLOCK_SIZE
-    shape_0, shape_1 = weight.shape
-    n_tiles = ceildiv(shape_0, block_n)
-    k_tiles = ceildiv(shape_1, block_k)
-
-    q_weight = F.pad(
-        weight,
-        (0, k_tiles * block_k - shape_1, 0, n_tiles * block_n - shape_0),
-        mode="constant",
-        value=0.0,
-    )
-
-    qweight = q_weight.reshape(n_tiles, block_n, k_tiles, block_k)
-    block_max = torch.max(torch.abs(qweight), dim=1, keepdim=True)[0]
-    block_max = torch.max(block_max, dim=3, keepdim=True)[0]
-
-    scale = block_max.to(torch.float32) / FP8_MAX
-    qweight = (
-        (qweight / scale)
-        .clamp(min=FP8_MIN, max=FP8_MAX)
-        .reshape((n_tiles * block_n, k_tiles * block_k))
-        .to(torch.float8_e4m3fn)
-    )
-    qweight = qweight[:shape_0, :shape_1].clone().detach()
-    scale = scale.squeeze()
-    return qweight, scale
 
 
 def _should_quantize_weight(key: str) -> bool:
@@ -139,7 +106,7 @@ def _process_safetensors_file(
 
     for key, weight in weights.items():
         if _should_quantize_weight(key):
-            qw, s = _block_fp8(weight)
+            qw, s = blockwise_cast_to_fp8_triton(weight, FP8_BLOCK_SIZE)
             q_weights[key] = qw
             scale_name = key.replace(".weight", ".weight_scale_inv")
             q_weights[scale_name] = s
