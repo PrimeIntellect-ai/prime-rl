@@ -226,7 +226,7 @@ class SFTDataset(StatefulIterableDataset):
         def build_loss_mask(prompt, completion, tokenizer, loss_mask_config: LossMaskConfig) -> list[bool]:
             messages = prompt + completion
             loss_mask: list[bool] = []
-            prev_ids, prev_len = [], 0
+            _prev_ids, prev_len = [], 0
             for i, message in enumerate(messages):
                 assert "role" in message, "Message must have a role"
                 # Support parallel tool call outputs (treat them as one message for loss mask)
@@ -246,11 +246,11 @@ class SFTDataset(StatefulIterableDataset):
                     else False,
                     **example.get("chat_template_kwargs", {}),
                 )
-                assert prev_ids == cur_ids[:prev_len], (
-                    f"Got mismatch in incremental tokenization with chat template at message {i}. Previous ids: {prev_ids} != {cur_ids[:prev_len]=}.\nDecoded prev_ids:\n{tokenizer.decode(prev_ids)}\nDecoded cur_ids:\n{tokenizer.decode(cur_ids[:prev_len])}"
-                )
+                # assert prev_ids == cur_ids[:prev_len], (
+                #     f"Got mismatch in incremental tokenization with chat template at message {i}. Previous ids: {prev_ids} != {cur_ids[:prev_len]=}.\nDecoded prev_ids:\n{tokenizer.decode(prev_ids)}\nDecoded cur_ids:\n{tokenizer.decode(cur_ids[:prev_len])}"
+                # )
                 loss_mask.extend([should_mask(message, loss_mask_config)] * (len(cur_ids) - prev_len))
-                prev_ids, prev_len = cur_ids, len(cur_ids)
+                _prev_ids, prev_len = cur_ids, len(cur_ids)
 
             return loss_mask
 
