@@ -4,11 +4,11 @@ uv run rl \
   --orchestrator.sampling.max-tokens 128 \
   --trainer.model.experimental.lora.rank 8 \
   --trainer.weights.save-adapter-separately \
-  --orchestrator.lora-name r8-1e-3 \
-  --trainer_gpu_ids 1 \
-  --output_dir multi_outputs/trainer_1 \
-  --trainer.optim.lr 1e-3 \
+  --orchestrator.lora-name r8-1e-5 \
+  --trainer_gpu_ids 3 \
+  --output_dir multi_outputs/trainer_3 \
+  --trainer.optim.lr 1e-5 \
   --wandb.project multi-tenant-debug \
-  --wandb.name r8-1e-3 \
+  --wandb.name r8-1e-5 \
   --log.level debug \
   --ckpt
