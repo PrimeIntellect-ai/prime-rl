@@ -65,6 +65,11 @@ RUN apt-get update && apt-get install -y \
     openssh-server \
     git-lfs \
     gpg \
+    sudo \
+    iputils-ping \
+    net-tools \
+    curl \
+    vim \
     && apt-get clean autoclean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
@@ -72,7 +77,9 @@ RUN apt-get update && apt-get install -y \
 ARG USER_ID=1000
 ARG GROUP_ID=1000
 RUN groupadd --gid $GROUP_ID appuser && \
-    useradd --uid $USER_ID --gid appuser --create-home --shell /bin/bash appuser
+    useradd --uid $USER_ID --gid appuser --create-home --shell /bin/bash appuser && \
+    usermod -aG sudo appuser && \
+    echo "appuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 USER appuser
 WORKDIR /app
