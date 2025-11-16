@@ -107,12 +107,12 @@ def train(config: SFTTrainerConfig):
     dataiter = iter(dataloader)
 
     # Check that the world size and batch configuration is compatible
-    batch_size = config.data.batch_size
-    if world.world_size > batch_size:
+    num_micro_batches = config.data.batch_size // config.data.micro_batch_size
+    if world.world_size > num_micro_batches:
         raise ValueError(
-            f"There must be at least one micro batch per rank, but only have {batch_size} micro batches for {world.world_size} ranks."
+            f"There must be at least one micro batch per rank, but only have {num_micro_batches} micro batches for {world.world_size} ranks."
         )
-    if batch_size % world.world_size != 0:
+    if num_micro_batches % world.world_size != 0:
         raise ValueError(
             f"The number of micro batches ({num_micro_batches}) must be divisible by the world size ({world.world_size})."
         )
@@ -190,7 +190,12 @@ def train(config: SFTTrainerConfig):
 
         step_start_time = time.time()
         forward_backward_start_time = time.time()
-        grad_accum_steps = config.data.batch_size * config.model.cp * config.model.tp // world.world_size
+        grad_accum_steps = (
+            config.data.batch_size
+            * config.model.cp
+            * config.model.tp
+            // (world.world_size * config.data.micro_batch_size)
+        )
 
         batch_loss = torch.tensor(0.0).to("cuda")
         nan_loss_count = torch.tensor(0).to("cuda")
