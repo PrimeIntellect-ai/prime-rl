@@ -15,7 +15,7 @@ from pydantic_settings import (
 )
 
 
-class StrictModel(BaseModel):
+class BaseConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     @field_validator("*", mode="before")

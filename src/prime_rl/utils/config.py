@@ -2,10 +2,10 @@ from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
-from prime_rl.utils.pydantic_config import StrictModel
+from prime_rl.utils.pydantic_config import BaseConfig
 
 
-class ModelConfig(StrictModel):
+class ModelConfig(BaseConfig):
     """Configures the model."""
 
     name: Annotated[str, Field(description="Name or path of the HF model to use.")] = "Qwen/Qwen3-0.6B"
@@ -21,7 +21,7 @@ class ModelConfig(StrictModel):
 ServerType = Literal["vllm", "openai"]
 
 
-class ClientConfig(StrictModel):
+class ClientConfig(BaseConfig):
     """Configures the OAI client."""
 
     timeout: Annotated[
@@ -66,7 +66,7 @@ class ClientConfig(StrictModel):
         return self
 
 
-class LogConfig(StrictModel):
+class LogConfig(BaseConfig):
     """Configures the logger."""
 
     level: Annotated[
@@ -94,7 +94,7 @@ class LogConfig(StrictModel):
     ] = False
 
 
-class LogExtrasConfig(StrictModel):
+class LogExtrasConfig(BaseConfig):
     """Configures extra logging for W&B tables."""
 
     samples: Annotated[
@@ -120,7 +120,7 @@ class LogExtrasConfig(StrictModel):
     ] = 10
 
 
-class WandbMonitorConfig(StrictModel):
+class WandbMonitorConfig(BaseConfig):
     """Configures logging to Weights and Biases."""
 
     # Shared configs (May be overwritten by WandbConfig from `rl.py`)

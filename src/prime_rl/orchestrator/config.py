@@ -4,10 +4,10 @@ from typing import Annotated, Literal, TypeAlias
 from pydantic import BaseModel, Field, model_validator
 
 from prime_rl.utils.config import ClientConfig, LogConfig, ModelConfig, WandbMonitorConfig
-from prime_rl.utils.pydantic_config import BaseSettings, StrictModel
+from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
-class SamplingConfig(StrictModel):
+class SamplingConfig(BaseConfig):
     """Configures how tokens are sampled from the model for training. Largely follows the vLLM sampling parameters."""
 
     temperature: Annotated[
@@ -49,7 +49,7 @@ class SamplingConfig(StrictModel):
     ] = None
 
 
-class EvalSamplingConfig(StrictModel):
+class EvalSamplingConfig(BaseConfig):
     """Configures how tokens are sampled from the model for evaluation. Largely follows the vLLM sampling parameters."""
 
     temperature: Annotated[
@@ -118,7 +118,7 @@ class EvalSamplingConfig(StrictModel):
     ] = None
 
 
-class EvalSaveDiskConfig(StrictModel):
+class EvalSaveDiskConfig(BaseConfig):
     """Configures how to save the eval results to disk."""
 
     path: Annotated[
@@ -129,7 +129,7 @@ class EvalSaveDiskConfig(StrictModel):
     ] = None
 
 
-class EvalSaveHFConfig(StrictModel):
+class EvalSaveHFConfig(BaseConfig):
     """Configures how to save the eval results to HF."""
 
     dataset_name: Annotated[
@@ -159,7 +159,7 @@ class EvalSaveHFConfig(StrictModel):
     ] = False
 
 
-class EvalSaveConfig(StrictModel):
+class EvalSaveConfig(BaseConfig):
     disk: EvalSaveDiskConfig | None = None
     hf: EvalSaveHFConfig | None = None
     env_hub: Annotated[
@@ -170,7 +170,7 @@ class EvalSaveConfig(StrictModel):
     ] = False
 
 
-class EnvConfig(StrictModel):
+class EnvConfig(BaseConfig):
     """Configures an environment for training."""
 
     id: Annotated[str, Field(description="ID of the environment to use.")] = "reverse-text"
@@ -195,7 +195,7 @@ class EvalEnvConfig(EnvConfig):
     ] = None
 
 
-class ValConfig(StrictModel):
+class ValConfig(BaseConfig):
     """Configures the validation of the model."""
 
     num_examples: Annotated[
@@ -207,7 +207,7 @@ class ValConfig(StrictModel):
     interval: Annotated[int, Field(description="Interval at which to validate the model.")] = 10
 
 
-class EvalConfig(StrictModel):
+class EvalConfig(BaseConfig):
     """Configures evaluation using verifiers environments."""
 
     env: list[EvalEnvConfig] = [EvalEnvConfig()]
@@ -244,7 +244,7 @@ class OnlineEvalConfig(EvalConfig):
     ] = True
 
 
-class CheckpointConfig(StrictModel):
+class CheckpointConfig(BaseConfig):
     """Configures checkpointing the orchestrator."""
 
     interval: Annotated[int | None, Field(ge=1, description="Interval at which to save the checkpoint.")] = None
@@ -287,7 +287,7 @@ class CheckpointConfig(StrictModel):
     ] = None
 
 
-class BufferConfig(StrictModel):
+class BufferConfig(BaseConfig):
     """Configures the buffer for the orchestrator."""
 
     seed: Annotated[
@@ -344,7 +344,7 @@ class BufferConfig(StrictModel):
     ] = None
 
 
-class AdvantageConfig(StrictModel):
+class AdvantageConfig(BaseConfig):
     std_norm: Literal["local", "global"] | None = None
     length_weighted_mean: bool = False
     leave_one_out: bool = False
