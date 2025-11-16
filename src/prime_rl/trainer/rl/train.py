@@ -13,7 +13,7 @@ from loguru import logger
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.rl.broadcast.nccl_broadcast import NCCLBroadcastSender
-from prime_rl.trainer.weights import setup_weight_ckpt_manager
+from prime_rl.trainer.weights import setup_weight_ckpt_manager, FP8_BLOCK_QUANT_KWARGS
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.logger import setup_logger
@@ -104,6 +104,7 @@ def train(config: RLTrainerConfig):
     nccl_broadcast = None
     logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
     if config.weight_broadcast.type == "nccl":
+        quantization_config = FP8_BLOCK_QUANT_KWARGS if config.weight_broadcast.inference_quantization else None
         # we do inferece world size + 1 because we have the trainer broadcaster as rank 0
         nccl_broadcast = NCCLBroadcastSender(
             host=config.weight_broadcast.host,
@@ -113,6 +114,7 @@ def train(config: RLTrainerConfig):
             rank=0,
             device=torch.cuda.current_device(),
             logger=logger,
+            quantization_config=quantization_config,
         )
 
     # Set up checkpoint manager

@@ -56,6 +56,10 @@ class FileSystemWeightBroadcastConfig(BaseModel):
     """Configures the weight broadcast."""
 
     type: Literal["filesystem"] = "filesystem"
+    inference_quantization: Annotated[
+        bool,
+        Field(description="Whether to use FP8 blockwise (128x128) quantization for weights."),
+    ] = False
 
 
 class NCCLWeightBroadcastConfig(BaseModel):
@@ -67,6 +71,10 @@ class NCCLWeightBroadcastConfig(BaseModel):
     timeout: Annotated[int, Field(description="The timeout  in seconds to use for the NCCL broadcast.")] = 1200
     # TODO: Should not be configurable, but auto-inferred
     inference_world_size: Annotated[int, Field(description="The world size to use for the NCCL broadcast.")] = 1
+    inference_quantization: Annotated[
+        bool,
+        Field(description="Whether to use FP8 blockwise (128x128) quantization for weights."),
+    ] = False
 
 
 WeightBroadcastConfigType: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig

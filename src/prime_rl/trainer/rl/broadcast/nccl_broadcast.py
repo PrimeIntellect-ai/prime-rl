@@ -8,7 +8,7 @@ from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 
 from prime_rl.trainer.utils import get_world
-from prime_rl.trainer.weights import convert_tt_layer_to_hf, get_max_layer_num, has_tt_moe_layers
+from prime_rl.trainer.weights import convert_tt_layer_to_hf, get_max_layer_num, has_tt_moe_layers, quantize_layer_params
 
 
 def create_nccl_communicator(
@@ -136,6 +136,7 @@ class NCCLBroadcastSender:
         logger,
         timeout: int,
         dtype: torch.dtype = torch.bfloat16,
+        quantization_config: dict | None = None,
     ):
         self.logger = logger
 
@@ -147,6 +148,7 @@ class NCCLBroadcastSender:
 
         self.device = device
         self.dtype = dtype
+        self.quantization_config = quantization_config
 
     @torch.no_grad()
     def broadcast_state_dict(self, model: torch.nn.Module) -> None:
@@ -173,6 +175,10 @@ class NCCLBroadcastSender:
 
             if has_tt_moe_layers(state_dict):
                 convert_tt_layer_to_hf(state_dict, i)
+
+            # Quantize layer parameters if quantization config is provided
+            if self.quantization_config is not None:
+                quantize_layer_params(state_dict, i, self.quantization_config)
 
             if self.training_rank == 0:
                 send_state_dict(state_dict, self.communicator)
