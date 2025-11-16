@@ -6,7 +6,7 @@ from typing import Annotated, ClassVar, Type, TypeVar
 
 import tomli
 import tomli_w
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings as PydanticBaseSettings
 from pydantic_settings import (
     PydanticBaseSettingsSource,
@@ -17,6 +17,16 @@ from pydantic_settings import (
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def empty_str_to_none(cls, v):
+        """
+        This allow to support setting None via toml files using the string "None"
+        """
+        if v == "None":
+            return None
+        return v
 
 
 class BaseSettings(PydanticBaseSettings):
