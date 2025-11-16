@@ -554,12 +554,12 @@ class OrchestratorConfig(BaseSettings):
 
     seed: Annotated[int | None, Field(description="Random seed for the orchestrator.")] = 42
 
-    load_lora: Annotated[
-        bool,
+    lora_name: Annotated[
+        str | None,
         Field(
-            description="Whether to use lora loading API to update the model.",
+            description="Name of the LoRA to use for the orchestrator. If None, will not use any LoRA.",
         ),
-    ] = False
+    ] = None
 
     @model_validator(mode="after")
     def nccl_max_async_level(self):
