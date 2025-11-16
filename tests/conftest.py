@@ -1,13 +1,10 @@
-import asyncio
+import atexit
 import concurrent.futures
 import os
 import shutil
 import signal
 import socket
 import subprocess
-import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Callable, Generator
 
@@ -95,27 +92,6 @@ class ProcessResult:
         self.pid = pid
 
 
-def cleanup_subprocess(process: subprocess.Popen, timeout: int = 10):
-    """Gracefully cleanup a subprocess (and all of its children)"""
-    if process.poll() is not None:
-        return
-    try:
-        pgid = os.getpgid(process.pid)
-    except ProcessLookupError:
-        return
-    try:
-        os.killpg(pgid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-    try:
-        process.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(pgid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-
-
 def run_subprocess(command: Command, env: Environment, timeout: int = TIMEOUT) -> ProcessResult:
     """Run a subprocess with given command and environment with a timeout"""
     process = subprocess.Popen(command, env={**os.environ, **env})
@@ -123,14 +99,19 @@ def run_subprocess(command: Command, env: Environment, timeout: int = TIMEOUT) -
         process.wait(timeout=timeout)
         return ProcessResult(process.returncode, process.pid)
     except subprocess.TimeoutExpired:
-        cleanup_subprocess(process)
+        process.terminate()
+        try:
+            process.wait(timeout=10)  # Give it 10 seconds to terminate gracefully
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
         return ProcessResult(1, process.pid)
 
 
 def run_subprocesses_in_parallel(
     commands: list[Command], envs: list[Environment], timeout: int = TIMEOUT
 ) -> list[ProcessResult]:
-    """Run multiple subprocesses in parallel using a ProcessPoolExecutor and wait for completion."""
+    """Start multiple processes in parallel using ProcessPoolExecutor and wait for completion."""
     assert len(commands) == len(envs), "Should have an environment for each command"
     with concurrent.futures.ProcessPoolExecutor(max_workers=len(commands)) as executor:
         futures = [executor.submit(run_subprocess, cmd, env, timeout) for cmd, env in zip(commands, envs)]
@@ -161,18 +142,34 @@ VLLM_SERVER_ENV = {"CUDA_VISIBLE_DEVICES": "0"}
 VLLM_SERVER_CMD = ["uv", "run", "inference", "@", "configs/reverse_text/rl/infer.toml", "--max-model-len", "2048"]
 
 
+def cleanup_process(process: subprocess.Popen):
+    process.terminate()
+
+    # Wait for the process to terminate (with timeout)
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        # If it doesn't terminate gracefully, kill it
+        process.kill()
+        process.wait()
+
+
 @pytest.fixture(scope="session")
 def vllm_server() -> Generator[None, None, None]:
     """Start a vLLM server for integration and e2e tests"""
+    import asyncio
+    import time
+    import urllib.error
+    import urllib.request
+
     # Start the server as a subprocess
     env = {**os.environ, **VLLM_SERVER_ENV}
-    vllm_process = subprocess.Popen(
-        VLLM_SERVER_CMD,
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    vllm_process = subprocess.Popen(VLLM_SERVER_CMD, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    # Register cleanup on unexpected termination
+    atexit.register(cleanup_process, vllm_process)
+    signal.signal(signal.SIGTERM, lambda signum, frame: cleanup_process(vllm_process))
+    signal.signal(signal.SIGINT, lambda signum, frame: cleanup_process(vllm_process))
 
     # Default vLLM server URL
     base_url = "http://localhost:8000"
@@ -198,13 +195,12 @@ def vllm_server() -> Generator[None, None, None]:
         is_healthy = asyncio.run(wait_for_server_health())
 
         if not is_healthy:
-            cleanup_subprocess(vllm_process)
             raise RuntimeError("vLLM server did not become healthy within timeout")
 
         # Yield to signal that the server is ready (can be used in tests that depend on it)
         yield
     finally:
-        cleanup_subprocess(vllm_process)
+        cleanup_process(vllm_process)
 
 
 @pytest.fixture()
