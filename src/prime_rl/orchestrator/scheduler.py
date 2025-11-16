@@ -160,7 +160,7 @@ class Scheduler:
 
             update_weights_start_time = time.time()
             if self.lora_name is not None:
-                lora_name = self.lora_name + str(next_ckpt_step)
+                lora_name = f"{self.lora_name}-step_{next_ckpt_step}"
             else:
                 lora_name = None
             await update_weights(
@@ -171,7 +171,7 @@ class Scheduler:
             self.update_weights_time = time.time() - update_weights_start_time
             self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
             if self.lora_name is not None:
-                self.model_name = self.lora_name + str(next_ckpt_step)
+                self.model_name = lora_name
 
             # Cancel old rollout requests
             tasks_to_remove = []
