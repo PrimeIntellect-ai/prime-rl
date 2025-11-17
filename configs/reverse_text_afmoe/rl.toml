@@ -21,8 +21,9 @@ max_steps = 20
 [train.model]
 load_using_meta = true
 compile = true
-ac = true
 attn = "sdpa"
+
+[train.model.ac]
 
 [train.weights]
 save_sharded = true

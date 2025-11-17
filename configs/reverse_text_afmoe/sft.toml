@@ -10,8 +10,9 @@ save_format = "safetensors"
 name = "arcee-train/hf-converted-afmoe-nano-ctxext-v4-revese-text"
 load_using_meta = true
 compile = true
-ac = true
 attn = "sdpa"
+
+[model.ac]
 
 [data]
 name = "PrimeIntellect/Reverse-Text-SFT"
