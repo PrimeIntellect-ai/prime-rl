@@ -24,6 +24,10 @@ compile = true
 ac = true
 attn = "sdpa"
 
+[train.weights]
+save_sharded = true
+save_format = "safetensors"
+
 [train.optim]
 lr = 3e-6
 type = "muon"
