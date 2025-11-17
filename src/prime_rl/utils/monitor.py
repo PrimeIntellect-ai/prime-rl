@@ -7,6 +7,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pandas as pd
 import wandb
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -34,6 +35,60 @@ class WandbMonitor:
         rank = int(os.environ.get("RANK", os.environ.get("DP_RANK", "0")))
         self.enabled = self.config is not None
         self.is_master = rank == 0
+
+        self.platform_enabled = False
+        self.platform_run_id = None
+        self.platform_api_url = None
+        self.platform_api_key = None
+        self.platform_config = None
+        self.platform_upload_interval = 1
+        self.platform_max_rollouts = 10
+        self.run_config = run_config
+
+        if config and config.platform and config.platform.enabled:
+            self.platform_enabled = True
+            self.platform_config = config.platform
+            self.platform_api_url = config.platform.api_url.rstrip("/")
+            self.platform_api_key = config.platform.api_key or os.getenv("PRIME_API_KEY")
+            self.platform_upload_interval = config.platform.upload_interval
+            self.platform_max_rollouts = config.platform.max_rollouts_per_step
+
+            if not self.platform_api_key:
+                self.logger.warning(
+                    "Platform upload enabled but no API key provided. Set PRIME_API_KEY env var or config.platform.api_key"
+                )
+                self.platform_enabled = False
+
+        if self.platform_enabled and self.is_master:
+            if self.output_dir:
+                run_id_file = self.output_dir / "platform_run_id.txt"
+
+                if run_id_file.exists():
+                    try:
+                        file_age = time.time() - run_id_file.stat().st_mtime
+                        existing_run_id = run_id_file.read_text().strip()
+
+                        if existing_run_id and file_age < 120:
+                            self.platform_run_id = existing_run_id
+                            self.logger.info(
+                                f"Using existing platform run_id from orchestrator: {self.platform_run_id}"
+                            )
+                        else:
+                            if file_age >= 120:
+                                self.logger.info(f"Stale platform_run_id.txt (age: {file_age:.0f}s) - creating new run")
+                                run_id_file.unlink()
+                            else:
+                                self.logger.info("Empty platform_run_id.txt - registering new run")
+                            self._register_platform_run()
+                    except Exception as e:
+                        self.logger.warning(f"Failed to read platform_run_id file: {e}")
+                        self._register_platform_run()
+                else:
+                    self.logger.info("No platform_run_id.txt found - registering new run (orchestrator)")
+                    self._register_platform_run()
+            else:
+                self._register_platform_run()
+
         if not self.enabled or not self.is_master:
             if not self.is_master:
                 self.logger.warning(f"Skipping {self.__class__.__name__} initialization from non-master rank ({rank})")
@@ -91,6 +146,12 @@ class WandbMonitor:
 
     def log(self, metrics: dict[str, Any]) -> None:
         self.history.append(metrics)
+
+        if self.platform_enabled and self.platform_run_id and self.is_master:
+            step = metrics.get("step")
+            if step is not None and step % self.platform_upload_interval == 0:
+                self._upload_metrics_to_platform(metrics)
+
         if not self.is_master:
             return
         if not self.enabled:
@@ -105,6 +166,7 @@ class WandbMonitor:
         advantages: list[float],
         rollouts_per_problem: int,
         step: int,
+        tasks: list[str] | None = None,
     ) -> None:
         """Log prompt/response samples to W&B table.
 
@@ -183,6 +245,14 @@ class WandbMonitor:
         self.last_log_samples_step = step
         self.logger.debug(f"Logged samples at step {step} to W&B table in {time.time() - start_time:.2f}s")
 
+        if (
+            self.platform_enabled
+            and self.platform_run_id
+            and self.platform_config
+            and self.platform_config.upload_rollouts
+        ):
+            self._upload_rollouts_to_platform(input_tokens, output_tokens, rewards, advantages, step, tasks)
+
     def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:
         if not self.is_master:
             return
@@ -248,6 +318,216 @@ class WandbMonitor:
         dir_path.mkdir(parents=True, exist_ok=True)
         with open(dir_path / filename, "w") as f:
             json.dump(wandb.summary._as_dict(), f)
+
+        if self.platform_enabled and self.platform_run_id:
+            self._mark_platform_run_completed()
+
+    def _register_platform_run(self) -> None:
+        """Register this run with the Prime platform."""
+        if not self.platform_enabled or not self.platform_api_key:
+            return
+
+        try:
+            user_id = os.getenv("PRIME_USER_ID")
+            if not user_id:
+                self.logger.warning("PRIME_USER_ID not set, skipping platform registration")
+                self.platform_enabled = False
+                return
+
+            wandb_url = None
+            if hasattr(self, "wandb") and self.wandb and self.config:
+                wandb_url = f"https://wandb.ai/{self.config.project}/{self.wandb.id}"
+
+            config_dict = {}
+            if self.run_config:
+                try:
+                    config_dict = json.loads(json.dumps(self.run_config.model_dump(), default=str))
+                except Exception:
+                    config_dict = {
+                        "model": self.run_config.model.name if hasattr(self.run_config, "model") else "unknown"
+                    }
+
+            run_data = {
+                "user_id": user_id,
+                "team_id": os.getenv("PRIME_TEAM_ID"),
+                "name": self.config.name if self.config else None,
+                "env_id": os.getenv("PRIME_ENV_ID", "unknown"),
+                "env_name": os.getenv("PRIME_ENV_NAME"),
+                "model_name": self.run_config.model.name
+                if self.run_config and hasattr(self.run_config, "model")
+                else "unknown",
+                "config": config_dict,
+                "wandb_url": wandb_url,
+            }
+
+            endpoint = f"{self.platform_api_url}/rl-runs"
+
+            self.logger.info("Registering run with platform...")
+
+            with httpx.Client(timeout=30.0) as client:
+                response = client.post(
+                    endpoint,
+                    json=run_data,
+                    headers={
+                        "Authorization": f"Bearer {self.platform_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                )
+
+            if response.status_code == 201:
+                result = response.json()
+                self.platform_run_id = result.get("run_id")
+
+                platform_url = f"https://app.primeintellect.ai/dashboard/rl/{self.platform_run_id}"
+                if "localhost" in self.platform_api_url:
+                    platform_url = f"http://localhost:3000/dashboard/rl/{self.platform_run_id}"
+
+                self.logger.info(f"✓ Registered RL run with platform: {self.platform_run_id}")
+                self.logger.info(f"→ View run at: {platform_url}")
+
+                # Save run_id to file so trainer can use it
+                if self.output_dir:
+                    run_id_file = self.output_dir / "platform_run_id.txt"
+                    run_id_file.parent.mkdir(parents=True, exist_ok=True)
+                    run_id_file.write_text(self.platform_run_id)
+            else:
+                self.logger.error(f"Failed to register run with platform: {response.status_code} - {response.text}")
+                self.platform_enabled = False
+
+        except Exception as e:
+            self.logger.warning(f"Error registering run with platform: {e}")
+            self.platform_enabled = False
+
+    def _upload_metrics_to_platform(self, metrics: dict[str, Any]) -> None:
+        """Upload metrics batch to the Prime platform."""
+        if not self.platform_enabled or not self.platform_run_id:
+            return
+
+        try:
+            step = metrics.get("step")
+            if step is None:
+                return
+
+            metrics_data = {
+                "run_id": self.platform_run_id,
+                "step": step,
+                "rewards": [float(metrics["reward/mean"])] if "reward/mean" in metrics else [],
+                "entropies": [float(metrics["entropy/mean"])] if "entropy/mean" in metrics else [],
+                "seq_lengths": [int(metrics["seq_len/mean"])] if "seq_len/mean" in metrics else [],
+                "grad_norm": float(metrics.get("optim/grad_norm", 0.0)),
+                "kl_mismatch": float(metrics.get("mismatch_kl/mean", 0.0)),
+                "time_per_step": float(metrics.get("time/step", 0.0)),
+                "total_tokens": int(metrics.get("progress/total_tokens", 0)),
+                "total_samples": int(metrics.get("progress/total_samples", 0)),
+                "total_examples": int(metrics.get("progress/total_problems", 0)),
+                "additional_stats": {},
+            }
+
+            metrics_endpoint = f"{self.platform_api_url}/rl-runs/{self.platform_run_id}/metrics"
+
+            with httpx.Client(timeout=10.0) as client:
+                response = client.post(
+                    metrics_endpoint,
+                    json=metrics_data,
+                    headers={
+                        "Authorization": f"Bearer {self.platform_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                )
+
+            if response.status_code != 201:
+                self.logger.warning(
+                    f"Failed to upload metrics for step {step}: {response.status_code} - {response.text}"
+                )
+
+        except httpx.TimeoutException:
+            self.logger.warning(f"Timeout uploading metrics for step {step} - backend may be slow or unresponsive")
+        except Exception as e:
+            self.logger.warning(f"Error uploading metrics for step {step}: {e}")
+
+    def _upload_rollouts_to_platform(
+        self,
+        input_tokens: list[list[int]],
+        output_tokens: list[list[int]],
+        rewards: list[float],
+        advantages: list[float],
+        step: int,
+        tasks: list[str] | None = None,
+    ) -> None:
+        """Upload sample rollouts to platform."""
+        if not self.platform_enabled or not self.platform_run_id or not self.tokenizer:
+            return
+
+        try:
+            num_rollouts = min(len(input_tokens), self.platform_max_rollouts)
+
+            rollout_samples = []
+            for i in range(num_rollouts):
+                rollout_samples.append(
+                    {
+                        "example_id": i,
+                        "prompt": self.tokenizer.decode(input_tokens[i]),
+                        "completion": self.tokenizer.decode(output_tokens[i]),
+                        "reward": float(rewards[i]),
+                        "advantage": float(advantages[i]) if i < len(advantages) else None,
+                        "prompt_tokens": input_tokens[i],
+                        "completion_tokens": output_tokens[i],
+                        "task": tasks[i] if tasks and i < len(tasks) else None,
+                        "is_truncated": False,
+                    }
+                )
+
+            rollouts_data = {
+                "run_id": self.platform_run_id,
+                "step": step,
+                "rollouts": rollout_samples,
+            }
+
+            rollouts_endpoint = f"{self.platform_api_url}/rl-runs/{self.platform_run_id}/rollouts"
+
+            with httpx.Client(timeout=30.0) as client:
+                response = client.post(
+                    rollouts_endpoint,
+                    json=rollouts_data,
+                    headers={
+                        "Authorization": f"Bearer {self.platform_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                )
+
+            if response.status_code != 201:
+                self.logger.warning(
+                    f"Failed to upload rollouts for step {step}: {response.status_code} - {response.text}"
+                )
+
+        except Exception as e:
+            self.logger.warning(f"Error uploading rollouts to platform: {e}")
+
+    def _mark_platform_run_completed(self) -> None:
+        """Mark the run as completed on the platform."""
+        if not self.platform_enabled or not self.platform_run_id:
+            return
+
+        try:
+            update_endpoint = f"{self.platform_api_url}/rl-runs/{self.platform_run_id}"
+
+            with httpx.Client(timeout=30.0) as client:
+                response = client.put(
+                    update_endpoint,
+                    json={"status": "completed"},
+                    headers={
+                        "Authorization": f"Bearer {self.platform_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                )
+
+            if response.status_code == 200:
+                self.logger.info("Marked platform run as completed")
+            else:
+                self.logger.warning(f"Failed to mark run as completed: {response.status_code} - {response.text}")
+
+        except Exception as e:
+            self.logger.warning(f"Error marking run as completed: {e}")
 
 
 _MONITOR: WandbMonitor | None = None

@@ -113,6 +113,40 @@ class LogExtrasConfig(BaseConfig):
     ] = 10
 
 
+class PlatformUploadConfig(BaseConfig):
+    """Configures uploading to Prime platform."""
+
+    enabled: Annotated[
+        bool,
+        Field(description="Whether to upload metrics to the Prime platform."),
+    ] = False
+
+    api_key: Annotated[
+        str | None,
+        Field(description="API key for Prime platform. If None, will read from PRIME_API_KEY env var."),
+    ] = None
+
+    api_url: Annotated[
+        str,
+        Field(description="Base URL for Prime platform API."),
+    ] = "https://api.primeintellect.ai"
+
+    upload_rollouts: Annotated[
+        bool,
+        Field(description="Whether to upload sample rollouts to the platform."),
+    ] = True
+
+    upload_interval: Annotated[
+        int,
+        Field(description="Upload metrics every N steps. Set to 1 to upload every step.", ge=1),
+    ] = 1
+
+    max_rollouts_per_step: Annotated[
+        int,
+        Field(description="Maximum number of rollouts to upload per step.", ge=1),
+    ] = 10
+
+
 class WandbMonitorConfig(BaseConfig):
     """Configures logging to Weights and Biases."""
 
@@ -140,5 +174,12 @@ class WandbMonitorConfig(BaseConfig):
         LogExtrasConfig | None,
         Field(
             description="Configuration for logging extras to W&B tables. If None, no extras are logged.",
+        ),
+    ] = None
+
+    platform: Annotated[
+        PlatformUploadConfig | None,
+        Field(
+            description="Configuration for uploading to Prime platform. If None, platform upload is disabled.",
         ),
     ] = None
