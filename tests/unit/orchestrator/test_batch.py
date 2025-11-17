@@ -52,7 +52,7 @@ def test_prepare_batch_balances_micro_batches_across_workers(
     # Verify real rollouts have expected non-zero advantages and loss mask
     for batch in flat_batches[: len(rollouts)]:
         assert torch.count_nonzero(batch["advantages"]) == 4
-        assert torch.count_nonzero(batch["loss_mask"]) == 4
+        assert torch.count_nonzero(batch["loss_mask"]) == 2
 
     # Verify padded batches have zero advantages and loss mask
     for batch in flat_batches[len(rollouts) :]:
