@@ -141,7 +141,10 @@ def train(config: RLTrainerConfig):
             broadcast_weights_start_time = time.time()
             weight_broadcast.broadcast_weights(model, step=progress.step)
             broadcast_weights_time = time.time() - broadcast_weights_start_time
-            maybe_clean(weight_broadcast.broadcast_dir, progress.step, config.max_async_level, None)
+            # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
+            ckpt_interval = config.ckpt and config.ckpt.interval
+            interval_to_keep = ckpt_interval if config.weight_broadcast.type == "filesystem" else None
+            maybe_clean(weight_broadcast.broadcast_dir, progress.step, config.max_async_level, interval_to_keep)
         else:
             broadcast_weights_time = 0
 
