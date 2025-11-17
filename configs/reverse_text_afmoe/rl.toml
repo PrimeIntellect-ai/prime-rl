@@ -1,0 +1,30 @@
+[model]
+name = "arcee-train/hf-converted-afmoe-nano-ctxext-v4-revese-text"
+
+
+[orch]
+batch_size = 128
+rollouts_per_example = 16
+seq_len = 2048
+max_steps = 20
+mask_truncated_completions = false
+
+[orch.sampling]
+max_tokens = 128
+
+[[orch.env]]
+id = "reverse-text"
+
+[train]
+max_steps = 20
+
+[train.model]
+name = "arcee-train/hf-converted-afmoe-nano-ctxext-v4-revese-text"
+load_using_meta = true
+compile = true
+ac = true
+attn = "sdpa"
+
+[train.optim]
+lr = 3e-6
+type = "muon"
