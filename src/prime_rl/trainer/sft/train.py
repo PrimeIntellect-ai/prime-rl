@@ -12,7 +12,6 @@ from torch.distributed.tensor.experimental import context_parallel
 from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
-from prime_rl.trainer.weights import setup_weight_ckpt_manager
 from prime_rl.trainer.sft.config import SFTTrainerConfig
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.optim import setup_optimizer
@@ -87,18 +86,9 @@ def train(config: SFTTrainerConfig):
     logger.info(f"Setting up {config.scheduler.type} scheduler with {scheduler_steps} steps ({config.scheduler})")
     scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
 
-    # Set up weight checkpoint manager
-    logger.info(f"Initializing weight checkpoint manager ({config.weights})")
-    weight_ckpt_manager = setup_weight_ckpt_manager(
-        config.output_dir, config.weights, config.ckpt, 0, config.model.experimental.lora
-    )
-
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
     ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
-    assert ckpt_manager is None or (ckpt_manager is not None and weight_ckpt_manager is not None), (
-        "If ckpt_manager is set, weight_ckpt_manager must also be set"
-    )
 
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
@@ -149,35 +139,20 @@ def train(config: SFTTrainerConfig):
         torch.cuda.reset_peak_memory_stats()
         is_last_step = config.max_steps is not None and progress.step == config.max_steps
 
-        # Save the weight checkpoint (if we are at an interval step and not at the first or last step)
-        save_weights_time = 0
-        if (
-            weight_ckpt_manager is not None
-            and (config.weights and config.weights.interval)
-            and not (is_first_step or is_last_step)
-            and progress.step % config.weights.interval == 0
-        ):
-            logger.info(f"Saving weight checkpoint at step {progress.step}")
-            save_weights_start_time = time.time()
-            weight_ckpt_manager.save(model, tokenizer, step=progress.step)
-            save_weights_time = time.time() - save_weights_start_time
-
         # Save the full checkpoint (if we are at an interval step and not at the first or last step)
-        save_ckpt_time = 0
         if (
             ckpt_manager is not None
-            and weight_ckpt_manager is not None
             and config.ckpt
             and config.ckpt.interval
             and not (is_first_step or is_last_step)
             and progress.step % config.ckpt.interval == 0
         ):
             logger.info(f"Saving checkpoint at step {progress.step}")
-            save_ckpt_start_time = time.time()
-            ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step, dataloader=dataloader)
-            save_ckpt_time = time.time() - save_ckpt_start_time
+            ckpt_manager.save(
+                model, tokenizer, [optimizer], scheduler, progress, step=progress.step, dataloader=dataloader
+            )
 
-            # Maybe clean up old trainer checkpoints
+            # Maybe clean up old checkpoints
             ckpt_manager.maybe_clean()
 
         # Break if we have reached the maximum number of steps
@@ -356,8 +331,7 @@ def train(config: SFTTrainerConfig):
         # Log time metrics
         time_metrics = {
             "time/step": step_time,
-            "time/save_ckpt": save_ckpt_time,
-            "time/save_weights": save_weights_time,
+            **(ckpt_manager.get_metrics() if ckpt_manager is not None else {}),
             "time/forward_backward": forward_backward_time,
             "step": progress.step,
         }
@@ -384,16 +358,10 @@ def train(config: SFTTrainerConfig):
     # Log final (immutable) distributions to W&B table
     monitor.log_final_distributions()
 
-    # Write final weight checkpoint
-    if weight_ckpt_manager is not None:
-        assert config.weights is not None
-        logger.info("Writing final weight checkpoint")
-        weight_ckpt_manager.save(model, tokenizer, step=progress.step)
-
     # Write final checkpoint
     if ckpt_manager is not None:
         logger.info("Writing final checkpoint")
-        ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step, dataloader=dataloader)
+        ckpt_manager.save(model, tokenizer, [optimizer], scheduler, progress, step=progress.step, dataloader=dataloader)
         ckpt_manager.maybe_clean()
 
     logger.info(f"Peak memory: {max(to_col_format(monitor.history)['perf/peak_memory']):.1f} GiB")
