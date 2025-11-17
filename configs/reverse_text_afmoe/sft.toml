@@ -11,8 +11,12 @@ name = "arcee-train/hf-converted-afmoe-nano-ctxext-v4-revese-text"
 load_using_meta = true
 compile = true
 attn = "sdpa"
+impl = "custom"
 
 [model.ac]
+
+[train.model.compile]
+
 
 [data]
 name = "PrimeIntellect/Reverse-Text-SFT"
