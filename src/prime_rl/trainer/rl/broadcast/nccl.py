@@ -102,6 +102,8 @@ class NCCLWeightBroadcast(WeightBroadcast):
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
         """Broadcast the state dict of a model into the inference pool using NCCL."""
         self.logger.debug("Starting broadcasting weights to inference engine via NCCL")
+        # Notify the orchestrator at the start to intialize receiver on all inference servers
+        self.notify_orchestrator(step)
         start_time = time.time()
         state_dict = model.state_dict()
         num_layers = get_max_layer_num(state_dict)
@@ -124,6 +126,4 @@ class NCCLWeightBroadcast(WeightBroadcast):
 
             if self.world.is_master:
                 broadcast_state_dict(state_dict, self.communicator)
-
-        self.notify_orchestrator(step)
         self.logger.debug(f"Weights broadcasted in {time.time() - start_time:.2f}s")
