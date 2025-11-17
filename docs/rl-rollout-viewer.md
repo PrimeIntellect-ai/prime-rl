@@ -39,6 +39,67 @@ uv run rl configs/your-config.toml
 
 Navigate to https://app.primeintellect.ai/dashboard/rl to see your run streaming in real-time.
 
+## Remote Training with Local Backend
+
+If you're training on a remote server but want to upload to your local backend:
+
+### Set Up SSH Reverse Tunnel
+
+From your **local machine**, create a reverse SSH tunnel to expose your local backend to the remote server:
+
+```bash
+# Forward local port 82 to remote server's localhost:82
+ssh -R 82:localhost:82 -p <SSH_PORT> <USER>@<REMOTE_SERVER> -N
+
+# Example:
+ssh -R 82:localhost:82 -p 40121 root@213.192.2.68 -N
+```
+
+Keep this terminal running while training.
+
+### Run in Background
+
+```bash
+# Run tunnel in background
+ssh -R 82:localhost:82 -p 40121 root@213.192.2.68 -N -f
+
+# To kill later:
+ps aux | grep "ssh -R 82"
+kill <PID>
+```
+
+### Verify Connection
+
+On the **remote training server**, test that the tunnel works:
+
+```bash
+curl http://localhost:82/healthcheck
+# Should return: {"status":"ok"}
+```
+
+### Complete Workflow
+
+**Terminal 1 (Local):** Start your backend
+```bash
+cd /path/to/pi-backend
+# Start backend on port 82
+uvicorn app.main:app --port 82
+```
+
+**Terminal 2 (Local):** Create reverse tunnel
+```bash
+ssh -R 82:localhost:82 -p 40121 root@213.192.2.68 -N
+```
+
+**Terminal 3 (Remote):** Run training
+```bash
+ssh -p 40121 root@213.192.2.68
+cd ~/Dev/prime-rl
+uv run rl configs/your-config.toml
+```
+
+The training server will connect to `http://localhost:82` which tunnels to your local backend!
+
 
 ### Full Platform Config
 

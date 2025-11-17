@@ -70,9 +70,15 @@ class WandbMonitor:
 
                         if existing_run_id and file_age < 120:
                             self.platform_run_id = existing_run_id
+
+                            platform_url = f"https://app.primeintellect.ai/dashboard/rl/{self.platform_run_id}"
+                            if "localhost" in self.platform_api_url:
+                                platform_url = f"http://localhost:3000/dashboard/rl/{self.platform_run_id}"
+
                             self.logger.info(
                                 f"Using existing platform run_id from orchestrator: {self.platform_run_id}"
                             )
+                            self.logger.info(f"→ View run at: {platform_url}")
                         else:
                             if file_age >= 120:
                                 self.logger.info(f"Stale platform_run_id.txt (age: {file_age:.0f}s) - creating new run")
