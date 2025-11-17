@@ -40,8 +40,7 @@ oversampling_factor = 2.0
 max_tokens = 512
 
 [orchestrator.buffer]
-filter_min_threshold = 0.0
-filter_max_threshold = 1.0
+online_difficulty_filtering = true
 
 [[orchestrator.env]]
 id = "primeintellect/wiki-search"
