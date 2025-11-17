@@ -270,19 +270,19 @@ def train(config: RLTrainerConfig):
 
             pre_pad_logits = None
             if config.model.cp > 1:
-                empty_tl = [
-                    torch.zeros(1, size, logits.shape[2], dtype=logits.dtype, device=logits.device) for size in sizes
+                last_logit = logits[:, -1, :].unsqueeze(1)
+                last_logits = [
+                    torch.zeros(1, 1, logits.shape[2], dtype=logits.dtype, device=logits.device)
+                    for _ in range(config.model.cp)
                 ]
 
-                dist.all_gather(empty_tl, logits, parallel_dims.world_mesh["cp"].get_group())
-                full_logits = torch.cat(empty_tl, dim=1)
-
-                chunked_logits = torch.chunk(full_logits, config.model.cp, dim=1)
+                dist.all_gather(last_logits, last_logit, parallel_dims.world_mesh["cp"].get_group())
                 cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
                 prev_rank = cp_rank - 1
                 if prev_rank >= 0:
-                    pre_pad_logits = chunked_logits[prev_rank][:, -1, :].unsqueeze(1)
-
+                    pre_pad_logits = last_logits[prev_rank]
+                else:
+                    pre_pad_logits = None
 
             shifted_logits = shift_logits(logits, pre_pad_logits=pre_pad_logits)
             shifted_logits = shifted_logits / temperature
