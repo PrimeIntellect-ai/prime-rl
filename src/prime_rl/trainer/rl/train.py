@@ -12,7 +12,8 @@ from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
-from prime_rl.trainer.rl.broadcast.nccl import NCCLBroadcastSender
+from prime_rl.trainer.rl.broadcast.filesystem import FileSystemWeightBroadcast
+from prime_rl.trainer.rl.broadcast.nccl import NCCLWeightBroadcast
 from prime_rl.trainer.weights import setup_weight_ckpt_manager
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
@@ -101,11 +102,9 @@ def train(config: RLTrainerConfig):
     assert weight_ckpt_manager is not None, "Weight checkpoint manager must be set on RL trainer"
 
     # Set up NCCL broadcast
-    nccl_broadcast = None
     logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
     if config.weight_broadcast.type == "nccl":
-        # we do inferece world size + 1 because we have the trainer broadcaster as rank 0
-        nccl_broadcast = NCCLBroadcastSender(
+        weight_broadcast = NCCLWeightBroadcast(
             host=config.weight_broadcast.host,
             port=config.weight_broadcast.port,
             world_size=config.weight_broadcast.inference_world_size + 1,
@@ -113,6 +112,10 @@ def train(config: RLTrainerConfig):
             rank=0,
             device=torch.cuda.current_device(),
             logger=logger,
+        )
+    else:
+        weight_broadcast = FileSystemWeightBroadcast(
+            config.output_dir, config.weights.save_format, config.weights.save_sharded
         )
 
     # Set up checkpoint manager
@@ -146,28 +149,24 @@ def train(config: RLTrainerConfig):
         torch.cuda.reset_peak_memory_stats()
         is_last_step = config.max_steps is not None and progress.step == config.max_steps
 
-        # Save the weight checkpoint (if we are not at the first step, because no updates to the model have been made yet)
-        save_weights_time = 0
-        broadcast_weights_time = 0
-        if progress.step > 0:
+        # Save weights to disk at interval step (except first step)
+        if progress.step > 0 and config.weights.interval and progress.step % config.weights.interval == 0:
             save_weights_start_time = time.time()
-            # Save weights to disk at every if using filesystem weight broadcast or at interval step
-            if config.weight_broadcast.type == "filesystem" or (
-                config.weights.interval and progress.step % config.weights.interval == 0
-            ):
-                weight_ckpt_manager.save(model, tokenizer, step=progress.step)
-            else:
-                # Always create a stable file to signal to the orchestrator to initialize receiving weights via NCCL
-                weight_ckpt_manager.create_stable_file(progress.step)
+            weight_ckpt_manager.save(model, tokenizer, step=progress.step)
             save_weights_time = time.time() - save_weights_start_time
-            broadcast_weights_time = save_weights_time
+        else:
+            save_weights_time = 0
 
-            # Do not NCCL broadcast the last async level steps because the inference server is not receiving anymore
-            is_second_to_last_step = config.max_steps is not None and progress.step >= config.max_steps - 1
-            if nccl_broadcast is not None and not is_second_to_last_step:
-                broadcast_weights_start_time = time.time()
-                nccl_broadcast.broadcast_state_dict(model)
-                broadcast_weights_time = time.time() - broadcast_weights_start_time
+        # Broadcast weights at every step (except first and last async level steps)
+        last_async_level_steps = (
+            config.max_steps is not None and progress.step >= config.max_steps - config.max_async_level
+        )
+        if progress.step > 0 and not last_async_level_steps:
+            broadcast_weights_start_time = time.time()
+            weight_broadcast.broadcast_weights(model, step=progress.step)
+            broadcast_weights_time = time.time() - broadcast_weights_start_time
+        else:
+            broadcast_weights_time = 0
 
         # Save the full checkpoint (if we are at an interval step and not at the first or last step)
         save_ckpt_time = 0

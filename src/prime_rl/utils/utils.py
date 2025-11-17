@@ -268,6 +268,10 @@ def get_eval_dir(output_dir: Path) -> Path:
     return output_dir / "evals"
 
 
+def get_broadcast_dir(output_dir: Path) -> Path:
+    return output_dir / "broadcast"
+
+
 def get_step_path(path: Path, step: int) -> Path:
     return path / f"step_{step}"
 
