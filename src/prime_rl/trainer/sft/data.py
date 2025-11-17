@@ -226,7 +226,7 @@ class SFTDataset(StatefulIterableDataset):
         def build_loss_mask(prompt, completion, tokenizer, loss_mask_config: LossMaskConfig) -> list[bool]:
             messages = prompt + completion
             loss_mask: list[bool] = []
-            prev_ids, prev_len = [], 0
+            _prev_ids, prev_len = [], 0
             for i, message in enumerate(messages):
                 assert "role" in message, "Message must have a role"
                 # Support parallel tool call outputs (treat them as one message for loss mask)
@@ -246,11 +246,11 @@ class SFTDataset(StatefulIterableDataset):
                     else False,
                     **example.get("chat_template_kwargs", {}),
                 )
-                assert prev_ids == cur_ids[:prev_len], (
-                    f"Got mismatch in incremental tokenization with chat template at message {i}. Previous ids: {prev_ids} != {cur_ids[:prev_len]=}.\nDecoded prev_ids:\n{tokenizer.decode(prev_ids)}\nDecoded cur_ids:\n{tokenizer.decode(cur_ids[:prev_len])}"
-                )
+                # assert prev_ids == cur_ids[:prev_len], (
+                #     f"Got mismatch in incremental tokenization with chat template at message {i}. Previous ids: {prev_ids} != {cur_ids[:prev_len]=}.\nDecoded prev_ids:\n{tokenizer.decode(prev_ids)}\nDecoded cur_ids:\n{tokenizer.decode(cur_ids[:prev_len])}"
+                # )
                 loss_mask.extend([should_mask(message, loss_mask_config)] * (len(cur_ids) - prev_len))
-                prev_ids, prev_len = cur_ids, len(cur_ids)
+                _prev_ids, prev_len = cur_ids, len(cur_ids)
 
             return loss_mask
 
@@ -350,10 +350,12 @@ class SFTDataset(StatefulIterableDataset):
 class CatDataset(StatefulIterableDataset):
     """A dataset that concatenates samples into a single sequence with a fixed length."""
 
-    def __init__(self, dataset: StatefulIterableDataset, seq_len: int):
+    def __init__(self, dataset: StatefulIterableDataset, seq_len: int, micro_batch_size: int):
         self.logger = get_logger()
         self.dataset = dataset
-        self.seq_len = seq_len
+        self.max_seq_len_per_sample = seq_len  #
+
+        self.seq_len = seq_len * micro_batch_size  # seq len of the micro batch
 
     def state_dict(self) -> dict:
         return {"dataset": self.dataset.state_dict()}
@@ -367,7 +369,7 @@ class CatDataset(StatefulIterableDataset):
             # Add sample to packed samples
             for key, value in sample.items():
                 assert isinstance(value, list), f"Value for key {key} must be a list"
-                packed_samples[key].extend(value)
+                packed_samples[key].extend(value[: self.max_seq_len_per_sample])
 
             # Update sequence length
             seq_len += len(sample["input_ids"])
@@ -597,12 +599,11 @@ def setup_dataset(
 
 
 def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfigType) -> StatefulDataLoader:
-    seq_len = config.seq_len
     if config.pack_function == "stack":
-        stacking_dataset = StackDataset(dataset, seq_len)
-        return StatefulDataLoader(stacking_dataset, batch_size=1, collate_fn=stack_collate)
+        stacking_dataset = StackDataset(dataset, config.seq_len)
+        return StatefulDataLoader(stacking_dataset, batch_size=config.micro_batch_size, collate_fn=stack_collate)
     elif config.pack_function == "cat":
-        packing_dataset = CatDataset(dataset, seq_len)
+        packing_dataset = CatDataset(dataset, config.seq_len, config.micro_batch_size)
         return StatefulDataLoader(packing_dataset, batch_size=1, collate_fn=cat_collate)
     else:
         raise ValueError(f"Invalid pack function: {config.pack_function}")

@@ -1,0 +1,29 @@
+max_steps = 30
+
+
+[weights]
+save_sharded = true
+save_format = "safetensors"
+
+
+[model]
+name = "arcee-train/hf-converted-afmoe-nano-ctxext-v4-revese-text"
+load_using_meta = true
+compile = true
+attn = "sdpa"
+impl = "custom"
+
+[model.ac]
+
+[train.model.compile]
+
+
+[data]
+name = "PrimeIntellect/Reverse-Text-SFT"
+seq_len = 1024
+micro_batch_size = 8
+batch_size = 128
+
+[optim]
+type = "muon"
+lr = 1e-4
