@@ -8,7 +8,7 @@ configs/endpoints.py
 **/torchrun
 **/weights
 **/checkpoints
-**/broadcast
+**/broadcasts
 **/rollouts
 **/logs
 **/wandb
