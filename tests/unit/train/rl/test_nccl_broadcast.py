@@ -3,7 +3,7 @@ import multiprocessing as mp
 import pytest
 import torch
 
-from prime_rl.trainer.rl.broadcast.nccl_broadcast import NCCLBroadcastReceiver, NCCLBroadcastSender
+from prime_rl.trainer.rl.broadcast.nccl import NCCLBroadcastReceiver, NCCLBroadcastSender
 from prime_rl.utils.logger import get_logger
 
 pytestmark = [pytest.mark.gpu]

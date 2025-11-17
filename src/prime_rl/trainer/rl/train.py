@@ -12,7 +12,7 @@ from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
-from prime_rl.trainer.rl.broadcast.nccl_broadcast import NCCLBroadcastSender
+from prime_rl.trainer.rl.broadcast.nccl import NCCLBroadcastSender
 from prime_rl.trainer.weights import setup_weight_ckpt_manager
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader

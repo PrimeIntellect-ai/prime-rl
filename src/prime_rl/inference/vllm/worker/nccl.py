@@ -5,7 +5,7 @@ from vllm.distributed.parallel_state import get_tp_group
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader.utils import process_weights_after_loading
 
-from prime_rl.trainer.rl.broadcast.nccl_broadcast import NCCLBroadcastReceiver
+from prime_rl.trainer.rl.broadcast.nccl import NCCLBroadcastReceiver
 
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
 if TYPE_CHECKING:
