@@ -77,23 +77,27 @@ def filter_state_dict_by_layers(
         )
 
 
-class NCCLWeightBroadcast(WeightBroadcast):
-    """Broadcast weights into the inference engine using NCCL."""
-
-    def __init__(self, output_dir: Path, config: NCCLWeightBroadcastConfig):
-        super().__init__(output_dir)
+class NCCLWeightBroadcastSender:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        rank: int,
+        world_size: int,
+        device: int | str | torch.device,
+        timeout: int,
+        dtype: torch.dtype = torch.bfloat16,
+    ):
         self.logger = get_logger()
         self.world = get_world()
-        self.dtype = torch.bfloat16
-        self.device = torch.cuda.current_device()
+        self.dtype = dtype
 
         if self.world.is_master:
             # Trainer is on rank 0 in process group with all inference GPUs
-            rank, world_size = (0, config.inference_world_size + 1)
             pg = StatelessProcessGroup.create(
-                host=config.host, port=config.port, rank=rank, world_size=world_size, store_timeout=config.timeout
+                host=host, port=port, rank=rank, world_size=world_size, store_timeout=timeout
             )
-            self.communicator = PyNcclCommunicator(pg, device=self.device)
+            self.communicator = PyNcclCommunicator(pg, device=device)
             self.logger.debug("NCCL broadcast initialized on master rank")
         else:
             self.logger.debug("NCCL broadcast initialized on non-master rank (no communicator)")
@@ -101,10 +105,6 @@ class NCCLWeightBroadcast(WeightBroadcast):
     @torch.no_grad()
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
         """Broadcast the state dict of a model into the inference pool using NCCL."""
-        self.logger.debug("Starting broadcasting weights to inference engine via NCCL")
-        # Notify the orchestrator at the start to intialize receiver on all inference servers
-        self.notify_orchestrator(step)
-        start_time = time.time()
         state_dict = model.state_dict()
         num_layers = get_max_layer_num(state_dict)
         num_state_dict_to_send = num_layers + 1  # we send all layer plus the remaining weights
@@ -126,4 +126,30 @@ class NCCLWeightBroadcast(WeightBroadcast):
 
             if self.world.is_master:
                 broadcast_state_dict(state_dict, self.communicator)
+
+
+class NCCLWeightBroadcast(WeightBroadcast):
+    """Broadcast weights into the inference engine using NCCL."""
+
+    def __init__(
+        self,
+        output_dir: Path,
+        config: NCCLWeightBroadcastConfig,
+        dtype: torch.dtype = torch.bfloat16,
+        device: int | str | torch.device = torch.cuda.current_device(),
+    ):
+        super().__init__(output_dir)
+        self.logger = get_logger()
+        self.world = get_world()
+        self.nccl_broadcast = NCCLWeightBroadcastSender(
+            config.host, config.port, 0, config.inference_world_size + 1, device, dtype, config.timeout
+        )
+
+    @torch.no_grad()
+    def broadcast_weights(self, model: nn.Module, step: int) -> None:
+        """Broadcast the state dict of a model into the inference pool using NCCL and notifies the orchestrator."""
+        self.logger.debug("Starting broadcasting weights to inference engine via NCCL")
+        start_time = time.time()
+        self.notify_orchestrator(step)
+        self.nccl_broadcast.broadcast_weights(model, step)
         self.logger.debug(f"Weights broadcasted in {time.time() - start_time:.2f}s")

@@ -3,24 +3,21 @@ import multiprocessing as mp
 import pytest
 import torch
 
-from prime_rl.trainer.rl.broadcast.nccl import NCCLBroadcastReceiver, NCCLBroadcastSender
-from prime_rl.utils.logger import get_logger
+from prime_rl.inference.vllm.worker.nccl import NCCLWeightBroadcastReceiver
+from prime_rl.trainer.rl.broadcast.nccl import NCCLWeightBroadcastSender
 
 pytestmark = [pytest.mark.gpu]
 
 
 @pytest.mark.skip(reason="Skipping NCCL broadcast as it fail only in ci")
 def test_nccl_broadcast(free_port):
-    logger = get_logger()
-
     host = "localhost"
+    free_port = free_port()
 
     def send():
         device = torch.device(f"cuda:{0}")
-
-        logger.info("Sending weights")
-        nccl_broadcast = NCCLBroadcastSender(
-            host=host, port=free_port, rank=0, world_size=2, device=device, logger=logger, timeout=10
+        nccl_broadcast = NCCLWeightBroadcastSender(
+            host=host, port=free_port, rank=0, world_size=2, device=device, timeout=10
         )
 
         class SubModel(torch.nn.Module):
@@ -46,13 +43,12 @@ def test_nccl_broadcast(free_port):
         for param in model.parameters():
             param.data = torch.ones_like(param.data)
 
-        nccl_broadcast.broadcast_state_dict(model)
+        nccl_broadcast.broadcast_weights(model, step=0)
 
     def receive():
         device = torch.device(f"cuda:{1}")
-        logger.info("Receiving weights")
-        nccl_broadcast = NCCLBroadcastReceiver(
-            host=host, port=free_port, rank=1, world_size=2, device=device, logger=logger, timeout=10
+        nccl_broadcast = NCCLWeightBroadcastReceiver(
+            host=host, port=free_port, rank=1, world_size=2, device=device, timeout=10
         )
 
         for key, value in nccl_broadcast.receive_state_dict():

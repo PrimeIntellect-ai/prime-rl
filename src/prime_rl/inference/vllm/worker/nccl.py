@@ -17,6 +17,8 @@ if TYPE_CHECKING:
 else:
     Worker = object
 
+logger = init_logger("vllm.inference.vllm.worker_nccl")
+
 
 def receive_integer(communicator: PyNcclCommunicator) -> int:
     """Receive an integer from the trainer master rank using NCCL communicator."""
@@ -54,19 +56,17 @@ def receive_state_dict(communicator: PyNcclCommunicator) -> Generator[tuple[str,
         del concatenated
 
 
-class NCCLBroadcastReceiver:
+class NCCLWeightBroadcastReceiver:
     def __init__(
         self,
         host: str,
         port: int,
         rank: int,
         world_size: int,
-        device,
-        logger,
+        device: int | str | torch.device,
         timeout: int,
     ):
-        self.logger = logger
-        self.logger.info(f"Initializing NCCL broadcast receiver ({host}:{port}, rank={rank}, world_size={world_size})")
+        logger.info(f"Initializing NCCL broadcast receiver ({host}:{port}, rank={rank}, world_size={world_size})")
 
         pg = StatelessProcessGroup.create(host=host, port=port, rank=rank, world_size=world_size, store_timeout=timeout)
         self.communicator = PyNcclCommunicator(pg, device=device)
@@ -74,11 +74,11 @@ class NCCLBroadcastReceiver:
     @torch.no_grad()
     def receive_state_dict(self):
         """Receives the state dict of a model from the trainer master rank using NCCL communicator."""
-        self.logger.info("Receiving weights from trainer")
+        logger.info("Receiving weights from trainer")
         num_state_dict_to_receive = receive_integer(self.communicator)
-        self.logger.info(f"Receiving {num_state_dict_to_receive} layer state dicts")
+        logger.info(f"Receiving {num_state_dict_to_receive} layer state dicts")
         for layer_id in range(num_state_dict_to_receive):
-            self.logger.info(f"Receiving state dict {layer_id + 1}/{num_state_dict_to_receive}")
+            logger.info(f"Receiving state dict {layer_id + 1}/{num_state_dict_to_receive}")
             for key, value in receive_state_dict(self.communicator):
                 yield key, value
 
@@ -88,7 +88,6 @@ class NCCLWeightUpdateWorker(Worker):
 
     def init_broadcaster(self, host: str, port: int, server_rank: int, num_inference_server: int, timeout: int) -> None:
         """Initialize the NCCL broadcast receiver."""
-        logger = init_logger("vllm.inference.vllm.worker_nccl")
         tp_size = get_tp_group().world_size
         tp_rank = get_tp_group().rank
         global_rank_inference = (server_rank * tp_size) + tp_rank
@@ -98,13 +97,12 @@ class NCCLWeightUpdateWorker(Worker):
             f"Worker [tp={tp_rank} server_rank={server_rank}] -> [global_rank={global_rank_inference} global_world_size={global_inference_world_size}]"
         )
 
-        self.nccl_broadcast_receiver = NCCLBroadcastReceiver(
+        self.nccl_broadcast_receiver = NCCLWeightBroadcastReceiver(
             host=host,
             port=port,
             rank=global_rank_inference + 1,  # +1 as the trainer broadcaster is on rank 0
             world_size=global_inference_world_size + 1,  # +1 as the trainer broadcaster is on rank 0
             device=self.device,
-            logger=logger,
             timeout=timeout,
         )
 

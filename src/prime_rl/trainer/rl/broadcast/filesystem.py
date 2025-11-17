@@ -24,7 +24,7 @@ class FileSystemWeightBroadcast(WeightBroadcast):
         )
 
     def broadcast_weights(self, model: nn.Module, step: int):
-        """Broadcast weights by saving a HF-compatible checkpoint to shared filesystem."""
+        """Broadcast weights by saving a HF-compatible checkpoint to shared filesystem and notifies the orchestrator."""
         self.logger.debug("Starting broadcasting weights to inference engine via shared filesystem")
         start_time = time.time()
         state_dict = gather_weights(model, self.world.is_master)
