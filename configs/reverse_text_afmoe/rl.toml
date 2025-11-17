@@ -19,7 +19,6 @@ id = "reverse-text"
 max_steps = 20
 
 [train.model]
-name = "arcee-train/hf-converted-afmoe-nano-ctxext-v4-revese-text"
 load_using_meta = true
 compile = true
 ac = true
