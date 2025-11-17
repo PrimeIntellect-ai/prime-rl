@@ -49,6 +49,7 @@ from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import (
     clean_exit,
     format_num,
+    get_broadcast_dir,
     get_rollout_dir,
     get_step_path,
     get_weights_dir,
@@ -153,7 +154,7 @@ async def orchestrate(config: OrchestratorConfig):
         ckpt_manager.load(progress, buffer, step=config.ckpt.resume_step)
         logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
         scheduler.ckpt_step = progress.step  # Always resume from the latest checkpoint
-        await update_weights(admin_clients, get_step_path(get_weights_dir(config.output_dir), scheduler.ckpt_step))
+        await update_weights(admin_clients, get_step_path(get_broadcast_dir(config.output_dir), scheduler.ckpt_step))
     else:
         logger.info("Training from scratch. Resetting weights to base model")
         await reload_weights(admin_clients)
