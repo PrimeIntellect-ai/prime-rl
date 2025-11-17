@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import time
 from itertools import cycle
 from typing import NamedTuple
@@ -8,12 +9,14 @@ from openai import AsyncOpenAI
 from tqdm import tqdm
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from verifiers import Environment
-from verifiers.types import GenerateOutputs, ProcessedOutputs
+from verifiers.types import RolloutInput, State, TrajectoryStep
+from verifiers.utils.async_utils import NullAsyncContext
 
 from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.config import OrchestratorConfig
-from prime_rl.orchestrator.utils import get_sampling_args, parse_is_truncated_completions
+from prime_rl.orchestrator.types import RolloutState, RolloutStep
+from prime_rl.orchestrator.utils import get_sampling_args, get_semaphore
 from prime_rl.utils.client import update_weights
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import (
@@ -22,7 +25,6 @@ from prime_rl.utils.utils import (
     get_step_path,
     sync_wait_for_path,
 )
-from prime_rl.utils.vf import Rollout, generate_group, make_rollouts
 
 
 class InflightRolloutInfo(NamedTuple):
@@ -72,47 +74,108 @@ class Scheduler:
         self.step, self.ckpt_step = 0, 0
         self.update_weights_time, self.wait_for_ckpt_time = 0, 0
         self.sampling_args = get_sampling_args(config.sampling)
+        semaphore = get_semaphore()
+        self.generation_semaphore = semaphore if semaphore is not None else NullAsyncContext()
+        self.score_semaphore = NullAsyncContext()
 
-    def process_generate_outputs(
-        self,
-        generate_outputs: GenerateOutputs,
-    ) -> list[Rollout]:
-        processed_outputs: ProcessedOutputs = self.env.process_env_results_vllm(
-            prompts=generate_outputs.prompt,
-            completions=generate_outputs.completion,
-            states=generate_outputs.state,
-            rewards=generate_outputs.reward,
-            processing_class=self.tokenizer,
-            max_seq_len=self.seq_len,
-            mask_env_responses=self.config.mask_env_responses,
-            zero_truncated_completions=self.config.zero_truncated_completions,
-            mask_truncated_completions=self.config.mask_truncated_completions,
+    def _problem_to_rollout_input(self, problem: dict) -> RolloutInput:
+        rollout_input: RolloutInput = {
+            "prompt": problem["prompt"],
+            "example_id": problem["example_id"],
+            "task": problem.get("task") or self.env.env_id or "default",
+        }
+        if "answer" in problem:
+            rollout_input["answer"] = problem["answer"]
+        if "info" in problem:
+            rollout_input["info"] = problem["info"]
+        return rollout_input
+
+    def _trajectory_step_to_rollout_step(self, step: TrajectoryStep, fallback_reward: float) -> RolloutStep:
+        tokens = step.get("tokens")
+        if tokens is None:
+            raise RuntimeError(
+                "Trajectory step is missing token data. Ensure vLLM is configured to return token_ids/logprobs."
+            )
+        is_truncated = bool(tokens.get("is_truncated") or tokens.get("overlong_prompt"))
+        completion_mask = list(tokens["completion_mask"])
+        if is_truncated and self.config.mask_truncated_completions:
+            completion_mask = [0] * len(completion_mask)
+        step_reward = step.get("reward")
+        if step_reward is None:
+            step_reward = fallback_reward
+        return RolloutStep(
+            prompt_ids=list(tokens["prompt_ids"]),
+            prompt_mask=list(tokens["prompt_mask"]),
+            completion_ids=list(tokens["completion_ids"]),
+            completion_mask=completion_mask,
+            completion_logprobs=list(tokens["completion_logprobs"]),
+            is_truncated=is_truncated,
+            reward=float(step_reward or 0.0),
         )
 
-        # Compute advantages
+    def _state_to_rollout_state(self, state: State) -> RolloutState | None:
+        trajectory: list[TrajectoryStep] = state.get("trajectory", [])
+        if not trajectory:
+            self.logger.warning("Received rollout state with empty trajectory. Skipping.")
+            return None
+
+        reward = float(state.get("reward", 0.0) or 0.0)
+        metrics = dict(state.get("metrics") or {})
+        steps: list[RolloutStep] = []
+        any_truncated = False
+
+        for trajectory_step in trajectory:
+            rollout_step = self._trajectory_step_to_rollout_step(trajectory_step, reward)
+            any_truncated = any_truncated or rollout_step["is_truncated"]
+            steps.append(rollout_step)
+
+        if any_truncated and self.config.zero_truncated_completions:
+            reward = 0.0
+            for step in steps:
+                step["reward"] = 0.0
+
+        return RolloutState(
+            example_id=int(state["example_id"]),
+            task=state.get("task", "default"),
+            reward=reward,
+            metrics=metrics,
+            steps=steps,
+            is_truncated=any_truncated,
+            advantage=None,
+        )
+
+    def _prepare_rollouts(self, states: list[State]) -> list[RolloutState]:
+        sanitized_rollouts: list[RolloutState] = []
+        for state in states:
+            rollout_state = self._state_to_rollout_state(state)
+            if rollout_state is not None:
+                sanitized_rollouts.append(rollout_state)
+
+        if not sanitized_rollouts:
+            return []
+
+        self.buffer.update(sanitized_rollouts)
+        num_problems = len({rollout["example_id"] for rollout in sanitized_rollouts})
+        accepted_rollouts = self.buffer.sample_rollouts(n=num_problems * self.config.rollouts_per_example)
+
+        if not accepted_rollouts:
+            return []
+
+        completion_lengths = [
+            max(
+                1,
+                sum(len(step["completion_ids"]) for step in rollout["steps"]),
+            )
+            for rollout in accepted_rollouts
+        ]
         advantages = compute_advantages(
-            rewards=processed_outputs.rewards,
-            completion_lengths=list(map(len, processed_outputs.completion_ids)),
+            rewards=[rollout["reward"] for rollout in accepted_rollouts],
+            completion_lengths=completion_lengths,
             samples_per_problem=self.config.rollouts_per_example,
             advantage_config=self.config.advantage,
         )
-
-        # Parse whether the completions were truncated
-        responses = [state["responses"] for state in generate_outputs.state]
-        is_truncated = parse_is_truncated_completions(responses=responses)
-
-        # Make rollouts
-        rollouts = make_rollouts(
-            generate_outputs,
-            processed_outputs,
-            advantages,
-            is_truncated,
-        )
-
-        # Update and sample rollouts from the buffer
-        self.buffer.update(rollouts)
-        num_problems = len(set(generate_outputs.example_id))
-        accepted_rollouts = self.buffer.sample_rollouts(n=num_problems * self.config.rollouts_per_example)
+        for rollout, advantage in zip(accepted_rollouts, advantages):
+            rollout["advantage"] = advantage
 
         return accepted_rollouts
 
@@ -122,13 +185,15 @@ class Scheduler:
         if client is None:
             client = next(self.cycle_clients)
         group_rollout_request = asyncio.create_task(
-            generate_group(
+            self.env.run_group(
+                group_inputs=[
+                    copy.deepcopy(self._problem_to_rollout_input(problem)) for _ in range(self.rollouts_per_example)
+                ],
                 client=client,
-                env=self.env,
-                model_name=self.config.model.name,
-                problem=problem,
-                rollouts_per_example=self.config.rollouts_per_example,
-                sampling_args=self.sampling_args,
+                model=self.config.model.name,
+                gen_sampling_args=self.sampling_args,
+                gen_sem=self.generation_semaphore,
+                score_sem=self.score_semaphore,
             )
         )
         await asyncio.sleep(0)
@@ -193,7 +258,7 @@ class Scheduler:
 
             self.ckpt_step = next_ckpt_step
 
-    async def generate_batch(self, step: int, semaphore: asyncio.Semaphore | None = None) -> list[Rollout]:
+    async def generate_batch(self, step: int, semaphore: asyncio.Semaphore | None = None) -> list[RolloutState]:
         """Continuously schedules group rollouts, allowing them to be in-flight across steps."""
         self.step = step
 
@@ -202,7 +267,7 @@ class Scheduler:
         while len(self.inflight_group_rollouts) < self.problems_per_batch:
             await self.schedule_group_rollout()  # Schedule requests in round-robin fashion
 
-        batch_rollouts: list[Rollout] = []
+        batch_rollouts: list[RolloutState] = []
         pbar = tqdm(total=self.config.batch_size, desc="Generating rollouts (train)")
         while len(batch_rollouts) < self.config.batch_size:
             finished_group_rollouts, _ = await asyncio.wait(
@@ -215,11 +280,12 @@ class Scheduler:
                     break
 
                 _, client = self.inflight_group_rollouts.pop(finished_group_rollout)
-                generate_outputs: GenerateOutputs = finished_group_rollout.result()
+                group_states: list[State] = finished_group_rollout.result()
 
-                accepted_rollouts = self.process_generate_outputs(generate_outputs=generate_outputs)
-                batch_rollouts.extend(accepted_rollouts)
-                pbar.update(len(accepted_rollouts))
+                accepted_rollouts = self._prepare_rollouts(states=group_states)
+                if accepted_rollouts:
+                    batch_rollouts.extend(accepted_rollouts)
+                    pbar.update(len(accepted_rollouts))
 
                 await self.schedule_group_rollout(client)
 

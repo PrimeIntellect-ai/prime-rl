@@ -102,6 +102,9 @@ async def orchestrate(config: OrchestratorConfig):
             seed=config.env_mix.seed,
         ),
     )
+    env.max_seq_len = config.seq_len
+    for sub_env in getattr(env, "envs", []):
+        sub_env.max_seq_len = config.seq_len
     dataset = env.get_dataset(seed=config.seed)
     val_dataset = env.get_eval_dataset(seed=config.seed) if config.val else None
 
@@ -243,7 +246,6 @@ async def orchestrate(config: OrchestratorConfig):
         all_data_ranks_batches = prepare_batch(
             rollouts=train_rollouts,
             temperature=config.sampling.temperature,
-            tokenizer=tokenizer,
             num_train_workers=config.num_train_workers,
             seq_len=config.seq_len,
         )
@@ -265,18 +267,25 @@ async def orchestrate(config: OrchestratorConfig):
         await eval_task
 
         # Gather metrics in dataframes
-        results_df = pd.DataFrame(
-            {
-                "example_id": [rollout["example_id"] for rollout in train_rollouts],
-                "task": [rollout["task"] for rollout in train_rollouts],
-                "reward": [rollout["reward"] for rollout in train_rollouts],
-                "advantage": [rollout["advantage"] for rollout in train_rollouts],
-                "is_truncated": [rollout["is_truncated"] for rollout in train_rollouts],
-                "completion_len": [len(rollout["completion_ids"]) for rollout in train_rollouts],
-                "prompt_len": [len(rollout["prompt_ids"]) for rollout in train_rollouts],
-                "seq_len": [len(rollout["prompt_ids"]) + len(rollout["completion_ids"]) for rollout in train_rollouts],
-            }
-        )
+        rollout_rows = []
+        for rollout in train_rollouts:
+            prompt_len = sum(len(step["prompt_ids"]) for step in rollout["steps"])
+            completion_len = sum(len(step["completion_ids"]) for step in rollout["steps"])
+            seq_len = prompt_len + completion_len
+            advantage = rollout["advantage"] if rollout["advantage"] is not None else rollout["reward"]
+            rollout_rows.append(
+                {
+                    "example_id": rollout["example_id"],
+                    "task": rollout["task"],
+                    "reward": rollout["reward"],
+                    "advantage": advantage,
+                    "is_truncated": rollout["is_truncated"],
+                    "completion_len": completion_len,
+                    "prompt_len": prompt_len,
+                    "seq_len": seq_len,
+                }
+            )
+        results_df = pd.DataFrame(rollout_rows)
 
         # Gather individual reward function metrics
         metrics_df = pd.DataFrame([rollout["metrics"] for rollout in train_rollouts])
@@ -284,9 +293,9 @@ async def orchestrate(config: OrchestratorConfig):
         val_results_df = (
             pd.DataFrame(
                 {
-                    "example_id": val_outputs.example_id,
-                    "task": val_outputs.task,
-                    "reward": val_outputs.reward,
+                    "example_id": val_outputs["example_id"],
+                    "task": val_outputs["task"],
+                    "reward": val_outputs["reward"],
                 }
             )
             if val_outputs is not None
@@ -382,9 +391,11 @@ async def orchestrate(config: OrchestratorConfig):
         monitor.log(to_log)
 
         # Log samples and distributions to W&B table if enabled
+        last_step_prompts = [rollout["steps"][-1]["prompt_ids"] for rollout in train_rollouts]
+        last_step_completions = [rollout["steps"][-1]["completion_ids"] for rollout in train_rollouts]
         monitor.log_samples(
-            input_tokens=[rollout["prompt_ids"] for rollout in train_rollouts],
-            output_tokens=[rollout["completion_ids"] for rollout in train_rollouts],
+            input_tokens=last_step_prompts,
+            output_tokens=last_step_completions,
             rewards=results_df.reward.tolist(),
             advantages=results_df.advantage.tolist(),
             rollouts_per_problem=config.rollouts_per_example,

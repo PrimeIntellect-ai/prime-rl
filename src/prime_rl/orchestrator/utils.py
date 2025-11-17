@@ -31,9 +31,15 @@ def get_sampling_args(sampling_config: SamplingConfig) -> dict:
     # https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#extra-parameters_2
     sampling_args = dict(sampling_config)
     sampling_args["top_p"] = 1.0
+    sampling_args["n"] = 1
     sampling_args["logprobs"] = True
     sampling_args["extra_body"] = {
         "return_tokens_as_token_ids": True,
+        "return_token_ids": True,
+        "prompt_logprobs": True,
+        "skip_special_tokens": False,
+        "spaces_between_special_tokens": False,
+        "include_stop_str_in_output": False,
         "top_k": -1,
         "min_p": 0.0,
     }

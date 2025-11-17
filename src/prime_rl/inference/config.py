@@ -157,7 +157,4 @@ class InferenceConfig(BaseSettings):
             value = rgetattr(self, key.replace("-", "_"))
             rsetattr(namespace, to_vllm.get(key, key), value)
 
-        # Set `logprobs_mode` to `processed_logprobs` by default
-        rsetattr(namespace, "logprobs_mode", "processed_logprobs")
-
         return namespace

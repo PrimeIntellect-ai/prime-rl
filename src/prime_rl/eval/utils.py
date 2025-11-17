@@ -1,7 +1,7 @@
 import asyncio
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -14,7 +14,6 @@ from verifiers.utils.eval_utils import get_hf_hub_dataset_name, make_dataset, sa
 
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.orchestrator.config import ClientConfig, EvalConfig, EvalSamplingConfig, EvalSaveConfig, ModelConfig
-from prime_rl.orchestrator.utils import parse_is_truncated_completions, parse_num_completion_tokens
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor import get_monitor
 from prime_rl.utils.utils import capitalize, get_eval_dir, get_step_path
@@ -115,15 +114,34 @@ async def run_eval(
         pbar_description=f"Evaluating {env_name_or_id}",
     )
 
-    # Parse vLLM responses
+    # Parse trajectory tokens
     k = rollouts_per_example
-    responses = [state["responses"] for state in results.state]
+    completion_lens: list[int] = []
+    is_truncated: list[bool] = []
+    states = results["state"]
+    for rollout_state_raw in states:
+        rollout_state: dict[str, Any] = cast(dict[str, Any], rollout_state_raw)
+        trajectory = rollout_state.get("trajectory", [])
+        if not trajectory:
+            raise RuntimeError("Evaluation rollout is missing trajectory data.")
+        total_completion_tokens = 0
+        truncated = False
+        for step in trajectory:
+            tokens = step.get("tokens")
+            if tokens is None:
+                raise RuntimeError(
+                    "Trajectory step is missing token data. Ensure evaluation sampling requests token_ids/logprobs."
+                )
+            total_completion_tokens += len(tokens["completion_ids"])
+            truncated = truncated or bool(tokens.get("is_truncated") or tokens.get("overlong_prompt"))
+        completion_lens.append(total_completion_tokens)
+        is_truncated.append(truncated)
     results_df = pd.DataFrame(
         {
-            "example_id": results.example_id,
-            "reward": results.reward,
-            "completion_len": parse_num_completion_tokens(responses),
-            "is_truncated": parse_is_truncated_completions(responses),
+            "example_id": results["example_id"],
+            "reward": results["reward"],
+            "completion_len": completion_lens,
+            "is_truncated": is_truncated,
         }
     )
     unique_rewards = results_df.reward.unique()
@@ -167,14 +185,14 @@ async def run_eval(
     # Save results
     if save_config.disk is not None or save_config.hf is not None or save_config.env_hub:
         dataset = make_dataset(results)
-        metadata_dict = sanitize_metadata(results.metadata)
+        metadata_dict = sanitize_metadata(results["metadata"])
 
         if save_config.disk is not None:
             is_online = step is not None
             default_save_path = (
                 get_step_path(get_eval_dir(output_dir), ckpt_step) / env_name_or_id
                 if is_online
-                else results.metadata.path_to_save
+                else results["metadata"]["path_to_save"]
             )
             save_path = save_config.disk.path or default_save_path
             save_to_disk(dataset, metadata_dict, save_path)

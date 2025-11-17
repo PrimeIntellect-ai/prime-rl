@@ -6,7 +6,6 @@ from typing import Any, Optional
 import uvloop
 import vllm.envs as envs
 from fastapi import Request
-from vllm.config import LogprobsMode
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server
@@ -45,7 +44,6 @@ async def custom_build_async_engine_client(
     # Ensures everything is shutdown and cleaned up on error/exit
     engine_args = AsyncEngineArgs.from_cli_args(args)
     engine_args.worker_extension_cls = args.worker_extension_cls
-    engine_args.logprobs_mode = LogprobsMode.PROCESSED_LOGPROBS
 
     async with build_async_engine_client_from_engine_args(
         engine_args, disable_frontend_multiprocessing=args.disable_frontend_multiprocessing, client_config=client_config
@@ -143,10 +141,6 @@ def server(config: InferenceConfig, vllm_args: list[str]):
 
     # Set the worker extension class based on the broadcast backend
     args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]
-
-    # Raise error if logprobs_mode is not set to processed_logprobs
-    if args.logprobs_mode != "processed_logprobs":
-        raise ValueError("logprobs_mode must be 'processed_logprobs' to be compatible with the orchestrator.")
 
     if args.headless or args.api_server_count < 1:
         run_headless(args)
