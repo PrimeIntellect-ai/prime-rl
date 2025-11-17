@@ -329,19 +329,12 @@ class BufferConfig(BaseConfig):
         ),
     ] = None
 
-    filter_min_threshold: Annotated[
-        float | None,
+    online_difficulty_filtering: Annotated[
+        bool,
         Field(
-            description="Minimum reward threshold for adding rollouts to buffer. If average reward <= this threshold, rollouts are not added to buffer.",
+            description="Whether to filter rollouts based on their average reward. If True, rollouts with average reward == 0.0 will be marked as hard and rollouts with average reward == 1.0 will be marked as easy.",
         ),
-    ] = None
-
-    filter_max_threshold: Annotated[
-        float | None,
-        Field(
-            description="Maximum reward threshold for adding rollouts to buffer. If average reward >= this threshold, rollouts are not added to buffer.",
-        ),
-    ] = None
+    ] = False
 
 
 class AdvantageConfig(BaseConfig):

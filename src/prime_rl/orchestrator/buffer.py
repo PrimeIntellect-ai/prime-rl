@@ -114,12 +114,13 @@ class Buffer:
             self.num_sampled_rollouts_per_pool[new_difficulty] += 1
 
             self.num_rollouts += len(example_rollouts)
-            if self.config.filter_min_threshold is not None and avg_reward <= self.config.filter_min_threshold:
-                self.num_filtered_rollouts_per_difficulty["hard"] += len(example_rollouts)
-                continue
-            elif self.config.filter_max_threshold is not None and avg_reward >= self.config.filter_max_threshold:
-                self.num_filtered_rollouts_per_difficulty["easy"] += len(example_rollouts)
-                continue
+            if self.config.online_difficulty_filtering:
+                if avg_reward == 0.0:
+                    self.num_filtered_rollouts_per_difficulty["hard"] += len(example_rollouts)
+                    continue
+                elif avg_reward == 1.0:
+                    self.num_filtered_rollouts_per_difficulty["easy"] += len(example_rollouts)
+                    continue
             self.rollout_buffer.extend(example_rollouts)
 
     def sample_rollouts(self, n: int) -> list[Rollout]:
