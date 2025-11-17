@@ -141,8 +141,8 @@ class NCCLWeightBroadcast(WeightBroadcast):
         super().__init__(output_dir)
         self.logger = get_logger()
         self.world = get_world()
-        self.nccl_broadcast = NCCLWeightBroadcastSender(
-            config.host, config.port, 0, config.inference_world_size + 1, device, dtype, config.timeout
+        self.nccl_broadcast_sender = NCCLWeightBroadcastSender(
+            config.host, config.port, 0, config.inference_world_size + 1, device, config.timeout
         )
 
     @torch.no_grad()
@@ -151,5 +151,5 @@ class NCCLWeightBroadcast(WeightBroadcast):
         self.logger.debug("Starting broadcasting weights to inference engine via NCCL")
         start_time = time.time()
         self.notify_orchestrator(step)
-        self.nccl_broadcast.broadcast_weights(model, step)
+        self.nccl_broadcast_sender.broadcast_weights(model, step)
         self.logger.debug(f"Weights broadcasted in {time.time() - start_time:.2f}s")
