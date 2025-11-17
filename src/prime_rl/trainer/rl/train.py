@@ -46,6 +46,9 @@ from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format
 
 
+from ring_flash_attn import substitute_hf_flash_attn, update_ring_flash_attn_params
+
+
 @clean_exit
 @logger.catch(reraise=True)
 def train(config: RLTrainerConfig):
@@ -111,6 +114,9 @@ def train(config: RLTrainerConfig):
             device=torch.cuda.current_device(),
             logger=logger,
         )
+
+    if config.model.cp > 1:
+        substitute_hf_flash_attn(parallel_dims.world_mesh["cp"].get_group(), heads_k_stride=1)
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
@@ -231,9 +237,36 @@ def train(config: RLTrainerConfig):
             inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
             temperature = micro_batch["temperature"]
 
+            maybe_sharded_input_ids = input_ids
+            maybe_sharded_position_ids = position_ids
+            if config.model.cp > 1:
+                assert position_ids.shape[0] == 1, "For CP, micro batches must be [1, seq_len]"
+
+                seq_len = input_ids.shape[1]
+
+                flat_position_ids = position_ids.view(-1)
+                seqlens = torch.cat(
+                    [
+                        flat_position_ids[0:1],
+                        flat_position_ids[:-1][(flat_position_ids == 0)[1:]] + 1,
+                        flat_position_ids[-1:] + 1,
+                    ]
+                )
+                cu_seqlens = seqlens.cumsum(dim=0, dtype=torch.int32)
+                update_ring_flash_attn_params(cu_seqlens, parallel_dims.world_mesh["cp"].get_group())
+
+                cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
+                chunked_input_ids = torch.chunk(input_ids, config.model.cp, dim=1)
+                chunked_position_ids = torch.chunk(position_ids, config.model.cp, dim=1)
+
+                split_sizes = [chunk.shape[1] for chunk in chunked_input_ids]
+
+                maybe_sharded_input_ids = chunked_input_ids[cp_rank]
+                maybe_sharded_position_ids = chunked_position_ids[cp_rank]
+
             # Forward pass
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                logits = forward(model, input_ids, position_ids).float().contiguous()
+                logits = forward(model, maybe_sharded_input_ids, maybe_sharded_position_ids).float().contiguous()
 
             shifted_logits = shift_logits(logits)
             shifted_logits = shifted_logits / temperature
