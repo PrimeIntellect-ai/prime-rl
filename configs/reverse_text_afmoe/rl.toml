@@ -15,23 +15,22 @@ max_tokens = 128
 [[orch.env]]
 id = "reverse-text"
 
-[train]
+[trainer]
 max_steps = 20
 
-[train.model]
+[trainer.model]
 load_using_meta = true
-compile = true
-attn = "sdpa"
+attn = "sdpa" 
 impl = "custom"
 
-[train.model.ac]
+[trainer.model.ac]
 
-[train.model.compile]
+[trainer.model.compile]
 
-[train.weights]
+[trainer.weights]
 save_sharded = true
 save_format = "safetensors"
 
-[train.optim]
+[trainer.optim]
 lr = 3e-6
 type = "muon"
