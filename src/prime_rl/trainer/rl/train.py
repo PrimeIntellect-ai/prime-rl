@@ -13,6 +13,7 @@ from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
+from prime_rl.trainer.weights import setup_weight_ckpt_manager
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.logger import setup_logger
@@ -25,10 +26,10 @@ from prime_rl.trainer.rl.loss import (
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
+    setup_tokenizer,
     setup_model,
     is_tt_moe_model,
     get_load_balance_stats,
-    setup_tokenizer,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
@@ -97,6 +98,12 @@ def train(config: RLTrainerConfig):
     logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
     weight_broadcast = setup_weight_broadcast(config.output_dir, config.weight_broadcast)
 
+    # Set up weight checkpoint manager
+    logger.info(f"Initializing weight checkpoint manager ({config.weights})")
+    weight_ckpt_manager = setup_weight_ckpt_manager(
+        config.output_dir, config.weights, config.ckpt, config.max_async_level, config.model.experimental.lora
+    )
+
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
     ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
@@ -139,6 +146,23 @@ def train(config: RLTrainerConfig):
             broadcast_weights_time = 0
 
         if (
+            weight_ckpt_manager is not None
+            and (config.weights and config.weights.interval)
+            and not (is_first_step or is_last_step)
+            and progress.step % config.weights.interval == 0
+        ):
+            # Save weight checkpoint
+            logger.info(f"Saving weight checkpoint at step {progress.step}")
+            save_weights_start_time = time.time()
+            weight_ckpt_manager.save(model, tokenizer, step=progress.step)
+            save_weights_time = time.time() - save_weights_start_time
+
+            # Maybe clean up old weight checkpoint
+            maybe_clean(weight_ckpt_manager.weights_dir, progress.step, config.max_async_level, config.weights.interval)
+        else:
+            save_weights_time = 0
+
+        if (
             ckpt_manager is not None
             and (config.ckpt and config.ckpt.interval)
             and not (is_first_step or is_last_step)
@@ -147,7 +171,7 @@ def train(config: RLTrainerConfig):
             # Save full checkpoint
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.time()
-            ckpt_manager.save(model, tokenizer, [optimizer], scheduler, progress, step=progress.step)
+            ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step)
             save_ckpt_time = time.time() - save_ckpt_start_time
 
             # Maybe clean up old checkpoints
@@ -300,27 +324,40 @@ def train(config: RLTrainerConfig):
             step_message += f" | Max Vio: {tensor_stats['max_vio/mean']:.4f}"
         logger.success(step_message)
 
-        metrics = {
+        # Log performance metrics
+        perf_metrics = {
             "perf/throughput": throughput,
             "perf/throughput_per_gpu": throughput / world.world_size,
             "perf/mfu": mfu,
             "perf/peak_memory": peak_memory,
-            "optim/lr": current_lr,
-            "time/step": step_time,
-            "time/wait_for_batch": wait_for_batch_time,
-            "time/load_data": load_data_time,
-            "time/broadcast_weights": broadcast_weights_time,
-            "time/save_ckpt": save_ckpt_time,
-            "time/forward_backward": forward_backward_time,
-            "optim/grad_norm": grad_norm.item(),
-            **(ckpt_manager.get_metrics() if ckpt_manager is not None else {}),
             "step": progress.step,
         }
-        monitor.log(metrics)
+        monitor.log(perf_metrics)
+
+        # Log optimizer metrics
+        optim_metrics = {
+            "optim/lr": current_lr,
+            "optim/grad_norm": grad_norm.item(),
+            "step": progress.step,
+        }
+        monitor.log(optim_metrics)
 
         # Log tensor stats
         tensor_stats["step"] = progress.step
         monitor.log(tensor_stats)
+
+        # Log time metrics
+        time_metrics = {
+            "time/step": step_time,
+            "time/wait_for_batch": wait_for_batch_time,
+            "time/load_data": load_data_time,
+            "time/save_weights": save_weights_time,
+            "time/broadcast_weights": broadcast_weights_time,
+            "time/save_ckpt": save_ckpt_time,
+            "time/forward_backward": forward_backward_time,
+            "step": progress.step,
+        }
+        monitor.log(time_metrics)
 
         # Log distributions to W&B table if enabled
         assert all(len(tensors) == 1 for tensors in tensors.values()), "Tensors must be lists of length 1"
@@ -345,9 +382,14 @@ def train(config: RLTrainerConfig):
     monitor.log_final_distributions()
 
     # Write final checkpoint
+    if weight_ckpt_manager is not None:
+        logger.info("Writing final weight checkpoint")
+        weight_ckpt_manager.save(model, tokenizer, step=progress.step)
+
+    # Write final checkpoint
     if ckpt_manager is not None:
         logger.info("Writing final checkpoint")
-        ckpt_manager.save(model, tokenizer, [optimizer], scheduler, progress, step=progress.step)
+        ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step)
         ckpt_manager.maybe_clean()
 
     logger.info(f"Peak memory: {max(to_col_format(monitor.history)['perf/peak_memory']):.1f} GiB")
