@@ -93,15 +93,15 @@ def train(config: RLTrainerConfig):
     scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
     logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
 
+    # Set up weight broadcast
+    logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
+    weight_broadcast = setup_weight_broadcast(config.output_dir, config.weight_broadcast)
+
     # Set up weight checkpoint manager
     logger.info(f"Initializing weight checkpoint manager ({config.weights})")
     weight_ckpt_manager = setup_weight_ckpt_manager(
         config.output_dir, config.weights, config.ckpt, config.max_async_level, config.model.experimental.lora
     )
-
-    # Set up weight broadcast
-    logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
-    weight_broadcast = setup_weight_broadcast(config.output_dir, config.weight_broadcast)
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
@@ -134,18 +134,8 @@ def train(config: RLTrainerConfig):
         torch.cuda.reset_peak_memory_stats()
         is_last_step = config.max_steps is not None and progress.step == config.max_steps
 
-        # Save weights to disk at interval step (except first step)
-        if progress.step > 0 and config.weights.interval and progress.step % config.weights.interval == 0:
-            save_weights_start_time = time.time()
-            weight_ckpt_manager.save(model, tokenizer, step=progress.step)
-            save_weights_time = time.time() - save_weights_start_time
-        else:
-            save_weights_time = 0
-
         # Broadcast weights at every step (except first and last async level steps)
-        last_async_level_steps = (
-            config.max_steps is not None and progress.step >= config.max_steps - config.max_async_level
-        )
+        last_async_level_steps = config.max_steps and progress.step >= config.max_steps - config.max_async_level
         if progress.step > 0 and not last_async_level_steps:
             broadcast_weights_start_time = time.time()
             weight_broadcast.broadcast_weights(model, step=progress.step)
@@ -153,21 +143,39 @@ def train(config: RLTrainerConfig):
         else:
             broadcast_weights_time = 0
 
-        # Save the full checkpoint (if we are at an interval step and not at the first or last step)
-        save_ckpt_time = 0
+        if (
+            weight_ckpt_manager is not None
+            and (config.weights and config.weights.interval)
+            and not (is_first_step or is_last_step)
+            and progress.step % config.weights.interval == 0
+        ):
+            # Save weight checkpoint
+            logger.info(f"Saving weight checkpoint at step {progress.step}")
+            save_weights_start_time = time.time()
+            weight_ckpt_manager.save(model, tokenizer, step=progress.step)
+            save_weights_time = time.time() - save_weights_start_time
+
+            # Maybe clean up old weight checkpoint
+            weight_ckpt_manager.maybe_clean(progress.step)
+        else:
+            save_weights_time = 0
+
         if (
             ckpt_manager is not None
             and (config.ckpt and config.ckpt.interval)
             and not (is_first_step or is_last_step)
             and progress.step % config.ckpt.interval == 0
         ):
+            # Save full checkpoint
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.time()
             ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step)
             save_ckpt_time = time.time() - save_ckpt_start_time
 
-            # Maybe clean up old trainer checkpoints
+            # Maybe clean up old checkpoints
             ckpt_manager.maybe_clean()
+        else:
+            save_ckpt_time = 0
 
         # Break if we have reached the maximum number of steps
         if config.max_steps is not None and progress.step >= config.max_steps:
@@ -289,9 +297,6 @@ def train(config: RLTrainerConfig):
 
         # TODO: Broadcast weight checkpoint via shardcast
 
-        # Maybe clean up weight checkpoint
-        weight_ckpt_manager.maybe_clean(progress.step)
-
         # Optionally, dump memory snapshot
         if memory_profiler is not None:
             memory_profiler.step()
@@ -373,6 +378,12 @@ def train(config: RLTrainerConfig):
 
     # Log final (immutable) distributions to W&B table
     monitor.log_final_distributions()
+
+    # Write final checkpoint
+    if weight_ckpt_manager is not None:
+        logger.info("Writing final weight checkpoint")
+        weight_ckpt_manager.save(model, tokenizer, step=progress.step)
+        weight_ckpt_manager.maybe_clean()
 
     # Write final checkpoint
     if ckpt_manager is not None:

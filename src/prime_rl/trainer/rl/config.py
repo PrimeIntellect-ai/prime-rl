@@ -95,7 +95,7 @@ class RLTrainerConfig(BaseSettings):
     ckpt: CheckpointConfig | None = None
 
     # The weight checkpoint configuration
-    weights: WeightCheckpointConfig = WeightCheckpointConfig()
+    weights: WeightCheckpointConfig | None = None
 
     weight_broadcast: Annotated[WeightBroadcastConfigType, Field(discriminator="type")] = (
         FileSystemWeightBroadcastConfig()
