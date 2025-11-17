@@ -73,10 +73,7 @@ def train(config: RLTrainerConfig):
 
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
-    if config.model.cp > 1:
-        raise ValueError(
-            "CP is not supported for RL. No reason it shouldn't, we just didn't test it. If you need it, please open an issue."
-        )
+    num_non_data_parallel_ranks = parallel_dims.cp * parallel_dims.tp * parallel_dims.pp
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model and tokenizer ({config.model})")
@@ -130,9 +127,9 @@ def train(config: RLTrainerConfig):
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
-    dataloader = DataLoader(config.output_dir, progress.step)
+    dataloader = DataLoader(config.output_dir, progress.step, num_non_data_parallel_ranks)
     if config.data.fake:
-        dataloader = FakeDataLoader(config.data.fake)
+        dataloader = FakeDataLoader(config.data.fake, num_non_data_parallel_ranks)
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     is_first_step = True

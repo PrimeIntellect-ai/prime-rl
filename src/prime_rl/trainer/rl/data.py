@@ -23,9 +23,13 @@ class MicroBatch(TypedDict):
 
 
 class FakeDataLoader:
-    def __init__(self, config: FakeDataLoaderConfig):
+    def __init__(self, config: FakeDataLoaderConfig, num_non_data_parallel_ranks: int = 1):
+        self.world = get_world()
+        num_dp_ranks = self.world.world_size // num_non_data_parallel_ranks
+
+        self.dp_rank = self.world.rank // num_non_data_parallel_ranks
         self.batch_size = config.batch_size
-        self.num_micro_batches = self.batch_size // get_world().world_size
+        self.num_micro_batches = self.batch_size // num_dp_ranks
         self.seq_len = config.seq_len
 
     def wait_for_batch(self) -> None:
@@ -55,13 +59,15 @@ class FakeDataLoader:
 class DataLoader:
     """Loads serialized data from a data path written by the orchestrator."""
 
-    def __init__(self, output_dir: Path, start_step: int):
+    def __init__(self, output_dir: Path, start_step: int, num_non_data_parallel_ranks: int = 1):
         self.rollout_dir = get_rollout_dir(output_dir)
         self.current_step = start_step
         self.world = get_world()
 
+        self.dp_rank = self.world.rank // num_non_data_parallel_ranks
+
     def get_rollout_path(self) -> Path:
-        return self.rollout_dir / f"step_{self.current_step}" / f"rank_{self.world.rank}.pt"
+        return self.rollout_dir / f"step_{self.current_step}" / f"rank_{self.dp_rank}.pt"
 
     def wait_for_batch(self) -> None:
         sync_wait_for_path(self.get_rollout_path())
