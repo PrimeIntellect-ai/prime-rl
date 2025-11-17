@@ -74,7 +74,6 @@ def get_model(
     logger.info(
         f"Loading model config (name={config.name}, attn={config.attn}, trust_remote_code={config.trust_remote_code})"
     )
-    logger.warning("Flash attention 3 HELLOOOOOOOOO")
     model_config = cast(
         PretrainedConfig,
         AutoConfig.from_pretrained(
