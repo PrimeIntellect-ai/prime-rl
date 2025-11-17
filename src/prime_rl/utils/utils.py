@@ -276,10 +276,6 @@ def get_step_path(path: Path, step: int) -> Path:
     return path / f"step_{step}"
 
 
-def get_weight_ckpt_model_path(weights_dir: Path, step: int) -> Path:
-    return weights_dir / f"step_{step}" / "pytorch_model.bin"
-
-
 def get_latest_ckpt_step(weights_dir: Path) -> int | None:
     step_dirs = list(weights_dir.glob("step_*"))
     if len(step_dirs) == 0:

@@ -1,5 +1,4 @@
 import json
-import shutil
 import threading
 import time
 import warnings
@@ -27,7 +26,7 @@ from prime_rl.trainer.lora import (
 from prime_rl.trainer.rl.config import WeightCheckpointConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.utils import get_step_path, get_weight_ckpt_model_path, get_weights_dir
+from prime_rl.utils.utils import get_step_path, get_weights_dir
 
 
 def has_hf_moe_layers(state_dict: dict[str, Tensor]) -> bool:
@@ -324,15 +323,12 @@ class WeightCheckpointManager:
         self.logger = get_logger()
         self.world = get_world()
 
-    def _get_model_path(self, step: int) -> Path:
-        return get_weight_ckpt_model_path(self.weights_dir, step)
-
-    def _get_step_path(self, step: int) -> Path:
+    def get_step_path(self, step: int) -> Path:
         return get_step_path(self.weights_dir, step)
 
-    def _save_lora_adapters(self, lora_state: dict[str, Tensor], model: nn.Module, step: int):
+    def save_lora_adapters(self, lora_state: dict[str, Tensor], model: nn.Module, step: int):
         """Save LoRA adapters to separate directory."""
-        adapter_path = self._get_step_path(step) / "lora_adapters"
+        adapter_path = self.get_step_path(step) / "lora_adapters"
         adapter_path.mkdir(parents=True, exist_ok=True)
 
         torch.save(lora_state, adapter_path / "adapter_model.bin")
@@ -342,16 +338,16 @@ class WeightCheckpointManager:
 
         self.logger.debug(f"Saved LoRA adapters to {adapter_path}")
 
-    def _save_weights(
+    def save_weights(
         self,
         state_dict: dict[str, Tensor],
         save_dir: Path,
         save_format: Literal["safetensors", "torch"],
         save_sharded: bool,
     ):
-        return save_state_dict(state_dict, save_dir, save_format, save_sharded)
+        return
 
-    def _save_to_path(
+    def save_to_path(
         self,
         state_dict: dict[str, Tensor],
         model,
@@ -360,7 +356,7 @@ class WeightCheckpointManager:
     ):
         """Save weight checkpoint for given step."""
         # Save weight checkpoint temporary dir to avoid race condition
-        step_path = self._get_step_path(step)
+        step_path = self.get_step_path(step)
         step_path.mkdir(parents=True, exist_ok=True)
 
         self.logger.debug(f"Saving weight checkpoint to {step_path}")
@@ -371,7 +367,7 @@ class WeightCheckpointManager:
             warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
 
             # Save weights
-            self._save_weights(state_dict, step_path, self.config.save_format, self.config.save_sharded)
+            save_state_dict(state_dict, step_path, self.config.save_format, self.config.save_sharded)
 
             # Save model config, generation arguments and tokenizer
             model.config.save_pretrained(step_path)
@@ -395,7 +391,7 @@ class WeightCheckpointManager:
         if self.config.save_adapter_separately and has_lora:
             if self.world.is_master:
                 lora_state = get_adapter_state_dict(model, self.world.is_master)
-                self._save_lora_adapters(lora_state, model, step)
+                self.save_lora_adapters(lora_state, model, step)
             torch.distributed.barrier()
 
         cpu_state = gather_weights_on_master(model, self.world.is_master, dtype, has_lora_layers=has_lora)
@@ -405,46 +401,13 @@ class WeightCheckpointManager:
         if self.world.is_master:
             if self.config.save_async:
                 thread = threading.Thread(
-                    target=self._save_to_path,
+                    target=self.save_to_path,
                     args=(cpu_state, model, tokenizer, step),
                     name=f"weight-checkpoint-save-{step}",
                 )
                 thread.start()
             else:
-                self._save_to_path(cpu_state, model, tokenizer, step)
-
-        return self._get_model_path(step)
-
-    def _maybe_clean(self, step: int):
-        """Synchronous helper of `clean`."""
-        step = max(step - (self.async_level + 1), 0)  # Consider deleting async_level + 1 steps ago
-        candidate_path_to_delete = self._get_step_path(step)
-        keep_for_eval = bool(self.config.interval and step % self.config.interval == 0)
-        keep_for_ckpt = bool(self.ckpt_config and self.ckpt_config.interval and step % self.ckpt_config.interval == 0)
-        self.logger.debug(
-            f"Considering deleting weight checkpoint {candidate_path_to_delete} ({keep_for_eval=}, {keep_for_ckpt=})"
-        )
-        if not (keep_for_eval or keep_for_ckpt):
-            self.logger.debug(
-                f"Removing past weight checkpoint {candidate_path_to_delete} ({keep_for_eval=}, {keep_for_ckpt=})"
-            )
-            shutil.rmtree(candidate_path_to_delete, ignore_errors=True)
-
-    def maybe_clean(self, step: int):
-        """
-        Considers deleting a past weight checkpoint at a given step. There are two reasons not to delete a checkpoint:
-        1. The step is an evaluation step (e.g. step % weights.interval == 0)
-        2. The step is a checkpoint step or at most async_level steps earlier
-        """
-        if self.config.save_async:
-            thread = threading.Thread(
-                target=self._maybe_clean,
-                args=(step,),
-                name=f"weight-checkpoint-clean-{step}",
-            )
-            thread.start()
-        else:
-            self._maybe_clean(step)
+                self.save_to_path(cpu_state, model, tokenizer, step)
 
 
 def setup_weight_ckpt_manager(

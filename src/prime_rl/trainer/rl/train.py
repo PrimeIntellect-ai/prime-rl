@@ -36,6 +36,7 @@ from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     MemoryProfiler,
     Tensors,
+    maybe_clean,
     setup_torch_distributed,
     print_benchmark,
     get_response_lengths,
@@ -140,6 +141,7 @@ def train(config: RLTrainerConfig):
             broadcast_weights_start_time = time.time()
             weight_broadcast.broadcast_weights(model, step=progress.step)
             broadcast_weights_time = time.time() - broadcast_weights_start_time
+            maybe_clean(weight_broadcast.broadcast_dir, progress.step, config.max_async_level, None)
         else:
             broadcast_weights_time = 0
 
@@ -156,7 +158,7 @@ def train(config: RLTrainerConfig):
             save_weights_time = time.time() - save_weights_start_time
 
             # Maybe clean up old weight checkpoint
-            weight_ckpt_manager.maybe_clean(progress.step)
+            maybe_clean(weight_ckpt_manager.weights_dir, progress.step, config.max_async_level, config.weights.interval)
         else:
             save_weights_time = 0
 
