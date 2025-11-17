@@ -19,5 +19,7 @@ class WeightBroadcast(ABC):
 
     def notify_orchestrator(self, step: int):
         """Notify the orchestrator that the weights have been broadcast by writing a 'STABLE' file to a shared filesystem."""
-        stable_file = get_step_path(self.broadcast_dir, step) / "STABLE"
+        step_path = get_step_path(self.broadcast_dir, step)
+        step_path.mkdir(parents=True, exist_ok=True)
+        stable_file = step_path / "STABLE"
         stable_file.touch()
