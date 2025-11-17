@@ -32,18 +32,12 @@ ENV UV_CACHE_DIR="/usr/local/share/uv/cache"
 # Install Python dependencies (The gradual copies help with caching)
 WORKDIR /app
 
-COPY ./pyproject.toml ./pyproject.toml
-COPY ./uv.lock ./uv.lock
-COPY ./README.md ./README.md
-COPY ./src/ ./src/
-
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 
-
-COPY src/ /app/src/
 COPY pyproject.toml /app/pyproject.toml
 COPY uv.lock /app/uv.lock
 COPY README.md /app/README.md
+COPY src/ /app/src/
 COPY configs /app/configs
 COPY examples /app/examples
 
@@ -84,10 +78,10 @@ RUN groupadd --gid $GROUP_ID appuser && \
 
 # Install uv for development use
 ADD https://astral.sh/uv/install.sh /uv-installer.sh
-RUN sh /uv-installer.sh && rm /uv-installer.sh
+RUN INSTALLER_NO_MODIFY_PATH=1 UV_INSTALL_DIR="/usr/local/bin" sh /uv-installer.sh && rm /uv-installer.sh
 
 USER appuser
-ENV PATH="/home/appuser/.local/bin:$PATH"
+ENV PATH="/usr/local/bin:$PATH"
 WORKDIR /app
 # Copy the application from the builder
 COPY --from=builder --chown=appuser:appuser /app /app
@@ -101,7 +95,7 @@ RUN rm /app/.venv/bin/python3 && ln -s /usr/local/bin/python /app/.venv/bin/pyth
 RUN rm /app/.venv/bin/python3.12 && ln -s /usr/local/bin/python /app/.venv/bin/python3.12
 
 # Set ulimit in bashrc for interactive sessions
-RUN echo 'ulimit -n 65536 2>/dev/null || true' >> /home/appuser/.bashrc
+RUN echo 'ulimit -n 32000 2>/dev/null || true' >> /home/appuser/.bashrc
 
 
 # Place executables in the environment at the front of the path
