@@ -259,7 +259,7 @@ def train(config: RLTrainerConfig):
                 chunked_input_ids = torch.chunk(input_ids, config.model.cp, dim=1)
                 chunked_position_ids = torch.chunk(position_ids, config.model.cp, dim=1)
 
-                split_sizes = [chunk.shape[1] for chunk in chunked_input_ids]
+                sizes = [chunk.shape[1] for chunk in chunked_input_ids]
 
                 maybe_sharded_input_ids = chunked_input_ids[cp_rank]
                 maybe_sharded_position_ids = chunked_position_ids[cp_rank]
@@ -268,9 +268,25 @@ def train(config: RLTrainerConfig):
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
                 logits = forward(model, maybe_sharded_input_ids, maybe_sharded_position_ids).float().contiguous()
 
-            shifted_logits = shift_logits(logits)
+            pre_pad_logits = None
+            if config.model.cp > 1:
+                empty_tl = [
+                    torch.zeros(1, size, logits.shape[2], dtype=logits.dtype, device=logits.device) for size in sizes
+                ]
+
+                dist.all_gather(empty_tl, logits, parallel_dims.world_mesh["cp"].get_group())
+                full_logits = torch.cat(empty_tl, dim=1)
+
+                chunked_logits = torch.chunk(full_logits, config.model.cp, dim=1)
+                cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
+                prev_rank = cp_rank - 1
+                if prev_rank >= 0:
+                    pre_pad_logits = chunked_logits[prev_rank][:, -1, :].unsqueeze(1)
+
+
+            shifted_logits = shift_logits(logits, pre_pad_logits=pre_pad_logits)
             shifted_logits = shifted_logits / temperature
-            trainer_logprobs = selective_log_softmax(shifted_logits, input_ids)
+            trainer_logprobs = selective_log_softmax(shifted_logits, maybe_sharded_input_ids)
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)

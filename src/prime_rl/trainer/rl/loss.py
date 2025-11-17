@@ -6,6 +6,7 @@ from jaxtyping import Float, Int, jaxtyped
 from torch import Tensor
 
 from prime_rl.trainer.rl.config import LossConfig
+from prime_rl.utils.logger import get_logger
 
 
 @jaxtyped(typechecker=typechecker)
@@ -27,12 +28,17 @@ def compute_entropy(shifted_logits: Float[Tensor, "batch seq vocab"]) -> Float[T
 
 
 @jaxtyped(typechecker=typechecker)
-def shift_logits(logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq vocab"]:
+def shift_logits(
+    logits: Float[Tensor, "batch seq vocab"], pre_pad_logits: Float[Tensor, "batch 1 vocab"] | None = None
+) -> Float[Tensor, "batch seq vocab"]:
     """Removes final token logits and adds a zero logit for the first token."""
     # We drop the last logit because it corresponds to the next token that will be sampled but is not here yet
     batch, seq, vocab = logits.shape
     logits = logits[:, :-1, :]  # (batch, seq-1, vocab)
-    zeros = torch.zeros(batch, 1, vocab, device=logits.device, dtype=logits.dtype)  # (batch, 1, vocab)
+    if pre_pad_logits is not None:
+        zeros = pre_pad_logits
+    else:
+        zeros = torch.zeros(batch, 1, vocab, device=logits.device, dtype=logits.dtype)  # (batch, 1, vocab)
     logits = torch.cat([zeros, logits], dim=1)  # (batch, seq, vocab)
     return logits
 
