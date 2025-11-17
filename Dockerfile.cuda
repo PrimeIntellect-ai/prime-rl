@@ -87,16 +87,12 @@ WORKDIR /app
 COPY --from=builder --chown=appuser:appuser /app /app
 
 # Copy and set up entrypoint script
-COPY --chown=appuser:appuser docker-entrypoint.sh /app/docker-entrypoint.sh
+COPY --chown=appuser:appuser scripts/docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 
 RUN rm /app/.venv/bin/python && ln -s /usr/local/bin/python /app/.venv/bin/python
 RUN rm /app/.venv/bin/python3 && ln -s /usr/local/bin/python /app/.venv/bin/python3
 RUN rm /app/.venv/bin/python3.12 && ln -s /usr/local/bin/python /app/.venv/bin/python3.12
-
-# Set ulimit in bashrc for interactive sessions
-RUN echo 'ulimit -n 32000 2>/dev/null || true' >> /home/appuser/.bashrc
-
 
 # Place executables in the environment at the front of the path
 ENV PATH="/app/.venv/bin:$PATH"
