@@ -465,7 +465,12 @@ def rl(config: RLConfig):
         log_dir.mkdir(parents=True, exist_ok=True)
 
         # Cleaning broadcast dir (so that orchestrator does not pre-maturely update weights)
-        if not (config.ckpt and config.ckpt.resume_step and config.trainer.weight_broadcast == "filesystem"):
+        if not (
+            config.ckpt
+            and config.ckpt.resume_step
+            and config.trainer.weight_broadcast
+            and config.trainer.weight_broadcast.type == "filesystem"
+        ):
             logger.info(f"Cleaning broadcast directory ({broadcast_dir})")
             shutil.rmtree(broadcast_dir, ignore_errors=True)
 
