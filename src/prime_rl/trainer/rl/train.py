@@ -385,7 +385,6 @@ def train(config: RLTrainerConfig):
     if weight_ckpt_manager is not None:
         logger.info("Writing final weight checkpoint")
         weight_ckpt_manager.save(model, tokenizer, step=progress.step)
-        weight_ckpt_manager.maybe_clean()
 
     # Write final checkpoint
     if ckpt_manager is not None:
