@@ -135,8 +135,8 @@ class NCCLWeightBroadcast(WeightBroadcast):
         self,
         output_dir: Path,
         config: NCCLWeightBroadcastConfig,
+        device: int | str | torch.device,
         dtype: torch.dtype = torch.bfloat16,
-        device: int | str | torch.device = torch.cuda.current_device(),
     ):
         super().__init__(output_dir)
         self.logger = get_logger()
