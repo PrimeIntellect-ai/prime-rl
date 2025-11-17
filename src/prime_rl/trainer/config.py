@@ -2,6 +2,7 @@ from importlib.util import find_spec
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
+from transformers.utils.import_utils import is_flash_attn_3_available
 
 from prime_rl.utils.pydantic_config import BaseConfig
 
@@ -274,6 +275,16 @@ class ModelConfig(BaseConfig):
         """Random initialize is only supported with the custom implementation."""
         if self.debug.random_init and not self.load_using_meta:
             raise ValueError("Random initialize is only supported when loading with meta.")
+        return self
+    
+    @model_validator(mode="after")
+    def flash_attention_3_installed(self):
+        """Flash attention 3 is only supported if the flash_attn_3 package is installed."""
+
+        # transformers checks for FA3 themselves, but the error message is not very helpful, so we add our own check with help here
+        if self.attn == "flash_attention_3" and not is_flash_attn_3_available():
+            raise ValueError("Flash attention 3 is only supported if the flash_attn_3 package is installed. Install with `uv sync --extra flash-attn-3`")
+        
         return self
 
 class ConstantSchedulerConfig(BaseModel):
