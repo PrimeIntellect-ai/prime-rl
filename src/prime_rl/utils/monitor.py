@@ -60,40 +60,25 @@ class WandbMonitor:
                 self.platform_enabled = False
 
         if self.platform_enabled and self.is_master:
-            if self.output_dir:
-                run_id_file = self.output_dir / "platform_run_id.txt"
+            is_orchestrator = self._is_orchestrator()
 
-                if run_id_file.exists():
-                    try:
-                        file_age = time.time() - run_id_file.stat().st_mtime
-                        existing_run_id = run_id_file.read_text().strip()
-
-                        if existing_run_id and file_age < 120:
-                            self.platform_run_id = existing_run_id
-
-                            platform_url = f"https://app.primeintellect.ai/dashboard/rl/{self.platform_run_id}"
-                            if "localhost" in self.platform_api_url:
-                                platform_url = f"http://localhost:3000/dashboard/rl/{self.platform_run_id}"
-
-                            self.logger.info(
-                                f"Using existing platform run_id from orchestrator: {self.platform_run_id}"
-                            )
-                            self.logger.info(f"→ View run at: {platform_url}")
-                        else:
-                            if file_age >= 120:
-                                self.logger.info(f"Stale platform_run_id.txt (age: {file_age:.0f}s) - creating new run")
-                                run_id_file.unlink()
-                            else:
-                                self.logger.info("Empty platform_run_id.txt - registering new run")
-                            self._register_platform_run()
-                    except Exception as e:
-                        self.logger.warning(f"Failed to read platform_run_id file: {e}")
-                        self._register_platform_run()
-                else:
-                    self.logger.info("No platform_run_id.txt found - registering new run (orchestrator)")
-                    self._register_platform_run()
-            else:
+            if is_orchestrator:
                 self._register_platform_run()
+                if self.platform_run_id and self.output_dir:
+                    run_id_file = self.output_dir / "platform_run_id.txt"
+                    run_id_file.parent.mkdir(parents=True, exist_ok=True)
+                    run_id_file.write_text(self.platform_run_id)
+            else:
+                if self.output_dir:
+                    run_id_file = self.output_dir / "platform_run_id.txt"
+                    if run_id_file.exists():
+                        self.platform_run_id = run_id_file.read_text().strip()
+                        if self.platform_run_id:
+                            platform_url = f"https://app.primeintellect.ai/dashboard/rl-runs/{self.platform_run_id}"
+                            if "localhost" in self.platform_api_url:
+                                platform_url = f"http://localhost:3000/dashboard/rl-runs/{self.platform_run_id}"
+                            self.logger.info(f"Using platform run_id from orchestrator: {self.platform_run_id}")
+                            self.logger.info(f"→ View run at: {platform_url}")
 
         if not self.enabled or not self.is_master:
             if not self.is_master:
@@ -142,6 +127,13 @@ class WandbMonitor:
                 # Incremental table is initialized dynamically in `log_distributions`
                 self.distributions_table = None
                 self.distributions = []
+
+    def _is_orchestrator(self) -> bool:
+        """Detect if running in orchestrator or trainer."""
+        import __main__
+
+        main_file = getattr(__main__, "__file__", "")
+        return "orchestrator" in main_file or "orchestrator" in sys.argv[0]
 
     def _maybe_overwrite_wandb_command(self) -> None:
         """Overwrites sys.argv with the start command if it is set in the environment variables."""
@@ -390,12 +382,6 @@ class WandbMonitor:
 
                 self.logger.info(f"✓ Registered RL run with platform: {self.platform_run_id}")
                 self.logger.info(f"→ View run at: {platform_url}")
-
-                # Save run_id to file so trainer can use it
-                if self.output_dir:
-                    run_id_file = self.output_dir / "platform_run_id.txt"
-                    run_id_file.parent.mkdir(parents=True, exist_ok=True)
-                    run_id_file.write_text(self.platform_run_id)
             else:
                 self.logger.error(f"Failed to register run with platform: {response.status_code} - {response.text}")
                 self.platform_enabled = False
@@ -534,6 +520,14 @@ class WandbMonitor:
 
         except Exception as e:
             self.logger.warning(f"Error marking run as completed: {e}")
+        finally:
+            if self.output_dir:
+                run_id_file = self.output_dir / "platform_run_id.txt"
+                try:
+                    run_id_file.unlink(missing_ok=True)
+                    self.logger.debug("Removed platform_run_id.txt after run completion")
+                except Exception as e:
+                    self.logger.debug(f"Could not remove platform_run_id.txt: {e}")
 
 
 _MONITOR: WandbMonitor | None = None
