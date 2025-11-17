@@ -338,9 +338,6 @@ class Glm4MoePreTrainedModel(PreTrainedModel):
     def _init_weights(self, module):
         super()._init_weights(module)
 
-    def _flash_attn_3_can_dispatch(self, *args, **kwargs) -> bool:
-        return True
-
 
 @auto_docstring
 class Glm4MoeModel(Glm4MoePreTrainedModel):
