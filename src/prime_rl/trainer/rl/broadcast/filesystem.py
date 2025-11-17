@@ -39,9 +39,6 @@ class FileSystemWeightBroadcast(WeightBroadcast):
             save_dir = get_step_path(self.broadcast_dir, step)
             save_state_dict(state_dict, save_dir, self.save_format, self.save_sharded)
 
-            # Save model config
-            model.config.save_pretrained(save_dir)  # type: ignore
-
             # Notify the orchestrator at the end of step to signal that it is safe to load weights from shared filesystem
             self.notify_orchestrator(step)
             self.logger.debug(f"Weights broadcasted in {time.time() - start_time:.2f}s")
