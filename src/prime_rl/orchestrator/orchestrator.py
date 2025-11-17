@@ -102,9 +102,7 @@ async def orchestrate(config: OrchestratorConfig):
             seed=config.env_mix.seed,
         ),
     )
-    env.max_seq_len = config.seq_len
-    for sub_env in getattr(env, "envs", []):
-        sub_env.max_seq_len = config.seq_len
+    env.set_max_seq_len(config.seq_len)  # recursively set max_seq_len
     dataset = env.get_dataset(seed=config.seed)
     val_dataset = env.get_eval_dataset(seed=config.seed) if config.val else None
 
