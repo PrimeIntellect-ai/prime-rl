@@ -188,9 +188,6 @@ async def orchestrate(config: OrchestratorConfig):
             ckpt_manager.save(progress, buffer, step=progress.step)
             save_ckpt_time = time.time() - save_ckpt_start_time
 
-            # Maybe clean up old orchestrator checkpoints
-            ckpt_manager.maybe_clean()
-
         # Break if we have reached the maximum number of steps
         if config.max_steps and progress.step >= config.max_steps:
             break

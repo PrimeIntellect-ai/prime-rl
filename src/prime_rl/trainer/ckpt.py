@@ -224,7 +224,7 @@ class CheckpointManager:
             self.ckpt_steps.append(step)
 
     def maybe_clean(self) -> None:
-        """Deletes past local checkpoints beyond the most recent `config.keep` steps. No-op if `config.keep` is None."""
+        """Deletes past checkpoints beyond the most recent config.keep steps. No-op if config.keep is None."""
         if self.config.keep is None:
             return
 
@@ -232,10 +232,10 @@ class CheckpointManager:
         assert list(self.ckpt_steps) == sorted(self.ckpt_steps)
         ckpt_steps_to_delete = self.ckpt_steps[: -self.config.keep]
         for ckpt_step in ckpt_steps_to_delete:
-            ckpt_path = self.get_ckpt_path(ckpt_step)
+            trainer_ckpt_path = self.get_ckpt_path(ckpt_step)
+            ckpt_path = trainer_ckpt_path.parent
             if ckpt_path.exists():
-                self.logger.debug(f"Removing past trainer checkpoint for step {ckpt_step} ({ckpt_path})")
-                # TODO: Handle this more gracefully, e.g. each rank should only delete its own checkpoint
+                self.logger.debug(f"Removing past checkpoint for step {ckpt_step} ({ckpt_path})")
                 shutil.rmtree(ckpt_path)
 
         # Update checkpoint steps
