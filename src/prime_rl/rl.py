@@ -30,11 +30,9 @@ from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pydantic_config import BaseSettings, get_temp_toml_file, parse_argv
 from prime_rl.utils.utils import (
     get_broadcast_dir,
-    get_ckpt_dir,
     get_free_port,
     get_log_dir,
     get_rollout_dir,
-    get_weights_dir,
 )
 from prime_rl.utils.validation import (
     validate_shared_ckpt_config,
@@ -454,8 +452,6 @@ def rl(config: RLConfig):
 
     # Prepare paths to communicate with the trainer
     log_dir = get_log_dir(config.output_dir)
-    ckpt_dir = get_ckpt_dir(config.output_dir)
-    weights_dir = get_weights_dir(config.output_dir)
     rollout_dir = get_rollout_dir(config.output_dir)
     broadcast_dir = get_broadcast_dir(config.output_dir)
 
@@ -463,25 +459,16 @@ def rl(config: RLConfig):
     if config.clean:
         logger.info("Cleaning checkpoint, logs, weights, broadcast and rollout directories")
 
-        # Cleaning logs
+        # Cleaning logs (so that streaming logs to terminal works)
         logger.info(f"Cleaning log dir ({log_dir})")
         shutil.rmtree(log_dir, ignore_errors=True)
         log_dir.mkdir(parents=True, exist_ok=True)
 
-        # Cleaning checkpoints and weights, unless resuming
-        do_resume = config.trainer.ckpt and config.trainer.ckpt.resume_step
-        if not do_resume:  # Only clean if we don't resume
-            logger.info(f"Cleaning checkpoint directory ({ckpt_dir})")
-            shutil.rmtree(ckpt_dir, ignore_errors=True)
+        # Cleaning broadcast dir (so that orchestrator does not pre-maturely update weights)
+        logger.info(f"Cleaning broadcast directory ({broadcast_dir})")
+        shutil.rmtree(broadcast_dir, ignore_errors=True)
 
-            logger.info(f"Cleaning broadcast directory ({broadcast_dir})")
-            shutil.rmtree(broadcast_dir, ignore_errors=True)
-
-        # Cleaning weights
-        logger.info(f"Cleaning weights directory ({weights_dir})")
-        shutil.rmtree(weights_dir, ignore_errors=True)
-
-        # Cleaning rollouts
+        # Cleaning rollouts (so that trainer does not train on old rollouts)
         logger.info(f"Cleaning rollout dir ({rollout_dir})")
         shutil.rmtree(rollout_dir, ignore_errors=True)
 
