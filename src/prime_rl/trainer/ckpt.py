@@ -80,9 +80,8 @@ class CheckpointManager:
     def __init__(self, output_dir: Path, config: CheckpointConfig):
         self.config = config
         self.ckpt_dir = get_ckpt_dir(output_dir)
-        self._logger = get_logger()
-        self._world = get_world()
-        self._is_master = self._world.is_master
+        self.logger = get_logger()
+        self.world = get_world()
         self.ckpt_steps: list[int] = []  # Sorted list of steps that have been checkpointed, only used on master rank
 
     def get_ckpt_path(self, step: int) -> Path:
@@ -94,7 +93,7 @@ class CheckpointManager:
             raise ValueError(f"No checkpoints found in {self.ckpt_dir}")
         steps = sorted([int(step_dir.name.split("_")[-1]) for step_dir in step_dirs])
         latest_step = steps[-1]
-        self._logger.info(f"Found latest checkpoint in {self.ckpt_dir}: {latest_step}")
+        self.logger.info(f"Found latest checkpoint in {self.ckpt_dir}: {latest_step}")
         return latest_step
 
     def _save_to_path(
@@ -107,7 +106,7 @@ class CheckpointManager:
         progress: Progress,
         dataloader: StatefulDataLoader | None = None,
     ):
-        self._logger.debug(f"Saving training checkpoint to {ckpt_path}")
+        self.logger.debug(f"Saving training checkpoint to {ckpt_path}")
         start_time = time.time()
 
         # Create checkpoint state
@@ -117,16 +116,16 @@ class CheckpointManager:
         if dataloader is not None:
             dataloader_dir = ckpt_path / "dataloader"
             dataloader_dir.mkdir(parents=True, exist_ok=True)
-            torch.save(dataloader.state_dict(), dataloader_dir / f"rank_{self._world.rank}.pt")
+            torch.save(dataloader.state_dict(), dataloader_dir / f"rank_{self.world.rank}.pt")
 
         # Save sharded state
         dcp_save(state_dict, checkpoint_id=ckpt_path)
 
         # Append to list of saved steps
-        if self._is_master:
+        if self.world.is_master:
             self.ckpt_steps.append(ckpt_step)
 
-        self._logger.debug(f"Training checkpoint saved in {time.time() - start_time:.2f} seconds")
+        self.logger.debug(f"Training checkpoint saved in {time.time() - start_time:.2f} seconds")
 
     def _load_from_path(
         self,
@@ -138,7 +137,7 @@ class CheckpointManager:
         dataloader: StatefulDataLoader | None = None,
     ):
         """Loads a checkpoint from a given path in-place."""
-        self._logger.debug(f"Loading training checkpoint from {ckpt_path}")
+        self.logger.debug(f"Loading training checkpoint from {ckpt_path}")
         start_time = time.time()
 
         # Load sharded state
@@ -148,9 +147,9 @@ class CheckpointManager:
 
         # Load the dataloader
         if dataloader is not None:
-            dataloader_path = ckpt_path / "dataloader" / f"rank_{self._world.rank}.pt"
+            dataloader_path = ckpt_path / "dataloader" / f"rank_{self.world.rank}.pt"
             if not dataloader_path.exists():
-                self._logger.warning(
+                self.logger.warning(
                     f"Did not find local dataloader checkpoint at path {dataloader_path}. This might be because you tried restarting the trainer with a different world size. Falling back to using the master rank's dataloader checkpoint. Note, that this may cause training inconsistencies."
                 )
                 dataloader_path = ckpt_path / "dataloader" / "rank_0.pt"
@@ -160,7 +159,7 @@ class CheckpointManager:
                     )
             dataloader.load_state_dict(torch.load(dataloader_path))
 
-        self._logger.debug(f"Training checkpoint loaded in {time.time() - start_time:.2f} seconds")
+        self.logger.debug(f"Training checkpoint loaded in {time.time() - start_time:.2f} seconds")
 
     def load(
         self,
@@ -179,7 +178,7 @@ class CheckpointManager:
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
         self._load_from_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
-        self._logger.debug(
+        self.logger.debug(
             f"Signatures after loading training checkpoint: model={get_module_signature(model, compress=True)}, optimizers={', '.join(get_optimizer_signature(optimizer, compress=True) for optimizer in optimizers)}"
         )
 
@@ -195,7 +194,7 @@ class CheckpointManager:
         """Saves the full checkpoint state for a specified step."""
         ckpt_path = self.get_ckpt_path(step)
         ckpt_path.parent.mkdir(parents=True, exist_ok=True)
-        self._logger.debug(
+        self.logger.debug(
             f"Signatures before saving training checkpoint: model={get_module_signature(model, compress=True)}, optimizers={', '.join(get_optimizer_signature(optimizer, compress=True) for optimizer in optimizers)}"
         )
         self._save_to_path(ckpt_path, step, model, optimizers, scheduler, progress, dataloader)
@@ -212,7 +211,7 @@ class CheckpointManager:
             trainer_ckpt_path = self.get_ckpt_path(ckpt_step)
             ckpt_path = trainer_ckpt_path.parent
             if ckpt_path.exists():
-                self._logger.debug(f"Removing past checkpoint for step {ckpt_step} ({ckpt_path})")
+                self.logger.debug(f"Removing past checkpoint for step {ckpt_step} ({ckpt_path})")
                 shutil.rmtree(ckpt_path)
 
         # Update checkpoint steps
