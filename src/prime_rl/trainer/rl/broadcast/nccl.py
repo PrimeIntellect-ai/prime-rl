@@ -150,6 +150,7 @@ class NCCLWeightBroadcast(WeightBroadcast):
         """Broadcast the state dict of a model into the inference pool using NCCL and notifies the orchestrator."""
         self.logger.debug("Starting broadcasting weights to inference engine via NCCL")
         start_time = time.time()
-        self.notify_orchestrator(step)
+        if self.world.is_master:
+            self.notify_orchestrator(step)
         self.nccl_broadcast_sender.broadcast_weights(model, step)
         self.logger.debug(f"Weights broadcasted in {time.time() - start_time:.2f}s")
