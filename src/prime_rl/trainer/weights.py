@@ -338,15 +338,6 @@ class WeightCheckpointManager:
 
         self.logger.debug(f"Saved LoRA adapters to {adapter_path}")
 
-    def save_weights(
-        self,
-        state_dict: dict[str, Tensor],
-        save_dir: Path,
-        save_format: Literal["safetensors", "torch"],
-        save_sharded: bool,
-    ):
-        return
-
     def save_to_path(
         self,
         state_dict: dict[str, Tensor],
