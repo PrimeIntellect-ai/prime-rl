@@ -360,7 +360,7 @@ class WandbMonitor:
                 "wandb_url": wandb_url,
             }
 
-            endpoint = f"{self.platform_api_url}/rl-runs"
+            endpoint = f"{self.platform_api_url}/api/v1/rl-runs"
 
             self.logger.info("Registering run with platform...")
 
@@ -423,7 +423,7 @@ class WandbMonitor:
                 "additional_stats": {},
             }
 
-            metrics_endpoint = f"{self.platform_api_url}/rl-runs/{self.platform_run_id}/metrics"
+            metrics_endpoint = f"{self.platform_api_url}/api/v1/rl-runs/{self.platform_run_id}/metrics"
 
             with httpx.Client(timeout=10.0) as client:
                 response = client.post(
@@ -483,7 +483,7 @@ class WandbMonitor:
                 "rollouts": rollout_samples,
             }
 
-            rollouts_endpoint = f"{self.platform_api_url}/rl-runs/{self.platform_run_id}/rollouts"
+            rollouts_endpoint = f"{self.platform_api_url}/api/v1/rl-runs/{self.platform_run_id}/rollouts"
 
             with httpx.Client(timeout=30.0) as client:
                 response = client.post(
@@ -509,7 +509,7 @@ class WandbMonitor:
             return
 
         try:
-            update_endpoint = f"{self.platform_api_url}/rl-runs/{self.platform_run_id}"
+            update_endpoint = f"{self.platform_api_url}/api/v1/rl-runs/{self.platform_run_id}"
 
             with httpx.Client(timeout=30.0) as client:
                 response = client.put(
