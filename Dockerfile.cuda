@@ -45,6 +45,7 @@ COPY pyproject.toml /app/pyproject.toml
 COPY uv.lock /app/uv.lock
 COPY README.md /app/README.md
 COPY configs /app/configs
+COPY examples /app/examples
 
 RUN --mount=type=cache,target=/app/.cache/uv \
     uv sync --locked --no-dev
@@ -81,16 +82,31 @@ RUN groupadd --gid $GROUP_ID appuser && \
     usermod -aG sudo appuser && \
     echo "appuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
+# Install uv for development use
+ADD https://astral.sh/uv/install.sh /uv-installer.sh
+RUN sh /uv-installer.sh && rm /uv-installer.sh
+
 USER appuser
+ENV PATH="/home/appuser/.local/bin:$PATH"
 WORKDIR /app
 # Copy the application from the builder
 COPY --from=builder --chown=appuser:appuser /app /app
+
+# Copy and set up entrypoint script
+COPY --chown=appuser:appuser docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
 
 RUN rm /app/.venv/bin/python && ln -s /usr/local/bin/python /app/.venv/bin/python
 RUN rm /app/.venv/bin/python3 && ln -s /usr/local/bin/python /app/.venv/bin/python3
 RUN rm /app/.venv/bin/python3.12 && ln -s /usr/local/bin/python /app/.venv/bin/python3.12
 
+# Set ulimit in bashrc for interactive sessions
+RUN echo 'ulimit -n 65536 2>/dev/null || true' >> /home/appuser/.bashrc
+
 
 # Place executables in the environment at the front of the path
 ENV PATH="/app/.venv/bin:$PATH"
-ENTRYPOINT ["python", "src/prime_rl/inference/server.py"]
+
+# Use entrypoint for setup (ulimit, etc) but default to sleep infinity for K8s
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["sleep", "infinity"]
