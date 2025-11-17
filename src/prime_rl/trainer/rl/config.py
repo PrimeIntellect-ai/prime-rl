@@ -20,9 +20,6 @@ class LossConfig(BaseConfig):
     """Base config for loss."""
 
     ratio_type: Annotated[Literal["token", "sequence"], Field(description="Type of importance ratio to use.")] = "token"
-    ratio_length_norm: Annotated[
-        bool, Field(description="Whether to normalize the importance ratio by the sequence length.")
-    ] = False
 
     mask_ratio_high: Annotated[float, Field(ge=0)] = 8.0
     mask_ratio_low: Annotated[float, Field(ge=0)] = 0.125

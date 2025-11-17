@@ -345,10 +345,7 @@ class BufferConfig(BaseConfig):
 
 
 class AdvantageConfig(BaseConfig):
-    std_norm: Literal["local", "global"] | None = None
     length_weighted_mean: bool = False
-    leave_one_out: bool = False
-    neg_clipped: bool = False
 
 
 class FileSystemWeightBroadcastConfig(BaseModel):
