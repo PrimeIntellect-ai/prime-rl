@@ -276,21 +276,6 @@ class ModelConfig(BaseConfig):
             raise ValueError("Random initialize is only supported when loading with meta.")
         return self
 
-    # @model_validator(mode="after")
-    # def flash_attention_3_only_with_custom(self):
-    #     """Flash attention 3 is only supported with the custom implementation."""
-    #     if self.attn == "flash_attention_3" and self.impl != "custom":
-    #         raise ValueError("Flash attention 3 is only supported with the custom implementation.")
-    #     return self
-
-    # @model_validator(mode="after")
-    # def flash_attention_3_installed(self):
-    #     """Flash attention 3 is only supported if the flash_attn_interface package is installed."""
-    #     if self.attn == "flash_attention_3" and find_spec("flash_attn_interface") is None:
-    #         raise ValueError("Flash attention 3 is only supported if installed.")
-    #     return self
-
-
 class ConstantSchedulerConfig(BaseModel):
     """Configuration for constant learning rate scheduler."""
 
