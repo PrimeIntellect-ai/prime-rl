@@ -1,4 +1,6 @@
 import pickle
+import time
+from pathlib import Path
 from typing import Generator, cast
 
 import torch
@@ -9,8 +11,10 @@ from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
+from prime_rl.trainer.rl.config import NCCLWeightBroadcastConfig
 from prime_rl.trainer.utils import get_world
 from prime_rl.trainer.weights import convert_tt_layer_to_hf, get_max_layer_num, has_tt_moe_layers
+from prime_rl.utils.logger import get_logger
 
 
 def broadcast_integer(integer: int, communicator: PyNcclCommunicator) -> None:
@@ -76,32 +80,29 @@ def filter_state_dict_by_layers(
 class NCCLWeightBroadcast(WeightBroadcast):
     """Broadcast weights into the inference engine using NCCL."""
 
-    def __init__(
-        self,
-        host: str,
-        port: int,
-        rank: int,
-        world_size: int,
-        device,
-        logger,
-        timeout: int,
-        dtype: torch.dtype = torch.bfloat16,
-    ):
-        self.logger = logger
+    def __init__(self, output_dir: Path, config: NCCLWeightBroadcastConfig):
+        super().__init__(output_dir)
+        self.logger = get_logger()
         self.world = get_world()
-        self.device, self.dtype = device, dtype
+        self.dtype = torch.bfloat16
+        self.device = torch.cuda.current_device()
 
         if self.world.is_master:
+            # Trainer is on rank 0 in process group with all inference GPUs
+            rank, world_size = (0, config.inference_world_size + 1)
             pg = StatelessProcessGroup.create(
-                host=host, port=port, rank=rank, world_size=world_size, store_timeout=timeout
+                host=config.host, port=config.port, rank=rank, world_size=world_size, store_timeout=config.timeout
             )
             self.communicator = PyNcclCommunicator(pg, device=self.device)
-            self.logger.info("NCCL broadcast initialized on master rank")
+            self.logger.debug("NCCL broadcast initialized on master rank")
+        else:
+            self.logger.debug("NCCL broadcast initialized on non-master rank (no communicator)")
 
     @torch.no_grad()
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
         """Broadcast the state dict of a model into the inference pool using NCCL."""
-        self.logger.debug("Broadcasting weights to inference pool")
+        self.logger.debug("Starting broadcasting weights to inference engine via NCCL")
+        start_time = time.time()
         state_dict = model.state_dict()
         num_layers = get_max_layer_num(state_dict)
         num_state_dict_to_send = num_layers + 1  # we send all layer plus the remaining weights
@@ -125,4 +126,4 @@ class NCCLWeightBroadcast(WeightBroadcast):
                 broadcast_state_dict(state_dict, self.communicator)
 
         self.notify_orchestrator(step)
-        self.logger.info("Weights broadcasted to inference pool")
+        self.logger.debug(f"Weights broadcasted in {time.time() - start_time:.2f}s")

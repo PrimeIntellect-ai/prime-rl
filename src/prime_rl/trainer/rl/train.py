@@ -5,6 +5,7 @@ from datetime import timedelta
 # Import environment before any other imports
 # ruff: noqa: I001
 
+from prime_rl.trainer.rl.broadcast import setup_weight_broadcast
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 import torch.distributed as dist
@@ -12,8 +13,6 @@ from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
-from prime_rl.trainer.rl.broadcast.filesystem import FileSystemWeightBroadcast
-from prime_rl.trainer.rl.broadcast.nccl import NCCLWeightBroadcast
 from prime_rl.trainer.weights import setup_weight_ckpt_manager
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
@@ -99,24 +98,10 @@ def train(config: RLTrainerConfig):
     weight_ckpt_manager = setup_weight_ckpt_manager(
         config.output_dir, config.weights, config.ckpt, config.max_async_level, config.model.experimental.lora
     )
-    assert weight_ckpt_manager is not None, "Weight checkpoint manager must be set on RL trainer"
 
-    # Set up NCCL broadcast
+    # Set up weight broadcast
     logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
-    if config.weight_broadcast.type == "nccl":
-        weight_broadcast = NCCLWeightBroadcast(
-            host=config.weight_broadcast.host,
-            port=config.weight_broadcast.port,
-            world_size=config.weight_broadcast.inference_world_size + 1,
-            timeout=config.weight_broadcast.timeout,
-            rank=0,
-            device=torch.cuda.current_device(),
-            logger=logger,
-        )
-    else:
-        weight_broadcast = FileSystemWeightBroadcast(
-            config.output_dir, config.weights.save_format, config.weights.save_sharded
-        )
+    weight_broadcast = setup_weight_broadcast(config.output_dir, config.weight_broadcast)
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
