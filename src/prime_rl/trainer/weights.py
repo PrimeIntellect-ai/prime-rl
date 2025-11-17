@@ -238,10 +238,10 @@ def save_state_dict(
             torch.save(state_dict, save_dir / weights_name)
 
 
-def gather_weights(
+def gather_weights_on_master(
     model: nn.Module, is_master: bool, dtype: torch.dtype = torch.bfloat16, has_lora_layers: bool = False
 ) -> dict[str, Tensor]:
-    """Gather distributed weights for weight checkpoint."""
+    """Gather distributed weights on CPU on master rank. Optionally, merge LoRA weights."""
     original_lora_state = None
     if has_lora_layers:
         original_lora_state = merge_lora_weights_inplace(model)
@@ -398,7 +398,7 @@ class WeightCheckpointManager:
                 self._save_lora_adapters(lora_state, model, step)
             torch.distributed.barrier()
 
-        cpu_state = gather_weights(model, self.world.is_master, dtype, has_lora_layers=has_lora)
+        cpu_state = gather_weights_on_master(model, self.world.is_master, dtype, has_lora_layers=has_lora)
         if has_tt_moe_layers(cpu_state):
             convert_tt_to_hf_moe(cpu_state)
 
