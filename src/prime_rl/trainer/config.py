@@ -276,16 +276,19 @@ class ModelConfig(BaseConfig):
         if self.debug.random_init and not self.load_using_meta:
             raise ValueError("Random initialize is only supported when loading with meta.")
         return self
-    
+
     @model_validator(mode="after")
     def flash_attention_3_installed(self):
         """Flash attention 3 is only supported if the flash_attn_3 package is installed."""
 
         # transformers checks for FA3 themselves, but the error message is not very helpful, so we add our own check with help here
         if self.attn == "flash_attention_3" and not is_flash_attn_3_available():
-            raise ValueError("Flash attention 3 is only supported if the flash_attn_3 package is installed. Install with `uv sync --extra flash-attn-3`")
-        
+            raise ValueError(
+                "Flash attention 3 is only supported if the flash_attn_3 package is installed. Install with `uv sync --extra flash-attn-3`"
+            )
+
         return self
+
 
 class ConstantSchedulerConfig(BaseModel):
     """Configuration for constant learning rate scheduler."""
