@@ -687,6 +687,17 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/3b/b2/8d76c41ad7974ee264754709c22963447f7f8134613fd9ce80984ed0dab7/flash_attn-2.8.3.tar.gz", hash = "sha256:1e71dd64a9e0280e0447b8a0c2541bad4bf6ac65bdeaa2f90e51a9e57de0370d", size = 8447812, upload-time = "2025-08-15T08:28:12.911Z" }
 
 [[package]]
+name = "flashattn-hopper"
+version = "3.0.0b1"
+source = { git = "https://github.com/togethercomputer/flash-attention-3.git?subdirectory=hopper&rev=main#478ee666cccbd1b8f63648633003059a8dc6827d" }
+dependencies = [
+    { name = "einops" },
+    { name = "ninja" },
+    { name = "packaging" },
+    { name = "torch" },
+]
+
+[[package]]
 name = "fonttools"
 version = "4.59.2"
 source = { registry = "https://pypi.org/simple" }
@@ -2141,6 +2152,7 @@ dependencies = [
     { name = "datasets" },
     { name = "dion" },
     { name = "flash-attn" },
+    { name = "flashattn-hopper" },
     { name = "jaxtyping" },
     { name = "liger-kernel" },
     { name = "loguru" },
@@ -2187,6 +2199,7 @@ requires-dist = [
     { name = "datasets", specifier = ">=4.0.0" },
     { name = "dion", git = "https://github.com/samsja/dion.git?rev=main" },
     { name = "flash-attn", specifier = ">=2.8.3" },
+    { name = "flashattn-hopper", git = "https://github.com/togethercomputer/flash-attention-3.git?subdirectory=hopper&rev=main" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "liger-kernel", specifier = ">=0.5.10" },
     { name = "loguru", specifier = ">=0.7.3" },

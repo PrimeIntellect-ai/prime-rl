@@ -39,6 +39,7 @@ dependencies = [
     "prime-evals>=0.1.2",
     "prime-sandboxes>=0.2.3",
     "flash-attn>=2.8.3",
+    "flashattn-hopper",
 ]
 
 [project.scripts]
@@ -69,9 +70,11 @@ reverse-text = { index = "primeintellect" }
 verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "91f436d" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "main" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
+flashattn-hopper = { git = "https://github.com/togethercomputer/flash-attention-3.git", subdirectory = "hopper", rev = "main" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
+flashattn-hopper = ["setuptools", {requirement = "torch", match-runtime = true}]
 
 [tool.uv.extra-build-variables]
 flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }

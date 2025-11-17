@@ -338,6 +338,9 @@ class Glm4MoePreTrainedModel(PreTrainedModel):
     def _init_weights(self, module):
         super()._init_weights(module)
 
+    def _flash_attn_3_can_dispatch(self, *args, **kwargs) -> bool:
+        return True
+
 
 @auto_docstring
 class Glm4MoeModel(Glm4MoePreTrainedModel):
@@ -382,7 +385,7 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds: torch.Tensor = self.embed_tokens(input_ids)
 
-        if self.config._attn_implementation == "flash_attention_2":
+        if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3"):
             flat_position_ids = position_ids.view(-1)
             seqlens = torch.cat(
                 [

@@ -1,10 +1,11 @@
+from importlib.util import find_spec
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
 
 from prime_rl.utils.pydantic_config import BaseConfig
 
-AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2"]
+AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2", "flash_attention_3"]
 
 MOE_MODEL_MAPS = {
     "Qwen/Qwen3-30B-A3B": "Jackmin108/Qwen3-30B-A3B-Fast",
@@ -274,6 +275,20 @@ class ModelConfig(BaseConfig):
         if self.debug.random_init and not self.load_using_meta:
             raise ValueError("Random initialize is only supported when loading with meta.")
         return self
+
+    # @model_validator(mode="after")
+    # def flash_attention_3_only_with_custom(self):
+    #     """Flash attention 3 is only supported with the custom implementation."""
+    #     if self.attn == "flash_attention_3" and self.impl != "custom":
+    #         raise ValueError("Flash attention 3 is only supported with the custom implementation.")
+    #     return self
+
+    # @model_validator(mode="after")
+    # def flash_attention_3_installed(self):
+    #     """Flash attention 3 is only supported if the flash_attn_interface package is installed."""
+    #     if self.attn == "flash_attention_3" and find_spec("flash_attn_interface") is None:
+    #         raise ValueError("Flash attention 3 is only supported if installed.")
+    #     return self
 
 
 class ConstantSchedulerConfig(BaseModel):
