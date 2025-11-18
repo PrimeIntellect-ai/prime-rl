@@ -41,6 +41,7 @@ dependencies = [
     "flash-attn>=2.8.3",
     "math500",
     "deepdive",
+    "deepswe",
     "i3-math-python",
 ]
 
@@ -74,7 +75,8 @@ dion = { git = "https://github.com/samsja/dion.git", rev = "main" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 math500 = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git", rev = "b73bab8", subdirectory = "environments/math500" }
 deepdive = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git", rev = "b73bab8", subdirectory = "environments/deepdive" }
-i3-math-python = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git", rev = "c0f90db", subdirectory = "environments/i3_math_python" }
+deepswe = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git", rev = "4ee7ad6", subdirectory = "environments/deepswe" }
+i3-math-python = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git", rev = "402a50c", subdirectory = "environments/i3_math_python" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
