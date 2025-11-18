@@ -340,8 +340,8 @@ class WeightCheckpointManager:
 
         def save_weights_and_update_ckpt_steps():
             """Save weight checkpoint"""
-            self.save_to_path(step_path, state_dict, model, tokenizer)
             if self.world.is_master:
+                self.save_to_path(step_path, state_dict, model, tokenizer)
                 self.ckpt_steps.append(step)
 
         if self.world.is_master:
