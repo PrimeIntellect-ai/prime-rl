@@ -66,7 +66,9 @@ class AppState(Stateful):
         return state_dict
 
     def load_state_dict(self, state_dict: dict[str, Any]):
-        set_state_dict(self.model, [], model_state_dict=state_dict["model"], optim_state_dict=state_dict["optimizers"])
+        set_state_dict(
+            self.model, self.optimizers, model_state_dict=state_dict["model"], optim_state_dict=state_dict["optimizers"]
+        )
         if self.scheduler is not None:
             self.scheduler.load_state_dict(state_dict["scheduler"])
         if self.progress is not None:
