@@ -387,7 +387,7 @@ class CheckpointConfig(BaseConfig):
         Field(
             description="Whether to save the checkpoint asynchronously (in a separate thread).",
         ),
-    ] = False
+    ] = True
 
     weights: WeightCheckpointConfig | None = WeightCheckpointConfig()
 
