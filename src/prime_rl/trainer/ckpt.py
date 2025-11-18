@@ -1,9 +1,9 @@
 import shutil
-import threading
 import time
 import warnings
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from threading import Thread
 from typing import Any
 
 import torch
@@ -94,6 +94,7 @@ class CheckpointManager:
         self.logger = get_logger()
         self.world = get_world()
         self.ckpt_steps: list[int] = []  # Sorted list of steps that have been checkpointed, only used on master rank
+        self.save_thread: Thread | None = None
 
     def get_ckpt_path(self, step: int) -> Path:
         return self.ckpt_dir / f"step_{step}" / "trainer"
@@ -205,12 +206,14 @@ class CheckpointManager:
         )
         if self.world.is_master:
             if self.config.save_async:
-                thread = threading.Thread(
+                self.wait_for_thread()
+                assert self.save_thread is None
+                self.save_thread = Thread(
                     target=self.save_to_path,
                     args=(ckpt_path, model, optimizers, scheduler, progress, dataloader),
                     name=f"weight-checkpoint-save-{step}",
                 )
-                thread.start()
+                self.save_thread.start()
             else:
                 self.save_to_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
         torch.distributed.barrier()
@@ -237,6 +240,16 @@ class CheckpointManager:
         # Update checkpoint steps
         self.ckpt_steps = self.ckpt_steps[-self.config.keep :]
 
+    def wait_for_thread(self):
+        if self.save_thread is None:
+            return
+        self.save_thread.join()
+        self.save_thread = None
+
+    def __del__(self):
+        if hasattr(self, "save_thread"):
+            self.wait_for_thread()
+
 
 class WeightCheckpointManager:
     """Utility class to save and cleanup HF-compatible weight checkpoints."""
@@ -254,6 +267,7 @@ class WeightCheckpointManager:
         self.save_async = save_async
         self.logger = get_logger()
         self.world = get_world()
+        self.save_thread: Thread | None = None
 
     def get_step_path(self, step: int) -> Path:
         return get_step_path(self.weights_dir, step)
@@ -323,15 +337,27 @@ class WeightCheckpointManager:
 
         if self.world.is_master:
             if self.save_async:
-                thread = threading.Thread(
+                self.wait_for_thread()
+                assert self.save_thread is None
+                self.save_thread = Thread(
                     target=self.save_to_path,
                     args=(cpu_state, model, tokenizer, step),
                     name=f"weight-checkpoint-save-{step}",
                 )
-                thread.start()
+                self.save_thread.start()
             else:
                 self.save_to_path(cpu_state, model, tokenizer, step)
         torch.distributed.barrier()
+
+    def wait_for_thread(self):
+        if self.save_thread is None:
+            return
+        self.save_thread.join()
+        self.save_thread = None
+
+    def __del__(self):
+        if hasattr(self, "save_thread"):
+            self.wait_for_thread()
 
 
 def setup_ckpt_managers(
