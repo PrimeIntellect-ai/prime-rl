@@ -165,9 +165,7 @@ def train(config: RLTrainerConfig):
                 weight_ckpt_manager.save(model, tokenizer, step=progress.step)
 
                 # Maybe clean up old weight checkpoint
-                maybe_clean(
-                    weight_ckpt_manager.weights_dir, progress.step, config.max_async_level, config.ckpt.interval
-                )
+                weight_ckpt_manager.maybe_clean()
         else:
             save_ckpt_time = 0
 

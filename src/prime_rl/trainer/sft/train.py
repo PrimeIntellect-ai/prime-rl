@@ -160,6 +160,8 @@ def train(config: SFTTrainerConfig):
             if weight_ckpt_manager is not None:
                 logger.info(f"Saving weight checkpoint at step {progress.step}")
                 weight_ckpt_manager.save(model, tokenizer, step=progress.step)
+                # Maybe clean up old weight checkpoint
+                weight_ckpt_manager.maybe_clean()
         else:
             save_ckpt_time = 0
 

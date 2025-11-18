@@ -259,6 +259,7 @@ class WeightCheckpointManager:
         config: WeightCheckpointConfig,
         lora_config: LoRAConfig | None = None,
         save_async: bool = False,
+        keep: int | None = None,
     ):
         self.weights_dir = get_weights_dir(output_dir)
         self.config = config
@@ -266,7 +267,9 @@ class WeightCheckpointManager:
         self.save_async = save_async
         self.logger = get_logger()
         self.world = get_world()
+        self.ckpt_steps: list[int] = []  # Sorted list of steps that have been checkpointed, only used on master rank
         self.save_thread: threading.Thread | None = None
+        self.keep = keep
 
     def get_step_path(self, step: int) -> Path:
         return get_step_path(self.weights_dir, step)
@@ -348,6 +351,23 @@ class WeightCheckpointManager:
                 self.save_to_path(cpu_state, model, tokenizer, step)
         torch.distributed.barrier()
 
+    def maybe_clean(self) -> None:
+        """Deletes past checkpoints beyond the most recent config.keep steps. No-op if config.keep is None."""
+        if self.keep is None:
+            return
+
+        # Get all the checkpoint steps to delete
+        assert list(self.ckpt_steps) == sorted(self.ckpt_steps)
+        ckpt_steps_to_delete = self.ckpt_steps[: -self.keep]
+        for ckpt_step in ckpt_steps_to_delete:
+            ckpt_path = self.get_step_path(ckpt_step)
+            if ckpt_path.exists():
+                self.logger.debug(f"Removing past checkpoint for step {ckpt_step} ({ckpt_path})")
+                shutil.rmtree(ckpt_path)
+
+        # Update checkpoint steps
+        self.ckpt_steps = self.ckpt_steps[-self.keep :]
+
     def wait_for_thread(self):
         if self.save_thread is None:
             return
@@ -366,7 +386,11 @@ def setup_ckpt_managers(
     ckpt_manager = CheckpointManager(output_dir, ckpt_config)
     if ckpt_config.weights:
         weight_ckpt_manager = WeightCheckpointManager(
-            output_dir, ckpt_config.weights, lora_config=lora_config, save_async=ckpt_config.save_async
+            output_dir,
+            ckpt_config.weights,
+            lora_config=lora_config,
+            save_async=ckpt_config.save_async,
+            keep=ckpt_config.keep,
         )
     else:
         weight_ckpt_manager = None
