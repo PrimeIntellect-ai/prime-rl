@@ -1,9 +1,9 @@
 import shutil
+import threading
 import time
 import warnings
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from threading import Thread
 from typing import Any
 
 import torch
@@ -94,7 +94,7 @@ class CheckpointManager:
         self.logger = get_logger()
         self.world = get_world()
         self.ckpt_steps: list[int] = []  # Sorted list of steps that have been checkpointed, only used on master rank
-        self.save_thread: Thread | None = None
+        self.save_thread: threading.Thread | None = None
 
     def get_ckpt_path(self, step: int) -> Path:
         return self.ckpt_dir / f"step_{step}" / "trainer"
@@ -208,7 +208,7 @@ class CheckpointManager:
             if self.config.save_async:
                 self.wait_for_thread()
                 assert self.save_thread is None
-                self.save_thread = Thread(
+                self.save_thread = threading.Thread(
                     target=self.save_to_path,
                     args=(ckpt_path, model, optimizers, scheduler, progress, dataloader),
                     name=f"weight-checkpoint-save-{step}",
@@ -243,6 +243,9 @@ class CheckpointManager:
     def wait_for_thread(self):
         if self.save_thread is None:
             return
+        # Don't try to join if we're in the save thread itself
+        if threading.current_thread() is self.save_thread:
+            return
         self.save_thread.join()
         self.save_thread = None
 
@@ -267,7 +270,7 @@ class WeightCheckpointManager:
         self.save_async = save_async
         self.logger = get_logger()
         self.world = get_world()
-        self.save_thread: Thread | None = None
+        self.save_thread: threading.Thread | None = None
 
     def get_step_path(self, step: int) -> Path:
         return get_step_path(self.weights_dir, step)
@@ -339,7 +342,7 @@ class WeightCheckpointManager:
             if self.save_async:
                 self.wait_for_thread()
                 assert self.save_thread is None
-                self.save_thread = Thread(
+                self.save_thread = threading.Thread(
                     target=self.save_to_path,
                     args=(cpu_state, model, tokenizer, step),
                     name=f"weight-checkpoint-save-{step}",
@@ -351,6 +354,9 @@ class WeightCheckpointManager:
 
     def wait_for_thread(self):
         if self.save_thread is None:
+            return
+        # Don't try to join if we're in the save thread itself
+        if threading.current_thread() is self.save_thread:
             return
         self.save_thread.join()
         self.save_thread = None
