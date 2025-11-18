@@ -12,6 +12,8 @@ from datasets import Dataset
 from loguru import logger
 from openai import AsyncOpenAI
 
+from prime_rl.orchestrator.utils import serialize_for_msgpack
+
 
 class ZMQEnvironmentServer:
     """Server that wraps a verifiers environment and exposes it via ZMQ."""
@@ -189,29 +191,29 @@ class ZMQEnvironmentServer:
         responses = [state["responses"] for state in generate_outputs.state]
         is_truncated = parse_is_truncated_completions(responses=responses)
 
-        # Return processed data
+        # Return processed data (serialize everything for msgpack)
         return {
             "status": "success",
             "generate_outputs": {
-                "prompt": generate_outputs.prompt,
-                "completion": generate_outputs.completion,
-                "answer": generate_outputs.answer,
-                "state": generate_outputs.state,
-                "reward": generate_outputs.reward,
-                "info": generate_outputs.info,
-                "task": generate_outputs.task,
-                "metrics": dict(generate_outputs.metrics),
-                "example_id": generate_outputs.example_id,
+                "prompt": serialize_for_msgpack(generate_outputs.prompt),
+                "completion": serialize_for_msgpack(generate_outputs.completion),
+                "answer": serialize_for_msgpack(generate_outputs.answer),
+                "state": serialize_for_msgpack(generate_outputs.state),
+                "reward": serialize_for_msgpack(generate_outputs.reward),
+                "info": serialize_for_msgpack(generate_outputs.info),
+                "task": serialize_for_msgpack(generate_outputs.task),
+                "metrics": serialize_for_msgpack(generate_outputs.metrics),
+                "example_id": serialize_for_msgpack(generate_outputs.example_id),
             },
             "processed_outputs": {
-                "prompt_ids": processed_outputs.prompt_ids,
-                "completion_ids": processed_outputs.completion_ids,
-                "prompt_mask": processed_outputs.prompt_mask,
-                "completion_mask": processed_outputs.completion_mask,
-                "completion_logprobs": processed_outputs.completion_logprobs,
-                "rewards": processed_outputs.rewards,
+                "prompt_ids": serialize_for_msgpack(processed_outputs.prompt_ids),
+                "completion_ids": serialize_for_msgpack(processed_outputs.completion_ids),
+                "prompt_mask": serialize_for_msgpack(processed_outputs.prompt_mask),
+                "completion_mask": serialize_for_msgpack(processed_outputs.completion_mask),
+                "completion_logprobs": serialize_for_msgpack(processed_outputs.completion_logprobs),
+                "rewards": serialize_for_msgpack(processed_outputs.rewards),
             },
-            "is_truncated": is_truncated,
+            "is_truncated": serialize_for_msgpack(is_truncated),
         }
 
     async def _handle_get_dataset(self, request: dict) -> dict:

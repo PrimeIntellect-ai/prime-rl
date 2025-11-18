@@ -9,6 +9,8 @@ import zmq
 import zmq.asyncio
 from loguru import logger
 
+from prime_rl.orchestrator.utils import serialize_for_msgpack
+
 
 class ZMQEnvironmentClient:
     """Client for remote environment communication via ZMQ."""
@@ -78,7 +80,8 @@ class ZMQEnvironmentClient:
 
         request_id = uuid.uuid4().bytes
 
-        request_payload = {"action": action, **kwargs}
+        # Serialize the request payload to handle numpy types, etc.
+        request_payload = serialize_for_msgpack({"action": action, **kwargs})
         payload_bytes = msgpack.packb(request_payload, use_bin_type=True)
 
         future = asyncio.Future()

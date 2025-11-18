@@ -1,6 +1,7 @@
 import asyncio
 from typing import Any
 
+import numpy as np
 import pandas as pd
 from openai.types.chat.chat_completion import ChatCompletion, Choice
 from openai.types.completion_usage import CompletionUsage
@@ -14,6 +15,34 @@ from prime_rl.utils.utils import (
 )
 
 SEMAPHORE: asyncio.Semaphore | None = None
+
+
+def serialize_for_msgpack(obj):
+    """Convert objects to msgpack-serializable format.
+
+    Handles numpy types, Pydantic models, nested structures, etc.
+    """
+    if obj is None:
+        return None
+    elif isinstance(obj, (str, int, float, bool)):
+        return obj
+    elif isinstance(obj, (np.integer, np.floating)):
+        return obj.item()  # Convert numpy scalar to Python scalar
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()  # Convert numpy array to list
+    elif isinstance(obj, dict):
+        return {k: serialize_for_msgpack(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [serialize_for_msgpack(item) for item in obj]
+    elif hasattr(obj, 'model_dump'):
+        # Pydantic models (like ChatCompletion)
+        return serialize_for_msgpack(obj.model_dump())
+    else:
+        # Fallback for other types
+        try:
+            return list(obj) if hasattr(obj, '__iter__') else obj
+        except (TypeError, ValueError):
+            return str(obj)
 
 
 def set_semaphore(semaphore: asyncio.Semaphore):
