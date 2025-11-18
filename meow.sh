@@ -1,4 +1,3 @@
 export VLLM_ALLOW_RUNTIME_LORA_UPDATING=True
 
-vllm serve meta-llama/Llama-2-7b-hf \
-    --enable-lora
+uv run inference @ configs/reverse_text/rl/infer.toml --max-model-len 2048 --enable-lora
