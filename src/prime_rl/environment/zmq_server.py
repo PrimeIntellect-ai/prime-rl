@@ -206,7 +206,9 @@ class ZMQEnvironmentServer:
             "processed_outputs": {
                 "prompt_ids": processed_outputs.prompt_ids,
                 "completion_ids": processed_outputs.completion_ids,
-                "masks": processed_outputs.masks,
+                "prompt_mask": processed_outputs.prompt_mask,
+                "completion_mask": processed_outputs.completion_mask,
+                "completion_logprobs": processed_outputs.completion_logprobs,
                 "rewards": processed_outputs.rewards,
             },
             "is_truncated": is_truncated,

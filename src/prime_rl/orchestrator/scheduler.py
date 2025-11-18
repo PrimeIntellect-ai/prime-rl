@@ -166,7 +166,9 @@ class Scheduler:
         processed_outputs = vf.ProcessedOutputs(
             prompt_ids=proc_out["prompt_ids"],
             completion_ids=proc_out["completion_ids"],
-            masks=proc_out["masks"],
+            prompt_mask=proc_out["prompt_mask"],
+            completion_mask=proc_out["completion_mask"],
+            completion_logprobs=proc_out["completion_logprobs"],
             rewards=proc_out["rewards"],
         )
 
