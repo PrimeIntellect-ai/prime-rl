@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from torch import nn
+from torch import Tensor, nn
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.checkpoint.state_dict_saver import save as dcp_save
@@ -257,19 +257,56 @@ class WeightCheckpointManager:
     def save_to_path(
         self,
         path: Path,
+        state_dict: dict[str, Tensor],
+        lora_state_dict: dict[str, Tensor] | None,
         model,
         tokenizer: PreTrainedTokenizer,
         dtype: torch.dtype = torch.bfloat16,
     ):
         """Save HF-compatible weight checkpoint to a given path."""
         path.mkdir(parents=True, exist_ok=True)
-        save_to_path_start_time = time.time()
+        start_time = time.time()
+
+        self.logger.debug(f"Saving weight checkpoint to {path}")
+        # Suppress torch.distributed warnings during checkpoint saving
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
+            warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
+
+            # Save weights
+            save_state_dict(state_dict, path, self.config.save_format, self.config.save_sharded)
+
+            # Save model config, generation arguments and tokenizer
+            model.config.save_pretrained(path)
+            if model.generation_config:
+                model.generation_config.save_pretrained(path)
+            tokenizer.save_pretrained(path)
+
+        if self.config.save_adapter_separately and lora_state_dict is not None:
+            adapter_path = path / "lora_adapters"
+            adapter_path.mkdir(parents=True, exist_ok=True)
+            torch.save(lora_state_dict, adapter_path / "adapter_model.bin")
+            if self.lora_config:
+                save_lora_config(self.lora_config, model, adapter_path)  # Pass model
+        self.logger.debug(f"Saved weight checkpoint to {path} in {time.time() - start_time:.2f} seconds")
+
+    def save(
+        self,
+        step: int,
+        model: nn.Module,
+        tokenizer: PreTrainedTokenizer,
+    ):
+        """Save a HF-compatible weight-only checkpoint for a given step."""
+        step_path = self.get_step_path(step)
+        step_path.mkdir(parents=True, exist_ok=True)
 
         # Gather all weights on master rank
         self.logger.debug("Gathering weights on master rank for weight checkpoint")
         has_lora = has_lora_layers(model)
         start_time = time.time()
-        state_dict = gather_weights_on_master(model, self.world.is_master, dtype, has_lora_layers=has_lora)
+        state_dict = gather_weights_on_master(
+            model, self.world.is_master, dtype=torch.bfloat16, has_lora_layers=has_lora
+        )
         self.logger.debug(f"Gathered weights on master rank in {time.time() - start_time:.2f} seconds")
 
         if has_lora:
@@ -287,59 +324,23 @@ class WeightCheckpointManager:
             convert_tt_to_hf_moe(state_dict)
             self.logger.debug(f"Converted TT-MoE layers to HF format in {time.time() - start_time:.2f} seconds")
 
-        if self.world.is_master:
-            self.logger.debug(f"Saving weight checkpoint to {path}")
-            start_time = time.time()
-            # Suppress torch.distributed warnings during checkpoint saving
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
-                warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
-
-                # Save weights
-                save_state_dict(state_dict, path, self.config.save_format, self.config.save_sharded)
-
-                # Save model config, generation arguments and tokenizer
-                model.config.save_pretrained(path)
-                if model.generation_config:
-                    model.generation_config.save_pretrained(path)
-                tokenizer.save_pretrained(path)
-
-            if self.config.save_adapter_separately and lora_state_dict is not None:
-                adapter_path = path / "lora_adapters"
-                adapter_path.mkdir(parents=True, exist_ok=True)
-                torch.save(lora_state_dict, adapter_path / "adapter_model.bin")
-                if self.lora_config:
-                    save_lora_config(self.lora_config, model, adapter_path)  # Pass model
-            self.logger.debug(
-                f"Saved weight checkpoint to {path} in {time.time() - save_to_path_start_time:.2f} seconds"
-            )
-
-    def save(
-        self,
-        step: int,
-        model: nn.Module,
-        tokenizer: PreTrainedTokenizer,
-    ):
-        """Save a HF-compatible weight-only checkpoint for a given step."""
-        step_path = self.get_step_path(step)
-        step_path.mkdir(parents=True, exist_ok=True)
-
         def save_weights_and_update_ckpt_steps():
             """Save weight checkpoint"""
-            self.save_to_path(step_path, model, tokenizer)
+            self.save_to_path(step_path, state_dict, lora_state_dict, model, tokenizer)
             if self.world.is_master:
                 self.ckpt_steps.append(step)
 
-        if self.config.save_async:
-            self.wait_for_thread()
-            assert self.save_thread is None
-            self.save_thread = threading.Thread(
-                target=save_weights_and_update_ckpt_steps,
-                name=f"weight-checkpoint-save-{step}",
-            )
-            self.save_thread.start()
-        else:
-            save_weights_and_update_ckpt_steps()
+        if self.world.is_master:
+            if self.config.save_async:
+                self.wait_for_thread()
+                assert self.save_thread is None
+                self.save_thread = threading.Thread(
+                    target=save_weights_and_update_ckpt_steps,
+                    name=f"weight-checkpoint-save-{step}",
+                )
+                self.save_thread.start()
+            else:
+                save_weights_and_update_ckpt_steps()
         torch.distributed.barrier()
 
     def maybe_clean(self) -> None:
