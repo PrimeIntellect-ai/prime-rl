@@ -148,18 +148,21 @@ class Scheduler:
 
         # Reconstruct GenerateOutputs from ZMQ response
         gen_out = response["generate_outputs"]
-        generate_outputs = vf.GenerateOutputs(
-            prompt=gen_out["prompt"],
-            completion=gen_out["completion"],
-            answer=gen_out["answer"],
-            state=gen_out["state"],
-            reward=gen_out["reward"],
-            info=gen_out["info"],
-            task=gen_out["task"],
-            metrics=gen_out["metrics"],
-            example_id=gen_out["example_id"],
-            metadata=gen_out["metadata"],
-        )
+        # Only include metadata if it's not None (Pydantic validation requirement)
+        kwargs = {
+            "prompt": gen_out["prompt"],
+            "completion": gen_out["completion"],
+            "answer": gen_out["answer"],
+            "state": gen_out["state"],
+            "reward": gen_out["reward"],
+            "info": gen_out["info"],
+            "task": gen_out["task"],
+            "metrics": gen_out["metrics"],
+            "example_id": gen_out["example_id"],
+        }
+        if gen_out.get("metadata") is not None:
+            kwargs["metadata"] = gen_out["metadata"]
+        generate_outputs = vf.GenerateOutputs(**kwargs)
 
         # Reconstruct ProcessedOutputs from ZMQ response
         proc_out = response["processed_outputs"]
