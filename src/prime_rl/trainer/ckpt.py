@@ -259,7 +259,6 @@ class WeightCheckpointManager:
         lora_state_dict: dict[str, Tensor] | None,
         model,
         tokenizer: PreTrainedTokenizer,
-        dtype: torch.dtype = torch.bfloat16,
     ):
         """Save HF-compatible weight checkpoint to a given path."""
         path.mkdir(parents=True, exist_ok=True)
