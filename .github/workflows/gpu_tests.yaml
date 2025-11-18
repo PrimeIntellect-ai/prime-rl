@@ -27,7 +27,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - name: Install dependencies
-        run: uv sync --locked
+        run: uv sync --locked && uv sync --all-extras --locked
       - name: Cleanup GPU processes
         run: |
           echo "Checking for stray GPU processes..."

@@ -78,7 +78,7 @@ main() {
     uv tool install prime
 
     log_info "Syncing virtual environment..."
-    uv sync
+    uv sync && uv sync --all-extras
 
     log_info "Installing pre-commit hooks..."
     uv run pre-commit install

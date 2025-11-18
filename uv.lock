@@ -687,17 +687,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/3b/b2/8d76c41ad7974ee264754709c22963447f7f8134613fd9ce80984ed0dab7/flash_attn-2.8.3.tar.gz", hash = "sha256:1e71dd64a9e0280e0447b8a0c2541bad4bf6ac65bdeaa2f90e51a9e57de0370d", size = 8447812, upload-time = "2025-08-15T08:28:12.911Z" }
 
 [[package]]
-name = "flash-attn-3"
-version = "3.0.0b1"
-source = { git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=hopper&rev=main#5d2cd3bcbaeff6fe1bfc5d0ff489451b0d4827a6" }
-dependencies = [
-    { name = "einops" },
-    { name = "ninja" },
-    { name = "packaging" },
-    { name = "torch" },
-]
-
-[[package]]
 name = "fonttools"
 version = "4.59.2"
 source = { registry = "https://pypi.org/simple" }
@@ -2180,11 +2169,6 @@ dependencies = [
     { name = "wandb" },
 ]
 
-[package.optional-dependencies]
-flash-attn-3 = [
-    { name = "flash-attn-3" },
-]
-
 [package.dev-dependencies]
 dev = [
     { name = "ipykernel" },
@@ -2203,7 +2187,6 @@ requires-dist = [
     { name = "datasets", specifier = ">=4.0.0" },
     { name = "dion", git = "https://github.com/samsja/dion.git?rev=main" },
     { name = "flash-attn", specifier = ">=2.8.3" },
-    { name = "flash-attn-3", marker = "extra == 'flash-attn-3'", git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=hopper&rev=main" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "liger-kernel", specifier = ">=0.5.10" },
     { name = "loguru", specifier = ">=0.7.3" },
@@ -2232,7 +2215,6 @@ requires-dist = [
     { name = "vllm", specifier = "==0.10.2" },
     { name = "wandb", specifier = ">=0.20.1" },
 ]
-provides-extras = ["flash-attn-3"]
 
 [package.metadata.requires-dev]
 dev = [
