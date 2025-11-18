@@ -28,8 +28,8 @@ orchestrator:
 
   # Auto-start configuration (set to false to use sleep infinity for debugging)
   autoStart: false
-  command: ""  # e.g., "uv run orchestrator @ /app/examples/reverse_text/rl/orch.toml --output-dir /data/outputs --client.base-url '[\"http://RELEASE-NAME-inference-0.RELEASE-NAME-inference-headless.NAMESPACE.svc.cluster.local:8000/v1\"]'"
-  # Note: Use headless service with pod ordinal (e.g., inference-0) to connect directly to a specific pod and preserve KV cache
+  command: ""  # e.g., "uv run orchestrator @ /app/examples/reverse_text/rl/orch.toml --output-dir /data/outputs --client.base-url '[\"'$INFERENCE_URL'\"]'"
+  # Note: $INFERENCE_URL is automatically set to http://<release-name>-inference-0.<release-name>-inference-headless.<namespace>.svc.cluster.local:8000/v1
 
   resources:
     requests:

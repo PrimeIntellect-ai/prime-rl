@@ -78,6 +78,7 @@ helm install my-exp ./prime-rl -f ./prime-rl/examples/reverse-text.yaml
 - Model: Qwen3-0.6B
 - GPUs: 1 per component
 - Runs on consumer GPUs (RTX 3090/4090)
+- **Note:** You can use any release name - the chart automatically configures service URLs
 
 
 ## Configuration
@@ -251,7 +252,7 @@ trainer:
 Deploy and run distributed training:
 
 ```bash
-helm upgrade --install my-training ./prime-rl -f distributed-training.yaml
+helm install my-training ./prime-rl -f distributed-training.yaml
 
 # Extract pod ordinal for torchrun
 # Inside prime-rl-trainer-3, $POD_NAME="prime-rl-trainer-3"
@@ -318,6 +319,7 @@ Each pod has these K8s environment variables set:
 - `$POD_IP` - Pod IP address
 - `$STATEFUL_REPLICAS` - Total number of replicas for that component
 - `$HEADLESS_SERVICE` - DNS name for peer discovery (e.g., `my-exp-trainer-headless.default.svc.cluster.local`)
+- `$INFERENCE_URL` - Full URL to the first inference pod (available in orchestrator and trainer pods)
 
 For distributed training, extract the rank from the pod name:
 

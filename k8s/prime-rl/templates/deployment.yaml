@@ -60,6 +60,8 @@ spec:
           value: "{{ .Values.orchestrator.replicas }}"
         - name: HEADLESS_SERVICE
           value: "{{ .Release.Name }}-orchestrator-headless.{{ .Values.namespace }}.svc.cluster.local"
+        - name: INFERENCE_URL
+          value: "http://{{ .Release.Name }}-inference-0.{{ .Release.Name }}-inference-headless.{{ .Values.namespace }}.svc.cluster.local:8000/v1"
         {{- with .Values.orchestrator.env }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -257,6 +259,8 @@ spec:
           value: "{{ .Values.trainer.replicas }}"
         - name: HEADLESS_SERVICE
           value: "{{ .Release.Name }}-trainer-headless.{{ .Values.namespace }}.svc.cluster.local"
+        - name: INFERENCE_URL
+          value: "http://{{ .Release.Name }}-inference-0.{{ .Release.Name }}-inference-headless.{{ .Values.namespace }}.svc.cluster.local:8000/v1"
         {{- with .Values.trainer.env }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

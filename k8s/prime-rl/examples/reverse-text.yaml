@@ -1,10 +1,5 @@
 # Values for reverse_text example
 # Small model (Qwen3-0.6B) - runs on single consumer GPU
-#
-# IMPORTANT: This example must be deployed with release name "reverse-text":
-#   helm install reverse-text ./prime-rl -f ./prime-rl/examples/reverse-text.yaml
-#
-# The orchestrator command contains a hardcoded URL that references "reverse-text-inference-0"
 
 config:
   example: "reverse-text"
@@ -16,7 +11,7 @@ image:
 orchestrator:
   enabled: true
   autoStart: true
-  command: "uv run orchestrator @ /app/examples/reverse_text/rl/orch.toml --output-dir /data/outputs --client.base-url '[\"http://reverse-text-inference-0.reverse-text-inference-headless.default.svc.cluster.local:8000/v1\"]' ; sleep infinity"
+  command: "uv run orchestrator @ /app/examples/reverse_text/rl/orch.toml --output-dir /data/outputs --client.base-url '[\"'$INFERENCE_URL'\"]' ; sleep infinity"
   resources:
     requests:
       memory: "1Gi"
