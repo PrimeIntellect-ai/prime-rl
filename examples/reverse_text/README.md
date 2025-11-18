@@ -110,3 +110,112 @@ uv run vf-eval reverse-text -m PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL -b http
 ```
 
 Way better! Now we get an **average reward of ~0.8**.
+
+## Kubernetes Deployment
+
+If you're running on Kubernetes, you can deploy this example using the provided Helm chart. The Helm chart automatically configures all components with proper networking and shared storage.
+
+### Deploy with Auto-Start
+
+The reverse-text example is configured to automatically start all components when pods boot.
+
+**IMPORTANT:** This example must be deployed with the release name `reverse-text` (the orchestrator command contains hardcoded service URLs):
+
+```bash
+cd k8s
+helm install reverse-text ./prime-rl -f ./prime-rl/examples/reverse-text.yaml
+
+# Wait for pods to be ready
+kubectl get pods -l app.kubernetes.io/instance=reverse-text -w
+# Press Ctrl+C when all pods show 1/1 Running
+```
+
+Monitor the logs to see training progress:
+
+```bash
+# View inference server logs
+kubectl logs -f reverse-text-inference-0
+
+# View orchestrator logs
+kubectl logs -f reverse-text-orchestrator-0
+
+# View trainer logs
+kubectl logs -f reverse-text-trainer-0
+```
+
+### Run SFT Training
+
+For SFT training, exec into the trainer pod:
+
+```bash
+kubectl exec -it reverse-text-trainer-0 -- bash
+cd /data
+uv run sft @ /app/examples/reverse_text/sft/train.toml --output-dir /data/outputs
+# This will save checkpoints to /data/outputs/weights/
+```
+
+### Manual RL Training
+
+To run RL components manually instead of auto-start, edit `k8s/prime-rl/examples/reverse-text.yaml` and set `autoStart: false` for all components, then redeploy and exec into each pod:
+
+```bash
+# Terminal 1 - Inference
+kubectl exec -it reverse-text-inference-0 -- bash
+uv run inference @ /app/examples/reverse_text/rl/infer.toml
+
+# Terminal 2 - Orchestrator
+kubectl exec -it reverse-text-orchestrator-0 -- bash
+uv run orchestrator @ /app/examples/reverse_text/rl/orch.toml --output-dir /data/outputs --client.base-url '["http://reverse-text-inference-0.reverse-text-inference-headless.default.svc.cluster.local:8000/v1"]'
+
+# Terminal 3 - Trainer
+kubectl exec -it reverse-text-trainer-0 -- bash
+uv run trainer @ /app/examples/reverse_text/rl/train.toml --output-dir /data/outputs
+```
+
+### Access Outputs and Checkpoints
+
+All outputs are written to `/data/outputs` on the shared NFS storage:
+
+```bash
+# Exec into any pod to access outputs
+kubectl exec -it reverse-text-trainer-0 -- bash
+ls -lh /data/outputs/weights/
+ls -lh /data/outputs/rollouts/
+```
+
+### Run Evaluation
+
+To evaluate a trained model on K8s:
+
+```bash
+# Exec into trainer pod
+kubectl exec -it reverse-text-trainer-0 -- bash
+
+# Start inference server with your trained model (if not already running)
+# In another terminal:
+kubectl exec -it reverse-text-inference-0 -- bash
+uv run inference --model.name /data/outputs/weights/step_20
+
+# Back in trainer pod, run evaluation
+uv run vf-eval reverse-text \
+  -m /data/outputs/weights/step_20 \
+  -b http://reverse-text-inference-0.reverse-text-inference-headless.default.svc.cluster.local:8000/v1 \
+  -n 20 --max-tokens 1024
+```
+
+### Clean Up
+
+```bash
+helm uninstall reverse-text
+# Optionally delete shared data:
+kubectl delete pvc prime-rl-shared-data
+```
+
+**What the Helm chart provides:**
+- Predictably named pods: `reverse-text-trainer-0`, `reverse-text-inference-0`, `reverse-text-orchestrator-0`
+- Shared NFS storage at `/data` for model checkpoints and outputs
+- GPU resources (1 GPU per inference/trainer pod)
+- Kubernetes services for component communication
+- Auto-start capability with proper networking configured
+
+See the [K8s deployment guide](../../k8s/README.md) for more details on scaling, distributed training, and advanced configurations.

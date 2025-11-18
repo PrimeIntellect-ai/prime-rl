@@ -282,3 +282,199 @@ Of course, you can further scale up the number of nodes used by the trainer and 
 ### SLURM
 
 TBD.
+
+## Kubernetes
+
+For production deployments on Kubernetes clusters, PRIME-RL provides a Helm chart that manages the entire training infrastructure. Kubernetes automatically handles pod scheduling, restarts, and resource allocation.
+
+### Prerequisites
+
+- Kubernetes cluster with GPU-enabled nodes
+- [NVIDIA GPU Operator](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/getting-started.html) installed
+- [Helm 3.x](https://helm.sh/docs/intro/install/) installed
+- Storage class supporting `ReadWriteMany` (NFS, CephFS, or cloud provider storage)
+
+### Quick Start
+
+Deploy the complete training infrastructure with auto-start enabled:
+
+```bash
+cd k8s
+# IMPORTANT: Use release name "reverse-text" (hardcoded in example values)
+helm install reverse-text ./prime-rl -f ./prime-rl/examples/reverse-text.yaml
+
+# Verify deployment
+kubectl get pods -l app.kubernetes.io/instance=reverse-text -w
+# Press Ctrl+C when all pods show 1/1 Running
+
+# Monitor training logs
+kubectl logs -f reverse-text-trainer-0
+kubectl logs -f reverse-text-inference-0
+kubectl logs -f reverse-text-orchestrator-0
+```
+
+The reverse-text example is pre-configured with `autoStart: true`, so all components automatically start when pods boot. For manual control, set `autoStart: false` in your values file and exec into pods to run commands manually.
+
+### Components
+
+The Helm chart deploys three components (all using StatefulSets):
+
+1. **Orchestrator** (StatefulSet, 1 replica)
+   - Named: `<release-name>-orchestrator-0` (e.g., `my-exp-orchestrator-0`)
+   - Coordinates training workflow
+   - No GPU required
+   - Communicates with trainer and inference via K8s services
+
+2. **Inference** (StatefulSet, scalable)
+   - Runs vLLM inference server
+   - Pods named: `<release-name>-inference-0`, `<release-name>-inference-1`, ...
+   - Configurable GPU count
+   - Service exposed on port 8000
+
+3. **Trainer** (StatefulSet, scalable)
+   - Runs SFT or RL training
+   - Pods named: `<release-name>-trainer-0`, `<release-name>-trainer-1`, ...
+   - Configurable GPU count
+   - Reads/writes checkpoints to shared storage
+
+**StatefulSets provide:**
+- Clean, predictable pod names with ordinal indices (0, 1, 2, ...)
+- Stable DNS hostnames via headless services
+- Environment variables for pod discovery: `$POD_NAME`, `$STATEFUL_REPLICAS`, `$HEADLESS_SERVICE`
+- Required for distributed training coordination
+
+### Shared Storage
+
+All components mount a shared PVC at `/data` for:
+- Model checkpoints (trainer writes, inference reads)
+- Training data
+- Experiment outputs
+
+This **shared storage is required** for weight updates between trainer and inference.
+
+### Scaling
+
+Scale components by adjusting replicas in values:
+
+```yaml
+# custom-scale.yaml
+orchestrator:
+  replicas: 1  # Always keep at 1
+
+trainer:
+  replicas: 4  # Scale trainers for distributed training
+  gpu:
+    count: 2   # GPUs per trainer pod
+
+inference:
+  replicas: 2  # Load balance inference
+  gpu:
+    count: 4   # GPUs per inference pod
+```
+
+Deploy with custom scaling:
+
+```bash
+helm upgrade my-training ./k8s/prime-rl -f custom-scale.yaml
+```
+
+### Multi-Node Training on K8s
+
+For distributed training across multiple nodes:
+
+```yaml
+# multi-node.yaml
+trainer:
+  replicas: 8  # 8 trainer pods distributed across nodes
+
+  # Ensure pods spread across nodes
+  podAntiAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+    - labelSelector:
+        matchExpressions:
+        - key: role
+          operator: In
+          values:
+          - trainer
+      topologyKey: kubernetes.io/hostname
+```
+
+The orchestrator coordinates all trainers via the shared storage and NCCL communication (port 29501).
+
+### Auto-Start Configuration
+
+By default, pods start with `sleep infinity` for manual control. To auto-start workloads, configure the `autoStart` and `command` fields:
+
+```yaml
+# example-values.yaml
+orchestrator:
+  autoStart: true
+  command: "uv run orchestrator @ /app/examples/reverse_text/rl/orch.toml --output-dir /data/outputs --client.base-url '[\"http://my-exp-inference.default.svc.cluster.local:8000/v1\"]'"
+
+inference:
+  autoStart: true
+  command: "uv run inference @ /app/examples/reverse_text/rl/infer.toml"
+
+trainer:
+  autoStart: true
+  command: "uv run trainer @ /app/examples/reverse_text/rl/train.toml --output-dir /data/outputs"
+```
+
+The reverse-text example (`k8s/prime-rl/examples/reverse-text.yaml`) is pre-configured with auto-start enabled.
+
+### Configuration
+
+Customize resources, storage, secrets, and more:
+
+```bash
+# Override specific values
+helm install my-training ./k8s/prime-rl \
+  --set image.tag=v1.0.0 \
+  --set trainer.gpu.count=8 \
+  --set storage.size=2Ti
+
+# Or use a custom values file
+helm install my-training ./k8s/prime-rl -f my-values.yaml
+```
+
+### Monitoring
+
+View logs and exec into pods:
+
+```bash
+# View logs
+kubectl logs my-exp-trainer-0
+kubectl logs -f my-exp-inference-0  # Follow logs
+
+# Interactive shell
+kubectl exec -it my-exp-trainer-0 -- bash
+
+# List all pods for this experiment
+kubectl get pods -l app.kubernetes.io/instance=my-exp
+```
+
+### Networking
+
+The chart exposes:
+- **Port 8000** - API endpoint for inference and orchestrator
+- **Port 29501** - NCCL broadcast for distributed coordination
+
+Services use `ClusterIP` by default (internal only). For external access, change to `LoadBalancer`:
+
+```yaml
+inference:
+  service:
+    type: LoadBalancer
+```
+
+### Advanced: Custom Images
+
+Use your own Docker image:
+
+```bash
+helm install my-training ./k8s/prime-rl \
+  --set image.repository=myregistry/prime-rl \
+  --set image.tag=custom-v1
+```
+
+For a complete guide, see the [Kubernetes README](../k8s/README.md).
