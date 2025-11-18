@@ -166,6 +166,8 @@ class Scheduler:
 
         # Reconstruct ProcessedOutputs from ZMQ response
         proc_out = response["processed_outputs"]
+        is_truncated = response["is_truncated"]
+
         processed_outputs = vf.ProcessedOutputs(
             prompt_ids=proc_out["prompt_ids"],
             completion_ids=proc_out["completion_ids"],
@@ -173,9 +175,8 @@ class Scheduler:
             completion_mask=proc_out["completion_mask"],
             completion_logprobs=proc_out["completion_logprobs"],
             rewards=proc_out["rewards"],
+            is_truncated=is_truncated,
         )
-
-        is_truncated = response["is_truncated"]
 
         return (generate_outputs, processed_outputs, is_truncated)
 
