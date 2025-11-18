@@ -370,6 +370,13 @@ class WeightCheckpointConfig(BaseConfig):
         ),
     ] = False
 
+    save_async: Annotated[
+        bool,
+        Field(
+            description="Whether to save the checkpoint asynchronously (in a separate thread).",
+        ),
+    ] = True
+
 
 class CheckpointConfig(BaseConfig):
     """Configures checkpointing the full model, optimizer and training state for resuming training."""
@@ -381,13 +388,6 @@ class CheckpointConfig(BaseConfig):
             description="Interval at which to save the training checkpoint. If None, will only checkpoint at the end of training.",
         ),
     ] = None
-
-    save_async: Annotated[
-        bool,
-        Field(
-            description="Whether to save the checkpoint asynchronously (in a separate thread).",
-        ),
-    ] = True
 
     weights: WeightCheckpointConfig | None = WeightCheckpointConfig()
 

@@ -374,7 +374,6 @@ def train(config: RLTrainerConfig):
     if ckpt_manager is not None:
         logger.info("Writing final checkpoint")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
-        ckpt_manager.wait_for_thread()
         ckpt_manager.maybe_clean()
 
     # Write final checkpoint

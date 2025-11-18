@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from torch import Tensor, nn
+from torch import nn
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.checkpoint.state_dict_saver import save as dcp_save
@@ -86,7 +86,7 @@ class AppState(Stateful):
 
 
 class CheckpointManager:
-    """Utility class to save and load training checkpoints to resume training."""
+    """Utility class to save and load trainer checkpoints to resume SFT and RL training."""
 
     def __init__(self, output_dir: Path, config: CheckpointConfig):
         self.config = config
@@ -94,12 +94,13 @@ class CheckpointManager:
         self.logger = get_logger()
         self.world = get_world()
         self.ckpt_steps: list[int] = []  # Sorted list of steps that have been checkpointed, only used on master rank
-        self.save_thread: threading.Thread | None = None
 
     def get_ckpt_path(self, step: int) -> Path:
+        """Get the path to write the trainer checkpoint for a given step."""
         return self.ckpt_dir / f"step_{step}" / "trainer"
 
     def get_latest_step(self) -> int:
+        """Get the latest checkpoint step from the checkpoint directory."""
         step_dirs = list(self.ckpt_dir.glob("step_*"))
         if len(step_dirs) == 0:
             raise ValueError(f"No checkpoints found in {self.ckpt_dir}")
@@ -117,6 +118,7 @@ class CheckpointManager:
         progress: Progress,
         dataloader: StatefulDataLoader | None = None,
     ):
+        """Save the trainer checkpoint to a given path."""
         self.logger.debug(f"Saving training checkpoint to {path}")
         start_time = time.time()
 
@@ -143,7 +145,7 @@ class CheckpointManager:
         progress: Progress | None,
         dataloader: StatefulDataLoader | None = None,
     ):
-        """Loads a checkpoint from a given path in-place."""
+        """Load the trainer checkpoint from a given path (in-place)."""
         self.logger.debug(f"Loading training checkpoint from {path}")
         start_time = time.time()
 
@@ -177,7 +179,7 @@ class CheckpointManager:
         progress: Progress | None,
         dataloader: StatefulDataLoader | None = None,
     ) -> None:
-        """Loads a checkpoint from a given path in-place."""
+        """Load the trainer checkpoint for a given step (in-place)."""
         if step == -1:
             step = self.get_latest_step()
 
@@ -198,30 +200,16 @@ class CheckpointManager:
         progress: Progress,
         dataloader: StatefulDataLoader | None = None,
     ) -> None:
-        """Saves the full checkpoint state for a specified step."""
+        """Save the full checkpoint state for a specified step."""
         ckpt_path = self.get_ckpt_path(step)
         ckpt_path.parent.mkdir(parents=True, exist_ok=True)
         self.logger.debug(
             f"Signatures before saving training checkpoint: model={get_module_signature(model, compress=True)}, optimizers={', '.join(get_optimizer_signature(optimizer, compress=True) for optimizer in optimizers)}"
         )
 
-        def save_ckpt_and_update_ckpt_steps():
-            """Save checkpoint to disk and update checkpoint steps"""
-            self.save_to_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
-            if self.world.is_master:
-                self.ckpt_steps.append(step)
-
-        if self.config.save_async:
-            self.wait_for_thread()
-            assert self.save_thread is None
-            self.save_thread = threading.Thread(
-                target=save_ckpt_and_update_ckpt_steps,
-                name=f"checkpoint-save-{step}",
-            )
-            self.save_thread.start()
-        else:
-            save_ckpt_and_update_ckpt_steps()
-        torch.distributed.barrier()
+        self.save_to_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
+        if self.world.is_master:
+            self.ckpt_steps.append(step)
 
     def maybe_clean(self) -> None:
         """Deletes past checkpoints beyond the most recent config.keep steps. No-op if config.keep is None."""
@@ -241,18 +229,9 @@ class CheckpointManager:
         # Update checkpoint steps
         self.ckpt_steps = self.ckpt_steps[-self.config.keep :]
 
-    def wait_for_thread(self):
-        if self.save_thread is None:
-            return
-        # Don't try to join if we're in the save thread itself
-        if threading.current_thread() is self.save_thread:
-            return
-        self.save_thread.join()
-        self.save_thread = None
-
 
 class WeightCheckpointManager:
-    """Utility class to save and cleanup HF-compatible weight checkpoints."""
+    """Utility class to save HF-compatible weight checkpoints."""
 
     def __init__(
         self,
@@ -265,7 +244,6 @@ class WeightCheckpointManager:
         self.weights_dir = get_weights_dir(output_dir)
         self.config = config
         self.lora_config = lora_config
-        self.save_async = save_async
         self.logger = get_logger()
         self.world = get_world()
         self.ckpt_steps: list[int] = []  # Sorted list of steps that have been checkpointed, only used on master rank
@@ -273,88 +251,95 @@ class WeightCheckpointManager:
         self.keep = keep
 
     def get_step_path(self, step: int) -> Path:
+        """Get the path to write the weight checkpoint for a given step."""
         return get_step_path(self.weights_dir, step)
-
-    def save_lora_adapters(self, lora_state: dict[str, Tensor], model: nn.Module, step: int):
-        """Save LoRA adapters to separate directory."""
-        adapter_path = self.get_step_path(step) / "lora_adapters"
-        adapter_path.mkdir(parents=True, exist_ok=True)
-
-        torch.save(lora_state, adapter_path / "adapter_model.bin")
-
-        if self.lora_config:
-            save_lora_config(self.lora_config, model, adapter_path)  # Pass model
-
-        self.logger.debug(f"Saved LoRA adapters to {adapter_path}")
 
     def save_to_path(
         self,
         path: Path,
-        state_dict: dict[str, Tensor],
         model,
-        tokenizer,
+        tokenizer: PreTrainedTokenizer,
+        dtype: torch.dtype = torch.bfloat16,
     ):
-        """Save weight checkpoint for given step."""
-        # Save weight checkpoint temporary dir to avoid race condition
+        """Save HF-compatible weight checkpoint to a given path."""
         path.mkdir(parents=True, exist_ok=True)
+        save_to_path_start_time = time.time()
 
-        self.logger.debug(f"Saving weight checkpoint to {path}")
+        # Gather all weights on master rank
+        self.logger.debug("Gathering weights on master rank for weight checkpoint")
+        has_lora = has_lora_layers(model)
         start_time = time.time()
-        # Suppress torch.distributed warnings during checkpoint saving
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
-            warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
+        state_dict = gather_weights_on_master(model, self.world.is_master, dtype, has_lora_layers=has_lora)
+        self.logger.debug(f"Gathered weights on master rank in {time.time() - start_time:.2f} seconds")
 
-            # Save weights
-            save_state_dict(state_dict, path, self.config.save_format, self.config.save_sharded)
+        if has_lora:
+            self.logger.debug("Getting LoRA state dict on master rank for weight checkpoint")
+            start_time = time.time()
+            lora_state_dict = get_adapter_state_dict(model, self.world.is_master)
+            self.logger.debug(f"Got LoRA state dict on master rank in {time.time() - start_time:.2f} seconds")
+        else:
+            lora_state_dict = None
 
-            # Save model config, generation arguments and tokenizer
-            model.config.save_pretrained(path)
-            if model.generation_config:
-                model.generation_config.save_pretrained(path)
-            tokenizer.save_pretrained(path)
+        # Convert TT-MoE layers to HF format if needed
+        if has_tt_moe_layers(state_dict):
+            self.logger.debug("Converting TT-MoE layers to HF format for weight checkpoint")
+            start_time = time.time()
+            convert_tt_to_hf_moe(state_dict)
+            self.logger.debug(f"Converted TT-MoE layers to HF format in {time.time() - start_time:.2f} seconds")
 
-        self.logger.debug(f"Saved weight checkpoint to {path} in {time.time() - start_time:.2f} seconds")
+        if self.world.is_master:
+            self.logger.debug(f"Saving weight checkpoint to {path}")
+            start_time = time.time()
+            # Suppress torch.distributed warnings during checkpoint saving
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
+                warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
+
+                # Save weights
+                save_state_dict(state_dict, path, self.config.save_format, self.config.save_sharded)
+
+                # Save model config, generation arguments and tokenizer
+                model.config.save_pretrained(path)
+                if model.generation_config:
+                    model.generation_config.save_pretrained(path)
+                tokenizer.save_pretrained(path)
+
+            if self.config.save_adapter_separately and lora_state_dict is not None:
+                adapter_path = path / "lora_adapters"
+                adapter_path.mkdir(parents=True, exist_ok=True)
+                torch.save(lora_state_dict, adapter_path / "adapter_model.bin")
+                if self.lora_config:
+                    save_lora_config(self.lora_config, model, adapter_path)  # Pass model
+            self.logger.debug(
+                f"Saved weight checkpoint to {path} in {time.time() - save_to_path_start_time:.2f} seconds"
+            )
 
     def save(
         self,
         step: int,
         model: nn.Module,
         tokenizer: PreTrainedTokenizer,
-        dtype: torch.dtype = torch.bfloat16,
     ):
         """Save a HF-compatible weight-only checkpoint for a given step."""
-
-        # Save LoRA adapters separately if configured
-        has_lora = has_lora_layers(model)
-        if self.config.save_adapter_separately and has_lora:
-            if self.world.is_master:
-                lora_state = get_adapter_state_dict(model, self.world.is_master)
-                self.save_lora_adapters(lora_state, model, step)
-            torch.distributed.barrier()
-
         step_path = self.get_step_path(step)
-        state_dict = gather_weights_on_master(model, self.world.is_master, dtype, has_lora_layers=has_lora)
-        if has_tt_moe_layers(state_dict):
-            convert_tt_to_hf_moe(state_dict)
+        step_path.mkdir(parents=True, exist_ok=True)
 
         def save_weights_and_update_ckpt_steps():
             """Save weight checkpoint"""
+            self.save_to_path(step_path, model, tokenizer)
             if self.world.is_master:
-                self.save_to_path(step_path, state_dict, model, tokenizer)
                 self.ckpt_steps.append(step)
 
-        if self.world.is_master:
-            if self.save_async:
-                self.wait_for_thread()
-                assert self.save_thread is None
-                self.save_thread = threading.Thread(
-                    target=save_weights_and_update_ckpt_steps,
-                    name=f"weight-checkpoint-save-{step}",
-                )
-                self.save_thread.start()
-            else:
-                save_weights_and_update_ckpt_steps()
+        if self.config.save_async:
+            self.wait_for_thread()
+            assert self.save_thread is None
+            self.save_thread = threading.Thread(
+                target=save_weights_and_update_ckpt_steps,
+                name=f"weight-checkpoint-save-{step}",
+            )
+            self.save_thread.start()
+        else:
+            save_weights_and_update_ckpt_steps()
         torch.distributed.barrier()
 
     def maybe_clean(self) -> None:
@@ -375,6 +360,7 @@ class WeightCheckpointManager:
         self.ckpt_steps = self.ckpt_steps[-self.keep :]
 
     def wait_for_thread(self):
+        """Wait for the save thread to finish."""
         if self.save_thread is None:
             return
         # Don't try to join if we're in the save thread itself
@@ -395,7 +381,6 @@ def setup_ckpt_managers(
             output_dir,
             ckpt_config.weights,
             lora_config=lora_config,
-            save_async=ckpt_config.save_async,
             keep=ckpt_config.keep,
         )
     else:
