@@ -138,7 +138,7 @@ class Scheduler:
             model_name=self.config.model.name,
             rollouts_per_example=self.config.rollouts_per_example,
             sampling_args=self.sampling_args,
-            inference_endpoint=inference_client.base_url,
+            inference_endpoint=str(inference_client.base_url),
             processing_class=self.config.model.name,  # Tokenizer name
             max_seq_len=self.seq_len,
             mask_env_responses=self.config.mask_env_responses,
