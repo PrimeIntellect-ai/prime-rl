@@ -300,7 +300,7 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
 def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
     if config.attn == "flash_attention_3" and not is_flash_attn_3_available():
         raise ValueError(
-            "Flash attention 3 is only supported if the flash_attn_3 package is installed. Install with `uv sync --extra flash-attn-3`"
+            "Flash attention 3 is only supported if the flash_attn_3 package is installed. Install with `uv pip install 'flash-attn-3 @ git+https://github.com/Dao-AILab/flash-attention.git@main#subdirectory=hopper' --no-build-isolation`"
         )
 
     logger = get_logger()
