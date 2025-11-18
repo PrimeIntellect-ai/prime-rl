@@ -1,5 +1,4 @@
 import shutil
-import threading
 import time
 import warnings
 from dataclasses import asdict, dataclass
@@ -247,7 +246,6 @@ class WeightCheckpointManager:
         self.logger = get_logger()
         self.world = get_world()
         self.ckpt_steps: list[int] = []  # Sorted list of steps that have been checkpointed, only used on master rank
-        self.save_thread: threading.Thread | None = None
         self.keep = keep
 
     def get_step_path(self, step: int) -> Path:
@@ -324,24 +322,10 @@ class WeightCheckpointManager:
             convert_tt_to_hf_moe(state_dict)
             self.logger.debug(f"Converted TT-MoE layers to HF format in {time.time() - start_time:.2f} seconds")
 
-        def save_weights_and_update_ckpt_steps():
-            """Save weight checkpoint"""
-            self.save_to_path(step_path, state_dict, lora_state_dict, model, tokenizer)
-            if self.world.is_master:
-                self.ckpt_steps.append(step)
-
+        # Save weight checkpoint on master rank
         if self.world.is_master:
-            if self.config.save_async:
-                self.wait_for_thread()
-                assert self.save_thread is None
-                self.save_thread = threading.Thread(
-                    target=save_weights_and_update_ckpt_steps,
-                    name=f"weight-checkpoint-save-{step}",
-                )
-                self.save_thread.start()
-            else:
-                save_weights_and_update_ckpt_steps()
-        torch.distributed.barrier()
+            self.save_to_path(step_path, state_dict, lora_state_dict, model, tokenizer)
+            self.ckpt_steps.append(step)
 
     def maybe_clean(self) -> None:
         """Deletes past checkpoints beyond the most recent config.keep steps. No-op if config.keep is None."""
@@ -359,16 +343,6 @@ class WeightCheckpointManager:
 
         # Update checkpoint steps
         self.ckpt_steps = self.ckpt_steps[-self.keep :]
-
-    def wait_for_thread(self):
-        """Wait for the save thread to finish."""
-        if self.save_thread is None:
-            return
-        # Don't try to join if we're in the save thread itself
-        if threading.current_thread() is self.save_thread:
-            return
-        self.save_thread.join()
-        self.save_thread = None
 
 
 def setup_ckpt_managers(
