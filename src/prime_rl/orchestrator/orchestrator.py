@@ -129,7 +129,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Create ZMQ client for this environment
         logger.info(f"Connecting to {env_name}")
-        client = ZMQEnvironmentClient(endpoints=[endpoint], timeout=60.0)
+        client = ZMQEnvironmentClient(endpoints=[endpoint], timeout=300.0)  # 5 minutes for generate calls
         await client.start()
         env_clients[env_name] = client
 

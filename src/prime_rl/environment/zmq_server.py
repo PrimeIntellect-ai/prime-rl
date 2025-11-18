@@ -126,6 +126,8 @@ class ZMQEnvironmentServer:
                 # Send response: [client_id, request_id, response]
                 await self.socket.send_multipart([client_id, request_id, response_bytes])
 
+                logger.debug(f"Sent {action} response ({len(response_bytes)} bytes)")
+
             except Exception as e:
                 logger.error(f"Error processing request: {e}", exc_info=True)
 
@@ -149,9 +151,8 @@ class ZMQEnvironmentServer:
         zero_truncated_completions = request.get("zero_truncated_completions", False)
         mask_truncated_completions = request.get("mask_truncated_completions", False)
 
-        logger.debug(
-            f"Generating {rollouts_per_example} rollouts for "
-            f"problem {problem.get('example_id')} using {inference_endpoint}"
+        logger.info(
+            f"[{problem.get('example_id')}] Starting generation of {rollouts_per_example} rollouts using {inference_endpoint}"
         )
 
         # Get inference client
@@ -165,13 +166,15 @@ class ZMQEnvironmentServer:
             sampling_args=sampling_args,
         )
 
-        logger.debug(
-            f"Generated {len(generate_outputs.completion)} rollouts, "
+        logger.info(
+            f"[{problem.get('example_id')}] Generated {len(generate_outputs.completion)} rollouts, "
             f"avg_reward={sum(generate_outputs.reward) / len(generate_outputs.reward):.3f}"
         )
 
         # Get tokenizer for processing
         tokenizer = self._get_tokenizer(processing_class)
+
+        logger.info(f"[{problem.get('example_id')}] Processing environment results")
 
         # Process environment results
         processed_outputs: vf.ProcessedOutputs = self.env.process_env_results_vllm(
@@ -190,6 +193,8 @@ class ZMQEnvironmentServer:
         from prime_rl.orchestrator.utils import parse_is_truncated_completions
         responses = [state["responses"] for state in generate_outputs.state]
         is_truncated = parse_is_truncated_completions(responses=responses)
+
+        logger.info(f"[{problem.get('example_id')}] Serializing response for transmission")
 
         # Return processed data (serialize everything for msgpack)
         return {
