@@ -1,5 +1,9 @@
 import asyncio
+from datetime import datetime, date
+from enum import Enum
+from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import numpy as np
 import pandas as pd
@@ -20,12 +24,22 @@ SEMAPHORE: asyncio.Semaphore | None = None
 def serialize_for_msgpack(obj):
     """Convert objects to msgpack-serializable format.
 
-    Handles numpy types, Pydantic models, nested structures, etc.
+    Handles numpy types, Pydantic models, Path objects, datetime, UUID, Enum, nested structures, etc.
     """
     if obj is None:
         return None
     elif isinstance(obj, (str, int, float, bool)):
         return obj
+    elif isinstance(obj, bytes):
+        return obj  # msgpack handles bytes natively
+    elif isinstance(obj, Path):
+        return str(obj)  # Convert Path to string
+    elif isinstance(obj, (datetime, date)):
+        return obj.isoformat()  # Convert datetime to ISO string
+    elif isinstance(obj, UUID):
+        return str(obj)  # Convert UUID to string
+    elif isinstance(obj, Enum):
+        return obj.value  # Convert Enum to its value
     elif isinstance(obj, (np.integer, np.floating)):
         return obj.item()  # Convert numpy scalar to Python scalar
     elif isinstance(obj, np.ndarray):
