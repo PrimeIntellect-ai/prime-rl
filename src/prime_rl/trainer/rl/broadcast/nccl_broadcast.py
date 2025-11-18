@@ -8,7 +8,7 @@ from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 
 from prime_rl.trainer.utils import get_world
-from prime_rl.trainer.weights import convert_tt_layer_to_hf, get_max_layer_num, has_tt_moe_layers, quantize_layer_params
+from prime_rl.trainer.weights import convert_tt_layer_to_hf, get_max_layer_num, has_tt_moe_layers
 
 
 def create_nccl_communicator(
@@ -111,20 +111,18 @@ def filter_state_dict_by_layers(
     """
     Yield a generator of state dicts for each layer as well as the remaining weights.
     """
-    buckets: list[dict[str, torch.Tensor]] = [dict() for _ in range(num_layers + 1)]
 
-    for key, value in state_dict.items():
-        if key.startswith("model.layers."):
-            parts = key.split(".")
-            if len(parts) > 2 and parts[2].isdigit():
-                layer_idx = int(parts[2])
-                if 1 <= layer_idx <= num_layers:
-                    buckets[layer_idx][key] = value
-                    continue
-        buckets[0][key] = value
+    yield 0, {key: value for key, value in state_dict.items() if "model.layers" not in key}
 
-    for idx, bucket in enumerate(buckets):
-        yield idx, bucket
+    for i in range(1, num_layers + 1):  # +1 because layer indices start from 1
+        yield (
+            i,
+            {
+                key: value
+                for key, value in state_dict.items()
+                if key.startswith(f"model.layers.{i}.") or key == f"model.layers.{i}"
+            },
+        )
 
 
 class NCCLBroadcastSender:
@@ -138,7 +136,6 @@ class NCCLBroadcastSender:
         logger,
         timeout: int,
         dtype: torch.dtype = torch.bfloat16,
-        quantization_config: dict | None = None,
     ):
         self.logger = logger
 
@@ -150,14 +147,9 @@ class NCCLBroadcastSender:
 
         self.device = device
         self.dtype = dtype
-        self.quantization_config = quantization_config
 
     @torch.no_grad()
     def broadcast_state_dict(self, model: torch.nn.Module) -> None:
-        
-        if self.training_rank != 0:
-            return
-
         self.logger.debug("Broadcasting weights to inference pool")
 
         state_dict = model.state_dict()
@@ -165,8 +157,9 @@ class NCCLBroadcastSender:
         num_layers = get_max_layer_num(state_dict)
 
         num_state_dict_to_send = num_layers + 1  # we send all layer plus the remaining weights
-        
-        send_integer(num_state_dict_to_send, self.communicator)
+
+        if self.training_rank == 0:
+            send_integer(num_state_dict_to_send, self.communicator)
 
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
 
@@ -181,11 +174,10 @@ class NCCLBroadcastSender:
             if has_tt_moe_layers(state_dict):
                 convert_tt_layer_to_hf(state_dict, i)
 
-            # Quantize layer parameters if quantization config is provided
-            if self.quantization_config is not None:
-                quantize_layer_params(state_dict, i, self.quantization_config)
-
-            send_state_dict(state_dict, self.communicator)
+            if self.training_rank == 0:
+                if self.quantization_config is not None:
+                    quantize_layer_params(state_dict, i, self.quantization_config)
+                send_state_dict(state_dict, self.communicator)
 
         self.logger.info("Weights broadcasted to inference pool")
 
