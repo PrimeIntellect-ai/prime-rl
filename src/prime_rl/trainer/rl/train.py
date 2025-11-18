@@ -134,9 +134,9 @@ def train(config: RLTrainerConfig):
         # Also, with NCCL broadcast, we do not broadcast weights the last async level step as the orchestrator is already finished and will not initialize the receive on the inference; for filesystem broadcast, we do "broadcast" until the final step to allow to resume from the broadcast directory
         last_async_level_steps = config.max_steps and progress.step >= config.max_steps - config.max_async_level
         if progress.step > 0 and (not last_async_level_steps or config.weight_broadcast.type == "filesystem"):
-            broadcast_weights_start_time = time.time()
+            broadcast_weights_start_time = time.perf_counter()
             weight_broadcast.broadcast_weights(model, step=progress.step)
-            broadcast_weights_time = time.time() - broadcast_weights_start_time
+            broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
             # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
             ckpt_interval = config.ckpt and config.ckpt.interval
             interval_to_keep = ckpt_interval if config.weight_broadcast.type == "filesystem" else None
@@ -152,9 +152,9 @@ def train(config: RLTrainerConfig):
         ):
             # Save full checkpoint
             logger.info(f"Saving checkpoint at step {progress.step}")
-            save_ckpt_start_time = time.time()
+            save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
-            save_ckpt_time = time.time() - save_ckpt_start_time
+            save_ckpt_time = time.perf_counter() - save_ckpt_start_time
 
             # Maybe clean up old checkpoints
             ckpt_manager.maybe_clean()
@@ -174,20 +174,20 @@ def train(config: RLTrainerConfig):
             break
 
         logger.info(f"Starting training step {progress.step}")
-        step_start_time = time.time()
+        step_start_time = time.perf_counter()
 
         # Wait for the batch to be available
         logger.info("Waiting for training batch to arrive")
-        wait_for_batch_start_time = time.time()
+        wait_for_batch_start_time = time.perf_counter()
         dataloader.wait_for_batch()
-        wait_for_batch_time = time.time() - wait_for_batch_start_time
+        wait_for_batch_time = time.perf_counter() - wait_for_batch_start_time
         logger.debug(f"Waited for batch to arrive for {wait_for_batch_time:.2f} seconds")
 
         # Load the training batch
         logger.debug("Loading batch")
-        load_data_start_time = time.time()
+        load_data_start_time = time.perf_counter()
         micro_batches = dataloader.get_batch()
-        load_data_time = time.time() - load_data_start_time
+        load_data_time = time.perf_counter() - load_data_start_time
         logger.debug(f"Loaded batch in {load_data_time:.2f} seconds")
 
         batch_size = len(micro_batches)
@@ -195,7 +195,7 @@ def train(config: RLTrainerConfig):
         if config.memory_profiler_path is not None:
             memory_profiler = MemoryProfiler(progress.step, config.memory_profiler_path)
 
-        forward_backward_start_time = time.time()
+        forward_backward_start_time = time.perf_counter()
         seq_len = micro_batches[0]["input_ids"].shape[1]
 
         # Normalize by the local number of unmasked tokens in the batch (per-batch length normalization)
@@ -285,7 +285,7 @@ def train(config: RLTrainerConfig):
         current_lr = optimizer.param_groups[0]["lr"]
         scheduler.step()
 
-        forward_backward_time = time.time() - forward_backward_start_time
+        forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         # TODO: Broadcast weight checkpoint via shardcast
 
@@ -308,7 +308,7 @@ def train(config: RLTrainerConfig):
         peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
 
         # Log step metrics
-        step_time = time.time() - step_start_time
+        step_time = time.perf_counter() - step_start_time
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Entropy: {tensor_stats['entropy/mean']:.4f} | Mismatch KL: {tensor_stats['mismatch_kl/mean']:.4f} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f} GiB"
         if "max_vio/mean" in tensor_stats:
             step_message += f" | Max Vio: {tensor_stats['max_vio/mean']:.4f}"

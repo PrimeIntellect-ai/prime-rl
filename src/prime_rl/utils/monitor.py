@@ -129,7 +129,7 @@ class WandbMonitor:
         assert self.last_log_samples_step <= step, "Step must be greater than last logged step"
         assert self.logger is not None, "Logger is required for sample logging"
         self.logger.info(f"Logging samples to W&B table at step {step}")
-        start_time = time.time()
+        start_time = time.perf_counter()
         batch_size = len(input_tokens)
         num_problems = batch_size // rollouts_per_problem
 
@@ -181,7 +181,7 @@ class WandbMonitor:
                 self.samples.append(sample)
         wandb.log({"samples": self.samples_table}, step=step)
         self.last_log_samples_step = step
-        self.logger.debug(f"Logged samples at step {step} to W&B table in {time.time() - start_time:.2f}s")
+        self.logger.debug(f"Logged samples at step {step} to W&B table in {time.perf_counter() - start_time:.2f}s")
 
     def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:
         if not self.is_master:
@@ -208,13 +208,15 @@ class WandbMonitor:
         )
 
         # Append to distributions
-        start_time = time.time()
+        start_time = time.perf_counter()
         row = {"step": step, **distributions}
         self.distributions.append(row)
         self.distributions_table.add_data(*row.values())
         wandb.log({"distributions": self.distributions_table}, step=step)
         self.last_log_distributions_step = step
-        self.logger.debug(f"Logged distributions at step {step} to W&B table in {time.time() - start_time:.2f}s")
+        self.logger.debug(
+            f"Logged distributions at step {step} to W&B table in {time.perf_counter() - start_time:.2f}s"
+        )
 
     def log_final_samples(self) -> None:
         """Log final samples to W&B table."""
