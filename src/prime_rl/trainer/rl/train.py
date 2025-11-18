@@ -17,6 +17,11 @@ from prime_rl.trainer.rl.broadcast.nccl_broadcast import NCCLBroadcastSender
 from prime_rl.trainer.weights import setup_weight_ckpt_manager
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
+from prime_rl.utils.cp import (
+    maybe_get_padding_logit_from_prev_cp_rank,
+    maybe_shard_for_cp,
+    maybe_update_ring_flash_attn_params_and_shard_for_cp,
+)
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
     shift_logits,
@@ -47,7 +52,7 @@ from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format
 
 
-from ring_flash_attn import substitute_hf_flash_attn, update_ring_flash_attn_params
+from ring_flash_attn import substitute_hf_flash_attn
 
 
 @clean_exit
@@ -228,83 +233,44 @@ def train(config: RLTrainerConfig):
 
         logger.info(f"Starting forward and backward pass ({batch_size=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
+        cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
         for micro_step, micro_batch in enumerate(micro_batches):
             # we only all reduce at the last grad acc step
             model.set_requires_all_reduce(micro_step == len(micro_batches) - 1)
 
-            input_ids = micro_batch["input_ids"].to("cuda")
-            position_ids = micro_batch["position_ids"].to("cuda")
-            advantages = micro_batch["advantages"].to("cuda")
-            loss_mask = micro_batch["loss_mask"].to("cuda")
-            inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
+            input_ids = maybe_shard_for_cp(micro_batch["input_ids"].to("cuda"), cp_rank=cp_rank, cp_world_size=config.model.cp)
+            advantages = maybe_shard_for_cp(micro_batch["advantages"].to("cuda"), cp_rank=cp_rank, cp_world_size=config.model.cp)
+            loss_mask = maybe_shard_for_cp(micro_batch["loss_mask"].to("cuda"), cp_rank=cp_rank, cp_world_size=config.model.cp)
+            inference_logprobs = maybe_shard_for_cp(micro_batch["inference_logprobs"].to("cuda"), cp_rank=cp_rank, cp_world_size=config.model.cp)
+
+            position_ids = maybe_update_ring_flash_attn_params_and_shard_for_cp(
+                position_ids=micro_batch["position_ids"].to("cuda"),
+                cp_rank=cp_rank,
+                cp_world_size=config.model.cp,
+                cp_group=parallel_dims.world_mesh["cp"].get_group(),
+            )
+
             temperature = micro_batch["temperature"]
-
-            maybe_sharded_input_ids = input_ids
-            maybe_sharded_position_ids = position_ids
-            maybe_sharded_inference_logprobs = inference_logprobs
-            maybe_sharded_advantages = advantages
-            maybe_sharded_loss_mask = loss_mask
-
-            if config.model.cp > 1:
-                assert position_ids.shape[0] == 1, "For CP, micro batches must be [1, seq_len]"
-
-                seq_len = input_ids.shape[1]
-
-                flat_position_ids = position_ids.view(-1)
-                seqlens = torch.cat(
-                    [
-                        flat_position_ids[0:1],
-                        flat_position_ids[:-1][(flat_position_ids == 0)[1:]] + 1,
-                        flat_position_ids[-1:] + 1,
-                    ]
-                )
-                cu_seqlens = seqlens.cumsum(dim=0, dtype=torch.int32)
-                update_ring_flash_attn_params(cu_seqlens, parallel_dims.world_mesh["cp"].get_group())
-
-                cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
-                chunked_input_ids = torch.chunk(input_ids, config.model.cp, dim=1)
-                chunked_position_ids = torch.chunk(position_ids, config.model.cp, dim=1)
-                chunked_inference_logprobs = torch.chunk(inference_logprobs, config.model.cp, dim=1)
-                chunked_advantages = torch.chunk(advantages, config.model.cp, dim=1)
-                chunked_loss_mask = torch.chunk(loss_mask, config.model.cp, dim=1)
-
-                maybe_sharded_input_ids = chunked_input_ids[cp_rank]
-                maybe_sharded_position_ids = chunked_position_ids[cp_rank]
-                maybe_sharded_inference_logprobs = chunked_inference_logprobs[cp_rank]
-                maybe_sharded_advantages = chunked_advantages[cp_rank]
-                maybe_sharded_loss_mask = chunked_loss_mask[cp_rank]
 
             # Forward pass
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                logits = forward(model, maybe_sharded_input_ids, maybe_sharded_position_ids).float().contiguous()
+                logits = forward(model, input_ids, position_ids).float().contiguous()
 
-            pre_pad_logits = None
-            if config.model.cp > 1:
-                last_logit = logits[:, -1, :].unsqueeze(1)
-                last_logits = [
-                    torch.zeros(1, 1, logits.shape[2], dtype=logits.dtype, device=logits.device)
-                    for _ in range(config.model.cp)
-                ]
+            left_pad_logit = maybe_get_padding_logit_from_prev_cp_rank(
+                logits, cp_rank, config.model.cp, parallel_dims.world_mesh["cp"].get_group()
+            )
 
-                dist.all_gather(last_logits, last_logit, parallel_dims.world_mesh["cp"].get_group())
-                cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
-                prev_rank = cp_rank - 1
-                if prev_rank >= 0:
-                    pre_pad_logits = last_logits[prev_rank]
-                else:
-                    pre_pad_logits = None
-
-            shifted_logits = shift_logits(logits, left_pad_logit=pre_pad_logits)
+            shifted_logits = shift_logits(logits, left_pad_logit=left_pad_logit)
             shifted_logits = shifted_logits / temperature
-            trainer_logprobs = selective_log_softmax(shifted_logits, maybe_sharded_input_ids)
+            trainer_logprobs = selective_log_softmax(shifted_logits, input_ids)
 
             # Compute loss
-            response_lengths = get_response_lengths(maybe_sharded_position_ids)
+            response_lengths = get_response_lengths(position_ids)
             loss, loss_tensors = compute_loss(
                 trainer_logprobs=trainer_logprobs.squeeze().split(response_lengths),
-                inference_logprobs=maybe_sharded_inference_logprobs.squeeze().split(response_lengths),
-                advantages=maybe_sharded_advantages.squeeze().split(response_lengths),
-                loss_mask=maybe_sharded_loss_mask.squeeze().split(response_lengths),
+                inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
+                advantages=advantages.squeeze().split(response_lengths),
+                loss_mask=loss_mask.squeeze().split(response_lengths),
                 loss_config=config.loss,
                 loss_scale=loss_scale,
             )
@@ -320,9 +286,9 @@ def train(config: RLTrainerConfig):
                 loss.backward()
 
             # Add relevant tensors to tensor dict for logging purposes
-            tensors["trainer_probs"].append(torch.exp(trainer_logprobs)[maybe_sharded_loss_mask].detach().to("cpu"))
-            tensors["inference_probs"].append(torch.exp(maybe_sharded_inference_logprobs)[maybe_sharded_loss_mask].detach().to("cpu"))
-            tensors["entropy"].append(entropy[maybe_sharded_loss_mask].detach().to("cpu"))
+            tensors["trainer_probs"].append(torch.exp(trainer_logprobs)[loss_mask].detach().to("cpu"))
+            tensors["inference_probs"].append(torch.exp(inference_logprobs)[loss_mask].detach().to("cpu"))
+            tensors["entropy"].append(entropy[loss_mask].detach().to("cpu"))
             tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
 
             if is_tt_moe_model(model):

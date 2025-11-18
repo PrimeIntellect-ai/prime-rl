@@ -177,6 +177,7 @@ ATTN_IMPL2CLASS = {
 
 def substitute_prime_rl_flash_attn(process_group: torch.distributed.ProcessGroup, heads_k_stride: int) -> None:
     from ring_flash_attn import llama3_flash_attn_varlen_func
+
     global ATTN_IMPL2CLASS
 
     class RingFlashAttention(FlashAttention):
