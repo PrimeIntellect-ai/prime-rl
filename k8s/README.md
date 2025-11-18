@@ -79,21 +79,6 @@ helm install my-exp ./prime-rl -f ./prime-rl/examples/reverse-text.yaml
 - GPUs: 1 per component
 - Runs on consumer GPUs (RTX 3090/4090)
 
-### wordle (Medium - 2-4 GPUs)
-```bash
-helm install my-exp ./prime-rl -f ./prime-rl/examples/wordle.yaml
-```
-- Model: Qwen3-1.7B
-- GPUs: 2 per component
-- Recommended: H100 GPUs
-
-### alphabet-sort (Medium - 1 GPU with LoRA)
-```bash
-helm install my-exp ./prime-rl -f ./prime-rl/examples/alphabet-sort.yaml
-```
-- Model: Qwen3-4B-Instruct
-- GPUs: 1 per component (uses LoRA)
-- Recommended: H100 GPU
 
 ## Configuration
 
@@ -300,77 +285,7 @@ torchrun \
   src/prime_rl/trainer/sft/train.py @ /app/examples/reverse_text/sft/train.toml
 ```
 
-### Multi-Node with Pod Anti-Affinity
-
-Ensure pods spread across nodes:
-
-```yaml
-# multi-node.yaml
-trainer:
-  replicas: 10
-
-  # Force pods to run on different nodes
-  podAntiAffinity:
-    requiredDuringSchedulingIgnoredDuringExecution:
-    - labelSelector:
-        matchExpressions:
-        - key: role
-          operator: In
-          values:
-          - trainer
-      topologyKey: kubernetes.io/hostname
-```
-
-### Custom Images
-
-Use your own Docker image:
-
-```bash
-helm install my-release ./prime-rl \
-  --set image.repository=myregistry/prime-rl \
-  --set image.tag=custom-v1
-```
-
-### Disable Components
-
-Run only specific components:
-
-```yaml
-# inference-only.yaml
-orchestrator:
-  enabled: false
-
-trainer:
-  enabled: false
-
-inference:
-  enabled: true
-  gpu:
-    count: 8  # Use all GPUs for inference
-```
-
 ## Troubleshooting
-
-### Pods stuck in Pending
-
-Check GPU availability:
-```bash
-kubectl describe node <node-name> | grep nvidia.com/gpu
-```
-
-Check PVC status:
-```bash
-kubectl get pvc
-kubectl describe pvc prime-rl-shared-data
-```
-
-### Out of Memory
-
-Increase memory limits:
-```bash
-helm upgrade my-release ./prime-rl \
-  --set trainer.resources.limits.memory=64Gi
-```
 
 ### Can't access shared storage
 

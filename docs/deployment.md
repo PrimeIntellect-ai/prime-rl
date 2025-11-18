@@ -380,23 +380,12 @@ helm upgrade my-training ./k8s/prime-rl -f custom-scale.yaml
 
 ### Multi-Node Training on K8s
 
-For distributed training across multiple nodes:
+For distributed training across multiple nodes, simply increase the number of trainer replicas:
 
 ```yaml
 # multi-node.yaml
 trainer:
-  replicas: 8  # 8 trainer pods distributed across nodes
-
-  # Ensure pods spread across nodes
-  podAntiAffinity:
-    requiredDuringSchedulingIgnoredDuringExecution:
-    - labelSelector:
-        matchExpressions:
-        - key: role
-          operator: In
-          values:
-          - trainer
-      topologyKey: kubernetes.io/hostname
+  replicas: 8  # 8 trainer pods (will be scheduled across available nodes)
 ```
 
 The orchestrator coordinates all trainers via the shared storage and NCCL communication (port 29501).
@@ -458,23 +447,5 @@ kubectl get pods -l app.kubernetes.io/instance=my-exp
 The chart exposes:
 - **Port 8000** - API endpoint for inference and orchestrator
 - **Port 29501** - NCCL broadcast for distributed coordination
-
-Services use `ClusterIP` by default (internal only). For external access, change to `LoadBalancer`:
-
-```yaml
-inference:
-  service:
-    type: LoadBalancer
-```
-
-### Advanced: Custom Images
-
-Use your own Docker image:
-
-```bash
-helm install my-training ./k8s/prime-rl \
-  --set image.repository=myregistry/prime-rl \
-  --set image.tag=custom-v1
-```
 
 For a complete guide, see the [Kubernetes README](../k8s/README.md).
