@@ -85,14 +85,17 @@ def train(config: RLTrainerConfig):
     logger.info(f"Initializing optimizer ({config.optim})")
     logger.info(f"Using `{config.loss.ratio_type}` importance ratio ({config.loss})")
 
+    # TODO(meow): multi-sched
     optimizer = setup_optimizer(config.optim, model, parallel_dims.world_mesh["dp_shard_cp"])
 
     # Set up the learning rate scheduler
+    # TODO(meow): multi-sched
     scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
     logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
 
     # Set up weight checkpoint manager
     logger.info(f"Initializing weight checkpoint manager ({config.weights})")
+    # TODO(meow): multi-weight-ckpt-manager
     weight_ckpt_manager = setup_weight_ckpt_manager(
         config.output_dir, config.weights, config.ckpt, config.max_async_level, config.model.experimental.lora
     )
@@ -115,6 +118,7 @@ def train(config: RLTrainerConfig):
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
+    # TODO(meow): multi-ckpt-manager
     ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
 
     # Optionally, resume training from a checkpoint
@@ -128,6 +132,7 @@ def train(config: RLTrainerConfig):
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
+    # TODO(meow): multi-data-loader
     dataloader = DataLoader(config.output_dir, progress.step)
     if config.data.fake:
         dataloader = FakeDataLoader(config.data.fake)
