@@ -285,7 +285,7 @@ TBD.
 
 ## Kubernetes
 
-For production deployments on Kubernetes clusters, PRIME-RL provides a Helm chart that manages the entire training infrastructure including orchestrator, trainer, and inference components with automatic pod scheduling, GPU allocation, and shared storage.
+For deployments on Kubernetes clusters, PRIME-RL provides a Helm chart that manages the entire training infrastructure including orchestrator, trainer, and inference components with automatic pod scheduling, GPU allocation, and shared storage.
 
 See the [Kubernetes deployment guide](../k8s/README.md) for complete documentation including:
 - Prerequisites and setup
