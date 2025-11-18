@@ -114,11 +114,11 @@ def train(config: SFTTrainerConfig):
     if ckpt_manager is not None and config.ckpt and config.ckpt.resume_step:
         logger.info(f"Resuming training from checkpoint step {config.ckpt.resume_step}")
         ckpt_manager.load(
+            config.ckpt.resume_step,
             model,
             [optimizer],
             scheduler if not config.ckpt.skip_scheduler else None,
             progress if not config.ckpt.skip_progress else None,
-            step=config.ckpt.resume_step,
             dataloader=dataloader if not config.ckpt.skip_dataloader else None,
         )
         # This redundant setup is necessary because loading the optimizer's state has side effects on the scheduler state dict
@@ -150,7 +150,7 @@ def train(config: SFTTrainerConfig):
             # Save full checkpoint
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.time()
-            ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step, dataloader=dataloader)
+            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
             save_ckpt_time = time.time() - save_ckpt_start_time
 
             # Maybe clean up old checkpoints
@@ -159,7 +159,7 @@ def train(config: SFTTrainerConfig):
             # Save weight checkpoint
             if weight_ckpt_manager is not None:
                 logger.info(f"Saving weight checkpoint at step {progress.step}")
-                weight_ckpt_manager.save(model, tokenizer, step=progress.step)
+                weight_ckpt_manager.save(progress.step, model, tokenizer)
                 # Maybe clean up old weight checkpoint
                 weight_ckpt_manager.maybe_clean()
         else:
@@ -371,14 +371,14 @@ def train(config: SFTTrainerConfig):
     # Write final checkpoint
     if ckpt_manager is not None:
         logger.info("Writing final checkpoint")
-        ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step, dataloader=dataloader)
+        ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
         ckpt_manager.wait_for_thread()
         ckpt_manager.maybe_clean()
 
     # Write final weight checkpoint
     if weight_ckpt_manager is not None:
         logger.info("Writing final weight checkpoint")
-        weight_ckpt_manager.save(model, tokenizer, step=progress.step)
+        weight_ckpt_manager.save(progress.step, model, tokenizer)
         weight_ckpt_manager.wait_for_thread()
         weight_ckpt_manager.maybe_clean()
 

@@ -107,7 +107,7 @@ def train(config: RLTrainerConfig):
     progress = Progress()
     if config.ckpt and ckpt_manager is not None and config.ckpt.resume_step:
         logger.info(f"Resuming training from checkpoint step {config.ckpt.resume_step}")
-        ckpt_manager.load(model, [optimizer], scheduler, progress, step=config.ckpt.resume_step)
+        ckpt_manager.load(config.ckpt.resume_step, model, [optimizer], scheduler, progress)
     logger.info(
         f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
     )
@@ -153,7 +153,7 @@ def train(config: RLTrainerConfig):
             # Save full checkpoint
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.time()
-            ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step)
+            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
             save_ckpt_time = time.time() - save_ckpt_start_time
 
             # Maybe clean up old checkpoints
@@ -162,7 +162,7 @@ def train(config: RLTrainerConfig):
             # Save weight checkpoint
             if weight_ckpt_manager is not None:
                 logger.info(f"Saving weight checkpoint at step {progress.step}")
-                weight_ckpt_manager.save(model, tokenizer, step=progress.step)
+                weight_ckpt_manager.save(progress.step, model, tokenizer)
 
                 # Maybe clean up old weight checkpoint
                 weight_ckpt_manager.maybe_clean()
@@ -373,14 +373,14 @@ def train(config: RLTrainerConfig):
     # Write final checkpoint
     if ckpt_manager is not None:
         logger.info("Writing final checkpoint")
-        ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step)
+        ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
         ckpt_manager.wait_for_thread()
         ckpt_manager.maybe_clean()
 
     # Write final checkpoint
     if weight_ckpt_manager is not None:
         logger.info("Writing final weight checkpoint")
-        weight_ckpt_manager.save(model, tokenizer, step=progress.step)
+        weight_ckpt_manager.save(progress.step, model, tokenizer)
         weight_ckpt_manager.wait_for_thread()
         weight_ckpt_manager.maybe_clean()
 

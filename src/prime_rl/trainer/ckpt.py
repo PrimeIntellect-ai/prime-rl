@@ -110,14 +110,14 @@ class CheckpointManager:
 
     def save_to_path(
         self,
-        ckpt_path: Path,
+        path: Path,
         model: nn.Module,
         optimizers: list[Optimizer],
         scheduler: LRScheduler,
         progress: Progress,
         dataloader: StatefulDataLoader | None = None,
     ):
-        self.logger.debug(f"Saving training checkpoint to {ckpt_path}")
+        self.logger.debug(f"Saving training checkpoint to {path}")
         start_time = time.time()
 
         # Create checkpoint state
@@ -125,18 +125,18 @@ class CheckpointManager:
 
         # Checkpoint the local dataloader
         if dataloader is not None:
-            dataloader_dir = ckpt_path / "dataloader"
+            dataloader_dir = path / "dataloader"
             dataloader_dir.mkdir(parents=True, exist_ok=True)
             torch.save(dataloader.state_dict(), dataloader_dir / f"rank_{self.world.rank}.pt")
 
         # Save sharded state
-        dcp_save(state_dict, checkpoint_id=ckpt_path)
+        dcp_save(state_dict, checkpoint_id=path)
 
         self.logger.debug(f"Training checkpoint saved in {time.time() - start_time:.2f} seconds")
 
     def load_from_path(
         self,
-        ckpt_path: Path,
+        path: Path,
         model: nn.Module,
         optimizers: list[Optimizer],
         scheduler: LRScheduler | None,
@@ -144,22 +144,22 @@ class CheckpointManager:
         dataloader: StatefulDataLoader | None = None,
     ):
         """Loads a checkpoint from a given path in-place."""
-        self.logger.debug(f"Loading training checkpoint from {ckpt_path}")
+        self.logger.debug(f"Loading training checkpoint from {path}")
         start_time = time.time()
 
         # Load sharded state
         app_state = AppState(model, optimizers, scheduler, progress)
         state_dict = {"app": app_state}
-        dcp_load(state_dict=state_dict, checkpoint_id=ckpt_path)
+        dcp_load(state_dict=state_dict, checkpoint_id=path)
 
         # Load the dataloader
         if dataloader is not None:
-            dataloader_path = ckpt_path / "dataloader" / f"rank_{self.world.rank}.pt"
+            dataloader_path = path / "dataloader" / f"rank_{self.world.rank}.pt"
             if not dataloader_path.exists():
                 self.logger.warning(
                     f"Did not find local dataloader checkpoint at path {dataloader_path}. This might be because you tried restarting the trainer with a different world size. Falling back to using the master rank's dataloader checkpoint. Note, that this may cause training inconsistencies."
                 )
-                dataloader_path = ckpt_path / "dataloader" / "rank_0.pt"
+                dataloader_path = path / "dataloader" / "rank_0.pt"
                 if not dataloader_path.exists():
                     raise RuntimeError(
                         f"Couldn't fallback to using the master rank's dataloader checkpoint, because dataloder checkpoint was not found at path {dataloader_path}. Cannot resume training."
@@ -170,11 +170,11 @@ class CheckpointManager:
 
     def load(
         self,
+        step: int,
         model: nn.Module,
         optimizers: list[Optimizer],
         scheduler: LRScheduler | None,
         progress: Progress | None,
-        step: int,
         dataloader: StatefulDataLoader | None = None,
     ) -> None:
         """Loads a checkpoint from a given path in-place."""
@@ -191,11 +191,11 @@ class CheckpointManager:
 
     def save(
         self,
+        step: int,
         model: nn.Module,
         optimizers: list[Optimizer],
         scheduler: LRScheduler,
         progress: Progress,
-        step: int,
         dataloader: StatefulDataLoader | None = None,
     ) -> None:
         """Saves the full checkpoint state for a specified step."""
@@ -204,23 +204,24 @@ class CheckpointManager:
         self.logger.debug(
             f"Signatures before saving training checkpoint: model={get_module_signature(model, compress=True)}, optimizers={', '.join(get_optimizer_signature(optimizer, compress=True) for optimizer in optimizers)}"
         )
-        if self.world.is_master:
-            if self.config.save_async:
-                self.wait_for_thread()
-                assert self.save_thread is None
-                self.save_thread = threading.Thread(
-                    target=self.save_to_path,
-                    args=(ckpt_path, model, optimizers, scheduler, progress, dataloader),
-                    name=f"weight-checkpoint-save-{step}",
-                )
-                self.save_thread.start()
-            else:
-                self.save_to_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
-        torch.distributed.barrier()
 
-        # Append to list of saved steps
-        if self.world.is_master:
-            self.ckpt_steps.append(step)
+        def save_ckpt_and_update_ckpt_steps():
+            """Save checkpoint to disk and update checkpoint steps"""
+            self.save_to_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
+            if self.world.is_master:
+                self.ckpt_steps.append(step)
+
+        if self.config.save_async:
+            self.wait_for_thread()
+            assert self.save_thread is None
+            self.save_thread = threading.Thread(
+                target=save_ckpt_and_update_ckpt_steps,
+                name=f"checkpoint-save-{step}",
+            )
+            self.save_thread.start()
+        else:
+            save_ckpt_and_update_ckpt_steps()
+        torch.distributed.barrier()
 
     def maybe_clean(self) -> None:
         """Deletes past checkpoints beyond the most recent config.keep steps. No-op if config.keep is None."""
@@ -288,17 +289,16 @@ class WeightCheckpointManager:
 
     def save_to_path(
         self,
+        path: Path,
         state_dict: dict[str, Tensor],
         model,
         tokenizer,
-        step: int,
     ):
         """Save weight checkpoint for given step."""
         # Save weight checkpoint temporary dir to avoid race condition
-        step_path = self.get_step_path(step)
-        step_path.mkdir(parents=True, exist_ok=True)
+        path.mkdir(parents=True, exist_ok=True)
 
-        self.logger.debug(f"Saving weight checkpoint to {step_path}")
+        self.logger.debug(f"Saving weight checkpoint to {path}")
         start_time = time.time()
         # Suppress torch.distributed warnings during checkpoint saving
         with warnings.catch_warnings():
@@ -306,21 +306,21 @@ class WeightCheckpointManager:
             warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
 
             # Save weights
-            save_state_dict(state_dict, step_path, self.config.save_format, self.config.save_sharded)
+            save_state_dict(state_dict, path, self.config.save_format, self.config.save_sharded)
 
             # Save model config, generation arguments and tokenizer
-            model.config.save_pretrained(step_path)
+            model.config.save_pretrained(path)
             if model.generation_config:
-                model.generation_config.save_pretrained(step_path)
-            tokenizer.save_pretrained(step_path)
+                model.generation_config.save_pretrained(path)
+            tokenizer.save_pretrained(path)
 
-        self.logger.debug(f"Saved weight checkpoint to {step_path} in {time.time() - start_time:.2f} seconds")
+        self.logger.debug(f"Saved weight checkpoint to {path} in {time.time() - start_time:.2f} seconds")
 
     def save(
         self,
+        step: int,
         model: nn.Module,
         tokenizer: PreTrainedTokenizer,
-        step: int,
         dtype: torch.dtype = torch.bfloat16,
     ):
         """Save a HF-compatible weight-only checkpoint for a given step."""
@@ -333,22 +333,28 @@ class WeightCheckpointManager:
                 self.save_lora_adapters(lora_state, model, step)
             torch.distributed.barrier()
 
-        cpu_state = gather_weights_on_master(model, self.world.is_master, dtype, has_lora_layers=has_lora)
-        if has_tt_moe_layers(cpu_state):
-            convert_tt_to_hf_moe(cpu_state)
+        step_path = self.get_step_path(step)
+        state_dict = gather_weights_on_master(model, self.world.is_master, dtype, has_lora_layers=has_lora)
+        if has_tt_moe_layers(state_dict):
+            convert_tt_to_hf_moe(state_dict)
+
+        def save_weights_and_update_ckpt_steps():
+            """Save weight checkpoint"""
+            self.save_to_path(step_path, state_dict, model, tokenizer)
+            if self.world.is_master:
+                self.ckpt_steps.append(step)
 
         if self.world.is_master:
             if self.save_async:
                 self.wait_for_thread()
                 assert self.save_thread is None
                 self.save_thread = threading.Thread(
-                    target=self.save_to_path,
-                    args=(cpu_state, model, tokenizer, step),
+                    target=save_weights_and_update_ckpt_steps,
                     name=f"weight-checkpoint-save-{step}",
                 )
                 self.save_thread.start()
             else:
-                self.save_to_path(cpu_state, model, tokenizer, step)
+                save_weights_and_update_ckpt_steps()
         torch.distributed.barrier()
 
     def maybe_clean(self) -> None:
