@@ -101,7 +101,7 @@ def get_model(
             case "custom":
                 model_cls = AutoModelForCausalLMPrimeRL
 
-        load_model_start_time = time.time()
+        load_model_start_time = time.perf_counter()
         if device == torch.device("meta"):
             logger.info(f"Loading model {config.name} using {model_cls.__name__} to meta device")
             model = model_cls.from_config(model_config, trust_remote_code=config.trust_remote_code, dtype=dtype)
@@ -113,7 +113,7 @@ def get_model(
                 trust_remote_code=config.trust_remote_code,
                 dtype=dtype,
             )
-        logger.debug(f"Loaded model {config.name} in {time.time() - load_model_start_time:.2f} seconds")
+        logger.debug(f"Loaded model {config.name} in {time.perf_counter() - load_model_start_time:.2f} seconds")
 
     assert model.lm_head.weight.dtype == dtype, (
         f"LM head dtype wasnt loaded correctly {model.lm_head.weight.dtype} != {dtype}"
@@ -227,7 +227,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     torch.distributed.barrier()
 
     logger.info(f"Loading weights using HF DCP from {snapshot_path}")
-    load_dcp_start_time = time.time()
+    load_dcp_start_time = time.perf_counter()
     dcp_load(
         model.state_dict(),
         storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),
@@ -235,7 +235,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
         # planner=DefaultLoadPlanner(allow_partial_load=True),
     )
     fix_model_post_empty(model)
-    logger.debug(f"Loaded weights using HF DCP in {time.time() - load_dcp_start_time:.2f} seconds")
+    logger.debug(f"Loaded weights using HF DCP in {time.perf_counter() - load_dcp_start_time:.2f} seconds")
 
 
 def can_load_dcp_from_hf(model: nn.Module):

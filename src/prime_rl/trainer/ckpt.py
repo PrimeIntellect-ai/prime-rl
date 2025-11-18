@@ -121,7 +121,7 @@ class CheckpointManager:
     ):
         """Save the trainer checkpoint to a given path."""
         self.logger.debug(f"Saving training checkpoint to {path}")
-        start_time = time.time()
+        start_time = time.perf_counter()
 
         # Create checkpoint state
         state_dict = {"app": AppState(model, optimizers, scheduler, progress)}
@@ -135,7 +135,7 @@ class CheckpointManager:
         # Save sharded state
         dcp_save(state_dict, checkpoint_id=path)
 
-        self.logger.debug(f"Training checkpoint saved in {time.time() - start_time:.2f} seconds")
+        self.logger.debug(f"Training checkpoint saved in {time.perf_counter() - start_time:.2f} seconds")
 
     def load_from_path(
         self,
@@ -148,7 +148,7 @@ class CheckpointManager:
     ):
         """Load the trainer checkpoint from a given path (in-place)."""
         self.logger.debug(f"Loading training checkpoint from {path}")
-        start_time = time.time()
+        start_time = time.perf_counter()
 
         # Load sharded state
         app_state = AppState(model, optimizers, scheduler, progress)
@@ -169,7 +169,7 @@ class CheckpointManager:
                     )
             dataloader.load_state_dict(torch.load(dataloader_path))
 
-        self.logger.debug(f"Training checkpoint loaded in {time.time() - start_time:.2f} seconds")
+        self.logger.debug(f"Training checkpoint loaded in {time.perf_counter() - start_time:.2f} seconds")
 
     def load(
         self,
@@ -264,7 +264,7 @@ class WeightCheckpointManager:
     ):
         """Save HF-compatible weight checkpoint to a given path."""
         path.mkdir(parents=True, exist_ok=True)
-        start_time = time.time()
+        start_time = time.perf_counter()
 
         self.logger.debug(f"Saving weight checkpoint to {path}")
         # Suppress torch.distributed warnings during checkpoint saving
@@ -287,7 +287,7 @@ class WeightCheckpointManager:
             torch.save(lora_state_dict, adapter_path / "adapter_model.bin")
             if self.lora_config:
                 save_lora_config(self.lora_config, model, adapter_path)  # Pass model
-        self.logger.debug(f"Saved weight checkpoint to {path} in {time.time() - start_time:.2f} seconds")
+        self.logger.debug(f"Saved weight checkpoint to {path} in {time.perf_counter() - start_time:.2f} seconds")
 
     def save(
         self,
@@ -302,26 +302,26 @@ class WeightCheckpointManager:
         # Gather all weights on master rank
         self.logger.debug("Gathering weights on master rank for weight checkpoint")
         has_lora = has_lora_layers(model)
-        start_time = time.time()
+        start_time = time.perf_counter()
         state_dict = gather_weights_on_master(
             model, self.world.is_master, dtype=torch.bfloat16, has_lora_layers=has_lora
         )
-        self.logger.debug(f"Gathered weights on master rank in {time.time() - start_time:.2f} seconds")
+        self.logger.debug(f"Gathered weights on master rank in {time.perf_counter() - start_time:.2f} seconds")
 
         if has_lora:
             self.logger.debug("Getting LoRA state dict on master rank for weight checkpoint")
-            start_time = time.time()
+            start_time = time.perf_counter()
             lora_state_dict = get_adapter_state_dict(model, self.world.is_master)
-            self.logger.debug(f"Got LoRA state dict on master rank in {time.time() - start_time:.2f} seconds")
+            self.logger.debug(f"Got LoRA state dict on master rank in {time.perf_counter() - start_time:.2f} seconds")
         else:
             lora_state_dict = None
 
         # Convert TT-MoE layers to HF format if needed
         if has_tt_moe_layers(state_dict):
             self.logger.debug("Converting TT-MoE layers to HF format for weight checkpoint")
-            start_time = time.time()
+            start_time = time.perf_counter()
             convert_tt_to_hf_moe(state_dict)
-            self.logger.debug(f"Converted TT-MoE layers to HF format in {time.time() - start_time:.2f} seconds")
+            self.logger.debug(f"Converted TT-MoE layers to HF format in {time.perf_counter() - start_time:.2f} seconds")
 
         # Save weight checkpoint on master rank
         if self.world.is_master:

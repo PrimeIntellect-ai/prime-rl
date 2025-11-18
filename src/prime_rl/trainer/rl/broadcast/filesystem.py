@@ -27,7 +27,7 @@ class FileSystemWeightBroadcast(WeightBroadcast):
     def broadcast_weights(self, model: nn.Module, step: int):
         """Broadcast weights by saving a HF-compatible checkpoint to shared filesystem and notifies the orchestrator."""
         self.logger.debug("Starting broadcasting weights to inference engine via shared filesystem")
-        start_time = time.time()
+        start_time = time.perf_counter()
         has_lora = has_lora_layers(model)
         state_dict = gather_weights_on_master(model, is_master=self.world.is_master, has_lora_layers=has_lora)
         if self.world.is_master:
@@ -41,4 +41,4 @@ class FileSystemWeightBroadcast(WeightBroadcast):
 
             # Notify the orchestrator at the end of step to signal that it is safe to load weights from shared filesystem
             self.notify_orchestrator(step)
-            self.logger.debug(f"Weights broadcasted in {time.time() - start_time:.2f}s")
+            self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
