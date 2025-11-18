@@ -150,7 +150,7 @@ def train(config: SFTTrainerConfig):
             # Save full checkpoint
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.time()
-            ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step)
+            ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step, dataloader=dataloader)
             save_ckpt_time = time.time() - save_ckpt_start_time
 
             # Maybe clean up old checkpoints
@@ -371,11 +371,13 @@ def train(config: SFTTrainerConfig):
         logger.info("Writing final checkpoint")
         ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step, dataloader=dataloader)
         ckpt_manager.maybe_clean()
+        ckpt_manager.wait_for_thread()
 
     # Write final weight checkpoint
     if weight_ckpt_manager is not None:
         logger.info("Writing final weight checkpoint")
         weight_ckpt_manager.save(model, tokenizer, step=progress.step)
+        weight_ckpt_manager.wait_for_thread()
 
     logger.info(f"Peak memory: {max(to_col_format(monitor.history)['perf/peak_memory']):.1f} GiB")
     logger.success("SFT trainer finished!")
