@@ -18,6 +18,7 @@ spec:
   template:
     metadata:
       labels:
+        {{- include "prime-rl.selectorLabels" . | nindent 8 }}
         {{- include "prime-rl.componentLabels" . | nindent 8 }}
         role: orchestrator
     spec:
@@ -90,7 +91,7 @@ spec:
       volumes:
       - name: shared-data
         persistentVolumeClaim:
-          claimName: {{ .Values.storage.name }}
+          claimName: {{ .Release.Name }}-shared-data
       {{- end }}
 {{- end }}
 ---
@@ -114,6 +115,7 @@ spec:
   template:
     metadata:
       labels:
+        {{- include "prime-rl.selectorLabels" . | nindent 8 }}
         {{- include "prime-rl.componentLabels" . | nindent 8 }}
         role: inference
     spec:
@@ -194,7 +196,7 @@ spec:
       volumes:
       - name: shared-data
         persistentVolumeClaim:
-          claimName: {{ .Values.storage.name }}
+          claimName: {{ .Release.Name }}-shared-data
       {{- end }}
 {{- end }}
 ---
@@ -218,6 +220,7 @@ spec:
   template:
     metadata:
       labels:
+        {{- include "prime-rl.selectorLabels" . | nindent 8 }}
         {{- include "prime-rl.componentLabels" . | nindent 8 }}
         role: trainer
     spec:
@@ -302,6 +305,6 @@ spec:
       volumes:
       - name: shared-data
         persistentVolumeClaim:
-          claimName: {{ .Values.storage.name }}
+          claimName: {{ .Release.Name }}-shared-data
       {{- end }}
 {{- end }}

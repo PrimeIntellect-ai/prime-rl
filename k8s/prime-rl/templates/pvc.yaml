@@ -2,7 +2,7 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: {{ .Values.storage.name }}
+  name: {{ .Release.Name }}-shared-data
   namespace: {{ .Values.namespace }}
   labels:
     {{- include "prime-rl.labels" . | nindent 4 }}

@@ -14,7 +14,7 @@ image:
 # Shared storage configuration
 storage:
   enabled: true
-  name: prime-rl-shared-data
+  # PVC name will be automatically set to {{ .Release.Name }}-shared-data
   storageClassName: nfs
   accessModes:
     - ReadWriteMany
@@ -46,8 +46,8 @@ orchestrator:
   # - name: CUSTOM_ENV
   #   value: "value"
 
-  nodeSelector:
-    nvidia.com/gpu.present: "true"
+  nodeSelector: {}
+    # nvidia.com/gpu.present: "true"  # Orchestrator doesn't need GPUs
 
 # Inference component
 inference:
