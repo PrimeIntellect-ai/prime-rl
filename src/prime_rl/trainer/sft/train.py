@@ -372,14 +372,15 @@ def train(config: SFTTrainerConfig):
     if ckpt_manager is not None:
         logger.info("Writing final checkpoint")
         ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step, dataloader=dataloader)
-        ckpt_manager.maybe_clean()
         ckpt_manager.wait_for_thread()
+        ckpt_manager.maybe_clean()
 
     # Write final weight checkpoint
     if weight_ckpt_manager is not None:
         logger.info("Writing final weight checkpoint")
         weight_ckpt_manager.save(model, tokenizer, step=progress.step)
         weight_ckpt_manager.wait_for_thread()
+        weight_ckpt_manager.maybe_clean()
 
     logger.info(f"Peak memory: {max(to_col_format(monitor.history)['perf/peak_memory']):.1f} GiB")
     logger.success("SFT trainer finished!")
