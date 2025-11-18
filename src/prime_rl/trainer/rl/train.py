@@ -145,23 +145,6 @@ def train(config: RLTrainerConfig):
             broadcast_weights_time = 0
 
         if (
-            weight_ckpt_manager is not None
-            and (config.weights and config.weights.interval)
-            and not (is_first_step or is_last_step)
-            and progress.step % config.weights.interval == 0
-        ):
-            # Save weight checkpoint
-            logger.info(f"Saving weight checkpoint at step {progress.step}")
-            save_weights_start_time = time.time()
-            weight_ckpt_manager.save(model, tokenizer, step=progress.step)
-            save_weights_time = time.time() - save_weights_start_time
-
-            # Maybe clean up old weight checkpoint
-            maybe_clean(weight_ckpt_manager.weights_dir, progress.step, config.max_async_level, config.weights.interval)
-        else:
-            save_weights_time = 0
-
-        if (
             ckpt_manager is not None
             and (config.ckpt and config.ckpt.interval)
             and not (is_first_step or is_last_step)
@@ -175,6 +158,16 @@ def train(config: RLTrainerConfig):
 
             # Maybe clean up old checkpoints
             ckpt_manager.maybe_clean()
+
+            # Save weight checkpoint
+            if weight_ckpt_manager is not None:
+                logger.info(f"Saving weight checkpoint at step {progress.step}")
+                weight_ckpt_manager.save(model, tokenizer, step=progress.step)
+
+                # Maybe clean up old weight checkpoint
+                maybe_clean(
+                    weight_ckpt_manager.weights_dir, progress.step, config.max_async_level, config.ckpt.interval
+                )
         else:
             save_ckpt_time = 0
 
@@ -350,7 +343,6 @@ def train(config: RLTrainerConfig):
             "time/step": step_time,
             "time/wait_for_batch": wait_for_batch_time,
             "time/load_data": load_data_time,
-            "time/save_weights": save_weights_time,
             "time/broadcast_weights": broadcast_weights_time,
             "time/save_ckpt": save_ckpt_time,
             "time/forward_backward": forward_backward_time,
@@ -381,15 +373,15 @@ def train(config: RLTrainerConfig):
     monitor.log_final_distributions()
 
     # Write final checkpoint
-    if weight_ckpt_manager is not None:
-        logger.info("Writing final weight checkpoint")
-        weight_ckpt_manager.save(model, tokenizer, step=progress.step)
-
-    # Write final checkpoint
     if ckpt_manager is not None:
         logger.info("Writing final checkpoint")
         ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step)
         ckpt_manager.maybe_clean()
+
+    # Write final checkpoint
+    if weight_ckpt_manager is not None:
+        logger.info("Writing final weight checkpoint")
+        weight_ckpt_manager.save(model, tokenizer, step=progress.step)
 
     logger.info(f"Peak memory: {max(to_col_format(monitor.history)['perf/peak_memory']):.1f} GiB")
     logger.success("RL trainer finished!")
