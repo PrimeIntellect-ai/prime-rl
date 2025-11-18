@@ -175,6 +175,8 @@ def train(config: SFTTrainerConfig):
 
         step_start_time = time.perf_counter()
         forward_backward_start_time = time.perf_counter()
+        step_start_time = time.perf_counter()
+        forward_backward_start_time = time.perf_counter()
         grad_accum_steps = (
             config.data.batch_size
             * config.model.cp
@@ -267,6 +269,7 @@ def train(config: SFTTrainerConfig):
         scheduler.step()
 
         forward_backward_time = time.perf_counter() - forward_backward_start_time
+        forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         # Optionally, dump memory snapshot
         if memory_profiler is not None:
@@ -288,6 +291,7 @@ def train(config: SFTTrainerConfig):
         peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
 
         # Log step metrics
+        step_time = time.perf_counter() - step_start_time
         step_time = time.perf_counter() - step_start_time
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {batch_loss.item():.4f} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%)"
         if is_tt_moe_model(model) and max_vio is not None:

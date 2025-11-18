@@ -179,6 +179,7 @@ async def orchestrate(config: OrchestratorConfig):
         ):
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
+            save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(progress, buffer, step=progress.step)
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
 
@@ -188,8 +189,10 @@ async def orchestrate(config: OrchestratorConfig):
 
         logger.info(f"Starting orchestrator step {progress.step}")
         step_start_time = time.perf_counter()
+        step_start_time = time.perf_counter()
 
         # Schedule generating the training batch
+        generate_completions_start_time = time.perf_counter()
         generate_completions_start_time = time.perf_counter()
         train_task = asyncio.create_task(scheduler.generate_batch(step=progress.step))
 
@@ -238,6 +241,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Await train rollouts, process results and write batch to disk to consume by trainer
         await train_task
+        generate_completions_time = time.perf_counter() - generate_completions_start_time
         generate_completions_time = time.perf_counter() - generate_completions_start_time
         train_rollouts = train_task.result()
         all_data_ranks_batches = prepare_batch(
@@ -314,6 +318,7 @@ async def orchestrate(config: OrchestratorConfig):
         per_env_reward = results_df.groupby("task").reward.mean().to_dict() if num_envs_in_batch > 1 else None
         per_env_count = results_df.task.value_counts().to_dict() if num_envs_in_batch > 1 else None
 
+        step_time = time.perf_counter() - step_start_time
         step_time = time.perf_counter() - step_start_time
         to_log = {
             # Progress metrics

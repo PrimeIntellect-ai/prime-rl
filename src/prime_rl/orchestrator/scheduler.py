@@ -161,9 +161,11 @@ class Scheduler:
             )
 
             update_weights_start_time = time.perf_counter()
+            update_weights_start_time = time.perf_counter()
             await update_weights(
                 self.admin_clients, get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
             )
+            self.update_weights_time = time.perf_counter() - update_weights_start_time
             self.update_weights_time = time.perf_counter() - update_weights_start_time
             self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
 
