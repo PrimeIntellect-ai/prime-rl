@@ -175,11 +175,9 @@ def train(config: RLTrainerConfig):
 
         logger.info(f"Starting training step {progress.step}")
         step_start_time = time.perf_counter()
-        step_start_time = time.perf_counter()
 
         # Wait for the batch to be available
         logger.info("Waiting for training batch to arrive")
-        wait_for_batch_start_time = time.perf_counter()
         wait_for_batch_start_time = time.perf_counter()
         dataloader.wait_for_batch()
         wait_for_batch_time = time.perf_counter() - wait_for_batch_start_time
@@ -188,7 +186,6 @@ def train(config: RLTrainerConfig):
 
         # Load the training batch
         logger.debug("Loading batch")
-        load_data_start_time = time.perf_counter()
         load_data_start_time = time.perf_counter()
         micro_batches = dataloader.get_batch()
         load_data_time = time.perf_counter() - load_data_start_time
@@ -200,7 +197,6 @@ def train(config: RLTrainerConfig):
         if config.memory_profiler_path is not None:
             memory_profiler = MemoryProfiler(progress.step, config.memory_profiler_path)
 
-        forward_backward_start_time = time.perf_counter()
         forward_backward_start_time = time.perf_counter()
         seq_len = micro_batches[0]["input_ids"].shape[1]
 
@@ -292,7 +288,6 @@ def train(config: RLTrainerConfig):
         scheduler.step()
 
         forward_backward_time = time.perf_counter() - forward_backward_start_time
-        forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         # TODO: Broadcast weight checkpoint via shardcast
 
@@ -315,7 +310,6 @@ def train(config: RLTrainerConfig):
         peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
 
         # Log step metrics
-        step_time = time.perf_counter() - step_start_time
         step_time = time.perf_counter() - step_start_time
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Entropy: {tensor_stats['entropy/mean']:.4f} | Mismatch KL: {tensor_stats['mismatch_kl/mean']:.4f} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f} GiB"
         if "max_vio/mean" in tensor_stats:
