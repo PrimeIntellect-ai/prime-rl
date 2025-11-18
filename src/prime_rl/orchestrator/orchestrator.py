@@ -2,13 +2,8 @@ import asyncio
 import hashlib
 import tempfile
 import time
-import uuid
 
-import pandas as pd
-from datasets import Dataset as HFDataset
-from loguru import logger
-
-from prime_rl.orchestrator.patches import monkey_patch_oai_iterable_types, monkey_patch_chat_completion_logprobs
+from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 
 # This monkey patch is necessary to avoid Pydantic validating fields using typing.Iterable (e.g. in multimodal or tool call messages) lazily which leads to tokenization errors, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1249
 monkey_patch_oai_iterable_types()
@@ -18,24 +13,25 @@ monkey_patch_oai_iterable_types()
 monkey_patch_chat_completion_logprobs()
 
 # Import environment before any other imports
-# ruff: noqa: I001,F401
-from prime_rl.orchestrator import envs
-from prime_rl.orchestrator.scheduler import Scheduler
-from prime_rl.orchestrator.utils import get_sampling_args, set_semaphore
-
-# ruff: noqa: I001,F401
-import lovely_tensors as lt
+import pandas as pd
 import torch
 import verifiers as vf
+from loguru import logger
 from transformers import AutoTokenizer
 
+from prime_rl.eval.utils import run_evals
 from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.orchestrator.config import BufferConfig, OrchestratorConfig
+from prime_rl.orchestrator.scheduler import Scheduler
+from prime_rl.orchestrator.utils import (
+    get_sampling_args,
+    print_benchmark,
+    set_semaphore,
+)
 from prime_rl.orchestrator.env_manager import EnvironmentManager
 from prime_rl.orchestrator.zmq_client import ZMQEnvironmentClient
-from prime_rl.eval.utils import run_evals
 from prime_rl.utils.client import (
     check_has_model,
     check_health,
@@ -46,22 +42,17 @@ from prime_rl.utils.client import (
     setup_evals_client,
     update_weights,
 )
-from prime_rl.utils.vf import generate_batch
 from prime_rl.utils.logger import setup_logger
-from prime_rl.orchestrator.utils import (
-    print_benchmark,
-)
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import (
     clean_exit,
-    format_num,
+    get_broadcast_dir,
     get_rollout_dir,
     get_step_path,
-    get_weights_dir,
     to_col_format,
 )
-import numpy as np
+from prime_rl.utils.vf import generate_batch
 
 
 @clean_exit
@@ -214,9 +205,9 @@ async def orchestrate(config: OrchestratorConfig):
     progress = Progress()
     if config.ckpt and ckpt_manager and config.ckpt.resume_step:
         ckpt_manager.load(progress, buffer, step=config.ckpt.resume_step)
-        logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
+        logger.info(f"Resuming training from checkpoint step {config.ckpt.resume_step}")
         scheduler.ckpt_step = progress.step  # Always resume from the latest checkpoint
-        await update_weights(admin_clients, get_step_path(get_weights_dir(config.output_dir), scheduler.ckpt_step))
+        await update_weights(admin_clients, get_step_path(get_broadcast_dir(config.output_dir), scheduler.ckpt_step))
     else:
         logger.info("Training from scratch. Resetting weights to base model")
         await reload_weights(admin_clients)
@@ -250,9 +241,6 @@ async def orchestrate(config: OrchestratorConfig):
             save_ckpt_start_time = time.time()
             ckpt_manager.save(progress, buffer, step=progress.step)
             save_ckpt_time = time.time() - save_ckpt_start_time
-
-            # Maybe clean up old orchestrator checkpoints
-            ckpt_manager.maybe_clean()
 
         # Break if we have reached the maximum number of steps
         if config.max_steps and progress.step >= config.max_steps:

@@ -5,15 +5,14 @@ from datetime import timedelta
 # Import environment before any other imports
 # ruff: noqa: I001
 
+from prime_rl.trainer.rl.broadcast import setup_weight_broadcast
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
-from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
+from prime_rl.trainer.ckpt import Progress, setup_ckpt_managers
 from prime_rl.trainer.optim import setup_optimizer
-from prime_rl.trainer.rl.broadcast.nccl_broadcast import NCCLBroadcastSender
-from prime_rl.trainer.weights import setup_weight_ckpt_manager
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.logger import setup_logger
@@ -36,6 +35,7 @@ from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     MemoryProfiler,
     Tensors,
+    maybe_clean,
     setup_torch_distributed,
     print_benchmark,
     get_response_lengths,
@@ -93,37 +93,21 @@ def train(config: RLTrainerConfig):
     scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
     logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
 
-    # Set up weight checkpoint manager
-    logger.info(f"Initializing weight checkpoint manager ({config.weights})")
-    weight_ckpt_manager = setup_weight_ckpt_manager(
-        config.output_dir, config.weights, config.ckpt, config.max_async_level, config.model.experimental.lora
-    )
-    assert weight_ckpt_manager is not None, "Weight checkpoint manager must be set on RL trainer"
-
-    # Set up NCCL broadcast
-    nccl_broadcast = None
+    # Set up weight broadcast
     logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
-    if config.weight_broadcast.type == "nccl":
-        # we do inferece world size + 1 because we have the trainer broadcaster as rank 0
-        nccl_broadcast = NCCLBroadcastSender(
-            host=config.weight_broadcast.host,
-            port=config.weight_broadcast.port,
-            world_size=config.weight_broadcast.inference_world_size + 1,
-            timeout=config.weight_broadcast.timeout,
-            rank=0,
-            device=torch.cuda.current_device(),
-            logger=logger,
-        )
+    weight_broadcast = setup_weight_broadcast(config.output_dir, config.weight_broadcast)
 
     # Set up checkpoint manager
-    logger.info(f"Initializing checkpoint manager ({config.ckpt})")
-    ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
+    logger.info(f"Initializing checkpoint managers ({config.ckpt})")
+    ckpt_manager, weight_ckpt_manager = setup_ckpt_managers(
+        config.output_dir, config.ckpt, config.model.experimental.lora
+    )
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
     if config.ckpt and ckpt_manager is not None and config.ckpt.resume_step:
         logger.info(f"Resuming training from checkpoint step {config.ckpt.resume_step}")
-        ckpt_manager.load(model, [optimizer], scheduler, progress, step=config.ckpt.resume_step)
+        ckpt_manager.load(config.ckpt.resume_step, model, [optimizer], scheduler, progress)
     logger.info(
         f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
     )
@@ -146,44 +130,44 @@ def train(config: RLTrainerConfig):
         torch.cuda.reset_peak_memory_stats()
         is_last_step = config.max_steps is not None and progress.step == config.max_steps
 
-        # Save the weight checkpoint (if we are not at the first step, because no updates to the model have been made yet)
-        save_weights_time = 0
-        broadcast_weights_time = 0
-        if progress.step > 0:
-            save_weights_start_time = time.time()
-            # Save weights to disk at every if using filesystem weight broadcast or at interval step
-            if config.weight_broadcast.type == "filesystem" or (
-                config.weights.interval and progress.step % config.weights.interval == 0
-            ):
-                weight_ckpt_manager.save(model, tokenizer, step=progress.step)
-            else:
-                # Always create a stable file to signal to the orchestrator to initialize receiving weights via NCCL
-                weight_ckpt_manager.create_stable_file(progress.step)
-            save_weights_time = time.time() - save_weights_start_time
-            broadcast_weights_time = save_weights_time
+        # Broadcast weights at every step, (except step 0, because no need to broadcast the base model)
+        # Also, with NCCL broadcast, we do not broadcast weights the last async level step as the orchestrator is already finished and will not initialize the receive on the inference; for filesystem broadcast, we do "broadcast" until the final step to allow to resume from the broadcast directory
+        last_async_level_steps = config.max_steps and progress.step >= config.max_steps - config.max_async_level
+        if progress.step > 0 and (not last_async_level_steps or config.weight_broadcast.type == "filesystem"):
+            broadcast_weights_start_time = time.time()
+            weight_broadcast.broadcast_weights(model, step=progress.step)
+            broadcast_weights_time = time.time() - broadcast_weights_start_time
+            # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
+            ckpt_interval = config.ckpt and config.ckpt.interval
+            interval_to_keep = ckpt_interval if config.weight_broadcast.type == "filesystem" else None
+            maybe_clean(weight_broadcast.broadcast_dir, progress.step, config.max_async_level, interval_to_keep)
+        else:
+            broadcast_weights_time = 0
 
-            # Do not NCCL broadcast the last async level steps because the inference server is not receiving anymore
-            is_second_to_last_step = config.max_steps is not None and progress.step >= config.max_steps - 1
-            if nccl_broadcast is not None and not is_second_to_last_step:
-                broadcast_weights_start_time = time.time()
-                nccl_broadcast.broadcast_state_dict(model)
-                broadcast_weights_time = time.time() - broadcast_weights_start_time
-
-        # Save the full checkpoint (if we are at an interval step and not at the first or last step)
-        save_ckpt_time = 0
         if (
             ckpt_manager is not None
             and (config.ckpt and config.ckpt.interval)
             and not (is_first_step or is_last_step)
             and progress.step % config.ckpt.interval == 0
         ):
+            # Save full checkpoint
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.time()
-            ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step)
+            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
             save_ckpt_time = time.time() - save_ckpt_start_time
 
-            # Maybe clean up old trainer checkpoints
+            # Maybe clean up old checkpoints
             ckpt_manager.maybe_clean()
+
+            # Save weight checkpoint
+            if weight_ckpt_manager is not None:
+                logger.info(f"Saving weight checkpoint at step {progress.step}")
+                weight_ckpt_manager.save(progress.step, model, tokenizer)
+
+                # Maybe clean up old weight checkpoint
+                weight_ckpt_manager.maybe_clean()
+        else:
+            save_ckpt_time = 0
 
         # Break if we have reached the maximum number of steps
         if config.max_steps is not None and progress.step >= config.max_steps:
@@ -305,9 +289,6 @@ def train(config: RLTrainerConfig):
 
         # TODO: Broadcast weight checkpoint via shardcast
 
-        # Maybe clean up weight checkpoint
-        weight_ckpt_manager.maybe_clean(progress.step)
-
         # Optionally, dump memory snapshot
         if memory_profiler is not None:
             memory_profiler.step()
@@ -360,7 +341,6 @@ def train(config: RLTrainerConfig):
             "time/step": step_time,
             "time/wait_for_batch": wait_for_batch_time,
             "time/load_data": load_data_time,
-            "time/save_weights": save_weights_time,
             "time/broadcast_weights": broadcast_weights_time,
             "time/save_ckpt": save_ckpt_time,
             "time/forward_backward": forward_backward_time,
@@ -393,8 +373,14 @@ def train(config: RLTrainerConfig):
     # Write final checkpoint
     if ckpt_manager is not None:
         logger.info("Writing final checkpoint")
-        ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step)
+        ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
         ckpt_manager.maybe_clean()
+
+    # Write final checkpoint
+    if weight_ckpt_manager is not None:
+        logger.info("Writing final weight checkpoint")
+        weight_ckpt_manager.save(progress.step, model, tokenizer)
+        weight_ckpt_manager.maybe_clean()
 
     logger.info(f"Peak memory: {max(to_col_format(monitor.history)['perf/peak_memory']):.1f} GiB")
     logger.success("RL trainer finished!")

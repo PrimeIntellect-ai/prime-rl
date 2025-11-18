@@ -346,6 +346,31 @@ class MuonConfig(BaseOptimizerConfig):
 OptimizerConfigType: TypeAlias = SGDConfig | AdamWConfig | MuonConfig
 
 
+class WeightCheckpointConfig(BaseConfig):
+    """Configures saving HF-compatible weight checkpoints."""
+
+    save_sharded: Annotated[
+        bool,
+        Field(
+            description="Whether to save the weight checkpoint in sharded format.",
+        ),
+    ] = True
+
+    save_format: Annotated[
+        Literal["safetensors", "torch"],
+        Field(
+            description="The format to save the weight checkpoint in.",
+        ),
+    ] = "safetensors"
+
+    save_adapter_separately: Annotated[
+        bool,
+        Field(
+            description="Whether to save LoRA adapters separately before merging into full model weights.",
+        ),
+    ] = False
+
+
 class CheckpointConfig(BaseConfig):
     """Configures checkpointing the full model, optimizer and training state for resuming training."""
 
@@ -356,6 +381,8 @@ class CheckpointConfig(BaseConfig):
             description="Interval at which to save the training checkpoint. If None, will only checkpoint at the end of training.",
         ),
     ] = None
+
+    weights: WeightCheckpointConfig | None = WeightCheckpointConfig()
 
     resume_step: Annotated[
         int | None,
@@ -391,45 +418,5 @@ class CheckpointConfig(BaseConfig):
         bool,
         Field(
             description="Whether to skip loading the dataloader from checkpoint.",
-        ),
-    ] = False
-
-
-class WeightCheckpointConfig(BaseConfig):
-    """Configures checkpointing the model weights for updating the inference engines (RL trainer) or continued post-training (on SFT trainer)."""
-
-    interval: Annotated[
-        int | None,
-        Field(
-            ge=1,
-            description="Interval at which to save weight checkpoint. If None, will save all necessary weight checkpoints on RL trainer and only final weight checkpoint on SFT trainer.",
-        ),
-    ] = None
-
-    save_sharded: Annotated[
-        bool,
-        Field(
-            description="Whether to save the weight checkpoint in sharded format.",
-        ),
-    ] = False
-
-    save_format: Annotated[
-        Literal["safetensors", "torch"],
-        Field(
-            description="The format to save the weight checkpoint in.",
-        ),
-    ] = "torch"
-
-    save_async: Annotated[
-        bool,
-        Field(
-            description="Whether to save the weight checkpoint asynchronously.",
-        ),
-    ] = True
-
-    save_adapter_separately: Annotated[
-        bool,
-        Field(
-            description="Whether to save LoRA adapters separately before merging into full model weights.",
         ),
     ] = False
