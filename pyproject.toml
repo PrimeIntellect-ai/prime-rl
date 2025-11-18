@@ -43,11 +43,6 @@ dependencies = [
     "flash-attn>=2.8.3",
 ]
 
-[project.optional-dependencies]
-flash-attn-3 = [
-    "flash_attn_3",
-]
-
 [project.scripts]
 rl = "prime_rl.rl:main"
 trainer = "prime_rl.trainer.rl.train:main"
@@ -76,11 +71,9 @@ reverse-text = { index = "primeintellect" }
 verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "91f436d" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "main" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
-flash_attn_3 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "hopper", rev = "main" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
-flash-attn-3 = ["setuptools", {requirement = "torch", match-runtime = true}]
 
 [tool.uv.extra-build-variables]
 flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }

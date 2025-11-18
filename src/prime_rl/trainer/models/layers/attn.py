@@ -1,4 +1,3 @@
-import functools
 from dataclasses import dataclass
 
 import torch
@@ -12,11 +11,6 @@ try:
     from flash_attn import flash_attn_varlen_func
 except ImportError:
     flash_attn_varlen_func = None
-
-try:
-    from flash_attn_interface import flash_attn_varlen_func as flash_attn_3_varlen_func
-except ImportError:
-    flash_attn_3_varlen_func = None
 
 
 @dataclass
@@ -39,7 +33,7 @@ class AttentionConfig:
 class FlashAttention(nn.Module):
     """Flash Attention"""
 
-    def __init__(self, config: AttentionConfig, flash_attn_version: int = 2):
+    def __init__(self, config: AttentionConfig):
         super().__init__()
         self.head_dim = config.head_dim
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
@@ -60,8 +54,6 @@ class FlashAttention(nn.Module):
         if self.use_qk_norm:
             self.q_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
             self.k_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
-
-        self.func = flash_attn_3_varlen_func if flash_attn_version == 3 else flash_attn_varlen_func
 
     def forward(
         self,
@@ -92,7 +84,7 @@ class FlashAttention(nn.Module):
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
-        out = self.func(
+        out = flash_attn_varlen_func(
             query_states[0],
             key_states[0],
             value_states[0],
@@ -102,9 +94,6 @@ class FlashAttention(nn.Module):
             max_seqlen,
             causal=True,
         )
-        if isinstance(out, tuple):
-            out = out[0]
-
         out = out.contiguous()
         attn_output = out.view(1, out.shape[0], -1)
         attn_weights = None
@@ -178,7 +167,6 @@ class SDPAAttention(nn.Module):
 
 
 ATTN_IMPL2CLASS = {
-    "flash_attention_2": functools.partial(FlashAttention, flash_attn_version=2),
+    "flash_attention_2": FlashAttention,
     "sdpa": SDPAAttention,
-    "flash_attention_3": functools.partial(FlashAttention, flash_attn_version=3),
 }
