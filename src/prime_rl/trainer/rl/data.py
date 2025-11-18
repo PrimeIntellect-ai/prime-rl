@@ -7,7 +7,7 @@ from torch import Tensor
 
 from prime_rl.trainer.rl.config import FakeDataLoaderConfig
 from prime_rl.trainer.world import get_world
-from prime_rl.utils.utils import get_rollout_dir, sync_wait_for_path
+from prime_rl.utils.utils import get_rollout_dir, sync_wait_for_any_paths, sync_wait_for_path
 
 
 class MicroBatch(TypedDict):
@@ -20,6 +20,7 @@ class MicroBatch(TypedDict):
 
     # Batch level
     temperature: float
+    lora_cu_idx: Int[Tensor, "n_loras"]
 
 
 class FakeDataLoader:
@@ -69,4 +70,34 @@ class DataLoader:
     def get_batch(self) -> list[MicroBatch]:
         batches = torch.load(self.get_rollout_path())
         self.current_step += 1
+        return batches
+
+
+class MultiTenantDataLoader:
+    def __init__(self):
+        self.world = get_world()
+        self.rollout_dirs = {}
+        self.current_steps = {}
+        self.rollout_paths = {}
+
+    def start_run(self, run_id: str, output_dir: Path, start_step: int):
+        self.rollout_dirs[run_id] = get_rollout_dir(output_dir)
+        self.current_steps[run_id] = start_step
+        self.rollout_paths[run_id] = self.get_rollout_path(run_id)
+
+    def stop_run(self, run_id: str) -> None:
+        del self.rollout_dirs[run_id]
+        del self.current_steps[run_id]
+        del self.rollout_paths[run_id]
+
+    def get_rollout_path(self, run_id: str) -> Path:
+        return self.rollout_dirs[run_id] / f"step_{self.current_steps[run_id]}" / f"rank_{self.world.rank}.pt"
+
+    def wait_for_batch(self) -> None:
+        self._ready_run_id, self._ready_rollout_path = sync_wait_for_any_paths(self.rollout_paths)
+
+    def get_batch(self) -> list[MicroBatch]:
+        batches = torch.load(self._ready_rollout_path)
+        self.current_steps[self._ready_run_id] += 1
+        self.rollout_paths[self._ready_run_id] = self.get_rollout_path(self._ready_run_id)
         return batches
