@@ -10,7 +10,6 @@ from prime_rl.trainer.config import (
     ModelConfig,
     OptimizerConfigType,
     SchedulerConfigType,
-    WeightCheckpointConfig,
 )
 from prime_rl.utils.config import LogConfig, WandbMonitorConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
@@ -94,9 +93,6 @@ class RLTrainerConfig(BaseSettings):
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
 
-    # The weight checkpoint configuration
-    weights: WeightCheckpointConfig | None = None
-
     weight_broadcast: Annotated[WeightBroadcastConfigType, Field(discriminator="type")] = (
         FileSystemWeightBroadcastConfig()
     )
@@ -178,7 +174,7 @@ class RLTrainerConfig(BaseSettings):
 
     @model_validator(mode="after")
     def validate_lora_adapter_saving(self):
-        if self.weights and self.weights.save_adapter_separately:
+        if self.ckpt and self.ckpt.weights and self.ckpt.weights.save_adapter_separately:
             lora_enabled = self.model and self.model.experimental and self.model.experimental.lora
             if not lora_enabled:
                 raise ValueError(

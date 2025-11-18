@@ -11,8 +11,7 @@ from torch.nn.functional import cross_entropy
 from torch.distributed.tensor.experimental import context_parallel
 from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
-from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
-from prime_rl.trainer.weights import setup_weight_ckpt_manager
+from prime_rl.trainer.ckpt import Progress, setup_ckpt_managers
 from prime_rl.trainer.sft.config import SFTTrainerConfig
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.optim import setup_optimizer
@@ -87,17 +86,10 @@ def train(config: SFTTrainerConfig):
     logger.info(f"Setting up {config.scheduler.type} scheduler with {scheduler_steps} steps ({config.scheduler})")
     scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
 
-    # Set up weight checkpoint manager
-    logger.info(f"Initializing weight checkpoint manager ({config.weights})")
-    weight_ckpt_manager = setup_weight_ckpt_manager(
-        config.output_dir, config.weights, config.ckpt, 0, config.model.experimental.lora
-    )
-
     # Set up checkpoint manager
-    logger.info(f"Initializing checkpoint manager ({config.ckpt})")
-    ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
-    assert ckpt_manager is None or (ckpt_manager is not None and weight_ckpt_manager is not None), (
-        "If ckpt_manager is set, weight_ckpt_manager must also be set"
+    logger.info(f"Initializing checkpoint managers ({config.ckpt})")
+    ckpt_manager, weight_ckpt_manager = setup_ckpt_managers(
+        config.output_dir, config.ckpt, config.model.experimental.lora
     )
 
     # Set up the dataset and dataloader

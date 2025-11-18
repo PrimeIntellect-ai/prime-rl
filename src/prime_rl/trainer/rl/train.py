@@ -11,9 +11,8 @@ import torch
 import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
-from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
+from prime_rl.trainer.ckpt import Progress, setup_ckpt_managers
 from prime_rl.trainer.optim import setup_optimizer
-from prime_rl.trainer.weights import setup_weight_ckpt_manager
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.logger import setup_logger
@@ -98,15 +97,11 @@ def train(config: RLTrainerConfig):
     logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
     weight_broadcast = setup_weight_broadcast(config.output_dir, config.weight_broadcast)
 
-    # Set up weight checkpoint manager
-    logger.info(f"Initializing weight checkpoint manager ({config.weights})")
-    weight_ckpt_manager = setup_weight_ckpt_manager(
-        config.output_dir, config.weights, config.ckpt, config.max_async_level, config.model.experimental.lora
-    )
-
     # Set up checkpoint manager
-    logger.info(f"Initializing checkpoint manager ({config.ckpt})")
-    ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
+    logger.info(f"Initializing checkpoint managers ({config.ckpt})")
+    ckpt_manager, weight_ckpt_manager = setup_ckpt_managers(
+        config.output_dir, config.ckpt, config.model.experimental.lora
+    )
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
