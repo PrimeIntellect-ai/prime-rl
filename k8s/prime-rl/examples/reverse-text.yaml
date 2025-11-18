@@ -16,7 +16,7 @@ image:
 orchestrator:
   enabled: true
   autoStart: true
-  command: "uv run orchestrator @ /app/examples/reverse_text/rl/orch.toml --output-dir /data/outputs --client.base-url '[\"http://reverse-text-inference-0.reverse-text-inference-headless.default.svc.cluster.local:8000/v1\"]'"
+  command: "uv run orchestrator @ /app/examples/reverse_text/rl/orch.toml --output-dir /data/outputs --client.base-url '[\"http://reverse-text-inference-0.reverse-text-inference-headless.default.svc.cluster.local:8000/v1\"]' ; sleep infinity"
   resources:
     requests:
       memory: "1Gi"
@@ -26,7 +26,7 @@ orchestrator:
 inference:
   enabled: true
   autoStart: true
-  command: "uv run inference @ /app/examples/reverse_text/rl/infer.toml"
+  command: "uv run inference @ /app/examples/reverse_text/rl/infer.toml ; sleep infinity"
   gpu:
     enabled: true
     count: 1
@@ -39,7 +39,7 @@ inference:
 trainer:
   enabled: true
   autoStart: true
-  command: "uv run trainer @ /app/examples/reverse_text/rl/train.toml --output-dir /data/outputs"
+  command: "uv run trainer @ /app/examples/reverse_text/rl/train.toml --output-dir /data/outputs ; sleep infinity"
   gpu:
     enabled: true
     count: 1
