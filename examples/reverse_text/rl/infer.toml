@@ -1,2 +1,4 @@
+trust-remote-code = true
+
 [model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"

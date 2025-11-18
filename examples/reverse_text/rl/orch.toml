@@ -1,6 +1,6 @@
-batch_size = 128
+batch_size = 16
 rollouts_per_example = 16
-seq_len = 2048
+seq_len = 256
 max_steps = 20
 
 [model]
