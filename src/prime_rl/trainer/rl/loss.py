@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Callable
 
 import torch
 from beartype import beartype as typechecker
@@ -51,6 +51,10 @@ def compute_loss(
     loss_mask: Any,  # list of Bool[Tensor, "seq_i"] with potentially different seq_i lengths
     loss_config: LossConfig,
     loss_scale: int,
+    last_sequence_split_across_cp: bool,
+    cp_rank: int,
+    cp_world_size: int,
+    cp_group: dist.ProcessGroup,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).

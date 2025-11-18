@@ -20,7 +20,7 @@ from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.cp import (
     maybe_get_padding_logit_from_prev_cp_rank,
     maybe_shard_for_cp,
-    maybe_update_ring_flash_attn_params_and_shard_for_cp,
+    maybe_do_stuff,
 )
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
@@ -238,12 +238,20 @@ def train(config: RLTrainerConfig):
             # we only all reduce at the last grad acc step
             model.set_requires_all_reduce(micro_step == len(micro_batches) - 1)
 
-            input_ids = maybe_shard_for_cp(micro_batch["input_ids"].to("cuda"), cp_rank=cp_rank, cp_world_size=config.model.cp)
-            advantages = maybe_shard_for_cp(micro_batch["advantages"].to("cuda"), cp_rank=cp_rank, cp_world_size=config.model.cp)
-            loss_mask = maybe_shard_for_cp(micro_batch["loss_mask"].to("cuda"), cp_rank=cp_rank, cp_world_size=config.model.cp)
-            inference_logprobs = maybe_shard_for_cp(micro_batch["inference_logprobs"].to("cuda"), cp_rank=cp_rank, cp_world_size=config.model.cp)
+            input_ids = maybe_shard_for_cp(
+                micro_batch["input_ids"].to("cuda"), cp_rank=cp_rank, cp_world_size=config.model.cp
+            )
+            advantages = maybe_shard_for_cp(
+                micro_batch["advantages"].to("cuda"), cp_rank=cp_rank, cp_world_size=config.model.cp
+            )
+            loss_mask = maybe_shard_for_cp(
+                micro_batch["loss_mask"].to("cuda"), cp_rank=cp_rank, cp_world_size=config.model.cp
+            )
+            inference_logprobs = maybe_shard_for_cp(
+                micro_batch["inference_logprobs"].to("cuda"), cp_rank=cp_rank, cp_world_size=config.model.cp
+            )
 
-            position_ids = maybe_update_ring_flash_attn_params_and_shard_for_cp(
+            is_sharded_first, is_sharded_last, position_ids = maybe_do_stuff(
                 position_ids=micro_batch["position_ids"].to("cuda"),
                 cp_rank=cp_rank,
                 cp_world_size=config.model.cp,
@@ -273,6 +281,11 @@ def train(config: RLTrainerConfig):
                 loss_mask=loss_mask.squeeze().split(response_lengths),
                 loss_config=config.loss,
                 loss_scale=loss_scale,
+                is_sharded_first=is_sharded_first,
+                is_sharded_last=is_sharded_last,
+                cp_rank=cp_rank,
+                cp_world_size=config.model.cp,
+                cp_group=parallel_dims.world_mesh["cp"].get_group(),
             )
 
             # Compute entropy
