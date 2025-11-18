@@ -39,7 +39,7 @@ class Scheduler:
         self,
         clients: list[AsyncOpenAI],
         admin_clients: list[AsyncClient],
-        env: Environment,
+        env_clients: dict[str, any],  # ZMQ environment clients
         buffer: Buffer,
         tokenizer: PreTrainedTokenizerFast,
         config: OrchestratorConfig,
@@ -51,7 +51,7 @@ class Scheduler:
         self.logger = get_logger()
         self.clients = clients
         self.admin_clients = admin_clients
-        self.env = env
+        self.env_clients = env_clients
         self.buffer = buffer
         self.tokenizer = tokenizer
         self.config = config
@@ -71,19 +71,9 @@ class Scheduler:
     def process_generate_outputs(
         self,
         generate_outputs: GenerateOutputs,
+        processed_outputs: ProcessedOutputs,
+        is_truncated: list[bool],
     ) -> list[Rollout]:
-        processed_outputs: ProcessedOutputs = self.env.process_env_results_vllm(
-            prompts=generate_outputs.prompt,
-            completions=generate_outputs.completion,
-            states=generate_outputs.state,
-            rewards=generate_outputs.reward,
-            processing_class=self.tokenizer,
-            max_seq_len=self.seq_len,
-            mask_env_responses=self.config.mask_env_responses,
-            zero_truncated_completions=self.config.zero_truncated_completions,
-            mask_truncated_completions=self.config.mask_truncated_completions,
-        )
-
         # Compute advantages
         advantages = compute_advantages(
             rewards=processed_outputs.rewards,
@@ -91,10 +81,6 @@ class Scheduler:
             samples_per_problem=self.config.rollouts_per_example,
             advantage_config=self.config.advantage,
         )
-
-        # Parse whether the completions were truncated
-        responses = [state["responses"] for state in generate_outputs.state]
-        is_truncated = parse_is_truncated_completions(responses=responses)
 
         # Make rollouts
         rollouts = make_rollouts(
@@ -116,18 +102,77 @@ class Scheduler:
         problem = self.buffer.sample_problems(n=1)[0]
         if client is None:
             client = next(self.cycle_clients)
+
+        # Determine which environment client to use based on problem's env_type
+        env_type = problem.get("_env_type")
+        if env_type and env_type in self.env_clients:
+            env_client = self.env_clients[env_type]
+        else:
+            # Fallback to first env client if no tag
+            env_type = list(self.env_clients.keys())[0]
+            env_client = self.env_clients[env_type]
+
         group_rollout_request = asyncio.create_task(
-            generate_group(
-                client=client,
-                env=self.env,
-                model_name=self.config.model.name,
+            self._generate_group_zmq(
+                env_client=env_client,
+                env_type=env_type,
+                inference_client=client,
                 problem=problem,
-                rollouts_per_example=self.config.rollouts_per_example,
-                sampling_args=self.sampling_args,
             )
         )
         await asyncio.sleep(0)
         self.inflight_group_rollouts[group_rollout_request] = InflightRolloutInfo(0, client)
+
+    async def _generate_group_zmq(
+        self,
+        env_client,
+        env_type: str,
+        inference_client: AsyncOpenAI,
+        problem: dict,
+    ) -> tuple[GenerateOutputs, ProcessedOutputs, list[bool]]:
+        """Generate and process rollouts using ZMQ environment client."""
+        import verifiers as vf
+
+        response = await env_client.generate(
+            problem=problem,
+            model_name=self.config.model.name,
+            rollouts_per_example=self.config.rollouts_per_example,
+            sampling_args=self.sampling_args,
+            inference_endpoint=inference_client.base_url,
+            processing_class=self.config.model.name,  # Tokenizer name
+            max_seq_len=self.seq_len,
+            mask_env_responses=self.config.mask_env_responses,
+            zero_truncated_completions=self.config.zero_truncated_completions,
+            mask_truncated_completions=self.config.mask_truncated_completions,
+        )
+
+        # Reconstruct GenerateOutputs from ZMQ response
+        gen_out = response["generate_outputs"]
+        generate_outputs = vf.GenerateOutputs(
+            prompt=gen_out["prompt"],
+            completion=gen_out["completion"],
+            answer=gen_out["answer"],
+            state=gen_out["state"],
+            reward=gen_out["reward"],
+            info=gen_out["info"],
+            task=gen_out["task"],
+            metrics=gen_out["metrics"],
+            example_id=gen_out["example_id"],
+            metadata=None,  # Not needed by orchestrator
+        )
+
+        # Reconstruct ProcessedOutputs from ZMQ response
+        proc_out = response["processed_outputs"]
+        processed_outputs = vf.ProcessedOutputs(
+            prompt_ids=proc_out["prompt_ids"],
+            completion_ids=proc_out["completion_ids"],
+            masks=proc_out["masks"],
+            rewards=proc_out["rewards"],
+        )
+
+        is_truncated = response["is_truncated"]
+
+        return (generate_outputs, processed_outputs, is_truncated)
 
     async def update_policy_loop(self):
         """Continuously checks for new policy checkpoints."""
@@ -210,9 +255,13 @@ class Scheduler:
                     break
 
                 _, client = self.inflight_group_rollouts.pop(finished_group_rollout)
-                generate_outputs: GenerateOutputs = finished_group_rollout.result()
+                generate_outputs, processed_outputs, is_truncated = finished_group_rollout.result()
 
-                accepted_rollouts = self.process_generate_outputs(generate_outputs=generate_outputs)
+                accepted_rollouts = self.process_generate_outputs(
+                    generate_outputs=generate_outputs,
+                    processed_outputs=processed_outputs,
+                    is_truncated=is_truncated,
+                )
                 batch_rollouts.extend(accepted_rollouts)
                 pbar.update(len(accepted_rollouts))
 

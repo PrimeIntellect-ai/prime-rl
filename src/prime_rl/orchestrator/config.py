@@ -177,6 +177,13 @@ class EnvConfig(BaseConfig):
     args: Annotated[dict, Field(description="Arguments to pass to the environment.")] = {}
     name: Annotated[str | None, Field(description="Name of the environment to use.")] = None
 
+    # ZMQ endpoint (optional, for K8s or custom setups)
+    # If not specified, auto-spawns local worker with IPC socket
+    zmq_endpoint: Annotated[
+        str | None,
+        Field(description="ZMQ endpoint for this environment. If not set, auto-spawns local worker with IPC socket. Example: 'tcp://math-env:5555'")
+    ] = None
+
 
 class EvalEnvConfig(EnvConfig):
     """Configures an environment for evaluation."""

@@ -93,23 +93,80 @@ async def orchestrate(config: OrchestratorConfig):
         run_config=config,
     )
 
-    # Load environment and extract dataset
-    logger.info(
-        f"Loading {len(config.env)} training environment(s) ({', '.join(env.name or env.id for env in config.env)})"
-    )
-    env = vf.EnvGroup(
-        envs=[vf.load_environment(env.id, **env.args) for env in config.env],
-        env_names=[env.name or env.id for env in config.env],
-        map_kwargs=dict(writer_batch_size=1),  # Set defensively to not error on map operations on large datasets
-        env_mix_strategy=config.env_mix.strategy,
-        env_mix_kwargs=dict(
-            probabilities=config.env_mix.probabilities,
-            stopping_strategy=config.env_mix.stopping_strategy,
-            seed=config.env_mix.seed,
-        ),
-    )
-    dataset = env.get_dataset(seed=config.seed)
-    val_dataset = env.get_eval_dataset(seed=config.seed) if config.val else None
+    # Setup ZMQ environment clients
+    logger.info(f"Setting up {len(config.env)} environment(s) via ZMQ")
+    from prime_rl.orchestrator.zmq_client import ZMQEnvironmentClient
+    from prime_rl.orchestrator.env_manager import EnvironmentManager
+    import tempfile
+    import uuid
+
+    env_clients: dict[str, ZMQEnvironmentClient] = {}
+    env_managers: list[EnvironmentManager] = []
+
+    for env_config in config.env:
+        env_name = env_config.name or env_config.id
+
+        # Determine endpoint
+        if env_config.zmq_endpoint:
+            # Explicit endpoint (K8s or custom)
+            endpoint = env_config.zmq_endpoint
+            logger.info(f"Using explicit endpoint for {env_name}: {endpoint}")
+        else:
+            # Auto-generate IPC endpoint for local development
+            instance_name = f"{env_config.id}-{uuid.uuid4().hex[:8]}"
+            endpoint = f"ipc://{tempfile.gettempdir()}/prime-rl-{instance_name}.sock"
+
+            # Auto-start worker
+            logger.info(f"Auto-starting {env_name} worker on {endpoint}")
+            manager = EnvironmentManager(
+                env_id=env_config.id,
+                instance_name=instance_name,
+                endpoint=endpoint,
+                env_args=env_config.args,
+            )
+            manager.start_worker()
+            env_managers.append(manager)
+
+        # Create ZMQ client for this environment
+        logger.info(f"Connecting to {env_name}")
+        client = ZMQEnvironmentClient(endpoints=[endpoint], timeout=60.0)
+        await client.start()
+        env_clients[env_name] = client
+
+    # Load datasets from each environment
+    logger.info("Loading datasets from environment workers")
+    all_datasets = []
+    for env_config in config.env:
+        env_name = env_config.name or env_config.id
+        client = env_clients[env_name]
+
+        # Load dataset from first instance
+        dataset_raw = await client.get_dataset(seed=config.seed)
+
+        # Tag each problem with environment info
+        for problem in dataset_raw:
+            problem["_env_type"] = env_name
+
+        all_datasets.extend(dataset_raw)
+
+    # Merge datasets
+    from datasets import Dataset as HFDataset
+
+    dataset = HFDataset.from_list(all_datasets)
+    logger.info(f"Loaded {len(dataset)} total problems across {len(config.env)} environment(s)")
+
+    # Load validation datasets if configured
+    val_dataset = None
+    if config.val:
+        val_datasets = []
+        for env_config in config.env:
+            env_name = env_config.name or env_config.id
+            client = env_clients[env_name]
+            val_data_raw = await client.get_eval_dataset(seed=config.seed)
+            for problem in val_data_raw:
+                problem["_env_type"] = env_name
+            val_datasets.extend(val_data_raw)
+        val_dataset = HFDataset.from_list(val_datasets)
 
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
@@ -120,7 +177,7 @@ async def orchestrate(config: OrchestratorConfig):
     scheduler = Scheduler(
         clients=clients,
         admin_clients=admin_clients,
-        env=env,
+        env_clients=env_clients,
         buffer=buffer,
         tokenizer=tokenizer,
         config=config,
@@ -203,20 +260,10 @@ async def orchestrate(config: OrchestratorConfig):
         train_task = asyncio.create_task(scheduler.generate_batch(step=progress.step))
 
         # Schedule running evals at the specified interval
-        if val_buffer and config.val and progress.step % config.val.interval == 0:
-            logger.info(f"Running validation for step {progress.step}")
-            val_problems = val_buffer.sample_problems(config.val.num_examples)
-            val_task = asyncio.create_task(
-                generate_batch(
-                    clients=clients,
-                    env=env,
-                    model_name=config.model.name,
-                    problems=val_problems,
-                    rollouts_per_example=config.val.rollouts_per_example,
-                    sampling_args=get_sampling_args(config.sampling),
-                    pbar_description="Generating rollouts (val)",
-                )
-            )
+        # TODO: Update validation to use ZMQ (MVP limitation: validation disabled for now)
+        if False and val_buffer and config.val and progress.step % config.val.interval == 0:
+            logger.warning("Validation is disabled in ZMQ MVP - needs to be updated to use ZMQ")
+            val_task = asyncio.create_task(asyncio.sleep(0))  # Dummy task
         else:
             val_task = asyncio.create_task(asyncio.sleep(0))  # Dummy task
 
