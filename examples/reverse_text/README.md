@@ -126,9 +126,9 @@ helm install my-exp ./prime-rl -f ./prime-rl/examples/reverse-text.yaml \
   --set inference.autoStart=false \
   --set trainer.autoStart=false
 
-# Wait for pods to be ready
-kubectl get pods -l app.kubernetes.io/instance=my-exp -w
-# Press Ctrl+C when all pods show 1/1 Running
+# Check pods are ready
+kubectl get pods -l app=prime-rl,example=reverse-text
+# All pods should show 1/1 Running
 ```
 
 ### Step 2: Run SFT Training
@@ -160,8 +160,8 @@ Now upgrade the deployment to enable autoStart (uses the default `autoStart: tru
 cd k8s
 helm upgrade my-exp ./prime-rl -f ./prime-rl/examples/reverse-text.yaml
 
-# Wait for pods to restart
-kubectl get pods -l app.kubernetes.io/instance=my-exp -w
+# Check pods have restarted
+kubectl get pods -l app=prime-rl,example=reverse-text
 ```
 
 The RL components will automatically start. Monitor the logs:
