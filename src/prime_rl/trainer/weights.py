@@ -366,7 +366,7 @@ class WeightCheckpointManager:
         step_path.mkdir(parents=True, exist_ok=True)
 
         self._logger.debug(f"Saving weight checkpoint to {step_path}")
-        start_time = time.time()
+        start_time = time.perf_counter()
         # Suppress torch.distributed warnings during checkpoint saving
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
@@ -382,7 +382,7 @@ class WeightCheckpointManager:
             tokenizer.save_pretrained(step_path)
 
         (step_path / "STABLE").touch()
-        self._logger.debug(f"Saved weight checkpoint to {step_path} in {time.time() - start_time:.2f} seconds")
+        self._logger.debug(f"Saved weight checkpoint to {step_path} in {time.perf_counter() - start_time:.2f} seconds")
 
     def create_stable_file(self, step: int):
         step_path = self._get_step_path(step)

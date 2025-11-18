@@ -49,9 +49,7 @@ def compute_advantages(
     for group_rewards, group_lengths in zip(all_group_rewards, all_group_lengths):
         group_rewards_tensor = torch.tensor(group_rewards)
         group_lengths_tensor = torch.tensor(group_lengths)
-        group_advantages_tensor = compute_advantage(
-            group_rewards_tensor, group_lengths_tensor, advantage_config
-        )
+        group_advantages_tensor = compute_advantage(group_rewards_tensor, group_lengths_tensor, advantage_config)
         assert len(group_advantages_tensor) == len(group_rewards_tensor)
         advantages.extend(group_advantages_tensor.tolist())
     assert len(rewards) == len(advantages)

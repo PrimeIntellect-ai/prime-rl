@@ -147,19 +147,19 @@ class Scheduler:
                 self.logger.info(
                     f"Hit async barrier because we are >{self.max_async_level} step(s) async. Waiting for checkpoint {next_ckpt_step}"
                 )
-                wait_for_ckpt_start_time = time.time()
+                wait_for_ckpt_start_time = time.perf_counter()
                 sync_wait_for_path(get_step_path(get_weights_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
-                self.wait_for_ckpt_time = time.time() - wait_for_ckpt_start_time
+                self.wait_for_ckpt_time = time.perf_counter() - wait_for_ckpt_start_time
                 self.logger.debug(f"Waited for checkpoint {next_ckpt_step} for {self.wait_for_ckpt_time:.2f}s")
             self.logger.debug(
                 f"Got new policy with step {next_ckpt_step}. Updating weights and cancelling old rollout requests."
             )
 
-            update_weights_start_time = time.time()
+            update_weights_start_time = time.perf_counter()
             await update_weights(
                 self.admin_clients, get_step_path(get_weights_dir(self.config.output_dir), next_ckpt_step)
             )
-            self.update_weights_time = time.time() - update_weights_start_time
+            self.update_weights_time = time.perf_counter() - update_weights_start_time
             self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
 
             # Cancel old rollout requests

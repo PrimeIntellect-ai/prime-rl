@@ -158,9 +158,9 @@ def train(config: SFTTrainerConfig):
             and progress.step % config.weights.interval == 0
         ):
             logger.info(f"Saving weight checkpoint at step {progress.step}")
-            save_weights_start_time = time.time()
+            save_weights_start_time = time.perf_counter()
             weight_ckpt_manager.save(model, tokenizer, step=progress.step)
-            save_weights_time = time.time() - save_weights_start_time
+            save_weights_time = time.perf_counter() - save_weights_start_time
 
         # Save the full checkpoint (if we are at an interval step and not at the first or last step)
         save_ckpt_time = 0
@@ -173,9 +173,9 @@ def train(config: SFTTrainerConfig):
             and progress.step % config.ckpt.interval == 0
         ):
             logger.info(f"Saving checkpoint at step {progress.step}")
-            save_ckpt_start_time = time.time()
+            save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step, dataloader=dataloader)
-            save_ckpt_time = time.time() - save_ckpt_start_time
+            save_ckpt_time = time.perf_counter() - save_ckpt_start_time
 
             # Maybe clean up old trainer checkpoints
             ckpt_manager.maybe_clean()
@@ -188,8 +188,8 @@ def train(config: SFTTrainerConfig):
             MemoryProfiler(progress.step, config.memory_profiler_path) if config.memory_profiler_path else None
         )
 
-        step_start_time = time.time()
-        forward_backward_start_time = time.time()
+        step_start_time = time.perf_counter()
+        forward_backward_start_time = time.perf_counter()
         grad_accum_steps = (
             config.data.batch_size
             * config.model.cp
@@ -281,7 +281,7 @@ def train(config: SFTTrainerConfig):
         current_lr = optimizer.param_groups[0]["lr"]
         scheduler.step()
 
-        forward_backward_time = time.time() - forward_backward_start_time
+        forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         # Optionally, dump memory snapshot
         if memory_profiler is not None:
@@ -303,7 +303,7 @@ def train(config: SFTTrainerConfig):
         peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
 
         # Log step metrics
-        step_time = time.time() - step_start_time
+        step_time = time.perf_counter() - step_start_time
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {batch_loss.item():.4f} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%)"
         if is_tt_moe_model(model) and max_vio is not None:
             step_message += f" | Max Vio: {batch_max_vio.item():.4f}"

@@ -110,7 +110,7 @@ class CheckpointManager:
         dataloader: StatefulDataLoader | None = None,
     ):
         self._logger.debug(f"Saving training checkpoint to {ckpt_path}")
-        start_time = time.time()
+        start_time = time.perf_counter()
 
         # Create checkpoint state
         state_dict = {"app": AppState(model, optimizers, scheduler, progress)}
@@ -128,7 +128,7 @@ class CheckpointManager:
         if self._is_master:
             self.ckpt_steps.append(ckpt_step)
 
-        self._logger.debug(f"Training checkpoint saved in {time.time() - start_time:.2f} seconds")
+        self._logger.debug(f"Training checkpoint saved in {time.perf_counter() - start_time:.2f} seconds")
 
     def _load_from_path(
         self,
@@ -141,7 +141,7 @@ class CheckpointManager:
     ):
         """Loads a checkpoint from a given path in-place."""
         self._logger.debug(f"Loading training checkpoint from {ckpt_path}")
-        start_time = time.time()
+        start_time = time.perf_counter()
 
         # Load sharded state
         app_state = AppState(model, optimizers, scheduler, progress)
@@ -162,7 +162,7 @@ class CheckpointManager:
                     )
             dataloader.load_state_dict(torch.load(dataloader_path))
 
-        self._logger.debug(f"Training checkpoint loaded in {time.time() - start_time:.2f} seconds")
+        self._logger.debug(f"Training checkpoint loaded in {time.perf_counter() - start_time:.2f} seconds")
 
     def load(
         self,

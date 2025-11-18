@@ -51,7 +51,7 @@ class CheckpointManager:
         buffer: Buffer,
     ):
         self._logger.debug(f"Saving orchestrator checkpoint to {ckpt_path}")
-        start_time = time.time()
+        start_time = time.perf_counter()
 
         # Save progress
         with open(ckpt_path / "progress.pt", "wb") as f:
@@ -63,12 +63,12 @@ class CheckpointManager:
         # Append to list of saved steps
         self.ckpt_steps.append(ckpt_step)
 
-        self._logger.debug(f"Orchestrator checkpoint saved in {time.time() - start_time:.2f} seconds")
+        self._logger.debug(f"Orchestrator checkpoint saved in {time.perf_counter() - start_time:.2f} seconds")
 
     def _load_from_path(self, ckpt_path: Path, progress: Progress, buffer: Buffer) -> None:
         """Loads a checkpoint from a given path in-place."""
         self._logger.debug(f"Loading checkpoint from {ckpt_path}")
-        start_time = time.time()
+        start_time = time.perf_counter()
 
         # Load progress
         if self.config.skip_progress:
@@ -87,7 +87,7 @@ class CheckpointManager:
         else:
             buffer.load(ckpt_path / "buffer")
 
-        self._logger.debug(f"Orchestrator checkpoint loaded in {time.time() - start_time:.2f} seconds")
+        self._logger.debug(f"Orchestrator checkpoint loaded in {time.perf_counter() - start_time:.2f} seconds")
 
     def load(self, progress: Progress, buffer: Buffer, step: int) -> None:
         """Loads a checkpoint from a given path."""
