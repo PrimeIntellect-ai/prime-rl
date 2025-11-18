@@ -11,8 +11,9 @@ import zmq.asyncio
 from datasets import Dataset
 from loguru import logger
 from openai import AsyncOpenAI
+from transformers import AutoTokenizer
 
-from prime_rl.orchestrator.utils import serialize_for_msgpack
+from prime_rl.orchestrator.utils import parse_is_truncated_completions, serialize_for_msgpack
 
 
 class ZMQEnvironmentServer:
@@ -73,7 +74,6 @@ class ZMQEnvironmentServer:
 
     def _get_tokenizer(self, processing_class: str):
         if processing_class not in self.tokenizers:
-            from transformers import AutoTokenizer
             self.tokenizers[processing_class] = AutoTokenizer.from_pretrained(processing_class)
         return self.tokenizers[processing_class]
 
@@ -190,7 +190,6 @@ class ZMQEnvironmentServer:
         )
 
         # Parse truncation info
-        from prime_rl.orchestrator.utils import parse_is_truncated_completions
         responses = [state["responses"] for state in generate_outputs.state]
         is_truncated = parse_is_truncated_completions(responses=responses)
 

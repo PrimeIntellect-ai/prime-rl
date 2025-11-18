@@ -1,6 +1,10 @@
-import pandas as pd
 import asyncio
+import tempfile
 import time
+import uuid
+
+import pandas as pd
+from datasets import Dataset as HFDataset
 from loguru import logger
 
 from prime_rl.orchestrator.patches import monkey_patch_oai_iterable_types, monkey_patch_chat_completion_logprobs
@@ -24,9 +28,13 @@ import torch
 import verifiers as vf
 from transformers import AutoTokenizer
 
+from prime_rl.orchestrator.batch import prepare_batch
+from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
+from prime_rl.orchestrator.config import BufferConfig, OrchestratorConfig
+from prime_rl.orchestrator.env_manager import EnvironmentManager
+from prime_rl.orchestrator.zmq_client import ZMQEnvironmentClient
 from prime_rl.eval.utils import run_evals
-from prime_rl.utils.vf import generate_batch
 from prime_rl.utils.client import (
     check_has_model,
     check_health,
@@ -37,9 +45,7 @@ from prime_rl.utils.client import (
     setup_evals_client,
     update_weights,
 )
-from prime_rl.orchestrator.config import OrchestratorConfig, BufferConfig
-from prime_rl.orchestrator.batch import prepare_batch
-from prime_rl.orchestrator.buffer import Buffer
+from prime_rl.utils.vf import generate_batch
 from prime_rl.utils.logger import setup_logger
 from prime_rl.orchestrator.utils import (
     print_benchmark,
@@ -95,11 +101,6 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup ZMQ environment clients
     logger.info(f"Setting up {len(config.env)} environment(s) via ZMQ")
-    from prime_rl.orchestrator.zmq_client import ZMQEnvironmentClient
-    from prime_rl.orchestrator.env_manager import EnvironmentManager
-    import tempfile
-    import uuid
-
     env_clients: dict[str, ZMQEnvironmentClient] = {}
     env_managers: list[EnvironmentManager] = []
 
@@ -150,8 +151,6 @@ async def orchestrate(config: OrchestratorConfig):
         all_datasets.extend(dataset_raw)
 
     # Merge datasets
-    from datasets import Dataset as HFDataset
-
     dataset = HFDataset.from_list(all_datasets)
     logger.info(f"Loaded {len(dataset)} total problems across {len(config.env)} environment(s)")
 

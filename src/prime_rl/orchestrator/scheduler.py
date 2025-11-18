@@ -131,8 +131,6 @@ class Scheduler:
         problem: dict,
     ) -> tuple[GenerateOutputs, ProcessedOutputs, list[bool]]:
         """Generate and process rollouts using ZMQ environment client."""
-        import verifiers as vf
-
         response = await env_client.generate(
             problem=problem,
             model_name=self.config.model.name,
@@ -162,13 +160,13 @@ class Scheduler:
         }
         if gen_out.get("metadata") is not None:
             kwargs["metadata"] = gen_out["metadata"]
-        generate_outputs = vf.GenerateOutputs(**kwargs)
+        generate_outputs = GenerateOutputs(**kwargs)
 
         # Reconstruct ProcessedOutputs from ZMQ response
         proc_out = response["processed_outputs"]
         is_truncated = response["is_truncated"]
 
-        processed_outputs = vf.ProcessedOutputs(
+        processed_outputs = ProcessedOutputs(
             prompt_ids=proc_out["prompt_ids"],
             completion_ids=proc_out["completion_ids"],
             prompt_mask=proc_out["prompt_mask"],
@@ -250,6 +248,9 @@ class Scheduler:
 
         batch_rollouts: list[Rollout] = []
         pbar = tqdm(total=self.config.batch_size, desc="Generating rollouts (train)")
+        consecutive_failures = 0
+        max_consecutive_failures = 10  # Fail-safe to prevent infinite retry loop
+
         while len(batch_rollouts) < self.config.batch_size:
             finished_group_rollouts, _ = await asyncio.wait(
                 self.inflight_group_rollouts, return_when=asyncio.FIRST_COMPLETED
@@ -261,7 +262,26 @@ class Scheduler:
                     break
 
                 _, client = self.inflight_group_rollouts.pop(finished_group_rollout)
-                generate_outputs, processed_outputs, is_truncated = finished_group_rollout.result()
+
+                # Handle exceptions from failed rollout tasks
+                try:
+                    generate_outputs, processed_outputs, is_truncated = finished_group_rollout.result()
+                    consecutive_failures = 0  # Reset on success
+                except Exception as e:
+                    consecutive_failures += 1
+                    self.logger.error(
+                        f"Rollout generation failed ({consecutive_failures}/{max_consecutive_failures}): {e}"
+                    )
+
+                    if consecutive_failures >= max_consecutive_failures:
+                        raise RuntimeError(
+                            f"Failed to generate rollouts after {max_consecutive_failures} consecutive failures. "
+                            f"Last error: {e}. Check environment workers and inference server."
+                        )
+
+                    # Schedule a replacement rollout
+                    await self.schedule_group_rollout(client)
+                    continue
 
                 accepted_rollouts = self.process_generate_outputs(
                     generate_outputs=generate_outputs,
