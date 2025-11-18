@@ -249,10 +249,6 @@ class CheckpointManager:
         self.save_thread.join()
         self.save_thread = None
 
-    def __del__(self):
-        if hasattr(self, "save_thread"):
-            self.wait_for_thread()
-
 
 class WeightCheckpointManager:
     """Utility class to save and cleanup HF-compatible weight checkpoints."""
@@ -360,10 +356,6 @@ class WeightCheckpointManager:
             return
         self.save_thread.join()
         self.save_thread = None
-
-    def __del__(self):
-        if hasattr(self, "save_thread"):
-            self.wait_for_thread()
 
 
 def setup_ckpt_managers(
