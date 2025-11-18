@@ -131,6 +131,21 @@ def sync_wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) ->
         wait_time += interval
 
 
+def sync_wait_for_any_paths(paths: dict[str, Path], interval: int = 1, log_interval: int = 10) -> tuple[str, Path]:
+    logger = get_logger()
+    wait_time = 0
+    logger.debug(f"Waiting for any of the paths `{paths.values()}`")
+    while True:
+        for run_id, path in paths.items():
+            if path.exists():
+                logger.debug(f"Found path `{path}` for run `{run_id}`")
+                return run_id, path
+        if wait_time % log_interval == 0 and wait_time > 0:  # Every log_interval seconds
+            logger.debug(f"Waiting for any of the paths `{paths.values()}` for {wait_time} seconds")
+        time.sleep(interval)
+        wait_time += interval
+
+
 async def wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:
     logger = get_logger()
     wait_time = 0
