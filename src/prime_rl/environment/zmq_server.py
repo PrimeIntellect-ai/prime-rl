@@ -204,6 +204,7 @@ class ZMQEnvironmentServer:
                 "task": serialize_for_msgpack(generate_outputs.task),
                 "metrics": serialize_for_msgpack(generate_outputs.metrics),
                 "example_id": serialize_for_msgpack(generate_outputs.example_id),
+                "metadata": serialize_for_msgpack(generate_outputs.metadata),
             },
             "processed_outputs": {
                 "prompt_ids": serialize_for_msgpack(processed_outputs.prompt_ids),

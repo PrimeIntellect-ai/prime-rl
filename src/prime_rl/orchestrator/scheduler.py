@@ -158,7 +158,7 @@ class Scheduler:
             task=gen_out["task"],
             metrics=gen_out["metrics"],
             example_id=gen_out["example_id"],
-            metadata=None,  # Not needed by orchestrator
+            metadata=gen_out["metadata"],
         )
 
         # Reconstruct ProcessedOutputs from ZMQ response
