@@ -181,14 +181,12 @@ def train(config: RLTrainerConfig):
         wait_for_batch_start_time = time.perf_counter()
         dataloader.wait_for_batch()
         wait_for_batch_time = time.perf_counter() - wait_for_batch_start_time
-        wait_for_batch_time = time.perf_counter() - wait_for_batch_start_time
         logger.debug(f"Waited for batch to arrive for {wait_for_batch_time:.2f} seconds")
 
         # Load the training batch
         logger.debug("Loading batch")
         load_data_start_time = time.perf_counter()
         micro_batches = dataloader.get_batch()
-        load_data_time = time.perf_counter() - load_data_start_time
         load_data_time = time.perf_counter() - load_data_start_time
         logger.debug(f"Loaded batch in {load_data_time:.2f} seconds")
 
