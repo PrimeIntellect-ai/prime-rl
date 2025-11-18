@@ -116,8 +116,6 @@ spec:
   ports:
   - port: {{ .Values.inference.service.port }}
     name: api
-  - port: 29501
-    name: nccl
 {{- end }}
 ---
 {{- if .Values.trainer.enabled }}
