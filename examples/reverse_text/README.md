@@ -115,20 +115,56 @@ Way better! Now we get an **average reward of ~0.8**.
 
 If you're running on Kubernetes, you can deploy this example using the provided Helm chart. The Helm chart automatically configures all components with proper networking and shared storage.
 
-### Deploy with Auto-Start
+### Step 1: Deploy for SFT Training
 
-The reverse-text example is configured to automatically start all components when pods boot.
+The reverse-text example is configured with `autoStart: true` for RL training, but we need to run SFT first. Deploy with autoStart disabled:
 
 ```bash
 cd k8s
-helm install my-exp ./prime-rl -f ./prime-rl/examples/reverse-text.yaml
+helm install my-exp ./prime-rl -f ./prime-rl/examples/reverse-text.yaml \
+  --set orchestrator.autoStart=false \
+  --set inference.autoStart=false \
+  --set trainer.autoStart=false
 
 # Wait for pods to be ready
 kubectl get pods -l app.kubernetes.io/instance=my-exp -w
 # Press Ctrl+C when all pods show 1/1 Running
 ```
 
-Monitor the logs to see training progress:
+### Step 2: Run SFT Training
+
+Exec into the trainer pod and run SFT:
+
+```bash
+kubectl exec -it my-exp-trainer-0 -- bash
+uv run sft @ /app/examples/reverse_text/sft/train.toml --output-dir /data/outputs
+# This will save checkpoints to /data/outputs/weights/step_100
+```
+
+Upload the checkpoint to HuggingFace or use it directly from shared storage:
+
+```bash
+# Option 1: Upload to HuggingFace (from within the pod)
+uv run hf upload <user>/Qwen3-0.6B-Reverse-Text-SFT /data/outputs/weights/step_100
+
+# Option 2: Use local checkpoint path in RL config
+# Update the model.name in the RL configs to point to /data/outputs/weights/step_100
+```
+
+### Step 3: Deploy RL Training
+
+Now upgrade the deployment to enable autoStart (uses the default `autoStart: true` from reverse-text.yaml):
+
+```bash
+# Exit the pod first (Ctrl+D)
+cd k8s
+helm upgrade my-exp ./prime-rl -f ./prime-rl/examples/reverse-text.yaml
+
+# Wait for pods to restart
+kubectl get pods -l app.kubernetes.io/instance=my-exp -w
+```
+
+The RL components will automatically start. Monitor the logs:
 
 ```bash
 # View inference server logs
@@ -141,20 +177,9 @@ kubectl logs -f my-exp-orchestrator-0
 kubectl logs -f my-exp-trainer-0
 ```
 
-### Run SFT Training
+### Alternative: Manual RL Training
 
-For SFT training, exec into the trainer pod:
-
-```bash
-kubectl exec -it my-exp-trainer-0 -- bash
-cd /data
-uv run sft @ /app/examples/reverse_text/sft/train.toml --output-dir /data/outputs
-# This will save checkpoints to /data/outputs/weights/
-```
-
-### Manual RL Training
-
-To run RL components manually instead of auto-start, edit `k8s/prime-rl/examples/reverse-text.yaml` and set `autoStart: false` for all components, then redeploy and exec into each pod:
+If you prefer to run RL components manually, keep `autoStart: false` and exec into each pod:
 
 ```bash
 # Terminal 1 - Inference
@@ -181,16 +206,15 @@ ls -lh /data/outputs/weights/
 ls -lh /data/outputs/rollouts/
 ```
 
-### Run Evaluation
+### Step 4: Run Evaluation
 
-To evaluate a trained model on K8s:
+To evaluate the trained RL model:
 
 ```bash
 # Exec into trainer pod
 kubectl exec -it my-exp-trainer-0 -- bash
 
-# Start inference server with your trained model (if not already running)
-# In another terminal:
+# If inference server isn't running with the RL model, start it in another terminal:
 kubectl exec -it my-exp-inference-0 -- bash
 uv run inference --model.name /data/outputs/weights/step_20
 
