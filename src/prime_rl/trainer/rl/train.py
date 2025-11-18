@@ -5,6 +5,7 @@ from datetime import timedelta
 # Import environment before any other imports
 # ruff: noqa: I001
 
+from prime_rl.trainer.models.layers.attn import substitute_prime_rl_flash_attn
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 import torch.distributed as dist
@@ -16,6 +17,11 @@ from prime_rl.trainer.rl.broadcast.nccl_broadcast import NCCLBroadcastSender
 from prime_rl.trainer.weights import setup_weight_ckpt_manager
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
+from prime_rl.utils.cp import (
+    maybe_get_padding_logit_from_prev_cp_rank,
+    maybe_shard_for_cp,
+    maybe_do_stuff,
+)
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
     shift_logits,
@@ -46,6 +52,9 @@ from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format
 
 
+from ring_flash_attn import substitute_hf_flash_attn
+
+
 @clean_exit
 @logger.catch(reraise=True)
 def train(config: RLTrainerConfig):
@@ -73,10 +82,7 @@ def train(config: RLTrainerConfig):
 
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
-    if config.model.cp > 1:
-        raise ValueError(
-            "CP is not supported for RL. No reason it shouldn't, we just didn't test it. If you need it, please open an issue."
-        )
+    num_non_data_parallel_ranks = parallel_dims.cp * parallel_dims.tp * parallel_dims.pp
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model and tokenizer ({config.model})")
@@ -115,6 +121,10 @@ def train(config: RLTrainerConfig):
             logger=logger,
         )
 
+    if config.model.cp > 1:
+        substitute_hf_flash_attn(parallel_dims.world_mesh["cp"].get_group(), heads_k_stride=1)
+        substitute_prime_rl_flash_attn(parallel_dims.world_mesh["cp"].get_group(), heads_k_stride=1)
+
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
     ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
@@ -130,9 +140,9 @@ def train(config: RLTrainerConfig):
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
-    dataloader = DataLoader(config.output_dir, progress.step)
+    dataloader = DataLoader(config.output_dir, progress.step, num_non_data_parallel_ranks)
     if config.data.fake:
-        dataloader = FakeDataLoader(config.data.fake)
+        dataloader = FakeDataLoader(config.data.fake, num_non_data_parallel_ranks)
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     is_first_step = True
@@ -223,22 +233,42 @@ def train(config: RLTrainerConfig):
 
         logger.info(f"Starting forward and backward pass ({batch_size=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
+        cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
         for micro_step, micro_batch in enumerate(micro_batches):
             # we only all reduce at the last grad acc step
             model.set_requires_all_reduce(micro_step == len(micro_batches) - 1)
 
-            input_ids = micro_batch["input_ids"].to("cuda")
-            position_ids = micro_batch["position_ids"].to("cuda")
-            advantages = micro_batch["advantages"].to("cuda")
-            loss_mask = micro_batch["loss_mask"].to("cuda")
-            inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
+            input_ids = maybe_shard_for_cp(
+                micro_batch["input_ids"].to("cuda"), cp_rank=cp_rank, cp_world_size=config.model.cp
+            )
+            advantages = maybe_shard_for_cp(
+                micro_batch["advantages"].to("cuda"), cp_rank=cp_rank, cp_world_size=config.model.cp
+            )
+            loss_mask = maybe_shard_for_cp(
+                micro_batch["loss_mask"].to("cuda"), cp_rank=cp_rank, cp_world_size=config.model.cp
+            )
+            inference_logprobs = maybe_shard_for_cp(
+                micro_batch["inference_logprobs"].to("cuda"), cp_rank=cp_rank, cp_world_size=config.model.cp
+            )
+
+            is_sharded_first, is_sharded_last, position_ids = maybe_do_stuff(
+                position_ids=micro_batch["position_ids"].to("cuda"),
+                cp_rank=cp_rank,
+                cp_world_size=config.model.cp,
+                cp_group=parallel_dims.world_mesh["cp"].get_group(),
+            )
+
             temperature = micro_batch["temperature"]
 
             # Forward pass
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
                 logits = forward(model, input_ids, position_ids).float().contiguous()
 
-            shifted_logits = shift_logits(logits)
+            left_pad_logit = maybe_get_padding_logit_from_prev_cp_rank(
+                logits, cp_rank, config.model.cp, parallel_dims.world_mesh["cp"].get_group()
+            )
+
+            shifted_logits = shift_logits(logits, left_pad_logit=left_pad_logit)
             shifted_logits = shifted_logits / temperature
             trainer_logprobs = selective_log_softmax(shifted_logits, input_ids)
 
@@ -251,6 +281,11 @@ def train(config: RLTrainerConfig):
                 loss_mask=loss_mask.squeeze().split(response_lengths),
                 loss_config=config.loss,
                 loss_scale=loss_scale,
+                is_sharded_first=is_sharded_first,
+                is_sharded_last=is_sharded_last,
+                cp_rank=cp_rank,
+                cp_world_size=config.model.cp,
+                cp_group=parallel_dims.world_mesh["cp"].get_group(),
             )
 
             # Compute entropy
