@@ -96,7 +96,7 @@ class CheckpointManager:
 
     def get_ckpt_path(self, step: int) -> Path:
         """Get the path to write the trainer checkpoint for a given step."""
-        return self.ckpt_dir / f"step_{step}" / "trainer"
+        return get_step_path(self.ckpt_dir, step) / "trainer"
 
     def get_latest_step(self) -> int:
         """Get the latest checkpoint step from the checkpoint directory."""
