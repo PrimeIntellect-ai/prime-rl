@@ -354,14 +354,14 @@ class WeightCheckpointConfig(BaseConfig):
         Field(
             description="Whether to save the weight checkpoint in sharded format.",
         ),
-    ] = False
+    ] = True
 
     save_format: Annotated[
         Literal["safetensors", "torch"],
         Field(
             description="The format to save the weight checkpoint in.",
         ),
-    ] = "torch"
+    ] = "safetensors"
 
     save_adapter_separately: Annotated[
         bool,
@@ -387,7 +387,7 @@ class CheckpointConfig(BaseConfig):
         Field(
             description="Whether to save the checkpoint asynchronously (in a separate thread).",
         ),
-    ] = True
+    ] = False
 
     weights: WeightCheckpointConfig | None = WeightCheckpointConfig()
 
