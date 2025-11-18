@@ -232,60 +232,6 @@ All components mount the same PVC at `/data` for:
 
 This is **required** for coordinating weight updates between trainer and inference.
 
-## Advanced Usage
-
-### Distributed Training with StatefulSets
-
-For distributed training across multiple trainer pods:
-
-```yaml
-# distributed-training.yaml
-orchestrator:
-  replicas: 1  # Always 1
-
-trainer:
-  replicas: 10  # Scale to 10 trainer pods
-  gpu:
-    count: 8    # 8 GPUs per pod = 80 total GPUs
-```
-
-Deploy and run distributed training:
-
-```bash
-helm install my-training ./prime-rl -f distributed-training.yaml
-
-# Extract pod ordinal for torchrun
-# Inside prime-rl-trainer-3, $POD_NAME="prime-rl-trainer-3"
-# Extract ordinal: 3
-
-# On each trainer pod, run torchrun with:
-# --nnodes=$STATEFUL_REPLICAS (e.g., 10)
-# --node-rank=<extracted from $POD_NAME> (e.g., 3)
-# --rdzv-endpoint=prime-rl-trainer-0.prime-rl-trainer-headless:29501
-```
-
-**Example: Running distributed training**
-
-Exec into any trainer pod and extract the rank:
-
-```bash
-# Exec into trainer-3
-kubectl exec -it my-exp-trainer-3 -- bash
-
-# Extract rank from pod name
-RANK=$(echo $POD_NAME | grep -o '[0-9]*$')  # 3
-echo "My rank: $RANK, Total trainers: $STATEFUL_REPLICAS"
-
-# Run distributed training
-torchrun \
-  --nnodes=$STATEFUL_REPLICAS \
-  --node-rank=$RANK \
-  --nproc-per-node=8 \
-  --rdzv-endpoint=my-exp-trainer-0.$HEADLESS_SERVICE:29501 \
-  --rdzv-backend=c10d \
-  src/prime_rl/trainer/sft/train.py @ /app/examples/reverse_text/sft/train.toml
-```
-
 ## Troubleshooting
 
 ### Can't access shared storage
