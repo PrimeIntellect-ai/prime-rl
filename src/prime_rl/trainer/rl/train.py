@@ -266,6 +266,11 @@ def train(config: RLTrainerConfig):
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
+            
+            starts_with_zero = True
+            if config.model.cp > 1:
+                starts_with_zero = (position_ids[0, 0] == 0).item()
+
             loss, loss_tensors = compute_loss(
                 trainer_logprobs=trainer_logprobs.squeeze().split(response_lengths),
                 inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
@@ -273,6 +278,10 @@ def train(config: RLTrainerConfig):
                 loss_mask=loss_mask.squeeze().split(response_lengths),
                 loss_config=config.loss,
                 loss_scale=loss_scale,
+                cp_rank=cp_rank,
+                cp_world_size=config.model.cp,
+                cp_group=parallel_dims.world_mesh["cp"].get_group(),
+                starts_with_zero=starts_with_zero,
             )
 
             # Compute entropy
