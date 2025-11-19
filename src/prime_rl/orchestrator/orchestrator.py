@@ -1,15 +1,6 @@
 import asyncio
 import time
 
-from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
-
-# This monkey patch is necessary to avoid Pydantic validating fields using typing.Iterable (e.g. in multimodal or tool call messages) lazily which leads to tokenization errors, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1249
-monkey_patch_oai_iterable_types()
-
-
-# This monkey patch is necessary to avoid heavy CPU overhead from constructing the OAI ChatCompletion Pydantic model with logprobs, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1189
-monkey_patch_chat_completion_logprobs()
-
 # Import environment before any other imports
 import pandas as pd
 import torch
