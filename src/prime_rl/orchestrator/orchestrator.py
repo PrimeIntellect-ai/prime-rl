@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import tempfile
 import time
 
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
@@ -87,23 +89,82 @@ async def orchestrate(config: OrchestratorConfig):
         run_config=config,
     )
 
-    # Load environment and extract dataset
-    logger.info(
-        f"Loading {len(config.env)} training environment(s) ({', '.join(env.name or env.id for env in config.env)})"
-    )
-    env = vf.EnvGroup(
-        envs=[vf.load_environment(env.id, **env.args) for env in config.env],
-        env_names=[env.name or env.id for env in config.env],
-        map_kwargs=dict(writer_batch_size=1),  # Set defensively to not error on map operations on large datasets
-        env_mix_strategy=config.env_mix.strategy,
-        env_mix_kwargs=dict(
-            probabilities=config.env_mix.probabilities,
-            stopping_strategy=config.env_mix.stopping_strategy,
-            seed=config.env_mix.seed,
-        ),
-    )
-    dataset = env.get_dataset(seed=config.seed)
-    val_dataset = env.get_eval_dataset(seed=config.seed) if config.val else None
+    # Setup ZMQ environment clients
+    # TODO Jannik: 
+    # Deeply recheck this all config.env_mix strategy and will likely need to reimplement something here. Ideally we support vf.EnvGroup but with the ability to execute remote envs.
+
+    logger.info(f"Setting up {len(config.env)} environment(s) via ZMQ")
+    env_clients: dict[str, ZMQEnvironmentClient] = {}
+    env_managers: list[EnvironmentManager] = []
+
+    for env_config in config.env:
+        env_name = env_config.name or env_config.id
+
+        # Determine endpoint
+        if env_config.zmq_endpoint:
+            # Explicit endpoint (K8s or custom)
+            endpoint = env_config.zmq_endpoint
+            logger.info(f"Using explicit endpoint for {env_name}: {endpoint}")
+        else:
+            # Auto-generate IPC endpoint for local development
+            # Hash environment ID to avoid hitting Unix socket path length limit (108 chars)
+            env_hash = hashlib.md5(env_config.id.encode()).hexdigest()[:8]
+            instance_id = uuid.uuid4().hex[:8]
+            instance_name = f"{env_config.id}-{instance_id}"
+            # Use short filename to prevent "AF_UNIX path too long" errors
+            endpoint = f"ipc://{tempfile.gettempdir()}/prl-{env_hash}-{instance_id}.sock"
+
+            # Auto-start worker
+            logger.info(f"Auto-starting {env_name} worker on {endpoint}")
+            manager = EnvironmentManager(
+                env_id=env_config.id,
+                instance_name=instance_name,
+                endpoint=endpoint,
+                env_args=env_config.args,
+                output_dir=config.output_dir,
+                log_level=config.log.level,
+            )
+            manager.start_worker()
+            env_managers.append(manager)
+
+        # Create ZMQ client for this environment
+        logger.info(f"Connecting to {env_name}")
+        client = ZMQEnvironmentClient(endpoints=[endpoint], timeout=300.0)  # 5 minutes for generate calls
+        await client.start()
+        env_clients[env_name] = client
+
+    # Load datasets from each environment
+    logger.info("Loading datasets from environment workers")
+    all_datasets = []
+    for env_config in config.env:
+        env_name = env_config.name or env_config.id
+        client = env_clients[env_name]
+
+        # Load dataset from first instance
+        dataset_raw = await client.get_dataset(seed=config.seed)
+
+        # Tag each problem with environment info
+        for problem in dataset_raw:
+            problem["_env_type"] = env_name
+
+        all_datasets.extend(dataset_raw)
+
+    # Merge datasets
+    dataset = HFDataset.from_list(all_datasets)
+    logger.info(f"Loaded {len(dataset)} total problems across {len(config.env)} environment(s)")
+
+    # Load validation datasets if configured
+    val_dataset = None
+    if config.val:
+        val_datasets = []
+        for env_config in config.env:
+            env_name = env_config.name or env_config.id
+            client = env_clients[env_name]
+            val_data_raw = await client.get_eval_dataset(seed=config.seed)
+            for problem in val_data_raw:
+                problem["_env_type"] = env_name
+            val_datasets.extend(val_data_raw)
+        val_dataset = HFDataset.from_list(val_datasets)
 
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
