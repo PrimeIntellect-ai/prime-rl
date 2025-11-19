@@ -3,6 +3,7 @@
 import asyncio
 import json
 import time
+from pathlib import Path
 
 import msgpack
 import verifiers as vf
@@ -14,6 +15,7 @@ from openai import AsyncOpenAI
 from transformers import AutoTokenizer
 
 from prime_rl.orchestrator.utils import parse_is_truncated_completions, serialize_for_msgpack
+from prime_rl.utils.logger import setup_logger
 
 
 class ZMQEnvironmentServer:
@@ -270,8 +272,15 @@ async def main():
     parser.add_argument("--instance-name", required=True, help="Unique instance name")
     parser.add_argument("--env-args", default="{}", help="Environment args as JSON")
     parser.add_argument("--max-concurrent", type=int, default=10, help="Max concurrent requests")
+    parser.add_argument("--log-level", default="info", help="Logging level (e.g., info, debug)")
+    parser.add_argument("--log-file", type=str, default=None, help="Path to log file (optional)")
 
     args = parser.parse_args()
+
+    # Setup logger with the specified log level and optional log file
+    # Use append mode for shared log files (multiple workers write to same file)
+    log_file = Path(args.log_file) if args.log_file else None
+    setup_logger(args.log_level, log_file=log_file, append=True)
 
     # Parse env args
     env_args = json.loads(args.env_args)

@@ -124,6 +124,8 @@ async def orchestrate(config: OrchestratorConfig):
                 instance_name=instance_name,
                 endpoint=endpoint,
                 env_args=env_config.args,
+                output_dir=config.output_dir,
+                log_level=config.log.level,
             )
             manager.start_worker()
             env_managers.append(manager)

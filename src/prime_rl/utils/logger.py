@@ -8,7 +8,7 @@ NO_BOLD = "\033[22m"
 RESET = "\033[0m"
 
 
-def setup_logger(log_level: str, log_file: Path | None = None):
+def setup_logger(log_level: str, log_file: Path | None = None, append: bool = False):
     global _LOGGER
     if _LOGGER is not None:
         raise RuntimeError("Logger already set. Please call `setup_logger` only once.")
@@ -52,7 +52,7 @@ def setup_logger(log_level: str, log_file: Path | None = None):
 
     # If specified, install file handler
     if log_file is not None:
-        if log_file.exists():
+        if not append and log_file.exists():
             log_file.unlink()
         logger.add(log_file, format=format, level=log_level.upper(), colorize=True)
 
