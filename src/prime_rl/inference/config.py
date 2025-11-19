@@ -1,8 +1,10 @@
+import os
 from argparse import Namespace
 from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
+from prime_rl.trainer.weights import FP8_BLOCK_QUANT_KWARGS
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings, get_all_fields
 from prime_rl.utils.utils import rgetattr, rsetattr
 
@@ -129,6 +131,16 @@ class InferenceConfig(BaseSettings):
         WeightBroadcastConfig()
     )
 
+    quantization: Annotated[
+        bool,
+        Field(description="Whether to use FP8 quantization for inference."),
+    ] = False
+
+    use_deep_gemm: Annotated[
+        bool,
+        Field(description="Whether to use deep GEMM optimization in vLLM."),
+    ] = False
+
     @model_validator(mode="after")
     def nccl_and_dp(self):
         if self.weight_broadcast.type == "nccl" and self.parallel.dp != 1:
@@ -153,11 +165,22 @@ class InferenceConfig(BaseSettings):
             "gpu_memory_utilization": "gpu_memory_utilization",
         }
 
+        excluded_fields = {"quantization", "use_deep_gemm"}
+
         for key in get_all_fields(self):
+            if key in excluded_fields:
+                continue
             value = rgetattr(self, key.replace("-", "_"))
             rsetattr(namespace, to_vllm.get(key, key), value)
 
         # Set `logprobs_mode` to `processed_logprobs` by default
         rsetattr(namespace, "logprobs_mode", "processed_logprobs")
+
+        if self.quantization:
+            rsetattr(namespace, "quantization", "fp8")
+            rsetattr(namespace, "hf_overrides", {"quantization_config": FP8_BLOCK_QUANT_KWARGS})
+
+        if self.use_deep_gemm:
+            os.environ["VLLM_USE_DEEP_GEMM"] = "1"
 
         return namespace

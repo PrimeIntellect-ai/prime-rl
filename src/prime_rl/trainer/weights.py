@@ -1,5 +1,10 @@
+import gc
 import json
+import os
+import shutil
+import threading
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Literal, cast
 
@@ -11,13 +16,164 @@ from torch import Tensor, nn
 from torch.distributed.checkpoint.state_dict import _get_fqns as get_fqns
 from torch.distributed.tensor import DTensor
 from transformers.utils import SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME, WEIGHTS_INDEX_NAME, WEIGHTS_NAME
+from tqdm import tqdm
 
+from prime_rl.trainer.fp8_triton import blockwise_cast_to_fp8_triton
 from prime_rl.trainer.lora import (
     clean_lora_state_dict,
     merge_lora_weights_inplace,
     restore_lora_weights_inplace,
 )
 from prime_rl.utils.logger import get_logger
+
+FP8_BLOCK_QUANT_KWARGS = {
+    "activation_scheme": "dynamic",
+    "fmt": "e4m3",
+    "quant_method": "fp8",
+    "weight_block_size": [128, 128],
+}
+
+class ConversionResult:
+    """Thread-safe result collector for model conversion."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.weight_map = {}
+        self.param_count = 0
+        self.modules_to_not_convert = []
+
+    def add_result(self, filename: str, q_weights: dict, module_names: list[str]) -> None:
+        with self.lock:
+            for k, v in q_weights.items():
+                self.weight_map[k] = filename
+                if isinstance(v, torch.Tensor):
+                    self.param_count += len(v)
+            self.modules_to_not_convert.extend(module_names)
+
+
+# Exclusion patterns for weights that should not be quantized
+_QUANTIZATION_EXCLUSIONS = {"layernorm", "embed", "router", "mlp.gate.", "norm", "lm_head", "eh_proj"}
+
+
+def _should_quantize_weight(key: str) -> bool:
+    """Check if a weight key should be quantized."""
+    if "weight" not in key:
+        return False
+    return not any(exclusion in key for exclusion in _QUANTIZATION_EXCLUSIONS)
+
+
+def _process_safetensors_file(
+    input_path: Path,
+    output_path: Path,
+    filename: str,
+    result_collector: ConversionResult,
+) -> None:
+    """Process a single safetensors file, quantizing weights with FP8 blockwise (128x128)."""
+    logger = get_logger()
+    logger.debug(f"Processing {filename}, memory usage: {torch.cuda.memory_allocated()}")
+    
+    q_weights = {}
+    modules_to_not_convert = []
+
+    with safe_open(input_path / filename, framework="pt", device="cuda") as f:
+        for key in f.keys():
+            weight = f.get_tensor(key)
+            if _should_quantize_weight(key):
+                qw, s = blockwise_cast_to_fp8_triton(weight)
+                q_weights[key] = qw
+                q_weights[key.replace(".weight", ".weight_scale_inv")] = s
+            else:
+                if key.endswith(".weight"):
+                    modules_to_not_convert.append(key.replace(".weight", ""))
+                q_weights[key] = weight
+
+    save_file(q_weights, output_path / filename, metadata={"format": "pt"})
+    result_collector.add_result(filename, q_weights, modules_to_not_convert)
+
+
+def convert_model_to_fp8(
+    model_path: Path | str,
+    output_path: Path | str,
+    max_workers: int = 4,
+) -> None:
+    """
+    Convert a model to FP8 format using blockwise (128x128) quantization and save it.
+    
+    Args:
+        model_path: Path to the input model directory (HF format with safetensors)
+        output_path: Path to save the FP8 quantized model
+        max_workers: Number of worker threads for parallel processing
+    """
+    model_path = Path(model_path)
+    output_path = Path(output_path)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # Copy non-safetensors files
+    for filename in os.listdir(model_path):
+        file_path = model_path / filename
+        if not filename.endswith(".safetensors") and not file_path.is_dir():
+            shutil.copyfile(file_path, output_path / filename)
+
+    safetensors_files = [f for f in os.listdir(model_path) if f.endswith(".safetensors")]
+    result_collector = ConversionResult()
+
+    # Process safetensors files in parallel
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(_process_safetensors_file, model_path, output_path, filename, result_collector)
+            for filename in safetensors_files
+        ]
+        for future in tqdm(futures, desc="Processing files"):
+            future.result()
+
+    # Save quantization config to config.json
+    config_path = model_path / "config.json"
+    if config_path.exists():
+        with open(config_path) as f:
+            cfg = json.load(f)
+        
+        quant_config = dict(FP8_BLOCK_QUANT_KWARGS)
+        if result_collector.modules_to_not_convert:
+            quant_config["modules_to_not_convert"] = sorted(set(result_collector.modules_to_not_convert))
+        cfg["quantization_config"] = quant_config
+        with open(output_path / "config.json", "w") as f:
+            json.dump(cfg, f, indent=2)
+
+    # Save index file
+    index_dict = {
+        "weight_map": result_collector.weight_map,
+        "metadata": {"total_size": result_collector.param_count},
+    }
+    with open(output_path / "model.safetensors.index.json", "w") as f:
+        json.dump(index_dict, f, indent=2)
+
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
+def quantize_param(name: str, weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, str]:
+    """Quantize a single weight parameter using FP8 blockwise (128x128) quantization."""
+    assert name.endswith(".weight"), f"Expected weight parameter, got {name}"
+    qweight, scale = blockwise_cast_to_fp8_triton(weight)
+    scale_name = name.replace(".weight", ".weight_scale_inv")
+    return qweight, scale, scale_name
+
+
+def quantize_layer_params(state_dict: dict[str, Tensor]) -> None:
+
+    for key in list(state_dict.keys()):
+        if (
+            not key.endswith(".weight")
+            or key.endswith("_scale")
+            or key.endswith("_scale_inv")
+            or not _should_quantize_weight(key)
+        ):
+            continue
+        
+        weight = state_dict[key]
+        qweight, scale, scale_name = quantize_param(key, weight)
+        state_dict[key] = qweight
+        state_dict[scale_name] = scale
 
 
 def has_hf_moe_layers(state_dict: dict[str, Tensor]) -> bool:

@@ -7,7 +7,7 @@ import torch.nn as nn
 from prime_rl.trainer.lora import has_lora_layers
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.rl.config import FileSystemWeightBroadcastConfig
-from prime_rl.trainer.weights import convert_tt_to_hf_moe, gather_weights_on_master, has_tt_moe_layers, save_state_dict
+from prime_rl.trainer.weights import convert_tt_to_hf_moe, gather_weights_on_master, has_tt_moe_layers, quantize_layer_params, save_state_dict
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.utils import get_step_path
 
@@ -23,6 +23,7 @@ class FileSystemWeightBroadcast(WeightBroadcast):
         self.logger.debug(
             f"Filesystem broadcast initialized (save_format={config.save_format}, save_sharded={config.save_sharded}, broadcast_dir={self.broadcast_dir})"
         )
+        self.use_fp8 = config.use_fp8
 
     def broadcast_weights(self, model: nn.Module, step: int):
         """Broadcast weights by saving a HF-compatible checkpoint to shared filesystem and notifies the orchestrator."""
@@ -34,6 +35,9 @@ class FileSystemWeightBroadcast(WeightBroadcast):
             # Convert TT-MoE layers to HF format if needed
             if has_tt_moe_layers(state_dict):
                 convert_tt_to_hf_moe(state_dict)
+                
+            if self.use_fp8:
+                quantize_layer_params(state_dict)
 
             # Save weights to shared filesystem
             save_dir = get_step_path(self.broadcast_dir, step)

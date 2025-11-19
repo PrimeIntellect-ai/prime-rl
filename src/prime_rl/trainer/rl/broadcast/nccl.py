@@ -87,6 +87,7 @@ class NCCLWeightBroadcastSender:
         device: int | str | torch.device,
         timeout: int,
         dtype: torch.dtype = torch.bfloat16,
+        use_fp8: bool = False,
     ):
         self.logger = get_logger()
         self.world = get_world()
@@ -99,6 +100,7 @@ class NCCLWeightBroadcastSender:
             )
             self.communicator = PyNcclCommunicator(pg, device=device)
             self.logger.debug("NCCL broadcast initialized on master rank")
+            self.use_fp8 = use_fp8
         else:
             self.logger.debug("NCCL broadcast initialized on non-master rank (no communicator)")
 
@@ -125,6 +127,8 @@ class NCCLWeightBroadcastSender:
                 convert_tt_layer_to_hf(state_dict, layer_id)
 
             if self.world.is_master:
+                if self.use_fp8:
+                    quantize_layer_params(state_dict)
                 broadcast_state_dict(state_dict, self.communicator)
 
 
@@ -142,7 +146,7 @@ class NCCLWeightBroadcast(WeightBroadcast):
         self.logger = get_logger()
         self.world = get_world()
         self.nccl_broadcast_sender = NCCLWeightBroadcastSender(
-            config.host, config.port, 0, config.inference_world_size + 1, device, config.timeout
+            config.host, config.port, 0, config.inference_world_size + 1, device, config.timeout, config.use_fp8
         )
 
     @torch.no_grad()
