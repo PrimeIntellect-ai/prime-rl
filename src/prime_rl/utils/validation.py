@@ -34,7 +34,7 @@ def validate_shared_model_name(
     orchestrator: OrchestratorConfig,
     inference: Optional[InferenceConfig] = None,
 ) -> None:
-    if trainer.model.name.startswith("Jackmin108/"):  # The TT MoE models will have a different name on the orchestrator
+    if trainer.model.name.startswith("Jackmin108/") or orchestrator.model.name.endswith("-fp8"):  # The TT MoE models will have a different name on the orchestrator
         return
     if trainer.model.name != orchestrator.model.name:
         raise ValueError(
