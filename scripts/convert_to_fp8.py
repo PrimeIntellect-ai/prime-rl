@@ -98,7 +98,7 @@ def main():
             output_path=str(output_path),
             max_workers=args.max_workers,
         )
-        print(f"\n✓ Successfully converted model to FP8 format!")
+        print("\n✓ Successfully converted model to FP8 format!")
         print(f"  Output directory: {output_path}")
     except Exception as e:
         print(f"\n✗ Error during conversion: {e}", file=sys.stderr)

@@ -2,7 +2,7 @@ import time
 from pathlib import Path
 from typing import Literal
 
-import torch.nn as nn
+from torch import nn
 
 from prime_rl.trainer.lora import has_lora_layers
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
