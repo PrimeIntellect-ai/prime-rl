@@ -58,6 +58,8 @@ from ring_flash_attn import substitute_hf_flash_attn
 @clean_exit
 @logger.catch(reraise=True)
 def train(config: RLTrainerConfig):
+    torch.manual_seed(42)
+    torch.cuda.manual_seed_all(42)
     # Setup world and logger
     world = get_world()
     logger = setup_logger(
@@ -233,21 +235,30 @@ def train(config: RLTrainerConfig):
 
         logger.info(f"Starting forward and backward pass ({batch_size=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
-        cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
+        cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if config.model.cp > 1 else 0
+        cp_group = parallel_dims.world_mesh["cp"].get_group() if config.model.cp > 1 else None
         for micro_step, micro_batch in enumerate(micro_batches):
             # we only all reduce at the last grad acc step
             model.set_requires_all_reduce(micro_step == len(micro_batches) - 1)
 
-            input_ids = maybe_shard_for_cp(micro_batch["input_ids"].to("cuda"), cp_rank=cp_rank, cp_world_size=config.model.cp)
-            advantages = maybe_shard_for_cp(micro_batch["advantages"].to("cuda"), cp_rank=cp_rank, cp_world_size=config.model.cp)
-            loss_mask = maybe_shard_for_cp(micro_batch["loss_mask"].to("cuda"), cp_rank=cp_rank, cp_world_size=config.model.cp)
-            inference_logprobs = maybe_shard_for_cp(micro_batch["inference_logprobs"].to("cuda"), cp_rank=cp_rank, cp_world_size=config.model.cp)
+            input_ids = maybe_shard_for_cp(
+                micro_batch["input_ids"].to("cuda"), cp_rank=cp_rank, cp_world_size=config.model.cp
+            )
+            advantages = maybe_shard_for_cp(
+                micro_batch["advantages"].to("cuda"), cp_rank=cp_rank, cp_world_size=config.model.cp
+            )
+            loss_mask = maybe_shard_for_cp(
+                micro_batch["loss_mask"].to("cuda"), cp_rank=cp_rank, cp_world_size=config.model.cp
+            )
+            inference_logprobs = maybe_shard_for_cp(
+                micro_batch["inference_logprobs"].to("cuda"), cp_rank=cp_rank, cp_world_size=config.model.cp
+            )
 
             position_ids = maybe_update_ring_flash_attn_params_and_shard_for_cp(
                 position_ids=micro_batch["position_ids"].to("cuda"),
                 cp_rank=cp_rank,
                 cp_world_size=config.model.cp,
-                cp_group=parallel_dims.world_mesh["cp"].get_group(),
+                cp_group=cp_group,
             )
 
             temperature = micro_batch["temperature"]
@@ -256,9 +267,7 @@ def train(config: RLTrainerConfig):
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
                 logits = forward(model, input_ids, position_ids).float().contiguous()
 
-            left_pad_logit = maybe_get_padding_logit_from_prev_cp_rank(
-                logits, cp_rank, config.model.cp, parallel_dims.world_mesh["cp"].get_group()
-            )
+            left_pad_logit = maybe_get_padding_logit_from_prev_cp_rank(logits, cp_rank, config.model.cp, cp_group)
 
             shifted_logits = shift_logits(logits, left_pad_logit=left_pad_logit)
             shifted_logits = shifted_logits / temperature
@@ -266,7 +275,7 @@ def train(config: RLTrainerConfig):
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
-            
+
             starts_with_zero = True
             if config.model.cp > 1:
                 starts_with_zero = (position_ids[0, 0] == 0).item()
@@ -280,7 +289,7 @@ def train(config: RLTrainerConfig):
                 loss_scale=loss_scale,
                 cp_rank=cp_rank,
                 cp_world_size=config.model.cp,
-                cp_group=parallel_dims.world_mesh["cp"].get_group(),
+                cp_group=cp_group,
                 starts_with_zero=starts_with_zero,
             )
 
@@ -293,6 +302,12 @@ def train(config: RLTrainerConfig):
             # Backward pass
             with maybe_record_function("backward"):
                 loss.backward()
+
+            kl_mismatch_tensor = loss_tensors["mismatch_kl"][-1].mean()
+            if cp_group is not None:
+                dist.all_reduce(kl_mismatch_tensor, group=cp_group, op=dist.ReduceOp.AVG)
+            
+            tensors["global_mismatch_kl"].append(kl_mismatch_tensor.detach().to("cpu").unsqueeze(0))
 
             # Add relevant tensors to tensor dict for logging purposes
             tensors["trainer_probs"].append(torch.exp(trainer_logprobs)[loss_mask].detach().to("cpu"))
@@ -312,7 +327,7 @@ def train(config: RLTrainerConfig):
                 tensors[key].append(loss_tensor)
 
             # Debug log with *local, micro step* stats
-            micro_step_message = f"Micro Step {micro_step}/{len(micro_batches)} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy'][-1].mean().item():.4f} | Mismatch KL: {tensors['mismatch_kl'][-1].mean().item():.4f}"
+            micro_step_message = f"Micro Step {micro_step}/{len(micro_batches)} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy'][-1].mean().item():.4f} | Mismatch KL: {tensors['mismatch_kl'][-1].mean().item():.4f} | Global Mismatch KL: {tensors['global_mismatch_kl'][-1].item():.4f}"
             if "max_vio" in tensors:
                 micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
@@ -362,6 +377,10 @@ def train(config: RLTrainerConfig):
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Entropy: {tensor_stats['entropy/mean']:.4f} | Mismatch KL: {tensor_stats['mismatch_kl/mean']:.4f} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f} GiB"
         if "max_vio/mean" in tensor_stats:
             step_message += f" | Max Vio: {tensor_stats['max_vio/mean']:.4f}"
+
+        if "global_mismatch_kl/mean" in tensor_stats:
+            step_message += f" | Global Mismatch KL: {tensor_stats['global_mismatch_kl/mean']:.4f}"
+            
         logger.success(step_message)
 
         # Log performance metrics
