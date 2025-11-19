@@ -1,6 +1,5 @@
 """Environment worker process manager for local development."""
 
-import asyncio
 import atexit
 import json
 import subprocess
