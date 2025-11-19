@@ -142,7 +142,7 @@ class Scheduler:
         problem: dict,
     ) -> tuple[GenerateOutputs, ProcessedOutputs, list[bool]]:
         """Generate and process rollouts using ZMQ environment client."""
-        response = await env_client.generate(
+        return await env_client.generate(
             problem=problem,
             model_name=self.config.model.name,
             rollouts_per_example=self.config.rollouts_per_example,
@@ -154,43 +154,6 @@ class Scheduler:
             zero_truncated_completions=self.config.zero_truncated_completions,
             mask_truncated_completions=self.config.mask_truncated_completions,
         )
-
-        # Reconstruct GenerateOutputs from ZMQ response
-        gen_out = response["generate_outputs"]
-        # Only include metadata if it's not None (Pydantic validation requirement)
-        kwargs = {
-            "prompt": gen_out["prompt"],
-            "completion": gen_out["completion"],
-            "answer": gen_out["answer"],
-            "state": gen_out["state"],
-            "reward": gen_out["reward"],
-            "info": gen_out["info"],
-            "task": gen_out["task"],
-            "metrics": gen_out["metrics"],
-            "example_id": gen_out["example_id"],
-        }
-        if gen_out.get("metadata") is not None:
-            kwargs["metadata"] = gen_out["metadata"]
-
-        # Use model_construct to skip validation overhead for trusted ZMQ data
-        generate_outputs = GenerateOutputs.model_construct(**kwargs)
-
-        # Reconstruct ProcessedOutputs from ZMQ response
-        proc_out = response["processed_outputs"]
-        is_truncated = response["is_truncated"]
-
-        # Use model_construct to skip validation overhead for trusted ZMQ data
-        processed_outputs = ProcessedOutputs.model_construct(
-            prompt_ids=proc_out["prompt_ids"],
-            completion_ids=proc_out["completion_ids"],
-            prompt_mask=proc_out["prompt_mask"],
-            completion_mask=proc_out["completion_mask"],
-            completion_logprobs=proc_out["completion_logprobs"],
-            rewards=proc_out["rewards"],
-            is_truncated=is_truncated,
-        )
-
-        return (generate_outputs, processed_outputs, is_truncated)
 
     async def update_policy_loop(self):
         """Continuously checks for new policy checkpoints."""

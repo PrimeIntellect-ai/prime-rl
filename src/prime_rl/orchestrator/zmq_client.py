@@ -2,13 +2,13 @@
 
 import asyncio
 import uuid
-from typing import Any
 
 import msgpack
 import msgpack_numpy
 import zmq
 import zmq.asyncio
 from loguru import logger
+from verifiers.types import GenerateOutputs, ProcessedOutputs
 
 from prime_rl.orchestrator.utils import msgpack_encoder
 
@@ -151,7 +151,7 @@ class ZMQEnvironmentClient:
         mask_env_responses: bool = True,
         zero_truncated_completions: bool = False,
         mask_truncated_completions: bool = False,
-    ) -> dict:
+    ) -> tuple[GenerateOutputs, ProcessedOutputs, list[bool]]:
         """
         Generate and process rollouts for a problem.
 
@@ -168,9 +168,9 @@ class ZMQEnvironmentClient:
             mask_truncated_completions: Whether to mask truncated completions
 
         Returns:
-            Dict with "generate_outputs", "processed_outputs", "is_truncated"
+            Tuple containing (GenerateOutputs, ProcessedOutputs, is_truncated list)
         """
-        return await self._send_request(
+        response = await self._send_request(
             action="generate",
             problem=problem,
             model_name=model_name,
@@ -183,6 +183,43 @@ class ZMQEnvironmentClient:
             zero_truncated_completions=zero_truncated_completions,
             mask_truncated_completions=mask_truncated_completions,
         )
+
+        # Reconstruct GenerateOutputs from ZMQ response
+        gen_out = response["generate_outputs"]
+        # Only include metadata if it's not None (Pydantic validation requirement)
+        kwargs = {
+            "prompt": gen_out["prompt"],
+            "completion": gen_out["completion"],
+            "answer": gen_out["answer"],
+            "state": gen_out["state"],
+            "reward": gen_out["reward"],
+            "info": gen_out["info"],
+            "task": gen_out["task"],
+            "metrics": gen_out["metrics"],
+            "example_id": gen_out["example_id"],
+        }
+        if gen_out.get("metadata") is not None:
+            kwargs["metadata"] = gen_out["metadata"]
+
+        # Use model_construct to skip validation overhead for trusted ZMQ data
+        generate_outputs = GenerateOutputs.model_construct(**kwargs)
+
+        # Reconstruct ProcessedOutputs from ZMQ response
+        proc_out = response["processed_outputs"]
+        is_truncated = response["is_truncated"]
+
+        # Use model_construct to skip validation overhead for trusted ZMQ data
+        processed_outputs = ProcessedOutputs.model_construct(
+            prompt_ids=proc_out["prompt_ids"],
+            completion_ids=proc_out["completion_ids"],
+            prompt_mask=proc_out["prompt_mask"],
+            completion_mask=proc_out["completion_mask"],
+            completion_logprobs=proc_out["completion_logprobs"],
+            rewards=proc_out["rewards"],
+            is_truncated=is_truncated,
+        )
+
+        return generate_outputs, processed_outputs, is_truncated
 
     async def get_dataset(self, seed: int) -> list[dict]:
         """
