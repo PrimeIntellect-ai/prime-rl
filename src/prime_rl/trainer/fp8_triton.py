@@ -1,5 +1,7 @@
 from typing import Tuple
 
+# Adapted from https://github.com/THUDM/slime/blob/5b706fb03b11b5a9c8bc2532926695b07d72a066/slime/utils/fp8_kernel.py
+
 import torch
 import triton
 import triton.language as tl
@@ -10,6 +12,16 @@ fp8_min = -fp8_max
 
 
 def ceil_div(x: int, y: int) -> int:
+    """
+    Perform ceiling division of two integers.
+
+    Args:
+            x: the dividend.
+            y: the divisor.
+
+    Returns:
+            The result of the ceiling division.
+    """
     return (x + y - 1) // y
 
 
@@ -50,8 +62,10 @@ def _blockwise_cast_to_fp8_triton(
     tl.store(S + pid_m * stride_sm + pid_n * stride_sn, x_s)
 
 
-def blockwise_cast_to_fp8_triton(x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+def blockwise_cast_to_fp8_triton(x: torch.Tensor, block_size=None) -> Tuple[torch.Tensor, torch.Tensor]:
     BLOCK_M, BLOCK_N = 128, 128
+    if block_size:
+        BLOCK_M, BLOCK_N = block_size[0], block_size[1]
     M, N = x.shape
     y = torch.empty(M, N, device=x.device, dtype=torch.float8_e4m3fn)
     s = torch.empty(ceil_div(M, BLOCK_M), ceil_div(N, BLOCK_N), dtype=torch.float32, device=x.device)
