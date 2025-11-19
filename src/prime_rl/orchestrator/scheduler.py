@@ -3,17 +3,16 @@ import time
 from itertools import cycle
 from typing import NamedTuple
 
+import verifiers as vf
 from httpx import AsyncClient
 from openai import AsyncOpenAI
 from tqdm import tqdm
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from verifiers import Environment
-from verifiers.types import GenerateOutputs, ProcessedOutputs
 
-from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.config import OrchestratorConfig
-from prime_rl.orchestrator.utils import get_sampling_args, parse_is_truncated_completions
+from prime_rl.orchestrator.utils import get_sampling_args
 from prime_rl.utils.client import update_weights
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import (
@@ -22,7 +21,8 @@ from prime_rl.utils.utils import (
     get_step_path,
     sync_wait_for_path,
 )
-from prime_rl.utils.vf import Rollout, generate_group, make_rollouts
+from prime_rl.utils.vf import Rollout, generate_group
+from prime_rl.utils.vf import make_interleaved_rollouts as make_rollouts  # TODO: Make this configurable
 
 
 class InflightRolloutInfo(NamedTuple):
@@ -76,49 +76,6 @@ class Scheduler:
         self.sampling_args = get_sampling_args(config.sampling)
         self.model_name = self.config.model.name
 
-    def process_generate_outputs(
-        self,
-        generate_outputs: GenerateOutputs,
-    ) -> list[Rollout]:
-        processed_outputs: ProcessedOutputs = self.env.process_env_results_vllm(
-            prompts=generate_outputs.prompt,
-            completions=generate_outputs.completion,
-            states=generate_outputs.state,
-            rewards=generate_outputs.reward,
-            processing_class=self.tokenizer,
-            max_seq_len=self.seq_len,
-            mask_env_responses=self.config.mask_env_responses,
-            zero_truncated_completions=self.config.zero_truncated_completions,
-            mask_truncated_completions=self.config.mask_truncated_completions,
-        )
-
-        # Compute advantages
-        advantages = compute_advantages(
-            rewards=processed_outputs.rewards,
-            completion_lengths=list(map(len, processed_outputs.completion_ids)),
-            samples_per_problem=self.config.rollouts_per_example,
-            advantage_config=self.config.advantage,
-        )
-
-        # Parse whether the completions were truncated
-        responses = [state["responses"] for state in generate_outputs.state]
-        is_truncated = parse_is_truncated_completions(responses=responses)
-
-        # Make rollouts
-        rollouts = make_rollouts(
-            generate_outputs,
-            processed_outputs,
-            advantages,
-            is_truncated,
-        )
-
-        # Update and sample rollouts from the buffer
-        self.buffer.update(rollouts)
-        num_problems = len(set(generate_outputs.example_id))
-        accepted_rollouts = self.buffer.sample_rollouts(n=num_problems * self.config.rollouts_per_example)
-
-        return accepted_rollouts
-
     async def schedule_group_rollout(self, client: AsyncOpenAI | None = None):
         """Asynchronously schedules a group rollout request."""
         problem = self.buffer.sample_problems(n=1)[0]
@@ -129,7 +86,7 @@ class Scheduler:
                 client=client,
                 env=self.env,
                 model_name=self.model_name,
-                problem=problem,
+                example=problem,
                 rollouts_per_example=self.config.rollouts_per_example,
                 sampling_args=self.sampling_args,
             )
@@ -222,9 +179,13 @@ class Scheduler:
                     break
 
                 _, client = self.inflight_group_rollouts.pop(finished_group_rollout)
-                generate_outputs: GenerateOutputs = finished_group_rollout.result()
+                group_states: list[vf.State] = finished_group_rollout.result()
 
-                accepted_rollouts = self.process_generate_outputs(generate_outputs=generate_outputs)
+                # Update and sample rollouts from the buffer
+                rollouts = make_rollouts(group_states)
+                self.buffer.update(rollouts)
+                accepted_rollouts = self.buffer.sample_rollouts(n=self.config.rollouts_per_example)
+
                 batch_rollouts.extend(accepted_rollouts)
                 pbar.update(len(accepted_rollouts))
 

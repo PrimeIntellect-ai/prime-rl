@@ -4,7 +4,6 @@ from typing import TypedDict
 import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
-from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.rl.data import MicroBatch
 from prime_rl.utils.vf import Rollout
@@ -21,47 +20,51 @@ class BatchSample(TypedDict):
 def prepare_sample(
     rollout: Rollout,
     seq_len: int,
-    tokenizer: PreTrainedTokenizer,
-) -> BatchSample:
+) -> list[BatchSample]:
     """
     Prepare a problem for sequence packing training.
     Tokenize and prepare tensors.
     """
 
     # Prepare prompt tokens
-    prompt_token_ids = torch.tensor(rollout["prompt_ids"]).long()
-    prompt_token_mask = torch.tensor(rollout["prompt_mask"]).long()
+    samples = []
+    advantage = rollout["advantage"]
+    for trajectory_step in rollout["trajectory_tokens"]:
+        prompt_token_ids = torch.tensor(trajectory_step["prompt_ids"]).long()
+        prompt_token_mask = torch.tensor(trajectory_step["prompt_mask"]).long()
 
-    # Prepare completion tokens
-    completion_token_ids = torch.tensor(rollout["completion_ids"]).long()
-    completion_token_mask = torch.tensor(rollout["completion_mask"]).long()
+        # Prepare completion tokens
+        completion_token_ids = torch.tensor(trajectory_step["completion_ids"]).long()
+        completion_token_mask = torch.tensor(trajectory_step["completion_mask"]).long()
 
-    # Prepare input_ids, loss_mask, position_ids, inference_logprobs, and advantages
-    input_ids = torch.cat([prompt_token_ids, completion_token_ids]).long()
-    loss_mask = torch.cat([prompt_token_mask, completion_token_mask]).bool()
-    inference_logprobs = torch.cat(
-        [torch.zeros(len(prompt_token_ids)), torch.tensor(rollout["completion_logprobs"])]
-    ).float()
-    position_ids = torch.arange(len(input_ids)).long()
-    advantages = torch.tensor(rollout["advantage"]).repeat(len(input_ids)).float()
+        # Prepare input_ids, loss_mask, position_ids, inference_logprobs, and advantages
+        input_ids = torch.cat([prompt_token_ids, completion_token_ids]).long()
+        loss_mask = torch.cat([prompt_token_mask, completion_token_mask]).bool()
+        inference_logprobs = torch.cat(
+            [torch.zeros(len(prompt_token_ids)), torch.tensor(trajectory_step["completion_logprobs"])]
+        ).float()
+        advantages = torch.tensor(advantage).repeat(len(input_ids)).float()
+        position_ids = torch.arange(len(input_ids)).long()
 
-    if len(input_ids) > seq_len:
-        # We should never truncate as it would create a really bad learning signal. Instead, always set the maximum sequence length
-        # on the inference worker accordingly, e.g. by setting the `max_tokens` parameter.
-        raise ValueError(
-            f"Number of tokens {len(input_ids)} is greater than sequence length {seq_len}. This should not happen."
+        if len(input_ids) > seq_len:
+            # We should never truncate as it would create a really bad learning signal. Instead, always set the maximum sequence length
+            # on the inference worker accordingly, e.g. by setting the `max_tokens` parameter.
+            raise ValueError(
+                f"Number of tokens {len(input_ids)} is greater than sequence length {seq_len}. This should not happen."
+            )
+
+        assert len(input_ids) == len(advantages) == len(loss_mask) == len(position_ids) == len(inference_logprobs), (
+            f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, inference_logprobs: {len(inference_logprobs)}"
         )
-
-    assert len(input_ids) == len(advantages) == len(loss_mask) == len(position_ids) == len(inference_logprobs), (
-        f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, inference_logprobs: {len(inference_logprobs)}"
-    )
-    return {
-        "input_ids": input_ids,
-        "advantages": advantages,
-        "loss_mask": loss_mask,
-        "position_ids": position_ids,
-        "inference_logprobs": inference_logprobs,
-    }
+        sample: BatchSample = {
+            "input_ids": input_ids,
+            "advantages": advantages,
+            "loss_mask": loss_mask,
+            "position_ids": position_ids,
+            "inference_logprobs": inference_logprobs,
+        }
+        samples.append(sample)
+    return samples
 
 
 def prepare_micro_batch(samples: list[MicroBatch], temperature: float):
@@ -125,7 +128,6 @@ def prepare_micro_batch_packing(samples: list[BatchSample], max_seq_len: int, te
 def prepare_batch(
     rollouts: list[Rollout],
     temperature: float,
-    tokenizer: PreTrainedTokenizer,
     seq_len: int,
     num_train_workers: int,
 ) -> list[list[MicroBatch]]:
@@ -136,14 +138,9 @@ def prepare_batch(
     rollouts = copy.deepcopy(rollouts)
     max_seq_len = seq_len
 
-    all_samples = [
-        prepare_sample(
-            rollout,
-            max_seq_len,
-            tokenizer,
-        )
-        for rollout in rollouts
-    ]
+    all_samples = []
+    for rollout in rollouts:
+        all_samples.extend(prepare_sample(rollout, max_seq_len))
 
     micro_batches_list = packed_samples_into_micro_bs(all_samples, max_seq_len)
     micro_batches = [

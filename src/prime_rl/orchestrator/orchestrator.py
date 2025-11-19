@@ -165,9 +165,7 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info(f"Starting orchestrator loop (max_steps={max_steps or 'infinite'})")
     last_eval_step = -1
     is_first_step = True
-    if config.max_concurrent is not None:
-        semaphore = asyncio.Semaphore(config.max_concurrent)
-        set_semaphore(semaphore)
+    await set_semaphore(config.max_concurrent or -1)
 
     # Start update policy loop
     asyncio.create_task(scheduler.update_policy_loop())
@@ -210,7 +208,7 @@ async def orchestrate(config: OrchestratorConfig):
                     clients=clients,
                     env=env,
                     model_name=config.model.name,
-                    problems=val_problems,
+                    examples=val_problems,
                     rollouts_per_example=config.val.rollouts_per_example,
                     sampling_args=get_sampling_args(config.sampling),
                     pbar_description="Generating rollouts (val)",
@@ -251,7 +249,6 @@ async def orchestrate(config: OrchestratorConfig):
         all_data_ranks_batches = prepare_batch(
             rollouts=train_rollouts,
             temperature=config.sampling.temperature,
-            tokenizer=tokenizer,
             num_train_workers=config.num_train_workers,
             seq_len=config.seq_len,
         )
@@ -279,10 +276,16 @@ async def orchestrate(config: OrchestratorConfig):
                 "task": [rollout["task"] for rollout in train_rollouts],
                 "reward": [rollout["reward"] for rollout in train_rollouts],
                 "advantage": [rollout["advantage"] for rollout in train_rollouts],
-                "is_truncated": [rollout["is_truncated"] for rollout in train_rollouts],
-                "completion_len": [len(rollout["completion_ids"]) for rollout in train_rollouts],
-                "prompt_len": [len(rollout["prompt_ids"]) for rollout in train_rollouts],
-                "seq_len": [len(rollout["prompt_ids"]) + len(rollout["completion_ids"]) for rollout in train_rollouts],
+                "is_truncated": [rollout["stop_condition"] == "length" for rollout in train_rollouts],
+                "completion_len": [
+                    len(rollout["trajectory_tokens"][-1]["completion_ids"]) for rollout in train_rollouts
+                ],
+                "prompt_len": [len(rollout["trajectory_tokens"][0]["prompt_ids"]) for rollout in train_rollouts],
+                "seq_len": [
+                    len(rollout["trajectory_tokens"][0]["prompt_ids"])
+                    + len(rollout["trajectory_tokens"][-1]["completion_ids"])
+                    for rollout in train_rollouts
+                ],
             }
         )
 
@@ -292,9 +295,9 @@ async def orchestrate(config: OrchestratorConfig):
         val_results_df = (
             pd.DataFrame(
                 {
-                    "example_id": val_outputs.example_id,
-                    "task": val_outputs.task,
-                    "reward": val_outputs.reward,
+                    "example_id": [rollout["input"]["example_id"] for rollout in val_outputs],
+                    "task": [rollout["input"]["task"] for rollout in val_outputs],
+                    "reward": [rollout["reward"] for rollout in val_outputs],
                 }
             )
             if val_outputs is not None
@@ -391,8 +394,8 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Log samples and distributions to W&B table if enabled
         monitor.log_samples(
-            input_tokens=[rollout["prompt_ids"] for rollout in train_rollouts],
-            output_tokens=[rollout["completion_ids"] for rollout in train_rollouts],
+            input_tokens=[rollout["trajectory_tokens"][0]["prompt_ids"] for rollout in train_rollouts],
+            output_tokens=[rollout["trajectory_tokens"][-1]["completion_ids"] for rollout in train_rollouts],
             rewards=results_df.reward.tolist(),
             advantages=results_df.advantage.tolist(),
             rollouts_per_problem=config.rollouts_per_example,
