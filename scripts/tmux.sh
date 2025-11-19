@@ -58,17 +58,15 @@ else
   # Start new tmux session with first window
   tmux new-session -d -s "$SESSION_NAME" -n "RL"
 
-  # Window 1: RL - 4 vertical panes
+  # Window 1: RL - 3 vertical panes
   tmux split-window -v -t "$SESSION_NAME:RL.0"
   tmux split-window -v -t "$SESSION_NAME:RL.1"
-  tmux split-window -v -t "$SESSION_NAME:RL.2"
   tmux select-layout -t "$SESSION_NAME:RL" even-vertical
 
   # Pane titles
   tmux select-pane -t "$SESSION_NAME:RL.0" -T "Trainer"
   tmux select-pane -t "$SESSION_NAME:RL.1" -T "Orchestrator"
   tmux select-pane -t "$SESSION_NAME:RL.2" -T "Inference"
-  tmux select-pane -t "$SESSION_NAME:RL.3" -T "Environments"
 
   # Logs: Orchestrator
   tmux send-keys -t "$SESSION_NAME:RL.1" 'while true; do
@@ -84,14 +82,6 @@ echo "Waiting for inference log file..."
 while [ ! -f '"$OUTPUT_DIR"'/logs/inference.stdout ]; do sleep 1; done
 echo "Following inference.stdout..."
 tail -F '"$OUTPUT_DIR"'/logs/inference.stdout
-done' C-m
-
-  # Logs: Environments (matches logging approach with others - single file: env.log)
-  tmux send-keys -t "$SESSION_NAME:RL.3" 'while true; do
-echo "Waiting for environment log file..."
-while [ ! -f '"$OUTPUT_DIR"'/logs/env.log ]; do sleep 1; done
-echo "Following env.log..."
-tail -F '"$OUTPUT_DIR"'/logs/env.log
 done' C-m
 
   # Window 2: Monitor

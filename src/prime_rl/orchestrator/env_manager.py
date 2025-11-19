@@ -1,4 +1,4 @@
-"""Environment worker process manager for local development."""
+"""Environment worker process manager to spawn environments instead of using remote zmq server."""
 
 import asyncio
 import atexit

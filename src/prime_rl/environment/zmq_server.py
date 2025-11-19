@@ -350,7 +350,9 @@ async def main():
     # Setup logger with the specified log level and optional log file
     # Use append mode for shared log files (multiple workers write to same file)
     log_file = Path(args.log_file) if args.log_file else None
-    setup_logger(args.log_level, log_file=log_file, append=True)
+    logger = setup_logger(args.log_level, log_file=log_file, append=True)
+    # Update module-level logger so class methods use the configured logger with file output
+    globals()['logger'] = logger
 
     # Parse env args
     env_args = json.loads(args.env_args)
