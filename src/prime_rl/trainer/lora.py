@@ -1,76 +1,12 @@
-import math
 import re
 from typing import Dict, List
 
 import torch
 import torch.nn as nn
-from torch.nn.parameter import Parameter
 
 from prime_rl.trainer.config import LoRAConfig
+from prime_rl.trainer.models.layers.lora import LoRALinear
 from prime_rl.utils.logger import get_logger
-
-
-class LoRALinear(nn.Module):
-    """
-    LoRA (Low-Rank Adaptation) linear layer.
-
-    Implements the low-rank decomposition: ΔW = B @ A
-    where A ∈ R^(rank x in_features), B ∈ R^(out_features x rank)
-
-    Forward pass: y = x @ (W + ΔW).T = x @ W.T + x @ A.T @ B.T * (alpha / rank)
-    """
-
-    def __init__(
-        self,
-        base_layer: nn.Linear,
-        rank: int,
-        alpha: float = 1.0,
-        dropout: float = 0.0,
-    ):
-        super().__init__()
-        self.base_layer = base_layer
-        self.rank = rank
-        self.alpha = alpha
-        self.scaling = alpha / rank
-
-        self.lora_A = Parameter(torch.empty(rank, base_layer.in_features))
-        self.lora_B = Parameter(torch.empty(base_layer.out_features, rank))
-
-        self.lora_dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
-
-        self._init_parameters()
-
-        for param in self.base_layer.parameters():
-            param.requires_grad = False
-
-    def _init_parameters(self):
-        """Initialize LoRA parameters following standard LoRA initialization."""
-        nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
-        nn.init.zeros_(self.lora_B)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass: base_output + lora_output"""
-        base_output = self.base_layer(x)
-        lora_x = self.lora_dropout(x)
-        lora_output = (lora_x @ self.lora_A.T) @ self.lora_B.T * self.scaling
-        return base_output + lora_output
-
-    def merge_weights(self) -> nn.Linear:
-        """Merge LoRA weights into base layer and return a new linear layer."""
-        delta_weight = (self.lora_B @ self.lora_A) * self.scaling
-        merged_layer = nn.Linear(
-            self.base_layer.in_features,
-            self.base_layer.out_features,
-            bias=self.base_layer.bias is not None,
-            device=self.base_layer.weight.device,
-            dtype=self.base_layer.weight.dtype,
-        )
-
-        merged_layer.weight.data = self.base_layer.weight.data + delta_weight
-        if self.base_layer.bias is not None:
-            merged_layer.bias.data = self.base_layer.bias.data.clone()
-
-        return merged_layer
 
 
 def _get_module_by_name(model: nn.Module, module_name: str) -> nn.Module:
@@ -217,7 +153,7 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
             continue
 
         lora_module = LoRALinear(
-            base_layer=base_module,
+            base_linear=base_module,
             rank=config.rank,
             alpha=config.alpha,
             dropout=config.dropout,
@@ -235,7 +171,7 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
     for name, module in model.named_modules():
         if isinstance(module, LoRALinear):
             lora_adapter_params += module.lora_A.numel() + module.lora_B.numel()
-            lora_adapted_params += module.base_layer.weight.numel()
+            lora_adapted_params += module.base_linear.weight.numel()
 
     fully_trainable = trainable_params - lora_adapter_params
     adapted_or_trainable = lora_adapted_params + fully_trainable
@@ -261,8 +197,8 @@ def clean_lora_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torc
         if "lora_A" in key or "lora_B" in key:
             continue
 
-        if ".base_layer." in key:
-            new_key = key.replace(".base_layer.", ".")
+        if ".base_linear." in key:
+            new_key = key.replace(".base_linear.", ".")
             clean_state_dict[new_key] = value
         else:
             clean_state_dict[key] = value
@@ -288,7 +224,7 @@ def merge_lora_weights_inplace(model: nn.Module) -> Dict[str, Dict[str, torch.Te
             }
 
             delta_weight = (module.lora_B @ module.lora_A) * module.scaling
-            module.base_layer.weight.data.add_(delta_weight)
+            module.base_linear.weight.data.add_(delta_weight)
 
             module.lora_A.data.zero_()
             module.lora_B.data.zero_()
@@ -313,7 +249,7 @@ def restore_lora_weights_inplace(model: nn.Module, original_lora_state: Dict[str
             module.lora_B.data.copy_(original_lora_state[name]["lora_B"])
 
             delta_weight = (module.lora_B @ module.lora_A) * module.scaling
-            module.base_layer.weight.data.sub_(delta_weight)
+            module.base_linear.weight.data.sub_(delta_weight)
             restored_count += 1
 
 
