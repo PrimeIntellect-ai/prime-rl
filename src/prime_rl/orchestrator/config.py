@@ -415,6 +415,11 @@ class OrchestratorConfig(BaseSettings):
         FileSystemWeightBroadcastConfig()
     )
 
+    trajectory_strategy: Annotated[
+        Literal["interleaved", "branching"],
+        Field(description="TBD."),
+    ] = "interleaved"
+
     output_dir: Annotated[
         Path,
         Field(
