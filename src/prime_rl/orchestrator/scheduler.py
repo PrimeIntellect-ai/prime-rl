@@ -90,12 +90,10 @@ class Scheduler:
             rollout_input["info"] = problem["info"]
         return rollout_input
 
-    def _trajectory_step_to_rollout_step(self, step: TrajectoryStep, fallback_reward: float) -> RolloutStep:
+    def _trajectory_step_to_rollout_step(self, step: TrajectoryStep, fallback_reward: float) -> RolloutStep | None:
         tokens = step.get("tokens")
         if tokens is None:
-            raise RuntimeError(
-                "Trajectory step is missing token data. Ensure vLLM is configured to return token_ids/logprobs."
-            )
+            return None
         is_truncated = bool(tokens.get("is_truncated") or tokens.get("overlong_prompt"))
         completion_mask = list(tokens["completion_mask"])
         if is_truncated and self.config.mask_truncated_completions:
@@ -123,11 +121,22 @@ class Scheduler:
         metrics = dict(state.get("metrics") or {})
         steps: list[RolloutStep] = []
         any_truncated = False
+        skipped_steps = 0
 
         for trajectory_step in trajectory:
             rollout_step = self._trajectory_step_to_rollout_step(trajectory_step, reward)
+            if rollout_step is None:
+                skipped_steps += 1
+                continue
             any_truncated = any_truncated or rollout_step["is_truncated"]
             steps.append(rollout_step)
+
+        if skipped_steps > 0:
+            self.logger.warning(f"Skipped {skipped_steps} trajectory step(s) with missing token data.")
+
+        if not steps:
+            self.logger.warning("Received rollout state with no valid steps after filtering. Skipping.")
+            return None
 
         if any_truncated and self.config.zero_truncated_completions:
             reward = 0.0
