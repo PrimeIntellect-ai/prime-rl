@@ -108,6 +108,7 @@ def make_interleaved_rollouts(states: list[vf.State]) -> list[Rollout]:
             trajectory_tokens=[interleaved_trajectory],
         )
         rollouts.append(rollout)
+    assert len(rollouts) == len(states)
     return rollouts
 
 
@@ -122,7 +123,7 @@ def make_branching_rollouts(states: list[vf.State]) -> list[Rollout]:
             advantage=state["advantage"],
             stop_condition=state["stop_condition"],
             metrics=state["metrics"],
-            trajectory_tokens=state["trajectory"]["tokens"],
+            trajectory_tokens=[step["tokens"] for step in state["trajectory"]],
         )
         rollouts.append(rollout)
     assert len(rollouts) == len(states)
