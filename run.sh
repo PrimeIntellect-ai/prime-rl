@@ -1,3 +1,5 @@
+## to be run on 4 gpus
+
 uv run rl \
   --trainer @ examples/reverse_text/rl/train.toml \
   --orchestrator @ examples/reverse_text/rl/orch.toml \
@@ -12,6 +14,9 @@ uv run rl \
   --log.level debug \
   --wandb.project arcee_debug \
   --wandb.name run
+
+# need to run on gpu 0
+uv run inference @ configs/debug/infer.toml --model.name arcee-train/hf-converted-afmoe-nano-ctxext-v4 --trust-remote-code --parallel.tp 1
 
 
 # uv run rl \
