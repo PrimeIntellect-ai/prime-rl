@@ -21,42 +21,35 @@ from prime_rl.utils.utils import (
 SEMAPHORE: asyncio.Semaphore | None = None
 
 
-def serialize_for_msgpack(obj):
-    """Convert objects to msgpack-serializable format.
-
-    Handles numpy types, Pydantic models, Path objects, datetime, UUID, Enum, nested structures, etc.
+def msgpack_encoder(obj):
     """
-    if obj is None:
-        return None
-    elif isinstance(obj, (str, int, float, bool)):
-        return obj
-    elif isinstance(obj, bytes):
-        return obj  # msgpack handles bytes natively
-    elif isinstance(obj, Path):
-        return str(obj)  # Convert Path to string
-    elif isinstance(obj, (datetime, date)):
-        return obj.isoformat()  # Convert datetime to ISO string
-    elif isinstance(obj, UUID):
-        return str(obj)  # Convert UUID to string
+    Custom encoder for non-standard types.
+
+    IMPORTANT: msgpack traverses lists/dicts in optimized C code. This function
+    is ONLY called for types msgpack doesn't recognize. This avoids the massive
+    performance penalty of recursing through millions of tokens in Python.
+
+    Handles: Path, UUID, Enum, datetime, Pydantic models, numpy scalars.
+    Does NOT handle: lists, dicts, basic types (msgpack does this natively in C).
+    """
+    if isinstance(obj, (Path, UUID)):
+        return str(obj)
     elif isinstance(obj, Enum):
-        return obj.value  # Convert Enum to its value
+        return obj.value
+    elif isinstance(obj, (datetime, date)):
+        return obj.isoformat()
     elif isinstance(obj, (np.integer, np.floating)):
         return obj.item()  # Convert numpy scalar to Python scalar
+    elif hasattr(obj, "model_dump"):
+        # Pydantic models - dump to dict, msgpack will traverse it in C
+        return obj.model_dump()
     elif isinstance(obj, np.ndarray):
-        return obj.tolist()  # Convert numpy array to list
-    elif isinstance(obj, dict):
-        return {k: serialize_for_msgpack(v) for k, v in obj.items()}
-    elif isinstance(obj, (list, tuple)):
-        return [serialize_for_msgpack(item) for item in obj]
-    elif hasattr(obj, 'model_dump'):
-        # Pydantic models (like ChatCompletion)
-        return serialize_for_msgpack(obj.model_dump())
+        # This should be handled by msgpack_numpy.patch(), but explicit is better
+        # Return the array as-is; msgpack_numpy will encode it
+        return obj
     else:
-        # Fallback for other types
-        try:
-            return list(obj) if hasattr(obj, '__iter__') else obj
-        except (TypeError, ValueError):
-            return str(obj)
+        # Unknown type - raise to make issues visible
+        raise TypeError(f"Object of type {type(obj)} is not msgpack serializable")
 
 
 def set_semaphore(semaphore: asyncio.Semaphore):

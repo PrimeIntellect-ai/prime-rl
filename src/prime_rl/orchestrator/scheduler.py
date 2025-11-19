@@ -160,13 +160,16 @@ class Scheduler:
         }
         if gen_out.get("metadata") is not None:
             kwargs["metadata"] = gen_out["metadata"]
-        generate_outputs = GenerateOutputs(**kwargs)
+
+        # Use model_construct to skip validation overhead for trusted ZMQ data
+        generate_outputs = GenerateOutputs.model_construct(**kwargs)
 
         # Reconstruct ProcessedOutputs from ZMQ response
         proc_out = response["processed_outputs"]
         is_truncated = response["is_truncated"]
 
-        processed_outputs = ProcessedOutputs(
+        # Use model_construct to skip validation overhead for trusted ZMQ data
+        processed_outputs = ProcessedOutputs.model_construct(
             prompt_ids=proc_out["prompt_ids"],
             completion_ids=proc_out["completion_ids"],
             prompt_mask=proc_out["prompt_mask"],

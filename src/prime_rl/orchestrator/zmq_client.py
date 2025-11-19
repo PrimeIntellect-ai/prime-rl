@@ -5,11 +5,15 @@ import uuid
 from typing import Any
 
 import msgpack
+import msgpack_numpy
 import zmq
 import zmq.asyncio
 from loguru import logger
 
-from prime_rl.orchestrator.utils import serialize_for_msgpack
+from prime_rl.orchestrator.utils import msgpack_encoder
+
+# Patch msgpack to use msgpack-numpy for efficient numpy array serialization
+msgpack_numpy.patch()
 
 
 class ZMQEnvironmentClient:
@@ -32,7 +36,12 @@ class ZMQEnvironmentClient:
         self.socket.setsockopt(zmq.SNDHWM, 10000)
         self.socket.setsockopt(zmq.RCVHWM, 10000)
         self.socket.setsockopt(zmq.LINGER, 0)
+
+        # TCP keepalive for faster dead server detection
         self.socket.setsockopt(zmq.TCP_KEEPALIVE, 1)
+        self.socket.setsockopt(zmq.TCP_KEEPALIVE_IDLE, 10)  # Start probes after 10s idle
+        self.socket.setsockopt(zmq.TCP_KEEPALIVE_INTVL, 2)  # Probe every 2s
+        self.socket.setsockopt(zmq.TCP_KEEPALIVE_CNT, 3)  # Give up after 3 failed probes
 
         # Connect to all endpoints
         for endpoint in endpoints:
@@ -46,22 +55,49 @@ class ZMQEnvironmentClient:
         self._receiver_task = asyncio.create_task(self._receive_loop())
         logger.debug(f"ZMQ client started with {len(self.endpoints)} endpoint(s)")
 
+    def _fail_all_pending(self, reason: str):
+        """Fail all pending futures with the given reason."""
+        for request_id, future in list(self.pending.items()):
+            if not future.done():
+                future.set_exception(RuntimeError(reason))
+        self.pending.clear()
+
     async def _receive_loop(self):
         """Continuously receive responses from environment servers."""
         while True:
             try:
                 # Receive multipart: [request_id, payload]
                 msg = await self.socket.recv_multipart()
+
+                if len(msg) < 2:
+                    logger.error(f"Invalid message format: expected 2 frames, got {len(msg)}")
+                    continue
+
                 request_id, response_data = msg[0], msg[1]
 
                 if request_id in self.pending:
                     future = self.pending.pop(request_id)
                     if not future.done():
-                        future.set_result(msgpack.unpackb(response_data))
+                        try:
+                            response = msgpack.unpackb(response_data, raw=False)
+                            future.set_result(response)
+                        except Exception as unpack_error:
+                            # Unpacking failed - fail the specific future
+                            logger.error(f"Failed to unpack response for request {request_id.hex()}: {unpack_error}")
+                            future.set_exception(RuntimeError(f"Failed to deserialize response: {unpack_error}"))
+                else:
+                    logger.warning(f"Received response for unknown request_id: {request_id.hex()}")
+
             except asyncio.CancelledError:
                 break
+            except zmq.ZMQError as e:
+                # Socket-level error - fail all pending futures and exit
+                logger.error(f"ZMQ socket error in receive loop: {e}")
+                self._fail_all_pending(f"ZMQ socket error: {e}")
+                break
             except Exception as e:
-                logger.error(f"Error in ZMQ receive loop: {e}")
+                logger.error(f"Unexpected error in ZMQ receive loop: {e}", exc_info=True)
+                # Don't break - log and continue for non-socket errors
 
     async def _send_request(self, action: str, **kwargs) -> dict:
         """
@@ -80,9 +116,12 @@ class ZMQEnvironmentClient:
 
         request_id = uuid.uuid4().bytes
 
-        # Serialize the request payload to handle numpy types, etc.
-        request_payload = serialize_for_msgpack({"action": action, **kwargs})
-        payload_bytes = msgpack.packb(request_payload, use_bin_type=True)
+        # Let msgpack traverse dicts/lists in C - only call msgpack_encoder for unknown types
+        payload_bytes = msgpack.packb(
+            {"action": action, **kwargs},
+            default=msgpack_encoder,
+            use_bin_type=True,
+        )
 
         future = asyncio.Future()
         self.pending[request_id] = future

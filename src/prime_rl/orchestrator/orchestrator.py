@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import tempfile
 import time
 import uuid
@@ -114,8 +115,12 @@ async def orchestrate(config: OrchestratorConfig):
             logger.info(f"Using explicit endpoint for {env_name}: {endpoint}")
         else:
             # Auto-generate IPC endpoint for local development
-            instance_name = f"{env_config.id}-{uuid.uuid4().hex[:8]}"
-            endpoint = f"ipc://{tempfile.gettempdir()}/prime-rl-{instance_name}.sock"
+            # Hash environment ID to avoid hitting Unix socket path length limit (108 chars)
+            env_hash = hashlib.md5(env_config.id.encode()).hexdigest()[:8]
+            instance_id = uuid.uuid4().hex[:8]
+            instance_name = f"{env_config.id}-{instance_id}"
+            # Use short filename to prevent "AF_UNIX path too long" errors
+            endpoint = f"ipc://{tempfile.gettempdir()}/prl-{env_hash}-{instance_id}.sock"
 
             # Auto-start worker
             logger.info(f"Auto-starting {env_name} worker on {endpoint}")

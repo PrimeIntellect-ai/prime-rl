@@ -181,7 +181,9 @@ class EnvConfig(BaseConfig):
     # If not specified, auto-spawns local worker with IPC socket
     zmq_endpoint: Annotated[
         str | None,
-        Field(description="ZMQ endpoint for this environment. If not set, auto-spawns local worker with IPC socket. Example: 'tcp://math-env:5555'")
+        Field(
+            description="ZMQ endpoint for this environment. If not set, auto-spawns local worker with IPC socket. Example: 'tcp://math-env:5555'"
+        ),
     ] = None
 
 
