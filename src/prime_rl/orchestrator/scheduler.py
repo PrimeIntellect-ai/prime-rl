@@ -199,10 +199,10 @@ class Scheduler:
                 completion_lens = [get_completion_len(rollout) for rollout in rollouts]
                 rewards = [rollout["reward"] for rollout in rollouts]
                 advantages = compute_advantages(
-                    rewards=rewards,
-                    completion_lengths=completion_lens,
-                    rollouts_per_example=self.config.rollouts_per_example,
-                    advantage_config=self.config.advantage,
+                    rewards,
+                    completion_lens,
+                    self.config.rollouts_per_example,
+                    self.config.advantage,
                 )
                 for rollout, advantage in zip(rollouts, advantages):
                     rollout["advantage"] = advantage
