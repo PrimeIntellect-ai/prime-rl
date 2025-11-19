@@ -1,28 +1,31 @@
-from unittest.mock import MagicMock
-
 import pytest
 import torch
-from transformers import PreTrainedTokenizer
 
 from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.utils.vf import Rollout
 
 
-def _make_rollout(example_id: int) -> Rollout:
+def dummy_rollout(example_id: int) -> Rollout:
     prompt_ids = [example_id, example_id + 1]
     completion_ids = [example_id + 2, example_id + 3]
     return {
         "example_id": example_id,
         "task": "dummy-task",
-        "prompt_ids": prompt_ids,
-        "prompt_mask": [1] * len(prompt_ids),
-        "completion_ids": completion_ids,
-        "completion_mask": [1] * len(completion_ids),
-        "completion_logprobs": [0.0] * len(completion_ids),
+        "stop_condition": None,
         "reward": 0.0,
         "advantage": 1.0,
-        "is_truncated": False,
         "metrics": {},
+        "trajectory_tokens": [
+            {
+                "prompt_ids": prompt_ids,
+                "prompt_mask": [1] * len(prompt_ids),
+                "completion_ids": completion_ids,
+                "completion_mask": [1] * len(completion_ids),
+                "completion_logprobs": [0.0] * len(completion_ids),
+                "overlong_prompt": False,
+                "is_truncated": False,
+            }
+        ],
     }
 
 
@@ -32,13 +35,11 @@ def _make_rollout(example_id: int) -> Rollout:
 def test_prepare_batch_balances_micro_batches_across_workers(
     rollout_count, num_train_workers, expected_batches_per_worker
 ):
-    tokenizer = MagicMock(spec=PreTrainedTokenizer)
-    rollouts = [_make_rollout(i) for i in range(rollout_count)]
+    rollouts = [dummy_rollout(i) for i in range(rollout_count)]
 
     batches_per_gpu = prepare_batch(
         rollouts=rollouts,
         temperature=0.5,
-        tokenizer=tokenizer,
         seq_len=4,
         num_train_workers=num_train_workers,
     )
