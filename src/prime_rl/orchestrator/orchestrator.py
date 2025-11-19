@@ -48,7 +48,7 @@ from prime_rl.utils.utils import (
     get_step_path,
     to_col_format,
 )
-from prime_rl.utils.vf import generate_batch
+from prime_rl.utils.vf import generate_batch, get_completion_len, get_prompt_len, get_seq_len
 
 
 @clean_exit
@@ -278,15 +278,9 @@ async def orchestrate(config: OrchestratorConfig):
                 "reward": [rollout["reward"] for rollout in train_rollouts],
                 "advantage": [rollout["advantage"] for rollout in train_rollouts],
                 "is_truncated": [rollout["stop_condition"] == "length" for rollout in train_rollouts],
-                "completion_len": [
-                    len(rollout["trajectory_tokens"][-1]["completion_ids"]) for rollout in train_rollouts
-                ],
-                "prompt_len": [len(rollout["trajectory_tokens"][0]["prompt_ids"]) for rollout in train_rollouts],
-                "seq_len": [
-                    len(rollout["trajectory_tokens"][0]["prompt_ids"])
-                    + len(rollout["trajectory_tokens"][-1]["completion_ids"])
-                    for rollout in train_rollouts
-                ],
+                "completion_len": [get_completion_len(rollout) for rollout in train_rollouts],
+                "prompt_len": [get_prompt_len(rollout) for rollout in train_rollouts],
+                "seq_len": [get_seq_len(rollout) for rollout in train_rollouts],
             }
         )
 

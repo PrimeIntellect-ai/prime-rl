@@ -128,3 +128,21 @@ def make_branching_rollouts(states: list[vf.State]) -> list[Rollout]:
         rollouts.append(rollout)
     assert len(rollouts) == len(states)
     return rollouts
+
+
+def get_completion_len(rollout: Rollout) -> int:
+    """Get the length of the completion for a rollout."""
+    completion_len = 0
+    for step in rollout["trajectory_tokens"]:
+        completion_len += len(step["completion_ids"])
+    return completion_len
+
+
+def get_prompt_len(rollout: Rollout) -> int:
+    """Get the length of the prompt for a rollout."""
+    return len(rollout["trajectory_tokens"][0]["prompt_ids"])
+
+
+def get_seq_len(rollout: Rollout) -> int:
+    """Get the length of the sequence for a rollout."""
+    return get_prompt_len(rollout) + get_completion_len(rollout)

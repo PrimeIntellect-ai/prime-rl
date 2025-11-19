@@ -10,6 +10,7 @@ from tqdm import tqdm
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from verifiers import Environment
 
+from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.orchestrator.utils import get_sampling_args
@@ -21,7 +22,13 @@ from prime_rl.utils.utils import (
     get_step_path,
     sync_wait_for_path,
 )
-from prime_rl.utils.vf import Rollout, generate_group, make_branching_rollouts, make_interleaved_rollouts
+from prime_rl.utils.vf import (
+    Rollout,
+    generate_group,
+    get_completion_len,
+    make_branching_rollouts,
+    make_interleaved_rollouts,
+)
 
 
 class InflightRolloutInfo(NamedTuple):
@@ -187,6 +194,19 @@ class Scheduler:
                     make_interleaved_rollouts if self.trajectory_strategy == "interleaved" else make_branching_rollouts
                 )
                 rollouts = make_rollouts(group_states)
+
+                # Compute advantages
+                completion_lens = [get_completion_len(rollout) for rollout in rollouts]
+                rewards = [rollout["reward"] for rollout in rollouts]
+                advantages = compute_advantages(
+                    rewards=rewards,
+                    completion_lengths=completion_lens,
+                    rollouts_per_example=self.config.rollouts_per_example,
+                    advantage_config=self.config.advantage,
+                )
+                for rollout, advantage in zip(rollouts, advantages):
+                    rollout["advantage"] = advantage
+
                 self.buffer.update(rollouts)
                 accepted_rollouts = self.buffer.sample_rollouts(n=self.config.rollouts_per_example)
 
