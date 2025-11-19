@@ -1,5 +1,5 @@
-import time
 from pathlib import Path
+import time
 from typing import Literal
 
 from torch import nn
