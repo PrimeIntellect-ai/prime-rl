@@ -56,7 +56,14 @@ def prepare_sampling_args(sampling_config: EvalSamplingConfig, client_config: Cl
     if client_config.server_type == "vllm":
         # Always return logprobs and token IDs from vLLM server
         sampling_args["logprobs"] = True
-        extra_body: dict[str, Any] = {"return_tokens_as_token_ids": True}
+        extra_body: dict[str, Any] = {
+            "return_tokens_as_token_ids": True,
+            "return_token_ids": True,
+            "prompt_logprobs": True,
+            "skip_special_tokens": False,
+            "spaces_between_special_tokens": False,
+            "include_stop_str_in_output": False,
+        }
 
         # Apply vLLM-specific sampling arguments, if specified
         if sampling_config.top_k is not None:
