@@ -6,6 +6,7 @@ from prime_rl.orchestrator.utils import (
     set_semaphore,
 )
 from prime_rl.synthesize.config import SynthesizeConfig
+from prime_rl.synthesize.utils import generate_synthetic_data
 from prime_rl.utils.client import (
     check_has_model,
     check_health,
@@ -47,7 +48,24 @@ async def synthesize(config: SynthesizeConfig):
     await set_semaphore(config.max_concurrent or -1)
 
     # Generate synthetic data
-    logger.info("Generating synthetic data")
+    logger.info("Starting synthetic data generation")
+    await asyncio.gather(
+        *[
+            generate_synthetic_data(
+                clients=clients,
+                env_id=env.id,
+                env_name=env.name,
+                env_args=env.args,
+                num_examples=env.num_examples or config.num_examples,
+                rollouts_per_example=env.rollouts_per_example or config.rollouts_per_example,
+                output_dir=config.output_dir,
+                model_config=config.model,
+                sampling_config=config.sampling,
+                client_config=config.client,
+            )
+            for env in config.env
+        ]
+    )
 
     logger.success("Synthetic data generation finished!")
 
