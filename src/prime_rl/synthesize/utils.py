@@ -1,46 +1,25 @@
 import asyncio
-import time
+import json
+from itertools import cycle
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-import pandas as pd
-from huggingface_hub import whoami
+import aiofiles
+import verifiers as vf
 from openai import AsyncOpenAI
-from prime_evals import AsyncEvalsClient
+from tqdm.asyncio import tqdm
 from verifiers import load_environment
-from verifiers.types import GenerateOutputs
-from verifiers.utils.eval_utils import get_hf_hub_dataset_name, make_dataset, sanitize_metadata, save_to_disk
+from verifiers.envs.environment import get_results_path
 
-from prime_rl.eval.config import OfflineEvalConfig
-from prime_rl.orchestrator.config import ClientConfig, EvalConfig, EvalSamplingConfig, EvalSaveConfig, ModelConfig
-from prime_rl.orchestrator.utils import parse_is_truncated_completions, parse_num_completion_tokens
+from prime_rl.orchestrator.config import ClientConfig, EvalSamplingConfig, ModelConfig
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.monitor import get_monitor
-from prime_rl.utils.utils import capitalize, get_eval_dir, get_step_path
-from prime_rl.utils.vf import generate_batch
+from prime_rl.utils.vf import generate_group
 
-
-def compute_pass_at_k(rewards: list[int]) -> dict[str, float]:
-    total_attempts = len(rewards)
-    k = total_attempts // 2
-
-    if k == 0:
-        return {"pass@1": float(any(reward == 1.0 for reward in rewards))}
-
-    num_trials = 100
-    pass_rates = []
-
-    for _ in range(num_trials):
-        sampled_rewards = np.random.choice(rewards, size=k, replace=False)
-        pass_rate = float(any(reward == 1.0 for reward in sampled_rewards))
-        pass_rates.append(pass_rate)
-
-    return {f"pass@{k}": float(np.mean(pass_rates))}
+WRITE_LOCK = asyncio.Lock()
 
 
 def prepare_sampling_args(sampling_config: EvalSamplingConfig, client_config: ClientConfig) -> dict[str, Any]:
-    """Prepare sampling args for the client."""
+    """Prepare sampling args for synthetic data generation."""
     # Initialize sampling args
     sampling_args: dict[str, Any] = {}
 
@@ -54,12 +33,10 @@ def prepare_sampling_args(sampling_config: EvalSamplingConfig, client_config: Cl
     if sampling_config.reasoning_effort is not None:
         sampling_args["reasoning_effort"] = sampling_config.reasoning_effort
 
-    if client_config.server_type == "vllm":
-        # Always return logprobs and token IDs from vLLM server
-        sampling_args["logprobs"] = True
-        extra_body: dict[str, Any] = {"return_tokens_as_token_ids": True}
+    extra_body: dict[str, Any] = sampling_config.extra_body
 
-        # Apply vLLM-specific sampling arguments, if specified
+    # Apply vLLM-specific sampling arguments, if specified
+    if client_config.server_type == "vllm":
         if sampling_config.top_k is not None:
             extra_body["top_k"] = sampling_config.top_k
         if sampling_config.min_p is not None:
@@ -69,12 +46,95 @@ def prepare_sampling_args(sampling_config: EvalSamplingConfig, client_config: Cl
         if sampling_config.repetition_penalty is not None:
             extra_body["repetition_penalty"] = sampling_config.repetition_penalty
 
-        sampling_args["extra_body"] = extra_body
+    sampling_args["extra_body"] = extra_body
 
     return sampling_args
 
 
-async def run_eval(
+def serialize_oai_tools(oai_tools) -> str:
+    return json.dumps(oai_tools)
+
+
+# def serialize_completion(messages: vf.Messages) -> str:
+#     return [m for m in messages]
+
+
+# def merge_completion(completion: vf.Messages, trajectory: list[vf.TrajectoryStep]) -> vf.Messages:
+#     """Merges the regular completions with the trajectory responses to include reasoning and tool calls."""
+#     # Parse responses from trajectory
+#     assert all(not isinstance(c, str) for c in completion)
+#     responses: list[vf.ModelResponse] = [trajectory_step["response"] for trajectory_step in trajectory]
+#
+#     # Merge with completions
+#     # assert len([c for c in completion if isinstance(c, dict) and c.get("role") == "assistant"]) == len(responses)
+#     # j = 0
+#     # for i in range(len(completion)):
+#     #     if isinstance(completion[i], dict) and completion[i].get("role") == "assistant":
+#     #         assistant_message = completion[i]
+#     #         completion[i] = {}
+#     #         j += 1
+#     return completion
+
+
+def make_result(state: vf.State, save_file: Path):
+    """Translates a finished rollout state to a synthetic dataset row."""
+    result_dict = {
+        "example_id": state["example_id"],
+        "prompt": state["prompt"],
+        "completion": state["completion"],
+        "task": state["task"],
+        "reward": state["reward"],
+        "generation_ms": state["timing"]["generation_ms"],
+        "scoring_ms": state["timing"]["scoring_ms"],
+        "total_ms": state["timing"]["total_ms"],
+        "info": state["info"],
+        "answer": state["answer"],
+    }
+    for metric_name, metric_value in state["metrics"].items():
+        result_dict[metric_name] = metric_value
+
+    # Add tools and trajectory columns
+    result_dict["oai_tools"] = json.dumps(state["oai_tools"])
+    # result_dict["trajectory"] = state["trajectory"]
+
+    return result_dict
+
+
+async def save_result(result_dict: dict, save_file: Path):
+    """Saves a finished rollout state to a file."""
+    async with WRITE_LOCK:
+        async with aiofiles.open(save_file, "a") as f:
+            await f.write(json.dumps(result_dict) + "\n")
+
+
+async def make_and_save_result(state: vf.State, save_file: Path):
+    """Makes a finished rollout state to a synthetic dataset row and saves it to a file."""
+    result_dict = await asyncio.to_thread(make_result, state, save_file)
+    await save_result(result_dict, save_file)
+
+
+async def generate_and_save_group(
+    client: AsyncOpenAI,
+    env: vf.Environment,
+    model_name: str,
+    example: dict,
+    index: int,
+    rollouts_per_example: int,
+    sampling_args: dict,
+    save_file: Path,
+    pbar: tqdm,
+):
+    logger = get_logger()
+    try:
+        states = await generate_group(client, env, model_name, example, rollouts_per_example, sampling_args)
+        pbar.update(rollouts_per_example)
+        await asyncio.gather(*[make_and_save_result(state, save_file) for state in states])
+    except:
+        logger.error(f"Error generating synthetic data for group {index}")
+        return
+
+
+async def generate_synthetic_data(
     clients: list[AsyncOpenAI],
     env_id: str,
     env_name: str | None,
@@ -82,169 +142,36 @@ async def run_eval(
     num_examples: int,
     rollouts_per_example: int,
     output_dir: Path,
-    ckpt_step: int,
     model_config: ModelConfig,
     sampling_config: EvalSamplingConfig,
     client_config: ClientConfig,
-    save_config: EvalSaveConfig,
-    evals_client: AsyncEvalsClient,
-    step: int | None = None,
 ) -> None:
     # Get the logger
     logger = get_logger()
-    monitor = get_monitor()
-    eval_start_time = time.time()
 
     # Load the eval environment
     env_name_or_id = env_name or env_id
     env = load_environment(env_id, **env_args)
-    dataset = env.get_eval_dataset(n=num_examples)
+    dataset = env.get_dataset(n=num_examples)
     sampling_args = prepare_sampling_args(sampling_config, client_config)
+    path_to_save = get_results_path(env_name_or_id, model_config.name)
+    path_to_save.parent.mkdir(parents=True, exist_ok=True)
 
     logger.info(
-        f"Evaluating {env_name_or_id} ({num_examples=}, {rollouts_per_example=}) {'with default args' if env_args == {} else f'with args {env_args}'}"
+        f"Generating synthetic data for {env_name_or_id} (num_examples={len(dataset)}, {rollouts_per_example=}) {'with default args' if env_args == {} else f'with args {env_args}'}"
     )
+
+    total_rollouts = len(dataset) * rollouts_per_example
+    pbar = tqdm(total=total_rollouts, desc="Generating synthetic data")
+
     # Run async generation and scoring
-    results: GenerateOutputs = await generate_batch(
-        env=env,
-        model_name=model_config.name,
-        problems=dataset.to_list(),
-        clients=clients,
-        rollouts_per_example=rollouts_per_example,
-        sampling_args=sampling_args,
-        pbar_description=f"Evaluating {env_name_or_id}",
-    )
-
-    # Parse vLLM responses
-    k = rollouts_per_example
-    responses = [state["responses"] for state in results.state]
-    results_df = pd.DataFrame(
-        {
-            "example_id": results.example_id,
-            "reward": results.reward,
-            "completion_len": parse_num_completion_tokens(responses),
-            "is_truncated": parse_is_truncated_completions(responses),
-        }
-    )
-    unique_rewards = results_df.reward.unique()
-    could_be_binary = set(unique_rewards).issubset({0.0, 1.0})
-    if could_be_binary:
-        pass_at_k = (
-            results_df.groupby("example_id")
-            .apply(lambda x: compute_pass_at_k(x.reward), include_groups=False)
-            .apply(pd.Series)
-        )
-    else:
-        pass_at_k = None
-        logger.warning("Skipping computing pass@k rates because the task rewards appear to be non-binary")
-
-    # Log statistics to console
-    eval_time = time.time() - eval_start_time
-    message = f"Evaluated {env_name_or_id} in {eval_time:.2f}s (Avg@{k}={results_df.reward.mean():.4f}"
-    if could_be_binary:
-        assert pass_at_k is not None
-        for pass_rate, pass_rate_score in pd.Series(pass_at_k.mean()).items():
-            message += f", {capitalize(str(pass_rate))}: {pass_rate_score:.4f}"
-    message += f", Completion Length: {results_df.completion_len.mean():.2f} (±{results_df.completion_len.std():.2f}, ∈[{results_df.completion_len.min():.2f}, {results_df.completion_len.max():.2f}]), Truncated: {results_df.is_truncated.mean() * 100:.1f}%)"
-    logger.success(message)
-
-    # Log statistics to monitor
-    eval_metrics = {
-        f"avg@{k}": results_df.reward.mean(),
-        "completion_len/avg": results_df.completion_len.mean().item(),
-        "completion_len/max": results_df.completion_len.max().item(),
-        "completion_len/min": results_df.completion_len.min().item(),
-        "is_truncated/mean": results_df.is_truncated.mean().item(),
-        "time": eval_time,
-    }
-    if could_be_binary:
-        assert pass_at_k is not None
-        eval_metrics.update(pd.Series(pass_at_k.mean()).to_dict())
-    eval_metrics = {**{f"eval/{env_name_or_id}/{k}": v for k, v in eval_metrics.items()}}
-    eval_metrics.update({"progress/ckpt_step": ckpt_step, "step": step or ckpt_step})
-    monitor.log(eval_metrics)
-
-    # Save results
-    if save_config.disk is not None or save_config.hf is not None or save_config.env_hub:
-        dataset = make_dataset(results)
-        metadata_dict = sanitize_metadata(results.metadata)
-
-        if save_config.disk is not None:
-            is_online = step is not None
-            default_save_path = (
-                get_step_path(get_eval_dir(output_dir), ckpt_step) / env_name_or_id
-                if is_online
-                else results.metadata.path_to_save
-            )
-            save_path = save_config.disk.path or default_save_path
-            save_to_disk(dataset, metadata_dict, save_path)
-            logger.info(f"Saved eval results for {env_name_or_id} to disk ({save_path})")
-
-        if save_config.hf is not None:
-            dataset_name = save_config.hf.dataset_name or get_hf_hub_dataset_name(results)
-            dataset_subset = save_config.hf.dataset_subset or env.env_id
-            dataset_split = save_config.hf.dataset_split or "evals"
-            dataset.push_to_hub(dataset_name, dataset_subset, split=dataset_split, private=save_config.hf.private)
-            default_org = whoami().get("name", "")
-            repo_name = dataset_name if "/" in dataset_name else f"{default_org}/{dataset_name}"
-            logger.info(
-                f"Pushed {'private' if save_config.hf.private else 'public'} eval results for {env_name_or_id} to HF Hub (https://huggingface.co/datasets/{repo_name})"
-            )
-
-        if save_config.env_hub:
-            eval_name = f"{env_id}--{model_config.name.replace('/', '--')}"
-
-            # Create evaluation for environment
-            create_response = await evals_client.create_evaluation(
-                name=eval_name,
-                environments=[{"id": env_id}],
-                model_name=model_config.name,
-                framework="verifiers",
-                metadata=metadata_dict,
-                metrics=eval_metrics,
-            )
-
-            eval_id = create_response.get("evaluation_id")
-            assert eval_id is not None
-
-            # Push samples
-            await evals_client.push_samples(eval_id, dataset.to_list())
-
-            # Finalize evaluation
-            await evals_client.finalize_evaluation(eval_id, metrics=eval_metrics)
-
-            logger.info(f"Pushed eval results for {env_id} to Environment Hub (eval_id: {eval_id})")
-
-
-async def run_evals(
-    clients: list[AsyncOpenAI],
-    eval_config: EvalConfig | OfflineEvalConfig,
-    model_config: ModelConfig,
-    sampling_config: EvalSamplingConfig,
-    client_config: ClientConfig,
-    evals_client: AsyncEvalsClient,
-    output_dir: Path,
-    ckpt_step: int,
-    step: int | None = None,
-):
     await asyncio.gather(
         *[
-            run_eval(
-                clients=clients,
-                env_id=env.id,
-                env_name=env.name,
-                env_args=env.args,
-                num_examples=env.num_examples or eval_config.num_examples,
-                rollouts_per_example=env.rollouts_per_example or eval_config.rollouts_per_example,
-                output_dir=output_dir,
-                model_config=model_config,
-                sampling_config=sampling_config,
-                client_config=client_config,
-                save_config=eval_config.save,
-                evals_client=evals_client,
-                ckpt_step=ckpt_step,
-                step=step,
+            generate_and_save_group(
+                client, env, model_config.name, example, index, rollouts_per_example, sampling_args, path_to_save, pbar
             )
-            for env in eval_config.env
+            for index, (client, example) in enumerate(zip(cycle(clients), dataset.to_list()))
         ]
     )
+
+    logger.success(f"Synthetic data generated and saved to {path_to_save}")
