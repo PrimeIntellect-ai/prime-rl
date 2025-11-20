@@ -175,7 +175,7 @@ class MultiLoRALinear(nn.Module):
             lora_out = _run_lora_grouped_mm(lora_x, self.lora_A, self.lora_B, offsets)
         else:
             lora_out = _run_lora_for_loop(lora_x, self.lora_A, self.lora_B, offsets)
-        return base_out + lora_out
+        return base_out + self.scaling * lora_out
 
     def merge_weights(self, index: int) -> nn.Linear:
         """Merge LoRA weights into base layer and return a new linear layer."""
