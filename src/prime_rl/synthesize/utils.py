@@ -154,7 +154,7 @@ async def generate_synthetic_data(
     env = load_environment(env_id, **env_args)
     dataset = env.get_dataset(n=num_examples)
     sampling_args = prepare_sampling_args(sampling_config, client_config)
-    path_to_save = get_results_path(env_name_or_id, model_config.name) / "results.jsonl"
+    path_to_save = get_results_path(env_name_or_id, model_config.name, base_path=output_dir) / "results.jsonl"
     path_to_save.parent.mkdir(parents=True, exist_ok=True)
 
     logger.info(
