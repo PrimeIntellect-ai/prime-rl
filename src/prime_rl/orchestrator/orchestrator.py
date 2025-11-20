@@ -421,6 +421,7 @@ async def orchestrate(config: OrchestratorConfig):
             output_dir=config.output_dir,
             ckpt_step=scheduler.ckpt_step,
             step=progress.step,
+            max_concurrent=config.max_concurrent,
         )
 
     # Log final (immutable) samples and distributions to W&B table
