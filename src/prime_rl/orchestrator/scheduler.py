@@ -19,7 +19,7 @@ from prime_rl.utils.utils import (
     get_broadcast_dir,
     get_latest_ckpt_step,
     get_step_path,
-    sync_wait_for_path,
+    wait_for_path,
 )
 from prime_rl.utils.vf import generate_group
 
@@ -112,7 +112,7 @@ class Scheduler:
                     f"Hit async barrier because we are >{self.max_async_level} step(s) async. Waiting for checkpoint {next_ckpt_step}"
                 )
                 wait_for_ckpt_start_time = time.perf_counter()
-                sync_wait_for_path(get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
+                await wait_for_path(get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
                 self.wait_for_ckpt_time = time.perf_counter() - wait_for_ckpt_start_time
                 self.logger.debug(f"Waited for checkpoint {next_ckpt_step} for {self.wait_for_ckpt_time:.2f}s")
             self.logger.debug(
@@ -163,11 +163,36 @@ class Scheduler:
         # Schedule initial tasks
         self.logger.debug("Starting to generate batch rollouts")
         while len(self.inflight_group_rollouts) < self.problems_per_batch:
+            if self.async_level > self.max_async_level:
+                self.logger.debug(
+                    f"Initial fill paused at {len(self.inflight_group_rollouts)} due to async barrier (level {self.async_level})."
+                )
+                break
             await self.schedule_group_rollout()  # Schedule requests in round-robin fashion
 
         batch_rollouts: list[vf.State] = []
         pbar = tqdm(total=self.config.batch_size, desc="Generating rollouts (train)")
+        wait_log_last_time = 0
+
         while len(batch_rollouts) < self.config.batch_size:
+            if not self.inflight_group_rollouts:
+                if self.async_level > self.max_async_level:
+                    # Async barrier active: We are too far ahead of the trainer.
+                    # We have no inflight rollouts to process, so we must wait.
+                    # We use asyncio.sleep to yield control to the event loop, allowing
+                    # the concurrent update_policy_loop to run, fetch new checkpoints,
+                    # and eventually reduce self.async_level.
+                    now = time.time()
+                    if now - wait_log_last_time > 5:
+                        self.logger.info(
+                            f"Async barrier active (level {self.async_level} > {self.max_async_level}). No longer scheduling group rollouts. Waiting for trainer to catch up..."
+                        )
+                        wait_log_last_time = now
+                    await asyncio.sleep(0.1)
+                    continue
+                else:
+                    await self.schedule_group_rollout()
+
             finished_group_rollouts, _ = await asyncio.wait(
                 self.inflight_group_rollouts, return_when=asyncio.FIRST_COMPLETED
             )
@@ -177,7 +202,14 @@ class Scheduler:
                     batch_rollouts = batch_rollouts[: self.config.batch_size]
                     break
 
-                _, client = self.inflight_group_rollouts.pop(finished_group_rollout)
+                # Safely pop the task info. If it returns None, the task was removed externally.
+                # This handles the race condition where update_policy() might have concurrently
+                # cancelled the task and removed it from inflight_group_rollouts.
+                popped_info = self.inflight_group_rollouts.pop(finished_group_rollout, None)
+                if popped_info is None:
+                    continue
+                _, client = popped_info
+
                 group_states: list[vf.State] = finished_group_rollout.result()
 
                 self.buffer.update(group_states)
@@ -186,7 +218,8 @@ class Scheduler:
                 batch_rollouts.extend(accepted_rollouts)
                 pbar.update(len(accepted_rollouts))
 
-                await self.schedule_group_rollout(client)
+                if self.async_level <= self.max_async_level:
+                    await self.schedule_group_rollout(client)
 
             self.logger.debug(
                 f"Got {len(batch_rollouts)} rollout(s) in batch. Need {self.config.batch_size - len(batch_rollouts)} more."
