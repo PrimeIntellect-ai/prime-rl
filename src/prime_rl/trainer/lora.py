@@ -55,23 +55,6 @@ class LoRALinear(nn.Module):
         lora_output = (lora_x @ self.lora_A.T) @ self.lora_B.T * self.scaling
         return base_output + lora_output
 
-    def merge_weights(self) -> nn.Linear:
-        """Merge LoRA weights into base layer and return a new linear layer."""
-        delta_weight = (self.lora_B @ self.lora_A) * self.scaling
-        merged_layer = nn.Linear(
-            self.base_layer.in_features,
-            self.base_layer.out_features,
-            bias=self.base_layer.bias is not None,
-            device=self.base_layer.weight.device,
-            dtype=self.base_layer.weight.dtype,
-        )
-
-        merged_layer.weight.data = self.base_layer.weight.data + delta_weight
-        if self.base_layer.bias is not None:
-            merged_layer.bias.data = self.base_layer.bias.data.clone()
-
-        return merged_layer
-
 
 def _get_module_by_name(model: nn.Module, module_name: str) -> nn.Module:
     """Get a module by its fully qualified name."""
