@@ -185,7 +185,7 @@ class Scheduler:
                     now = time.time()
                     if now - wait_log_last_time > 60:
                         self.logger.info(
-                            f"Async barrier active (level {self.async_level} > {self.max_async_level}). No longer scheduling group rollouts. Waiting for trainer to catch up..."
+                            f"Async barrier active (async level={self.async_level} > max level={self.max_async_level}). No longer scheduling group rollouts. Waiting for trainer to catch up..."
                         )
                         wait_log_last_time = now
                     await asyncio.sleep(0.1)
