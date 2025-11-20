@@ -55,33 +55,34 @@ def serialize_oai_tools(oai_tools) -> str:
     return json.dumps(oai_tools)
 
 
-# def serialize_completion(messages: vf.Messages) -> str:
-#     return [m for m in messages]
+def merge_reasoning_content(
+    completion: list[vf.ChatMessage],
+    trajectory: list[vf.TrajectoryStep],
+    reasoning_fields: list[str] = ["reasoning_content", "reasoning", "thinking"],
+) -> list[vf.ChatMessage]:
+    """Temporary hotfix to also save reasoning content if"""
+    # Parse responses from trajectory
+    responses: list[vf.ModelResponse] = [trajectory_step["response"] for trajectory_step in trajectory]
+    assistant_messages: list[vf.ChatMessage] = [c for c in completion if c.get("role") == "assistant"]
 
+    for assistant_message, response in zip(assistant_messages, responses):
+        assert isinstance(response, vf.ChatCompletion)
+        response_message = response.choices[0].message
+        for field in reasoning_fields:
+            if getattr(response_message, field, None) is not None:
+                assistant_message[field] = str(getattr(response_message, field))
+                break
 
-# def merge_completion(completion: vf.Messages, trajectory: list[vf.TrajectoryStep]) -> vf.Messages:
-#     """Merges the regular completions with the trajectory responses to include reasoning and tool calls."""
-#     # Parse responses from trajectory
-#     assert all(not isinstance(c, str) for c in completion)
-#     responses: list[vf.ModelResponse] = [trajectory_step["response"] for trajectory_step in trajectory]
-#
-#     # Merge with completions
-#     # assert len([c for c in completion if isinstance(c, dict) and c.get("role") == "assistant"]) == len(responses)
-#     # j = 0
-#     # for i in range(len(completion)):
-#     #     if isinstance(completion[i], dict) and completion[i].get("role") == "assistant":
-#     #         assistant_message = completion[i]
-#     #         completion[i] = {}
-#     #         j += 1
-#     return completion
+    return completion
 
 
 def make_result(state: vf.State, save_file: Path):
     """Translates a finished rollout state to a synthetic dataset row."""
+    completion = merge_reasoning_content(state["completion"], state["trajectory"])
     result_dict = {
         "example_id": state["example_id"],
         "prompt": state["prompt"],
-        "completion": state["completion"],
+        "completion": completion,
         "task": state["task"],
         "reward": state["reward"],
         "generation_ms": state["timing"]["generation_ms"],
@@ -95,7 +96,6 @@ def make_result(state: vf.State, save_file: Path):
 
     # Add tools and trajectory columns
     result_dict["oai_tools"] = json.dumps(state["oai_tools"])
-    # result_dict["trajectory"] = state["trajectory"]
 
     return result_dict
 
@@ -154,7 +154,7 @@ async def generate_synthetic_data(
     env = load_environment(env_id, **env_args)
     dataset = env.get_dataset(n=num_examples)
     sampling_args = prepare_sampling_args(sampling_config, client_config)
-    path_to_save = get_results_path(env_name_or_id, model_config.name)
+    path_to_save = get_results_path(env_name_or_id, model_config.name) / "results.jsonl"
     path_to_save.parent.mkdir(parents=True, exist_ok=True)
 
     logger.info(
@@ -174,4 +174,4 @@ async def generate_synthetic_data(
         ]
     )
 
-    logger.success(f"Synthetic data generated and saved to {path_to_save}")
+    logger.info(f"Synthetic data generated for {env_name_or_id} and saved to {path_to_save}")
