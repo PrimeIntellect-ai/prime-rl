@@ -4,9 +4,7 @@ uv run rl \
   --orchestrator.sampling.max-tokens 128 \
   --trainer.model.experimental.lora.rank 8 \
   --trainer.weights.save-adapter-separately \
-  --orchestrator.load-lora \
   --trainer.optim.lr 1e-4 \
   --wandb.project multi-tenant-debug \
   --wandb.name r8-1e-4 \
-  --log.level debug \
   --ckpt
