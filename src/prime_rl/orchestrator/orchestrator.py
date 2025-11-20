@@ -36,6 +36,7 @@ from prime_rl.utils.client import (
     setup_clients,
     setup_evals_client,
     update_weights,
+    unload_lora_adapter,
 )
 from prime_rl.orchestrator.config import OrchestratorConfig, SimpleBufferConfig
 from prime_rl.orchestrator.buffer import setup_buffer
@@ -446,6 +447,10 @@ async def orchestrate(config: OrchestratorConfig):
     if ckpt_manager is not None:
         logger.info("Writing final checkpoint")
         ckpt_manager.save(progress, buffer, step=progress.step)
+
+    # Unload LoRA adapter
+    if config.lora_name is not None:
+        await unload_lora_adapter(admin_clients, config.lora_name)
 
     logger.success("Orchestrator finished.")
 
