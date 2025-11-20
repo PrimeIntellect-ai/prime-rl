@@ -1,9 +1,7 @@
-import pandas as pd
 import asyncio
 import time
-from loguru import logger
 
-from prime_rl.orchestrator.patches import monkey_patch_oai_iterable_types, monkey_patch_chat_completion_logprobs
+from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 
 # This monkey patch is necessary to avoid Pydantic validating fields using typing.Iterable (e.g. in multimodal or tool call messages) lazily which leads to tokenization errors, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1249
 monkey_patch_oai_iterable_types()
@@ -13,20 +11,23 @@ monkey_patch_oai_iterable_types()
 monkey_patch_chat_completion_logprobs()
 
 # Import environment before any other imports
-# ruff: noqa: I001,F401
-from prime_rl.orchestrator import envs
-from prime_rl.orchestrator.scheduler import Scheduler
-from prime_rl.orchestrator.utils import get_sampling_args, set_semaphore
-
-# ruff: noqa: I001,F401
-import lovely_tensors as lt
+import pandas as pd
 import torch
 import verifiers as vf
+from loguru import logger
 from transformers import AutoTokenizer
 
-from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.eval.utils import run_evals
-from prime_rl.utils.vf import generate_batch
+from prime_rl.orchestrator.batch import prepare_batch
+from prime_rl.orchestrator.buffer import Buffer
+from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
+from prime_rl.orchestrator.config import BufferConfig, OrchestratorConfig
+from prime_rl.orchestrator.scheduler import Scheduler
+from prime_rl.orchestrator.utils import (
+    get_sampling_args,
+    print_benchmark,
+    set_semaphore,
+)
 from prime_rl.utils.client import (
     check_has_model,
     check_health,
@@ -38,24 +39,17 @@ from prime_rl.utils.client import (
     update_weights,
     unload_lora_adapter,
 )
-from prime_rl.orchestrator.config import OrchestratorConfig, SimpleBufferConfig
-from prime_rl.orchestrator.buffer import setup_buffer
-from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.utils.logger import setup_logger
-from prime_rl.orchestrator.utils import (
-    print_benchmark,
-)
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import (
     clean_exit,
-    format_num,
+    get_broadcast_dir,
     get_rollout_dir,
     get_step_path,
-    get_weights_dir,
     to_col_format,
 )
-import numpy as np
+from prime_rl.utils.vf import generate_batch
 
 
 @clean_exit
@@ -114,8 +108,8 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
-    buffer = setup_buffer(dataset, config.buffer)
-    val_buffer = setup_buffer(val_dataset, SimpleBufferConfig()) if val_dataset else None
+    buffer = Buffer(dataset, config.buffer)
+    val_buffer = Buffer(val_dataset, BufferConfig()) if val_dataset else None
 
     # Setup scheduler
     scheduler = Scheduler(
@@ -153,15 +147,17 @@ async def orchestrate(config: OrchestratorConfig):
     progress = Progress()
     if config.ckpt and ckpt_manager and config.ckpt.resume_step:
         ckpt_manager.load(progress, buffer, step=config.ckpt.resume_step)
-        logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
+        logger.info(f"Resuming training from checkpoint step {config.ckpt.resume_step}")
         scheduler.ckpt_step = progress.step  # Always resume from the latest checkpoint
+
         await update_weights(
             admin_clients,
-            get_step_path(get_weights_dir(config.output_dir), scheduler.ckpt_step),
+            get_step_path(get_broadcast_dir(config.output_dir), scheduler.ckpt_step),
             lora_name=config.lora_name,
         )
         if config.lora_name is not None:
             scheduler.model_name = config.lora_name
+
     else:
         logger.info("Training from scratch. Resetting weights to base model")
         if config.lora_name is None:
@@ -193,22 +189,19 @@ async def orchestrate(config: OrchestratorConfig):
             and progress.step % config.ckpt.interval == 0
         ):
             logger.info(f"Saving checkpoint at step {progress.step}")
-            save_ckpt_start_time = time.time()
+            save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(progress, buffer, step=progress.step)
-            save_ckpt_time = time.time() - save_ckpt_start_time
-
-            # Maybe clean up old orchestrator checkpoints
-            ckpt_manager.maybe_clean()
+            save_ckpt_time = time.perf_counter() - save_ckpt_start_time
 
         # Break if we have reached the maximum number of steps
         if config.max_steps and progress.step >= config.max_steps:
             break
 
         logger.info(f"Starting orchestrator step {progress.step}")
-        step_start_time = time.time()
+        step_start_time = time.perf_counter()
 
         # Schedule generating the training batch
-        generate_completions_start_time = time.time()
+        generate_completions_start_time = time.perf_counter()
         train_task = asyncio.create_task(scheduler.generate_batch(step=progress.step))
 
         # Schedule running evals at the specified interval
@@ -256,7 +249,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Await train rollouts, process results and write batch to disk to consume by trainer
         await train_task
-        generate_completions_time = time.time() - generate_completions_start_time
+        generate_completions_time = time.perf_counter() - generate_completions_start_time
         train_rollouts = train_task.result()
         all_data_ranks_batches = prepare_batch(
             rollouts=train_rollouts,
@@ -332,7 +325,7 @@ async def orchestrate(config: OrchestratorConfig):
         per_env_reward = results_df.groupby("task").reward.mean().to_dict() if num_envs_in_batch > 1 else None
         per_env_count = results_df.task.value_counts().to_dict() if num_envs_in_batch > 1 else None
 
-        step_time = time.time() - step_start_time
+        step_time = time.perf_counter() - step_start_time
         to_log = {
             # Progress metrics
             "progress/tokens": num_tokens,
@@ -370,7 +363,9 @@ async def orchestrate(config: OrchestratorConfig):
             "time/generate_completions": generate_completions_time,
             "time/save_ckpt": save_ckpt_time,
             # Scheduler metrics
-            **scheduler.metrics(),
+            **scheduler.get_metrics(),
+            # Buffer metrics
+            **buffer.get_metrics(),
             # W&B axis
             "step": progress.step,
         }

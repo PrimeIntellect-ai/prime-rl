@@ -17,19 +17,17 @@ seq_len = 2048
 max_tokens = 2048
 
 [[orchestrator.env]]
-id = "hendrycks-math"
+id = "primeintellect/hendrycks-math"
 
 [orchestrator.buffer]
-type = "difficulty-pool"
 easy_fraction = 0.0
 hard_fraction = 0.0
-easy_border = 1.0
-hard_border = 0.0
+easy_threshold = 1.0
+hard_threshold = 0.0
 
 [orchestrator.val]
-interval = 1
-num_examples = 8
-rollouts_per_example = 16
+interval = 5
+num_examples = 128
 
 [orchestrator.eval]
 interval = 10
@@ -38,16 +36,16 @@ interval = 10
 max_tokens = 2048
 
 [[orchestrator.eval.env]]
-id = "math500"
+id = "primeintellect/math500"
 num_examples = 30
 rollouts_per_example = 4
 
 [[orchestrator.eval.env]]
-id = "aime2024"
+id = "primeintellect/aime2024"
 rollouts_per_example = 4
 
 [[orchestrator.eval.env]]
-id = "aime2025"
+id = "primeintellect/aime2025"
 rollouts_per_example = 4
 
 [inference.parallel]

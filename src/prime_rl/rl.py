@@ -29,12 +29,10 @@ from prime_rl.utils.config import WandbMonitorConfig
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pydantic_config import BaseSettings, get_temp_toml_file, parse_argv
 from prime_rl.utils.utils import (
-    get_ckpt_dir,
-    get_cuda_visible_devices,
+    get_broadcast_dir,
     get_free_port,
     get_log_dir,
     get_rollout_dir,
-    get_weights_dir,
 )
 from prime_rl.utils.validation import (
     validate_shared_ckpt_config,
@@ -192,20 +190,7 @@ class RLConfig(BaseSettings):
     weight_broadcast: Annotated[WeightBroadcastConfig | None, Field(description="The weight broadcast config.")] = None
 
     @model_validator(mode="after")
-    def validate_device(self):
-        available_gpu_ids = get_cuda_visible_devices()
-        # If no CUDA devices are available (e.g., in CPU-only test environments), skip GPU validation
-        if len(available_gpu_ids) == 0:
-            return self
-        requested_gpu_ids = sorted(set(self.trainer_gpu_ids + self.inference_gpu_ids))
-        if len(requested_gpu_ids) > len(available_gpu_ids):
-            raise ValueError(
-                f"The number of requested GPUs ({len(requested_gpu_ids)}) exceeds available GPUs ({len(available_gpu_ids)})"
-            )
-        if any(not (gpu_id in available_gpu_ids) for gpu_id in requested_gpu_ids):
-            raise ValueError(
-                f"Some requested GPU IDs are not available. Available GPUs: {available_gpu_ids}, Requested GPUs: {requested_gpu_ids}"
-            )
+    def auto_setup_dp(self):
         if self.inference and len(self.inference_gpu_ids) != self.inference.parallel.dp * self.inference.parallel.tp:
             assert len(self.inference_gpu_ids) % self.inference.parallel.tp == 0, (
                 "Number of inference GPUs must be divisible by the tensor parallel size"
@@ -467,29 +452,29 @@ def rl(config: RLConfig):
 
     # Prepare paths to communicate with the trainer
     log_dir = get_log_dir(config.output_dir)
-    ckpt_dir = get_ckpt_dir(config.output_dir)
-    weights_dir = get_weights_dir(config.output_dir)
     rollout_dir = get_rollout_dir(config.output_dir)
+    broadcast_dir = get_broadcast_dir(config.output_dir)
 
     # Clean up directories if specified
     if config.clean:
-        logger.info("Cleaning checkpoint, logs, weights and rollout directories")
+        logger.info("Cleaning checkpoint, logs, weights, broadcast and rollout directories")
 
-        # Cleaning logs
+        # Cleaning logs (so that streaming logs to terminal works)
         logger.info(f"Cleaning log dir ({log_dir})")
         shutil.rmtree(log_dir, ignore_errors=True)
         log_dir.mkdir(parents=True, exist_ok=True)
 
-        # Cleaning checkpoints and weights, unless resuming
-        do_resume = config.trainer.ckpt and config.trainer.ckpt.resume_step
-        if not do_resume:  # Only clean if we don't resume
-            logger.info(f"Cleaning checkpoint directory ({ckpt_dir})")
-            shutil.rmtree(ckpt_dir, ignore_errors=True)
+        # Cleaning broadcast dir (so that orchestrator does not pre-maturely update weights)
+        if not (
+            config.ckpt
+            and config.ckpt.resume_step
+            and config.trainer.weight_broadcast
+            and config.trainer.weight_broadcast.type == "filesystem"
+        ):
+            logger.info(f"Cleaning broadcast directory ({broadcast_dir})")
+            shutil.rmtree(broadcast_dir, ignore_errors=True)
 
-            logger.info(f"Cleaning checkpoint weights directory ({weights_dir})")
-            shutil.rmtree(weights_dir, ignore_errors=True)
-
-        # Cleaning rollouts
+        # Cleaning rollouts (so that trainer does not train on old rollouts)
         logger.info(f"Cleaning rollout dir ({rollout_dir})")
         shutil.rmtree(rollout_dir, ignore_errors=True)
 

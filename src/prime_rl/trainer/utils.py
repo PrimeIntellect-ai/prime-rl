@@ -1,4 +1,5 @@
 import pickle
+import shutil
 import time
 from collections import defaultdict
 from datetime import timedelta
@@ -17,18 +18,21 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.utils import format_num, format_time
+from prime_rl.utils.utils import format_num, format_time, get_step_path
 
 DEFAULT_TIMEOUT = timedelta(seconds=600)
 
 
-def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT):
+def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: bool = False):
     torch.cuda.set_device(get_world().local_rank)
-    dist.init_process_group(
-        backend="nccl",
-        device_id=torch.device("cuda", torch.cuda.current_device()),
-        timeout=timedelta(seconds=1200),
-    )
+    # Use Gloo backend for CPU and NCCL for GPU when CPU offloading is enabled
+    # Otherwise use NCCL for better GPU performance
+    backend = None  # by default nccl
+    if enable_gloo:
+        get_logger().info("Using Gloo backend for CPU and NCCL backend for GPU")
+        backend = "cpu:gloo,cuda:nccl"
+
+    dist.init_process_group(backend=backend, timeout=timeout)
 
 
 def get_response_lengths(position_ids: torch.Tensor) -> list[int]:
@@ -227,3 +231,14 @@ class MemoryProfiler:
             f"Finished dumping memory snapshot in {time.monotonic() - begin:.2f} seconds, load {file_path} at https://docs.pytorch.org/memory_viz to visualize the memory usage"
         )
         self.step_num += 1
+
+
+def maybe_clean(path: Path, step: int, async_level: int, interval_to_keep: int | None) -> None:
+    logger = get_logger()
+    step = max(step - (async_level + 1), 0)  # Consider deleting async_level + 1 steps ago
+    candidate_path_to_delete = get_step_path(path, step)
+    keep = bool(interval_to_keep and step % interval_to_keep == 0)
+    logger.debug(f"Considering deleting path {candidate_path_to_delete}")
+    if not keep:
+        logger.debug(f"Removing path {candidate_path_to_delete}")
+        shutil.rmtree(candidate_path_to_delete, ignore_errors=True)

@@ -177,9 +177,9 @@ def vllm_server() -> Generator[None, None, None]:
     async def wait_for_server_health(timeout: int = 180, interval: int = 1) -> bool:
         """Wait for the server to be healthy by checking the /health endpoint."""
         health_url = f"{base_url}/health"
-        start_time = time.time()
+        start_time = time.perf_counter()
 
-        while time.time() - start_time < timeout:
+        while time.perf_counter() - start_time < timeout:
             try:
                 with urllib.request.urlopen(health_url, timeout=5) as response:
                     if response.status == 200:

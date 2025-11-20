@@ -39,11 +39,10 @@ num_examples = 32
 rollouts_per_example = 16
 
 [orchestrator.buffer]
-type = "difficulty-pool"
 easy_fraction = 0.0
 hard_fraction = 0.0
-easy_border = 1.0
-hard_border = 0.0
+easy_threshold = 1.0
+hard_threshold = 0.0
 
 # [orchestrator.eval]
 # interval = 50

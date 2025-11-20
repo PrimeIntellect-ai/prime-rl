@@ -32,25 +32,17 @@ ENV UV_CACHE_DIR="/usr/local/share/uv/cache"
 # Install Python dependencies (The gradual copies help with caching)
 WORKDIR /app
 
-COPY ./pyproject.toml ./pyproject.toml
-COPY ./uv.lock ./uv.lock
-COPY ./README.md ./README.md
-COPY ./src/ ./src/
-
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 
-
-COPY src/ /app/src/
 COPY pyproject.toml /app/pyproject.toml
 COPY uv.lock /app/uv.lock
 COPY README.md /app/README.md
+COPY src/ /app/src/
 COPY configs /app/configs
+COPY examples /app/examples
 
 RUN --mount=type=cache,target=/app/.cache/uv \
     uv sync --locked --no-dev
-
-RUN --mount=type=cache,target=/app/.cache/uv \
-    uv sync --all-extras --locked --no-dev
 
 FROM python:3.12-slim
 
@@ -65,6 +57,11 @@ RUN apt-get update && apt-get install -y \
     openssh-server \
     git-lfs \
     gpg \
+    sudo \
+    iputils-ping \
+    net-tools \
+    curl \
+    vim \
     && apt-get clean autoclean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
@@ -72,18 +69,31 @@ RUN apt-get update && apt-get install -y \
 ARG USER_ID=1000
 ARG GROUP_ID=1000
 RUN groupadd --gid $GROUP_ID appuser && \
-    useradd --uid $USER_ID --gid appuser --create-home --shell /bin/bash appuser
+    useradd --uid $USER_ID --gid appuser --create-home --shell /bin/bash appuser && \
+    usermod -aG sudo appuser && \
+    echo "appuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# Install uv for development use
+ADD https://astral.sh/uv/install.sh /uv-installer.sh
+RUN INSTALLER_NO_MODIFY_PATH=1 UV_INSTALL_DIR="/usr/local/bin" sh /uv-installer.sh && rm /uv-installer.sh
 
 USER appuser
+ENV PATH="/usr/local/bin:$PATH"
 WORKDIR /app
 # Copy the application from the builder
 COPY --from=builder --chown=appuser:appuser /app /app
+
+# Copy and set up entrypoint script
+COPY --chown=appuser:appuser scripts/docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
 
 RUN rm /app/.venv/bin/python && ln -s /usr/local/bin/python /app/.venv/bin/python
 RUN rm /app/.venv/bin/python3 && ln -s /usr/local/bin/python /app/.venv/bin/python3
 RUN rm /app/.venv/bin/python3.12 && ln -s /usr/local/bin/python /app/.venv/bin/python3.12
 
-
 # Place executables in the environment at the front of the path
 ENV PATH="/app/.venv/bin:$PATH"
-ENTRYPOINT ["python", "src/prime_rl/inference/server.py"]
+
+# Use entrypoint for setup (ulimit, etc) but default to sleep infinity for K8s
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["sleep", "infinity"]

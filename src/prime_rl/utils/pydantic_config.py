@@ -29,7 +29,7 @@ class BaseConfig(BaseModel):
         return v
 
 
-class BaseSettings(PydanticBaseSettings, BaseConfig):
+class BaseSettings(PydanticBaseSettings):
     """
     Base settings class for all configs.
     """
