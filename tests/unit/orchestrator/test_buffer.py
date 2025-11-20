@@ -7,7 +7,7 @@ from datasets import Dataset
 
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.config import BufferConfig
-from prime_rl.utils.vf import Rollout
+from prime_rl.orchestrator.types import RolloutState
 
 
 @pytest.fixture(autouse=True)
@@ -45,25 +45,31 @@ def make_rollouts():
 
     def _make_rollouts(
         dataset: Dataset, rewards: list[float] | None = None, advantages: list[float] | None = None
-    ) -> list[Rollout]:
+    ) -> list[RolloutState]:
         rollouts = []
         rewards = rewards or [1.0] * len(dataset)
         advantages = advantages or [1.0] * len(dataset)
         for i, (reward, advantage) in enumerate(zip(rewards, advantages)):
             problem_rollouts = [
-                Rollout(
-                    example_id=i,
-                    task="default",
-                    prompt_ids=[0],
-                    prompt_mask=[1],
-                    completion_ids=[1],
-                    completion_mask=[1],
-                    completion_logprobs=[0.0],
-                    is_truncated=False,
-                    reward=reward,
-                    advantage=advantage,
-                    metrics={},
-                )
+                {
+                    "example_id": i,
+                    "task": "default",
+                    "reward": reward,
+                    "advantage": advantage,
+                    "metrics": {},
+                    "is_truncated": False,
+                    "steps": [
+                        {
+                            "prompt_ids": [0],
+                            "prompt_mask": [0],
+                            "completion_ids": [1],
+                            "completion_mask": [1],
+                            "completion_logprobs": [0.0],
+                            "is_truncated": False,
+                            "reward": reward,
+                        }
+                    ],
+                }
             ] * 2
             rollouts.extend(problem_rollouts)
         return rollouts

@@ -24,7 +24,7 @@ modules_to_save = [
     "embed_tokens",
     "norm",
     "layernorm",
-    "lm_head$"
+    "lm_head"
 ]
 
 [optim]

@@ -1,5 +1,6 @@
 from typing import Any, Optional, TypedDict, Union
 
+# ruff: noqa: F401
 import openai.types.chat
 from openai.types.chat.chat_completion import ChatCompletion, Choice
 from openai.types.chat.chat_completion_assistant_message_param import (
@@ -93,59 +94,19 @@ def monkey_patch_oai_iterable_types():
 
 def monkey_patch_chat_completion_logprobs():
     """
-    At large batch sizes and context, constructing OAI's Pydantic model
-    ChatCompletion with logprobs is causing heavy CPU overhead (~200ms per
-    object at 32K context, which translates to >10min overhead at 4K batch
-    size). This function monkey-patches the OAI type and verifiers'
-    post-processing utils to avoid validating the complex logprobs field.
+    Patch OpenAI's Choice/ChatCompletion types to skip heavy validation of logprob fields.
+    TrajectoryStep tokens already come from vLLM, so we only need to relax the OpenAI models.
     """
 
     class ChoiceAny(Choice):
-        """Same as openai.types.chat.chat_completion.Choice, but without type validation for logprobs field."""
+        """Same as openai.types.chat.chat_completion.Choice, but without strict typing for logprobs."""
 
         logprobs: Optional[Any] = None
 
     class ModdedChatCompletion(ChatCompletion):
-        """Same as openai.types.chat.chat_completion.ChatCompletion, but but using ChoiceAny instead of Choice."""
+        """Same as openai.types.chat.chat_completion.ChatCompletion but using ChoiceAny."""
 
         choices: list[ChoiceAny]  # type: ignore
 
-    # Patch OAI types
     openai.types.chat.chat_completion.Choice = ChoiceAny
     openai.types.chat.chat_completion.ChatCompletion = ModdedChatCompletion
-
-    # Patch verifiers parse_chat_completion_logprobs
-    def patched_parse_chat_completion_logprobs(chat_completion: ModdedChatCompletion) -> list[float]:
-        """Same as verifiers.utils.processing_utils.parse_chat_completion_logprobs, but using arbitrary logprobs type."""
-        assert len(chat_completion.choices) == 1, "Response should always have one choice"
-        assert chat_completion.choices[0].logprobs is not None, (
-            "Logprobs should not be None. Make sure to set logprobs=True in the extra body when making the request to /v1/chat/completions"
-        )
-        assert chat_completion.choices[0].logprobs["content"] is not None, (
-            "Logprob content should not be None. Make sure to set logprobs=True in the extra body when making the request to /v1/chat/completions"
-        )
-        logprobs = [logprob["logprob"] for logprob in chat_completion.choices[0].logprobs["content"]]
-        return logprobs
-
-    # Patch verifiers parse_chat_completion_logprobs
-    def patched_parse_chat_completion_tokens(chat_completion: ModdedChatCompletion) -> list[int]:
-        """Same as verifiers.utils.processing_utils.parse_chat_completion_tokens, but using arbitrary logprobs type."""
-        assert len(chat_completion.choices) == 1, "Response should always have one choice"
-        assert chat_completion.choices[0].logprobs is not None, (
-            "Logprobs should not be None. Make sure to set logprobs=True in the extra body when making the request to /v1/chat/completions"
-        )
-        assert chat_completion.choices[0].logprobs["content"] is not None, (
-            "Logprob content should not be None. Make sure to set logprobs=True in the extra body when making the request to /v1/chat/completions"
-        )
-        tokens = [
-            # tokens are token_id:<int> because we request `return_tokens_as_token_ids` from vllm in GRPOTrainer
-            int(token["token"].split(":")[-1])
-            for token in chat_completion.choices[0].logprobs["content"]
-        ]
-        return tokens
-
-    # Import verifiers here (after patching OpenAI types) so verifiers picks up the patched types
-    import verifiers as vf
-
-    vf.utils.processing_utils.parse_chat_completion_logprobs = patched_parse_chat_completion_logprobs
-    vf.utils.processing_utils.parse_chat_completion_tokens = patched_parse_chat_completion_tokens

@@ -1,7 +1,7 @@
 import asyncio
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -14,7 +14,6 @@ from verifiers.utils.eval_utils import get_hf_hub_dataset_name, make_dataset, sa
 
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.orchestrator.config import ClientConfig, EvalConfig, EvalSamplingConfig, EvalSaveConfig, ModelConfig
-from prime_rl.orchestrator.utils import parse_is_truncated_completions, parse_num_completion_tokens
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor import get_monitor
 from prime_rl.utils.utils import capitalize, get_eval_dir, get_step_path
@@ -57,7 +56,14 @@ def prepare_sampling_args(sampling_config: EvalSamplingConfig, client_config: Cl
     if client_config.server_type == "vllm":
         # Always return logprobs and token IDs from vLLM server
         sampling_args["logprobs"] = True
-        extra_body: dict[str, Any] = {"return_tokens_as_token_ids": True}
+        extra_body: dict[str, Any] = {
+            "return_tokens_as_token_ids": True,
+            "return_token_ids": True,
+            "prompt_logprobs": True,
+            "skip_special_tokens": False,
+            "spaces_between_special_tokens": False,
+            "include_stop_str_in_output": False,
+        }
 
         # Apply vLLM-specific sampling arguments, if specified
         if sampling_config.top_k is not None:
@@ -89,6 +95,7 @@ async def run_eval(
     save_config: EvalSaveConfig,
     evals_client: AsyncEvalsClient,
     step: int | None = None,
+    max_concurrent: int | None = None,
 ) -> None:
     # Get the logger
     logger = get_logger()
@@ -113,17 +120,37 @@ async def run_eval(
         rollouts_per_example=rollouts_per_example,
         sampling_args=sampling_args,
         pbar_description=f"Evaluating {env_name_or_id}",
+        max_concurrent=max_concurrent,
     )
 
-    # Parse vLLM responses
+    # Parse trajectory tokens
     k = rollouts_per_example
-    responses = [state["responses"] for state in results.state]
+    completion_lens: list[int] = []
+    is_truncated: list[bool] = []
+    states = results["state"]
+    for rollout_state_raw in states:
+        rollout_state: dict[str, Any] = cast(dict[str, Any], rollout_state_raw)
+        trajectory = rollout_state.get("trajectory", [])
+        if not trajectory:
+            raise RuntimeError("Evaluation rollout is missing trajectory data.")
+        total_completion_tokens = 0
+        truncated = False
+        for step in trajectory:
+            tokens = step.get("tokens")
+            if tokens is None:
+                raise RuntimeError(
+                    "Trajectory step is missing token data. Ensure evaluation sampling requests token_ids/logprobs."
+                )
+            total_completion_tokens += len(tokens["completion_ids"])
+            truncated = truncated or bool(tokens.get("is_truncated") or tokens.get("overlong_prompt"))
+        completion_lens.append(total_completion_tokens)
+        is_truncated.append(truncated)
     results_df = pd.DataFrame(
         {
-            "example_id": results.example_id,
-            "reward": results.reward,
-            "completion_len": parse_num_completion_tokens(responses),
-            "is_truncated": parse_is_truncated_completions(responses),
+            "example_id": results["example_id"],
+            "reward": results["reward"],
+            "completion_len": completion_lens,
+            "is_truncated": is_truncated,
         }
     )
     unique_rewards = results_df.reward.unique()
@@ -167,14 +194,14 @@ async def run_eval(
     # Save results
     if save_config.disk is not None or save_config.hf is not None or save_config.env_hub:
         dataset = make_dataset(results)
-        metadata_dict = sanitize_metadata(results.metadata)
+        metadata_dict = sanitize_metadata(results["metadata"])
 
         if save_config.disk is not None:
             is_online = step is not None
             default_save_path = (
                 get_step_path(get_eval_dir(output_dir), ckpt_step) / env_name_or_id
                 if is_online
-                else results.metadata.path_to_save
+                else results["metadata"]["path_to_save"]
             )
             save_path = save_config.disk.path or default_save_path
             save_to_disk(dataset, metadata_dict, save_path)
@@ -226,7 +253,10 @@ async def run_evals(
     output_dir: Path,
     ckpt_step: int,
     step: int | None = None,
+    max_concurrent: int | None = None,
 ):
+    if max_concurrent is None:
+        max_concurrent = getattr(eval_config, "max_concurrent", None)
     await asyncio.gather(
         *[
             run_eval(
@@ -244,6 +274,7 @@ async def run_evals(
                 evals_client=evals_client,
                 ckpt_step=ckpt_step,
                 step=step,
+                max_concurrent=max_concurrent,
             )
             for env in eval_config.env
         ]

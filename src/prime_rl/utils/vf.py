@@ -7,8 +7,6 @@ import verifiers as vf
 from datasets import Dataset
 from openai import AsyncOpenAI
 
-from prime_rl.orchestrator.utils import get_semaphore
-
 
 def merge_metadata(generate_metadata_list: list[vf.GenerateMetadata]) -> vf.GenerateMetadata:
     """Merge multiple GenerateMetadata into a single GenerateMetadata."""
@@ -86,17 +84,19 @@ async def generate_group(
     rollouts_per_example: int,
     sampling_args: dict,
     use_tqdm: bool = False,
+    max_concurrent: int | None = None,
 ) -> vf.GenerateOutputs:
     """Asynchronously generate and score rollouts for one problem."""
-    semaphore = get_semaphore()
-    return await env.generate(
-        inputs=Dataset.from_list([problem] * rollouts_per_example),
-        client=client,
-        model=model_name,
-        sampling_args=sampling_args,
-        semaphore=semaphore,
-        use_tqdm=use_tqdm,
-    )
+    generate_kwargs = {
+        "inputs": Dataset.from_list([problem] * rollouts_per_example),
+        "client": client,
+        "model": model_name,
+        "sampling_args": sampling_args,
+        "use_tqdm": use_tqdm,
+    }
+    if max_concurrent is not None:
+        generate_kwargs["max_concurrent"] = max_concurrent
+    return await env.generate(**generate_kwargs)
 
 
 async def generate_batch(
@@ -107,6 +107,7 @@ async def generate_batch(
     rollouts_per_example: int,
     sampling_args: dict,
     pbar_description: str = "Generating rollouts",
+    max_concurrent: int | None = None,
 ) -> vf.GenerateOutputs:
     """Asynchronously generate and score rollouts for a list of problems."""
     from tqdm import tqdm
@@ -116,7 +117,14 @@ async def generate_batch(
     async def generate_group_with_progress(client, problem):
         """Generate rollouts for one problem and update progress."""
         result = await generate_group(
-            client, env, model_name, problem, rollouts_per_example, sampling_args, use_tqdm=False
+            client,
+            env,
+            model_name,
+            problem,
+            rollouts_per_example,
+            sampling_args,
+            use_tqdm=False,
+            max_concurrent=max_concurrent,
         )
         pbar.update(rollouts_per_example)
         return result

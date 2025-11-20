@@ -1,0 +1,31 @@
+inference_gpu_ids = [0]
+trainer_gpu_ids = [1]
+
+max_steps = 20
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[wandb]
+project = "reverse-text"
+name = "reverse-text-0.6b"
+
+[trainer.optim]
+lr = 3e-6
+weight_decay = 0.0
+
+[orchestrator]
+batch_size = 128
+rollouts_per_example = 16
+seq_len = 2048
+max_steps = 20
+
+[orchestrator.sampling]
+max_tokens = 128
+
+[[orchestrator.env]]
+id = "reverse-text"
+
+[inference.model]
+enable_auto_tool_choice = true
+tool_call_parser = "hermes"
