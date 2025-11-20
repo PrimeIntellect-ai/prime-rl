@@ -155,7 +155,7 @@ def cleanup_process(process: subprocess.Popen):
 
 
 @pytest.fixture(scope="session")
-def vllm_server() -> Generator[None, None, None]:
+def vllm_server(output_dir: Path) -> Generator[None, None, None]:
     """Start a vLLM server for integration and e2e tests"""
     import asyncio
     import time
@@ -164,7 +164,12 @@ def vllm_server() -> Generator[None, None, None]:
 
     # Start the server as a subprocess
     env = {**os.environ, **VLLM_SERVER_ENV}
-    vllm_process = subprocess.Popen(VLLM_SERVER_CMD, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    vllm_process = subprocess.Popen(
+        VLLM_SERVER_CMD,
+        env=env,
+        stdout=open(output_dir / "vllm.stdout", "w"),
+        stderr=open(output_dir / "vllm.stderr", "w"),
+    )
 
     # Register cleanup on unexpected termination
     atexit.register(cleanup_process, vllm_process)
