@@ -11,33 +11,6 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  setup:
-    name: Setup environment
-    runs-on: vm
-    container:
-      image: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
-      options: --gpus all
-    timeout-minutes: 30
-    if: github.event_name == 'push' || github.event.pull_request.draft == false
-    steps:
-      - name: Install Git
-        run: |
-          apt-get update
-          apt-get install -y git
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          submodules: true
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - name: Install dependencies
-        run: uv sync --locked
-      - name: Verify GPU access
-        run: nvidia-smi
-
   unit-tests:
     name: Unit tests
     runs-on: vm
@@ -45,13 +18,13 @@ jobs:
       image: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
       options: --gpus all
     timeout-minutes: 15
-    needs: setup
     if: github.event_name == 'push' || github.event.pull_request.draft == false
     steps:
       - name: Install Git
         run: |
           apt-get update
           apt-get install -y git
+          git config --global --add safe.directory /__w/prime-rl/prime-rl
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -73,13 +46,13 @@ jobs:
       image: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
       options: --gpus all
     timeout-minutes: 15
-    needs: setup
     if: github.event_name == 'push' || github.event.pull_request.draft == false
     steps:
       - name: Install Git
         run: |
           apt-get update
           apt-get install -y git
+          git config --global --add safe.directory /__w/prime-rl/prime-rl
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
