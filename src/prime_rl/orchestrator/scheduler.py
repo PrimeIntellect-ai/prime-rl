@@ -279,17 +279,33 @@ class Scheduler:
         batch_rollouts: list[RolloutState] = []
         pbar = tqdm(total=self.config.batch_size, desc="Generating rollouts (train)")
         while len(batch_rollouts) < self.config.batch_size:
-            finished_group_rollouts, _ = await asyncio.wait(
-                self.inflight_group_rollouts, return_when=asyncio.FIRST_COMPLETED
-            )
+            # Create a snapshot of tasks to avoid race condition with update_policy()
+            tasks_to_wait = list(self.inflight_group_rollouts.keys())
+            if not tasks_to_wait:
+                break
+            finished_group_rollouts, _ = await asyncio.wait(tasks_to_wait, return_when=asyncio.FIRST_COMPLETED)
 
             for finished_group_rollout in finished_group_rollouts:
                 if len(batch_rollouts) >= self.config.batch_size:
                     batch_rollouts = batch_rollouts[: self.config.batch_size]
                     break
 
+                # Skip if task was cancelled and removed from dict (can happen during checkpoint updates)
+                if finished_group_rollout not in self.inflight_group_rollouts:
+                    continue
+
                 _, client = self.inflight_group_rollouts.pop(finished_group_rollout)
-                group_states: list[State] = finished_group_rollout.result()
+
+                # Skip cancelled tasks and reschedule
+                if finished_group_rollout.cancelled():
+                    await self.schedule_group_rollout(client)
+                    continue
+
+                try:
+                    group_states: list[State] = finished_group_rollout.result()
+                except asyncio.CancelledError:
+                    await self.schedule_group_rollout(client)
+                    continue
 
                 accepted_rollouts = self._prepare_rollouts(states=group_states)
                 if accepted_rollouts:
