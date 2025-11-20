@@ -20,6 +20,10 @@ jobs:
     timeout-minutes: 30
     if: github.event_name == 'push' || github.event.pull_request.draft == false
     steps:
+      - name: Install Git
+        run: |
+          apt-get update
+          apt-get install -y git
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -44,6 +48,10 @@ jobs:
     needs: setup
     if: github.event_name == 'push' || github.event.pull_request.draft == false
     steps:
+      - name: Install Git
+        run: |
+          apt-get update
+          apt-get install -y git
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -68,6 +76,10 @@ jobs:
     needs: setup
     if: github.event_name == 'push' || github.event.pull_request.draft == false
     steps:
+      - name: Install Git
+        run: |
+          apt-get update
+          apt-get install -y git
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
