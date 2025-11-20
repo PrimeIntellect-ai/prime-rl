@@ -24,7 +24,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y git
-          git config --global --add safe.directory /__w/prime-rl/prime-rl
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -52,7 +52,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y git
-          git config --global --add safe.directory /__w/prime-rl/prime-rl
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
