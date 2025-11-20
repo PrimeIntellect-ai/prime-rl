@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -116,6 +116,13 @@ class EvalSamplingConfig(BaseConfig):
             description="Random seed to use for sampling. If None, no seeding is used. Defaults to None, which means we fall back to the inference server's default value.",
         ),
     ] = None
+
+    extra_body: Annotated[
+        dict[str, Any],
+        Field(
+            description="Extra body to pass to the sampling API. Defaults to None, which means we fall back to the inference server's default value.",
+        ),
+    ] = {}
 
 
 class EvalSaveDiskConfig(BaseConfig):
