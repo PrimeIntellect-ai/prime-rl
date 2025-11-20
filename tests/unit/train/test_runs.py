@@ -95,7 +95,7 @@ def test_max_runs_limit(tmp_path: Path) -> None:
     assert len(runs.idx_2_id) == 2
     assert len(runs._unused_idxs) == 0
 
-    to_delete_run = runs.run_dirs()[0]
+    to_delete_run = runs.get_run_dir(0)
     to_delete_run.rmdir()
 
     runs.check_for_changes()

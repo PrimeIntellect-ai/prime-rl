@@ -12,13 +12,13 @@ monkey_patch_chat_completion_logprobs()
 
 # Import environment before any other imports
 import pandas as pd
-import torch
 import verifiers as vf
 from loguru import logger
 from transformers import AutoTokenizer
 
 from prime_rl.eval.utils import run_evals
-from prime_rl.orchestrator.batch import prepare_batch
+
+# from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.orchestrator.config import BufferConfig, OrchestratorConfig
@@ -44,7 +44,6 @@ from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import (
     clean_exit,
     get_broadcast_dir,
-    get_rollout_dir,
     get_step_path,
     to_col_format,
 )
@@ -248,22 +247,24 @@ async def orchestrate(config: OrchestratorConfig):
         await train_task
         generate_completions_time = time.perf_counter() - generate_completions_start_time
         train_rollouts = train_task.result()
-        all_data_ranks_batches = prepare_batch(
-            rollouts=train_rollouts,
-            temperature=config.sampling.temperature,
-            tokenizer=tokenizer,
-            num_train_workers=config.num_train_workers,
-            seq_len=config.seq_len,
-        )
+        ## START
+        # all_data_ranks_batches = prepare_batch(
+        #     rollouts=train_rollouts,
+        #     temperature=config.sampling.temperature,
+        #     tokenizer=tokenizer,
+        #     num_train_workers=config.num_train_workers,
+        #     seq_len=config.seq_len,
+        # )
 
-        step_path = get_rollout_dir(config.output_dir) / f"step_{progress.step}"
-        step_path.mkdir(parents=True, exist_ok=True)
-        for i, batches in enumerate(all_data_ranks_batches):
-            batch_path = step_path / f"rank_{i}.pt"
-            tmp_path = batch_path.with_suffix(".tmp")
-            logger.debug(f"Saving rollouts for step {progress.step} for rank {i} to {batch_path}")
-            torch.save(batches, tmp_path)
-            tmp_path.rename(batch_path)
+        # step_path = get_rollout_dir(config.output_dir) / f"step_{progress.step}"
+        # step_path.mkdir(parents=True, exist_ok=True)
+        # for i, batches in enumerate(all_data_ranks_batches):
+        #     batch_path = step_path / f"rank_{i}.pt"
+        #     tmp_path = batch_path.with_suffix(".tmp")
+        #     logger.debug(f"Saving rollouts for step {progress.step} for rank {i} to {batch_path}")
+        #     torch.save(batches, tmp_path)
+        #     tmp_path.rename(batch_path)
+        ## END
 
         # Await and process val results
         await val_task
