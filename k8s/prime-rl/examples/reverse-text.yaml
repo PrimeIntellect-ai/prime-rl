@@ -1,0 +1,44 @@
+# Values for reverse_text example
+# Small model (Qwen3-0.6B) - runs on single consumer GPU
+
+config:
+  example: "reverse-text"
+
+image:
+  tag: "main"
+
+# Orchestrator - no GPU needed
+orchestrator:
+  enabled: true
+  autoStart: true
+  command: "uv run orchestrator @ /app/examples/reverse_text/rl/orch.toml --output-dir /data/outputs --client.base-url '[\"'$INFERENCE_URL'\"]' ; sleep infinity"
+  resources:
+    requests:
+      memory: "1Gi"
+      cpu: "500m"
+
+# Inference - 1 GPU
+inference:
+  enabled: true
+  autoStart: true
+  command: "uv run inference @ /app/examples/reverse_text/rl/infer.toml ; sleep infinity"
+  gpu:
+    enabled: true
+    count: 1
+  resources:
+    requests:
+      memory: "4Gi"
+      cpu: "1"
+
+# Trainer - 1 GPU
+trainer:
+  enabled: true
+  autoStart: true
+  command: "uv run trainer @ /app/examples/reverse_text/rl/train.toml --output-dir /data/outputs ; sleep infinity"
+  gpu:
+    enabled: true
+    count: 1
+  resources:
+    requests:
+      memory: "4Gi"
+      cpu: "1"

@@ -13,4 +13,3 @@ load_using_meta = true
 type = "fake"
 batch_size = 2
 seq_len = 1024
-fake = "fixed"

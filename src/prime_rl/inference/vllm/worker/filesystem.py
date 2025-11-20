@@ -14,16 +14,14 @@ else:
 
 
 class FileSystemWeightUpdateWorker(Worker):
-    """
-    This is an vLLM worker extension for updating weights to an updated RL policy model via filesystem.
-    """
+    """vLLM worker extension for updating weights in-place using shared filesystem."""
 
     def init_broadcaster(self) -> None:
         """Initialize the broadcaster."""
         ...
 
     def update_weights(self, weight_path: str) -> None:
-        """Update weights from a specified path pointing to a .pt file."""
+        """Update weights from a specified path in shared filesystem containing a HF-compatible checkpoint."""
         # Get vLLM model runner and model
         model_runner = self.model_runner
         model = model_runner.model

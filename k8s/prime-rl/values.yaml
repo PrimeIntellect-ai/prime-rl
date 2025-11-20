@@ -1,0 +1,115 @@
+# Default values for prime-rl
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# Global settings
+namespace: default
+
+# Docker image configuration
+image:
+  repository: primeintellect/prime-rl
+  pullPolicy: IfNotPresent
+  tag: "main"
+
+# Shared storage configuration
+storage:
+  enabled: true
+  # PVC name will be automatically set to {{ .Release.Name }}-shared-data
+  storageClassName: nfs
+  accessModes:
+    - ReadWriteMany
+  size: 1Ti
+  mountPath: /data
+
+# Orchestrator component
+orchestrator:
+  enabled: true
+  replicas: 1
+
+  # Auto-start configuration (set to false to use sleep infinity for debugging)
+  autoStart: false
+  command: ""  # e.g., "uv run orchestrator @ /app/examples/reverse_text/rl/orch.toml --output-dir /data/outputs --client.base-url '[\"'$INFERENCE_URL'\"]'"
+  # Note: $INFERENCE_URL is automatically set to http://<release-name>-inference-0.<release-name>-inference-headless.<namespace>.svc.cluster.local:8000/v1
+
+  resources:
+    requests:
+      memory: "2Gi"
+      cpu: "1"
+
+  service:
+    enabled: true
+    type: ClusterIP
+    port: 8000
+    ncclPort: 29501
+
+  env: []
+  # - name: CUSTOM_ENV
+  #   value: "value"
+
+  nodeSelector: {}
+    # nvidia.com/gpu.present: "true"  # Orchestrator doesn't need GPUs
+
+# Inference component
+inference:
+  enabled: true
+  replicas: 1
+
+  # Auto-start configuration (set to false to use sleep infinity for debugging)
+  autoStart: false
+  command: ""  # e.g., "uv run inference @ /app/examples/reverse_text/rl/infer.toml"
+
+  gpu:
+    enabled: true
+    count: 1
+
+  resources:
+    requests:
+      memory: "4Gi"
+      cpu: "1"
+
+  service:
+    enabled: true
+    type: ClusterIP
+    port: 8000
+
+  runtimeClassName: nvidia
+
+# Trainer component
+trainer:
+  enabled: true
+  replicas: 1
+
+  # Auto-start configuration (set to false to use sleep infinity for debugging)
+  autoStart: false
+  command: ""  # e.g., "uv run trainer @ /app/examples/reverse_text/rl/train.toml --output-dir /data/outputs"
+
+  gpu:
+    enabled: true
+    count: 1
+
+  resources:
+    requests:
+      memory: "4Gi"
+      cpu: "1"
+
+  service:
+    enabled: true
+    type: ClusterIP
+    port: 8000
+    ncclPort: 29501
+
+  env: []
+
+  runtimeClassName: nvidia
+
+# Additional configuration
+config:
+  # Example name (used for labeling)
+  example: "reverse-text"
+
+  # Secrets (optional)
+  secrets:
+    enabled: false
+    name: prime-rl-secrets
+    # wandbApiKey: ""
+    # hfToken: ""

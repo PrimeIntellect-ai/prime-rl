@@ -1,0 +1,310 @@
+{{- if .Values.orchestrator.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-orchestrator
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "prime-rl.labels" . | nindent 4 }}
+    {{- include "prime-rl.componentLabels" . | nindent 4 }}
+    role: orchestrator
+spec:
+  serviceName: {{ .Release.Name }}-orchestrator-headless
+  replicas: {{ .Values.orchestrator.replicas }}
+  selector:
+    matchLabels:
+      {{- include "prime-rl.componentLabels" . | nindent 6 }}
+      role: orchestrator
+  template:
+    metadata:
+      labels:
+        {{- include "prime-rl.selectorLabels" . | nindent 8 }}
+        {{- include "prime-rl.componentLabels" . | nindent 8 }}
+        role: orchestrator
+    spec:
+      {{- with .Values.orchestrator.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+      - name: prime-rl
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        {{- if .Values.orchestrator.autoStart }}
+        command: ["/bin/bash", "-c"]
+        args:
+          - {{ .Values.orchestrator.command }}
+        {{- else }}
+        command: ["sleep", "infinity"]
+        {{- end }}
+        ports:
+        - containerPort: {{ .Values.orchestrator.service.port }}
+          name: api
+        - containerPort: {{ .Values.orchestrator.service.ncclPort }}
+          name: nccl
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: ROLE
+          value: "orchestrator"
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: STATEFUL_REPLICAS
+          value: "{{ .Values.orchestrator.replicas }}"
+        - name: HEADLESS_SERVICE
+          value: "{{ .Release.Name }}-orchestrator-headless.{{ .Values.namespace }}.svc.cluster.local"
+        - name: INFERENCE_URL
+          value: "http://{{ .Release.Name }}-inference-0.{{ .Release.Name }}-inference-headless.{{ .Values.namespace }}.svc.cluster.local:8000/v1"
+        {{- with .Values.orchestrator.env }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.config.secrets.enabled }}
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.config.secrets.name }}
+              key: wandb-api-key
+              optional: true
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.config.secrets.name }}
+              key: hf-token
+              optional: true
+        {{- end }}
+        resources:
+          {{- toYaml .Values.orchestrator.resources | nindent 10 }}
+        {{- if .Values.storage.enabled }}
+        volumeMounts:
+        - name: shared-data
+          mountPath: {{ .Values.storage.mountPath }}
+        {{- end }}
+      {{- if .Values.storage.enabled }}
+      volumes:
+      - name: shared-data
+        persistentVolumeClaim:
+          claimName: {{ .Release.Name }}-shared-data
+      {{- end }}
+{{- end }}
+---
+{{- if .Values.inference.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-inference
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "prime-rl.labels" . | nindent 4 }}
+    {{- include "prime-rl.componentLabels" . | nindent 4 }}
+    role: inference
+spec:
+  serviceName: {{ .Release.Name }}-inference-headless
+  replicas: {{ .Values.inference.replicas }}
+  selector:
+    matchLabels:
+      {{- include "prime-rl.componentLabels" . | nindent 6 }}
+      role: inference
+  template:
+    metadata:
+      labels:
+        {{- include "prime-rl.selectorLabels" . | nindent 8 }}
+        {{- include "prime-rl.componentLabels" . | nindent 8 }}
+        role: inference
+    spec:
+      {{- if .Values.inference.runtimeClassName }}
+      runtimeClassName: {{ .Values.inference.runtimeClassName }}
+      {{- end }}
+      containers:
+      - name: prime-rl
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        {{- if .Values.inference.autoStart }}
+        command: ["/bin/bash", "-c"]
+        args:
+          - {{ .Values.inference.command }}
+        {{- else }}
+        command: ["sleep", "infinity"]
+        {{- end }}
+        ports:
+        - containerPort: {{ .Values.inference.service.port }}
+          name: api
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: ROLE
+          value: "inference"
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: STATEFUL_REPLICAS
+          value: "{{ .Values.inference.replicas }}"
+        - name: HEADLESS_SERVICE
+          value: "{{ .Release.Name }}-inference-headless.{{ .Values.namespace }}.svc.cluster.local"
+        {{- with .Values.inference.env }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.config.secrets.enabled }}
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.config.secrets.name }}
+              key: wandb-api-key
+              optional: true
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.config.secrets.name }}
+              key: hf-token
+              optional: true
+        {{- end }}
+        resources:
+          requests:
+            {{- if .Values.inference.gpu.enabled }}
+            nvidia.com/gpu: {{ .Values.inference.gpu.count }}
+            {{- end }}
+            memory: {{ .Values.inference.resources.requests.memory }}
+            cpu: {{ .Values.inference.resources.requests.cpu }}
+          limits:
+            {{- if .Values.inference.gpu.enabled }}
+            nvidia.com/gpu: {{ .Values.inference.gpu.count }}
+            {{- end }}
+            {{- if .Values.inference.resources.limits }}
+            memory: {{ .Values.inference.resources.limits.memory }}
+            cpu: {{ .Values.inference.resources.limits.cpu }}
+            {{- end }}
+        {{- if .Values.storage.enabled }}
+        volumeMounts:
+        - name: shared-data
+          mountPath: {{ .Values.storage.mountPath }}
+        {{- end }}
+      {{- if .Values.storage.enabled }}
+      volumes:
+      - name: shared-data
+        persistentVolumeClaim:
+          claimName: {{ .Release.Name }}-shared-data
+      {{- end }}
+{{- end }}
+---
+{{- if .Values.trainer.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-trainer
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "prime-rl.labels" . | nindent 4 }}
+    {{- include "prime-rl.componentLabels" . | nindent 4 }}
+    role: trainer
+spec:
+  serviceName: {{ .Release.Name }}-trainer-headless
+  replicas: {{ .Values.trainer.replicas }}
+  selector:
+    matchLabels:
+      {{- include "prime-rl.componentLabels" . | nindent 6 }}
+      role: trainer
+  template:
+    metadata:
+      labels:
+        {{- include "prime-rl.selectorLabels" . | nindent 8 }}
+        {{- include "prime-rl.componentLabels" . | nindent 8 }}
+        role: trainer
+    spec:
+      {{- if .Values.trainer.runtimeClassName }}
+      runtimeClassName: {{ .Values.trainer.runtimeClassName }}
+      {{- end }}
+      containers:
+      - name: prime-rl
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        {{- if .Values.trainer.autoStart }}
+        command: ["/bin/bash", "-c"]
+        args:
+          - {{ .Values.trainer.command }}
+        {{- else }}
+        command: ["sleep", "infinity"]
+        {{- end }}
+        ports:
+        - containerPort: {{ .Values.trainer.service.port }}
+          name: api
+        - containerPort: {{ .Values.trainer.service.ncclPort }}
+          name: nccl
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: ROLE
+          value: "trainer"
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: STATEFUL_REPLICAS
+          value: "{{ .Values.trainer.replicas }}"
+        - name: HEADLESS_SERVICE
+          value: "{{ .Release.Name }}-trainer-headless.{{ .Values.namespace }}.svc.cluster.local"
+        - name: INFERENCE_URL
+          value: "http://{{ .Release.Name }}-inference-0.{{ .Release.Name }}-inference-headless.{{ .Values.namespace }}.svc.cluster.local:8000/v1"
+        {{- with .Values.trainer.env }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.config.secrets.enabled }}
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.config.secrets.name }}
+              key: wandb-api-key
+              optional: true
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.config.secrets.name }}
+              key: hf-token
+              optional: true
+        {{- end }}
+        resources:
+          requests:
+            {{- if .Values.trainer.gpu.enabled }}
+            nvidia.com/gpu: {{ .Values.trainer.gpu.count }}
+            {{- end }}
+            memory: {{ .Values.trainer.resources.requests.memory }}
+            cpu: {{ .Values.trainer.resources.requests.cpu }}
+          limits:
+            {{- if .Values.trainer.gpu.enabled }}
+            nvidia.com/gpu: {{ .Values.trainer.gpu.count }}
+            {{- end }}
+            {{- if .Values.trainer.resources.limits }}
+            memory: {{ .Values.trainer.resources.limits.memory }}
+            cpu: {{ .Values.trainer.resources.limits.cpu }}
+            {{- end }}
+        {{- if .Values.storage.enabled }}
+        volumeMounts:
+        - name: shared-data
+          mountPath: {{ .Values.storage.mountPath }}
+        {{- end }}
+      {{- if .Values.storage.enabled }}
+      volumes:
+      - name: shared-data
+        persistentVolumeClaim:
+          claimName: {{ .Release.Name }}-shared-data
+      {{- end }}
+{{- end }}

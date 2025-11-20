@@ -11,13 +11,18 @@ from verifiers import Environment
 from verifiers.types import GenerateOutputs, ProcessedOutputs
 
 from prime_rl.orchestrator.advantage import compute_advantages
-from prime_rl.orchestrator.buffer import Buffer, Rollout
+from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.orchestrator.utils import get_sampling_args, parse_is_truncated_completions
 from prime_rl.utils.client import update_weights
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.utils import get_latest_ckpt_step, get_step_path, get_weights_dir, sync_wait_for_path
-from prime_rl.utils.vf import generate_group, make_rollouts
+from prime_rl.utils.utils import (
+    get_broadcast_dir,
+    get_latest_ckpt_step,
+    get_step_path,
+    sync_wait_for_path,
+)
+from prime_rl.utils.vf import Rollout, generate_group, make_rollouts
 
 
 class InflightRolloutInfo(NamedTuple):
@@ -110,7 +115,7 @@ class Scheduler:
         # Update and sample rollouts from the buffer
         self.buffer.update(rollouts)
         num_problems = len(set(generate_outputs.example_id))
-        accepted_rollouts = self.buffer.sample_rollouts(n=num_problems)
+        accepted_rollouts = self.buffer.sample_rollouts(n=num_problems * self.config.rollouts_per_example)
 
         return accepted_rollouts
 
@@ -140,7 +145,7 @@ class Scheduler:
 
     async def update_policy(self):
         """Updates the policy to the latest available checkpoint. Aborts rollout requests that are older than the max retention steps."""
-        latest_ckpt_step = get_latest_ckpt_step(get_weights_dir(self.config.output_dir)) or 0
+        latest_ckpt_step = get_latest_ckpt_step(get_broadcast_dir(self.config.output_dir)) or 0
         async_away_ckpt_step = max(self.step - self.max_async_level, 0)
         next_ckpt_step = (
             async_away_ckpt_step if self.strict_async_level else max(async_away_ckpt_step, latest_ckpt_step)
@@ -150,21 +155,21 @@ class Scheduler:
                 self.logger.info(
                     f"Hit async barrier because we are >{self.max_async_level} step(s) async. Waiting for checkpoint {next_ckpt_step}"
                 )
-                wait_for_ckpt_start_time = time.time()
-                sync_wait_for_path(get_step_path(get_weights_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
-                self.wait_for_ckpt_time = time.time() - wait_for_ckpt_start_time
+                wait_for_ckpt_start_time = time.perf_counter()
+                sync_wait_for_path(get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
+                self.wait_for_ckpt_time = time.perf_counter() - wait_for_ckpt_start_time
                 self.logger.debug(f"Waited for checkpoint {next_ckpt_step} for {self.wait_for_ckpt_time:.2f}s")
             self.logger.debug(
                 f"Got new policy with step {next_ckpt_step}. Updating weights and cancelling old rollout requests."
             )
 
-            update_weights_start_time = time.time()
+            update_weights_start_time = time.perf_counter()
             await update_weights(
                 self.admin_clients,
-                get_step_path(get_weights_dir(self.config.output_dir), next_ckpt_step),
+                get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step),
                 lora_name=self.lora_name,
             )
-            self.update_weights_time = time.time() - update_weights_start_time
+            self.update_weights_time = time.perf_counter() - update_weights_start_time
             self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
             if self.lora_name is not None:
                 self.model_name = self.lora_name
@@ -254,7 +259,7 @@ class Scheduler:
     def async_level(self) -> int:
         return self.step - self.ckpt_step
 
-    def metrics(self) -> dict:
+    def get_metrics(self) -> dict[str, float]:
         return {
             "time/wait_for_ckpt": self.wait_for_ckpt_time,
             "time/update_weights": self.update_weights_time,

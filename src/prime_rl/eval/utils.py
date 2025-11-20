@@ -93,7 +93,7 @@ async def run_eval(
     # Get the logger
     logger = get_logger()
     monitor = get_monitor()
-    eval_start_time = time.time()
+    eval_start_time = time.perf_counter()
 
     # Load the eval environment
     env_name_or_id = env_name or env_id
@@ -139,7 +139,7 @@ async def run_eval(
         logger.warning("Skipping computing pass@k rates because the task rewards appear to be non-binary")
 
     # Log statistics to console
-    eval_time = time.time() - eval_start_time
+    eval_time = time.perf_counter() - eval_start_time
     message = f"Evaluated {env_name_or_id} in {eval_time:.2f}s (Avg@{k}={results_df.reward.mean():.4f}"
     if could_be_binary:
         assert pass_at_k is not None
