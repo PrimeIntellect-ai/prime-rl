@@ -67,7 +67,7 @@ class LoRALinear(nn.Module):
         return merged_layer
 
     def __repr__(self):
-        return f"{self.__class__.__name__}(base={self.base_linear}, rank={self.rank}, alpha={self.alpha}, dropout={self.dropout})"
+        return f"{self.__class__.__name__}(base={self.base_linear}, rank={self.rank}, alpha={self.alpha}, dropout={self.lora_dropout})"
 
 
 def _run_lora_grouped_mm(x: torch.Tensor, lora_A: torch.Tensor, lora_B: torch.Tensor, offsets: torch.LongTensor):
@@ -195,4 +195,4 @@ class MultiLoRALinear(nn.Module):
         return merged_layer
 
     def __repr__(self):
-        return f"{self.__class__.__name__}(base={self.base_linear}, rank={self.rank}, n_adapters={self.n_adapters}, alpha={self.alpha})"
+        return f"{self.__class__.__name__}(base={self.base_linear}, rank={self.rank}, n_adapters={self.n_adapters}, alpha={self.alpha}, dropout={self.lora_dropout})"
