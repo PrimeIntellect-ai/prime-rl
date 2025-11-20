@@ -47,11 +47,11 @@ def prepare_sample(
         position_ids = torch.arange(len(input_ids)).long()
 
         if len(input_ids) > seq_len:
-            # We should never truncate as it would create a really bad learning signal. Instead, always set the maximum sequence length
-            # on the inference worker accordingly, e.g. by setting the `max_tokens` parameter.
-            raise ValueError(
-                f"Number of tokens {len(input_ids)} is greater than sequence length {seq_len}. This should not happen."
-            )
+            input_ids = input_ids[:seq_len]
+            loss_mask = loss_mask[:seq_len]
+            inference_logprobs = inference_logprobs[:seq_len]
+            position_ids = position_ids[:seq_len]
+            advantages = advantages[:seq_len]
 
         assert len(input_ids) == len(advantages) == len(loss_mask) == len(position_ids) == len(inference_logprobs), (
             f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, inference_logprobs: {len(inference_logprobs)}"
