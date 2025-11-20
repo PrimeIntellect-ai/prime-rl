@@ -183,7 +183,7 @@ class Scheduler:
                     # the concurrent update_policy_loop to run, fetch new checkpoints,
                     # and eventually reduce self.async_level.
                     now = time.time()
-                    if now - wait_log_last_time > 5:
+                    if now - wait_log_last_time > 60:
                         self.logger.info(
                             f"Async barrier active (level {self.async_level} > {self.max_async_level}). No longer scheduling group rollouts. Waiting for trainer to catch up..."
                         )
