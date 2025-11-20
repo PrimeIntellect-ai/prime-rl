@@ -3,7 +3,7 @@ base_url = ["https://api.moonshot.ai/v1"]
 api_key_var = "MOONSHOT_API_KEY"
 
 [model]
-name = "kimi-k2-thinking"
+name = "kimi-k2-thinking-turbo"
 
 [log]
 vf_level = "DEBUG"
