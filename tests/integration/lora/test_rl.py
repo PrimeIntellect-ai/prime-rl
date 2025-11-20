@@ -85,7 +85,7 @@ def lora_rl_process(
 
 @pytest.fixture(scope="module")
 def lora_rl_resume_process(
-    vllm_server,  # Can only run with vLLM server
+    vllm_server_dynamic_lora_loading,  # Can only run with vLLM server
     lora_rl_process,  # Resume training can only start when regular RL process is finished
     run_process: Callable[[Command, Environment, int], ProcessResult],
     output_dir: Path,

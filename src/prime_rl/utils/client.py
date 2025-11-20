@@ -109,10 +109,7 @@ async def update_weights(
 
     weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
-    if lora_name is not None:
-        # TODO: We cant unload because we will 404 the running requests.
-        # Not sure how we're supposed to clean up here :think:
-        # await unload_lora_adapter(admin_clients, lora_name)
+    if lora_name is not None and weight_dir is not None:
         await load_lora_adapter(admin_clients, lora_name, weight_dir / "lora_adapters")
     else:
 
