@@ -54,6 +54,7 @@ def setup_world():
 @pytest.fixture(scope="session")
 def output_dir(tmp_path_factory: pytest.TempPathFactory) -> Generator[Path, None, None]:
     output_dir = Path(os.environ.get("PYTEST_OUTPUT_DIR", tmp_path_factory.mktemp("outputs")))
+    output_dir.mkdir(parents=True, exist_ok=True)
     yield output_dir
     shutil.rmtree(output_dir, ignore_errors=True)
 
