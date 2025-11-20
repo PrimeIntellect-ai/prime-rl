@@ -56,7 +56,7 @@ class FileSystemWeightBroadcastConfig(BaseModel):
     save_format: Annotated[
         Literal["safetensors", "torch"], Field(description="The format to save the weight checkpoint in.")
     ] = "safetensors"
-
+    use_fp8: Annotated[bool, Field(description="Whether to use FP8 quantization for inference.")] = False
 
 class NCCLWeightBroadcastConfig(BaseModel):
     """Configures the NCCL broadcast."""
@@ -67,6 +67,7 @@ class NCCLWeightBroadcastConfig(BaseModel):
     timeout: Annotated[int, Field(description="The timeout in seconds to use for the NCCL broadcast.")] = 1200
     # TODO: Should not be configurable, but auto-inferred
     inference_world_size: Annotated[int, Field(description="The number of GPUs used for inference.")] = 1
+    use_fp8: Annotated[bool, Field(description="Whether to use FP8 quantization for inference.")] = False
 
 
 WeightBroadcastConfigType: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig
