@@ -147,22 +147,13 @@ def freeze_all_except_lora_and_specified(model: nn.Module, config: LoRAConfig) -
         model: The model to freeze parameters in
         config: LoRA configuration with modules_to_save patterns
     """
-    frozen_params = 0
-    trainable_params = 0
-    total_params = 0
-
     for name, param in model.named_parameters():
-        total_params += 1
-
         if any(lora_param in name for lora_param in ["lora_A", "lora_B"]):
             param.requires_grad = True
-            trainable_params += 1
         elif _should_keep_trainable(name, config.modules_to_save):
             param.requires_grad = True
-            trainable_params += 1
         else:
             param.requires_grad = False
-            frozen_params += 1
 
 
 def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
