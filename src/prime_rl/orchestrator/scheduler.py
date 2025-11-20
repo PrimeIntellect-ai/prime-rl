@@ -108,9 +108,6 @@ class Scheduler:
         )
         if next_ckpt_step > self.ckpt_step:
             if next_ckpt_step == async_away_ckpt_step:
-                self.logger.info(
-                    f"Hit async barrier because we are >{self.max_async_level} step(s) async. Waiting for checkpoint {next_ckpt_step}"
-                )
                 wait_for_ckpt_start_time = time.perf_counter()
                 await wait_for_path(get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
                 self.wait_for_ckpt_time = time.perf_counter() - wait_for_ckpt_start_time
@@ -172,7 +169,7 @@ class Scheduler:
 
         batch_rollouts: list[vf.State] = []
         pbar = tqdm(total=self.config.batch_size, desc="Generating rollouts (train)")
-        wait_log_last_time = 0
+        was_waiting = False
 
         while len(batch_rollouts) < self.config.batch_size:
             if not self.inflight_group_rollouts:
@@ -182,16 +179,20 @@ class Scheduler:
                     # We use asyncio.sleep to yield control to the event loop, allowing
                     # the concurrent update_policy_loop to run, fetch new checkpoints,
                     # and eventually reduce self.async_level.
-                    now = time.time()
-                    if now - wait_log_last_time > 60:
+                    if not was_waiting:
                         self.logger.info(
                             f"Async barrier active (async level={self.async_level} > max level={self.max_async_level}). No longer scheduling group rollouts. Waiting for trainer to catch up..."
                         )
-                        wait_log_last_time = now
+                        was_waiting = True
+                        pbar.set_description(f"Waiting for trainer (level {self.async_level})")
                     await asyncio.sleep(0.1)
                     continue
-                else:
-                    await self.schedule_group_rollout()
+                elif was_waiting:
+                    self.logger.info(f"Async barrier cleared (level {self.async_level}). Resuming rollout generation.")
+                    pbar.set_description("Generating rollouts (train)")
+                    was_waiting = False
+
+                await self.schedule_group_rollout()
 
             finished_group_rollouts, _ = await asyncio.wait(
                 self.inflight_group_rollouts, return_when=asyncio.FIRST_COMPLETED
