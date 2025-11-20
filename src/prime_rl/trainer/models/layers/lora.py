@@ -109,9 +109,8 @@ class MultiLoRALinear(nn.Module):
 
         # Set use_grouped_mm to False if CUDA compute capability < 9.0
         if torch.cuda.is_available():
-            device = torch.cuda.current_device()
-            cc_major, _ = torch.cuda.get_device_capability(device)
-            if cc_major < 9:
+            cc_major, _ = torch.cuda.get_device_capability()
+            if cc_major == 9:
                 use_grouped_mm = False
         else:
             use_grouped_mm = False
