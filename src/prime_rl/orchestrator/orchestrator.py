@@ -223,6 +223,7 @@ async def orchestrate(config: OrchestratorConfig):
                     output_dir=config.output_dir,
                     ckpt_step=ckpt_step,
                     step=progress.step,
+                    max_concurrent=config.max_concurrent,
                 )
             )
         else:

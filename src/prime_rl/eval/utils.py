@@ -88,6 +88,7 @@ async def run_eval(
     save_config: EvalSaveConfig,
     evals_client: AsyncEvalsClient,
     step: int | None = None,
+    max_concurrent: int | None = None,
 ) -> None:
     # Get the logger
     logger = get_logger()
@@ -112,6 +113,7 @@ async def run_eval(
         rollouts_per_example=rollouts_per_example,
         sampling_args=sampling_args,
         pbar_description=f"Evaluating {env_name_or_id}",
+        max_concurrent=max_concurrent,
     )
 
     # Parse trajectory tokens
@@ -244,7 +246,10 @@ async def run_evals(
     output_dir: Path,
     ckpt_step: int,
     step: int | None = None,
+    max_concurrent: int | None = None,
 ):
+    if max_concurrent is None:
+        max_concurrent = getattr(eval_config, "max_concurrent", None)
     await asyncio.gather(
         *[
             run_eval(
@@ -262,6 +267,7 @@ async def run_evals(
                 evals_client=evals_client,
                 ckpt_step=ckpt_step,
                 step=step,
+                max_concurrent=max_concurrent,
             )
             for env in eval_config.env
         ]
