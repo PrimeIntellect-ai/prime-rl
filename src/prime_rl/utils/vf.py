@@ -74,29 +74,27 @@ def make_interleaved_rollouts(states: list[vf.State]) -> list[Rollout]:
     """Convert vf.State to trainable rollout using interleaved trajectories."""
     rollouts = []
     for state in states:
+        trajectory: vf.Trajectory = state["trajectory"]
+        first_step = trajectory[0]
+        first_step_tokens = first_step["tokens"]
         interleaved_trajectory: vf.TrajectoryStepTokens = {
-            "prompt_ids": [],
-            "prompt_mask": [],
-            "completion_ids": [],
-            "completion_mask": [],
-            "completion_logprobs": [],
-            "overlong_prompt": False,
-            "is_truncated": False,
+            "prompt_ids": first_step_tokens["prompt_ids"],
+            "prompt_mask": first_step_tokens["prompt_mask"],
+            "completion_ids": first_step_tokens["completion_ids"],
+            "completion_mask": first_step_tokens["completion_mask"],
+            "completion_logprobs": first_step_tokens["completion_logprobs"],
+            "overlong_prompt": trajectory[-1]["tokens"]["overlong_prompt"],
+            "is_truncated": trajectory[-1]["tokens"]["is_truncated"],
         }
-        trajectory = state["trajectory"]
-        prefix_tokens = []
-        for step in trajectory:
+        prefix_tokens = first_step_tokens["prompt_ids"]
+        for step in trajectory[1:]:
             tokens = step["tokens"]
             assert tokens is not None
             current_tokens = tokens["prompt_ids"] + tokens["completion_ids"]
             assert prefix_tokens == current_tokens[: len(prefix_tokens)]
-            interleaved_trajectory["prompt_ids"].extend(tokens["prompt_ids"])
-            interleaved_trajectory["prompt_mask"].extend(tokens["prompt_mask"])
             interleaved_trajectory["completion_ids"].extend(tokens["completion_ids"])
             interleaved_trajectory["completion_mask"].extend(tokens["completion_mask"])
             interleaved_trajectory["completion_logprobs"].extend(tokens["completion_logprobs"])
-            interleaved_trajectory["overlong_prompt"] = tokens["overlong_prompt"]
-            interleaved_trajectory["is_truncated"] = tokens["is_truncated"]
             prefix_tokens = tokens["prompt_ids"]
         rollout = Rollout(
             example_id=state["input"]["example_id"],
