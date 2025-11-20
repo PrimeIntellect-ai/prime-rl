@@ -288,6 +288,13 @@ class Scheduler:
                     batch_rollouts = batch_rollouts[: self.config.batch_size]
                     break
 
+                if finished_group_rollout not in self.inflight_group_rollouts:
+                    continue
+
+                if finished_group_rollout.cancelled():
+                    self.inflight_group_rollouts.pop(finished_group_rollout, None)
+                    continue
+
                 _, client = self.inflight_group_rollouts.pop(finished_group_rollout)
                 group_states: list[State] = finished_group_rollout.result()
 
