@@ -99,6 +99,12 @@ async def custom_run_server_worker(listen_address, sock, args, client_config=Non
         vllm_config = await engine_client.get_vllm_config()
         await init_app_state(engine_client, vllm_config, app.state, args)
 
+        # This hack allows us to update lora adapters in-place by skipping the check for already loaded adapters.
+        async def do_nothing(*args, **kwargs):
+            return None
+
+        app.state.openai_serving_models._check_load_lora_adapter_request = do_nothing
+
         logger.info("Starting vLLM API server %d on %s", server_index, listen_address)
         shutdown_task = await serve_http(
             app,
