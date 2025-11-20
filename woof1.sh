@@ -3,12 +3,13 @@ uv run rl \
   --orchestrator @ configs/reverse_text/rl/orch.toml \
   --orchestrator.sampling.max-tokens 128 \
   --trainer.model.experimental.lora.rank 8 \
-  --trainer.weights.save-adapter-separately \
-  --orchestrator.lora-name r8-1e-3 \
+  --trainer.ckpt.weights.save-adapter-separately \
+  --trainer.weight_broadcast.adapter_only \
+  --orchestrator.lora-name r8-1e-4 \
   --trainer_gpu_ids 1 \
-  --output_dir multi_outputs/trainer_1 \
-  --trainer.optim.lr 1e-3 \
+  --output_dir multi_outputs/trainer_3 \
+  --trainer.optim.lr 1e-4 \
   --wandb.project multi-tenant-debug \
-  --wandb.name r8-1e-3 \
+  --wandb.name r8-1e-4 \
   --log.level debug \
   --ckpt
