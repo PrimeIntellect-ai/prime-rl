@@ -77,6 +77,5 @@ jobs:
           GITHUB_HEAD_REF: ${{ github.head_ref }}
           PYTEST_OUTPUT_DIR: /tmp/outputs
         run: |
-          uv run pytest tests/integration -m gpu --ignore=tests/integration/lora/test_rl.py
           uv run pytest tests/integration/lora -m gpu
-
+          uv run pytest tests/integration -m gpu --ignore=tests/integration/lora/test_rl.py
