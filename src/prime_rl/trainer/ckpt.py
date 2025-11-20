@@ -18,7 +18,7 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.config import CheckpointConfig, LoRAConfig, WeightCheckpointConfig
-from prime_rl.trainer.lora import has_lora_layers, save_lora_config
+from prime_rl.trainer.lora import save_lora_config
 from prime_rl.trainer.weights import (
     convert_tt_to_hf_moe,
     gather_weights_on_master,
@@ -301,11 +301,8 @@ class WeightCheckpointManager:
 
         # Gather all weights on master rank
         self.logger.debug("Gathering weights on master rank for weight checkpoint")
-        has_lora = has_lora_layers(model)
         start_time = time.perf_counter()
-        state_dict = gather_weights_on_master(
-            model, self.world.is_master, dtype=torch.bfloat16, has_lora_layers=has_lora
-        )
+        state_dict = gather_weights_on_master(model, self.world.is_master, dtype=torch.bfloat16)
         self.logger.debug(f"Gathered weights on master rank in {time.perf_counter() - start_time:.2f} seconds")
 
         if has_lora:

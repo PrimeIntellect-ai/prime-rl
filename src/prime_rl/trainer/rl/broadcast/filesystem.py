@@ -5,7 +5,7 @@ from typing import Literal
 import torch.nn as nn
 
 from prime_rl.trainer.config import LoRAConfig
-from prime_rl.trainer.lora import has_lora_layers, save_lora_config
+from prime_rl.trainer.lora import save_lora_config
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.rl.config import FileSystemWeightBroadcastConfig
 from prime_rl.trainer.weights import (
@@ -37,11 +37,10 @@ class FileSystemWeightBroadcast(WeightBroadcast):
         """Broadcast weights by saving a HF-compatible checkpoint to shared filesystem and notifies the orchestrator."""
         self.logger.debug("Starting broadcasting weights to inference engine via shared filesystem")
         start_time = time.perf_counter()
-        has_lora = has_lora_layers(model)
         if lora_only:
             state_dict = get_adapter_state_dict(model, is_master=self.world.is_master)
         else:
-            state_dict = gather_weights_on_master(model, is_master=self.world.is_master, has_lora_layers=has_lora)
+            state_dict = gather_weights_on_master(model, is_master=self.world.is_master)
 
         if self.world.is_master:
             # Convert TT-MoE layers to HF format if needed
