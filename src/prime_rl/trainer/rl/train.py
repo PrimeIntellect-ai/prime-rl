@@ -95,7 +95,9 @@ def train(config: RLTrainerConfig):
 
     # Set up weight broadcast
     logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
-    weight_broadcast = setup_weight_broadcast(config.output_dir, config.weight_broadcast)
+    weight_broadcast = setup_weight_broadcast(
+        config.output_dir, config.weight_broadcast, config.model.experimental.lora
+    )
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint managers ({config.ckpt})")
@@ -135,7 +137,9 @@ def train(config: RLTrainerConfig):
         last_async_level_steps = config.max_steps and progress.step >= config.max_steps - config.max_async_level
         if progress.step > 0 and (not last_async_level_steps or config.weight_broadcast.type == "filesystem"):
             broadcast_weights_start_time = time.perf_counter()
-            weight_broadcast.broadcast_weights(model, step=progress.step)
+            weight_broadcast.broadcast_weights(
+                model, step=progress.step, lora_only=config.weight_broadcast.adapter_only
+            )
             broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
             # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
             ckpt_interval = config.ckpt and config.ckpt.interval

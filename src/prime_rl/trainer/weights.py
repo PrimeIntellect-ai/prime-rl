@@ -10,7 +10,14 @@ from safetensors.torch import save_file
 from torch import Tensor, nn
 from torch.distributed.checkpoint.state_dict import _get_fqns as get_fqns
 from torch.distributed.tensor import DTensor
-from transformers.utils import SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME, WEIGHTS_INDEX_NAME, WEIGHTS_NAME
+from transformers.utils import (
+    ADAPTER_SAFE_WEIGHTS_NAME,
+    ADAPTER_WEIGHTS_NAME,
+    SAFE_WEIGHTS_INDEX_NAME,
+    SAFE_WEIGHTS_NAME,
+    WEIGHTS_INDEX_NAME,
+    WEIGHTS_NAME,
+)
 
 from prime_rl.trainer.lora import (
     clean_lora_state_dict,
@@ -177,10 +184,14 @@ def save_state_dict(
     save_dir: Path,
     save_format: Literal["torch", "safetensors"] = "safetensors",
     save_sharded: bool = True,
+    adapter: bool = False,
 ):
     """Save a state dict to a local directory in safetensors or torch format."""
     logger = get_logger()
-    weights_name = SAFE_WEIGHTS_NAME if save_format == "safetensors" else WEIGHTS_NAME
+    if adapter:
+        weights_name = ADAPTER_SAFE_WEIGHTS_NAME if save_format == "safetensors" else ADAPTER_WEIGHTS_NAME
+    else:
+        weights_name = SAFE_WEIGHTS_NAME if save_format == "safetensors" else WEIGHTS_NAME
     save_dir.mkdir(parents=True, exist_ok=True)
     if save_sharded:
         filename_pattern = weights_name.replace(".bin", "{suffix}.bin").replace(".safetensors", "{suffix}.safetensors")

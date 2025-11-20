@@ -110,7 +110,7 @@ async def update_weights(
     weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
     if lora_name is not None and weight_dir is not None:
-        await load_lora_adapter(admin_clients, lora_name, weight_dir / "lora_adapters")
+        await load_lora_adapter(admin_clients, lora_name, weight_dir)
     else:
 
         async def _update_weights(admin_client: AsyncClient, weight_dir: str | None) -> None:

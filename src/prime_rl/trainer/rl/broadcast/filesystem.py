@@ -4,10 +4,17 @@ from typing import Literal
 
 import torch.nn as nn
 
-from prime_rl.trainer.lora import has_lora_layers
+from prime_rl.trainer.config import LoRAConfig
+from prime_rl.trainer.lora import has_lora_layers, save_lora_config
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.rl.config import FileSystemWeightBroadcastConfig
-from prime_rl.trainer.weights import convert_tt_to_hf_moe, gather_weights_on_master, has_tt_moe_layers, save_state_dict
+from prime_rl.trainer.weights import (
+    convert_tt_to_hf_moe,
+    gather_weights_on_master,
+    get_adapter_state_dict,
+    has_tt_moe_layers,
+    save_state_dict,
+)
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.utils import get_step_path
 
@@ -15,8 +22,10 @@ from prime_rl.utils.utils import get_step_path
 class FileSystemWeightBroadcast(WeightBroadcast):
     """Broadcast weights into the inference engine via shared filesystem."""
 
-    def __init__(self, output_dir: Path, config: FileSystemWeightBroadcastConfig):
-        super().__init__(output_dir)
+    def __init__(
+        self, output_dir: Path, config: FileSystemWeightBroadcastConfig, lora_config: LoRAConfig | None = None
+    ):
+        super().__init__(output_dir, lora_config)
         self.save_format: Literal["safetensors", "torch"] = config.save_format
         self.save_sharded = config.save_sharded
         self.world = get_world()
@@ -24,12 +33,16 @@ class FileSystemWeightBroadcast(WeightBroadcast):
             f"Filesystem broadcast initialized (save_format={config.save_format}, save_sharded={config.save_sharded}, broadcast_dir={self.broadcast_dir})"
         )
 
-    def broadcast_weights(self, model: nn.Module, step: int):
+    def broadcast_weights(self, model: nn.Module, step: int, lora_only: bool = False):
         """Broadcast weights by saving a HF-compatible checkpoint to shared filesystem and notifies the orchestrator."""
         self.logger.debug("Starting broadcasting weights to inference engine via shared filesystem")
         start_time = time.perf_counter()
         has_lora = has_lora_layers(model)
-        state_dict = gather_weights_on_master(model, is_master=self.world.is_master, has_lora_layers=has_lora)
+        if lora_only:
+            state_dict = get_adapter_state_dict(model, is_master=self.world.is_master)
+        else:
+            state_dict = gather_weights_on_master(model, is_master=self.world.is_master, has_lora_layers=has_lora)
+
         if self.world.is_master:
             # Convert TT-MoE layers to HF format if needed
             if has_tt_moe_layers(state_dict):
@@ -37,7 +50,10 @@ class FileSystemWeightBroadcast(WeightBroadcast):
 
             # Save weights to shared filesystem
             save_dir = get_step_path(self.broadcast_dir, step)
-            save_state_dict(state_dict, save_dir, self.save_format, self.save_sharded)
+            save_state_dict(state_dict, save_dir, self.save_format, self.save_sharded, adapter=lora_only)
+
+            if lora_only:
+                save_lora_config(self.lora_config, model, save_dir)
 
             # Notify the orchestrator at the end of step to signal that it is safe to load weights from shared filesystem
             self.notify_orchestrator(step)
