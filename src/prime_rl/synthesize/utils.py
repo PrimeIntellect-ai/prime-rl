@@ -58,7 +58,7 @@ def serialize_oai_tools(oai_tools) -> str:
 def merge_reasoning_content(
     completion: list[vf.ChatMessage],
     trajectory: list[vf.TrajectoryStep],
-    reasoning_fields: list[str] = ["reasoning_content", "reasoning", "thinking"],
+    reasoning_field: str = "reasoning_content",
 ) -> list[vf.ChatMessage]:
     """Temporary hotfix to also save reasoning content if"""
     # Parse responses from trajectory
@@ -68,10 +68,8 @@ def merge_reasoning_content(
     for assistant_message, response in zip(assistant_messages, responses):
         assert isinstance(response, vf.ChatCompletion)
         response_message = response.choices[0].message
-        for field in reasoning_fields:
-            if getattr(response_message, field, None) is not None:
-                assistant_message[field] = str(getattr(response_message, field))
-                break
+        if getattr(response_message, reasoning_field, None) is not None:
+            assistant_message[reasoning_field] = getattr(response_message, reasoning_field)
 
     return completion
 
