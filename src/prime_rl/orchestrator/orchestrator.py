@@ -19,8 +19,6 @@ from loguru import logger
 from transformers import AutoTokenizer
 
 from prime_rl.eval.utils import run_evals
-
-# from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.orchestrator.config import BufferConfig, OrchestratorConfig
