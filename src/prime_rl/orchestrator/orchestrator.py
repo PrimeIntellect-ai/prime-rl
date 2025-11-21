@@ -442,8 +442,8 @@ async def orchestrate(config: OrchestratorConfig):
         ckpt_manager.save(progress, buffer, step=progress.step)
 
     # Unload LoRA adapter
-    if config.lora_name is not None:
-        await unload_lora_adapter(admin_clients, config.lora_name)
+    # if config.lora_name is not None:
+        # await unload_lora_adapter(admin_clients, config.lora_name)
 
     logger.success("Orchestrator finished.")
 
