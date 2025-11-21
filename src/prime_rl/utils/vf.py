@@ -59,20 +59,18 @@ async def generate_batch(
     return [state for group_states in group_states_list for state in group_states]
 
 
-# def get_completion_len(rollout: Rollout) -> int:
-#     """Get the length of the completion for a rollout."""
-#     completion_len = 0
-#     for step in rollout["trajectory_tokens"]:
-#         completion_len += len(step["completion_ids"])
-#     return completion_len
-#
-#
-# def get_prompt_len(rollout: Rollout) -> int:
-#     """Get the length of the prompt for a rollout."""
-#     return len(rollout["trajectory_tokens"][0]["prompt_ids"])
-#
-#
-# def get_seq_len(rollout: Rollout) -> int:
-#     """Get the length of the sequence for a rollout."""
-#     return get_prompt_len(rollout) + get_completion_len(rollout)
-#
+def get_prompt_len(state: vf.State) -> int:
+    """Compute the number of prompt tokens from vf.State. Defined as the number of prompt IDs from the first trajectory step."""
+    first_step = state["trajectory"][0]
+    return len(first_step["tokens"]["prompt_ids"])
+
+
+def get_seq_len(state: vf.State) -> int:
+    """Compute the number of tokens from vf.State. Defined as the sum of prompt and completion tokens from the last trajectory step."""
+    last_step = state["trajectory"][-1]
+    return len(last_step["tokens"]["prompt_ids"]) + len(last_step["tokens"]["completion_ids"])
+
+
+def get_completion_len(state: vf.State) -> int:
+    """Compute the number of completion tokens from vf.State. Defined as the difference between the total number of tokens and the number of prompt tokens."""
+    return get_seq_len(state) - get_prompt_len(state)
