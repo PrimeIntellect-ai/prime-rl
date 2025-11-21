@@ -27,6 +27,20 @@ def compute_entropy(shifted_logits: Float[Tensor, "batch seq vocab"]) -> Float[T
 
 
 @jaxtyped(typechecker=typechecker)
+@torch.compile(dynamic=True)
+def compute_confidence_score(shifted_logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq"]:
+    """Computes normalized confidence score based on entropy and top-k probability mass."""
+    with torch.no_grad():
+        probs = torch.nn.functional.softmax(shifted_logits, dim=-1)
+        entropy = compute_entropy(shifted_logits)
+        top_k_mass = torch.topk(probs, k=min(10, probs.size(-1)), dim=-1)[0].sum(dim=-1)
+        max_entropy = torch.log(torch.tensor(float(probs.size(-1))))
+        normalized_entropy = 1.0 - (entropy / max_entropy)
+        confidence = 0.7 * normalized_entropy + 0.3 * top_k_mass
+    return confidence.clamp(0.0, 1.0)
+
+
+@jaxtyped(typechecker=typechecker)
 def shift_logits(logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq vocab"]:
     """Removes final token logits and adds a zero logit for the first token."""
     # We drop the last logit because it corresponds to the next token that will be sampled but is not here yet
