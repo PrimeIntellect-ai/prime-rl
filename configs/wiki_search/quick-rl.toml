@@ -1,0 +1,30 @@
+inference_gpu_ids = [0]
+trainer_gpu_ids = [1]
+
+max_steps = 500
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[wandb]
+project = "wiki-search-debug"
+name = "wiki-search-4b"
+
+[trainer.optim]
+lr = 1e-5
+weight_decay = 0.0
+
+[orchestrator]
+batch_size = 512
+rollouts_per_example = 16
+seq_len = 4096
+
+[orchestrator.sampling]
+max_tokens = 512
+
+[[orchestrator.env]]
+id = "primeintellect/wiki-search"
+
+[inference.model]
+enable_auto_tool_choice = true
+tool_call_parser = "hermes"
