@@ -31,8 +31,12 @@ def interleave_rollout(state: vf.State) -> list[TrainingExample]:
         prev_trajectory_and_new_prompt_ids = tokens["prompt_ids"]
         prev_trajectory_and_new_prompt = step["prompt"]
         # Incremental tokenization assumption
-        assert prefix_tokens == prev_trajectory_and_new_prompt_ids[: len(prefix_tokens)]
-        assert prefix_messages == prev_trajectory_and_new_prompt[: len(prefix_messages)]
+        assert prefix_messages == prev_trajectory_and_new_prompt[: len(prefix_messages)], (
+            f"{prefix_messages} != \n{prev_trajectory_and_new_prompt[: len(prefix_messages)]}"
+        )
+        assert prefix_tokens == prev_trajectory_and_new_prompt_ids[: len(prefix_tokens)], (
+            f"{prefix_tokens} != \n{prev_trajectory_and_new_prompt_ids[: len(prefix_tokens)]}"
+        )
 
         # Extend the completion with the new prompt
         prompt_ids = prev_trajectory_and_new_prompt_ids[len(prefix_tokens) :]
