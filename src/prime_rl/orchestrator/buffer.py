@@ -4,11 +4,11 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import cast
 
+import verifiers as vf
 from datasets import Dataset, load_from_disk
 
 from prime_rl.orchestrator.config import BufferConfig
 from prime_rl.utils.utils import mean_normalize
-from prime_rl.utils.vf import Rollout
 
 
 class Buffer:
@@ -28,7 +28,7 @@ class Buffer:
         self.dataset = dataset
         self.problem_ids = dataset["example_id"]
         self.problem_buffer = {pid: dict(problem) for pid, problem in zip(self.problem_ids, dataset)}
-        self.rollout_buffer: list[Rollout] = []
+        self.rollout_buffer: list[vf.State] = []
         self.metadata = {pid: {"difficulty": "normal"} for pid in self.problem_ids}
 
         # The number of problems/rollouts sampled from each pool at the current step (will reset with every call to get_metrics)
@@ -68,8 +68,9 @@ class Buffer:
         # Load rollouts
         rollouts_path = path / "rollouts"
         if rollouts_path.exists():
-            rollouts_dataset = load_from_disk(rollouts_path)
-            self.rollout_buffer = [Rollout(**cast(dict, row)) for row in rollouts_dataset]
+            raise NotImplementedError("Loading rollouts from disk is not implemented yet")
+            # rollouts_dataset = load_from_disk(rollouts_path)
+            # self.rollout_buffer = [**cast(dict, row)) for row in rollouts_dataset]
 
     def sample_problems(self, n: int) -> list[dict]:
         """Samples `n` problems from the dataset using difficulty pools."""
@@ -94,7 +95,7 @@ class Buffer:
         sampled_ids = sampled_easy + sampled_normal + sampled_hard
         return [self.problem_buffer[pid] for pid in sampled_ids]
 
-    def update(self, rollouts: list[Rollout]):
+    def update(self, rollouts: list[vf.State]):
         """Updates the buffer state with completed rollouts."""
         rollouts_by_example = defaultdict(list)
         for rollout in rollouts:
@@ -123,7 +124,7 @@ class Buffer:
                     continue
             self.rollout_buffer.extend(example_rollouts)
 
-    def sample_rollouts(self, n: int) -> list[Rollout]:
+    def sample_rollouts(self, n: int) -> list[vf.State]:
         """Samples the latest `n` rollouts from the buffer."""
         n = min(n, len(self.rollout_buffer))
         sampled = self.rollout_buffer[-n:]
