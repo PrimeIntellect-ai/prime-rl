@@ -14,6 +14,20 @@ name = "wiki-search-4b"
 lr = 1e-5
 weight_decay = 0.0
 
+[trainer.model.experimental.lora]
+rank = 8
+alpha = 32
+dropout = 0.0
+target_modules = [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj"
+]
+
 [orchestrator]
 batch_size = 512
 rollouts_per_example = 16
