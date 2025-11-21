@@ -13,12 +13,12 @@ def main():
     def foo():
         # C = torch.matmul(A, B)
         C = torch._grouped_mm(A, B, offs=torch.tensor([N // 2, N], dtype=torch.int32))
-        grads = torch.autograd.grad(C, [A, B], grad_outputs=torch.ones_like(C), create_graph=False, retain_graph=False)
+        torch.autograd.grad(C, [A, B], grad_outputs=torch.ones_like(C), create_graph=False, retain_graph=False)
 
     def bar():
         # C = torch.matmul(A, B.T)
         C = torch._grouped_mm(A, B.transpose(-2, -1), offs=torch.tensor([N // 2, N], dtype=torch.int32))
-        grads = torch.autograd.grad(C, [A, B], grad_outputs=torch.ones_like(C), create_graph=False, retain_graph=False)
+        torch.autograd.grad(C, [A, B], grad_outputs=torch.ones_like(C), create_graph=False, retain_graph=False)
 
     # test_b_ms = do_bench(bar, warmup=10, rep=2000)
     test_b_ms = do_bench(bar, warmup=10, rep=2000)
