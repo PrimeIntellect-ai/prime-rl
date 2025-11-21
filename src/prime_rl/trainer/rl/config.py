@@ -48,22 +48,26 @@ class DataLoaderConfig(BaseConfig):
     fake: Annotated[FakeDataLoaderConfig | None, Field(description="Whether to use a fake data loader.")] = None
 
 
-class FileSystemWeightBroadcastConfig(BaseModel):
+class BaseWeightBroadcastConfig(BaseModel):
+    """Configures the base weight broadcast."""
+
+    adapter_only: Annotated[bool, Field(description="Whether to save LoRA adapters only for weight broadcast.")] = False
+
+
+class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     """Configures the weight broadcast."""
 
     type: Literal["filesystem"] = "filesystem"
-    adapter_only: Annotated[bool, Field(description="Whether to save LoRA adapters only for weight broadcast.")] = False
     save_sharded: Annotated[bool, Field(description="Whether to save the weight checkpoint in sharded format.")] = True
     save_format: Annotated[
         Literal["safetensors", "torch"], Field(description="The format to save the weight checkpoint in.")
     ] = "safetensors"
 
 
-class NCCLWeightBroadcastConfig(BaseModel):
+class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
     """Configures the NCCL broadcast."""
 
     type: Literal["nccl"] = "nccl"
-    adapter_only: Annotated[bool, Field(description="Whether to save LoRA adapters only for weight broadcast.")] = False
     host: Annotated[str, Field(description="The host to use for the NCCL broadcast.")] = "localhost"
     port: Annotated[int, Field(description="The port to use for the NCCL broadcast.")] = 29501
     timeout: Annotated[int, Field(description="The timeout in seconds to use for the NCCL broadcast.")] = 1200
