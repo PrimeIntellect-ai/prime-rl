@@ -1,0 +1,5 @@
+max_concurrent = 256
+
+[[env]]
+id = "mini-swe-agent-plus"
+args = { dataset_name = "PrimeIntellect/SWE-smith-Second-Half" }
