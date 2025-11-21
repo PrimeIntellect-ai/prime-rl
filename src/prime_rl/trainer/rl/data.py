@@ -20,7 +20,7 @@ class MicroBatch(TypedDict):
 
     # Batch level
     temperature: float
-    lora_cu_idx: Int[Tensor, "n_loras"]
+    lora_cu_offsets: Int[Tensor, "n_loras"]
 
 
 class FakeDataLoader:
@@ -50,6 +50,7 @@ class FakeDataLoader:
             "inference_logprobs": torch.randn(self.seq_len).unsqueeze(0),
             "temperature": 1.0,
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
+            "lora_cu_offsets": torch.tensor([self.seq_len], dtype=torch.int32),
         }
 
 
