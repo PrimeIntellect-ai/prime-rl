@@ -105,6 +105,7 @@ async def orchestrate(config: OrchestratorConfig):
             seed=config.env_mix.seed,
         ),
     )
+    env.set_max_seq_len(config.seq_len)
     dataset = env.get_dataset(seed=config.seed)
     val_dataset = env.get_eval_dataset(seed=config.seed) if config.val else None
 
@@ -302,7 +303,7 @@ async def orchestrate(config: OrchestratorConfig):
                 "example_id": [rollout["example_id"] for rollout in train_rollouts],
                 "task": [rollout["task"] for rollout in train_rollouts],
                 "reward": [rollout["reward"] for rollout in train_rollouts],
-                # "is_truncated": [rollout["stop_condition"] == "length" for rollout in train_rollouts],
+                "is_truncated": [rollout["is_truncated"] for rollout in train_rollouts],
                 "completion_len": [get_completion_len(rollout) for rollout in train_rollouts],
                 "prompt_len": [get_prompt_len(rollout) for rollout in train_rollouts],
                 "seq_len": [get_seq_len(rollout) for rollout in train_rollouts],
@@ -365,9 +366,9 @@ async def orchestrate(config: OrchestratorConfig):
             "completion_len/mean": results_df.groupby("example_id").completion_len.mean().mean(),
             "completion_len/max": results_df.groupby("example_id").completion_len.mean().max(),
             "completion_len/min": results_df.groupby("example_id").completion_len.mean().min(),
-            # "is_truncated/mean": results_df.groupby("example_id").is_truncated.mean().mean(),
-            # "is_truncated/max": results_df.groupby("example_id").is_truncated.mean().max(),
-            # "is_truncated/min": results_df.groupby("example_id").is_truncated.mean().min(),
+            "is_truncated/mean": results_df.groupby("example_id").is_truncated.mean().mean(),
+            "is_truncated/max": results_df.groupby("example_id").is_truncated.mean().max(),
+            "is_truncated/min": results_df.groupby("example_id").is_truncated.mean().min(),
             # Performance metrics
             "perf/throughput": throughput,
             # Train reward
