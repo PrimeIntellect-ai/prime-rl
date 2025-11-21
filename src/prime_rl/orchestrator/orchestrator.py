@@ -1,7 +1,10 @@
 import asyncio
 import time
 
+from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
+from prime_rl.orchestrator.trajectories import branch_rollout, interleave_rollout
+from prime_rl.orchestrator.types import TrainingExample
 
 # This monkey patch is necessary to avoid Pydantic validating fields using typing.Iterable (e.g. in multimodal or tool call messages) lazily which leads to tokenization errors, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1249
 monkey_patch_oai_iterable_types()
@@ -48,7 +51,7 @@ from prime_rl.utils.utils import (
     get_step_path,
     to_col_format,
 )
-from prime_rl.utils.vf import generate_batch
+from prime_rl.utils.vf import generate_batch, get_completion_len, get_is_truncated, get_prompt_len, get_seq_len
 
 
 @clean_exit
@@ -102,6 +105,7 @@ async def orchestrate(config: OrchestratorConfig):
             seed=config.env_mix.seed,
         ),
     )
+    env.set_max_seq_len(config.seq_len)
     dataset = env.get_dataset(seed=config.seed)
     val_dataset = env.get_eval_dataset(seed=config.seed) if config.val else None
 
@@ -122,6 +126,7 @@ async def orchestrate(config: OrchestratorConfig):
         max_async_level=config.max_async_level,
         max_off_policy_steps=config.max_off_policy_steps,
         strict_async_level=config.strict_async_level,
+        trajectory_strategy=config.trajectory_strategy,
     )
 
     # Check health of the client
@@ -157,9 +162,7 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info(f"Starting orchestrator loop (max_steps={max_steps or 'infinite'})")
     last_eval_step = -1
     is_first_step = True
-    if config.max_concurrent is not None:
-        semaphore = asyncio.Semaphore(config.max_concurrent)
-        set_semaphore(semaphore)
+    await set_semaphore(config.max_concurrent or -1)
 
     # Start update policy loop
     asyncio.create_task(scheduler.update_policy_loop())
@@ -202,7 +205,7 @@ async def orchestrate(config: OrchestratorConfig):
                     clients=clients,
                     env=env,
                     model_name=config.model.name,
-                    problems=val_problems,
+                    examples=val_problems,
                     rollouts_per_example=config.val.rollouts_per_example,
                     sampling_args=get_sampling_args(config.sampling),
                     pbar_description="Generating rollouts (val)",
@@ -240,10 +243,32 @@ async def orchestrate(config: OrchestratorConfig):
         await train_task
         generate_completions_time = time.perf_counter() - generate_completions_start_time
         train_rollouts = train_task.result()
+
+        # Compute advantages
+        rewards = [rollout["reward"] for rollout in train_rollouts]
+        completion_lens = [get_completion_len(rollout) for rollout in train_rollouts]
+        advantages = compute_advantages(
+            rewards,
+            completion_lens,
+            config.rollouts_per_example,
+            config.advantage,
+        )
+
+        # Update and sample rollouts from the buffer
+        make_train_example = interleave_rollout if config.trajectory_strategy == "interleaved" else branch_rollout
+        train_examples: list[TrainingExample] = []
+        for train_rollout, advantage in zip(train_rollouts, advantages):
+            train_example = make_train_example(train_rollout)
+            for te in train_example:
+                te["advantage"] = advantage
+            train_examples.extend(train_example)
+        logger.debug(
+            f"Converted {len(train_rollouts)} training rollouts to {len(train_examples)} training examples using {config.trajectory_strategy} strategy"
+        )
+
         all_data_ranks_batches = prepare_batch(
-            rollouts=train_rollouts,
+            train_examples,
             temperature=config.sampling.temperature,
-            tokenizer=tokenizer,
             num_train_workers=config.num_train_workers,
             seq_len=config.seq_len,
         )
@@ -270,11 +295,10 @@ async def orchestrate(config: OrchestratorConfig):
                 "example_id": [rollout["example_id"] for rollout in train_rollouts],
                 "task": [rollout["task"] for rollout in train_rollouts],
                 "reward": [rollout["reward"] for rollout in train_rollouts],
-                "advantage": [rollout["advantage"] for rollout in train_rollouts],
-                "is_truncated": [rollout["is_truncated"] for rollout in train_rollouts],
-                "completion_len": [len(rollout["completion_ids"]) for rollout in train_rollouts],
-                "prompt_len": [len(rollout["prompt_ids"]) for rollout in train_rollouts],
-                "seq_len": [len(rollout["prompt_ids"]) + len(rollout["completion_ids"]) for rollout in train_rollouts],
+                "is_truncated": [get_is_truncated(rollout) for rollout in train_rollouts],
+                "completion_len": [get_completion_len(rollout) for rollout in train_rollouts],
+                "prompt_len": [get_prompt_len(rollout) for rollout in train_rollouts],
+                "seq_len": [get_seq_len(rollout) for rollout in train_rollouts],
             }
         )
 
@@ -284,9 +308,9 @@ async def orchestrate(config: OrchestratorConfig):
         val_results_df = (
             pd.DataFrame(
                 {
-                    "example_id": val_outputs.example_id,
-                    "task": val_outputs.task,
-                    "reward": val_outputs.reward,
+                    "example_id": [rollout["input"]["example_id"] for rollout in val_outputs],
+                    "task": [rollout["input"]["task"] for rollout in val_outputs],
+                    "reward": [rollout["reward"] for rollout in val_outputs],
                 }
             )
             if val_outputs is not None
@@ -317,7 +341,7 @@ async def orchestrate(config: OrchestratorConfig):
         step_time = time.perf_counter() - step_start_time
         to_log = {
             # Progress metrics
-            "progress/tokens": num_tokens,
+            # "progress/tokens": num_tokens,
             "progress/samples": config.batch_size,
             "progress/problems": config.batch_size // config.rollouts_per_example,
             "progress/total_tokens": progress.total_tokens,
@@ -382,26 +406,24 @@ async def orchestrate(config: OrchestratorConfig):
         monitor.log(to_log)
 
         # Log samples and distributions to W&B table if enabled
-        monitor.log_samples(
-            input_tokens=[rollout["prompt_ids"] for rollout in train_rollouts],
-            output_tokens=[rollout["completion_ids"] for rollout in train_rollouts],
-            rewards=results_df.reward.tolist(),
-            advantages=results_df.advantage.tolist(),
-            rollouts_per_problem=config.rollouts_per_example,
-            step=progress.step,
-        )
+        # monitor.log_samples(
+        #     input_tokens=[rollout["trajectory_tokens"][0]["prompt_ids"] for rollout in train_rollouts],
+        #     output_tokens=[rollout["trajectory_tokens"][-1]["completion_ids"] for rollout in train_rollouts],
+        #     rewards=results_df.reward.tolist(),
+        #     advantages=results_df.advantage.tolist(),
+        #     rollouts_per_problem=config.rollouts_per_example,
+        #     step=progress.step,
+        # )
 
         distributions = {
             "rewards": results_df.reward.tolist(),
-            "advantages": results_df.advantage.tolist(),
             "problem_rewards": results_df.groupby("example_id").reward.mean().tolist(),
-            "problem_advantages": results_df.groupby("example_id").advantage.mean().tolist(),
         }
 
         # Log distributions to W&B table
         monitor.log_distributions(distributions=distributions, step=progress.step)
 
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} |{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.seq_len.mean():.1f} tokens/sample | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} |{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.groupby('example_id').seq_len.mean().mean():.1f} tokens/sample | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
         logger.success(step_message)
 
         # Increment step
