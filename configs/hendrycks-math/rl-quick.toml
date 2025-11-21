@@ -3,7 +3,7 @@ trainer_gpu_ids = [1]
 max_steps = 100
 
 [model]
-name = "PrimeIntellect/Qwen3-1.7B"
+name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
 
 [orchestrator]
 batch_size = 512
