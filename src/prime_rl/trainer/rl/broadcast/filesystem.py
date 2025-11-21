@@ -33,11 +33,11 @@ class FileSystemWeightBroadcast(WeightBroadcast):
             f"Filesystem broadcast initialized (save_format={config.save_format}, save_sharded={config.save_sharded}, broadcast_dir={self.broadcast_dir})"
         )
 
-    def broadcast_weights(self, model: nn.Module, step: int, lora_only: bool = False):
+    def broadcast_weights(self, model: nn.Module, step: int, adapter_only: bool = False):
         """Broadcast weights by saving a HF-compatible checkpoint to shared filesystem and notifies the orchestrator."""
         self.logger.debug("Starting broadcasting weights to inference engine via shared filesystem")
         start_time = time.perf_counter()
-        if lora_only:
+        if adapter_only:
             state_dict = get_adapter_state_dict(model, is_master=self.world.is_master)
         else:
             state_dict = gather_weights_on_master(model, is_master=self.world.is_master)
@@ -49,9 +49,9 @@ class FileSystemWeightBroadcast(WeightBroadcast):
 
             # Save weights to shared filesystem
             save_dir = get_step_path(self.broadcast_dir, step)
-            save_state_dict(state_dict, save_dir, self.save_format, self.save_sharded, adapter=lora_only)
+            save_state_dict(state_dict, save_dir, self.save_format, self.save_sharded, adapter=adapter_only)
 
-            if lora_only:
+            if adapter_only:
                 save_lora_config(self.lora_config, model, save_dir)
 
             # Notify the orchestrator at the end of step to signal that it is safe to load weights from shared filesystem
