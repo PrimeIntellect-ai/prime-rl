@@ -1,18 +1,9 @@
-from typing import TypedDict
-
 import verifiers as vf
 
-
-class TrainableRollout(TypedDict):
-    prompt_ids: list[int]
-    prompt_mask: list[bool]
-    completion_ids: list[int]
-    completion_mask: list[int]
-    completion_logprobs: list[float]
-    advantage: float | None
+from prime_rl.orchestrator.types import TrainingExample
 
 
-def interleave_rollout(state: vf.State) -> list[TrainableRollout]:
+def interleave_rollout(state: vf.State) -> list[TrainingExample]:
     """
     Convert vf.State to a *single* trainable rollout by interleaving the trajectory.
 
@@ -22,7 +13,7 @@ def interleave_rollout(state: vf.State) -> list[TrainableRollout]:
     # Initialize the rollout with prompt and completion from first trajectory step
     trajectory = state["trajectory"]
     first_step = trajectory[0]
-    interleaved_rollout = TrainableRollout(
+    interleaved_rollout = TrainingExample(
         prompt_ids=first_step["tokens"]["prompt_ids"],
         prompt_mask=first_step["tokens"]["prompt_mask"],
         completion_ids=first_step["tokens"]["completion_ids"],
@@ -64,13 +55,13 @@ def interleave_rollout(state: vf.State) -> list[TrainableRollout]:
     return [interleaved_rollout]
 
 
-def branch_rollout(state: vf.State) -> list[TrainableRollout]:
+def branch_rollout(state: vf.State) -> list[TrainingExample]:
     """Convert vf.State to *multiple* trainable rollouts using branching trajectories strategy."""
     rollouts = []
     for step in state["trajectory"]:
         assert "tokens" in step
         tokens = step["tokens"]
-        rollout = TrainableRollout(
+        rollout = TrainingExample(
             prompt_ids=tokens["prompt_ids"],
             prompt_mask=tokens["prompt_mask"],
             completion_ids=tokens["completion_ids"],
