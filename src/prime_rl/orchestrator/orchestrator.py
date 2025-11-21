@@ -302,7 +302,6 @@ async def orchestrate(config: OrchestratorConfig):
                 "example_id": [rollout["example_id"] for rollout in train_rollouts],
                 "task": [rollout["task"] for rollout in train_rollouts],
                 "reward": [rollout["reward"] for rollout in train_rollouts],
-                "advantage": [example["advantage"] for example in train_examples],
                 # "is_truncated": [rollout["stop_condition"] == "length" for rollout in train_rollouts],
                 "completion_len": [get_completion_len(rollout) for rollout in train_rollouts],
                 "prompt_len": [get_prompt_len(rollout) for rollout in train_rollouts],
@@ -425,9 +424,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         distributions = {
             "rewards": results_df.reward.tolist(),
-            "advantages": results_df.advantage.tolist(),
             "problem_rewards": results_df.groupby("example_id").reward.mean().tolist(),
-            "problem_advantages": results_df.groupby("example_id").advantage.mean().tolist(),
         }
 
         # Log distributions to W&B table
