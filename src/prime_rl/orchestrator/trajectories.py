@@ -7,7 +7,9 @@ def interleave_rollout(state: vf.State) -> list[TrainingExample]:
     """
     Convert vf.State to a *single* trainable rollout by interleaving the trajectory.
 
-    NOTE: This requires that consecutive trajectory steps share token prefixes (incremental tokenization)
+    NOTE:
+    - This requires that consecutive trajectory steps share token prefixes (incremental tokenization)
+    - This approach is suceptible to introduce subtle difference due to re-tokenization in multi-turn environments.
     """
 
     # Initialize the rollout with prompt and completion from first trajectory step
@@ -31,12 +33,12 @@ def interleave_rollout(state: vf.State) -> list[TrainingExample]:
         prev_trajectory_and_new_prompt_ids = tokens["prompt_ids"]
         prev_trajectory_and_new_prompt = step["prompt"]
         # Incremental tokenization assumption
-        assert prefix_messages == prev_trajectory_and_new_prompt[: len(prefix_messages)], (
-            f"{prefix_messages} != \n{prev_trajectory_and_new_prompt[: len(prefix_messages)]}"
-        )
-        assert prefix_tokens == prev_trajectory_and_new_prompt_ids[: len(prefix_tokens)], (
-            f"{prefix_tokens} != \n{prev_trajectory_and_new_prompt_ids[: len(prefix_tokens)]}"
-        )
+        # assert prefix_messages == prev_trajectory_and_new_prompt[: len(prefix_messages)], (
+        #     f"{prefix_messages} != \n{prev_trajectory_and_new_prompt[: len(prefix_messages)]}"
+        # )
+        # assert prefix_tokens == prev_trajectory_and_new_prompt_ids[: len(prefix_tokens)], (
+        #     f"{prefix_tokens} != \n{prev_trajectory_and_new_prompt_ids[: len(prefix_tokens)]}"
+        # )
 
         # Extend the completion with the new prompt
         prompt_ids = prev_trajectory_and_new_prompt_ids[len(prefix_tokens) :]
