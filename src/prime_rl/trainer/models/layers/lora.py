@@ -49,23 +49,6 @@ class LoRALinear(nn.Module):
         lora_output = (lora_x @ self.lora_A.T) @ self.lora_B.T * self.scaling
         return base_output + lora_output
 
-    def merge_weights(self) -> nn.Linear:
-        """Merge LoRA weights into base layer and return a new linear layer."""
-        delta_weight = (self.lora_B @ self.lora_A) * self.scaling
-        merged_layer = nn.Linear(
-            self.base_linear.in_features,
-            self.base_linear.out_features,
-            bias=self.base_linear.bias is not None,
-            device=self.base_linear.weight.device,
-            dtype=self.base_linear.weight.dtype,
-        )
-
-        merged_layer.weight.data = self.base_linear.weight.data + delta_weight
-        if self.base_linear.bias is not None:
-            merged_layer.bias.data = self.base_linear.bias.data.clone()
-
-        return merged_layer
-
     def __repr__(self):
         return f"{self.__class__.__name__}(base={self.base_linear}, rank={self.rank}, alpha={self.alpha}, dropout={self.lora_dropout})"
 
@@ -175,23 +158,6 @@ class MultiLoRALinear(nn.Module):
         else:
             lora_out = _run_lora_for_loop(lora_x, self.lora_A, self.lora_B, offsets)
         return base_out + self.scaling * lora_out
-
-    def merge_weights(self, index: int) -> nn.Linear:
-        """Merge LoRA weights into base layer and return a new linear layer."""
-        delta_weight = (self.lora_B[index] @ self.lora_A[index]) * self.scaling
-        merged_layer = nn.Linear(
-            self.in_features,
-            self.out_features,
-            bias=self.base_linear.bias is not None,
-            device=self.base_linear.weight.device,
-            dtype=self.base_linear.weight.dtype,
-        )
-
-        merged_layer.weight.data = self.base_linear.weight.data + delta_weight
-        if self.base_linear.bias is not None:
-            merged_layer.bias.data = self.base_linear.bias.data.clone()
-
-        return merged_layer
 
     def __repr__(self):
         return f"{self.__class__.__name__}(base={self.base_linear}, rank={self.rank}, n_adapters={self.n_adapters}, alpha={self.alpha}, dropout={self.lora_dropout})"
