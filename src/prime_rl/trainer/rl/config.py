@@ -196,3 +196,12 @@ class RLTrainerConfig(BaseSettings):
         if self.optim.type == "muon" and self.model.fsdp_cpu_offload:
             raise ValueError("Muon optimizer does not support FSDP CPU offload")
         return self
+
+    @model_validator(mode="after")
+    def validate_lora_broadcast(self):
+        if self.weight_broadcast.adapter_only and not self.model.experimental.lora:
+            raise ValueError("Adapter only weight broadcast requires LoRA to be enabled.")
+        if self.weight_broadcast.type == "nccl" and self.weight_broadcast.adapter_only:
+            # TODO: Support this
+            raise ValueError("NCCL weight broadcast does not support LoRA yet.")
+        return self
