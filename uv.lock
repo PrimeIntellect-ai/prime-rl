@@ -1802,7 +1802,7 @@ wheels = [
 [[package]]
 name = "mini-swe-agent-plus"
 version = "0.1.0"
-source = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fmini_swe_agent_plus&rev=3b7cadd#3b7cadd57b41810184d6c57e2c83b68ce3474185" }
+source = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fmini_swe_agent_plus&rev=67fc14e#67fc14e52509ef1f4258353eb331b09632a1ba0a" }
 dependencies = [
     { name = "prime-sandboxes" },
     { name = "swebench" },
@@ -2559,7 +2559,7 @@ requires-dist = [
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "lovely-tensors", specifier = ">=0.1.18" },
     { name = "math-verify", specifier = ">=0.8.0" },
-    { name = "mini-swe-agent-plus", git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fmini_swe_agent_plus&rev=3b7cadd" },
+    { name = "mini-swe-agent-plus", git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fmini_swe_agent_plus&rev=67fc14e" },
     { name = "nltk", specifier = ">=3.9.1" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "openai", specifier = ">=1.106.1" },
