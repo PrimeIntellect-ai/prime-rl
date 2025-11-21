@@ -30,6 +30,8 @@ class Runs:
 
         for deleted_run in deleted_runs:
             # TODO: Support hooks?
+            del self.progress[self.id_2_idx[deleted_run]]
+
             # Process mappings
             self.unused_idxs.add(self.id_2_idx[deleted_run])
             del self.idx_2_id[self.id_2_idx[deleted_run]]

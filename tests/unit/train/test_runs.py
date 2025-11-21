@@ -11,7 +11,7 @@ def test_initial_state(tmp_path: Path) -> None:
     assert runs.max_runs == 5
     assert len(runs.idx_2_id) == 0
     assert len(runs.id_2_idx) == 0
-    assert len(runs._unused_idxs) == 5
+    assert len(runs.unused_idxs) == 5
     assert runs.run_dirs() == []
 
 
@@ -33,7 +33,7 @@ def test_detect_new_runs(tmp_path: Path) -> None:
     assert "run_def456" in runs.id_2_idx
 
     # Verify indices are assigned from available pool
-    assert len(runs._unused_idxs) == 3  # 5 - 2 = 3
+    assert len(runs.unused_idxs) == 3  # 5 - 2 = 3
     assert runs.id_2_idx["run_abc123"] in range(5)
     assert runs.id_2_idx["run_def456"] in range(5)
 
@@ -60,7 +60,7 @@ def test_detect_deleted_runs(tmp_path: Path) -> None:
     initial_idx2 = runs.id_2_idx["run_def456"]
 
     assert len(runs.id_2_idx) == 2
-    assert len(runs._unused_idxs) == 3
+    assert len(runs.unused_idxs) == 3
 
     # Delete one run
     run1.rmdir()
@@ -74,9 +74,9 @@ def test_detect_deleted_runs(tmp_path: Path) -> None:
     assert initial_idx1 not in runs.idx_2_id
 
     # Verify index was returned to unused pool
-    assert len(runs._unused_idxs) == 4
-    assert initial_idx1 in runs._unused_idxs
-    assert initial_idx2 not in runs._unused_idxs
+    assert len(runs.unused_idxs) == 4
+    assert initial_idx1 in runs.unused_idxs
+    assert initial_idx2 not in runs.unused_idxs
 
 
 def test_max_runs_limit(tmp_path: Path) -> None:
@@ -93,7 +93,7 @@ def test_max_runs_limit(tmp_path: Path) -> None:
     # Only max_runs should be tracked
     assert len(runs.id_2_idx) == 2
     assert len(runs.idx_2_id) == 2
-    assert len(runs._unused_idxs) == 0
+    assert len(runs.unused_idxs) == 0
 
     to_delete_run = runs.get_run_dir(0)
     to_delete_run.rmdir()
@@ -102,7 +102,7 @@ def test_max_runs_limit(tmp_path: Path) -> None:
 
     assert len(runs.id_2_idx) == 2
     assert len(runs.idx_2_id) == 2
-    assert len(runs._unused_idxs) == 0
+    assert len(runs.unused_idxs) == 0
     assert to_delete_run not in runs.run_dirs()
 
 
