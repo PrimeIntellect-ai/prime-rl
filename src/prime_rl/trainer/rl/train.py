@@ -116,9 +116,19 @@ def train(config: RLTrainerConfig):
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
-    dataloader = DataLoader(config.output_dir, progress.step)
     if config.data.fake:
         dataloader = FakeDataLoader(config.data.fake)
+    else:
+        if world.is_master:
+            from prime_rl.trainer.rl.packer import Packer
+            from prime_rl.trainer.runs import setup_runs
+
+            # TODO: allow setting max runs
+            setup_runs(config.output_dir, 2)
+            packer = Packer(
+                dp_world_size=parallel_dims.world_mesh["dp"].size(), seq_len=config.model.seq_len, tokenizer=tokenizer
+            )
+        dataloader = DataLoader(config.output_dir, progress.step)
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     is_first_step = True
@@ -181,6 +191,9 @@ def train(config: RLTrainerConfig):
         step_start_time = time.perf_counter()
 
         # Wait for the batch to be available
+        if world.is_master:
+            logger.info("Packing batch")
+            packer.pack()
         logger.info("Waiting for training batch to arrive")
         wait_for_batch_start_time = time.perf_counter()
         dataloader.wait_for_batch()
