@@ -129,7 +129,6 @@ async def generate_and_save_group(
         await asyncio.gather(*[make_and_save_result(state, save_file) for state in states])
     except:
         logger.error(f"Error generating synthetic data for group {index}. Calling environment teardown manually...")
-        await env._teardown()
         return
 
 
