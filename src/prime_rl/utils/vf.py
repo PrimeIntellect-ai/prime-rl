@@ -74,3 +74,8 @@ def get_seq_len(state: vf.State) -> int:
 def get_completion_len(state: vf.State) -> int:
     """Compute the number of completion tokens from vf.State. Defined as the difference between the total number of tokens and the number of prompt tokens."""
     return get_seq_len(state) - get_prompt_len(state)
+
+
+def get_is_truncated(state: vf.State) -> bool:
+    """Check if the state is truncated."""
+    return state["trajectory"][-1]["tokens"]["is_truncated"]
