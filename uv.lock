@@ -588,7 +588,7 @@ dependencies = [
 [[package]]
 name = "deepswe"
 version = "0.1.6"
-source = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fdeepswe&rev=4ee7ad6#4ee7ad6d4453ea3889d9c2eed3d3263b8c532c63" }
+source = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fdeepswe&rev=9a6ac5b#9a6ac5bcdf9d334f8d578c57070baff06db7da41" }
 dependencies = [
     { name = "prime-sandboxes" },
     { name = "swebench" },
@@ -1802,7 +1802,7 @@ wheels = [
 [[package]]
 name = "mini-swe-agent-plus"
 version = "0.1.0"
-source = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fmini_swe_agent_plus&rev=67fc14e#67fc14e52509ef1f4258353eb331b09632a1ba0a" }
+source = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fmini_swe_agent_plus&rev=e5bf87e#e5bf87ede262fb1d5dc57d96bb2dce7f75410f7f" }
 dependencies = [
     { name = "prime-sandboxes" },
     { name = "swebench" },
@@ -2550,7 +2550,7 @@ requires-dist = [
     { name = "cydifflib", specifier = ">=1.2.0" },
     { name = "datasets", specifier = ">=4.0.0" },
     { name = "deepdive", git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fdeepdive&rev=b73bab8" },
-    { name = "deepswe", git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fdeepswe&rev=4ee7ad6" },
+    { name = "deepswe", git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fdeepswe&rev=9a6ac5b" },
     { name = "dion", git = "https://github.com/samsja/dion.git?rev=main" },
     { name = "flash-attn", specifier = ">=2.8.3" },
     { name = "i3-math-python", git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fi3_math_python&rev=402a50c" },
@@ -2559,7 +2559,7 @@ requires-dist = [
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "lovely-tensors", specifier = ">=0.1.18" },
     { name = "math-verify", specifier = ">=0.8.0" },
-    { name = "mini-swe-agent-plus", git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fmini_swe_agent_plus&rev=67fc14e" },
+    { name = "mini-swe-agent-plus", git = "https://github.com/PrimeIntellect-ai/prime-environments.git?subdirectory=environments%2Fmini_swe_agent_plus&rev=e5bf87e" },
     { name = "nltk", specifier = ">=3.9.1" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "openai", specifier = ">=1.106.1" },

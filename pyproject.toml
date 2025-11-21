@@ -76,8 +76,8 @@ dion = { git = "https://github.com/samsja/dion.git", rev = "main" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 
 deepdive = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git", rev = "b73bab8", subdirectory = "environments/deepdive" }
-deepswe = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git", rev = "4ee7ad6", subdirectory = "environments/deepswe" }
-mini-swe-agent-plus = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git", rev = "67fc14e", subdirectory = "environments/mini_swe_agent_plus" }
+deepswe = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git", rev = "9a6ac5b", subdirectory = "environments/deepswe" }
+mini-swe-agent-plus = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git", rev = "e5bf87e", subdirectory = "environments/mini_swe_agent_plus" }
 i3-math-python = { git = "https://github.com/PrimeIntellect-ai/prime-environments.git", rev = "402a50c", subdirectory = "environments/i3_math_python" }
 
 [tool.uv.extra-build-dependencies]
