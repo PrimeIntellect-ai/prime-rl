@@ -10,7 +10,6 @@ from tqdm import tqdm
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from verifiers import Environment
 
-from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.orchestrator.utils import get_sampling_args
@@ -22,13 +21,7 @@ from prime_rl.utils.utils import (
     get_step_path,
     sync_wait_for_path,
 )
-from prime_rl.utils.vf import (
-    Rollout,
-    generate_group,
-    get_completion_len,
-    make_branching_rollouts,
-    make_interleaved_rollouts,
-)
+from prime_rl.utils.vf import generate_group
 
 
 class InflightRolloutInfo(NamedTuple):
@@ -165,7 +158,7 @@ class Scheduler:
 
             self.ckpt_step = next_ckpt_step
 
-    async def generate_batch(self, step: int, semaphore: asyncio.Semaphore | None = None) -> list[Rollout]:
+    async def generate_batch(self, step: int, semaphore: asyncio.Semaphore | None = None) -> list[vf.State]:
         """Continuously schedules group rollouts, allowing them to be in-flight across steps."""
         self.step = step
 
@@ -174,7 +167,7 @@ class Scheduler:
         while len(self.inflight_group_rollouts) < self.problems_per_batch:
             await self.schedule_group_rollout()  # Schedule requests in round-robin fashion
 
-        batch_rollouts: list[Rollout] = []
+        batch_rollouts: list[vf.State] = []
         pbar = tqdm(total=self.config.batch_size, desc="Generating rollouts (train)")
         while len(batch_rollouts) < self.config.batch_size:
             finished_group_rollouts, _ = await asyncio.wait(
@@ -189,25 +182,7 @@ class Scheduler:
                 _, client = self.inflight_group_rollouts.pop(finished_group_rollout)
                 group_states: list[vf.State] = finished_group_rollout.result()
 
-                # Update and sample rollouts from the buffer
-                make_rollouts = (
-                    make_interleaved_rollouts if self.trajectory_strategy == "interleaved" else make_branching_rollouts
-                )
-                rollouts = make_rollouts(group_states)
-
-                # Compute advantages
-                completion_lens = [get_completion_len(rollout) for rollout in rollouts]
-                rewards = [rollout["reward"] for rollout in rollouts]
-                advantages = compute_advantages(
-                    rewards,
-                    completion_lens,
-                    self.config.rollouts_per_example,
-                    self.config.advantage,
-                )
-                for rollout, advantage in zip(rollouts, advantages):
-                    rollout["advantage"] = advantage
-
-                self.buffer.update(rollouts)
+                self.buffer.update(group_states)
                 accepted_rollouts = self.buffer.sample_rollouts(n=self.config.rollouts_per_example)
 
                 batch_rollouts.extend(accepted_rollouts)

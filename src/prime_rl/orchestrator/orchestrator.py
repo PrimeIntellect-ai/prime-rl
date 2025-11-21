@@ -1,7 +1,9 @@
 import asyncio
 import time
 
+from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
+from prime_rl.orchestrator.trajectories import branch_rollout, interleave_rollout
 
 # This monkey patch is necessary to avoid Pydantic validating fields using typing.Iterable (e.g. in multimodal or tool call messages) lazily which leads to tokenization errors, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1249
 monkey_patch_oai_iterable_types()
@@ -48,7 +50,7 @@ from prime_rl.utils.utils import (
     get_step_path,
     to_col_format,
 )
-from prime_rl.utils.vf import generate_batch, get_completion_len, get_prompt_len, get_seq_len
+from prime_rl.utils.vf import generate_batch
 
 
 @clean_exit
@@ -246,7 +248,29 @@ async def orchestrate(config: OrchestratorConfig):
         # Await train rollouts, process results and write batch to disk to consume by trainer
         await train_task
         generate_completions_time = time.perf_counter() - generate_completions_start_time
-        train_rollouts = train_task.result()
+        train_states = train_task.result()
+
+        # Compute advantages
+        rewards = [state["reward"] for state in train_states]
+        completion_lens = [0] * len(rewards)  # TODO: Bring back completion lengths
+        # completion_lens = [get_completion_len(rollout) for rollout in rollouts]
+        advantages = compute_advantages(
+            rewards,
+            completion_lens,
+            config.rollouts_per_example,
+            config.advantage,
+        )
+
+        # Update and sample rollouts from the buffer
+        make_rollouts = interleave_rollout if config.trajectory_strategy == "interleaved" else branch_rollout
+        train_rollouts = []
+        for state, advantage in zip(train_states, advantages):
+            rollouts = make_rollouts(state)
+            for rollout in rollouts:
+                rollout["advantage"] = advantage
+            train_rollouts.extend(rollouts)
+        logger.debug(f"Converted {len(train_states)} rollouts to {len(train_rollouts)} training examples")
+
         all_data_ranks_batches = prepare_batch(
             rollouts=train_rollouts,
             temperature=config.sampling.temperature,
@@ -273,19 +297,19 @@ async def orchestrate(config: OrchestratorConfig):
         # Gather metrics in dataframes
         results_df = pd.DataFrame(
             {
-                "example_id": [rollout["example_id"] for rollout in train_rollouts],
-                "task": [rollout["task"] for rollout in train_rollouts],
-                "reward": [rollout["reward"] for rollout in train_rollouts],
-                "advantage": [rollout["advantage"] for rollout in train_rollouts],
-                "is_truncated": [rollout["stop_condition"] == "length" for rollout in train_rollouts],
-                "completion_len": [get_completion_len(rollout) for rollout in train_rollouts],
-                "prompt_len": [get_prompt_len(rollout) for rollout in train_rollouts],
-                "seq_len": [get_seq_len(rollout) for rollout in train_rollouts],
+                "example_id": [state["example_id"] for state in train_states],
+                "task": [state["task"] for state in train_states],
+                "reward": [state["reward"] for state in train_states],
+                "advantage": [state["advantage"] for state in train_rollouts],
+                # "is_truncated": [rollout["stop_condition"] == "length" for rollout in train_rollouts],
+                # "completion_len": [get_completion_len(rollout) for rollout in train_rollouts],
+                # "prompt_len": [get_prompt_len(rollout) for rollout in train_rollouts],
+                # "seq_len": [get_seq_len(rollout) for rollout in train_rollouts],
             }
         )
 
         # Gather individual reward function metrics
-        metrics_df = pd.DataFrame([rollout["metrics"] for rollout in train_rollouts])
+        metrics_df = pd.DataFrame([state["metrics"] for state in train_states])
 
         val_results_df = (
             pd.DataFrame(
@@ -300,11 +324,11 @@ async def orchestrate(config: OrchestratorConfig):
         )
 
         # Update progress metrics and throughput
-        num_tokens = int(results_df.seq_len.sum())
-        progress.total_tokens += num_tokens
-        progress.total_samples += config.batch_size
-        progress.total_problems += config.batch_size // config.rollouts_per_example
-        throughput = num_tokens / generate_completions_time
+        # num_tokens = int(results_df.seq_len.sum())
+        # progress.total_tokens += num_tokens
+        # progress.total_samples += config.batch_size
+        # progress.total_problems += config.batch_size // config.rollouts_per_example
+        # throughput = num_tokens / generate_completions_time
 
         # Compute solve all and none tensors
         solve_all = (
@@ -323,7 +347,7 @@ async def orchestrate(config: OrchestratorConfig):
         step_time = time.perf_counter() - step_start_time
         to_log = {
             # Progress metrics
-            "progress/tokens": num_tokens,
+            # "progress/tokens": num_tokens,
             "progress/samples": config.batch_size,
             "progress/problems": config.batch_size // config.rollouts_per_example,
             "progress/total_tokens": progress.total_tokens,
@@ -331,20 +355,20 @@ async def orchestrate(config: OrchestratorConfig):
             "progress/total_problems": progress.total_problems,
             "progress/ckpt_step": ckpt_step,  # Shared W&B axis
             # Sequence length metrics
-            "seq_len/mean": results_df.groupby("example_id").seq_len.mean().mean(),
-            "seq_len/max": results_df.groupby("example_id").seq_len.mean().max(),
-            "seq_len/min": results_df.groupby("example_id").seq_len.mean().min(),
-            "prompt_len/mean": results_df.groupby("example_id").prompt_len.mean().mean(),
-            "prompt_len/max": results_df.groupby("example_id").prompt_len.mean().max(),
-            "prompt_len/min": results_df.groupby("example_id").prompt_len.mean().min(),
-            "completion_len/mean": results_df.groupby("example_id").completion_len.mean().mean(),
-            "completion_len/max": results_df.groupby("example_id").completion_len.mean().max(),
-            "completion_len/min": results_df.groupby("example_id").completion_len.mean().min(),
-            "is_truncated/mean": results_df.groupby("example_id").is_truncated.mean().mean(),
-            "is_truncated/max": results_df.groupby("example_id").is_truncated.mean().max(),
-            "is_truncated/min": results_df.groupby("example_id").is_truncated.mean().min(),
+            # "seq_len/mean": results_df.groupby("example_id").seq_len.mean().mean(),
+            # "seq_len/max": results_df.groupby("example_id").seq_len.mean().max(),
+            # "seq_len/min": results_df.groupby("example_id").seq_len.mean().min(),
+            # "prompt_len/mean": results_df.groupby("example_id").prompt_len.mean().mean(),
+            # "prompt_len/max": results_df.groupby("example_id").prompt_len.mean().max(),
+            # "prompt_len/min": results_df.groupby("example_id").prompt_len.mean().min(),
+            # "completion_len/mean": results_df.groupby("example_id").completion_len.mean().mean(),
+            # "completion_len/max": results_df.groupby("example_id").completion_len.mean().max(),
+            # "completion_len/min": results_df.groupby("example_id").completion_len.mean().min(),
+            # "is_truncated/mean": results_df.groupby("example_id").is_truncated.mean().mean(),
+            # "is_truncated/max": results_df.groupby("example_id").is_truncated.mean().max(),
+            # "is_truncated/min": results_df.groupby("example_id").is_truncated.mean().min(),
             # Performance metrics
-            "perf/throughput": throughput,
+            # "perf/throughput": throughput,
             # Train reward
             "reward/mean": results_df.reward.mean(),
             # Batch metrics
@@ -388,14 +412,14 @@ async def orchestrate(config: OrchestratorConfig):
         monitor.log(to_log)
 
         # Log samples and distributions to W&B table if enabled
-        monitor.log_samples(
-            input_tokens=[rollout["trajectory_tokens"][0]["prompt_ids"] for rollout in train_rollouts],
-            output_tokens=[rollout["trajectory_tokens"][-1]["completion_ids"] for rollout in train_rollouts],
-            rewards=results_df.reward.tolist(),
-            advantages=results_df.advantage.tolist(),
-            rollouts_per_problem=config.rollouts_per_example,
-            step=progress.step,
-        )
+        # monitor.log_samples(
+        #     input_tokens=[rollout["trajectory_tokens"][0]["prompt_ids"] for rollout in train_rollouts],
+        #     output_tokens=[rollout["trajectory_tokens"][-1]["completion_ids"] for rollout in train_rollouts],
+        #     rewards=results_df.reward.tolist(),
+        #     advantages=results_df.advantage.tolist(),
+        #     rollouts_per_problem=config.rollouts_per_example,
+        #     step=progress.step,
+        # )
 
         distributions = {
             "rewards": results_df.reward.tolist(),
@@ -407,7 +431,9 @@ async def orchestrate(config: OrchestratorConfig):
         # Log distributions to W&B table
         monitor.log_distributions(distributions=distributions, step=progress.step)
 
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} |{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.seq_len.mean():.1f} tokens/sample | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
+        throughput = 0
+        seq_len = 0
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} |{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} Throughput: {throughput:.1f} tokens/s | Seq. Length: {seq_len:.1f} tokens/sample | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
         logger.success(step_message)
 
         # Increment step
