@@ -1,3 +1,4 @@
+import shutil
 import time
 from pathlib import Path
 
@@ -19,6 +20,7 @@ class Packer:
         self.seq_len = seq_len
         self.tokenizer = tokenizer
         self.trainer_step = 0
+        shutil.rmtree(get_rollout_dir(self.runs.output_dir), ignore_errors=True)
 
     def get_rollout_paths(self) -> list[tuple[int, Path]]:
         return [
