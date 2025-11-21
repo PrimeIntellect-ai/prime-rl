@@ -3,7 +3,7 @@ trainer_gpu_ids = [1]
 max_steps = 100
 
 [model]
-name = "Qwen/Qwen3-4B-Instruct-2507"
+name = "PrimeIntellect/Qwen3-1.7B"
 
 [orchestrator]
 batch_size = 512
@@ -15,3 +15,5 @@ max_tokens = 2048
 
 [[orchestrator.env]]
 id = "primeintellect/hendrycks-math"
+
+[trainer]
