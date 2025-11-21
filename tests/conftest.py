@@ -165,12 +165,13 @@ def vllm_server(output_dir: Path) -> Generator[None, None, None]:
 
     # Start the server as a subprocess
     env = {**os.environ, **VLLM_SERVER_ENV}
-    vllm_process = subprocess.Popen(
-        VLLM_SERVER_CMD,
-        env=env,
-        stdout=open(output_dir / "vllm.stdout", "w"),
-        stderr=open(output_dir / "vllm.stderr", "w"),
-    )
+    with open(output_dir / "vllm.stdout", "w") as stdout, open(output_dir / "vllm.stderr", "w") as stderr:
+        vllm_process = subprocess.Popen(
+            VLLM_SERVER_CMD,
+            env=env,
+            stdout=stdout,
+            stderr=stderr,
+        )
 
     # Register cleanup on unexpected termination
     atexit.register(cleanup_process, vllm_process)
@@ -219,12 +220,13 @@ def vllm_server_dynamic_lora_loading(output_dir: Path) -> Generator[None, None, 
 
     # Start the server as a subprocess
     env = {**os.environ, **VLLM_SERVER_ENV, "VLLM_ALLOW_RUNTIME_LORA_UPDATING": "True"}
-    vllm_process = subprocess.Popen(
-        VLLM_SERVER_CMD + ["--enable-lora"],
-        env=env,
-        stdout=open(output_dir / "vllm.stdout", "w"),
-        stderr=open(output_dir / "vllm.stderr", "w"),
-    )
+    with open(output_dir / "vllm.stdout", "w") as stdout, open(output_dir / "vllm.stderr", "w") as stderr:
+        vllm_process = subprocess.Popen(
+            VLLM_SERVER_CMD + ["--enable-lora"],
+            env=env,
+            stdout=stdout,
+            stderr=stderr,
+        )
 
     # Register cleanup on unexpected termination
     atexit.register(cleanup_process, vllm_process)
