@@ -160,6 +160,10 @@ class SFTTrainerConfig(BaseSettings):
         ),
     ] = 600
 
+    loss_impl: Annotated[
+        Literal["liger", "torch"], Field(description="Implementation of the cross entropy loss function to use.")
+    ] = "torch"
+
     @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench:
