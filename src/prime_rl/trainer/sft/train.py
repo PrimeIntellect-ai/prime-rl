@@ -68,9 +68,11 @@ def train(config: SFTTrainerConfig):
     parallel_dims = get_parallel_dims(config.model, config.data.seq_len)
 
     # Initialize the model and tokenizer
-    logger.info(f"Initializing model and tokenizer ({config.model})")
+    logger.info(f"Initializing model ({config.model})")
     model = setup_model(config.model, parallel_dims)
-    tokenizer = setup_tokenizer(config.model)
+
+    logger.info(f"Initializing tokenizer ({config.tokenizer})")
+    tokenizer = setup_tokenizer(config.tokenizer)
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
