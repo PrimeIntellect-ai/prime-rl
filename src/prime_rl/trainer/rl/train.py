@@ -117,7 +117,6 @@ def train(config: RLTrainerConfig):
     )
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
-
     logger.info(f"Initializing data loader ({config.data})")
     if config.data.fake:
         dataloader = FakeDataLoader(config.data.fake, config.model.seq_len)
