@@ -53,7 +53,7 @@ def validate_shared_output_dir(
 ) -> None:
     if trainer.output_dir != orchestrator.output_dir.parent:
         raise ValueError(
-            f"Trainer outputs directory ({trainer.output_dir}) and orchestrator outputs directory ({orchestrator.output_dir}) are not the same. Please specify the same outputs directory for both."
+            f"Trainer outputs directory ({trainer.output_dir}) and orchestrator outputs directory parent ({orchestrator.output_dir.parent}) are not the same. Please specify the same outputs directory for both."
         )
 
 
