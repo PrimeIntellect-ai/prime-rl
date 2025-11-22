@@ -51,11 +51,10 @@ class Runs:
                 # Process start args
                 self.progress[new_id] = Progress()
 
-                # TODO: Check ckpt instead
-                prev_broadcast_steps = [
-                    i.stem.split("_")[-1] for i in (self.get_run_dir(new_id) / "broadcast").glob("step_*")
+                prev_ckpt_steps = [
+                    int(i.stem.split("_")[-1]) for i in (self.get_run_dir(new_id) / "checkpoints").glob("step_*")
                 ]
-                self.progress[new_id].step = max(prev_broadcast_steps) if prev_broadcast_steps else 0
+                self.progress[new_id].step = max(prev_ckpt_steps) if prev_ckpt_steps else 0
 
                 # TODO: Support hooks?
             except StopIteration:
