@@ -1,14 +1,14 @@
-from functools import partial
 import time
 from contextlib import nullcontext
 from datetime import timedelta
+
+from torch.nn import CrossEntropyLoss
 
 # Import environment before any other imports
 # ruff: noqa: I001
 
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
-from torch.nn.functional import cross_entropy
 from torch.distributed.tensor.experimental import context_parallel
 from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
@@ -136,7 +136,7 @@ def train(config: SFTTrainerConfig):
         case "liger":
             ce_loss = LigerCrossEntropyLoss(reduction="none")
         case "torch":
-            ce_loss = partial(cross_entropy, reduction="none")
+            ce_loss = CrossEntropyLoss(reduction="none")
         case _:
             raise ValueError(f"Invalid loss implementation: {config.loss_impl}")
 
