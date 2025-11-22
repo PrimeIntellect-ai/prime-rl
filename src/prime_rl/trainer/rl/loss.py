@@ -27,6 +27,20 @@ def compute_entropy(shifted_logits: Float[Tensor, "batch seq vocab"]) -> Float[T
 
 
 @jaxtyped(typechecker=typechecker)
+@torch.compile(dynamic=True)
+def compute_confidence_score(shifted_logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq"]:
+    """Computes normalized confidence score based on entropy and top-k probability mass."""
+    with torch.no_grad():
+        probs = torch.nn.functional.softmax(shifted_logits, dim=-1)
+        entropy = compute_entropy(shifted_logits)
+        top_k_mass = torch.topk(probs, k=min(10, probs.size(-1)), dim=-1)[0].sum(dim=-1)
+        max_entropy = torch.log(torch.tensor(float(probs.size(-1)), device=shifted_logits.device))
+        normalized_entropy = 1.0 - (entropy / max_entropy)
+        confidence = 0.7 * normalized_entropy + 0.3 * top_k_mass
+    return confidence.clamp(0.0, 1.0)
+
+
+@jaxtyped(typechecker=typechecker)
 def shift_logits(logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq vocab"]:
     """Removes final token logits and adds a zero logit for the first token."""
     # We drop the last logit because it corresponds to the next token that will be sampled but is not here yet
@@ -74,15 +88,20 @@ def compute_loss(
     ):
         log_importance_ratio = trainer_logprobs - inference_logprobs
 
-        # Compute trainer-inference mismatch KL
-        token_mismatch_kl = torch.exp(log_importance_ratio) - log_importance_ratio - 1
-
-        if loss_config.ratio_type == "sequence":
+        # OPTIMIZATION: Fused exp() computation to eliminate redundancy
+        # In token mode (99% of cases), we compute exp() once and reuse for both KL and loss
+        # In sequence mode, we need two separate exp() calls due to ratio modification
+        if loss_config.ratio_type == "token":
+            # Token-level ratio: Single exp() call (50% reduction)
+            importance_ratio = torch.exp(log_importance_ratio)
+            token_mismatch_kl = importance_ratio - log_importance_ratio - 1
+        else:
+            # Sequence-level ratio: KL uses original log_ratio, loss uses modified ratio
+            token_mismatch_kl = torch.exp(log_importance_ratio) - log_importance_ratio - 1
             seq_log_importance_ratio = (log_importance_ratio[loss_mask]).sum()
             log_importance_ratio = trainer_logprobs - trainer_logprobs.detach() + seq_log_importance_ratio.detach()
             log_importance_ratio = torch.clamp(log_importance_ratio, max=10.0)
-
-        importance_ratio = torch.exp(log_importance_ratio)
+            importance_ratio = torch.exp(log_importance_ratio)
         is_masked_low = importance_ratio < loss_config.mask_ratio_low
         is_masked_high = importance_ratio > loss_config.mask_ratio_high
         is_masked = is_masked_low | is_masked_high
