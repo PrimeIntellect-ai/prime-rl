@@ -16,6 +16,37 @@ from prime_rl.utils.utils import (
 SEMAPHORE: asyncio.Semaphore | None = None
 
 
+def msgpack_encoder(obj):
+    """
+    Custom encoder for non-standard types.
+
+    IMPORTANT: msgpack traverses lists/dicts in optimized C code. This function
+    is ONLY called for types msgpack doesn't recognize. This avoids the massive
+    performance penalty of recursing through millions of tokens in Python.
+
+    Handles: Path, UUID, Enum, datetime, Pydantic models, numpy scalars.
+    Does NOT handle: lists, dicts, basic types (msgpack does this natively in C).
+    """
+    if isinstance(obj, (Path, UUID)):
+        return str(obj)
+    elif isinstance(obj, Enum):
+        return obj.value
+    elif isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    elif isinstance(obj, (np.integer, np.floating)):
+        return obj.item()  # Convert numpy scalar to Python scalar
+    elif hasattr(obj, "model_dump"):
+        # Pydantic models - dump to dict, msgpack will traverse it in C
+        return obj.model_dump()
+    elif isinstance(obj, np.ndarray):
+        # This should be handled by msgpack_numpy.patch(), but explicit is better
+        # Return the array as-is; msgpack_numpy will encode it
+        return obj
+    else:
+        # Unknown type - raise to make issues visible
+        raise TypeError(f"Object of type {type(obj)} is not msgpack serializable")
+
+
 def set_semaphore(semaphore: asyncio.Semaphore):
     global SEMAPHORE
     SEMAPHORE = semaphore
