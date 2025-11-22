@@ -35,7 +35,6 @@ from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     MemoryProfiler,
     Tensors,
-    maybe_clean,
     setup_torch_distributed,
     print_benchmark,
     get_response_lengths,
@@ -44,6 +43,7 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format
+from prime_rl.trainer.runs import setup_runs
 
 
 @clean_exit
@@ -55,7 +55,8 @@ def train(config: RLTrainerConfig):
         config.log.level,
         log_file=config.output_dir / "logs" / "trainer" / f"rank_{world.rank}.log" if config.log.file else None,
     )
-    logger.info(f"Starting RL trainer in {world}")
+    setup_runs(config.output_dir, config.max_concurrent_runs)
+    logger.info(f"Starting RL trainer in {world} in {config.output_dir}")
 
     # Print warning if running in benchmark mode
     if config.bench:
@@ -118,9 +119,12 @@ def train(config: RLTrainerConfig):
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
-    dataloader = DataLoader(config.output_dir, progress.step)
     if config.data.fake:
-        dataloader = FakeDataLoader(config.data.fake)
+        dataloader = FakeDataLoader(config.data.fake, config.model.seq_len)
+    else:
+        dataloader = DataLoader(
+            config.output_dir, progress.step, parallel_dims.world_mesh["dp"].size(), config.model.seq_len, tokenizer
+        )
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     is_first_step = True
@@ -146,7 +150,8 @@ def train(config: RLTrainerConfig):
             # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
             ckpt_interval = config.ckpt and config.ckpt.interval
             interval_to_keep = ckpt_interval if config.weight_broadcast.type == "filesystem" else None
-            maybe_clean(weight_broadcast.broadcast_dir, progress.step, config.max_async_level, interval_to_keep)
+            if config.weight_broadcast.type == "filesystem":
+                weight_broadcast.maybe_clean(config.max_async_level, interval_to_keep)
         else:
             broadcast_weights_time = 0
 

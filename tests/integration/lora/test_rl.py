@@ -140,12 +140,14 @@ def test_no_error_resume(lora_rl_resume_process: ProcessResult, output_dir: Path
 def test_check_reward(output_dir: Path, lora_rl_resume_process: ProcessResult):
     if lora_rl_resume_process.returncode != 0:
         pytest.skip("RL resume process failed")
-    wandb_paths = [i for i in output_dir.glob("run-*")]
+    wandb_paths = [i for i in (output_dir / "run_default").glob("run-*")]
     wandb_summaries = [json.load(open(i / "final_summary.json")) for i in wandb_paths]
-    assert len(wandb_paths) == 2
+    assert len(wandb_paths) == 2, f"Couldn't find 2 summary files: {wandb_paths}"
     for wandb_summary in wandb_summaries:
-        assert "reward/mean" in wandb_summary
-        assert wandb_summary["reward/mean"] > 0.65
+        reward_mean_in_summary = "reward/mean" in wandb_summary
+        reward_mean_in_summary_is_good = reward_mean_in_summary and wandb_summary["reward/mean"] > 0.65
+        assert reward_mean_in_summary, f"Reward mean is not in summary: {wandb_summary}"
+        assert reward_mean_in_summary_is_good, f"Reward mean is not good: {wandb_summary['reward/mean']} < 0.65"
 
 
 # would need the setup a vllm server with the nccl broadcast enabled to make this work

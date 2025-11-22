@@ -6,7 +6,6 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.trainer.rl.data import MicroBatch
 from prime_rl.utils.vf import Rollout
 
 
@@ -16,6 +15,19 @@ class BatchSample(TypedDict):
     loss_mask: Bool[Tensor, "seq"]
     advantages: Float[Tensor, "seq"]
     inference_logprobs: Float[Tensor, "seq"]
+
+
+class MicroBatch(TypedDict):
+    # Token level
+    input_ids: Int[Tensor, "batch seq"]
+    position_ids: Int[Tensor, "batch seq"]
+    advantages: Float[Tensor, "batch seq"]
+    inference_logprobs: Float[Tensor, "batch seq"]
+    loss_mask: Bool[Tensor, "batch seq"]
+
+    # Batch level
+    temperature: float
+    lora_cu_offsets: Int[Tensor, "n_loras"]
 
 
 def prepare_sample(
@@ -118,6 +130,8 @@ def prepare_micro_batch_packing(samples: list[BatchSample], max_seq_len: int, te
         micro_batch[key] = torch.cat([sample[key] for sample in samples], dim=0).unsqueeze(0)
 
     micro_batch["temperature"] = temperature
+    # TODO: set proper lora cu offsets
+    micro_batch["lora_cu_offsets"] = torch.tensor([len(sample["input_ids"]) for sample in samples], dtype=torch.int32)
 
     return micro_batch
 
