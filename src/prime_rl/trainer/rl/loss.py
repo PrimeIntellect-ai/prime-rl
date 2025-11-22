@@ -88,15 +88,20 @@ def compute_loss(
     ):
         log_importance_ratio = trainer_logprobs - inference_logprobs
 
-        # Compute trainer-inference mismatch KL
-        token_mismatch_kl = torch.exp(log_importance_ratio) - log_importance_ratio - 1
-
-        if loss_config.ratio_type == "sequence":
+        # OPTIMIZATION: Fused exp() computation to eliminate redundancy
+        # In token mode (99% of cases), we compute exp() once and reuse for both KL and loss
+        # In sequence mode, we need two separate exp() calls due to ratio modification
+        if loss_config.ratio_type == "token":
+            # Token-level ratio: Single exp() call (50% reduction)
+            importance_ratio = torch.exp(log_importance_ratio)
+            token_mismatch_kl = importance_ratio - log_importance_ratio - 1
+        else:
+            # Sequence-level ratio: KL uses original log_ratio, loss uses modified ratio
+            token_mismatch_kl = torch.exp(log_importance_ratio) - log_importance_ratio - 1
             seq_log_importance_ratio = (log_importance_ratio[loss_mask]).sum()
             log_importance_ratio = trainer_logprobs - trainer_logprobs.detach() + seq_log_importance_ratio.detach()
             log_importance_ratio = torch.clamp(log_importance_ratio, max=10.0)
-
-        importance_ratio = torch.exp(log_importance_ratio)
+            importance_ratio = torch.exp(log_importance_ratio)
         is_masked_low = importance_ratio < loss_config.mask_ratio_low
         is_masked_high = importance_ratio > loss_config.mask_ratio_high
         is_masked = is_masked_low | is_masked_high
