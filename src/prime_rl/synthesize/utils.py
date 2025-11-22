@@ -139,6 +139,7 @@ async def generate_synthetic_data(
     env_args: dict,
     num_examples: int,
     rollouts_per_example: int,
+    skip_first: int,
     output_dir: Path,
     model_config: ModelConfig,
     sampling_config: EvalSamplingConfig,
@@ -151,6 +152,8 @@ async def generate_synthetic_data(
     env_name_or_id = env_name or env_id
     env = load_environment(env_id, **env_args)
     dataset = env.get_dataset(n=num_examples)
+    if skip_first > 0:
+        dataset = dataset.skip(skip_first)
     sampling_args = prepare_sampling_args(sampling_config, client_config)
     path_to_save = get_results_path(env_name_or_id, model_config.name, base_path=output_dir) / "results.jsonl"
     path_to_save.parent.mkdir(parents=True, exist_ok=True)
