@@ -11,10 +11,9 @@ from prime_rl.utils.utils import get_rollout_dir, sync_wait_for_path
 
 
 class FakeDataLoader:
-    def __init__(self, config: FakeDataLoaderConfig):
+    def __init__(self, config: FakeDataLoaderConfig, seq_len: int):
         self.batch_size = config.batch_size
         self.num_micro_batches = self.batch_size // get_world().world_size
-        self.seq_len = config.seq_len
 
     def wait_for_batch(self) -> None:
         return

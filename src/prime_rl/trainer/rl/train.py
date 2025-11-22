@@ -121,7 +121,7 @@ def train(config: RLTrainerConfig):
     setup_runs(config.output_dir, 2)
     logger.info(f"Initializing data loader ({config.data})")
     if config.data.fake:
-        dataloader = FakeDataLoader(config.data.fake)
+        dataloader = FakeDataLoader(config.data.fake, config.model.seq_len)
     else:
         dataloader = DataLoader(
             config.output_dir, progress.step, parallel_dims.world_mesh["dp"].size(), config.model.seq_len, tokenizer
