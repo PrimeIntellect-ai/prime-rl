@@ -4,8 +4,10 @@ from typing import TypedDict
 import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
+from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.rl.config import FakeDataLoaderConfig
+from prime_rl.trainer.rl.packer import Packer
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.utils import get_rollout_dir, sync_wait_for_path
 
@@ -57,15 +59,22 @@ class FakeDataLoader:
 class DataLoader:
     """Loads serialized data from a data path written by the orchestrator."""
 
-    def __init__(self, output_dir: Path, start_step: int):
+    def __init__(
+        self, output_dir: Path, start_step: int, dp_world_size: int, seq_len: int, tokenizer: PreTrainedTokenizer
+    ):
         self.rollout_dir = get_rollout_dir(output_dir)
         self.current_step = start_step
         self.world = get_world()
+
+        if self.world.is_master:
+            self.packer = Packer(dp_world_size=dp_world_size, seq_len=seq_len, tokenizer=tokenizer)
 
     def get_rollout_path(self) -> Path:
         return self.rollout_dir / f"step_{self.current_step}" / f"rank_{self.world.rank}.pt"
 
     def wait_for_batch(self) -> None:
+        if self.world.is_master:
+            self.packer.pack()
         sync_wait_for_path(self.get_rollout_path())
 
     def get_batch(self) -> list[MicroBatch]:

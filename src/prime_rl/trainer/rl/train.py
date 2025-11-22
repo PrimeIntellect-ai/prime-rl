@@ -44,6 +44,7 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format
+from prime_rl.trainer.runs import setup_runs
 
 
 @clean_exit
@@ -115,20 +116,16 @@ def train(config: RLTrainerConfig):
     )
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
+
+    # TODO: allow setting max runs
+    setup_runs(config.output_dir, 2)
     logger.info(f"Initializing data loader ({config.data})")
     if config.data.fake:
         dataloader = FakeDataLoader(config.data.fake)
     else:
-        if world.is_master:
-            from prime_rl.trainer.rl.packer import Packer
-            from prime_rl.trainer.runs import setup_runs
-
-            # TODO: allow setting max runs
-            setup_runs(config.output_dir, 2)
-            packer = Packer(
-                dp_world_size=parallel_dims.world_mesh["dp"].size(), seq_len=config.model.seq_len, tokenizer=tokenizer
-            )
-        dataloader = DataLoader(config.output_dir, progress.step)
+        dataloader = DataLoader(
+            config.output_dir, progress.step, parallel_dims.world_mesh["dp"].size(), config.model.seq_len, tokenizer
+        )
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     is_first_step = True
