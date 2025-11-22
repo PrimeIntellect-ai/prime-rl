@@ -29,7 +29,7 @@ class FileSystemWeightBroadcast(WeightBroadcast):
     ):
         super().__init__(output_dir, lora_config)
         self.save_format: Literal["safetensors", "torch"] = config.save_format
-        self.save_sharded = config.save_sharded
+        self.save_sharded = config.save_sharded if lora_config is None else False
         self.world = get_world()
         self.runs = get_runs()
         self.logger.debug(
