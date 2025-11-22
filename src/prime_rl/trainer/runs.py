@@ -22,6 +22,7 @@ class Runs:
         self.unused_idxs = {i for i in range(self.max_runs)}
 
         self.progress: dict[int, Progress] = {}
+        self.ready_to_update = [False] * max_runs
 
     def check_for_changes(self) -> None:
         run_ids = {run_path.stem for run_path in self.output_dir.glob("run_*")}
@@ -29,12 +30,14 @@ class Runs:
         new_runs = run_ids - self.id_2_idx.keys()
 
         for deleted_run in deleted_runs:
+            deleted_idx = self.id_2_idx[deleted_run]
             # TODO: Support hooks?
-            del self.progress[self.id_2_idx[deleted_run]]
+            del self.progress[deleted_idx]
+            self.ready_to_update[deleted_idx] = False
 
             # Process mappings
-            self.unused_idxs.add(self.id_2_idx[deleted_run])
-            del self.idx_2_id[self.id_2_idx[deleted_run]]
+            self.unused_idxs.add(deleted_idx)
+            del self.idx_2_id[deleted_idx]
             del self.id_2_idx[deleted_run]
 
         for new_run in new_runs:

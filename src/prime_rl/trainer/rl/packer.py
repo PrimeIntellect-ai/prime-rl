@@ -36,8 +36,13 @@ class Packer:
         rollouts: dict[int, list[Rollout]] = {}
         self.runs.check_for_changes()
         for idx, rollout_path in self.get_rollout_paths():
-            if rollout_path.exists():
-                rollouts[idx] = torch.load(rollout_path)
+            if rollout_path.exists() and not self.runs.ready_to_update[idx]:
+                try:
+                    rollouts[idx] = torch.load(rollout_path)
+                except Exception as e:
+                    # This might happens if run is deleted midway in this loop
+                    self.logger.error(f"Error loading rollouts for run {idx}: {e}")
+                    self.runs.check_for_changes()
         return rollouts
 
     def has_enough_tokens(self, rollouts: dict[int, list[Rollout]]) -> bool:
@@ -69,6 +74,7 @@ class Packer:
             )
             self.runs.progress[idx].total_samples += len(rollouts)
             train_rollouts.extend(rollouts)
+            self.runs.ready_to_update[idx] = True
 
         all_data_ranks_batches = prepare_batch(
             rollouts=train_rollouts,
