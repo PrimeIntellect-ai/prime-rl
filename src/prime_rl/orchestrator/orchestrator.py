@@ -1,6 +1,8 @@
 import asyncio
 import time
 
+import tomli_w
+
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 
 # This monkey patch is necessary to avoid Pydantic validating fields using typing.Iterable (e.g. in multimodal or tool call messages) lazily which leads to tokenization errors, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1249
@@ -63,6 +65,12 @@ async def orchestrate(config: OrchestratorConfig):
     # Print warning if running in benchmark mode
     if config.bench:
         logger.warning(f"Running in benchmark mode (max_steps={config.max_steps})")
+
+    # Save configs to output directory
+    config_dir = config.output_dir / "configs"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    with open(config_dir / "orch.toml", "wb") as f:
+        tomli_w.dump(config.model_dump(exclude_none=True, mode="json"), f)
 
     # Setup client
     assert config.client.server_type == "vllm", "Orchestrator only supports vLLM server type."
