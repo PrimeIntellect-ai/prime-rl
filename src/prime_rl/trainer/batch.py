@@ -130,6 +130,8 @@ def prepare_micro_batch_packing(samples: list[BatchSample], max_seq_len: int, te
         micro_batch[key] = torch.cat([sample[key] for sample in samples], dim=0).unsqueeze(0)
 
     micro_batch["temperature"] = temperature
+    # TODO: set proper lora cu offsets
+    micro_batch["lora_cu_offsets"] = torch.tensor([len(sample["input_ids"]) for sample in samples], dtype=torch.int32)
 
     return micro_batch
 

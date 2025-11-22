@@ -285,7 +285,6 @@ class RLConfig(BaseSettings):
             # Configure the trainer fake data to match the orchestrator config
             self.trainer.data.fake = FakeDataLoaderConfig(
                 batch_size=self.orchestrator.batch_size,
-                seq_len=self.orchestrator.seq_len,
             )
 
         if self.trainer.bench != self.orchestrator.bench:
