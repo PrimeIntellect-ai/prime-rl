@@ -54,17 +54,25 @@ class FileSystemWeightBroadcast(WeightBroadcast):
                 if not self.runs.ready_to_update[idx]:
                     continue
 
-                save_dir = get_step_path(get_broadcast_dir(self.runs.get_run_dir(idx)), self.runs.progress[idx].step)
-                save_dir.mkdir(parents=True, exist_ok=True)
+                try:
+                    save_dir = get_step_path(
+                        get_broadcast_dir(self.runs.get_run_dir(idx)), self.runs.progress[idx].step
+                    )
+                    save_dir.mkdir(parents=True, exist_ok=True)
 
-                # Save weights to shared filesystem
-                save_state_dict(state_dict, save_dir, self.save_format, self.save_sharded, adapter=adapter_only)
-                if adapter_only:
-                    save_lora_config(self.lora_config, model, save_dir)
+                    # Save weights to shared filesystem
+                    save_state_dict(state_dict, save_dir, self.save_format, self.save_sharded, adapter=adapter_only)
+                    if adapter_only:
+                        save_lora_config(self.lora_config, model, save_dir)
 
-                # Notify the orchestrator at the end of step to signal that it is safe to load weights from shared filesystem
-                self.notify_orchestrator(save_dir)
-                self.runs.ready_to_update[idx] = False
+                    # Notify the orchestrator at the end of step to signal that it is safe to load weights from shared filesystem
+                    self.notify_orchestrator(save_dir)
+                except FileNotFoundError:
+                    self.logger.warning(f"Run {idx} is deleted, skipping")
+                except Exception as e:
+                    self.logger.error(f"Error broadcasting weights for run {idx}: {e}")
+                finally:
+                    self.runs.ready_to_update[idx] = False
             self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
 
     def notify_orchestrator(self, save_dir: Path):
