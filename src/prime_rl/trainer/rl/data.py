@@ -1,28 +1,13 @@
 from pathlib import Path
-from typing import TypedDict
 
 import torch
-from jaxtyping import Bool, Float, Int
-from torch import Tensor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
+from prime_rl.trainer.batch import MicroBatch
 from prime_rl.trainer.rl.config import FakeDataLoaderConfig
 from prime_rl.trainer.rl.packer import Packer
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.utils import get_rollout_dir, sync_wait_for_path
-
-
-class MicroBatch(TypedDict):
-    # Token level
-    input_ids: Int[Tensor, "batch seq"]
-    position_ids: Int[Tensor, "batch seq"]
-    advantages: Float[Tensor, "batch seq"]
-    inference_logprobs: Float[Tensor, "batch seq"]
-    loss_mask: Bool[Tensor, "batch seq"]
-
-    # Batch level
-    temperature: float
-    lora_cu_offsets: Int[Tensor, "n_loras"]
 
 
 class FakeDataLoader:
