@@ -34,8 +34,9 @@ def compute_confidence_score(shifted_logits: Float[Tensor, "batch seq vocab"]) -
         probs = torch.nn.functional.softmax(shifted_logits, dim=-1)
         entropy = compute_entropy(shifted_logits)
         top_k_mass = torch.topk(probs, k=min(10, probs.size(-1)), dim=-1)[0].sum(dim=-1)
-        max_entropy = torch.log(torch.tensor(float(probs.size(-1))))
-        normalized_entropy = 1.0 - (entropy / max_entropy)
+        max_entropy = torch.log(torch.tensor(float(probs.size(-1)), device=shifted_logits.device))
+        # Fix: Avoid division by zero if vocab size is 1 (max_entropy=0)
+        normalized_entropy = 1.0 - (entropy / (max_entropy + 1e-8))
         confidence = 0.7 * normalized_entropy + 0.3 * top_k_mass
     return confidence.clamp(0.0, 1.0)
 
