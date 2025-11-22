@@ -85,6 +85,6 @@ class FileSystemWeightBroadcast(WeightBroadcast):
             maybe_clean(
                 get_broadcast_dir(self.runs.get_run_dir(idx)),
                 self.runs.progress[idx].step,
-                max_async_level,
+                max_async_level + 1,
                 interval_to_keep,
             )
