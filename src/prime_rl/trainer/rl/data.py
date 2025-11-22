@@ -53,6 +53,7 @@ class DataLoader:
 
         if self.world.is_master:
             self.packer = Packer(dp_world_size=dp_world_size, seq_len=seq_len, tokenizer=tokenizer)
+            self.packer.trainer_step = start_step
 
     def get_rollout_path(self) -> Path:
         return self.rollout_dir / f"step_{self.current_step}" / f"rank_{self.world.rank}.pt"
