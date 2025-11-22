@@ -124,6 +124,7 @@ def train(config: RLTrainerConfig):
         dataloader = DataLoader(
             config.output_dir, progress.step, parallel_dims.world_mesh["dp"].size(), config.model.seq_len, tokenizer
         )
+        dataloader.packer.trainer_step = progress.step
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     is_first_step = True
