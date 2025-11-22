@@ -55,8 +55,7 @@ def train(config: RLTrainerConfig):
         config.log.level,
         log_file=config.output_dir / "logs" / "trainer" / f"rank_{world.rank}.log" if config.log.file else None,
     )
-    # TODO: allow setting max runs
-    setup_runs(config.output_dir, 2)
+    setup_runs(config.output_dir, config.max_concurrent_runs)
     logger.info(f"Starting RL trainer in {world} in {config.output_dir}")
 
     # Print warning if running in benchmark mode

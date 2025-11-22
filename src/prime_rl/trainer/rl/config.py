@@ -148,6 +148,14 @@ class RLTrainerConfig(BaseSettings):
         ),
     ] = 600
 
+    max_concurrent_runs: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="The maximum number of concurrent runs to allow. If 1, then only one run will be allowed at a time.",
+        ),
+    ] = 2
+
     @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench:
