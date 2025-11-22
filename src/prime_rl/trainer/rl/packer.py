@@ -35,6 +35,7 @@ class Packer:
     def get_batch(self) -> dict[int, list[Rollout]]:
         rollouts: dict[int, list[Rollout]] = {}
         self.runs.check_for_changes()
+        self.logger.debug(f"Looking in {self.get_rollout_paths()}")
         for idx, rollout_path in self.get_rollout_paths():
             if rollout_path.exists() and not self.runs.ready_to_update[idx]:
                 try:
