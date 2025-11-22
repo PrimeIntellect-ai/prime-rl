@@ -188,9 +188,6 @@ def train(config: RLTrainerConfig):
         step_start_time = time.perf_counter()
 
         # Wait for the batch to be available
-        if world.is_master:
-            logger.info("Packing batch")
-            packer.pack()
         logger.info("Waiting for training batch to arrive")
         wait_for_batch_start_time = time.perf_counter()
         dataloader.wait_for_batch()
