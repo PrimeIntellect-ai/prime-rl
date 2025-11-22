@@ -8,6 +8,7 @@ dependencies = [
     "beartype>=0.21.0",
     "cydifflib>=1.2.0",
     "datasets>=4.0.0",
+    "httpx>=0.27.0",
     "jaxtyping>=0.3.2",
     "liger-kernel>=0.5.10",
     "loguru>=0.7.3",

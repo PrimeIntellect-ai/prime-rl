@@ -1,0 +1,30 @@
+batch_size = 64
+rollouts_per_example = 8
+seq_len = 2048
+max_steps = 20
+
+[model]
+name = "Qwen/Qwen3-0.6B"
+
+[sampling]
+max_tokens = 128
+
+[[env]]
+id = "reverse-text"
+
+# WandB and Platform upload configuration
+[wandb]
+project = "prime-rl-test"
+offline = true  # Run WandB offline for testing
+
+[wandb.log_extras]
+samples = true
+interval = 1
+
+[wandb.platform]
+enabled = true
+api_url = "http://localhost:82"
+upload_rollouts = true
+upload_interval = 1
+max_rollouts_per_step = 10
+
