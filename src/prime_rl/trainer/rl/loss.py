@@ -82,12 +82,12 @@ def compute_loss(
     total_is_masked = []
     total_is_masked_low = []
     total_is_masked_high = []
-    total_sequence_masked_low = []
+    total_sequence_masked_low = []\n    total_clamped_ratios = []\n
 
     for trainer_logprobs, inference_logprobs, advantages, loss_mask in zip(
         trainer_logprobs, inference_logprobs, advantages, loss_mask
     ):
-        log_importance_ratio = trainer_logprobs - inference_logprobs
+        log_importance_ratio = trainer_logprobs - inference_logprobs\n        original_log_ratio = log_importance_ratio.clone()\n        log_importance_ratio = torch.clamp(log_importance_ratio, min=-20.0, max=20.0)\n        clamped_elements = ((original_log_ratio < -20.0) | (original_log_ratio > 20.0)).sum().float()\n        total_elements = loss_mask.sum().float()\n        clamped_ratio = clamped_elements / torch.clamp_min(total_elements, 1.0)\n        total_clamped_ratios.append(clamped_ratio)
 
         # OPTIMIZATION: Fused exp() computation to eliminate redundancy
         # In token mode (99% of cases), we compute exp() once and reuse for both KL and loss
