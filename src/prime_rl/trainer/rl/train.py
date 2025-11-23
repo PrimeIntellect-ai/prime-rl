@@ -123,7 +123,7 @@ def train(config: RLTrainerConfig):
             logger=logger,
         )
 
-    if config.model.cp > 1:
+    if parallel_dims.cp_enabled:
         substitute_hf_flash_attn(parallel_dims.world_mesh["cp"].get_group(), heads_k_stride=1)
         substitute_prime_rl_flash_attn(parallel_dims.world_mesh["cp"].get_group(), heads_k_stride=1)
 
@@ -246,10 +246,9 @@ def train(config: RLTrainerConfig):
 
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
-            inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
-            position_ids = micro_batch["position_ids"].to("cuda")
+            inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
 
             if cp_enabled:
                 input_ids, forward_position_ids = prepare_for_cp(
@@ -284,7 +283,6 @@ def train(config: RLTrainerConfig):
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
-
             loss, loss_tensors = compute_loss(
                 trainer_logprobs=trainer_logprobs.squeeze().split(response_lengths),
                 inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
@@ -377,7 +375,6 @@ def train(config: RLTrainerConfig):
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Entropy: {tensor_stats['entropy/mean']:.4f} | Mismatch KL: {tensor_stats['mismatch_kl/mean']:.4f} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f} GiB"
         if "max_vio/mean" in tensor_stats:
             step_message += f" | Max Vio: {tensor_stats['max_vio/mean']:.4f}"
-
         logger.success(step_message)
 
         # Log performance metrics

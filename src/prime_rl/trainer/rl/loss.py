@@ -43,24 +43,6 @@ def shift_logits(
     return logits
 
 
-def compute_sequence_stats(
-    trainer_logprobs: Tensor,
-    inference_logprobs: Tensor,
-    loss_mask: Tensor,
-) -> Tensor:
-    """
-    Compute stats for a single sequence needed for CP sync.
-    Returns: Tensor[3] -> [sum_log_importance_ratio, sum_loss_mask, min_log_importance_ratio]
-    """
-    log_importance_ratio = trainer_logprobs - inference_logprobs
-    
-    sum_log_imp = (log_importance_ratio[loss_mask]).sum()
-    sum_mask = loss_mask.sum()
-    min_log_imp = log_importance_ratio.masked_fill(~loss_mask, torch.inf).min()
-    
-    return torch.stack([sum_log_imp, sum_mask, min_log_imp])
-
-
 def compute_loss(
     trainer_logprobs: Any,  # list of Float[Tensor, "seq_i"] with potentially different seq_i lengths
     inference_logprobs: Any,  # list of Float[Tensor, "seq_i"] with potentially different seq_i lengths
@@ -103,6 +85,8 @@ def compute_loss(
 
         if loss_config.ratio_type == "sequence":
             seq_log_importance_ratio = (log_importance_ratio[loss_mask]).sum()
+            if loss_config.ratio_length_norm:
+                seq_log_importance_ratio = seq_log_importance_ratio / torch.clamp_min(loss_mask.sum(), 1)
             log_importance_ratio = trainer_logprobs - trainer_logprobs.detach() + seq_log_importance_ratio.detach()
             log_importance_ratio = torch.clamp(log_importance_ratio, max=10.0)
 

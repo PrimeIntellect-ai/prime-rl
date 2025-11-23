@@ -1,11 +1,8 @@
 from dataclasses import dataclass
-from functools import partial
 
 import torch
 import torch.nn.functional as F
 from torch import nn
-
-from prime_rl.trainer.config import AttnImplementation
 
 from .rms_norm import RMSNorm, RMSNormConfig
 from .rotary_emb import apply_rotary_pos_emb

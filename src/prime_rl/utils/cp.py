@@ -4,10 +4,17 @@ from ring_flash_attn import update_ring_flash_attn_params
 
 
 def shard_for_cp(t: torch.Tensor, cp_rank: int, cp_world_size: int) -> torch.Tensor:
-    if cp_world_size == 1:
-        return t
+    """
+    Shard a tensor for context parallelism.
+    Args:
+        t: The tensor to shard.
+        cp_rank: The rank of the current process.
+        cp_world_size: The number of processes in the context parallel group.
+    Returns:
+        The shard of the tensor for the current rank.
+    """
 
-    assert t.shape[0] == 1, "For CP, args must have batch dimension of 1"
+    assert t.shape[0] == 1, "For CP, tensor must have batch dimension of 1"
 
     chunked_t = torch.chunk(t, cp_world_size, dim=1)
 
@@ -17,6 +24,16 @@ def shard_for_cp(t: torch.Tensor, cp_rank: int, cp_world_size: int) -> torch.Ten
 def get_padding_logit_from_prev_cp_rank(
     logits: torch.Tensor, cp_rank: int, cp_world_size: int, cp_group: dist.ProcessGroup
 ) -> torch.Tensor | None:
+    """
+    Get the padding logit from the previous context parallel rank.
+    Args:
+        logits: The logits tensor.
+        cp_rank: The rank of the current process.
+        cp_world_size: The number of processes in the context parallel group.
+        cp_group: The context parallel group.
+    Returns:
+        The padding logit from the previous context parallel rank.
+    """
     last_logit = logits[:, -1, :].unsqueeze(1)
 
     all_rank_last_logits = [
@@ -52,6 +69,17 @@ def prepare_for_cp(
     cp_world_size: int,
     cp_group: dist.ProcessGroup,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Prepare the input for context parallelism and sets required parameters for ring flash attention.
+    Args:
+        input_ids: The input ids tensor.
+        position_ids: The position ids tensor.
+        cp_rank: The rank of the current process.
+        cp_world_size: The number of processes in the context parallel group.
+        cp_group: The context parallel group.
+    Returns:
+        The prepared input for context parallelism.
+    """
     input_ids = shard_for_cp(input_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
 
     cu_seqlens = _get_cu_seqlens_for_cp(position_ids)

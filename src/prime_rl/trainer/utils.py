@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from ring_flash_attn.adapters.hf_adapter import check_params
 import torch
 import torch.distributed as dist
 from rich import print as rich_print

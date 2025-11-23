@@ -77,7 +77,14 @@ class FakeDataLoader:
 
     def _get_micro_batch(self) -> MicroBatch:
         return {
-            "input_ids": torch.ones(self.seq_len, dtype=torch.int32).unsqueeze(0),
+            "input_ids": torch.randint(
+                0,
+                100,
+                (
+                    1,
+                    self.seq_len,
+                ),
+            ),
             "position_ids": torch.cat([torch.arange(self.seq_len)]).unsqueeze(0),
             "advantages": torch.randn(self.seq_len).unsqueeze(0),
             "inference_logprobs": torch.randn(self.seq_len).unsqueeze(0),
