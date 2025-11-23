@@ -1,6 +1,6 @@
 """
 CRITICAL PRODUCTION TEST SUITE: Fused Importance Ratio Optimization
-=====================================================================
+
 
 This test suite validates that the exp() fusion optimization maintains
 100% correctness, numerical stability, and backward compatibility.
@@ -24,9 +24,8 @@ from prime_rl.trainer.rl.loss import compute_loss
 
 pytestmark = [pytest.mark.gpu]
 
-# ============================================================================
 # TEST SUITE 1: NUMERICAL EQUIVALENCE VALIDATION
-# ============================================================================
+
 
 class TestNumericalEquivalence:
     """Verify optimization produces bit-exact results (within floating-point precision)"""
@@ -112,9 +111,9 @@ class TestNumericalEquivalence:
             f"KL divergence should be identical: token={kl_token.item()}, seq={kl_seq.item()}"
 
 
-# ============================================================================
+
 # TEST SUITE 2: EDGE CASE COVERAGE
-# ============================================================================
+
 
 class TestEdgeCases:
     """Test extreme values, boundary conditions, and pathological inputs"""
@@ -219,9 +218,9 @@ class TestEdgeCases:
         assert torch.isfinite(loss), "Loss should handle very short sequences"
 
 
-# ============================================================================
+
 # TEST SUITE 3: GRADIENT FLOW VALIDATION
-# ============================================================================
+
 
 class TestGradientFlow:
     """Verify autograd correctness and gradient computation"""
@@ -286,9 +285,9 @@ class TestGradientFlow:
         assert torch.all(torch.isfinite(trainer_logprobs[0].grad)), "Gradients must be finite"
 
 
-# ============================================================================
+
 # TEST SUITE 4: PRODUCTION SCENARIO SIMULATION
-# ============================================================================
+
 
 class TestProductionScenarios:
     """Simulate realistic production workloads"""
@@ -352,9 +351,9 @@ class TestProductionScenarios:
         assert torch.isfinite(loss), "Aggressive masking should not break loss computation"
 
 
-# ============================================================================
+
 # TEST SUITE 5: STRESS TESTING
-# ============================================================================
+
 
 class TestStressCases:
     """Push the implementation to its limits"""
@@ -422,9 +421,9 @@ class TestStressCases:
         assert torch.equal(metrics1["mismatch_kl"], metrics2["mismatch_kl"]), "KL should be deterministic"
 
 
-# ============================================================================
+
 # RUN ALL TESTS
-# ============================================================================
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])
