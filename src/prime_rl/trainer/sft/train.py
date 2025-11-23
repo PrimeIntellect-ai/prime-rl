@@ -198,8 +198,6 @@ def train(config: SFTTrainerConfig):
         nan_loss_count = torch.tensor(0).to("cuda")
         batch_max_vio, max_vio = torch.tensor(0.0).to("cuda"), None
         for micro_step in range(grad_accum_steps):
-            model.set_requires_all_reduce(micro_step == grad_accum_steps - 1)
-
             micro_batch = next(dataiter)
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
