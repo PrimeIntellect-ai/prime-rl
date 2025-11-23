@@ -44,6 +44,7 @@ from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format
 from prime_rl.trainer.runs import setup_runs
+from prime_rl.trainer.models.layers.lora import set_offsets
 
 
 @clean_exit
@@ -56,6 +57,7 @@ def train(config: RLTrainerConfig):
         log_file=config.output_dir / "logs" / "trainer" / f"rank_{world.rank}.log" if config.log.file else None,
     )
     setup_runs(config.output_dir, config.max_concurrent_runs)
+    set_offsets(torch.tensor([0] * config.max_concurrent_runs, dtype=torch.int32))
     logger.info(f"Starting RL trainer in {world} in {config.output_dir}")
 
     # Print warning if running in benchmark mode
@@ -229,7 +231,12 @@ def train(config: RLTrainerConfig):
 
             # Forward pass
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                logits = forward(model, input_ids, position_ids).float().contiguous()
+                if config.model.experimental.lora:
+                    lora_cu_offsets = micro_batch["lora_cu_offsets"].to("cuda")
+                    set_offsets(lora_cu_offsets)
+                    logits = forward(model, input_ids, position_ids).float().contiguous()
+                else:
+                    logits = forward(model, input_ids, position_ids).float().contiguous()
 
             shifted_logits = shift_logits(logits)
             shifted_logits = shifted_logits / temperature

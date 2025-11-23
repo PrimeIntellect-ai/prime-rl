@@ -3,6 +3,16 @@ import math
 import torch
 import torch.nn as nn
 
+OFFSETS = None
+
+
+def set_offsets(offsets: torch.Tensor) -> None:
+    global OFFSETS
+    if OFFSETS is None:
+        OFFSETS = offsets
+    else:
+        OFFSETS.copy_(offsets)
+
 
 class LoRALinear(nn.Module):
     """
@@ -135,6 +145,9 @@ class MultiLoRALinear(nn.Module):
         for param in self.base_linear.parameters():
             param.requires_grad = False
 
+        global OFFSETS
+        self.offsets = OFFSETS
+
     def reset_parameters(self, index: int | None = None):
         if index is None:
             nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
@@ -143,12 +156,14 @@ class MultiLoRALinear(nn.Module):
             nn.init.kaiming_uniform_(self.lora_A[index], a=math.sqrt(5))
             nn.init.zeros_(self.lora_B[index])
 
-    def forward(self, x: torch.Tensor, offsets: torch.LongTensor):
+    def forward(self, x: torch.Tensor):
         """
         x: [..., in_features]
         offsets: [n_adapters]
         """
-        assert x.dim() == 2
+        offsets = self.offsets
+        x = x[0]
+        assert x.dim() == 2, f"x.dim(): {x.dim()}"
         assert offsets[-1] == x.shape[0]
 
         base_out = self.base_linear(x)
@@ -157,7 +172,7 @@ class MultiLoRALinear(nn.Module):
             lora_out = _run_lora_grouped_mm(lora_x, self.lora_A, self.lora_B, offsets)
         else:
             lora_out = _run_lora_for_loop(lora_x, self.lora_A, self.lora_B, offsets)
-        return base_out + self.scaling * lora_out
+        return (base_out + self.scaling * lora_out).unsqueeze(0)
 
     def __repr__(self):
         return f"{self.__class__.__name__}(base={self.base_linear}, rank={self.rank}, n_adapters={self.n_adapters}, alpha={self.alpha}, dropout={self.lora_dropout})"

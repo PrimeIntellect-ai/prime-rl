@@ -1,3 +1,4 @@
+import copy
 import shutil
 import time
 from pathlib import Path
@@ -5,7 +6,7 @@ from pathlib import Path
 import torch
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.trainer.batch import prepare_batch
+from prime_rl.trainer.batch import BatchSample, MicroBatch, prepare_sample
 from prime_rl.trainer.runs import get_runs
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import get_rollout_dir, get_step_path
@@ -68,6 +69,7 @@ class Packer:
             rollouts = self.get_batch()
 
         train_rollouts = []
+        train_idxs = []
         for idx, rollouts in rollouts.items():
             self.runs.progress[idx].step += 1
             self.runs.progress[idx].total_tokens += sum(
@@ -75,14 +77,13 @@ class Packer:
             )
             self.runs.progress[idx].total_samples += len(rollouts)
             train_rollouts.extend(rollouts)
+            train_idxs.extend([idx] * len(rollouts))
             self.runs.ready_to_update[idx] = True
 
-        all_data_ranks_batches = prepare_batch(
+        all_data_ranks_batches = self.prepare_batch(
             rollouts=train_rollouts,
-            temperature=1.0,  # TODO: get from run config
-            tokenizer=self.tokenizer,
-            num_train_workers=self.dp_world_size,
-            seq_len=self.seq_len,
+            idxs=train_idxs,
+            temperature=1.0,  # TODO: get from run config, micro batch will also need seqlen temperature instead of scalar
         )
 
         step_path = get_rollout_dir(self.runs.output_dir) / f"step_{self.trainer_step}"
@@ -95,3 +96,99 @@ class Packer:
             tmp_path.rename(batch_path)
 
         self.trainer_step += 1
+
+    def prepare_batch(
+        self,
+        rollouts: list[Rollout],
+        idxs: list[int],
+        temperature: float,
+    ) -> list[list[MicroBatch]]:
+        """
+        Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
+        Each micro batch is shape [1, seq_len], the namber of sample is not fixed per micro batch.
+        """
+        rollouts = copy.deepcopy(rollouts)
+
+        all_samples = [
+            prepare_sample(
+                rollout,
+                self.seq_len,
+                idx,
+            )
+            for idx, rollout in zip(idxs, rollouts)
+        ]
+
+        micro_batches = self.packed_samples_into_micro_bs(all_samples, temperature)
+        num_padding_batch = -len(micro_batches) % self.dp_world_size
+
+        # because of fsdp we need to make sure that each data ran has the same number of micro batches otherwise training will hang.
+        # We create fake micro batches to fill the gap with real data but zero advantages, they would not contribute to the loss.
+        if self.dp_world_size > 1 and num_padding_batch > 0:
+            padded_batch = copy.deepcopy(micro_batches[0])
+            padded_batch["advantages"] = torch.zeros_like(padded_batch["advantages"])
+            padded_batch["loss_mask"] = torch.zeros_like(padded_batch["loss_mask"], dtype=torch.bool)
+            micro_batches.extend([padded_batch for _ in range(num_padding_batch)])
+
+        assert len(micro_batches) % self.dp_world_size == 0, (
+            "Number of micro batches is not divisible by number of data ranks"
+        )
+
+        per_gpu_micro_batches = len(micro_batches) // self.dp_world_size
+        batches_per_gpu = []
+        for _ in range(self.dp_world_size):
+            batches = []
+            for _ in range(per_gpu_micro_batches):
+                batches.append(micro_batches.pop(0))
+            batches_per_gpu.append(batches)
+
+        return batches_per_gpu
+
+    def packed_samples_into_micro_bs(self, samples: list[BatchSample], temperature: float) -> list[MicroBatch]:
+        """
+        Pack samples into micro_batch efficiently.
+        We follow the First Fit Decreasing algorithm to pack the samples into bins and minimize potential padding while never truncating.
+        """
+        # We have to put the same lora samples together for the offsets
+        sorted_samples = sorted(samples, key=lambda x: (x["lora_idx"], -len(x["input_ids"])))
+
+        ## we create bins
+        bin_samples = []
+        bin_len = 0
+        idx_tokens = [0] * self.runs.max_runs
+        micro_batches = []
+
+        for sample in sorted_samples:
+            # Check if sequence fits in this bin
+            if bin_len + len(sample["input_ids"]) <= self.seq_len:
+                bin_samples.append(sample)
+                bin_len += len(sample["input_ids"])
+                idx_tokens[sample["lora_idx"]] += len(sample["input_ids"])
+            else:
+                micro_batches.append(self.prepare_micro_batch_packing(bin_samples, temperature, idx_tokens))
+                bin_samples = [sample]
+                bin_len = len(sample["input_ids"])
+                idx_tokens = [0] * self.runs.max_runs
+                idx_tokens[sample["lora_idx"]] += len(sample["input_ids"])
+        micro_batches.append(self.prepare_micro_batch_packing(bin_samples, temperature, idx_tokens))
+
+        return micro_batches
+
+    def prepare_micro_batch_packing(
+        self, samples: list[BatchSample], temperature: float, idx_tokens: list[int]
+    ) -> MicroBatch:
+        """
+        Prepare a micro batch for packing mode. take multi sample and return a batch of shape [1, micro_bs * max_seq_len].
+        Would additionally pad the batch to the max sequence length.
+        """
+        micro_batch = {}
+        assert sum([len(sample["input_ids"]) for sample in samples]) <= self.seq_len, (
+            "Total tokens of samples is greater than max sequence length"
+        )
+
+        for key in ["input_ids", "advantages", "loss_mask", "position_ids", "inference_logprobs"]:
+            micro_batch[key] = torch.cat([sample[key] for sample in samples], dim=0).unsqueeze(0)
+
+        micro_batch["temperature"] = temperature
+        micro_batch["lora_cu_offsets"] = torch.cumsum(torch.tensor(idx_tokens, dtype=torch.int32), dim=0)
+
+        return micro_batch

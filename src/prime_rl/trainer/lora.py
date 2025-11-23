@@ -5,7 +5,8 @@ import torch
 import torch.nn as nn
 
 from prime_rl.trainer.config import LoRAConfig
-from prime_rl.trainer.models.layers.lora import LoRALinear
+from prime_rl.trainer.models.layers.lora import LoRALinear, MultiLoRALinear
+from prime_rl.trainer.runs import get_runs
 from prime_rl.utils.logger import get_logger
 
 
@@ -143,12 +144,22 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
             logger.warning(f"Module {module_name} is not nn.Linear, skipping")
             continue
 
-        lora_module = LoRALinear(
-            base_linear=base_module,
-            rank=config.rank,
-            alpha=config.alpha,
-            dropout=config.dropout,
-        )
+        max_concurrent_runs = get_runs().max_runs
+        if max_concurrent_runs == 1:
+            lora_module = LoRALinear(
+                base_linear=base_module,
+                rank=config.rank,
+                alpha=config.alpha,
+                dropout=config.dropout,
+            )
+        else:
+            lora_module = MultiLoRALinear(
+                base_linear=base_module,
+                rank=config.rank,
+                n_adapters=max_concurrent_runs,
+                alpha=config.alpha,
+                dropout=config.dropout,
+            )
 
         _set_module_by_name(model, module_name, lora_module)
 
