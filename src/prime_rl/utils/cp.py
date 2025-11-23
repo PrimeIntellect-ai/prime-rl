@@ -3,7 +3,7 @@ import torch.distributed as dist
 from ring_flash_attn import update_ring_flash_attn_params
 
 
-def maybe_shard_for_cp(t: torch.Tensor, cp_rank: int, cp_world_size: int) -> torch.Tensor:
+def shard_for_cp(t: torch.Tensor, cp_rank: int, cp_world_size: int) -> torch.Tensor:
     if cp_world_size == 1:
         return t
 
@@ -22,7 +22,9 @@ def maybe_get_padding_logit_from_prev_cp_rank(
 
     last_logit = logits[:, -1, :].unsqueeze(1)
 
-    all_rank_last_logits = [torch.zeros(1, 1, logits.shape[2], dtype=logits.dtype, device=logits.device) for _ in range(cp_world_size)]
+    all_rank_last_logits = [
+        torch.zeros(1, 1, logits.shape[2], dtype=logits.dtype, device=logits.device) for _ in range(cp_world_size)
+    ]
 
     dist.all_gather(all_rank_last_logits, last_logit, group=cp_group)
 
@@ -33,13 +35,15 @@ def maybe_get_padding_logit_from_prev_cp_rank(
         return None
 
 
-def maybe_update_ring_flash_attn_params_and_shard_for_cp(position_ids: torch.Tensor, cp_rank: int, cp_world_size: int, cp_group: dist.ProcessGroup) -> torch.Tensor:
+def update_ring_flash_attn_params_and_shard(
+    position_ids: torch.Tensor, cp_rank: int, cp_world_size: int, cp_group: dist.ProcessGroup
+) -> torch.Tensor:
     if cp_world_size == 1:
         return position_ids
 
     cu_seqlens = _get_cu_seqlens_for_cp(position_ids)
     update_ring_flash_attn_params(cu_seqlens, cp_group)
-    return maybe_shard_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
+    return shard_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
 
 
 def _get_cu_seqlens_for_cp(position_ids: torch.Tensor) -> torch.Tensor:
@@ -66,7 +70,7 @@ def sync_boundary_stats(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Synchronize statistics for boundary sequences across CP ranks.
-    
+
     Args:
         first_seq_stats: Stats for the first sequence on this rank [num_stats]
         last_seq_stats: Stats for the last sequence on this rank [num_stats]
@@ -75,7 +79,7 @@ def sync_boundary_stats(
         cp_rank: Current CP rank
         cp_world_size: CP world size
         cp_group: Process group for CP
-        
+
     Returns:
         Tuple of (aggregated_first_seq_stats, aggregated_last_seq_stats)
     """
@@ -84,24 +88,26 @@ def sync_boundary_stats(
 
     device = first_seq_stats.device
     num_stats = first_seq_stats.numel()
-    
+
     # Prepare data for gathering: [starts_with_zero, is_single_sequence, first_stats..., last_stats...]
     # 1 + 1 + num_stats + num_stats = 2 + 2 * num_stats
-    local_data = torch.cat([
-        torch.tensor([float(starts_with_zero), float(is_single_sequence)], device=device),
-        first_seq_stats,
-        last_seq_stats
-    ])
-    
+    local_data = torch.cat(
+        [
+            torch.tensor([float(starts_with_zero), float(is_single_sequence)], device=device),
+            first_seq_stats,
+            last_seq_stats,
+        ]
+    )
+
     gathered_data = [torch.zeros_like(local_data) for _ in range(cp_world_size)]
     dist.all_gather(gathered_data, local_data, group=cp_group)
-    
+
     # Parse gathered data
     all_starts_with_zero = [bool(d[0].item()) for d in gathered_data]
     all_is_single = [bool(d[1].item()) for d in gathered_data]
-    all_first_stats = [d[2:2+num_stats] for d in gathered_data]
-    all_last_stats = [d[2+num_stats:] for d in gathered_data]
-    
+    all_first_stats = [d[2 : 2 + num_stats] for d in gathered_data]
+    all_last_stats = [d[2 + num_stats :] for d in gathered_data]
+
     # Helper to aggregate stats (sum)
     # Note: This assumes all stats are sums. If we have min, we need to handle it differently.
     # But for now we will assume the caller handles the aggregation logic if it's not just sum.
@@ -115,15 +121,11 @@ def sync_boundary_stats(
     # Let's implement the walking logic here, but take a `merge_fn`?
     # Or just hardcode for our use case: stats = [sum_log, sum_mask, min_ratio]
     # merge = (a[0]+b[0], a[1]+b[1], min(a[2], b[2]))
-    
+
     def merge_stats(s1, s2):
         # s1, s2 are tensors of shape [3]
         # 0: sum, 1: sum, 2: min
-        return torch.stack([
-            s1[0] + s2[0],
-            s1[1] + s2[1],
-            torch.min(s1[2], s2[2])
-        ])
+        return torch.stack([s1[0] + s2[0], s1[1] + s2[1], torch.min(s1[2], s2[2])])
 
     # Calculate aggregated first seq stats
     agg_first = all_first_stats[cp_rank].clone()
@@ -135,15 +137,15 @@ def sync_boundary_stats(
                 break
             if all_starts_with_zero[j]:
                 break
-                
+
     # Calculate aggregated last seq stats
     agg_last = all_last_stats[cp_rank].clone()
-    
+
     # If we are a single sequence, we already aggregated the prefix in agg_first.
     # So agg_last should start with agg_first (which includes prefix + local).
     if is_single_sequence:
         agg_last = agg_first.clone()
-        
+
     # Walk forward
     if cp_rank < cp_world_size - 1:
         # Check if we continue to next
@@ -152,11 +154,11 @@ def sync_boundary_stats(
                 agg_last = merge_stats(agg_last, all_first_stats[j])
                 if not all_is_single[j]:
                     break
-                if j + 1 < cp_world_size and all_starts_with_zero[j+1]:
+                if j + 1 < cp_world_size and all_starts_with_zero[j + 1]:
                     break
-                    
+
     # If is_single_sequence, agg_first needs to be updated with the forward aggregation too
     if is_single_sequence:
         agg_first = agg_last.clone()
-        
+
     return agg_first, agg_last

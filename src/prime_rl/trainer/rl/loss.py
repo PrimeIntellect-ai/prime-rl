@@ -71,10 +71,6 @@ def compute_loss(
     loss_mask: Any,  # list of Bool[Tensor, "seq_i"] with potentially different seq_i lengths
     loss_config: LossConfig,
     loss_scale: int,
-    cp_rank: int = 0,
-    cp_world_size: int = 1,
-    cp_group: dist.ProcessGroup | None = None,
-    starts_with_zero: bool = True,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
@@ -86,10 +82,6 @@ def compute_loss(
         loss_mask: Loss mask tensor for packed sequences
         loss_config: Loss configuration object
         loss_scale: Scale factor to normalize the loss
-        cp_rank: Context Parallelism rank
-        cp_world_size: Context Parallelism world size
-        cp_group: Context Parallelism process group
-        starts_with_zero: Whether the first sequence on this rank starts with a new document (position_id == 0)
 
     Returns:
         Tuple of (scaled_loss, aggregated_loss_tensors)
@@ -104,52 +96,16 @@ def compute_loss(
     total_is_masked_high = []
     total_sequence_masked_low = []
 
-    # Pass 1: Compute local stats for all sequences
-    local_stats = []
-    for t_logprobs, i_logprobs, l_mask in zip(trainer_logprobs, inference_logprobs, loss_mask):
-        local_stats.append(compute_sequence_stats(t_logprobs, i_logprobs, l_mask))
-
-    # Pass 2: Synchronize boundary stats if CP is enabled
-    if cp_world_size > 1 and cp_group is not None:
-        first_seq_stats = local_stats[0]
-        last_seq_stats = local_stats[-1]
-        is_single_sequence = len(local_stats) == 1
-        
-        agg_first, agg_last = sync_boundary_stats(
-            first_seq_stats,
-            last_seq_stats,
-            starts_with_zero,
-            is_single_sequence,
-            cp_rank,
-            cp_world_size,
-            cp_group
-        )
-        
-        local_stats[0] = agg_first
-        local_stats[-1] = agg_last
-
-    # Pass 3: Compute loss using synchronized stats
-    for idx, (trainer_logprobs, inference_logprobs, advantages, loss_mask) in enumerate(zip(
+    for trainer_logprobs, inference_logprobs, advantages, loss_mask in zip(
         trainer_logprobs, inference_logprobs, advantages, loss_mask
-    )):
-        # Retrieve stats
-        stats = local_stats[idx]
-        sum_log_imp_ratio = stats[0]
-        sum_mask = stats[1]
-        min_log_imp_ratio = stats[2]
-        
+    ):
         log_importance_ratio = trainer_logprobs - inference_logprobs
 
         # Compute trainer-inference mismatch KL
         token_mismatch_kl = torch.exp(log_importance_ratio) - log_importance_ratio - 1
 
         if loss_config.ratio_type == "sequence":
-            # Use aggregated stats
-            seq_log_importance_ratio = sum_log_imp_ratio
-            if loss_config.ratio_length_norm:
-                seq_log_importance_ratio = seq_log_importance_ratio / torch.clamp_min(sum_mask, 1)
-            
-            # Recompute log_importance_ratio for the sequence
+            seq_log_importance_ratio = (log_importance_ratio[loss_mask]).sum()
             log_importance_ratio = trainer_logprobs - trainer_logprobs.detach() + seq_log_importance_ratio.detach()
             log_importance_ratio = torch.clamp(log_importance_ratio, max=10.0)
 
@@ -157,18 +113,7 @@ def compute_loss(
         is_masked_low = importance_ratio < loss_config.mask_ratio_low
         is_masked_high = importance_ratio > loss_config.mask_ratio_high
         is_masked = is_masked_low | is_masked_high
-        
-        # Compute seq_min_ratio using aggregated stats
-        if loss_config.ratio_type == "sequence":
-            # For sequence ratio, importance_ratio is constant (exp(seq_log_imp_ratio))
-            # So min is just that value
-            seq_min_ratio = torch.exp(torch.clamp(seq_log_importance_ratio, max=10.0))
-        else:
-            # For token ratio, importance_ratio = exp(log_imp_ratio)
-            # min_ratio = exp(min_log_imp_ratio)
-            # Note: min_log_imp_ratio comes from stats (aggregated min)
-            seq_min_ratio = torch.exp(min_log_imp_ratio)
-            
+        seq_min_ratio = importance_ratio.masked_fill(~loss_mask, torch.inf).min()
         seq_should_mask = seq_min_ratio < loss_config.sequence_mask_ratio_low
         is_masked = is_masked | seq_should_mask
         keep_mask = loss_mask & ~is_masked
@@ -185,11 +130,10 @@ def compute_loss(
 
         # Apply sequence-level normalization if configured
         if loss_config.ratio_type == "sequence":
-            loss = loss / torch.clamp_min(sum_mask, 1)
+            loss = loss / torch.clamp_min(loss_mask.sum(), 1)
 
         total_loss = total_loss + loss
 
-        # Metrics (using local masks/counts for now, as they are per-fragment averages usually)
         mismatch_kl = token_mismatch_kl[loss_mask].sum() / torch.clamp_min(loss_mask.sum(), 1)
         masked_mismatch_kl = token_mismatch_kl[loss_mask & is_masked].sum() / torch.clamp_min(
             (loss_mask & is_masked).sum(), 1

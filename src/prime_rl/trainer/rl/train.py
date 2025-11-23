@@ -9,6 +9,7 @@ from prime_rl.trainer.models.layers.attn import substitute_prime_rl_flash_attn
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 import torch.distributed as dist
+import torch.distributed.nn as dist_nn
 from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
@@ -19,8 +20,8 @@ from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.cp import (
     maybe_get_padding_logit_from_prev_cp_rank,
-    maybe_shard_for_cp,
-    maybe_update_ring_flash_attn_params_and_shard_for_cp,
+    shard_for_cp,
+    update_ring_flash_attn_params_and_shard,
 )
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
@@ -235,37 +236,40 @@ def train(config: RLTrainerConfig):
 
         logger.info(f"Starting forward and backward pass ({batch_size=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
-        cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if config.model.cp > 1 else 0
-        cp_group = parallel_dims.world_mesh["cp"].get_group() if config.model.cp > 1 else None
+        cp_enabled = parallel_dims.cp_enabled
+        cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
+        cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
+
         for micro_step, micro_batch in enumerate(micro_batches):
             # we only all reduce at the last grad acc step
             model.set_requires_all_reduce(micro_step == len(micro_batches) - 1)
 
-            input_ids = maybe_shard_for_cp(
-                micro_batch["input_ids"].to("cuda"), cp_rank=cp_rank, cp_world_size=config.model.cp
-            )
-            advantages = maybe_shard_for_cp(
-                micro_batch["advantages"].to("cuda"), cp_rank=cp_rank, cp_world_size=config.model.cp
-            )
-            loss_mask = maybe_shard_for_cp(
-                micro_batch["loss_mask"].to("cuda"), cp_rank=cp_rank, cp_world_size=config.model.cp
-            )
-            inference_logprobs = maybe_shard_for_cp(
-                micro_batch["inference_logprobs"].to("cuda"), cp_rank=cp_rank, cp_world_size=config.model.cp
-            )
+            input_ids = micro_batch["input_ids"].to("cuda")
+            position_ids = micro_batch["position_ids"].to("cuda")
+            inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
+            advantages = micro_batch["advantages"].to("cuda")
+            loss_mask = micro_batch["loss_mask"].to("cuda")
+            position_ids = micro_batch["position_ids"].to("cuda")
 
-            position_ids = maybe_update_ring_flash_attn_params_and_shard_for_cp(
-                position_ids=micro_batch["position_ids"].to("cuda"),
-                cp_rank=cp_rank,
-                cp_world_size=config.model.cp,
-                cp_group=cp_group,
-            )
+            if cp_enabled:
+                input_ids = shard_for_cp(
+                    input_ids, cp_rank=cp_rank, cp_world_size=parallel_dims.cp
+                )
+
+                forward_position_ids = update_ring_flash_attn_params_and_shard(
+                    position_ids=position_ids,
+                    cp_rank=cp_rank,
+                    cp_world_size=parallel_dims.cp,
+                    cp_group=cp_group,
+                )
+            else:
+                forward_position_ids = position_ids
 
             temperature = micro_batch["temperature"]
 
             # Forward pass
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                logits = forward(model, input_ids, position_ids).float().contiguous()
+                logits = forward(model, input_ids, forward_position_ids).float().contiguous()
 
             left_pad_logit = maybe_get_padding_logit_from_prev_cp_rank(logits, cp_rank, config.model.cp, cp_group)
 
@@ -273,12 +277,13 @@ def train(config: RLTrainerConfig):
             shifted_logits = shifted_logits / temperature
             trainer_logprobs = selective_log_softmax(shifted_logits, input_ids)
 
+
+            if cp_enabled:
+                trainer_logprobs = dist_nn.all_gather(trainer_logprobs, group=cp_group)
+                trainer_logprobs = torch.cat(trainer_logprobs, dim=1)
+
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
-
-            starts_with_zero = True
-            if config.model.cp > 1:
-                starts_with_zero = (position_ids[0, 0] == 0).item()
 
             loss, loss_tensors = compute_loss(
                 trainer_logprobs=trainer_logprobs.squeeze().split(response_lengths),
@@ -287,14 +292,15 @@ def train(config: RLTrainerConfig):
                 loss_mask=loss_mask.squeeze().split(response_lengths),
                 loss_config=config.loss,
                 loss_scale=loss_scale,
-                cp_rank=cp_rank,
-                cp_world_size=config.model.cp,
-                cp_group=cp_group,
-                starts_with_zero=starts_with_zero,
             )
 
             # Compute entropy
             entropy = compute_entropy(shifted_logits)
+
+            if cp_enabled:
+                entropies = [torch.zeros_like(entropy) for _ in range(parallel_dims.cp)]
+                dist.all_gather(entropies, entropy, group=cp_group)
+                entropy = torch.cat(entropies, dim=1)
 
             # Delete logits and shifted_logits before backward pass to avoid memory spike
             del logits, shifted_logits
@@ -302,12 +308,6 @@ def train(config: RLTrainerConfig):
             # Backward pass
             with maybe_record_function("backward"):
                 loss.backward()
-
-            kl_mismatch_tensor = loss_tensors["mismatch_kl"][-1].mean()
-            if cp_group is not None:
-                dist.all_reduce(kl_mismatch_tensor, group=cp_group, op=dist.ReduceOp.AVG)
-            
-            tensors["global_mismatch_kl"].append(kl_mismatch_tensor.detach().to("cpu").unsqueeze(0))
 
             # Add relevant tensors to tensor dict for logging purposes
             tensors["trainer_probs"].append(torch.exp(trainer_logprobs)[loss_mask].detach().to("cpu"))
@@ -327,7 +327,7 @@ def train(config: RLTrainerConfig):
                 tensors[key].append(loss_tensor)
 
             # Debug log with *local, micro step* stats
-            micro_step_message = f"Micro Step {micro_step}/{len(micro_batches)} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy'][-1].mean().item():.4f} | Mismatch KL: {tensors['mismatch_kl'][-1].mean().item():.4f} | Global Mismatch KL: {tensors['global_mismatch_kl'][-1].item():.4f}"
+            micro_step_message = f"Micro Step {micro_step}/{len(micro_batches)} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy'][-1].mean().item():.4f} | Mismatch KL: {tensors['mismatch_kl'][-1].mean().item():.4f}"
             if "max_vio" in tensors:
                 micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
@@ -378,9 +378,6 @@ def train(config: RLTrainerConfig):
         if "max_vio/mean" in tensor_stats:
             step_message += f" | Max Vio: {tensor_stats['max_vio/mean']:.4f}"
 
-        if "global_mismatch_kl/mean" in tensor_stats:
-            step_message += f" | Global Mismatch KL: {tensor_stats['global_mismatch_kl/mean']:.4f}"
-            
         logger.success(step_message)
 
         # Log performance metrics
