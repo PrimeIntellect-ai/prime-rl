@@ -9,6 +9,8 @@ from vllm.distributed.utils import StatelessProcessGroup
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader.utils import process_weights_after_loading
 
+from prime_rl.inference.vllm.worker.utils import quantize_weights_iterator
+
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
 if TYPE_CHECKING:
     from vllm.v1.worker.gpu_worker import Worker
@@ -113,6 +115,10 @@ class NCCLWeightUpdateWorker(Worker):
         assert isinstance(model, Module)
 
         state_iter = self.nccl_broadcast_receiver.receive_state_dict()
+        
+        if self.model_runner.model_config.quantization == "fp8":
+            state_iter = quantize_weights_iterator(state_iter)
+            
         model.load_weights(state_iter)  # type: ignore
 
         # # Process weights after loading (important for some models)

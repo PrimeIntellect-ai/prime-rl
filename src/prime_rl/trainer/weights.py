@@ -55,7 +55,7 @@ class ConversionResult:
 _QUANTIZATION_EXCLUSIONS = {"layernorm", "embed", "router", "mlp.gate.", "norm", "lm_head", "eh_proj"}
 
 
-def _should_quantize_weight(key: str) -> bool:
+def should_quantize_weight(key: str) -> bool:
     """Check if a weight key should be quantized."""
     if "weight" not in key:
         return False
@@ -78,7 +78,7 @@ def _process_safetensors_file(
     with safe_open(input_path / filename, framework="pt", device="cuda") as f:
         for key in f.keys():
             weight = f.get_tensor(key)
-            if _should_quantize_weight(key):
+            if should_quantize_weight(key):
                 qw, s = blockwise_cast_to_fp8_triton(weight)
                 q_weights[key] = qw
                 q_weights[key.replace(".weight", ".weight_scale_inv")] = s
@@ -166,7 +166,7 @@ def quantize_layer_params(state_dict: dict[str, Tensor]) -> None:
             not key.endswith(".weight")
             or key.endswith("_scale")
             or key.endswith("_scale_inv")
-            or not _should_quantize_weight(key)
+            or not should_quantize_weight(key)
         ):
             continue
         

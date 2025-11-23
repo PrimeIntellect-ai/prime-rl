@@ -36,9 +36,6 @@ class FileSystemWeightBroadcast(WeightBroadcast):
             if has_tt_moe_layers(state_dict):
                 convert_tt_to_hf_moe(state_dict)
                 
-            if self.use_fp8:
-                quantize_layer_params(state_dict)
-
             # Save weights to shared filesystem
             save_dir = get_step_path(self.broadcast_dir, step)
             save_state_dict(state_dict, save_dir, self.save_format, self.save_sharded)

@@ -127,8 +127,6 @@ class NCCLWeightBroadcastSender:
                 convert_tt_layer_to_hf(state_dict, layer_id)
 
             if self.world.is_master:
-                if self.use_fp8:
-                    quantize_layer_params(state_dict)
                 broadcast_state_dict(state_dict, self.communicator)
 
 
