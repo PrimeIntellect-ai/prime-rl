@@ -19,9 +19,8 @@ from prime_rl.trainer.weights import setup_weight_ckpt_manager
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.cp import (
-    maybe_get_padding_logit_from_prev_cp_rank,
-    shard_for_cp,
-    update_ring_flash_attn_params_and_shard,
+    get_padding_logit_from_prev_cp_rank,
+    prepare_for_cp,
 )
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
@@ -239,6 +238,7 @@ def train(config: RLTrainerConfig):
         cp_enabled = parallel_dims.cp_enabled
         cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
         cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
+        cp_size = parallel_dims.cp
 
         for micro_step, micro_batch in enumerate(micro_batches):
             # we only all reduce at the last grad acc step
@@ -252,16 +252,14 @@ def train(config: RLTrainerConfig):
             position_ids = micro_batch["position_ids"].to("cuda")
 
             if cp_enabled:
-                input_ids = shard_for_cp(
-                    input_ids, cp_rank=cp_rank, cp_world_size=parallel_dims.cp
-                )
-
-                forward_position_ids = update_ring_flash_attn_params_and_shard(
+                input_ids, forward_position_ids = prepare_for_cp(
+                    input_ids=input_ids,
                     position_ids=position_ids,
                     cp_rank=cp_rank,
-                    cp_world_size=parallel_dims.cp,
+                    cp_world_size=cp_size,
                     cp_group=cp_group,
                 )
+
             else:
                 forward_position_ids = position_ids
 
@@ -271,12 +269,14 @@ def train(config: RLTrainerConfig):
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
                 logits = forward(model, input_ids, forward_position_ids).float().contiguous()
 
-            left_pad_logit = maybe_get_padding_logit_from_prev_cp_rank(logits, cp_rank, config.model.cp, cp_group)
+            if cp_enabled:
+                left_pad_logit = get_padding_logit_from_prev_cp_rank(logits, cp_rank, cp_size, cp_group)
+            else:
+                left_pad_logit = None
 
             shifted_logits = shift_logits(logits, left_pad_logit=left_pad_logit)
             shifted_logits = shifted_logits / temperature
             trainer_logprobs = selective_log_softmax(shifted_logits, input_ids)
-
 
             if cp_enabled:
                 trainer_logprobs = dist_nn.all_gather(trainer_logprobs, group=cp_group)
@@ -298,7 +298,7 @@ def train(config: RLTrainerConfig):
             entropy = compute_entropy(shifted_logits)
 
             if cp_enabled:
-                entropies = [torch.zeros_like(entropy) for _ in range(parallel_dims.cp)]
+                entropies = [torch.zeros_like(entropy) for _ in range(cp_size)]
                 dist.all_gather(entropies, entropy, group=cp_group)
                 entropy = torch.cat(entropies, dim=1)
 

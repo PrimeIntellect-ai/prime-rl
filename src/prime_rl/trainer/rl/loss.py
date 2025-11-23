@@ -6,9 +6,6 @@ from jaxtyping import Float, Int, jaxtyped
 from torch import Tensor
 
 from prime_rl.trainer.rl.config import LossConfig
-from prime_rl.utils.logger import get_logger
-from prime_rl.utils.cp import sync_boundary_stats
-import torch.distributed as dist
 
 
 @jaxtyped(typechecker=typechecker)
