@@ -1,19 +1,20 @@
-uv run rl \
-  --trainer @ configs/reverse_text/rl/train.toml \
-  --orchestrator @ configs/reverse_text/rl/orch.toml \
-  --orchestrator.sampling.max-tokens 128 \
-  --trainer.model.experimental.lora.rank 8 \
-  --trainer.ckpt.weights.save-adapter-separately \
-  --trainer.weight_broadcast.adapter_only \
-  --orchestrator.lora-name r8-1e-4 \
-  --trainer_gpu_ids 1 \
-  --output_dir outputs \
-  --trainer.optim.lr 1e-4 \
-  --wandb.project multi-tenant-debug \
-  --wandb.name r8-1e-4 \
-  --log.level debug \
-  --ckpt.resume-step 20 \
-  --max-steps 25
+# uv run rl \
+#   --trainer @ configs/reverse_text/rl/train.toml \
+#   --orchestrator @ configs/reverse_text/rl/orch.toml \
+#   --orchestrator.sampling.max-tokens 128 \
+#   --trainer_gpu_ids 1 \
+#   --output_dir outputs \
+#   --trainer.optim.lr 3e-6 \
+#   --wandb.project multi-tenant-debug \
+#   --wandb.name r8-1e-4 \
+#   --log.level debug \
+#   --ckpt \
+#   --max-steps 20
+  #--ckpt.resume-step 20 \
+  #--trainer.model.experimental.lora.rank 8 \
+  #--trainer.ckpt.weights.save-adapter-separately \
+  #--trainer.weight_broadcast.adapter_only \
+  #--orchestrator.lora-name r8-1e-4 \
 
 
 
