@@ -48,17 +48,19 @@ def is_tt_moe_model(model: nn.Module) -> bool:
 
 
 def get_load_balance_stats(
-    model: nn.Module, reset_stats: bool = True, use_second_popular_expert: bool = True
+    model: nn.Module, reset_stats: bool = True, try_to_avoid_padding_experts: bool = True
 ) -> dict[str, Tensor | None]:
     per_layer_max_vio = []
     for transformer_block in model.model.layers:
         # This is necessary for models that have mixed dense layers
         if not hasattr(transformer_block.mlp, "tokens_per_expert"):
             continue
-        tokens_per_expert = transformer_block.mlp.tokens_per_expert
+        tokens_per_expert: torch.Tensor = transformer_block.mlp.tokens_per_expert
         balanced_load = tokens_per_expert.mean()
-        if use_second_popular_expert:
-            max_vio = (tokens_per_expert.topk(2).values[-1] - balanced_load) / balanced_load
+        if try_to_avoid_padding_experts:
+            max_vio = (
+                tokens_per_expert.topk(transformer_block.mlp.router.top_k + 1).values[-1] - balanced_load
+            ) / balanced_load
         else:
             max_vio = (tokens_per_expert.max() - balanced_load) / balanced_load
         per_layer_max_vio.append(max_vio.item())
