@@ -56,13 +56,12 @@ def get_load_balance_stats(
         if not hasattr(transformer_block.mlp, "tokens_per_expert"):
             continue
         tokens_per_expert: torch.Tensor = transformer_block.mlp.tokens_per_expert
-        balanced_load = tokens_per_expert.mean()
         if try_to_avoid_padding_experts:
-            max_vio = (
-                tokens_per_expert.topk(transformer_block.mlp.router.top_k + 1).values[-1] - balanced_load
-            ) / balanced_load
-        else:
-            max_vio = (tokens_per_expert.max() - balanced_load) / balanced_load
+            tokens_per_expert = tokens_per_expert.sort(dim=0, descending=True).values[
+                transformer_block.mlp.router.top_k :
+            ]
+        balanced_load = tokens_per_expert.mean()
+        max_vio = (tokens_per_expert.max() - balanced_load) / balanced_load
         per_layer_max_vio.append(max_vio.item())
         if reset_stats:
             tokens_per_expert.zero_()
