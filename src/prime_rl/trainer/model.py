@@ -64,7 +64,7 @@ def get_load_balance_stats(
         max_vio = (tokens_per_expert.max() - balanced_load) / balanced_load
         per_layer_max_vio.append(max_vio.item())
         if reset_stats:
-            tokens_per_expert.zero_()
+            transformer_block.mlp.tokens_per_expert.zero_()
     if len(per_layer_max_vio) == 0:
         return {"max_vio": None}
     return {"max_vio": torch.tensor(per_layer_max_vio, device=torch.device("cuda"))}
