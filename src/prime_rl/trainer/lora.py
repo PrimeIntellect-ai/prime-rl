@@ -161,6 +161,11 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
                 dropout=config.dropout,
             )
 
+        def reset_lora_idx_hook(idx: int, run_id: str) -> None:
+            lora_module.reset_parameters(idx)
+
+        get_runs().register_creation_hook(reset_lora_idx_hook)
+        # TODO: we need to reset optimizer state too!
         _set_module_by_name(model, module_name, lora_module)
 
     freeze_all_except_lora_and_specified(model, config)
