@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 
 # TODO: Delete the one in ckpt.py?
@@ -24,6 +25,9 @@ class Runs:
         self.progress: dict[int, Progress] = {}
         self.ready_to_update = [False] * max_runs
 
+        self._deletion_hooks: list[Callable[[int, str], None]] = []
+        self._creation_hooks: list[Callable[[int, str], None]] = []
+
     def check_for_changes(self) -> None:
         run_ids = {run_path.stem for run_path in self.output_dir.glob("run_*")}
         deleted_runs = self.id_2_idx.keys() - run_ids
@@ -31,7 +35,6 @@ class Runs:
 
         for deleted_run in deleted_runs:
             deleted_idx = self.id_2_idx[deleted_run]
-            # TODO: Support hooks?
             del self.progress[deleted_idx]
             self.ready_to_update[deleted_idx] = False
 
@@ -39,6 +42,10 @@ class Runs:
             self.unused_idxs.add(deleted_idx)
             del self.idx_2_id[deleted_idx]
             del self.id_2_idx[deleted_run]
+
+            # Call deletion hooks
+            for hook in self._deletion_hooks:
+                hook(deleted_idx, deleted_run)
 
         for new_run in new_runs:
             try:
@@ -56,7 +63,9 @@ class Runs:
                 ]
                 self.progress[new_id].step = max(prev_ckpt_steps) if prev_ckpt_steps else 0
 
-                # TODO: Support hooks?
+                # Call creation hooks
+                for hook in self._creation_hooks:
+                    hook(new_id, new_run)
             except StopIteration:
                 continue
 
@@ -69,6 +78,24 @@ class Runs:
 
     def get_run_dir(self, idx: int) -> Path:
         return self.output_dir / self.idx_2_id[idx]
+
+    def register_deletion_hook(self, hook: Callable[[int, str], None]) -> None:
+        """Register a hook to be called when a run is deleted.
+
+        Args:
+            hook: A callable that takes (idx: int, run_id: str) as arguments.
+                  Called when a run is deleted from the system.
+        """
+        self._deletion_hooks.append(hook)
+
+    def register_creation_hook(self, hook: Callable[[int, str], None]) -> None:
+        """Register a hook to be called when a new run is created.
+
+        Args:
+            hook: A callable that takes (idx: int, run_id: str) as arguments.
+                  Called when a new run is added to the system.
+        """
+        self._creation_hooks.append(hook)
 
     def __repr__(self):
         return f"Runs(max={self.max_runs})[{self.idx_2_id.keys()}]"
