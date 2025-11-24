@@ -9,7 +9,7 @@ import pandas as pd
 import wandb
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.utils.config import LogExtrasConfig, WandbMonitorConfig
+from prime_rl.utils.config import WandbMonitorConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor.base import Monitor
 from prime_rl.utils.pydantic_config import BaseSettings
