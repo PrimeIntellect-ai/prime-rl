@@ -1,5 +1,4 @@
 from pathlib import Path
-from typing import Any
 
 from transformers.tokenization_utils import PreTrainedTokenizer
 
