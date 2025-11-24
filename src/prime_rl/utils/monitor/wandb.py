@@ -1,9 +1,7 @@
 import json
 import os
-import random
 import sys
 import time
-from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -11,24 +9,25 @@ import pandas as pd
 import wandb
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.utils.config import WandbMonitorConfig
+from prime_rl.utils.config import WandbConfig, WandbWithExtrasConfig
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.monitor.base import Monitor
 from prime_rl.utils.pydantic_config import BaseSettings
 
 
-class WandbMonitor:
+class WandbMonitor(Monitor):
     """Logs to Weights and Biases."""
 
     def __init__(
         self,
-        config: WandbMonitorConfig | None,
+        config: WandbConfig | WandbWithExtrasConfig | None,
         output_dir: Path | None = None,
         tokenizer: PreTrainedTokenizer | None = None,
         run_config: BaseSettings | None = None,
     ):
         self.config = config
         self.logger = get_logger()
-        self.history: list[dict[str, Any]] = []
+        self._history: list[dict[str, Any]] = []
         self.output_dir = output_dir
 
         rank = int(os.environ.get("RANK", os.environ.get("DP_RANK", "0")))
@@ -52,7 +51,7 @@ class WandbMonitor:
         )
 
         # Optionally, initialize sample logging attributes
-        if config is not None and config.log_extras:
+        if config is not None and isinstance(config, WandbWithExtrasConfig) and config.log_extras:
             if config.log_extras.samples:
                 self.last_log_samples_step = -1
                 self.samples_cols = [
@@ -76,11 +75,16 @@ class WandbMonitor:
                 self.tokenizer = tokenizer
                 self.samples = []
 
-            if config is not None and config.log_extras.distributions:
+            if config.log_extras.distributions:
                 self.last_log_distributions_step = -1
                 # Incremental table is initialized dynamically in `log_distributions`
                 self.distributions_table = None
                 self.distributions = []
+
+    @property
+    def history(self) -> list[dict[str, Any]]:
+        """Returns the history of logged metrics."""
+        return self._history
 
     def _maybe_overwrite_wandb_command(self) -> None:
         """Overwrites sys.argv with the start command if it is set in the environment variables."""
@@ -90,7 +94,7 @@ class WandbMonitor:
             sys.argv = json.loads(wandb_args)
 
     def log(self, metrics: dict[str, Any]) -> None:
-        self.history.append(metrics)
+        self._history.append(metrics)
         if not self.is_master:
             return
         if not self.enabled:
@@ -112,51 +116,24 @@ class WandbMonitor:
             input_tokens: List of input token sequences
             output_tokens: List of output token sequences
             rewards: List of rewards for each sample
-            task_rewards: Optional list of task-specific rewards
+            advantages: List of advantages for each sample
+            rollouts_per_problem: Number of rollouts per problem
             step: Current training step
         """
         if not self.is_master:
             return
-        if (
-            not self.config
-            or not self.config.log_extras
-            or not self.config.log_extras.samples
-            or step % self.config.log_extras.interval != 0
-        ):
-            # Do not log samples if not enabled or not log interval step
+        if not Monitor.should_log_samples(self.config, step, self.last_log_samples_step):
             return
         assert self.tokenizer is not None, "Tokenizer is required for sample logging"
-        assert self.last_log_samples_step <= step, "Step must be greater than last logged step"
         assert self.logger is not None, "Logger is required for sample logging"
         self.logger.info(f"Logging samples to W&B table at step {step}")
         start_time = time.perf_counter()
-        batch_size = len(input_tokens)
-        num_problems = batch_size // rollouts_per_problem
 
-        # Compute per-problem statistics
-        per_problem_tokens = defaultdict(list)
-        tokens = [input_tokens[i] + output_tokens[i] for i in range(batch_size)]
-        for i, t in enumerate(tokens):
-            problem_id = i // rollouts_per_problem
-            per_problem_tokens[problem_id].append(t)
-        assert len(per_problem_tokens) == num_problems
-        assert list(per_problem_tokens.keys()) == list(range(num_problems))
-
-        per_problem_seq_len = {
-            problem_id: sum(len(t) for t in tokens) / len(tokens) for problem_id, tokens in per_problem_tokens.items()
-        }
-        self.logger.debug(f"Per-problem seq len: {per_problem_seq_len}")
-        min_len_problem_id = min(per_problem_seq_len.items(), key=lambda kv: kv[1])[0]
-        max_len_problem_id = max(per_problem_seq_len.items(), key=lambda kv: kv[1])[0]
-        random_problem_id = random.choice(list(range(num_problems)))
-        problem_ids = {
-            "min_len": min_len_problem_id,
-            "max_len": max_len_problem_id,
-            "random": random_problem_id,
-        }
+        # Use shared sample selection logic
+        problem_ids = Monitor.select_sample_problems(input_tokens, output_tokens, rollouts_per_problem)
         self.logger.debug(f"Logging samples for problems: {problem_ids}")
 
-        # Randomly select and log samples
+        # Log samples for selected problems
         for tag, problem_id in problem_ids.items():
             start_idx = problem_id * rollouts_per_problem
             for sample_id in range(start_idx, start_idx + rollouts_per_problem):
@@ -186,14 +163,9 @@ class WandbMonitor:
     def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:
         if not self.is_master:
             return
-        if (
-            not self.config
-            or not self.config.log_extras
-            or not self.config.log_extras.distributions
-            or step % self.config.log_extras.interval != 0
-        ):
+        if not Monitor.should_log_distributions(self.config, step, self.last_log_distributions_step):
             return
-        assert self.last_log_distributions_step <= step, "Step must be greater than last logged step"
+        assert self.logger is not None
         self.logger.info(f"Logging distributions for keys {list(distributions.keys())} to W&B table at step {step}")
 
         # Initialize incremental table if not already done
@@ -222,7 +194,12 @@ class WandbMonitor:
         """Log final samples to W&B table."""
         if not self.is_master:
             return
-        if not self.config or not self.config.log_extras or not self.config.log_extras.samples:
+        if (
+            not self.config
+            or not isinstance(self.config, WandbWithExtrasConfig)
+            or not self.config.log_extras
+            or not self.config.log_extras.samples
+        ):
             return
         self.logger.info("Logging final samples to W&B table")
         df = pd.DataFrame(self.samples)
@@ -233,7 +210,12 @@ class WandbMonitor:
         """Log final distributions to W&B table."""
         if not self.is_master:
             return
-        if not self.config or not self.config.log_extras or not self.config.log_extras.distributions:
+        if (
+            not self.config
+            or not isinstance(self.config, WandbWithExtrasConfig)
+            or not self.config.log_extras
+            or not self.config.log_extras.distributions
+        ):
             return
         self.logger.info("Logging final distributions to W&B table")
         df = pd.DataFrame(self.distributions)
@@ -250,28 +232,3 @@ class WandbMonitor:
         dir_path.mkdir(parents=True, exist_ok=True)
         with open(dir_path / filename, "w") as f:
             json.dump(wandb.summary._as_dict(), f)
-
-
-_MONITOR: WandbMonitor | None = None
-
-
-def get_monitor() -> WandbMonitor:
-    """Returns the global monitor."""
-    global _MONITOR
-    if _MONITOR is None:
-        raise RuntimeError("WandbMonitor not initialized. Please call `setup_monitor` first.")
-    return _MONITOR
-
-
-def setup_monitor(
-    config: WandbMonitorConfig | None,
-    output_dir: Path | None = None,
-    tokenizer: PreTrainedTokenizer | None = None,
-    run_config: BaseSettings | None = None,
-) -> WandbMonitor:
-    """Sets up a monitor to log metrics to W&B."""
-    global _MONITOR
-    if _MONITOR is not None:
-        raise RuntimeError("WandbMonitor already initialized. Please call `setup_monitor` only once.")
-    _MONITOR = WandbMonitor(config=config, output_dir=output_dir, tokenizer=tokenizer, run_config=run_config)
-    return _MONITOR
