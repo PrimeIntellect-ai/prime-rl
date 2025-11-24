@@ -90,7 +90,16 @@ def train(config: RLTrainerConfig):
     logger.info(f"Initializing optimizer ({config.optim})")
     logger.info(f"Using `{config.loss.ratio_type}` importance ratio ({config.loss})")
 
-    optimizer = setup_optimizer(config.optim, model, parallel_dims.world_mesh["dp_shard_cp"])
+    if config.max_concurrent_runs == 1:
+        optimizer = setup_optimizer(config.optim, model, parallel_dims.world_mesh["dp_shard_cp"])
+    else:
+        from prime_rl.trainer.runs import get_runs
+        from prime_rl.trainer.optim import _setup_optimizer
+
+        optimizer = _setup_optimizer(
+            config.optim, get_runs().multi_named_parameters, parallel_dims.world_mesh["dp_shard_cp"]
+        )
+        # optimizer = setup_multi_optimizer(config.optim, model, parallel_dims.world_mesh["dp_shard_cp"])
 
     # Set up the learning rate scheduler
     scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
@@ -234,9 +243,7 @@ def train(config: RLTrainerConfig):
                 if config.model.experimental.lora:
                     lora_cu_offsets = micro_batch["lora_cu_offsets"].to("cuda")
                     set_offsets(lora_cu_offsets)
-                    logits = forward(model, input_ids, position_ids).float().contiguous()
-                else:
-                    logits = forward(model, input_ids, position_ids).float().contiguous()
+                logits = forward(model, input_ids, position_ids).float().contiguous()
 
             shifted_logits = shift_logits(logits)
             shifted_logits = shifted_logits / temperature
@@ -298,6 +305,7 @@ def train(config: RLTrainerConfig):
         optimizer.zero_grad()
 
         # Update learning rate scheduler
+        # current_lr = optimizer.optimizers[0].param_groups[0]["lr"]
         current_lr = optimizer.param_groups[0]["lr"]
         scheduler.step()
 

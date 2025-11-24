@@ -22,6 +22,7 @@ from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, M
 from prime_rl.trainer.lora import apply_lora_to_model
 from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL
 from prime_rl.trainer.parallel_dims import ParallelDims
+from prime_rl.trainer.runs import get_runs
 from prime_rl.trainer.weights import (
     convert_hf_to_tt_moe,
     convert_tt_to_hf_moe,
@@ -331,6 +332,10 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
     if config.load_using_meta and can_load_dcp_from_hf(model):
         load_dcp_from_hf(model, config)
 
+    if config.experimental.lora is not None:
+        for n, p in model.named_parameters():
+            if "lora_A" in n or "lora_B" in n:
+                get_runs().multi_named_parameters.append((n, p))
     logger.debug(f"Model signature: {get_module_signature(model, compress=True)}")
     return model
 
