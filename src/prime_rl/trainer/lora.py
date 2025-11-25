@@ -144,7 +144,8 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
             logger.warning(f"Module {module_name} is not nn.Linear, skipping")
             continue
 
-        max_concurrent_runs = get_runs().max_runs
+        runs = get_runs()
+        max_concurrent_runs = runs.max_runs
         if max_concurrent_runs == 1:
             lora_module = LoRALinear(
                 base_linear=base_module,
@@ -161,11 +162,10 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
                 dropout=config.dropout,
             )
 
-        def reset_lora_idx_hook(idx: int, run_id: str) -> None:
-            lora_module.reset_parameters(idx)
+        # def reset_lora_idx_hook(idx: int, run_id: str) -> None:
+        #     lora_module.reset_parameters(idx)
 
-        get_runs().register_creation_hook(reset_lora_idx_hook)
-        # TODO: we need to reset optimizer state too!
+        # runs.register_creation_hook(reset_lora_idx_hook)
         _set_module_by_name(model, module_name, lora_module)
 
     freeze_all_except_lora_and_specified(model, config)

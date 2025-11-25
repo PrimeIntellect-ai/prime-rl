@@ -120,24 +120,32 @@ class MultiLoRALinear(nn.Module):
 
         # LoRA weights: one low-rank pair per adapter
         # [n_adapters, in, r]
-        self.lora_A = nn.Parameter(
-            torch.empty(
-                n_adapters,
-                rank,
-                self.in_features,
-                device=self.base_linear.weight.device,
-                dtype=self.base_linear.weight.dtype,
-            )
+        self.lora_A = nn.ParameterList(
+            [
+                nn.Parameter(
+                    torch.empty(
+                        rank,
+                        self.in_features,
+                        device=self.base_linear.weight.device,
+                        dtype=self.base_linear.weight.dtype,
+                    )
+                )
+                for _ in range(n_adapters)
+            ]
         )
         # [n_adapters, r, out]
-        self.lora_B = nn.Parameter(
-            torch.empty(
-                n_adapters,
-                self.out_features,
-                rank,
-                device=self.base_linear.weight.device,
-                dtype=self.base_linear.weight.dtype,
-            )
+        self.lora_B = nn.ParameterList(
+            [
+                nn.Parameter(
+                    torch.empty(
+                        self.out_features,
+                        rank,
+                        device=self.base_linear.weight.device,
+                        dtype=self.base_linear.weight.dtype,
+                    )
+                )
+                for _ in range(n_adapters)
+            ]
         )
 
         self.reset_parameters()
@@ -150,8 +158,8 @@ class MultiLoRALinear(nn.Module):
 
     def reset_parameters(self, index: int | None = None):
         if index is None:
-            nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
-            nn.init.zeros_(self.lora_B)
+            for i in range(self.n_adapters):
+                self.reset_parameters(i)
         else:
             nn.init.kaiming_uniform_(self.lora_A[index], a=math.sqrt(5))
             nn.init.zeros_(self.lora_B[index])
@@ -168,11 +176,27 @@ class MultiLoRALinear(nn.Module):
 
         base_out = self.base_linear(x)
         lora_x = self.lora_dropout(x)
+
+        combined_lora_A = torch.stack(list(self.lora_A), dim=0)
+        combined_lora_B = torch.stack(list(self.lora_B), dim=0)
         if self.use_grouped_mm:
-            lora_out = _run_lora_grouped_mm(lora_x, self.lora_A, self.lora_B, offsets)
+            lora_out = _run_lora_grouped_mm(lora_x, combined_lora_A, combined_lora_B, offsets)
         else:
-            lora_out = _run_lora_for_loop(lora_x, self.lora_A, self.lora_B, offsets)
+            lora_out = _run_lora_for_loop(lora_x, combined_lora_A, combined_lora_B, offsets)
         return (base_out + self.scaling * lora_out).unsqueeze(0)
+
+    def state_dict(self, *args, destination=None, prefix="", keep_vars=False):
+        destination.update(
+            {
+                f"{prefix}lora_A.weight": torch.stack(list(self.lora_A), dim=0).detach(),
+                f"{prefix}lora_B.weight": torch.stack(list(self.lora_B), dim=0).detach(),
+            }
+        )
+        return destination
+
+    def load_state_dict(self, state_dict: dict):
+        self.lora_A = nn.ParameterList([nn.Parameter(state_dict["lora_A"][i]) for i in range(self.n_adapters)])
+        self.lora_B = nn.ParameterList([nn.Parameter(state_dict["lora_B"][i]) for i in range(self.n_adapters)])
 
     def __repr__(self):
         return f"{self.__class__.__name__}(base={self.base_linear}, rank={self.rank}, n_adapters={self.n_adapters}, alpha={self.alpha}, dropout={self.lora_dropout})"

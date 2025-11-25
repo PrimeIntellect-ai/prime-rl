@@ -22,7 +22,6 @@ from prime_rl.trainer.rl.loss import (
     compute_entropy,
     compute_loss,
 )
-from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
     setup_tokenizer,
@@ -96,14 +95,14 @@ def train(config: RLTrainerConfig):
         from prime_rl.trainer.runs import get_runs
         from prime_rl.trainer.optim import _setup_optimizer
 
-        optimizer = _setup_optimizer(
-            config.optim, get_runs().multi_named_parameters, parallel_dims.world_mesh["dp_shard_cp"]
-        )
         # optimizer = setup_multi_optimizer(config.optim, model, parallel_dims.world_mesh["dp_shard_cp"])
+        runs = get_runs()
+        optimizer = _setup_optimizer(config.optim, runs.named_parameters[0], parallel_dims.world_mesh["dp_shard_cp"])
 
     # Set up the learning rate scheduler
-    scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
-    logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
+    # scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
+    # logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
+    scheduler = None
 
     # Set up weight broadcast
     logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
@@ -301,13 +300,30 @@ def train(config: RLTrainerConfig):
         grad_norm = grad_norm_dtensor.full_tensor()
 
         # Update the model parameters
+        for n, p in model.named_parameters():
+            if "layers.26" not in n:
+                continue
+            if p.grad is not None:
+                print(f"Grad for {n}: {p.grad.shape} {p.grad.sum().item()}")
+        from prime_rl.trainer.runs import get_runs
+
+        run = get_runs()
+        for n, p in run.named_parameters[0]:
+            if "layers.26" not in n:
+                continue
+            if p.grad is not None:
+                print(f"Run 0 grad for {n}: {p.grad.shape} {p.grad.sum().item()}")
+            else:
+                print(f"Run 0 grad for {n} is None")
         optimizer.step()
         optimizer.zero_grad()
 
         # Update learning rate scheduler
-        # current_lr = optimizer.optimizers[0].param_groups[0]["lr"]
-        current_lr = optimizer.param_groups[0]["lr"]
-        scheduler.step()
+        if hasattr(optimizer, "param_groups"):
+            current_lr = optimizer.param_groups[0]["lr"]
+        else:
+            current_lr = optimizer.optimizers[0].param_groups[0]["lr"]
+        # scheduler.step()
 
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 

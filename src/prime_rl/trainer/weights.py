@@ -272,14 +272,14 @@ def get_adapter_state_dict(model: nn.Module, is_master: bool) -> dict[str, Tenso
 
     for key, value in model.state_dict().items():
         param = dict(model.named_parameters()).get(key)
-        if param is None or not param.requires_grad:
+        if (param is None or not param.requires_grad) and "lora" not in key:
             continue
 
         if isinstance(value, DTensor):
             value = value.full_tensor()
 
         if is_master:
-            clean_key = next(iter(get_fqns(model, key)))
+            clean_key = key
             clean_key = clean_key.replace(".base_layer.", ".")
             clean_key = clean_key.replace(".base_linear.", ".")
 

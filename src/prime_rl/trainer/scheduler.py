@@ -2,6 +2,9 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import ConstantLR, CosineAnnealingLR, LinearLR, LRScheduler, SequentialLR
 
 from prime_rl.trainer.config import SchedulerConfigType
+from prime_rl.trainer.optim import MultiOptimizer
+from prime_rl.trainer.runs import get_runs
+from prime_rl.utils.logger import get_logger
 
 
 def setup_constant_scheduler(optimizer: Optimizer) -> LRScheduler:
@@ -74,7 +77,7 @@ def setup_cosine_scheduler(
     return SequentialLR(optimizer, schedulers, milestones=milestones)
 
 
-def setup_scheduler(
+def _setup_scheduler(
     optimizer: Optimizer,
     scheduler_config: SchedulerConfigType,
     max_steps: int | None,
@@ -103,3 +106,56 @@ def setup_scheduler(
             )
         case _:
             raise ValueError(f"Invalid scheduler type: {scheduler_config.type}")
+
+
+class MultiScheduler:
+    def __init__(
+        self, optimizer: MultiOptimizer, scheduler_config: SchedulerConfigType, max_steps: int | None, lr: float
+    ):
+        self.optimizer = optimizer
+        self.scheduler_config = scheduler_config
+        self.max_steps = max_steps
+        self.lr = lr
+        self.runs = get_runs()
+        self.logger = get_logger()
+        self.runs.register_creation_hook(self.scheduler_creation_hook)
+        self.schedulers: list[LRScheduler | None] = [None] * self.runs.max_runs
+
+    def scheduler_creation_hook(self, idx: int, run_id: str) -> None:
+        self.schedulers[idx] = _setup_scheduler(
+            self.optimizer.optimizers[idx],
+            self.scheduler_config,
+            self.max_steps,
+            self.lr,
+        )
+
+    def step(self):
+        for idx in self.runs.used_idxs:
+            try:
+                self.schedulers[idx].step()
+            except Exception as e:
+                self.logger.error(f"Error stepping scheduler for run {idx}: {e}")
+
+    def state_dict(self):
+        return {
+            "schedulers": [scheduler.state_dict() for scheduler in self.schedulers],
+        }
+
+    def load_state_dict(self, state_dict: dict):
+        for scheduler, scheduler_state in zip(self.schedulers, state_dict["schedulers"]):
+            scheduler.load_state_dict(scheduler_state)
+
+
+def setup_multi_scheduler(
+    optimizer: MultiOptimizer, scheduler_config: SchedulerConfigType, max_steps: int | None, lr: float
+) -> MultiScheduler:
+    return MultiScheduler(optimizer, scheduler_config, max_steps, lr)
+
+
+def setup_scheduler(
+    optimizer: Optimizer | MultiOptimizer, scheduler_config: SchedulerConfigType, max_steps: int | None, lr: float
+) -> LRScheduler | MultiScheduler:
+    if isinstance(optimizer, MultiOptimizer):
+        return setup_multi_scheduler(optimizer, scheduler_config, max_steps, lr)
+    else:
+        return _setup_scheduler(optimizer, scheduler_config, max_steps, lr)
