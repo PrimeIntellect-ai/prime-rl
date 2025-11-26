@@ -26,6 +26,7 @@ requires_grouped_mm = pytest.mark.skipif(
 )
 
 
+@requires_grouped_mm
 def test_no_graph_breaks() -> None:
     torch._dynamo.reset()
 
