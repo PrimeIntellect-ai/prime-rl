@@ -155,9 +155,6 @@ class MultiLoRALinear(nn.Module):
         for param in self.base_linear.parameters():
             param.requires_grad = False
 
-        global OFFSETS
-        self.offsets = OFFSETS
-
     def reset_parameters(self, index: int | None = None):
         if index is None:
             for i in range(self.n_adapters):
@@ -188,19 +185,6 @@ class MultiLoRALinear(nn.Module):
         else:
             lora_out = _run_lora_for_loop(lora_x, combined_lora_A, combined_lora_B, offsets)
         return (base_out + self.scaling * lora_out).view(new_shape)
-
-    def state_dict(self, *args, destination=None, prefix="", keep_vars=False):
-        destination.update(
-            {
-                f"{prefix}lora_A.weight": torch.stack(list(self.lora_A), dim=0).detach(),
-                f"{prefix}lora_B.weight": torch.stack(list(self.lora_B), dim=0).detach(),
-            }
-        )
-        return destination
-
-    def load_state_dict(self, state_dict: dict):
-        self.lora_A = nn.ParameterList([nn.Parameter(state_dict["lora_A"][i]) for i in range(self.n_adapters)])
-        self.lora_B = nn.ParameterList([nn.Parameter(state_dict["lora_B"][i]) for i in range(self.n_adapters)])
 
     def __repr__(self):
         return f"{self.__class__.__name__}(base={self.base_linear}, rank={self.rank}, n_adapters={self.n_adapters}, alpha={self.alpha}, dropout={self.lora_dropout})"
