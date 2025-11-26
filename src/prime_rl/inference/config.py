@@ -97,6 +97,13 @@ class ModelConfig(BaseConfig):
         ),
     ] = None
 
+    enable_reasoning: Annotated[
+        bool,
+        Field(
+            description="Whether to enable reasoning output extraction. Passed to vLLM as `--enable-reasoning`",
+        ),
+    ] = False
+
 
 class WeightBroadcastConfig(BaseSettings):
     """Configures weight broadcast settings."""
@@ -156,6 +163,7 @@ class InferenceConfig(BaseSettings):
             "model.enable_auto_tool_choice": "enable_auto_tool_choice",
             "model.tool_call_parser": "tool_call_parser",
             "model.reasoning_parser": "reasoning_parser",
+            "model.enable_reasoning": "enable_reasoning",
             "parallel.tp": "tensor_parallel_size",
             "parallel.dp": "data_parallel_size",
             "gpu_memory_utilization": "gpu_memory_utilization",
