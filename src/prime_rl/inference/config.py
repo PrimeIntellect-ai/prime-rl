@@ -90,6 +90,13 @@ class ModelConfig(BaseConfig):
         ),
     ] = "hermes"
 
+    reasoning_parser: Annotated[
+        str | None,
+        Field(
+            description="The reasoning parser to use for extracting reasoning content. Passed to vLLM as `--reasoning-parser`",
+        ),
+    ] = None
+
 
 class WeightBroadcastConfig(BaseSettings):
     """Configures weight broadcast settings."""
@@ -148,6 +155,7 @@ class InferenceConfig(BaseSettings):
             "model.trust_remote_code": "trust_remote_code",
             "model.enable_auto_tool_choice": "enable_auto_tool_choice",
             "model.tool_call_parser": "tool_call_parser",
+            "model.reasoning_parser": "reasoning_parser",
             "parallel.tp": "tensor_parallel_size",
             "parallel.dp": "data_parallel_size",
             "gpu_memory_utilization": "gpu_memory_utilization",
