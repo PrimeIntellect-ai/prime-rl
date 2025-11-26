@@ -39,6 +39,7 @@ dependencies = [
     "prime-evals>=0.1.2",
     "prime-sandboxes>=0.2.3",
     "flash-attn>=2.8.3",
+    "tabulate>=0.9.0",
 ]
 
 [project.scripts]
