@@ -305,6 +305,7 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
         )
 
     logger = get_logger()
+    runs = get_runs()
     # Get model from specified device
     model = get_model(
         config,
@@ -319,7 +320,7 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
 
     # Apply LoRA before FSDP setup
     if config.experimental.lora is not None:
-        apply_lora_to_model(model, config.experimental.lora)
+        apply_lora_to_model(model, config.experimental.lora, n_loras=runs.max_runs)
 
     # the right order is AC -> Compile -> FSDP
     if config.ac is not None:
@@ -335,7 +336,6 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
     from prime_rl.trainer.models.layers.lora import MultiLoRALinear
 
     if config.experimental.lora is not None:
-        runs = get_runs()
         for n, p in model.named_parameters():
             if "lora_A" in n or "lora_B" in n:
                 idx = int(n.split(".")[-1])
