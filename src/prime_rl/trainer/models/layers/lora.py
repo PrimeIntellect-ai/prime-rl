@@ -26,25 +26,25 @@ class LoRALinear(nn.Module):
 
     def __init__(
         self,
-        base_linear: nn.Linear,
+        base_layer: nn.Linear,
         rank: int,
         alpha: float = 1.0,
         dropout: float = 0.0,
     ):
         super().__init__()
-        self.base_linear = base_linear
+        self.base_layer = base_layer
         self.rank = rank
         self.alpha = alpha
         self.scaling = alpha / rank
 
-        self.lora_A = nn.Parameter(torch.empty(rank, base_linear.in_features))
-        self.lora_B = nn.Parameter(torch.empty(base_linear.out_features, rank))
+        self.lora_A = nn.Parameter(torch.empty(rank, base_layer.in_features))
+        self.lora_B = nn.Parameter(torch.empty(base_layer.out_features, rank))
 
         self.lora_dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
 
         self.reset_parameters()
 
-        for param in self.base_linear.parameters():
+        for param in self.base_layer.parameters():
             param.requires_grad = False
 
     def reset_parameters(self):
@@ -54,13 +54,13 @@ class LoRALinear(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass: base_output + lora_output"""
-        base_output = self.base_linear(x)
+        base_output = self.base_layer(x)
         lora_x = self.lora_dropout(x)
         lora_output = (lora_x @ self.lora_A.T) @ self.lora_B.T * self.scaling
         return base_output + lora_output
 
     def __repr__(self):
-        return f"{self.__class__.__name__}(base={self.base_linear}, rank={self.rank}, alpha={self.alpha}, dropout={self.lora_dropout})"
+        return f"{self.__class__.__name__}(base={self.base_layer}, rank={self.rank}, alpha={self.alpha}, dropout={self.lora_dropout})"
 
 
 def _run_lora_grouped_mm(x: torch.Tensor, lora_A: torch.Tensor, lora_B: torch.Tensor, offsets: torch.LongTensor):
@@ -89,7 +89,7 @@ class MultiLoRALinear(nn.Module):
 
     def __init__(
         self,
-        base_linear: nn.Linear,
+        base_layer: nn.Linear,
         rank: int,
         n_adapters: int,
         alpha: float = 16.0,
@@ -107,18 +107,18 @@ class MultiLoRALinear(nn.Module):
                 use_grouped_mm = False
         else:
             use_grouped_mm = False
-        if rank % 8 != 0 or base_linear.in_features % 8 != 0 or base_linear.out_features % 8 != 0:
+        if rank % 8 != 0 or base_layer.in_features % 8 != 0 or base_layer.out_features % 8 != 0:
             use_grouped_mm = False
 
-        self.base_linear = base_linear
+        self.base_layer = base_layer
         self.rank = rank
         self.n_adapters = n_adapters
         self.alpha = alpha
         self.lora_dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
         self.scaling = alpha / rank
         self.use_grouped_mm = use_grouped_mm
-        self.in_features = base_linear.in_features
-        self.out_features = base_linear.out_features
+        self.in_features = base_layer.in_features
+        self.out_features = base_layer.out_features
 
         # LoRA weights: one low-rank pair per adapter
         # [n_adapters, in, r]
@@ -128,8 +128,8 @@ class MultiLoRALinear(nn.Module):
                     torch.empty(
                         rank,
                         self.in_features,
-                        device=self.base_linear.weight.device,
-                        dtype=self.base_linear.weight.dtype,
+                        device=self.base_layer.weight.device,
+                        dtype=self.base_layer.weight.dtype,
                     )
                 )
                 for _ in range(n_adapters)
@@ -142,8 +142,8 @@ class MultiLoRALinear(nn.Module):
                     torch.empty(
                         self.out_features,
                         rank,
-                        device=self.base_linear.weight.device,
-                        dtype=self.base_linear.weight.dtype,
+                        device=self.base_layer.weight.device,
+                        dtype=self.base_layer.weight.dtype,
                     )
                 )
                 for _ in range(n_adapters)
@@ -152,7 +152,7 @@ class MultiLoRALinear(nn.Module):
 
         self.reset_parameters()
 
-        for param in self.base_linear.parameters():
+        for param in self.base_layer.parameters():
             param.requires_grad = False
 
     def reset_parameters(self, index: int | None = None):
@@ -175,7 +175,7 @@ class MultiLoRALinear(nn.Module):
         x = x.view(-1, x.shape[-1])
         assert offsets[-1] == x.shape[0]
 
-        base_out = self.base_linear(x)
+        base_out = self.base_layer(x)
         lora_x = self.lora_dropout(x)
 
         combined_lora_A = torch.stack([i for i in self.lora_A], dim=0)
@@ -187,4 +187,4 @@ class MultiLoRALinear(nn.Module):
         return (base_out + self.scaling * lora_out).view(new_shape)
 
     def __repr__(self):
-        return f"{self.__class__.__name__}(base={self.base_linear}, rank={self.rank}, n_adapters={self.n_adapters}, alpha={self.alpha}, dropout={self.lora_dropout})"
+        return f"{self.__class__.__name__}(base={self.base_layer}, rank={self.rank}, n_adapters={self.n_adapters}, alpha={self.alpha}, dropout={self.lora_dropout})"

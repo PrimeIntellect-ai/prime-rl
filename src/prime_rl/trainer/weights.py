@@ -281,7 +281,6 @@ def get_adapter_state_dict(model: nn.Module, is_master: bool) -> dict[str, Tenso
         if is_master:
             clean_key = key
             clean_key = clean_key.replace(".base_layer.", ".")
-            clean_key = clean_key.replace(".base_linear.", ".")
 
             # Add PEFT-expected prefix
             peft_key = f"base_model.model.{clean_key}"

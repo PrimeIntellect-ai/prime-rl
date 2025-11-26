@@ -145,14 +145,14 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig, n_loras: int = 1) 
 
         if n_loras == 1:
             lora_module = LoRALinear(
-                base_linear=base_module,
+                base_layer=base_module,
                 rank=config.rank,
                 alpha=config.alpha,
                 dropout=config.dropout,
             )
         else:
             lora_module = MultiLoRALinear(
-                base_linear=base_module,
+                base_layer=base_module,
                 rank=config.rank,
                 n_adapters=n_loras,
                 alpha=config.alpha,
@@ -171,7 +171,7 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig, n_loras: int = 1) 
     for name, module in model.named_modules():
         if isinstance(module, LoRALinear):
             lora_adapter_params += module.lora_A.numel() + module.lora_B.numel()
-            lora_adapted_params += module.base_linear.weight.numel()
+            lora_adapted_params += module.base_layer.weight.numel()
 
     fully_trainable = trainable_params - lora_adapter_params
     adapted_or_trainable = lora_adapted_params + fully_trainable
@@ -197,8 +197,8 @@ def clean_lora_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torc
         if "lora_A" in key or "lora_B" in key:
             continue
 
-        if ".base_linear." in key:
-            new_key = key.replace(".base_linear.", ".")
+        if ".base_layer." in key:
+            new_key = key.replace(".base_layer.", ".")
             clean_state_dict[new_key] = value
         else:
             clean_state_dict[key] = value

@@ -32,7 +32,7 @@ def test_no_graph_breaks() -> None:
 
     set_offsets(torch.tensor([5, 16], dtype=torch.int32), reset_reference=True)
 
-    model = MultiLoRALinear(base_linear=nn.Linear(32, 16), rank=8, n_adapters=2, alpha=16.0)
+    model = MultiLoRALinear(base_layer=nn.Linear(32, 16), rank=8, n_adapters=2, alpha=16.0)
 
     opt_model = torch.compile(model)
     _ = opt_model(torch.randn(1, 16, 32))
@@ -47,7 +47,7 @@ def test_initialization() -> None:
     """Test that MultiLoRALinear initializes correctly."""
     base = nn.Linear(10, 20)
     N_ADAPTERS = 3
-    lora = MultiLoRALinear(base_linear=base, rank=4, n_adapters=N_ADAPTERS, alpha=16.0)
+    lora = MultiLoRALinear(base_layer=base, rank=4, n_adapters=N_ADAPTERS, alpha=16.0)
 
     assert lora.rank == 4
     assert lora.n_adapters == 3
@@ -67,20 +67,20 @@ def test_initialization_with_invalid_params() -> None:
     base = nn.Linear(10, 20)
 
     with pytest.raises(ValueError, match="rank and n_adapters must be > 0"):
-        MultiLoRALinear(base_linear=base, rank=0, n_adapters=3)
+        MultiLoRALinear(base_layer=base, rank=0, n_adapters=3)
 
     with pytest.raises(ValueError, match="rank and n_adapters must be > 0"):
-        MultiLoRALinear(base_linear=base, rank=4, n_adapters=0)
+        MultiLoRALinear(base_layer=base, rank=4, n_adapters=0)
 
     with pytest.raises(ValueError, match="rank and n_adapters must be > 0"):
-        MultiLoRALinear(base_linear=base, rank=-1, n_adapters=3)
+        MultiLoRALinear(base_layer=base, rank=-1, n_adapters=3)
 
 
 def test_reset_parameters_all() -> None:
     """Test resetting all adapter parameters."""
     base = nn.Linear(10, 20)
     N_ADAPTERS = 3
-    lora = MultiLoRALinear(base_linear=base, rank=4, n_adapters=N_ADAPTERS)
+    lora = MultiLoRALinear(base_layer=base, rank=4, n_adapters=N_ADAPTERS)
 
     # Reset all adapters
     lora.reset_parameters()
@@ -96,7 +96,7 @@ def test_reset_parameters_single_adapter() -> None:
     """Test resetting a single adapter's parameters."""
     base = nn.Linear(10, 20)
     N_ADAPTERS = 3
-    lora = MultiLoRALinear(base_linear=base, rank=4, n_adapters=N_ADAPTERS)
+    lora = MultiLoRALinear(base_layer=base, rank=4, n_adapters=N_ADAPTERS)
 
     # Set all to known values first
     with torch.no_grad():
@@ -123,7 +123,7 @@ def test_forward_with_init_lora_equals_base() -> None:
     N_ADAPTERS = 4
     set_offsets(torch.zeros(N_ADAPTERS, dtype=torch.int32, device="cuda"), reset_reference=True)
     base = nn.Linear(8, 24).cuda()
-    lora = MultiLoRALinear(base_linear=base, rank=8, n_adapters=4)
+    lora = MultiLoRALinear(base_layer=base, rank=8, n_adapters=4)
 
     x = torch.randn(8, 8).cuda()
     offsets = torch.tensor([3, 3, 6, 8], dtype=torch.int32).cuda()
@@ -141,7 +141,7 @@ def test_forward_with_non_zero_lora() -> None:
     N_ADAPTERS = 4
     set_offsets(torch.zeros(N_ADAPTERS, dtype=torch.int32, device="cuda"), reset_reference=True)
     base = nn.Linear(8, 24).cuda()
-    lora = MultiLoRALinear(base_linear=base, rank=4, n_adapters=4)
+    lora = MultiLoRALinear(base_layer=base, rank=4, n_adapters=4)
 
     # Initialize with non-zero LoRA weights
     with torch.no_grad():
@@ -168,7 +168,7 @@ def test_device_consistency() -> None:
     """Test that LoRA parameters are on the same device as base layer."""
     N_ADAPTERS = 4
     base = nn.Linear(8, 24)
-    lora = MultiLoRALinear(base_linear=base, rank=4, n_adapters=N_ADAPTERS)
+    lora = MultiLoRALinear(base_layer=base, rank=4, n_adapters=N_ADAPTERS)
 
     for i in range(N_ADAPTERS):
         assert lora.lora_A[i].device == base.weight.device
@@ -179,7 +179,7 @@ def test_dtype_consistency() -> None:
     """Test that LoRA parameters have the same dtype as base layer."""
     N_ADAPTERS = 4
     base = nn.Linear(8, 24, dtype=torch.float32)
-    lora = MultiLoRALinear(base_linear=base, rank=4, n_adapters=N_ADAPTERS)
+    lora = MultiLoRALinear(base_layer=base, rank=4, n_adapters=N_ADAPTERS)
 
     for i in range(N_ADAPTERS):
         assert lora.lora_A[i].dtype == torch.float32
@@ -189,7 +189,7 @@ def test_dtype_consistency() -> None:
 def test_properties() -> None:
     """Test that in_features and out_features properties work correctly."""
     base = nn.Linear(15, 25)
-    lora = MultiLoRALinear(base_linear=base, rank=4, n_adapters=2)
+    lora = MultiLoRALinear(base_layer=base, rank=4, n_adapters=2)
 
     assert lora.in_features == 15
     assert lora.out_features == 25
@@ -202,7 +202,7 @@ def test_gradient_flow_init() -> None:
     N_ADAPTERS = 2
     set_offsets(torch.zeros(N_ADAPTERS, dtype=torch.int32, device="cuda"), reset_reference=True)
     base = nn.Linear(8, 24).cuda()
-    lora = MultiLoRALinear(base_linear=base, rank=4, n_adapters=N_ADAPTERS)
+    lora = MultiLoRALinear(base_layer=base, rank=4, n_adapters=N_ADAPTERS)
 
     x = torch.randn(4, 8, requires_grad=True, device="cuda")
     offsets = torch.tensor([2, 4], dtype=torch.int32, device="cuda")
@@ -213,7 +213,7 @@ def test_gradient_flow_init() -> None:
     loss.backward()
 
     # Check that gradients exist
-    assert lora.base_linear.weight.grad is None
+    assert lora.base_layer.weight.grad is None
     for i in range(N_ADAPTERS):
         assert lora.lora_A[i].grad is not None
         assert lora.lora_B[i].grad is not None
@@ -230,7 +230,7 @@ def test_gradient_flow_non_zero_lora() -> None:
     N_ADAPTERS = 2
     set_offsets(torch.zeros(N_ADAPTERS, dtype=torch.int32, device="cuda"), reset_reference=True)
     base = nn.Linear(8, 24).cuda()
-    lora = MultiLoRALinear(base_linear=base, rank=4, n_adapters=N_ADAPTERS)
+    lora = MultiLoRALinear(base_layer=base, rank=4, n_adapters=N_ADAPTERS)
     with torch.no_grad():
         for i in range(N_ADAPTERS):
             nn.init.kaiming_uniform_(lora.lora_B[i], a=math.sqrt(5))
@@ -244,7 +244,7 @@ def test_gradient_flow_non_zero_lora() -> None:
     loss.backward()
 
     # Check that gradients exist
-    assert lora.base_linear.weight.grad is None
+    assert lora.base_layer.weight.grad is None
     for i in range(N_ADAPTERS):
         assert lora.lora_A[i].grad is not None
         assert lora.lora_B[i].grad is not None
@@ -268,7 +268,7 @@ def test_different_configurations(rank: int, n_adapters: int, alpha: float) -> N
     """Test MultiLoRALinear with different hyperparameter configurations."""
     set_offsets(torch.zeros(n_adapters, dtype=torch.int32, device="cuda"), reset_reference=True)
     base = nn.Linear(8, 24).cuda()
-    lora = MultiLoRALinear(base_linear=base, rank=rank, n_adapters=n_adapters, alpha=alpha)
+    lora = MultiLoRALinear(base_layer=base, rank=rank, n_adapters=n_adapters, alpha=alpha)
 
     assert lora.rank == rank
     assert lora.n_adapters == n_adapters
