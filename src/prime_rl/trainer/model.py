@@ -333,25 +333,6 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
     if config.load_using_meta and can_load_dcp_from_hf(model):
         load_dcp_from_hf(model, config)
 
-    from prime_rl.trainer.models.layers.lora import MultiLoRALinear
-
-    if config.experimental.lora is not None:
-        for n, p in model.named_parameters():
-            if "lora_A" in n or "lora_B" in n:
-                idx = int(n.split(".")[-1])
-                runs.named_parameters[idx].append((n, p))
-        for n, m in model.named_modules():
-            if isinstance(m, MultiLoRALinear):
-                print(f"Found MultiLoRALinear at {n}")
-
-                def make_reset_hook(module):
-                    def reset_lora_idx_hook(idx: int, run_id: str) -> None:
-                        module.reset_parameters(idx)
-
-                    return reset_lora_idx_hook
-
-                runs.register_creation_hook(make_reset_hook(m))
-
     logger.debug(f"Model signature: {get_module_signature(model, compress=True)}")
     return model
 

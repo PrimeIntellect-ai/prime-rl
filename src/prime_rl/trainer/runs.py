@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Callable
 
 # This makes tests run significantly faster
 if TYPE_CHECKING:
-    import torch
+    pass
 
 
 # TODO: Delete the one in ckpt.py?
@@ -31,10 +31,6 @@ class Runs:
 
         self._deletion_hooks: list[Callable[[int, str], None]] = []
         self._creation_hooks: list[Callable[[int, str], None]] = []
-
-        self.named_parameters: dict[int, list[tuple[str, torch.nn.Parameter]]] = {}
-        for idx in range(self.max_runs):
-            self.named_parameters[idx] = []
 
     def check_for_changes(self) -> None:
         run_ids = {run_path.stem for run_path in self.output_dir.glob("run_*")}

@@ -4,18 +4,37 @@ from torch.distributed.device_mesh import DeviceMesh
 from torch.optim import SGD, AdamW, Optimizer
 
 from prime_rl.trainer.config import OptimizerConfigType
+from prime_rl.trainer.models.layers.lora import MultiLoRALinear
 from prime_rl.trainer.runs import get_runs
 from prime_rl.utils.logger import get_logger
 
 
 class MultiOptimizer:
-    def __init__(self, config: OptimizerConfigType, device_mesh: DeviceMesh):
+    def __init__(self, config: OptimizerConfigType, model: nn.Module, device_mesh: DeviceMesh):
         self.config = config
         self.device_mesh = device_mesh
         self.runs = get_runs()
         self.logger = get_logger()
 
         self.optimizers: list[Optimizer | None] = [None] * self.runs.max_runs
+        self.named_parameters: dict[int, list[tuple[str, nn.Parameter]]] = {}
+        for idx in range(self.runs.max_runs):
+            self.named_parameters[idx] = []
+        for n, p in model.named_parameters():
+            if "lora_A" in n or "lora_B" in n:
+                idx = int(n.split(".")[-1])
+                self.named_parameters[idx].append((n, p))
+        for n, m in model.named_modules():
+            if isinstance(m, MultiLoRALinear):
+                print(f"Found MultiLoRALinear at {n}")
+
+                def make_reset_hook(module):
+                    def reset_lora_idx_hook(idx: int, run_id: str) -> None:
+                        module.reset_parameters(idx)
+
+                    return reset_lora_idx_hook
+
+                self.runs.register_creation_hook(make_reset_hook(m))
 
         self.runs.register_creation_hook(self.optimizer_creation_hook)
 
@@ -48,7 +67,7 @@ class MultiOptimizer:
 
 
 def setup_multi_optimizer(config: OptimizerConfigType, model: nn.Module, device_mesh: DeviceMesh) -> MultiOptimizer:
-    return MultiOptimizer(config, device_mesh)
+    return MultiOptimizer(config, model, device_mesh)
 
 
 def setup_optimizer(config: OptimizerConfigType, model: nn.Module, device_mesh: DeviceMesh) -> Optimizer:
