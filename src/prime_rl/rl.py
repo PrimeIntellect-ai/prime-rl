@@ -285,7 +285,6 @@ class RLConfig(BaseSettings):
             # Configure the trainer fake data to match the orchestrator config
             self.trainer.data.fake = FakeDataLoaderConfig(
                 batch_size=self.orchestrator.batch_size,
-                seq_len=self.orchestrator.seq_len,
             )
 
         if self.trainer.bench != self.orchestrator.bench:
@@ -335,7 +334,7 @@ class RLConfig(BaseSettings):
         # If specified, use the same outputs directory for trainer and orchestrator
         if self.output_dir is not None:
             self.trainer.output_dir = self.output_dir
-            self.orchestrator.output_dir = self.output_dir
+            self.orchestrator.output_dir = self.output_dir / "run_default"
 
         validate_shared_output_dir(self.trainer, self.orchestrator)
 
