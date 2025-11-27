@@ -12,7 +12,7 @@ import torch
 from torch.distributed.tensor.experimental import context_parallel
 from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
-from prime_rl.trainer.ckpt import Progress, setup_ckpt_managers
+from prime_rl.trainer.ckpt import setup_ckpt_managers
 from prime_rl.trainer.sft.config import SFTTrainerConfig
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.optim import setup_optimizer
@@ -34,6 +34,7 @@ from prime_rl.trainer.utils import (
     print_benchmark,
 )
 from prime_rl.trainer.world import get_world
+from prime_rl.trainer.runs import Progress
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format
