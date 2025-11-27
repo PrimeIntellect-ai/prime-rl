@@ -40,7 +40,6 @@ class FakeDataLoaderConfig(BaseConfig):
     """Configures a fake data loader sampling random micro batches for debugging."""
 
     batch_size: Annotated[int, Field(ge=1)] = 2
-    seq_len: Annotated[int, Field(ge=1)] = 128
 
 
 class DataLoaderConfig(BaseConfig):
@@ -152,6 +151,14 @@ class RLTrainerConfig(BaseSettings):
             description="Timeout in seconds for torch distributed ops. Defaults to 600 seconds.",
         ),
     ] = 600
+
+    max_concurrent_runs: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="The maximum number of concurrent runs to allow. If 1, then only one run will be allowed at a time.",
+        ),
+    ] = 2
 
     @model_validator(mode="after")
     def auto_setup_bench(self):

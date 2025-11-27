@@ -41,7 +41,7 @@ from prime_rl.trainer.utils import (
     get_response_lengths,
 )
 from prime_rl.trainer.world import get_world
-from prime_rl.trainer.runs import Progress
+from prime_rl.trainer.runs import Progress, setup_runs
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format
@@ -56,7 +56,8 @@ def train(config: RLTrainerConfig):
         config.log.level,
         log_file=config.output_dir / "logs" / "trainer" / f"rank_{world.rank}.log" if config.log.file else None,
     )
-    logger.info(f"Starting RL trainer in {world}")
+    setup_runs(config.output_dir, config.max_concurrent_runs)
+    logger.info(f"Starting RL trainer in {world} in {config.output_dir}")
 
     # Print warning if running in benchmark mode
     if config.bench:
@@ -121,7 +122,11 @@ def train(config: RLTrainerConfig):
     logger.info(f"Initializing data loader ({config.data})")
     dataloader = DataLoader(config.output_dir, progress.step)
     if config.data.fake:
-        dataloader = FakeDataLoader(config.data.fake)
+        dataloader = FakeDataLoader(config.data.fake, config.model.seq_len)
+    else:
+        dataloader = DataLoader(
+            config.output_dir, progress.step, parallel_dims.world_mesh["dp"].size(), config.model.seq_len, tokenizer
+        )
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     is_first_step = True
