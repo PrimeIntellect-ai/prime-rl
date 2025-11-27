@@ -4,7 +4,7 @@ import pytest
 import torch
 from transformers import PreTrainedTokenizer
 
-from prime_rl.trainer.batch import prepare_batch
+# from prime_rl.trainer.batch import prepare_batch
 from prime_rl.utils.vf import Rollout
 
 
