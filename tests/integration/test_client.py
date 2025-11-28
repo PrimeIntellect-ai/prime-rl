@@ -48,7 +48,7 @@ def test_logprobs_in_response(response: ChatCompletion):
     assert "logprobs" in response_dict["choices"][0], "logprobs should be present in the response"
 
 
-def token_ids_and_logprobs_match(response: ChatCompletion):
+def test_token_ids_and_logprobs_match(response: ChatCompletion):
     response_dict = response.model_dump()
     token_ids = response_dict["choices"][0]["token_ids"]
     logprobs = response_dict["choices"][0]["logprobs"]["content"]
