@@ -9,6 +9,7 @@ from datasets import Dataset, load_from_disk
 
 from prime_rl.orchestrator.config import BufferConfig
 from prime_rl.utils.utils import mean_normalize
+from prime_rl.utils.vf import from_serializable_state, to_serializable_state
 
 
 class Buffer:
@@ -47,7 +48,8 @@ class Buffer:
 
         rollouts_path = path / "rollouts"
         if self.rollout_buffer:
-            Dataset.from_list(list(map(dict, self.rollout_buffer))).save_to_disk(rollouts_path)
+            serializable_rollouts = [to_serializable_state(rollout) for rollout in self.rollout_buffer]
+            Dataset.from_list(list(map(dict, serializable_rollouts))).save_to_disk(rollouts_path)
         elif rollouts_path.exists():
             shutil.rmtree(rollouts_path)
 
@@ -68,9 +70,8 @@ class Buffer:
         # Load rollouts
         rollouts_path = path / "rollouts"
         if rollouts_path.exists():
-            raise NotImplementedError("Loading rollouts from disk is not implemented yet")
-            # rollouts_dataset = load_from_disk(rollouts_path)
-            # self.rollout_buffer = [**cast(dict, row)) for row in rollouts_dataset]
+            rollouts_dataset = load_from_disk(rollouts_path)
+            self.rollout_buffer = [from_serializable_state(cast(dict, row)) for row in rollouts_dataset]
 
     def sample_problems(self, n: int) -> list[dict]:
         """Samples `n` problems from the dataset using difficulty pools."""
