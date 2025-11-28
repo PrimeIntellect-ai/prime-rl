@@ -2119,14 +2119,14 @@ wheels = [
 
 [[package]]
 name = "prime-evals"
-version = "0.1.2"
+version = "0.1.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6b/1e/433bde0e8f8de1d9ed35d30f96422fba9e30efdee16db584eaa3ec0aa4e7/prime_evals-0.1.2-py3-none-any.whl", hash = "sha256:f6e164b19beea7b5b5f2bec6bbcb9c8e371477e9ea698f09d88e907f7f253be3", size = 12795, upload-time = "2025-10-28T10:55:42.102Z" },
+    { url = "https://files.pythonhosted.org/packages/41/99/43f810f86c2dc483c10cdbb63fb1de20a2d7a3b5c65fe0f06cc79ee26130/prime_evals-0.1.4-py3-none-any.whl", hash = "sha256:0dec4b3561d26a287e03da3364508758b679d969ec389cd0955043edd7713b67", size = 12722, upload-time = "2025-11-11T21:14:18.702Z" },
 ]
 
 [[package]]
@@ -2195,8 +2195,8 @@ requires-dist = [
     { name = "nltk", specifier = ">=3.9.1" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "openai", specifier = ">=1.106.1" },
-    { name = "prime-evals", specifier = ">=0.1.2" },
-    { name = "prime-sandboxes", specifier = ">=0.2.3" },
+    { name = "prime-evals", specifier = ">=0.1.4" },
+    { name = "prime-sandboxes", specifier = ">=0.2.4" },
     { name = "pydantic", specifier = ">=1.10.13" },
     { name = "pydantic-settings", specifier = ">=2.10.1" },
     { name = "pylatexenc", specifier = ">=2.10" },
@@ -2227,7 +2227,7 @@ dev = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.2.3"
+version = "0.2.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -2235,7 +2235,7 @@ dependencies = [
     { name = "pydantic" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f3/c1/497242b9a532d6b9bfa9110b7906e0959739280016e6d4ba4cc8711d55e0/prime_sandboxes-0.2.3-py3-none-any.whl", hash = "sha256:7c7148b7df5c59701e7d2e8bf9f5a0c71365940cb2548547ee2bbba0010aac42", size = 16623, upload-time = "2025-11-07T21:20:06.148Z" },
+    { url = "https://files.pythonhosted.org/packages/ce/50/e4c75ab9c4ddc6aa64e7282a50e002a78d1c0901c412c543b397f1db0678/prime_sandboxes-0.2.4-py3-none-any.whl", hash = "sha256:763ba4fa0573567596324ec2518897e5eabcc28c25ffd2f48176a6c4757f42d0", size = 16928, upload-time = "2025-11-13T01:33:55.113Z" },
 ]
 
 [[package]]
