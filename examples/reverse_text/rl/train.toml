@@ -5,3 +5,13 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 [optim]
 lr = 3e-6
+
+# WandB config with platform upload (for logging from trainer)
+[wandb]
+project = "prime-rl-test"
+offline = true
+
+[wandb.platform]
+enabled = true
+api_url = "http://localhost:82"
+upload_interval = 1
