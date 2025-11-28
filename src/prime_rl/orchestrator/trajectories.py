@@ -1,6 +1,7 @@
 import verifiers as vf
 
 from prime_rl.orchestrator.types import TrainingExample
+from prime_rl.utils.logger import get_logger
 
 
 def interleave_rollout(state: vf.State) -> list[TrainingExample]:
@@ -11,6 +12,7 @@ def interleave_rollout(state: vf.State) -> list[TrainingExample]:
     - This requires that consecutive trajectory steps share token prefixes (incremental tokenization)
     - This approach is suceptible to introduce subtle difference due to re-tokenization in multi-turn environments.
     """
+    logger = get_logger()
 
     # Initialize the rollout with prompt and completion from first trajectory step
     trajectory = state["trajectory"]
@@ -26,25 +28,19 @@ def interleave_rollout(state: vf.State) -> list[TrainingExample]:
 
     # Interleave all other trajectory steps into completion
     prefix_tokens = first_step["tokens"]["prompt_ids"] + first_step["tokens"]["completion_ids"]
-    prefix_messages = first_step["prompt"] + first_step["completion"]
-    for step in trajectory[1:]:
+    for step_idx, step in enumerate(trajectory[1:], start=2):
         tokens = step["tokens"]
         assert tokens is not None
         prev_trajectory_and_new_prompt_ids = tokens["prompt_ids"]
-        prev_trajectory_and_new_prompt = step["prompt"]
+
         # Incremental tokenization assumption
-        # assert prefix_messages == prev_trajectory_and_new_prompt[: len(prefix_messages)], (
-        #     f"{prefix_messages} != \n{prev_trajectory_and_new_prompt[: len(prefix_messages)]}"
-        # )
-        # assert prefix_tokens == prev_trajectory_and_new_prompt_ids[: len(prefix_tokens)], (
-        #     f"{prefix_tokens} != \n{prev_trajectory_and_new_prompt_ids[: len(prefix_tokens)]}"
-        # )
+        if not prefix_tokens == prev_trajectory_and_new_prompt_ids[: len(prefix_tokens)]:
+            logger.warning(
+                f"Found mismatch in prefix tokens for example {state['example_id']} at trajectory step {step_idx}"
+            )
 
         # Extend the completion with the new prompt
         prompt_ids = prev_trajectory_and_new_prompt_ids[len(prefix_tokens) :]
-        prompt = prev_trajectory_and_new_prompt[len(prefix_messages) :]
-        for msg in prompt:
-            assert msg["role"] in ["user", "tool"]
         interleaved_rollout["completion_ids"].extend(prompt_ids)
         interleaved_rollout["completion_mask"].extend([0] * len(prompt_ids))
         interleaved_rollout["completion_logprobs"].extend([0.0] * len(prompt_ids))
@@ -56,7 +52,6 @@ def interleave_rollout(state: vf.State) -> list[TrainingExample]:
 
         # New prefix is the the current prompt and completion ids concatenated
         prefix_tokens = tokens["prompt_ids"] + tokens["completion_ids"]
-        prefix_messages = step["prompt"] + step["completion"]
 
     return [interleaved_rollout]
 
