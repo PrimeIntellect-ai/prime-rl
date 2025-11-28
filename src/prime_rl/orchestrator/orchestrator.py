@@ -349,7 +349,7 @@ async def orchestrate(config: OrchestratorConfig):
         step_time = time.perf_counter() - step_start_time
         to_log = {
             # Progress metrics
-            # "progress/tokens": num_tokens,
+            "progress/tokens": num_tokens,
             "progress/samples": config.batch_size,
             "progress/problems": config.batch_size // config.rollouts_per_example,
             "progress/total_tokens": progress.total_tokens,
