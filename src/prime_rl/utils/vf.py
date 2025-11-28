@@ -3,6 +3,7 @@ from itertools import cycle
 
 import verifiers as vf
 from openai import AsyncOpenAI
+from pydantic import BaseModel
 from tqdm import tqdm
 
 from prime_rl.orchestrator.utils import get_semaphore
@@ -79,3 +80,41 @@ def get_completion_len(state: vf.State) -> int:
 def get_is_truncated(state: vf.State) -> bool:
     """Check if the state is truncated."""
     return state["trajectory"][-1]["tokens"]["is_truncated"]
+
+
+def get_serializable_trajectory_step(step: vf.TrajectoryStep) -> dict:
+    """Get a serializable version of vf.TrajectoryStep. Serializes a selected subset of fields."""
+    serializable_trajectory_step = {}
+    if "response" in step and isinstance(step["response"], BaseModel):
+        serializable_trajectory_step["response"] = step["response"].model_dump()
+    return serializable_trajectory_step
+
+
+def get_serializable_state(state: vf.State) -> dict:
+    """Get a serializable version of vf.State. Serializes a selected subset of fields."""
+    serializable_state = {}
+    if "input" in state:
+        serializable_state["input"] = state["input"]
+    if "model" in state:
+        serializable_state["model"] = state["model"]
+    if "sampling_args" in state:
+        serializable_state["sampling_args"] = state["sampling_args"]
+    if "is_completed" in state:
+        serializable_state["is_completed"] = state["is_completed"]
+    if "stop_condition" in state:
+        serializable_state["stop_condition"] = state["stop_condition"]
+    if "oai_tools" in state:
+        serializable_state["oai_tools"] = state["oai_tools"]
+    if "trajectory" in state:
+        serializable_state["trajectory"] = [get_serializable_trajectory_step(step) for step in state["trajectory"]]
+    if "completion" in state:
+        serializable_state["completion"] = state["completion"]
+    if "reward" in state:
+        serializable_state["reward"] = state["reward"]
+    if "advantage" in state:
+        serializable_state["advantage"] = state["advantage"]
+    if "metrics" in state:
+        serializable_state["metrics"] = state["metrics"]
+    if "timing" in state:
+        serializable_state["timing"] = state["timing"]
+    return serializable_state
