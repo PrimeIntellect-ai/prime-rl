@@ -5,6 +5,9 @@ from openai.types.chat.chat_completion import ChatCompletion
 from prime_rl.orchestrator.config import SamplingConfig
 from prime_rl.orchestrator.utils import get_sampling_args
 
+# Needs GPU flag because requires vLLM server for testing
+pytestmark = [pytest.mark.gpu]
+
 
 @pytest.fixture(scope="module")
 def client():
