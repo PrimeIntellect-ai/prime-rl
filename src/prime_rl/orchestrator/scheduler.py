@@ -1,7 +1,7 @@
 import asyncio
 import time
 from itertools import cycle
-from typing import Literal, NamedTuple
+from typing import NamedTuple
 
 import verifiers as vf
 from httpx import AsyncClient
@@ -47,7 +47,6 @@ class Scheduler:
         buffer: Buffer,
         tokenizer: PreTrainedTokenizerFast,
         config: OrchestratorConfig,
-        trajectory_strategy: Literal["interleaved", "branching"],
         oversampling_factor: float,
         max_async_level: int,
         max_off_policy_steps: int,
@@ -75,7 +74,6 @@ class Scheduler:
         self.update_weights_time, self.wait_for_ckpt_time = 0, 0
         self.sampling_args = get_sampling_args(config.sampling)
         self.model_name = self.config.model.name
-        self.trajectory_strategy = trajectory_strategy
 
     async def schedule_group_rollout(self, client: AsyncOpenAI | None = None):
         """Asynchronously schedules a group rollout request."""

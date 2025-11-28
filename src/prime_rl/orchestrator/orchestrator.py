@@ -128,7 +128,6 @@ async def orchestrate(config: OrchestratorConfig):
         max_off_policy_steps=config.max_off_policy_steps,
         strict_async_level=config.strict_async_level,
         lora_name=config.lora_name,
-        trajectory_strategy=config.trajectory_strategy,
     )
 
     # Check health of the client
