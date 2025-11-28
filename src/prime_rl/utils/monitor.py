@@ -7,9 +7,9 @@ from typing import Any
 
 import pandas as pd
 import verifiers as vf
+import wandb
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-import wandb
 from prime_rl.utils.config import WandbMonitorConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pydantic_config import BaseSettings
@@ -101,15 +101,12 @@ class WandbMonitor:
         self.logger.info(f"Logging samples to W&B table at step {step}")
         start_time = time.perf_counter()
         for rollout in rollouts:
-            messages = rollout["trajectory"][0]["prompt"] + rollout["trajectory"][0]["completion"]
-            for trajectory in rollout["trajectory"][1:]:
-                messages.extend(trajectory["completion"])
-            input_ids = self.tokenizer.apply_chat_template(messages, tokenize=False)
+            messages = rollout["trajectory"][-1]["prompt"] + rollout["trajectory"][-1]["completion"]
             sample = {
                 "step": step,
                 "example_id": rollout["example_id"],
-                "messages": messages,
-                "input_ids": input_ids,
+                "messages": self.tokenizer.apply_chat_template(messages, tokenize=False),
+                "input_ids": self.tokenizer.apply_chat_template(messages),
                 "reward": rollout["reward"],
             }
             assert list(sample.keys()) == self.samples_cols, (
