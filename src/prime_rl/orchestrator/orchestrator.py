@@ -1,6 +1,8 @@
 import asyncio
 import time
 
+import tomli_w
+
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 
 # This monkey patch is necessary to avoid Pydantic validating fields using typing.Iterable (e.g. in multimodal or tool call messages) lazily which leads to tokenization errors, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1249
@@ -18,7 +20,6 @@ from loguru import logger
 from transformers import AutoTokenizer
 
 from prime_rl.eval.utils import run_evals
-from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.orchestrator.config import BufferConfig, OrchestratorConfig
@@ -64,6 +65,12 @@ async def orchestrate(config: OrchestratorConfig):
     # Print warning if running in benchmark mode
     if config.bench:
         logger.warning(f"Running in benchmark mode (max_steps={config.max_steps})")
+
+    # Save configs to output directory
+    config_dir = config.output_dir / "configs"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    with open(config_dir / "orch.toml", "wb") as f:
+        tomli_w.dump(config.model_dump(exclude_none=True, mode="json"), f)
 
     # Setup client
     assert config.client.server_type == "vllm", "Orchestrator only supports vLLM server type."
@@ -248,22 +255,14 @@ async def orchestrate(config: OrchestratorConfig):
         await train_task
         generate_completions_time = time.perf_counter() - generate_completions_start_time
         train_rollouts = train_task.result()
-        all_data_ranks_batches = prepare_batch(
-            rollouts=train_rollouts,
-            temperature=config.sampling.temperature,
-            tokenizer=tokenizer,
-            num_train_workers=config.num_train_workers,
-            seq_len=config.seq_len,
-        )
 
         step_path = get_rollout_dir(config.output_dir) / f"step_{progress.step}"
         step_path.mkdir(parents=True, exist_ok=True)
-        for i, batches in enumerate(all_data_ranks_batches):
-            batch_path = step_path / f"rank_{i}.pt"
-            tmp_path = batch_path.with_suffix(".tmp")
-            logger.debug(f"Saving rollouts for step {progress.step} for rank {i} to {batch_path}")
-            torch.save(batches, tmp_path)
-            tmp_path.rename(batch_path)
+        batch_path = step_path / "rollouts.pt"
+        tmp_path = batch_path.with_suffix(".tmp")
+        logger.debug(f"Saving rollouts for step {progress.step} to {batch_path}")
+        torch.save(train_rollouts, tmp_path)
+        tmp_path.rename(batch_path)
 
         # Await and process val results
         await val_task

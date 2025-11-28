@@ -22,7 +22,6 @@ from prime_rl.trainer.rl.loss import (
     compute_entropy,
     compute_loss,
 )
-from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
     setup_tokenizer,
@@ -35,7 +34,6 @@ from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     MemoryProfiler,
     Tensors,
-    maybe_clean,
     setup_torch_distributed,
     print_benchmark,
     get_response_lengths,
@@ -44,6 +42,8 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format
+from prime_rl.trainer.runs import setup_runs
+from prime_rl.trainer.models.layers.lora import set_offsets
 
 
 @clean_exit
@@ -55,7 +55,9 @@ def train(config: RLTrainerConfig):
         config.log.level,
         log_file=config.output_dir / "logs" / "trainer" / f"rank_{world.rank}.log" if config.log.file else None,
     )
-    logger.info(f"Starting RL trainer in {world}")
+    setup_runs(config.output_dir, config.max_concurrent_runs)
+    set_offsets(torch.tensor([0] * config.max_concurrent_runs, dtype=torch.int32))
+    logger.info(f"Starting RL trainer in {world} in {config.output_dir}")
 
     # Print warning if running in benchmark mode
     if config.bench:
@@ -89,11 +91,20 @@ def train(config: RLTrainerConfig):
     logger.info(f"Initializing optimizer ({config.optim})")
     logger.info(f"Using `{config.loss.ratio_type}` importance ratio ({config.loss})")
 
-    optimizer = setup_optimizer(config.optim, model, parallel_dims.world_mesh["dp_shard_cp"])
+    if config.max_concurrent_runs == 1:
+        optimizer = setup_optimizer(config.optim, model, parallel_dims.world_mesh["dp_shard_cp"])
+    else:
+        from prime_rl.trainer.runs import get_runs
+        from prime_rl.trainer.optim import _setup_optimizer
+
+        # optimizer = setup_multi_optimizer(config.optim, model, parallel_dims.world_mesh["dp_shard_cp"])
+        runs = get_runs()
+        optimizer = _setup_optimizer(config.optim, runs.named_parameters[0], parallel_dims.world_mesh["dp_shard_cp"])
 
     # Set up the learning rate scheduler
-    scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
-    logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
+    # scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
+    # logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
+    scheduler = None
 
     # Set up weight broadcast
     logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
@@ -118,9 +129,12 @@ def train(config: RLTrainerConfig):
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
-    dataloader = DataLoader(config.output_dir, progress.step)
     if config.data.fake:
-        dataloader = FakeDataLoader(config.data.fake)
+        dataloader = FakeDataLoader(config.data.fake, config.model.seq_len)
+    else:
+        dataloader = DataLoader(
+            config.output_dir, progress.step, parallel_dims.world_mesh["dp"].size(), config.model.seq_len, tokenizer
+        )
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     is_first_step = True
@@ -146,7 +160,8 @@ def train(config: RLTrainerConfig):
             # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
             ckpt_interval = config.ckpt and config.ckpt.interval
             interval_to_keep = ckpt_interval if config.weight_broadcast.type == "filesystem" else None
-            maybe_clean(weight_broadcast.broadcast_dir, progress.step, config.max_async_level, interval_to_keep)
+            if config.weight_broadcast.type == "filesystem":
+                weight_broadcast.maybe_clean(config.max_async_level, interval_to_keep)
         else:
             broadcast_weights_time = 0
 
@@ -223,6 +238,9 @@ def train(config: RLTrainerConfig):
 
             # Forward pass
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
+                if config.model.experimental.lora:
+                    lora_cu_offsets = micro_batch["lora_cu_offsets"].to("cuda")
+                    set_offsets(lora_cu_offsets)
                 logits = forward(model, input_ids, position_ids).float().contiguous()
 
             shifted_logits = shift_logits(logits)
@@ -281,12 +299,30 @@ def train(config: RLTrainerConfig):
         grad_norm = grad_norm_dtensor.full_tensor()
 
         # Update the model parameters
+        for n, p in model.named_parameters():
+            if "layers.26" not in n:
+                continue
+            if p.grad is not None:
+                print(f"Grad for {n}: {p.grad.shape} {p.grad.sum().item()}")
+        from prime_rl.trainer.runs import get_runs
+
+        run = get_runs()
+        for n, p in run.named_parameters[0]:
+            if "layers.26" not in n:
+                continue
+            if p.grad is not None:
+                print(f"Run 0 grad for {n}: {p.grad.shape} {p.grad.sum().item()}")
+            else:
+                print(f"Run 0 grad for {n} is None")
         optimizer.step()
         optimizer.zero_grad()
 
         # Update learning rate scheduler
-        current_lr = optimizer.param_groups[0]["lr"]
-        scheduler.step()
+        if hasattr(optimizer, "param_groups"):
+            current_lr = optimizer.param_groups[0]["lr"]
+        else:
+            current_lr = optimizer.optimizers[0].param_groups[0]["lr"]
+        # scheduler.step()
 
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
