@@ -13,7 +13,7 @@ def client():
 
 @pytest.fixture(scope="module")
 def model_name() -> str:
-    return "Qwen/Qwen3-0.6B"
+    return "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 
 @pytest.fixture(scope="module")
@@ -22,7 +22,7 @@ def prompt() -> list[dict]:
 
 
 @pytest.fixture
-def response(client: OpenAI, model_name: str, prompt) -> ChatCompletion:
+def response(vllm_server, client: OpenAI, model_name: str, prompt) -> ChatCompletion:
     sampling_config = SamplingConfig(max_tokens=10)
     sampling_args = get_sampling_args(sampling_config)
 

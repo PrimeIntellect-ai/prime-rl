@@ -8,7 +8,7 @@ class TrainingExample(TypedDict):
     """A single training example."""
 
     prompt_ids: list[int]
-    prompt_mask: list[bool]
+    prompt_mask: list[int]
     completion_ids: list[int]
     completion_mask: list[int]
     completion_logprobs: list[float]
