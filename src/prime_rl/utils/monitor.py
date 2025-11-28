@@ -106,7 +106,7 @@ class WandbMonitor:
                 "step": step,
                 "example_id": rollout["example_id"],
                 "messages": self.tokenizer.apply_chat_template(messages, tokenize=False),
-                "input_ids": self.tokenizer.apply_chat_template(messages),
+                "input_ids": str(self.tokenizer.apply_chat_template(messages)),
                 "reward": rollout["reward"],
             }
             assert list(sample.keys()) == self.samples_cols, (
