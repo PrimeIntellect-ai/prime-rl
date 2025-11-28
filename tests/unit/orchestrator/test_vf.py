@@ -1,4 +1,5 @@
 import json
+from copy import deepcopy
 
 import pytest
 import verifiers as vf
@@ -6,7 +7,7 @@ from openai.types.chat.chat_completion import ChatCompletion, Choice
 from openai.types.chat.chat_completion_message import ChatCompletionMessage
 from openai.types.completion_usage import CompletionUsage
 
-from prime_rl.utils.vf import get_serializable_state
+from prime_rl.utils.vf import from_serializable_state, to_serializable_state
 
 
 @pytest.fixture
@@ -51,8 +52,18 @@ def single_step_trajectory_state():
     return state
 
 
-def test_serializable_state(single_step_trajectory_state):
+def test_serialize_state(single_step_trajectory_state):
+    # Regular state is not JSON serializable
     with pytest.raises(Exception):
         json.dumps(single_step_trajectory_state)
-    serializable_state = get_serializable_state(single_step_trajectory_state)
+
+    # Serialized state is JSON serializable
+    serializable_state = to_serializable_state(single_step_trajectory_state)
     json.dumps(serializable_state)
+
+
+def test_deserialize_state(single_step_trajectory_state):
+    original_state = deepcopy(single_step_trajectory_state)
+    serialized_state = to_serializable_state(single_step_trajectory_state)
+    deserialized_state = from_serializable_state(serialized_state)
+    assert deserialized_state == original_state
