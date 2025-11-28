@@ -35,7 +35,6 @@ from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     MemoryProfiler,
     Tensors,
-    maybe_clean,
     setup_torch_distributed,
     print_benchmark,
     get_response_lengths,
@@ -120,7 +119,6 @@ def train(config: RLTrainerConfig):
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
-    dataloader = DataLoader(config.output_dir, progress.step)
     if config.data.fake:
         dataloader = FakeDataLoader(config.data.fake, config.model.seq_len)
     else:
@@ -152,7 +150,8 @@ def train(config: RLTrainerConfig):
             # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
             ckpt_interval = config.ckpt and config.ckpt.interval
             interval_to_keep = ckpt_interval if config.weight_broadcast.type == "filesystem" else None
-            maybe_clean(weight_broadcast.broadcast_dir, progress.step, config.max_async_level, interval_to_keep)
+            if config.weight_broadcast.type == "filesystem":
+                weight_broadcast.maybe_clean(config.max_async_level, interval_to_keep)
         else:
             broadcast_weights_time = 0
 
