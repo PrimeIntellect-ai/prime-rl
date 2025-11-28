@@ -116,7 +116,7 @@ def train(config: SFTTrainerConfig):
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
-    if ckpt_manager is not None and config.ckpt and config.ckpt.resume_step:
+    if ckpt_manager is not None and config.ckpt and config.ckpt.resume_step is not None:
         logger.info(f"Resuming training from checkpoint step {config.ckpt.resume_step}")
         ckpt_manager.load(
             config.ckpt.resume_step,

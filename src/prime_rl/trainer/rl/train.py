@@ -110,7 +110,7 @@ def train(config: RLTrainerConfig):
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
-    if config.ckpt and ckpt_manager is not None and config.ckpt.resume_step:
+    if config.ckpt and ckpt_manager is not None and config.ckpt.resume_step is not None:
         logger.info(f"Resuming training from checkpoint step {config.ckpt.resume_step}")
         ckpt_manager.load(config.ckpt.resume_step, model, [optimizer], scheduler, progress)
     logger.info(
