@@ -1,4 +1,5 @@
 import asyncio
+import random
 import time
 
 from prime_rl.orchestrator.advantage import compute_advantages
@@ -414,14 +415,8 @@ async def orchestrate(config: OrchestratorConfig):
         monitor.log(to_log)
 
         # Log samples and distributions to W&B table if enabled
-        # monitor.log_samples(
-        #     input_tokens=[rollout["trajectory_tokens"][0]["prompt_ids"] for rollout in train_rollouts],
-        #     output_tokens=[rollout["trajectory_tokens"][-1]["completion_ids"] for rollout in train_rollouts],
-        #     rewards=results_df.reward.tolist(),
-        #     advantages=results_df.advantage.tolist(),
-        #     rollouts_per_problem=config.rollouts_per_example,
-        #     step=progress.step,
-        # )
+        subset_train_rollouts = random.sample(train_rollouts, min(8, len(train_rollouts)))
+        monitor.log_samples(subset_train_rollouts, step=progress.step)
 
         distributions = {
             "rewards": results_df.reward.tolist(),
