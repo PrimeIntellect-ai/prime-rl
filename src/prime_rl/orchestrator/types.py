@@ -15,6 +15,7 @@ class TrainingExample(TypedDict):
     advantage: float | None
 
 
+# TODO(Jack): Should move to trainer (and can probably be just called `TrainingExample` in that case)
 class TensorTrainingExample(TypedDict):
     """A single training example as tensors."""
 
