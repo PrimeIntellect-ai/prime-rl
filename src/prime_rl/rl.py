@@ -202,8 +202,13 @@ class RLConfig(BaseSettings):
     @model_validator(mode="after")
     def auto_setup_num_train_workers(self):
         non_data_parallel_size = self.trainer.model.cp * self.trainer.model.tp * self.trainer.model.ep
+
+        pad_to_multiple_of = self.trainer.model.cp * 2 if self.trainer.model.cp > 1 else 1
+        self.orchestrator.pad_to_multiple_of = pad_to_multiple_of
+
         if len(self.trainer_gpu_ids) > 1:
             self.orchestrator.num_train_workers = len(self.trainer_gpu_ids) // non_data_parallel_size
+
         return self
 
     @model_validator(mode="after")

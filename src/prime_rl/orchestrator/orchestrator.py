@@ -255,6 +255,7 @@ async def orchestrate(config: OrchestratorConfig):
             tokenizer=tokenizer,
             num_train_workers=config.num_train_workers,
             seq_len=config.seq_len,
+            pad_to_multiple_of=config.pad_to_multiple_of,
         )
 
         step_path = get_rollout_dir(config.output_dir) / f"step_{progress.step}"

@@ -104,7 +104,9 @@ def packed_samples_into_micro_bs(samples: list[BatchSample], max_seq_len: int) -
     return micro_batches
 
 
-def prepare_micro_batch_packing(samples: list[BatchSample], max_seq_len: int, temperature: float) -> MicroBatch:
+def prepare_micro_batch_packing(
+    samples: list[BatchSample], max_seq_len: int, temperature: float, pad_to_multiple_of: int = 1
+) -> MicroBatch:
     """
     Prepare a micro batch for packing mode. take multi sample and return a batch of shape [1, micro_bs * max_seq_len].
     Would additionally pad the batch to the max sequence length.
@@ -119,6 +121,47 @@ def prepare_micro_batch_packing(samples: list[BatchSample], max_seq_len: int, te
 
     micro_batch["temperature"] = temperature
 
+    if pad_to_multiple_of > 1:
+        padding_size = pad_to_multiple_of - micro_batch["input_ids"].shape[1] % pad_to_multiple_of
+        if padding_size > 0:
+            input_ids = torch.ones(
+                1, padding_size, dtype=micro_batch["input_ids"].dtype, device=micro_batch["input_ids"].device
+            )
+            micro_batch["input_ids"] = torch.cat([micro_batch["input_ids"], input_ids], dim=1)
+            micro_batch["advantages"] = torch.cat(
+                [
+                    micro_batch["advantages"],
+                    torch.zeros(
+                        1, padding_size, dtype=micro_batch["advantages"].dtype, device=micro_batch["advantages"].device
+                    ),
+                ],
+                dim=1,
+            )
+            micro_batch["loss_mask"] = torch.cat(
+                [
+                    micro_batch["loss_mask"],
+                    torch.zeros(
+                        1, padding_size, dtype=micro_batch["loss_mask"].dtype, device=micro_batch["loss_mask"].device
+                    ),
+                ],
+                dim=1,
+            )
+            micro_batch["position_ids"] = torch.cat(
+                [micro_batch["position_ids"], torch.arange(padding_size).unsqueeze(0)], dim=1
+            )
+            micro_batch["inference_logprobs"] = torch.cat(
+                [
+                    micro_batch["inference_logprobs"],
+                    torch.zeros(
+                        1,
+                        padding_size,
+                        dtype=micro_batch["inference_logprobs"].dtype,
+                        device=micro_batch["inference_logprobs"].device,
+                    ),
+                ],
+                dim=1,
+            )
+
     return micro_batch
 
 
@@ -128,6 +171,7 @@ def prepare_batch(
     tokenizer: PreTrainedTokenizer,
     seq_len: int,
     num_train_workers: int,
+    pad_to_multiple_of: int = 1,
 ) -> list[list[MicroBatch]]:
     """
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
@@ -147,7 +191,8 @@ def prepare_batch(
 
     micro_batches_list = packed_samples_into_micro_bs(all_samples, max_seq_len)
     micro_batches = [
-        prepare_micro_batch_packing(micro_batch, max_seq_len, temperature) for micro_batch in micro_batches_list
+        prepare_micro_batch_packing(micro_batch, max_seq_len, temperature, pad_to_multiple_of)
+        for micro_batch in micro_batches_list
     ]
 
     num_padding_batch = -len(micro_batches) % num_train_workers

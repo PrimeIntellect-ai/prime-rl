@@ -530,6 +530,8 @@ class OrchestratorConfig(BaseSettings):
 
     seed: Annotated[int | None, Field(description="Random seed for the orchestrator.")] = 42
 
+    pad_to_multiple_of: Annotated[int, Field(ge=1, description="Pad the batch to a multiple of this value.")] = 1
+
     @model_validator(mode="after")
     def nccl_max_async_level(self):
         if self.weight_broadcast.type == "nccl":
