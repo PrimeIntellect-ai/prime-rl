@@ -37,12 +37,12 @@ def get_config_files(config_type: ConfigType) -> list[Path]:
     """Any TOML file inside `configs/` or `examples/`"""
     config_files = list(Path("configs").glob(f"**/{config_type}.toml"))
     example_files = list(Path("examples").glob(f"**/{config_type}.toml"))
-    
+
     # Special handling for eval configs: also search evals/ subdirectories
     if config_type == "eval":
         config_files.extend(Path("configs").glob("**/evals/**/*.toml"))
         example_files.extend(Path("examples").glob("**/evals/**/*.toml"))
-    
+
     return config_files + example_files
 
 

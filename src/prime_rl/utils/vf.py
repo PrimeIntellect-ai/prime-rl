@@ -64,23 +64,30 @@ async def generate_batch(
 def get_prompt_len(state: vf.State) -> int:
     """Compute the number of prompt tokens from vf.State. Defined as the number of prompt IDs from the first trajectory step."""
     first_step = state["trajectory"][0]
+    if not first_step["tokens"]:
+        return 0
     return len(first_step["tokens"]["prompt_ids"])
 
 
 def get_seq_len(state: vf.State) -> int:
     """Compute the number of tokens from vf.State. Defined as the sum of prompt and completion tokens from the last trajectory step."""
     last_step = state["trajectory"][-1]
+    if not last_step["tokens"]:
+        return 0
     return len(last_step["tokens"]["prompt_ids"]) + len(last_step["tokens"]["completion_ids"])
 
 
 def get_completion_len(state: vf.State) -> int:
     """Compute the number of completion tokens from vf.State. Defined as the difference between the total number of tokens and the number of prompt tokens."""
-    return get_seq_len(state) - get_prompt_len(state)
+    return max(0, get_seq_len(state) - get_prompt_len(state))
 
 
 def get_is_truncated(state: vf.State) -> bool:
     """Check if the state is truncated."""
-    return state["trajectory"][-1]["tokens"]["is_truncated"]
+    last_step = state["trajectory"][-1]
+    tokens = last_step.get("tokens")
+    # is_trucated should be True if there no tokens or if the tokens were marked as truncated
+    return bool(tokens and tokens.get("is_truncated"))
 
 
 def to_serializable_trajectory_step(step: vf.TrajectoryStep) -> dict:
