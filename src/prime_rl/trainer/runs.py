@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+import tomli
 
 # This makes tests run significantly faster
 if TYPE_CHECKING:
@@ -26,6 +28,7 @@ class Runs:
         self.unused_idxs = {i for i in range(self.max_runs)}
 
         self.progress: dict[int, Progress] = {}
+        self.config: dict[int, dict[str, Any]] = {}
         self.ready_to_update = [False] * max_runs
 
         self._deletion_hooks: list[Callable[[int, str], None]] = []
@@ -38,17 +41,20 @@ class Runs:
 
         for deleted_run in deleted_runs:
             deleted_idx = self.id_2_idx[deleted_run]
+
+            # Call deletion hooks
+            for hook in self._deletion_hooks:
+                hook(deleted_idx, deleted_run)
+
             del self.progress[deleted_idx]
+            if deleted_idx in self.config:
+                del self.config[deleted_idx]
             self.ready_to_update[deleted_idx] = False
 
             # Process mappings
             self.unused_idxs.add(deleted_idx)
             del self.idx_2_id[deleted_idx]
             del self.id_2_idx[deleted_run]
-
-            # Call deletion hooks
-            for hook in self._deletion_hooks:
-                hook(deleted_idx, deleted_run)
 
         for new_run in new_runs:
             try:
@@ -65,6 +71,14 @@ class Runs:
                     int(i.stem.split("_")[-1]) for i in (self.get_run_dir(new_id) / "checkpoints").glob("step_*")
                 ]
                 self.progress[new_id].step = max(prev_ckpt_steps) if prev_ckpt_steps else 0
+
+                # Load orchestrator config
+                config_path = self.get_run_dir(new_id) / "configs" / "orch.toml"
+                if config_path.exists():
+                    with open(config_path, "rb") as f:
+                        self.config[new_id] = tomli.load(f)
+                else:
+                    self.config[new_id] = {}
 
                 # Call creation hooks
                 for hook in self._creation_hooks:

@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import tomli_w
+
 from prime_rl.trainer.runs import Runs
 
 
@@ -138,3 +140,82 @@ def test_non_run_directories_ignored(tmp_path: Path) -> None:
     assert "run_abc" in runs.id_2_idx
     assert "other_dir" not in runs.id_2_idx
     assert "random" not in runs.id_2_idx
+
+
+def test_config_loading(tmp_path: Path) -> None:
+    """Test that orchestrator configs are loaded correctly."""
+    runs = Runs(output_dir=tmp_path, max_runs=5)
+
+    # Create a run directory with config
+    run_dir = tmp_path / "run_test123"
+    run_dir.mkdir()
+    config_dir = run_dir / "configs"
+    config_dir.mkdir()
+
+    # Create a sample orchestrator config
+    test_config = {
+        "model": {"name": "test-model"},
+        "batch_size": 32,
+        "max_steps": 1000,
+    }
+    with open(config_dir / "orch.toml", "wb") as f:
+        tomli_w.dump(test_config, f)
+
+    # Detect the run
+    runs.check_for_changes()
+
+    # Verify config was loaded
+    assert len(runs.config) == 1
+    run_idx = runs.id_2_idx["run_test123"]
+    assert run_idx in runs.config
+    assert runs.config[run_idx]["model"]["name"] == "test-model"
+    assert runs.config[run_idx]["batch_size"] == 32
+    assert runs.config[run_idx]["max_steps"] == 1000
+
+
+def test_config_missing(tmp_path: Path) -> None:
+    """Test that runs without configs get empty dict."""
+    runs = Runs(output_dir=tmp_path, max_runs=5)
+
+    # Create a run directory without config
+    run_dir = tmp_path / "run_noconfig"
+    run_dir.mkdir()
+
+    # Detect the run
+    runs.check_for_changes()
+
+    # Verify empty config was set
+    assert len(runs.config) == 1
+    run_idx = runs.id_2_idx["run_noconfig"]
+    assert run_idx in runs.config
+    assert runs.config[run_idx] == {}
+
+
+def test_config_cleanup_on_deletion(tmp_path: Path) -> None:
+    """Test that configs are cleaned up when runs are deleted."""
+    runs = Runs(output_dir=tmp_path, max_runs=5)
+
+    # Create a run directory with config
+    run_dir = tmp_path / "run_delete_me"
+    run_dir.mkdir()
+    config_dir = run_dir / "configs"
+    config_dir.mkdir()
+
+    test_config = {"test": "value"}
+    with open(config_dir / "orch.toml", "wb") as f:
+        tomli_w.dump(test_config, f)
+
+    # Detect the run
+    runs.check_for_changes()
+    run_idx = runs.id_2_idx["run_delete_me"]
+    assert run_idx in runs.config
+
+    # Delete the run directory
+    import shutil
+
+    shutil.rmtree(run_dir)
+    runs.check_for_changes()
+
+    # Verify config was cleaned up
+    assert run_idx not in runs.config
+    assert "run_delete_me" not in runs.id_2_idx
