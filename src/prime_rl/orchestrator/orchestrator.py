@@ -95,20 +95,17 @@ async def orchestrate(config: OrchestratorConfig):
         envs=[vf.load_environment(env.id, **env.args) for env in config.env],
         env_names=[env.name or env.id for env in config.env],
         map_kwargs=dict(writer_batch_size=1),  # Set defensively to not error on map operations on large datasets
-        env_mix_strategy=config.env_mix.strategy,
-        env_mix_kwargs=dict(
-            probabilities=config.env_mix.probabilities,
-            stopping_strategy=config.env_mix.stopping_strategy,
-            seed=config.env_mix.seed,
-        ),
+        env_mix_strategy="concatenate",
     )
     dataset = env.get_dataset(seed=config.seed)
     val_dataset = env.get_eval_dataset(seed=config.seed) if config.val else None
 
     # Setup buffer
-    logger.info(f"Setting up buffer ({config.buffer})")
-    buffer = Buffer(dataset, config.buffer)
-    val_buffer = Buffer(val_dataset, BufferConfig()) if val_dataset else None
+    env_names = [env.name or env.id for env in config.env]
+    buffer_config = config.buffer.model_copy(update={"env_probabilities": config.buffer.env_probabilities})
+    logger.info(f"Setting up buffer ({buffer_config})")
+    buffer = Buffer(dataset, buffer_config, env_names)
+    val_buffer = Buffer(val_dataset, BufferConfig(), env_names) if val_dataset else None
 
     # Setup scheduler
     scheduler = Scheduler(

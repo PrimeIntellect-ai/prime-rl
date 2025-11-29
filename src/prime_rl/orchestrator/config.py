@@ -297,23 +297,13 @@ class BufferConfig(BaseConfig):
         ),
     ] = None
 
-    easy_fraction: Annotated[
-        float,
+    env_probabilities: Annotated[
+        list[float] | None,
         Field(
-            ge=0,
-            le=1,
-            description="Fraction of the batch that should consist of easy samples.",
+            description="Probabilities for sampling from each environment. Must sum to 1.0 if provided. "
+            "If None, samples uniformly across all available problems (not environments).",
         ),
-    ] = 0.0
-
-    hard_fraction: Annotated[
-        float,
-        Field(
-            ge=0,
-            le=1,
-            description="Fraction of the batch that should consist of hard samples.",
-        ),
-    ] = 0.0
+    ] = None
 
     easy_threshold: Annotated[
         float | None,
@@ -329,12 +319,23 @@ class BufferConfig(BaseConfig):
         ),
     ] = None
 
-    online_difficulty_filtering: Annotated[
-        bool,
+    easy_to_normal_fraction: Annotated[
+        float,
         Field(
-            description="Whether to filter rollouts based on their average reward. If True, rollouts with average reward == 0.0 will be marked as hard and rollouts with average reward == 1.0 will be marked as easy.",
+            ge=0,
+            le=1,
+            description="Fraction of easy problems to convert to normal when resuming or starting training. Only problems with difficulty 'normal' are sampled.",
         ),
-    ] = False
+    ] = 0.0
+
+    hard_to_normal_fraction: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            description="Fraction of hard problems to convert to normal when resuming or starting training. Only problems with difficulty 'normal' are sampled.",
+        ),
+    ] = 0.0
 
 
 class AdvantageConfig(BaseConfig):
@@ -359,19 +360,6 @@ class NCCLWeightBroadcastConfig(BaseModel):
 
 WeightBroadcastConfigType: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig
 
-
-class EnvMixConfig(BaseModel):
-    """Configures the mixing of environments."""
-
-    strategy: Literal["interleave", "concatenate"] = "interleave"
-    probabilities: Annotated[list[float] | None, Field(description="Probabilities to use for each environment.")] = None
-    stopping_strategy: Annotated[
-        Literal["first_exhausted", "all_exhausted"],
-        Field(description="Stopping strategy to use for interleaving environment datasets."),
-    ] = "all_exhausted"
-    seed: Annotated[int | None, Field(description="Random seed to use for the environment mixing.")] = None
-
-
 class OrchestratorConfig(BaseSettings):
     """Configures the orchestrator for RL training."""
 
@@ -383,9 +371,6 @@ class OrchestratorConfig(BaseSettings):
 
     # The sampling configuration
     sampling: SamplingConfig = SamplingConfig()
-
-    # The environment mixing configuration
-    env_mix: EnvMixConfig = EnvMixConfig()
 
     # The environment configuration
     env: list[EnvConfig] = [EnvConfig()]

@@ -1,6 +1,4 @@
-import json
 import random
-from copy import deepcopy
 
 import pytest
 from datasets import Dataset
@@ -19,30 +17,30 @@ def set_seed():
 def dataset() -> Dataset:
     return Dataset.from_list(
         [
-            {"example_id": 0, "problem": "0"},
-            {"example_id": 1, "problem": "1"},
-            {"example_id": 2, "problem": "2"},
-            {"example_id": 3, "problem": "3"},
-            {"example_id": 4, "problem": "4"},
+            {"example_id": 0, "problem": "0", "task": "env_a"},
+            {"example_id": 1, "problem": "1", "task": "env_a"},
+            {"example_id": 2, "problem": "2", "task": "env_a"},
+            {"example_id": 3, "problem": "3", "task": "env_a"},
+            {"example_id": 4, "problem": "4", "task": "env_a"},
         ]
     )
 
 
 @pytest.fixture
-def difficulty_dataset(dataset: Dataset) -> Dataset:
-    difficulty_dataset = deepcopy(dataset)
-    difficulties = ["easy", "easy", "normal", "normal", "hard"]
-    difficulty_dataset = difficulty_dataset.map(
-        lambda x, i: {"metadata": json.dumps({"difficulty": difficulties[i]}), "rollouts": json.dumps([])},
-        with_indices=True,
+def multi_env_dataset() -> Dataset:
+    return Dataset.from_list(
+        [
+            {"example_id": 0, "problem": "0", "task": "env_a"},
+            {"example_id": 1, "problem": "1", "task": "env_a"},
+            {"example_id": 2, "problem": "2", "task": "env_a"},
+            {"example_id": 3, "problem": "3", "task": "env_b"},
+            {"example_id": 4, "problem": "4", "task": "env_b"},
+        ]
     )
-    return difficulty_dataset
 
 
 @pytest.fixture
 def make_rollouts():
-    """Factory fixture that creates rollouts for any given dataset."""
-
     def _make_rollouts(
         dataset: Dataset, rewards: list[float] | None = None, advantages: list[float] | None = None
     ) -> list[Rollout]:
@@ -50,10 +48,11 @@ def make_rollouts():
         rewards = rewards or [1.0] * len(dataset)
         advantages = advantages or [1.0] * len(dataset)
         for i, (reward, advantage) in enumerate(zip(rewards, advantages)):
+            task = dataset[i]["task"]
             problem_rollouts = [
                 Rollout(
                     example_id=i,
-                    task="default",
+                    task=task,
                     prompt_ids=[0],
                     prompt_mask=[1],
                     completion_ids=[1],
@@ -71,39 +70,44 @@ def make_rollouts():
     return _make_rollouts
 
 
+def _get_all_normal_ids(buffer: Buffer) -> set[int]:
+    all_ids = set()
+    for env_problems in buffer.problem_buffer.values():
+        all_ids.update(env_problems.keys())
+    return all_ids
+
+
 def test_buffer_init(dataset):
-    Buffer(dataset, BufferConfig())
+    Buffer(dataset, BufferConfig(), ["env_a"])
 
 
 def test_buffer_sample_problems(dataset):
-    buffer = Buffer(dataset, BufferConfig())
+    buffer = Buffer(dataset, BufferConfig(), ["env_a"])
     sampled_problems = buffer.sample_problems(2)
-    assert sampled_problems[0] == {"example_id": 0, "problem": "0"}
-    assert sampled_problems[1] == {"example_id": 4, "problem": "4"}
+    assert len(sampled_problems) == 2
+    sampled_ids = {p["example_id"] for p in sampled_problems}
+    assert sampled_ids.issubset({0, 1, 2, 3, 4})
 
 
-def test_buffer_sample_problems_with_difficulty_pools(difficulty_dataset, make_rollouts):
-    buffer = Buffer(
-        difficulty_dataset, BufferConfig(easy_fraction=0.5, hard_fraction=0.5, easy_threshold=1.0, hard_threshold=0.0)
-    )
-    # First, set up difficulties by updating with rollouts
-    # Set problems 0,1 to easy (advantage=0, reward=1.0), problem 4 to hard (advantage=0, reward=0.0)
-    rollouts = make_rollouts(
-        difficulty_dataset, rewards=[1.0, 1.0, 0.5, 0.5, 0.0], advantages=[0.0, 0.0, 1.0, 1.0, 0.0]
-    )
+def test_buffer_sample_problems_only_normal(dataset, make_rollouts):
+    buffer = Buffer(dataset, BufferConfig(easy_threshold=1.0, hard_threshold=0.0), ["env_a"])
+    rollouts = make_rollouts(dataset, rewards=[1.0, 1.0, 0.5, 0.5, 0.0])
     buffer.update(rollouts)
-    sampled_problems = buffer.sample_problems(3)
-    # Should sample from easy (0,1) and hard (4) pools
-    assert len(sampled_problems) == 3
-    # Verify we got problems from the right difficulty pools
+
+    sampled_problems = buffer.sample_problems(2)
+    assert len(sampled_problems) == 2
     sampled_ids = [p["example_id"] for p in sampled_problems]
-    assert 0 in sampled_ids or 1 in sampled_ids  # At least one easy
-    assert 4 in sampled_ids  # At least one hard
+    assert all(pid in [2, 3] for pid in sampled_ids)
+
+    assert 0 in buffer.easy_problems
+    assert 1 in buffer.easy_problems
+    assert 4 in buffer.hard_problems
+    assert 2 in _get_all_normal_ids(buffer)
+    assert 3 in _get_all_normal_ids(buffer)
 
 
 def test_buffer_sample_rollouts(dataset, make_rollouts):
-    buffer = Buffer(dataset, BufferConfig(online_difficulty_filtering=False))
-    # Use rewards that won't be filtered (0.5 instead of 1.0)
+    buffer = Buffer(dataset, BufferConfig(), ["env_a"])
     rollouts = make_rollouts(dataset, rewards=[0.5] * len(dataset))
     buffer.update(rollouts)
     sampled_rollouts = buffer.sample_rollouts(10)
@@ -112,8 +116,7 @@ def test_buffer_sample_rollouts(dataset, make_rollouts):
 
 
 def test_buffer_sample_rollouts_more_than_available(dataset, make_rollouts):
-    buffer = Buffer(dataset, BufferConfig(online_difficulty_filtering=False))
-    # Use rewards that won't be filtered (0.5 instead of 1.0)
+    buffer = Buffer(dataset, BufferConfig(), ["env_a"])
     rollouts = make_rollouts(dataset, rewards=[0.5] * len(dataset))
     buffer.update(rollouts)
     sampled_rollouts = buffer.sample_rollouts(20)
@@ -121,34 +124,112 @@ def test_buffer_sample_rollouts_more_than_available(dataset, make_rollouts):
     assert len(buffer.rollout_buffer) == 0
 
 
-def test_buffer_update_with_advantage_nonzero(difficulty_dataset, make_rollouts):
-    buffer = Buffer(difficulty_dataset, BufferConfig())
-    # Rollouts with advantage != 0 should be added to buffer and marked as normal
-    rollouts = make_rollouts(
-        difficulty_dataset, rewards=[0.5, 0.5, 0.5, 0.5, 0.5], advantages=[1.0, 1.0, 1.0, 1.0, 1.0]
-    )
-    buffer.update(rollouts)
-    sampled_rollouts = buffer.sample_rollouts(10)
-    assert sampled_rollouts == rollouts
-    assert len(sampled_rollouts) == 10
-    # All should be marked as normal (advantage != 0)
-    assert all(metadata["difficulty"] == "normal" for metadata in buffer.metadata.values())
-
-
 def test_buffer_online_difficulty_filtering(dataset, make_rollouts):
-    """Test that only rollouts with avg_reward == 0.0 or 1.0 are filtered."""
-    buffer = Buffer(
-        dataset,
-        BufferConfig(online_difficulty_filtering=True, easy_threshold=1.0, hard_threshold=0.0),
-    )
-    # Mix of rewards: 1.0 (filtered), 0.5 (kept), 0.0 (filtered), 0.5 (kept), 0.5 (kept)
+    buffer = Buffer(dataset, BufferConfig(easy_threshold=1.0, hard_threshold=0.0), ["env_a"])
     rollouts = make_rollouts(dataset, rewards=[1.0, 0.5, 0.0, 0.5, 0.5])
     buffer.update(rollouts)
-    # Only rollouts with reward 0.5 should be in buffer (3 problems * 2 rollouts = 6)
+
     assert len(buffer.rollout_buffer) == 6
-    # Check that difficulties are set correctly
-    assert buffer.metadata[0]["difficulty"] == "easy"
-    assert buffer.metadata[1]["difficulty"] == "normal"
-    assert buffer.metadata[2]["difficulty"] == "hard"
-    assert buffer.metadata[3]["difficulty"] == "normal"
-    assert buffer.metadata[4]["difficulty"] == "normal"
+    assert 0 in buffer.easy_problems
+    assert 1 in _get_all_normal_ids(buffer)
+    assert 2 in buffer.hard_problems
+    assert 3 in _get_all_normal_ids(buffer)
+    assert 4 in _get_all_normal_ids(buffer)
+
+
+def test_buffer_convert_difficulty_pools(dataset, make_rollouts, tmp_path):
+    buffer = Buffer(
+        dataset,
+        BufferConfig(easy_threshold=1.0, hard_threshold=0.0, easy_to_normal_fraction=0.5, hard_to_normal_fraction=0.5),
+        ["env_a"],
+    )
+    rollouts = make_rollouts(dataset, rewards=[1.0, 1.0, 0.5, 0.5, 0.0])
+    buffer.update(rollouts)
+
+    assert 0 in buffer.easy_problems
+    assert 1 in buffer.easy_problems
+    assert 4 in buffer.hard_problems
+    assert 2 in _get_all_normal_ids(buffer)
+    assert 3 in _get_all_normal_ids(buffer)
+
+    buffer_path = tmp_path / "buffer"
+    buffer.save(buffer_path)
+
+    new_buffer = Buffer(dataset, BufferConfig(easy_to_normal_fraction=0.5, hard_to_normal_fraction=0.5), ["env_a"])
+    new_buffer.load(buffer_path)
+
+    easy_converted = sum(1 for pid in [0, 1] if pid in _get_all_normal_ids(new_buffer))
+    assert easy_converted == 1
+    assert 4 in new_buffer.hard_problems
+    assert 2 in _get_all_normal_ids(new_buffer)
+    assert 3 in _get_all_normal_ids(new_buffer)
+    assert len(_get_all_normal_ids(new_buffer)) == 3
+
+    sampled = new_buffer.sample_problems(3)
+    assert len(sampled) == 3
+
+
+def test_buffer_multi_env_init(multi_env_dataset):
+    buffer = Buffer(multi_env_dataset, BufferConfig(), ["env_a", "env_b"])
+    assert buffer.env_names == ["env_a", "env_b"]
+    assert len(buffer.problem_buffer["env_a"]) == 3
+    assert len(buffer.problem_buffer["env_b"]) == 2
+
+
+def test_buffer_multi_env_uniform_sampling(multi_env_dataset):
+    buffer = Buffer(multi_env_dataset, BufferConfig(seed=42), ["env_a", "env_b"])
+    samples = buffer.sample_problems(5)
+    assert len(samples) == 5
+    assert all(p["task"] in ["env_a", "env_b"] for p in samples)
+
+
+def test_buffer_multi_env_probability_sampling(multi_env_dataset):
+    buffer = Buffer(multi_env_dataset, BufferConfig(env_probabilities=[0.8, 0.2], seed=42), ["env_a", "env_b"])
+    # Sample enough to check distribution
+    samples = buffer.sample_problems(100)
+    assert len(samples) == 100
+    env_a_count = sum(1 for p in samples if p["task"] == "env_a")
+    # Should be roughly 80%, allow some variance
+    assert 60 <= env_a_count <= 95
+
+
+def test_buffer_multi_env_save_load(multi_env_dataset, make_rollouts, tmp_path):
+    buffer = Buffer(multi_env_dataset, BufferConfig(easy_threshold=1.0, hard_threshold=0.0), ["env_a", "env_b"])
+    rollouts = make_rollouts(multi_env_dataset, rewards=[1.0, 0.5, 0.5, 0.0, 0.5])
+    buffer.update(rollouts)
+
+    assert 0 in buffer.easy_problems
+    assert 1 in buffer.problem_buffer["env_a"]
+    assert 2 in buffer.problem_buffer["env_a"]
+    assert 3 in buffer.hard_problems
+    assert 4 in buffer.problem_buffer["env_b"]
+
+    buffer_path = tmp_path / "buffer"
+    buffer.save(buffer_path)
+
+    new_buffer = Buffer(multi_env_dataset, BufferConfig(), ["env_a", "env_b"])
+    new_buffer.load(buffer_path)
+
+    assert 0 in new_buffer.easy_problems
+    assert 1 in new_buffer.problem_buffer["env_a"]
+    assert 2 in new_buffer.problem_buffer["env_a"]
+    assert 3 in new_buffer.hard_problems
+    assert 4 in new_buffer.problem_buffer["env_b"]
+
+
+def test_buffer_multi_env_metrics(multi_env_dataset):
+    buffer = Buffer(multi_env_dataset, BufferConfig(), ["env_a", "env_b"])
+    buffer.sample_problems(3)
+    metrics = buffer.get_metrics()
+    # Per-env metrics for sampled rollouts per pool
+    # evicted_problems metrics only appear when there are rollouts from update()
+    assert "buffer/evicted_problems/easy/env_a" not in metrics
+    assert "buffer/evicted_problems/hard/env_a" not in metrics
+
+
+def test_buffer_env_probabilities_validation(multi_env_dataset):
+    with pytest.raises(AssertionError, match="env_probabilities length"):
+        Buffer(multi_env_dataset, BufferConfig(env_probabilities=[0.5, 0.3, 0.2]), ["env_a", "env_b"])
+
+    with pytest.raises(AssertionError, match="must sum to 1.0"):
+        Buffer(multi_env_dataset, BufferConfig(env_probabilities=[0.5, 0.3]), ["env_a", "env_b"])
