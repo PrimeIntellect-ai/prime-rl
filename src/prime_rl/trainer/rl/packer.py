@@ -80,10 +80,12 @@ class Packer:
             train_idxs.extend([idx] * len(rollouts))
             self.runs.ready_to_update[idx] = True
 
+        # TODO: Handle different temperatures for each run
+        some_config = self.runs.config[train_idxs[0]]
         all_data_ranks_batches = self.prepare_batch(
             rollouts=train_rollouts,
             idxs=train_idxs,
-            temperature=1.0,  # TODO: get from run config, micro batch will also need seqlen temperature instead of scalar
+            temperature=some_config.sampling.temperature,
         )
 
         step_path = get_rollout_dir(self.runs.output_dir) / f"step_{self.trainer_step}"
