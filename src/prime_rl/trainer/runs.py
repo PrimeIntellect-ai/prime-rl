@@ -1,12 +1,11 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import Callable
 
 import tomli
 
-# This makes tests run significantly faster
-if TYPE_CHECKING:
-    pass
+from prime_rl.orchestrator.config import OrchestratorConfig
+from prime_rl.utils.logger import get_logger
 
 
 @dataclass
@@ -22,17 +21,56 @@ class Runs:
     def __init__(self, output_dir: Path, max_runs: int):
         self.output_dir = output_dir
         self.max_runs = max_runs
+        self.logger = get_logger()
 
         self.idx_2_id: dict[int, str] = {}
         self.id_2_idx: dict[str, int] = {}
         self.unused_idxs = {i for i in range(self.max_runs)}
 
         self.progress: dict[int, Progress] = {}
-        self.config: dict[int, dict[str, Any]] = {}
+        self.config: dict[int, OrchestratorConfig] = {}
         self.ready_to_update = [False] * max_runs
 
         self._deletion_hooks: list[Callable[[int, str], None]] = []
         self._creation_hooks: list[Callable[[int, str], None]] = []
+
+    def get_orchestrator_config(self, run_id: str) -> OrchestratorConfig | None:
+        # Load orchestrator config first to validate it
+        config_path = self.output_dir / run_id / "configs" / "orch.toml"
+        config_dir = config_path.parent
+        error_path = config_dir / "error.txt"
+
+        if not config_path.exists():
+            # Skip run if no config exists
+            if not error_path.exists():
+                config_dir.mkdir(parents=True, exist_ok=True)
+                with open(error_path, "w") as f:
+                    f.write(f"Error: No orchestrator config found at {config_path}\n")
+            self.logger.error(f"Error: No orchestrator config found at {config_path}")
+            return None
+
+        try:
+            # Import here to avoid circular dependency
+
+            with open(config_path, "rb") as f:
+                config_dict = tomli.load(f)
+
+            # Parse config with Pydantic validation
+            config = OrchestratorConfig(**config_dict)
+
+            # Remove error file if it exists (config is now valid)
+            if error_path.exists():
+                error_path.unlink()
+
+        except Exception as e:
+            # Write error to file and skip this run
+            config_dir.mkdir(parents=True, exist_ok=True)
+            with open(error_path, "w") as f:
+                f.write(f"Error parsing orchestrator config:\n{str(e)}\n")
+            self.logger.error(f"Error parsing orchestrator config for run {run_id}: {e}")
+            return None
+
+        return config
 
     def check_for_changes(self) -> None:
         run_ids = {run_path.stem for run_path in self.output_dir.glob("run_*")}
@@ -60,11 +98,17 @@ class Runs:
             try:
                 # Process mappings
                 new_id = next(iter(self.unused_idxs))
+
+                config = self.get_orchestrator_config(new_run)
+                if config is None:
+                    continue
+
+                # Now that config is valid, proceed with run setup
                 self.id_2_idx[new_run] = new_id
                 self.unused_idxs.remove(new_id)
                 self.idx_2_id[new_id] = new_run
 
-                # Process start args
+                # Get progress
                 self.progress[new_id] = Progress()
 
                 prev_ckpt_steps = [
@@ -72,13 +116,8 @@ class Runs:
                 ]
                 self.progress[new_id].step = max(prev_ckpt_steps) if prev_ckpt_steps else 0
 
-                # Load orchestrator config
-                config_path = self.get_run_dir(new_id) / "configs" / "orch.toml"
-                if config_path.exists():
-                    with open(config_path, "rb") as f:
-                        self.config[new_id] = tomli.load(f)
-                else:
-                    self.config[new_id] = {}
+                # Store the parsed config
+                self.config[new_id] = config
 
                 # Call creation hooks
                 for hook in self._creation_hooks:
