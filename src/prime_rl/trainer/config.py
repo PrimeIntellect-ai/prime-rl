@@ -443,3 +443,11 @@ class CheckpointConfig(BaseConfig):
             description="Whether to skip loading the dataloader from checkpoint.",
         ),
     ] = False
+
+
+class HeartbeatConfig(BaseConfig):
+    """Configures the heartbeat for BetterStack."""
+
+    url: Annotated[str, Field(description="The URL to send the heartbeat to.")]
+
+    interval: Annotated[float, Field(ge=0, description="The interval in seconds between heartbeats.")] = 60

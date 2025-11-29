@@ -7,6 +7,7 @@ from prime_rl.trainer.config import (
     AdamWConfig,
     CheckpointConfig,
     ConstantSchedulerConfig,
+    HeartbeatConfig,
     ModelConfig,
     OptimizerConfigType,
     SchedulerConfigType,
@@ -163,6 +164,10 @@ class SFTTrainerConfig(BaseSettings):
     loss_impl: Annotated[
         Literal["liger", "torch"], Field(description="Implementation of the cross entropy loss function to use.")
     ] = "torch"
+
+    heartbeat: Annotated[
+        HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
+    ] = None
 
     @model_validator(mode="after")
     def auto_setup_bench(self):

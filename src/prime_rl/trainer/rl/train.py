@@ -41,6 +41,7 @@ from prime_rl.trainer.utils import (
     get_response_lengths,
 )
 from prime_rl.trainer.world import get_world
+from prime_rl.trainer.heartbeat import Heartbeat
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format
@@ -64,6 +65,12 @@ def train(config: RLTrainerConfig):
     # Setup the monitor
     logger.info(f"Initializing monitor ({config.wandb})")
     monitor = setup_monitor(config.wandb, output_dir=config.output_dir, run_config=config)
+
+    # Setup heartbeat (only on rank 0)
+    heartbeat = None
+    if config.heartbeat is not None and world.rank == 0:
+        logger.info(f"Initializing heartbeat (interval={config.heartbeat.interval}s)")
+        heartbeat = Heartbeat(config.heartbeat.url, config.heartbeat.interval)
 
     # Set precision
     setup_torch_distributed(
@@ -361,6 +368,10 @@ def train(config: RLTrainerConfig):
 
         progress.step += 1
         is_first_step = False
+
+        # Send heartbeat if configured
+        if heartbeat is not None:
+            heartbeat.step()
 
     if config.trace_path:
         prof.__exit__(None, None, None)
