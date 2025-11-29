@@ -2,6 +2,11 @@ import torch
 from torch import Tensor
 
 
+def get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
+    """Get the maximum number of layers in the model."""
+    return max(int(i.split(".")[2]) for i in state_dict.keys() if "model.layers." in i) + 1
+
+
 def convert_hf_layer_to_tt(state_dict: dict[str, Tensor], layer_idx: int):
     """Convert a layer from HF to TT format in-place."""
     i = layer_idx
@@ -69,6 +74,6 @@ def convert_hf_to_tt_moe(state_dict: dict[str, Tensor]):
 
 def convert_tt_to_hf_moe(state_dict: dict[str, Tensor]):
     """Convert MoE weights from TT to HF format in-place."""
-    num_layers = len(list(i for i in state_dict.keys() if "mlp.gate.weight" in i))
+    num_layers = get_max_layer_num(state_dict)
     for i in range(num_layers):
         convert_tt_layer_to_hf(state_dict, i)
