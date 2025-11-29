@@ -250,12 +250,22 @@ async def orchestrate(config: OrchestratorConfig):
         # Await train rollouts, process results and write batch to disk to consume by trainer
         await train_task
         generate_completions_time = time.perf_counter() - generate_completions_start_time
-        train_rollouts = train_task.result()
+        train_task_result = train_task.result()
 
-        # Filter out rollouts without tokens to train on
-        train_rollouts = [
-            rollout for rollout in train_rollouts if all(bool(step["tokens"]) for step in rollout["trajectory"])
-        ]
+        # Some trajectories have their tokens set to None, which causes errors downstream.
+        # Set them to valid empty defaults.
+        train_rollouts = []
+        for rollout in train_task_result:
+            for i, step in enumerate(rollout["trajectory"]):
+                if not bool(step["tokens"]):
+                    rollout["trajectory"][i]["tokens"] = {
+                        "prompt_ids": [],
+                        "prompt_mask": [],
+                        "completion_ids": [],
+                        "completion_mask": [],
+                        "completion_logprobs": [],
+                    }
+            train_rollouts.append(rollout)
 
         # Compute advantages
         rewards = [rollout["reward"] for rollout in train_rollouts]
