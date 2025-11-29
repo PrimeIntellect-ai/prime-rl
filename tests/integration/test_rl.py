@@ -52,7 +52,7 @@ def wandb_project(username: str) -> str:
 
 
 @pytest.fixture(scope="module")
-def rl_process(
+def full_weight_rl_process(
     vllm_server,  # Can only run with vLLM server
     run_process: Callable[[Command, Environment, int], ProcessResult],
     output_dir: Path,
@@ -70,15 +70,17 @@ def rl_process(
 
 
 @pytest.fixture(scope="module")
-def rl_resume_process(
+def full_weight_rl_resume_process(
     vllm_server,  # Can only run with vLLM server
-    rl_process,  # Resume training can only start when regular RL process is finished
+    full_weight_rl_process,  # Resume training can only start when regular RL process is finished
     run_process: Callable[[Command, Environment, int], ProcessResult],
     output_dir: Path,
     wandb_project: str,
     branch_name: str,
     commit_hash: str,
 ) -> ProcessResult:
+    if full_weight_rl_process.returncode != 0:
+        pytest.skip("Full weight RL process failed")
     wandb_name = f"{branch_name}-{commit_hash}-resume"
 
     return run_process(
@@ -89,17 +91,41 @@ def rl_resume_process(
     )
 
 
-def test_no_error(rl_process: ProcessResult):
-    assert rl_process.returncode == 0, f"RL process failed with return code {rl_process.returncode}"
-
-
-def test_no_error_resume(rl_resume_process: ProcessResult):
-    assert rl_resume_process.returncode == 0, (
-        f"RL resume process failed with return code {rl_resume_process.returncode}"
+def test_no_error(full_weight_rl_process: ProcessResult, output_dir: Path):
+    if full_weight_rl_process.returncode != 0:
+        print("=== VLLM STDOUT ===")
+        with open(output_dir / "vllm.stdout", "r") as f:
+            print(*f.readlines()[-40:], sep="\n")
+        print("=== VLLM STDERR ===")
+        with open(output_dir / "vllm.stderr", "r") as f:
+            print(*f.readlines()[-40:], sep="\n")
+        print("=== ORCHESTRATOR STDOUT ===")
+        with open(output_dir / "logs" / "orchestrator.stdout", "r") as f:
+            print(*f.readlines()[-100:], sep="\n")
+    assert full_weight_rl_process.returncode == 0, (
+        f"RL process failed with return code {full_weight_rl_process.returncode}"
     )
 
 
-def test_check_reward(output_dir: Path, rl_resume_process: ProcessResult):
+def test_no_error_resume(full_weight_rl_resume_process: ProcessResult, output_dir: Path):
+    if full_weight_rl_resume_process.returncode != 0:
+        print("=== RESUME VLLM STDOUT ===")
+        with open(output_dir / "vllm.stdout", "r") as f:
+            print(*f.readlines()[-40:], sep="\n")
+        print("=== RESUME VLLM STDERR ===")
+        with open(output_dir / "vllm.stderr", "r") as f:
+            print(*f.readlines()[-40:], sep="\n")
+        print("=== RESUME ORCHESTRATOR STDOUT ===")
+        with open(output_dir / "logs" / "orchestrator.stdout", "r") as f:
+            print(*f.readlines()[-100:], sep="\n")
+    assert full_weight_rl_resume_process.returncode == 0, (
+        f"RL resume process failed with return code {full_weight_rl_resume_process.returncode}"
+    )
+
+
+def test_check_reward(output_dir: Path, full_weight_rl_resume_process: ProcessResult):
+    if full_weight_rl_resume_process.returncode != 0:
+        pytest.skip("Full weight RL resume process failed")
     wandb_paths = [i for i in output_dir.glob("run-*")]
     wandb_summaries = [json.load(open(i / "final_summary.json")) for i in wandb_paths]
     assert len(wandb_paths) == 2

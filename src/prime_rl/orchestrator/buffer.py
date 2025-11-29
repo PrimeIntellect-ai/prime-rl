@@ -4,11 +4,12 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import cast
 
+import verifiers as vf
 from datasets import Dataset, load_from_disk
 
 from prime_rl.orchestrator.config import BufferConfig
 from prime_rl.utils.utils import mean_normalize
-from prime_rl.utils.vf import Rollout
+from prime_rl.utils.vf import from_serializable_state, to_serializable_state
 
 
 class Buffer:
@@ -28,7 +29,7 @@ class Buffer:
         self.dataset = dataset
         self.problem_ids = dataset["example_id"]
         self.problem_buffer = {pid: dict(problem) for pid, problem in zip(self.problem_ids, dataset)}
-        self.rollout_buffer: list[Rollout] = []
+        self.rollout_buffer: list[vf.State] = []
         self.metadata = {pid: {"difficulty": "normal"} for pid in self.problem_ids}
 
         # The number of problems/rollouts sampled from each pool at the current step (will reset with every call to get_metrics)
@@ -47,7 +48,8 @@ class Buffer:
 
         rollouts_path = path / "rollouts"
         if self.rollout_buffer:
-            Dataset.from_list(list(map(dict, self.rollout_buffer))).save_to_disk(rollouts_path)
+            serializable_rollouts = [to_serializable_state(rollout) for rollout in self.rollout_buffer]
+            Dataset.from_list(list(map(dict, serializable_rollouts))).save_to_disk(rollouts_path)
         elif rollouts_path.exists():
             shutil.rmtree(rollouts_path)
 
@@ -69,7 +71,7 @@ class Buffer:
         rollouts_path = path / "rollouts"
         if rollouts_path.exists():
             rollouts_dataset = load_from_disk(rollouts_path)
-            self.rollout_buffer = [Rollout(**cast(dict, row)) for row in rollouts_dataset]
+            self.rollout_buffer = [from_serializable_state(cast(dict, row)) for row in rollouts_dataset]
 
     def sample_problems(self, n: int) -> list[dict]:
         """Samples `n` problems from the dataset using difficulty pools."""
@@ -94,7 +96,7 @@ class Buffer:
         sampled_ids = sampled_easy + sampled_normal + sampled_hard
         return [self.problem_buffer[pid] for pid in sampled_ids]
 
-    def update(self, rollouts: list[Rollout]):
+    def update(self, rollouts: list[vf.State]):
         """Updates the buffer state with completed rollouts."""
         rollouts_by_example = defaultdict(list)
         for rollout in rollouts:
@@ -114,15 +116,16 @@ class Buffer:
             self.num_sampled_rollouts_per_pool[new_difficulty] += 1
 
             self.num_rollouts += len(example_rollouts)
-            if self.config.filter_min_threshold is not None and avg_reward <= self.config.filter_min_threshold:
-                self.num_filtered_rollouts_per_difficulty["hard"] += len(example_rollouts)
-                continue
-            elif self.config.filter_max_threshold is not None and avg_reward >= self.config.filter_max_threshold:
-                self.num_filtered_rollouts_per_difficulty["easy"] += len(example_rollouts)
-                continue
+            if self.config.online_difficulty_filtering:
+                if avg_reward == 0.0:
+                    self.num_filtered_rollouts_per_difficulty["hard"] += len(example_rollouts)
+                    continue
+                elif avg_reward == 1.0:
+                    self.num_filtered_rollouts_per_difficulty["easy"] += len(example_rollouts)
+                    continue
             self.rollout_buffer.extend(example_rollouts)
 
-    def sample_rollouts(self, n: int) -> list[Rollout]:
+    def sample_rollouts(self, n: int) -> list[vf.State]:
         """Samples the latest `n` rollouts from the buffer."""
         n = min(n, len(self.rollout_buffer))
         sampled = self.rollout_buffer[-n:]

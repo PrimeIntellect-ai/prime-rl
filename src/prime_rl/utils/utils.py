@@ -268,12 +268,12 @@ def get_eval_dir(output_dir: Path) -> Path:
     return output_dir / "evals"
 
 
+def get_broadcast_dir(output_dir: Path) -> Path:
+    return output_dir / "broadcasts"
+
+
 def get_step_path(path: Path, step: int) -> Path:
     return path / f"step_{step}"
-
-
-def get_weight_ckpt_model_path(weights_dir: Path, step: int) -> Path:
-    return weights_dir / f"step_{step}" / "pytorch_model.bin"
 
 
 def get_latest_ckpt_step(weights_dir: Path) -> int | None:

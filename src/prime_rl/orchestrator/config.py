@@ -329,26 +329,16 @@ class BufferConfig(BaseConfig):
         ),
     ] = None
 
-    filter_min_threshold: Annotated[
-        float | None,
+    online_difficulty_filtering: Annotated[
+        bool,
         Field(
-            description="Minimum reward threshold for adding rollouts to buffer. If average reward <= this threshold, rollouts are not added to buffer.",
+            description="Whether to filter rollouts based on their average reward. If True, rollouts with average reward == 0.0 will be marked as hard and rollouts with average reward == 1.0 will be marked as easy.",
         ),
-    ] = None
-
-    filter_max_threshold: Annotated[
-        float | None,
-        Field(
-            description="Maximum reward threshold for adding rollouts to buffer. If average reward >= this threshold, rollouts are not added to buffer.",
-        ),
-    ] = None
+    ] = False
 
 
 class AdvantageConfig(BaseConfig):
-    std_norm: Literal["local", "global"] | None = None
     length_weighted_mean: bool = False
-    leave_one_out: bool = False
-    neg_clipped: bool = False
 
 
 class FileSystemWeightBroadcastConfig(BaseModel):
@@ -425,6 +415,13 @@ class OrchestratorConfig(BaseSettings):
         FileSystemWeightBroadcastConfig()
     )
 
+    trajectory_strategy: Annotated[
+        Literal["interleaved", "branching"],
+        Field(
+            description="Strategy to use for building training examples from multi-turn rollouts. If interleaved, will try to concatenate consecutive trajectory steps into a single training example. If branching, will create a separate training example for each trajectory step."
+        ),
+    ] = "interleaved"
+
     output_dir: Annotated[
         Path,
         Field(
@@ -470,20 +467,6 @@ class OrchestratorConfig(BaseSettings):
             description="Whether to mask environment responses from the loss.",
         ),
     ] = True
-
-    mask_truncated_completions: Annotated[
-        bool,
-        Field(
-            description="Whether to mask truncated completions from the loss.",
-        ),
-    ] = False
-
-    zero_truncated_completions: Annotated[
-        bool,
-        Field(
-            description="Whether to override reward scores with 0 for truncated completions.",
-        ),
-    ] = False
 
     # TODO(Mika): This should be automatic from the number of ZMQ connections
     num_train_workers: Annotated[
@@ -531,6 +514,12 @@ class OrchestratorConfig(BaseSettings):
     seed: Annotated[int | None, Field(description="Random seed for the orchestrator.")] = 42
 
     pad_to_multiple_of: Annotated[int, Field(ge=1, description="Pad the batch to a multiple of this value.")] = 1
+    lora_name: Annotated[
+        str | None,
+        Field(
+            description="Name of the LoRA to use for the orchestrator. If None, will not use any LoRA.",
+        ),
+    ] = None
 
     @model_validator(mode="after")
     def nccl_max_async_level(self):

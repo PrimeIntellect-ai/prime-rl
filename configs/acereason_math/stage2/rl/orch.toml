@@ -2,7 +2,6 @@ max_steps = 1000
 batch_size = 2048
 seq_len = 16384
 rollouts_per_example = 16
-mask_truncated_completions = false
 
 [sampling]
 temperature = 0.6

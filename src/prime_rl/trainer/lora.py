@@ -55,23 +55,6 @@ class LoRALinear(nn.Module):
         lora_output = (lora_x @ self.lora_A.T) @ self.lora_B.T * self.scaling
         return base_output + lora_output
 
-    def merge_weights(self) -> nn.Linear:
-        """Merge LoRA weights into base layer and return a new linear layer."""
-        delta_weight = (self.lora_B @ self.lora_A) * self.scaling
-        merged_layer = nn.Linear(
-            self.base_layer.in_features,
-            self.base_layer.out_features,
-            bias=self.base_layer.bias is not None,
-            device=self.base_layer.weight.device,
-            dtype=self.base_layer.weight.dtype,
-        )
-
-        merged_layer.weight.data = self.base_layer.weight.data + delta_weight
-        if self.base_layer.bias is not None:
-            merged_layer.bias.data = self.base_layer.bias.data.clone()
-
-        return merged_layer
-
 
 def _get_module_by_name(model: nn.Module, module_name: str) -> nn.Module:
     """Get a module by its fully qualified name."""
@@ -164,22 +147,13 @@ def freeze_all_except_lora_and_specified(model: nn.Module, config: LoRAConfig) -
         model: The model to freeze parameters in
         config: LoRA configuration with modules_to_save patterns
     """
-    frozen_params = 0
-    trainable_params = 0
-    total_params = 0
-
     for name, param in model.named_parameters():
-        total_params += 1
-
         if any(lora_param in name for lora_param in ["lora_A", "lora_B"]):
             param.requires_grad = True
-            trainable_params += 1
         elif _should_keep_trainable(name, config.modules_to_save):
             param.requires_grad = True
-            trainable_params += 1
         else:
             param.requires_grad = False
-            frozen_params += 1
 
 
 def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
@@ -268,73 +242,6 @@ def clean_lora_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torc
             clean_state_dict[key] = value
 
     return clean_state_dict
-
-
-def merge_lora_weights_inplace(model: nn.Module) -> Dict[str, Dict[str, torch.Tensor]]:
-    """
-    Merge LoRA weights into base layers in-place and return original LoRA state for restoration.
-
-    Returns:
-        Dictionary mapping module names to their original LoRA state
-    """
-    original_lora_state = {}
-    merged_count = 0
-
-    for name, module in model.named_modules():
-        if isinstance(module, LoRALinear):
-            original_lora_state[name] = {
-                "lora_A": module.lora_A.data.clone(),
-                "lora_B": module.lora_B.data.clone(),
-            }
-
-            delta_weight = (module.lora_B @ module.lora_A) * module.scaling
-            module.base_layer.weight.data.add_(delta_weight)
-
-            module.lora_A.data.zero_()
-            module.lora_B.data.zero_()
-            merged_count += 1
-
-    return original_lora_state
-
-
-def restore_lora_weights_inplace(model: nn.Module, original_lora_state: Dict[str, Dict[str, torch.Tensor]]) -> None:
-    """
-    Restore original LoRA weights and subtract merged weights from base layers.
-
-    Args:
-        model: Model with merged LoRA weights
-        original_lora_state: Original LoRA state from merge_lora_weights_inplace
-    """
-    restored_count = 0
-
-    for name, module in model.named_modules():
-        if isinstance(module, LoRALinear) and name in original_lora_state:
-            module.lora_A.data.copy_(original_lora_state[name]["lora_A"])
-            module.lora_B.data.copy_(original_lora_state[name]["lora_B"])
-
-            delta_weight = (module.lora_B @ module.lora_A) * module.scaling
-            module.base_layer.weight.data.sub_(delta_weight)
-            restored_count += 1
-
-
-def load_lora_state_dict(model: nn.Module, lora_state_dict: Dict[str, torch.Tensor]) -> None:
-    """
-    Load LoRA parameters into model.
-
-    Args:
-        model: Model with LoRA modules
-        lora_state_dict: Dictionary containing LoRA parameters
-    """
-    logger = get_logger()
-    loaded_params = 0
-
-    model_state_dict = model.state_dict()
-    for name, param in lora_state_dict.items():
-        if name in model_state_dict:
-            model_state_dict[name].copy_(param)
-            loaded_params += 1
-        else:
-            logger.warning(f"LoRA parameter {name} not found in model")
 
 
 def save_lora_config(config: LoRAConfig, model: nn.Module, save_path) -> None:

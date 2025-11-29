@@ -10,7 +10,7 @@ from prime_rl.trainer.config import (
     ModelConfig,
     OptimizerConfigType,
     SchedulerConfigType,
-    WeightCheckpointConfig,
+    TokenizerConfig,
 )
 from prime_rl.utils.config import LogConfig, WandbMonitorConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
@@ -22,6 +22,15 @@ class BaseDataConfig(BaseModel):
     batch_size: Annotated[int, Field(ge=1)] = 128
     seq_len: Annotated[int, Field(ge=1)] = 128
     pack_function: Literal["cat", "stack"] = "cat"
+    micro_batch_size: Annotated[int, Field(ge=1)] = 1
+
+    @model_validator(mode="after")
+    def validate_batch_size(self):
+        if self.batch_size % self.micro_batch_size != 0:
+            raise ValueError("Batch size must be divisible by micro batch size")
+        if self.batch_size < self.micro_batch_size:
+            raise ValueError("Batch size must be greater than or equal to micro batch size")
+        return self
 
 
 class FakeDataConfig(BaseDataConfig):
@@ -100,6 +109,9 @@ class SFTTrainerConfig(BaseSettings):
     # The model configuration
     model: ModelConfig = ModelConfig()
 
+    # The tokenizer configuration
+    tokenizer: TokenizerConfig = TokenizerConfig()
+
     # The data configuration
     data: Annotated[DataConfigType, Field(discriminator="type")] = SFTDataConfig()
 
@@ -111,9 +123,6 @@ class SFTTrainerConfig(BaseSettings):
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
-
-    # The weight checkpoint configuration
-    weights: WeightCheckpointConfig | None = None
 
     # The logging configuration
     log: LogConfig = LogConfig()
@@ -150,6 +159,10 @@ class SFTTrainerConfig(BaseSettings):
             description="Timeout in seconds for torch distributed ops. Defaults to 600 seconds.",
         ),
     ] = 600
+
+    loss_impl: Annotated[
+        Literal["liger", "torch"], Field(description="Implementation of the cross entropy loss function to use.")
+    ] = "torch"
 
     @model_validator(mode="after")
     def auto_setup_bench(self):
@@ -192,28 +205,8 @@ class SFTTrainerConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def validate_ckpt_managers(self):
-        # Ensures that we save a weight checkpoint with every full checkpoint as well
-        if self.ckpt is not None:
-            if self.weights is None:
-                self.weights = WeightCheckpointConfig()
-            # If not interval is specified, use the same interval as the full checkpoint
-            if self.ckpt.interval is not None and self.weights.interval is None:
-                self.weights.interval = self.ckpt.interval
-            # If an interval is specified, ensure that the weight checkpoint interval is a multiple of the full checkpoint interval
-            if (
-                self.ckpt.interval is not None
-                and self.weights.interval is not None
-                and self.ckpt.interval % self.weights.interval != 0
-            ):
-                raise ValueError(
-                    "Use a weight checkpoint interval that ensures that a weight checkpoint is saved with every full checkpoint"
-                )
-        return self
-
-    @model_validator(mode="after")
     def validate_lora_adapter_saving(self):
-        if self.weights and self.weights.save_adapter_separately:
+        if self.ckpt and self.ckpt.weights and self.ckpt.weights.save_adapter_separately:
             lora_enabled = self.model and self.model.experimental and self.model.experimental.lora
             if not lora_enabled:
                 raise ValueError(
@@ -226,4 +219,12 @@ class SFTTrainerConfig(BaseSettings):
     def validate_opt_and_fsdp_offload(self):
         if self.optim.type == "muon" and self.model.fsdp_cpu_offload:
             raise ValueError("Muon optimizer does not support FSDP CPU offload")
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_tokenizer(self):
+        if self.tokenizer.name is None:
+            self.tokenizer.name = self.model.name
+        if self.tokenizer.trust_remote_code is None:
+            self.tokenizer.trust_remote_code = self.model.trust_remote_code
         return self

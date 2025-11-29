@@ -2,17 +2,17 @@ import time
 from contextlib import nullcontext
 from datetime import timedelta
 
+from torch.nn import CrossEntropyLoss
+
 # Import environment before any other imports
 # ruff: noqa: I001
 
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
-from torch.nn.functional import cross_entropy
 from torch.distributed.tensor.experimental import context_parallel
 from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
-from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
-from prime_rl.trainer.weights import setup_weight_ckpt_manager
+from prime_rl.trainer.ckpt import Progress, setup_ckpt_managers
 from prime_rl.trainer.sft.config import SFTTrainerConfig
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.optim import setup_optimizer
@@ -38,6 +38,7 @@ from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format
 import torch.distributed as dist
+from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 
 
 @clean_exit
@@ -68,10 +69,20 @@ def train(config: SFTTrainerConfig):
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model, config.data.seq_len)
 
+    total_micro_batches = config.data.batch_size * config.model.cp * config.model.tp
+    micro_batches_per_step = world.world_size * config.data.micro_batch_size
+    assert total_micro_batches % micro_batches_per_step == 0, (
+        f"batch_size * cp * tp ({total_micro_batches}) must be divisible by "
+        f"world_size * micro_batch_size ({micro_batches_per_step})"
+    )
+    grad_accum_steps = total_micro_batches // micro_batches_per_step
+
     # Initialize the model and tokenizer
-    logger.info(f"Initializing model and tokenizer ({config.model})")
+    logger.info(f"Initializing model ({config.model})")
     model = setup_model(config.model, parallel_dims)
-    tokenizer = setup_tokenizer(config.model)
+
+    logger.info(f"Initializing tokenizer ({config.tokenizer})")
+    tokenizer = setup_tokenizer(config.tokenizer)
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -87,17 +98,10 @@ def train(config: SFTTrainerConfig):
     logger.info(f"Setting up {config.scheduler.type} scheduler with {scheduler_steps} steps ({config.scheduler})")
     scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
 
-    # Set up weight checkpoint manager
-    logger.info(f"Initializing weight checkpoint manager ({config.weights})")
-    weight_ckpt_manager = setup_weight_ckpt_manager(
-        config.output_dir, config.weights, config.ckpt, 0, config.model.experimental.lora
-    )
-
     # Set up checkpoint manager
-    logger.info(f"Initializing checkpoint manager ({config.ckpt})")
-    ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
-    assert ckpt_manager is None or (ckpt_manager is not None and weight_ckpt_manager is not None), (
-        "If ckpt_manager is set, weight_ckpt_manager must also be set"
+    logger.info(f"Initializing checkpoint managers ({config.ckpt})")
+    ckpt_manager, weight_ckpt_manager = setup_ckpt_managers(
+        config.output_dir, config.ckpt, config.model.experimental.lora
     )
 
     # Set up the dataset and dataloader
@@ -106,27 +110,16 @@ def train(config: SFTTrainerConfig):
     dataloader = setup_dataloader(dataset, config.data)
     dataiter = iter(dataloader)
 
-    # Check that the world size and batch configuration is compatible
-    batch_size = config.data.batch_size
-    if world.world_size > batch_size:
-        raise ValueError(
-            f"There must be at least one micro batch per rank, but only have {batch_size} micro batches for {world.world_size} ranks."
-        )
-    if batch_size % world.world_size != 0:
-        raise ValueError(
-            f"The number of micro batches ({num_micro_batches}) must be divisible by the world size ({world.world_size})."
-        )
-
     # Optionally, resume training from a checkpoint
     progress = Progress()
     if ckpt_manager is not None and config.ckpt and config.ckpt.resume_step:
         logger.info(f"Resuming training from checkpoint step {config.ckpt.resume_step}")
         ckpt_manager.load(
+            config.ckpt.resume_step,
             model,
             [optimizer],
             scheduler if not config.ckpt.skip_scheduler else None,
             progress if not config.ckpt.skip_progress else None,
-            step=config.ckpt.resume_step,
             dataloader=dataloader if not config.ckpt.skip_dataloader else None,
         )
         # This redundant setup is necessary because loading the optimizer's state has side effects on the scheduler state dict
@@ -135,6 +128,14 @@ def train(config: SFTTrainerConfig):
     logger.info(
         f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples}, dataset_state={dataloader.state_dict()['dataset_state']})"
     )
+
+    match config.loss_impl:
+        case "liger":
+            ce_loss = LigerCrossEntropyLoss(reduction="none")
+        case "torch":
+            ce_loss = CrossEntropyLoss(reduction="none")
+        case _:
+            raise ValueError(f"Invalid loss implementation: {config.loss_impl}")
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3  # GiB
@@ -149,36 +150,29 @@ def train(config: SFTTrainerConfig):
         torch.cuda.reset_peak_memory_stats()
         is_last_step = config.max_steps is not None and progress.step == config.max_steps
 
-        # Save the weight checkpoint (if we are at an interval step and not at the first or last step)
-        save_weights_time = 0
-        if (
-            weight_ckpt_manager is not None
-            and (config.weights and config.weights.interval)
-            and not (is_first_step or is_last_step)
-            and progress.step % config.weights.interval == 0
-        ):
-            logger.info(f"Saving weight checkpoint at step {progress.step}")
-            save_weights_start_time = time.time()
-            weight_ckpt_manager.save(model, tokenizer, step=progress.step)
-            save_weights_time = time.time() - save_weights_start_time
-
-        # Save the full checkpoint (if we are at an interval step and not at the first or last step)
-        save_ckpt_time = 0
         if (
             ckpt_manager is not None
-            and weight_ckpt_manager is not None
-            and config.ckpt
-            and config.ckpt.interval
+            and (config.ckpt and config.ckpt.interval)
             and not (is_first_step or is_last_step)
             and progress.step % config.ckpt.interval == 0
         ):
+            # Save full checkpoint
             logger.info(f"Saving checkpoint at step {progress.step}")
-            save_ckpt_start_time = time.time()
-            ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step, dataloader=dataloader)
-            save_ckpt_time = time.time() - save_ckpt_start_time
+            save_ckpt_start_time = time.perf_counter()
+            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
+            save_ckpt_time = time.perf_counter() - save_ckpt_start_time
 
-            # Maybe clean up old trainer checkpoints
+            # Maybe clean up old checkpoints
             ckpt_manager.maybe_clean()
+
+            # Save weight checkpoint
+            if weight_ckpt_manager is not None:
+                logger.info(f"Saving weight checkpoint at step {progress.step}")
+                weight_ckpt_manager.save(progress.step, model, tokenizer)
+                # Maybe clean up old weight checkpoint
+                weight_ckpt_manager.maybe_clean()
+        else:
+            save_ckpt_time = 0
 
         # Break if we have reached the maximum number of steps
         if config.max_steps is not None and progress.step >= config.max_steps:
@@ -188,16 +182,13 @@ def train(config: SFTTrainerConfig):
             MemoryProfiler(progress.step, config.memory_profiler_path) if config.memory_profiler_path else None
         )
 
-        step_start_time = time.time()
-        forward_backward_start_time = time.time()
-        grad_accum_steps = config.data.batch_size * config.model.cp * config.model.tp // world.world_size
+        step_start_time = time.perf_counter()
+        forward_backward_start_time = time.perf_counter()
 
         batch_loss = torch.tensor(0.0).to("cuda")
         nan_loss_count = torch.tensor(0).to("cuda")
         batch_max_vio, max_vio = torch.tensor(0.0).to("cuda"), None
         for micro_step in range(grad_accum_steps):
-            model.set_requires_all_reduce(micro_step == grad_accum_steps - 1)
-
             micro_batch = next(dataiter)
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
@@ -228,7 +219,7 @@ def train(config: SFTTrainerConfig):
                 B, L, V = logits.shape
 
                 # Compute loss
-                loss = cross_entropy(logits.view(-1, V), target_ids.view(-1), reduction="none").view(B, L)
+                loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
 
                 # Compute average loss over unmasked tokens
                 loss = loss[loss_mask].mean()
@@ -276,7 +267,7 @@ def train(config: SFTTrainerConfig):
         current_lr = optimizer.param_groups[0]["lr"]
         scheduler.step()
 
-        forward_backward_time = time.time() - forward_backward_start_time
+        forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         # Optionally, dump memory snapshot
         if memory_profiler is not None:
@@ -288,7 +279,8 @@ def train(config: SFTTrainerConfig):
         dist.all_reduce(nan_loss_count, op=dist.ReduceOp.SUM)
 
         # Compute step metrics
-        num_tokens = config.data.batch_size * config.data.seq_len
+        # Divide by CP and TP since those ranks process the same data
+        num_tokens = config.data.batch_size * config.data.seq_len // (config.model.cp * config.model.tp)
         progress.total_tokens += num_tokens
         progress.total_samples = dataset.step
         perf_counter = get_perf_counter(model, config.data.seq_len)
@@ -298,7 +290,7 @@ def train(config: SFTTrainerConfig):
         peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
 
         # Log step metrics
-        step_time = time.time() - step_start_time
+        step_time = time.perf_counter() - step_start_time
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {batch_loss.item():.4f} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%)"
         if is_tt_moe_model(model) and max_vio is not None:
             step_message += f" | Max Vio: {batch_max_vio.item():.4f}"
@@ -357,7 +349,6 @@ def train(config: SFTTrainerConfig):
         time_metrics = {
             "time/step": step_time,
             "time/save_ckpt": save_ckpt_time,
-            "time/save_weights": save_weights_time,
             "time/forward_backward": forward_backward_time,
             "step": progress.step,
         }
@@ -384,17 +375,17 @@ def train(config: SFTTrainerConfig):
     # Log final (immutable) distributions to W&B table
     monitor.log_final_distributions()
 
-    # Write final weight checkpoint
-    if weight_ckpt_manager is not None:
-        assert config.weights is not None
-        logger.info("Writing final weight checkpoint")
-        weight_ckpt_manager.save(model, tokenizer, step=progress.step)
-
     # Write final checkpoint
     if ckpt_manager is not None:
         logger.info("Writing final checkpoint")
-        ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step, dataloader=dataloader)
+        ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
         ckpt_manager.maybe_clean()
+
+    # Write final weight checkpoint
+    if weight_ckpt_manager is not None:
+        logger.info("Writing final weight checkpoint")
+        weight_ckpt_manager.save(progress.step, model, tokenizer)
+        weight_ckpt_manager.maybe_clean()
 
     logger.info(f"Peak memory: {max(to_col_format(monitor.history)['perf/peak_memory']):.1f} GiB")
     logger.success("SFT trainer finished!")

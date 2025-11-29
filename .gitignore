@@ -8,10 +8,12 @@ configs/endpoints.py
 **/torchrun
 **/weights
 **/checkpoints
+**/broadcasts
 **/rollouts
 **/logs
 **/wandb
 **/evals
+!configs/**/evals
 final_summary.json
 .pydantic_config
 .chroma_db

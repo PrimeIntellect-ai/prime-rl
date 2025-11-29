@@ -1,7 +1,7 @@
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.10"
 # dependencies = [
-#     "gradio",
+#     "gradio==5.49.1",
 #     "openai",
 # ]
 # ///
@@ -203,7 +203,6 @@ def create_demo():
                 # Create chat interface with custom settings
                 chat_interface = gr.ChatInterface(  # noqa: F841
                     fn=chat_function,
-                    type="messages",
                     additional_inputs=[
                         endpoint_input,
                         model_input,
@@ -214,9 +213,7 @@ def create_demo():
                     ],
                     chatbot=gr.Chatbot(
                         height=500,
-                        show_copy_button=True,
                         placeholder="Start chatting with the AI assistant...",
-                        type="messages",
                         render_markdown=True,
                     ),
                     textbox=gr.Textbox(placeholder="Type your message here...", container=False, scale=7),
@@ -242,7 +239,6 @@ def main():
         server_name="0.0.0.0",  # Bind to all interfaces
         server_port=args.port,
         share=not args.no_share,  # Share by default unless --no-share is specified
-        show_api=False,
     )
 
 

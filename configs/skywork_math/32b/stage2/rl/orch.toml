@@ -2,7 +2,6 @@ max_steps = 1130
 batch_size = 5120
 seq_len = 32768
 rollouts_per_example = 32
-mask_truncated_completions = false
 
 [model]
 name = "willcb/DeepSeek-R1-Distill-Qwen-32B"

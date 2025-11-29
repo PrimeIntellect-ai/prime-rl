@@ -1,0 +1,8 @@
+max_concurrent = 256
+
+[client]
+base_url = ["https://openrouter.ai/api/v1"]
+api_key_var = "OPENROUTER_API_KEY"
+
+[client.extra_body]
+provider = { order = ["deepseek", "novita/fp8", "atlas-cloud/fp8", "siliconflow/fp8"] }

@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from prime_rl.utils.pydantic_config import BaseConfig
 
-AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2"]
+AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2", "flash_attention_3"]
 
 MOE_MODEL_MAPS = {
     "Qwen/Qwen3-30B-A3B": "Jackmin108/Qwen3-30B-A3B-Fast",
@@ -276,6 +276,29 @@ class ModelConfig(BaseConfig):
         return self
 
 
+class TokenizerConfig(BaseConfig):
+    """Configuration for the tokenizer."""
+
+    name: Annotated[
+        str | None,
+        Field(description="The name or path of the tokenizer to use. If None, will use the model's default tokenizer."),
+    ] = None
+
+    trust_remote_code: Annotated[
+        bool | None,
+        Field(
+            description="Whether to trust remote code for tokenizer initialization. If None, will use the model's default trust remote code setting.",
+        ),
+    ] = None
+
+    chat_template: Annotated[
+        str | None,
+        Field(
+            description="The chat template to use for the tokenizer. If None, will use the tokenizer's default chat template."
+        ),
+    ] = None
+
+
 class ConstantSchedulerConfig(BaseModel):
     """Configuration for constant learning rate scheduler."""
 
@@ -346,6 +369,31 @@ class MuonConfig(BaseOptimizerConfig):
 OptimizerConfigType: TypeAlias = SGDConfig | AdamWConfig | MuonConfig
 
 
+class WeightCheckpointConfig(BaseConfig):
+    """Configures saving HF-compatible weight checkpoints."""
+
+    save_sharded: Annotated[
+        bool,
+        Field(
+            description="Whether to save the weight checkpoint in sharded format.",
+        ),
+    ] = True
+
+    save_format: Annotated[
+        Literal["safetensors", "torch"],
+        Field(
+            description="The format to save the weight checkpoint in.",
+        ),
+    ] = "safetensors"
+
+    save_adapter_separately: Annotated[
+        bool,
+        Field(
+            description="Whether to save LoRA adapters separately before merging into full model weights.",
+        ),
+    ] = False
+
+
 class CheckpointConfig(BaseConfig):
     """Configures checkpointing the full model, optimizer and training state for resuming training."""
 
@@ -356,6 +404,8 @@ class CheckpointConfig(BaseConfig):
             description="Interval at which to save the training checkpoint. If None, will only checkpoint at the end of training.",
         ),
     ] = None
+
+    weights: WeightCheckpointConfig | None = WeightCheckpointConfig()
 
     resume_step: Annotated[
         int | None,
@@ -391,45 +441,5 @@ class CheckpointConfig(BaseConfig):
         bool,
         Field(
             description="Whether to skip loading the dataloader from checkpoint.",
-        ),
-    ] = False
-
-
-class WeightCheckpointConfig(BaseConfig):
-    """Configures checkpointing the model weights for updating the inference engines (RL trainer) or continued post-training (on SFT trainer)."""
-
-    interval: Annotated[
-        int | None,
-        Field(
-            ge=1,
-            description="Interval at which to save weight checkpoint. If None, will save all necessary weight checkpoints on RL trainer and only final weight checkpoint on SFT trainer.",
-        ),
-    ] = None
-
-    save_sharded: Annotated[
-        bool,
-        Field(
-            description="Whether to save the weight checkpoint in sharded format.",
-        ),
-    ] = False
-
-    save_format: Annotated[
-        Literal["safetensors", "torch"],
-        Field(
-            description="The format to save the weight checkpoint in.",
-        ),
-    ] = "torch"
-
-    save_async: Annotated[
-        bool,
-        Field(
-            description="Whether to save the weight checkpoint asynchronously.",
-        ),
-    ] = True
-
-    save_adapter_separately: Annotated[
-        bool,
-        Field(
-            description="Whether to save LoRA adapters separately before merging into full model weights.",
         ),
     ] = False
