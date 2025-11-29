@@ -10,7 +10,7 @@ from datasets import Dataset, load_from_disk
 
 from prime_rl.orchestrator.config import BufferConfig
 from prime_rl.utils.utils import mean_normalize
-from prime_rl.utils.vf import from_serializable_state, to_serializable_state
+from prime_rl.utils.vf import to_serializable_state
 
 
 class Buffer:
