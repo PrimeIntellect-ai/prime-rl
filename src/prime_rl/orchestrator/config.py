@@ -337,6 +337,12 @@ class BufferConfig(BaseConfig):
         ),
     ] = 0.0
 
+    online_difficulty_filtering: Annotated[
+        bool,
+        Field(
+            description="Whether to filter rollouts based on difficulty. If True, only rollouts with average reward 0.0 or 1.0 are added to the buffer.",
+        ),
+    ] = False
 
 class AdvantageConfig(BaseConfig):
     length_weighted_mean: bool = False

@@ -155,11 +155,14 @@ class Buffer:
                 target_pool = self.easy_problems if pool == "easy" else self.hard_problems
                 target_pool[problem_id] = problem
             self.num_problems_per_pool[env_name][pool] += 1
-
-            if avg_reward == 0.0:
-                self.num_rollouts_per_pool[env_name]["hard"] += len(example_rollouts)
-            elif avg_reward == 1.0:
-                self.num_rollouts_per_pool[env_name]["easy"] += len(example_rollouts)
+            if self.config.online_difficulty_filtering:
+                if avg_reward == 0.0:
+                    self.num_rollouts_per_pool[env_name]["hard"] += len(example_rollouts)
+                elif avg_reward == 1.0:
+                    self.num_rollouts_per_pool[env_name]["easy"] += len(example_rollouts)
+                else:
+                    self.num_rollouts_per_pool[env_name]["normal"] += len(example_rollouts)
+                    self.rollout_buffer.extend(example_rollouts)
             else:
                 self.num_rollouts_per_pool[env_name]["normal"] += len(example_rollouts)
                 self.rollout_buffer.extend(example_rollouts)
