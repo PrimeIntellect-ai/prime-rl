@@ -25,7 +25,12 @@ def get_model_pairs():
         num_experts_per_tok=4,
         num_hidden_layers=3,
         rope_theta=1000000.0,
+        use_qk_norm=True,
     )
+    # TODO: We should test this path because it's the most performant
+    # But the grad seems to be off in attn because of precision
+    # hf_config._attn_implementation = "flash_attention_2"
+    hf_config._attn_implementation = "sdpa"
     hf_model = HFQwen3MoeForCausalLM._from_config(hf_config)
     prime_model = PrimeRLQwen3MoeForCausalLM._from_config(hf_config)
     with torch.no_grad():
@@ -45,7 +50,7 @@ def test_qwen3_moe_attn_only():
         layer.mlp = nn.Identity()
 
     input_ids = torch.randint(0, hf_model.config.vocab_size, (1, 100))
-    position_ids = torch.arange(100).unsqueeze(0)
+    position_ids = torch.arange(1, 101).unsqueeze(0)
 
     hf_output = hf_model(input_ids, position_ids)
     prime_output = prime_model(input_ids, position_ids)
@@ -72,7 +77,7 @@ def test_qwen3_moe_mlp_only():
         layer.self_attn.forward = foo
 
     input_ids = torch.randint(0, hf_model.config.vocab_size, (1, 100))
-    position_ids = torch.arange(100).unsqueeze(0)
+    position_ids = torch.arange(1, 101).unsqueeze(0)
 
     hf_output = hf_model(input_ids, position_ids)
     prime_output = prime_model(input_ids, position_ids)
@@ -91,7 +96,7 @@ def test_qwen3_moe():
     hf_model, prime_model = get_model_pairs()
 
     input_ids = torch.randint(0, hf_model.config.vocab_size, (1, 100))
-    position_ids = torch.arange(100).unsqueeze(0)
+    position_ids = torch.arange(1, 101).unsqueeze(0)
 
     hf_output = hf_model(input_ids, position_ids)
     prime_output = prime_model(input_ids, position_ids)

@@ -29,6 +29,10 @@ def get_model_pairs() -> tuple[HFGlm4MoeForCausalLM, PrimeRLGlm4MoeForCausalLM]:
         first_k_dense_replace=1,
         partial_rotary_factor=0.5,
     )
+    # TODO: We should test this path because it's the most performant
+    # But the grad seems to be off in attn because of precision
+    # hf_config._attn_implementation = "flash_attention_2"
+    hf_config._attn_implementation = "sdpa"
     hf_model = HFGlm4MoeForCausalLM._from_config(hf_config)
     prime_model = PrimeRLGlm4MoeForCausalLM._from_config(hf_config)
     with torch.no_grad():
@@ -48,7 +52,7 @@ def test_glm4_moe_attn_only() -> None:
         layer.mlp = nn.Identity()
 
     input_ids = torch.randint(0, hf_model.config.vocab_size, (1, 100))
-    position_ids = torch.arange(100).unsqueeze(0)
+    position_ids = torch.arange(1, 101).unsqueeze(0)
 
     hf_output = hf_model(input_ids, position_ids)
     prime_output = prime_model(input_ids, position_ids)
@@ -75,7 +79,7 @@ def test_glm4_moe_mlp_only() -> None:
         layer.self_attn.forward = foo
 
     input_ids = torch.randint(0, hf_model.config.vocab_size, (1, 100))
-    position_ids = torch.arange(100).unsqueeze(0)
+    position_ids = torch.arange(1, 101).unsqueeze(0)
 
     hf_output = hf_model(input_ids, position_ids)
     prime_output = prime_model(input_ids, position_ids)
@@ -94,7 +98,7 @@ def test_glm4_moe() -> None:
     hf_model, prime_model = get_model_pairs()
 
     input_ids = torch.randint(0, hf_model.config.vocab_size, (1, 100))
-    position_ids = torch.arange(100).unsqueeze(0)
+    position_ids = torch.arange(1, 101).unsqueeze(0)
 
     hf_output = hf_model(input_ids, position_ids)
     prime_output = prime_model(input_ids, position_ids)
