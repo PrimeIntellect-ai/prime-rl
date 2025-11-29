@@ -9,16 +9,14 @@ from huggingface_hub import whoami
 from openai import AsyncOpenAI
 from prime_evals import AsyncEvalsClient
 from verifiers import load_environment
-from verifiers.types import GenerateOutputs
 from verifiers.utils.eval_utils import get_hf_hub_dataset_name, make_dataset, sanitize_metadata, save_to_disk
 
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.orchestrator.config import ClientConfig, EvalConfig, EvalSamplingConfig, EvalSaveConfig, ModelConfig
-from prime_rl.orchestrator.utils import parse_is_truncated_completions, parse_num_completion_tokens
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor import get_monitor
 from prime_rl.utils.utils import capitalize, get_eval_dir, get_step_path
-from prime_rl.utils.vf import generate_batch
+from prime_rl.utils.vf import generate_batch, get_completion_len, get_is_truncated, to_serializable_state
 
 
 def compute_pass_at_k(rewards: list[int]) -> dict[str, float]:
@@ -56,8 +54,7 @@ def prepare_sampling_args(sampling_config: EvalSamplingConfig, client_config: Cl
 
     if client_config.server_type == "vllm":
         # Always return logprobs and token IDs from vLLM server
-        sampling_args["logprobs"] = True
-        extra_body: dict[str, Any] = {"return_tokens_as_token_ids": True}
+        extra_body: dict[str, Any] = {"return_token_ids": True, "logprobs": True}
 
         # Apply vLLM-specific sampling arguments, if specified
         if sampling_config.top_k is not None:
@@ -105,25 +102,23 @@ async def run_eval(
         f"Evaluating {env_name_or_id} ({num_examples=}, {rollouts_per_example=}) {'with default args' if env_args == {} else f'with args {env_args}'}"
     )
     # Run async generation and scoring
-    results: GenerateOutputs = await generate_batch(
+    states = await generate_batch(
+        clients=clients,
         env=env,
         model_name=model_config.name,
-        problems=dataset.to_list(),
-        clients=clients,
+        examples=dataset.to_list(),
         rollouts_per_example=rollouts_per_example,
         sampling_args=sampling_args,
         pbar_description=f"Evaluating {env_name_or_id}",
     )
-
     # Parse vLLM responses
     k = rollouts_per_example
-    responses = [state["responses"] for state in results.state]
     results_df = pd.DataFrame(
         {
-            "example_id": results.example_id,
-            "reward": results.reward,
-            "completion_len": parse_num_completion_tokens(responses),
-            "is_truncated": parse_is_truncated_completions(responses),
+            "example_id": [state["example_id"] for state in states],
+            "reward": [state["reward"] for state in states],
+            "completion_len": [get_completion_len(state) for state in states],
+            "is_truncated": [get_is_truncated(state) for state in states],
         }
     )
     unique_rewards = results_df.reward.unique()
@@ -166,22 +161,31 @@ async def run_eval(
 
     # Save results
     if save_config.disk is not None or save_config.hf is not None or save_config.env_hub:
-        dataset = make_dataset(results)
-        metadata_dict = sanitize_metadata(results.metadata)
+        outputs = env._prepare_rollout_results(
+            all_states=[to_serializable_state(state) for state in states],  # type: ignore
+            model=model_config.name,
+            client=clients[0],  # We use the first client
+            state_columns=None,
+            results_path=None,
+            gen_sampling_args=sampling_args,
+            start_time=eval_start_time,
+        )
+        dataset = make_dataset(outputs)
+        metadata_dict = sanitize_metadata(outputs["metadata"])
 
         if save_config.disk is not None:
             is_online = step is not None
             default_save_path = (
                 get_step_path(get_eval_dir(output_dir), ckpt_step) / env_name_or_id
                 if is_online
-                else results.metadata.path_to_save
+                else outputs["metadata"]["path_to_save"]
             )
             save_path = save_config.disk.path or default_save_path
             save_to_disk(dataset, metadata_dict, save_path)
             logger.info(f"Saved eval results for {env_name_or_id} to disk ({save_path})")
 
         if save_config.hf is not None:
-            dataset_name = save_config.hf.dataset_name or get_hf_hub_dataset_name(results)
+            dataset_name = save_config.hf.dataset_name or get_hf_hub_dataset_name(outputs)
             dataset_subset = save_config.hf.dataset_subset or env.env_id
             dataset_split = save_config.hf.dataset_split or "evals"
             dataset.push_to_hub(dataset_name, dataset_subset, split=dataset_split, private=save_config.hf.private)

@@ -60,9 +60,7 @@ async def eval(config: OfflineEvalConfig):
     await reload_weights(admin_clients)
 
     # Run benchmarks on base model
-    if config.max_concurrent is not None:
-        semaphore = asyncio.Semaphore(config.max_concurrent)
-        set_semaphore(semaphore)
+    await set_semaphore(config.max_concurrent or -1)
     if config.eval_base:
         logger.info(f"Evaluating model {config.model.name}")
         await run_evals(
