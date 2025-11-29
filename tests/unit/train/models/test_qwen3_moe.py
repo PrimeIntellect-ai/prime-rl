@@ -5,9 +5,7 @@ from transformers import Qwen3MoeForCausalLM as HFQwen3MoeForCausalLM
 
 from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig
 from prime_rl.trainer.models.qwen3_moe import Qwen3MoeForCausalLM as PrimeRLQwen3MoeForCausalLM
-
-torch.set_default_device("cuda")
-torch.set_default_dtype(torch.float32)
+from prime_rl.utils.utils import default_dtype
 
 pytestmark = [pytest.mark.gpu]
 
@@ -31,8 +29,9 @@ def get_model_pairs():
     # But the grad seems to be off in attn because of precision
     # hf_config._attn_implementation = "flash_attention_2"
     hf_config._attn_implementation = "sdpa"
-    hf_model = HFQwen3MoeForCausalLM._from_config(hf_config)
-    prime_model = PrimeRLQwen3MoeForCausalLM._from_config(hf_config)
+    with torch.device("cuda"), default_dtype(torch.float32):
+        hf_model = HFQwen3MoeForCausalLM._from_config(hf_config)
+        prime_model = PrimeRLQwen3MoeForCausalLM._from_config(hf_config)
     with torch.no_grad():
         state_dict = hf_model.state_dict()
         prime_state_keys = prime_model.state_dict().keys()
@@ -49,8 +48,9 @@ def test_qwen3_moe_attn_only():
     for layer in prime_model.model.layers:
         layer.mlp = nn.Identity()
 
-    input_ids = torch.randint(0, hf_model.config.vocab_size, (1, 100))
-    position_ids = torch.arange(1, 101).unsqueeze(0)
+    with torch.device("cuda"), default_dtype(torch.float32):
+        input_ids = torch.randint(0, hf_model.config.vocab_size, (1, 100))
+        position_ids = torch.arange(1, 101).unsqueeze(0)
 
     hf_output = hf_model(input_ids, position_ids)
     prime_output = prime_model(input_ids, position_ids)
@@ -76,8 +76,9 @@ def test_qwen3_moe_mlp_only():
     for layer in prime_model.model.layers:
         layer.self_attn.forward = foo
 
-    input_ids = torch.randint(0, hf_model.config.vocab_size, (1, 100))
-    position_ids = torch.arange(1, 101).unsqueeze(0)
+    with torch.device("cuda"), default_dtype(torch.float32):
+        input_ids = torch.randint(0, hf_model.config.vocab_size, (1, 100))
+        position_ids = torch.arange(1, 101).unsqueeze(0)
 
     hf_output = hf_model(input_ids, position_ids)
     prime_output = prime_model(input_ids, position_ids)
@@ -95,8 +96,9 @@ def test_qwen3_moe_mlp_only():
 def test_qwen3_moe():
     hf_model, prime_model = get_model_pairs()
 
-    input_ids = torch.randint(0, hf_model.config.vocab_size, (1, 100))
-    position_ids = torch.arange(1, 101).unsqueeze(0)
+    with torch.device("cuda"), default_dtype(torch.float32):
+        input_ids = torch.randint(0, hf_model.config.vocab_size, (1, 100))
+        position_ids = torch.arange(1, 101).unsqueeze(0)
 
     hf_output = hf_model(input_ids, position_ids)
     prime_output = prime_model(input_ids, position_ids)

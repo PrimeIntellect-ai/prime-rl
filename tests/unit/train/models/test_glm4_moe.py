@@ -5,9 +5,7 @@ from transformers import Glm4MoeForCausalLM as HFGlm4MoeForCausalLM
 
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig
 from prime_rl.trainer.models.glm4_moe import Glm4MoeForCausalLM as PrimeRLGlm4MoeForCausalLM
-
-torch.set_default_device("cuda")
-torch.set_default_dtype(torch.float32)
+from prime_rl.utils.utils import default_dtype
 
 pytestmark = [pytest.mark.gpu]
 
@@ -33,8 +31,9 @@ def get_model_pairs() -> tuple[HFGlm4MoeForCausalLM, PrimeRLGlm4MoeForCausalLM]:
     # But the grad seems to be off in attn because of precision
     # hf_config._attn_implementation = "flash_attention_2"
     hf_config._attn_implementation = "sdpa"
-    hf_model = HFGlm4MoeForCausalLM._from_config(hf_config)
-    prime_model = PrimeRLGlm4MoeForCausalLM._from_config(hf_config)
+    with torch.device("cuda"), default_dtype(torch.float32):
+        hf_model = HFGlm4MoeForCausalLM._from_config(hf_config)
+        prime_model = PrimeRLGlm4MoeForCausalLM._from_config(hf_config)
     with torch.no_grad():
         state_dict = hf_model.state_dict()
         prime_state_keys = prime_model.state_dict().keys()
@@ -51,8 +50,9 @@ def test_glm4_moe_attn_only() -> None:
     for layer in prime_model.model.layers:
         layer.mlp = nn.Identity()
 
-    input_ids = torch.randint(0, hf_model.config.vocab_size, (1, 100))
-    position_ids = torch.arange(1, 101).unsqueeze(0)
+    with torch.device("cuda"), default_dtype(torch.float32):
+        input_ids = torch.randint(0, hf_model.config.vocab_size, (1, 100))
+        position_ids = torch.arange(1, 101).unsqueeze(0)
 
     hf_output = hf_model(input_ids, position_ids)
     prime_output = prime_model(input_ids, position_ids)
@@ -78,8 +78,9 @@ def test_glm4_moe_mlp_only() -> None:
     for layer in prime_model.model.layers:
         layer.self_attn.forward = foo
 
-    input_ids = torch.randint(0, hf_model.config.vocab_size, (1, 100))
-    position_ids = torch.arange(1, 101).unsqueeze(0)
+    with torch.device("cuda"), default_dtype(torch.float32):
+        input_ids = torch.randint(0, hf_model.config.vocab_size, (1, 100))
+        position_ids = torch.arange(1, 101).unsqueeze(0)
 
     hf_output = hf_model(input_ids, position_ids)
     prime_output = prime_model(input_ids, position_ids)
@@ -97,8 +98,9 @@ def test_glm4_moe_mlp_only() -> None:
 def test_glm4_moe() -> None:
     hf_model, prime_model = get_model_pairs()
 
-    input_ids = torch.randint(0, hf_model.config.vocab_size, (1, 100))
-    position_ids = torch.arange(1, 101).unsqueeze(0)
+    with torch.device("cuda"), default_dtype(torch.float32):
+        input_ids = torch.randint(0, hf_model.config.vocab_size, (1, 100))
+        position_ids = torch.arange(1, 101).unsqueeze(0)
 
     hf_output = hf_model(input_ids, position_ids)
     prime_output = prime_model(input_ids, position_ids)
