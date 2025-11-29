@@ -21,9 +21,6 @@ seq_len = 16384
 max_tokens = 16384
 temperature = 0.7
 
-[orchestrator.env_mix]
-probabilities = [0.5, 0.5]
-
 [[orchestrator.env]]
 id = "skywork-math"
 args = { solve_rate_field = "solve_rate_qwen_r1_distill_7b", min_solve_rate = 0.01, max_solve_rate = 0.99 }
@@ -39,6 +36,7 @@ num_examples = 32
 rollouts_per_example = 16
 
 [orchestrator.buffer]
+env_probabilities = [0.5, 0.5]
 easy_threshold = 1.0
 hard_threshold = 0.0
 
