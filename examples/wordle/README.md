@@ -54,7 +54,7 @@ To train on a single GPU, run
 uv run sft @ examples/wordle/sft/train.toml \
   --wandb.project ... \
   --wandb.name ... \
-  --weights
+  --ckpt
 ```
 
 To train on multiple GPUs, run
@@ -66,7 +66,7 @@ uv run torchrun \
   src/prime_rl/trainer/sft/train.py @ examples/wordle/sft/train.toml \
   --wandb.project ... \
   --wandb.name ... \
-  --weights
+  --ckpt
 ```
 
 After training completes, you will find the final weight checkpoint in `outputs/weights/step_20`. Upload it to HF to be able to use it as the base model for RL we will do in the next section.
