@@ -140,7 +140,7 @@ def test_buffer_online_difficulty_filtering(dataset, make_rollouts):
 def test_buffer_convert_difficulty_pools(dataset, make_rollouts, tmp_path):
     buffer = Buffer(
         dataset,
-        BufferConfig(easy_threshold=1.0, hard_threshold=0.0, easy_to_normal_fraction=0.5, hard_to_normal_fraction=0.5),
+        BufferConfig(easy_threshold=1.0, hard_threshold=0.0, easy_fraction=0.5, hard_fraction=0.5),
         ["env_a"],
     )
     rollouts = make_rollouts(dataset, rewards=[1.0, 1.0, 0.5, 0.5, 0.0])
@@ -155,7 +155,7 @@ def test_buffer_convert_difficulty_pools(dataset, make_rollouts, tmp_path):
     buffer_path = tmp_path / "buffer"
     buffer.save(buffer_path)
 
-    new_buffer = Buffer(dataset, BufferConfig(easy_to_normal_fraction=0.5, hard_to_normal_fraction=0.5), ["env_a"])
+    new_buffer = Buffer(dataset, BufferConfig(easy_fraction=0.5, hard_fraction=0.5), ["env_a"])
     new_buffer.load(buffer_path)
 
     easy_converted = sum(1 for pid in [0, 1] if pid in _get_all_normal_ids(new_buffer))

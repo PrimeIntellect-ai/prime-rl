@@ -106,8 +106,8 @@ class Buffer:
 
     def convert_difficulty_pools(self) -> None:
         """Converts a fraction of easy and hard problems to normal based on config."""
-        self._convert_pool_to_normal(self.easy_problems, self.config.easy_to_normal_fraction)
-        self._convert_pool_to_normal(self.hard_problems, self.config.hard_to_normal_fraction)
+        self._convert_pool_to_normal(self.easy_problems, self.config.easy_fraction)
+        self._convert_pool_to_normal(self.hard_problems, self.config.hard_fraction)
 
     def _convert_pool_to_normal(self, source_pool: dict[int, dict], fraction: float) -> None:
         """Moves a fraction of problems from the given pool back to normal."""

@@ -319,7 +319,7 @@ class BufferConfig(BaseConfig):
         ),
     ] = None
 
-    easy_to_normal_fraction: Annotated[
+    easy_fraction: Annotated[
         float,
         Field(
             ge=0,
@@ -328,7 +328,7 @@ class BufferConfig(BaseConfig):
         ),
     ] = 0.0
 
-    hard_to_normal_fraction: Annotated[
+    hard_fraction: Annotated[
         float,
         Field(
             ge=0,
