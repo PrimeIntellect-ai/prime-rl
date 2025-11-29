@@ -171,6 +171,8 @@ class InferenceConfig(BaseSettings):
 
         for key in get_all_fields(self):
             value = rgetattr(self, key.replace("-", "_"))
-            rsetattr(namespace, to_vllm.get(key, key), value)
+            vllm_key = to_vllm.get(key, key)
+            if value is not None or vllm_key not in ("reasoning_parser",):
+                rsetattr(namespace, vllm_key, value)
 
         return namespace
