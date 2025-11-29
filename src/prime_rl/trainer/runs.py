@@ -7,7 +7,6 @@ if TYPE_CHECKING:
     pass
 
 
-# TODO: Delete the one in ckpt.py?
 @dataclass
 class Progress:
     step: int = 0
