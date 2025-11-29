@@ -34,7 +34,7 @@ from prime_rl.trainer.utils import (
     print_benchmark,
 )
 from prime_rl.trainer.world import get_world
-from prime_rl.trainer.heartbeat import Heartbeat
+from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format

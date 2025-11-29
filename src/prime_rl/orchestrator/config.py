@@ -3,6 +3,7 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
 
+from prime_rl.trainer.config import HeartbeatConfig
 from prime_rl.utils.config import ClientConfig, LogConfig, ModelConfig, WandbMonitorConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
@@ -518,6 +519,10 @@ class OrchestratorConfig(BaseSettings):
         Field(
             description="Name of the LoRA to use for the orchestrator. If None, will not use any LoRA.",
         ),
+    ] = None
+
+    heartbeat: Annotated[
+        HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
     ] = None
 
     @model_validator(mode="after")

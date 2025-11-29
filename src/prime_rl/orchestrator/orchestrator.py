@@ -42,6 +42,7 @@ from prime_rl.utils.client import (
     setup_evals_client,
     update_weights,
 )
+from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
@@ -90,6 +91,12 @@ async def orchestrate(config: OrchestratorConfig):
         tokenizer=tokenizer,
         run_config=config,
     )
+
+    # Setup heartbeat (only on rank 0, orchestrator is single process)
+    heartbeat = None
+    if config.heartbeat is not None:
+        logger.info(f"Initializing heartbeat (interval={config.heartbeat.interval}s)")
+        heartbeat = Heartbeat(config.heartbeat.url, config.heartbeat.interval)
 
     # Load environment and extract dataset
     logger.info(
@@ -431,6 +438,10 @@ async def orchestrate(config: OrchestratorConfig):
         # Increment step
         progress.step += 1
         is_first_step = False
+
+        # Send heartbeat if configured
+        if heartbeat is not None:
+            heartbeat.step()
 
     if config.eval:
         logger.info("Running final evals")
