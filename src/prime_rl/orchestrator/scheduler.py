@@ -181,14 +181,14 @@ class Scheduler:
                     # and eventually reduce self.async_level.
                     if not was_waiting:
                         self.logger.info(
-                            f"Async barrier active (async level={self.async_level} > max level={self.max_async_level}). No longer scheduling group rollouts. Waiting for trainer to catch up..."
+                            f"Async barrier active (async_level={self.async_level} > max_level={self.max_async_level}). No longer scheduling group rollouts. Waiting for trainer to catch up..."
                         )
                         was_waiting = True
-                        pbar.set_description(f"Waiting for trainer (level {self.async_level})")
+                        pbar.set_description("Waiting for trainer")
                     await asyncio.sleep(0.1)
                     continue
                 elif was_waiting:
-                    self.logger.info(f"Async barrier cleared (level {self.async_level}). Resuming rollout generation.")
+                    self.logger.info("Async barrier cleared. Resuming rollout generation.")
                     pbar.set_description("Generating rollouts (train)")
                     was_waiting = False
 
