@@ -3,8 +3,9 @@ import multiprocessing as mp
 import pytest
 import torch
 
-from prime_rl.inference.vllm.worker.nccl import NCCLWeightBroadcastReceiver
-from prime_rl.trainer.rl.broadcast.nccl import NCCLWeightBroadcastSender
+if torch.cuda.is_available():
+    from prime_rl.inference.vllm.worker.nccl import NCCLWeightBroadcastReceiver
+    from prime_rl.trainer.rl.broadcast.nccl import NCCLWeightBroadcastSender
 
 pytestmark = [pytest.mark.gpu]
 
