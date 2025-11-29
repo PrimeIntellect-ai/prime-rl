@@ -252,6 +252,11 @@ async def orchestrate(config: OrchestratorConfig):
         generate_completions_time = time.perf_counter() - generate_completions_start_time
         train_rollouts = train_task.result()
 
+        # Filter out rollouts without tokens to train on
+        train_rollouts = [
+            rollout for rollout in train_rollouts if all(bool(step["tokens"]) for step in rollout["trajectory"])
+        ]
+
         # Compute advantages
         rewards = [rollout["reward"] for rollout in train_rollouts]
         completion_lens = [get_completion_len(rollout) for rollout in train_rollouts]
