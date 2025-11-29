@@ -39,13 +39,13 @@ def convert_hf_layer_to_tt(state_dict: dict[str, Tensor], layer_idx: int):
 
     state_dict[f"model.layers.{i}.mlp.shared_expert.w1"] = state_dict[
         f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"
-    ].unsqueeze(0)
+    ]
     state_dict[f"model.layers.{i}.mlp.shared_expert.w2"] = state_dict[
         f"model.layers.{i}.mlp.shared_experts.down_proj.weight"
-    ].unsqueeze(0)
+    ]
     state_dict[f"model.layers.{i}.mlp.shared_expert.w3"] = state_dict[
         f"model.layers.{i}.mlp.shared_experts.up_proj.weight"
-    ].unsqueeze(0)
+    ]
 
     del state_dict[f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"]
     del state_dict[f"model.layers.{i}.mlp.shared_experts.down_proj.weight"]
@@ -102,7 +102,8 @@ def convert_tt_layer_to_hf(state_dict: dict[str, Tensor], layer_index: int):
         del state_dict[f"model.layers.{i}.mlp.shared_expert.w2"]
         del state_dict[f"model.layers.{i}.mlp.shared_expert.w3"]
 
-        # Gate / Router
+    # Gate / Router
+    if f"model.layers.{i}.mlp.router.gate.weight" in state_dict:
         state_dict[f"model.layers.{i}.mlp.gate.weight"] = state_dict[f"model.layers.{i}.mlp.router.gate.weight"]
         del state_dict[f"model.layers.{i}.mlp.router.gate.weight"]
 
