@@ -46,7 +46,7 @@ To train on a single GPU, run
 uv run sft @ examples/reverse_text/sft/train.toml \
   --wandb.project ... \
   --wandb.name ... \
-  --weights
+  --ckpt
 ```
 
 To train on multiple GPUs, run
@@ -58,7 +58,7 @@ uv run torchrun \
   src/prime_rl/trainer/sft/train.py @ examples/reverse_text/sft/train.toml \
   --wandb.project ... \
   --wandb.name ... \
-  --weights
+  --ckpt
 ```
 
 This should write a weight checkpoint in `outputs/weights/step_100`. Upload it to HF to be able to use it as the base model for RL.

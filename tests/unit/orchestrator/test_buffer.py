@@ -1,11 +1,11 @@
 import random
 
 import pytest
+import verifiers as vf
 from datasets import Dataset
 
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.config import BufferConfig
-from prime_rl.utils.vf import Rollout
 
 
 @pytest.fixture(autouse=True)
@@ -46,7 +46,7 @@ def make_rollouts():
         for i, reward in enumerate(rewards):
             task = dataset[i]["task"]
             problem_rollouts = [
-                Rollout(
+                vf.State(
                     example_id=i,
                     task=task,
                     prompt_ids=[0],

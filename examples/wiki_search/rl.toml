@@ -32,15 +32,13 @@ target_modules = [
 batch_size = 512
 rollouts_per_example = 16
 seq_len = 4096
-mask_truncated_completions = false
-zero_truncated_completions = true
+oversampling_factor = 2.0
 
 [orchestrator.sampling]
 max_tokens = 512
 
 [orchestrator.buffer]
-type = "online-difficulty"
-oversampling_factor = 2.0
+online_difficulty_filtering = true
 
 [[orchestrator.env]]
 id = "primeintellect/wiki-search"

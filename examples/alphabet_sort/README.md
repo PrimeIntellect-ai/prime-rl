@@ -1,6 +1,6 @@
 # Alphabet Sort
 
-In this example, we demonstrate how to train `Qwen3-4B-Instruct-2507` to sort names alphabetically using LoRA. Unlike other examples, this task doesn't require SFT warmup as the base model already understands the conversation format. We proceed directly to multi-turn RL against the [`kalomaze/alphabet-sort`](https://app.primeintellect.ai/dashboard/environments/kalomaze/alphabet-sort) environment.
+In this example, we demonstrate how to train `Qwen3-4B-Instruct-2507` to sort names alphabetically using LoRA. Unlike other examples, this task doesn't require SFT warmup as the base model already understands the conversation format. We proceed directly to multi-turn RL against the [`primeintellect/alphabet-sort`](https://app.primeintellect.ai/dashboard/environments/primeintellect/alphabet-sort) environment.
 
 > This example runs on a single H100 GPU.
 
@@ -8,7 +8,7 @@ In this example, we demonstrate how to train `Qwen3-4B-Instruct-2507` to sort na
 
 Install the environment:
 ```bash
-prime env install kalomaze/alphabet-sort
+prime env install primeintellect/alphabet-sort
 ```
 
 Verify installation:

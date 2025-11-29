@@ -406,6 +406,13 @@ class OrchestratorConfig(BaseSettings):
         FileSystemWeightBroadcastConfig()
     )
 
+    trajectory_strategy: Annotated[
+        Literal["interleaved", "branching"],
+        Field(
+            description="Strategy to use for building training examples from multi-turn rollouts. If interleaved, will try to concatenate consecutive trajectory steps into a single training example. If branching, will create a separate training example for each trajectory step."
+        ),
+    ] = "interleaved"
+
     output_dir: Annotated[
         Path,
         Field(
@@ -451,20 +458,6 @@ class OrchestratorConfig(BaseSettings):
             description="Whether to mask environment responses from the loss.",
         ),
     ] = True
-
-    mask_truncated_completions: Annotated[
-        bool,
-        Field(
-            description="Whether to mask truncated completions from the loss.",
-        ),
-    ] = False
-
-    zero_truncated_completions: Annotated[
-        bool,
-        Field(
-            description="Whether to override reward scores with 0 for truncated completions.",
-        ),
-    ] = False
 
     # TODO(Mika): This should be automatic from the number of ZMQ connections
     num_train_workers: Annotated[

@@ -5,11 +5,12 @@ from collections import defaultdict
 from pathlib import Path
 from typing import cast
 
+import verifiers as vf
 from datasets import Dataset, load_from_disk
 
 from prime_rl.orchestrator.config import BufferConfig
 from prime_rl.utils.utils import mean_normalize
-from prime_rl.utils.vf import Rollout
+from prime_rl.utils.vf import from_serializable_state, to_serializable_state
 
 
 class Buffer:
@@ -70,7 +71,8 @@ class Buffer:
 
         rollouts_path = path / "rollouts"
         if self.rollout_buffer:
-            Dataset.from_list(list(map(dict, self.rollout_buffer))).save_to_disk(rollouts_path)
+            serializable_rollouts = [to_serializable_state(rollout) for rollout in self.rollout_buffer]
+            Dataset.from_list(list(map(dict, serializable_rollouts))).save_to_disk(rollouts_path)
         elif rollouts_path.exists():
             shutil.rmtree(rollouts_path)
 
@@ -133,7 +135,7 @@ class Buffer:
             sampled.append(random.choice(list(self.problem_buffer[env_name].values())))
         return sampled
 
-    def update(self, rollouts: list[Rollout]):
+    def update(self, rollouts: list[vf.State]):
         """Updates the buffer state with completed rollouts."""
         rollouts_by_example = defaultdict(list)
         for rollout in rollouts:
@@ -167,7 +169,7 @@ class Buffer:
                 self.num_rollouts_per_pool[env_name]["normal"] += len(example_rollouts)
                 self.rollout_buffer.extend(example_rollouts)
 
-    def sample_rollouts(self, n: int) -> list[Rollout]:
+    def sample_rollouts(self, n: int) -> list[vf.State]:
         """Samples the latest `n` rollouts from the buffer."""
         n = min(n, len(self.rollout_buffer))
         sampled = self.rollout_buffer[-n:]

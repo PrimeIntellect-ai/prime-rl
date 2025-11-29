@@ -1,13 +1,12 @@
 import json
 import os
-import random
 import sys
 import time
-from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import verifiers as vf
 import wandb
 from transformers.tokenization_utils import PreTrainedTokenizer
 
@@ -55,20 +54,7 @@ class WandbMonitor:
         if config is not None and config.log_extras:
             if config.log_extras.samples:
                 self.last_log_samples_step = -1
-                self.samples_cols = [
-                    "step",
-                    "tag",
-                    "problem_id",
-                    "sample_id",
-                    "num_input_tokens",
-                    "num_output_tokens",
-                    "input_tokens",
-                    "output_tokens",
-                    "prompt",
-                    "completion",
-                    "reward",
-                    "advantage",
-                ]
+                self.samples_cols = ["step", "example_id", "messages", "input_ids", "reward"]
                 self.samples_table = wandb.Table(
                     columns=self.samples_cols,
                     log_mode="INCREMENTAL",
@@ -97,24 +83,8 @@ class WandbMonitor:
             return
         wandb.log(metrics, step=metrics.get("step", None))
 
-    def log_samples(
-        self,
-        input_tokens: list[list[int]],
-        output_tokens: list[list[int]],
-        rewards: list[float],
-        advantages: list[float],
-        rollouts_per_problem: int,
-        step: int,
-    ) -> None:
-        """Log prompt/response samples to W&B table.
-
-        Args:
-            input_tokens: List of input token sequences
-            output_tokens: List of output token sequences
-            rewards: List of rewards for each sample
-            task_rewards: Optional list of task-specific rewards
-            step: Current training step
-        """
+    def log_samples(self, rollouts: list[vf.State], step: int) -> None:
+        """Logs rollouts to W&B table."""
         if not self.is_master:
             return
         if (
@@ -130,55 +100,20 @@ class WandbMonitor:
         assert self.logger is not None, "Logger is required for sample logging"
         self.logger.info(f"Logging samples to W&B table at step {step}")
         start_time = time.perf_counter()
-        batch_size = len(input_tokens)
-        num_problems = batch_size // rollouts_per_problem
-
-        # Compute per-problem statistics
-        per_problem_tokens = defaultdict(list)
-        tokens = [input_tokens[i] + output_tokens[i] for i in range(batch_size)]
-        for i, t in enumerate(tokens):
-            problem_id = i // rollouts_per_problem
-            per_problem_tokens[problem_id].append(t)
-        assert len(per_problem_tokens) == num_problems
-        assert list(per_problem_tokens.keys()) == list(range(num_problems))
-
-        per_problem_seq_len = {
-            problem_id: sum(len(t) for t in tokens) / len(tokens) for problem_id, tokens in per_problem_tokens.items()
-        }
-        self.logger.debug(f"Per-problem seq len: {per_problem_seq_len}")
-        min_len_problem_id = min(per_problem_seq_len.items(), key=lambda kv: kv[1])[0]
-        max_len_problem_id = max(per_problem_seq_len.items(), key=lambda kv: kv[1])[0]
-        random_problem_id = random.choice(list(range(num_problems)))
-        problem_ids = {
-            "min_len": min_len_problem_id,
-            "max_len": max_len_problem_id,
-            "random": random_problem_id,
-        }
-        self.logger.debug(f"Logging samples for problems: {problem_ids}")
-
-        # Randomly select and log samples
-        for tag, problem_id in problem_ids.items():
-            start_idx = problem_id * rollouts_per_problem
-            for sample_id in range(start_idx, start_idx + rollouts_per_problem):
-                sample = {
-                    "step": step,
-                    "tag": tag,
-                    "problem_id": problem_id,
-                    "sample_id": sample_id,
-                    "num_input_tokens": len(input_tokens[sample_id]),
-                    "num_output_tokens": len(output_tokens[sample_id]),
-                    "input_tokens": str(input_tokens[sample_id]),
-                    "output_tokens": str(output_tokens[sample_id]),
-                    "prompt": self.tokenizer.decode(input_tokens[sample_id]),
-                    "completion": self.tokenizer.decode(output_tokens[sample_id]),
-                    "reward": float(rewards[sample_id]),
-                    "advantage": float(advantages[sample_id]),
-                }
-                assert list(sample.keys()) == self.samples_cols, (
-                    "Order of columns in the table must be the same as order of the keys here"
-                )
-                self.samples_table.add_data(*sample.values())
-                self.samples.append(sample)
+        for rollout in rollouts:
+            messages = rollout["trajectory"][-1]["prompt"] + rollout["trajectory"][-1]["completion"]
+            sample = {
+                "step": step,
+                "example_id": rollout["example_id"],
+                "messages": self.tokenizer.apply_chat_template(messages, tokenize=False),
+                "input_ids": str(self.tokenizer.apply_chat_template(messages)),
+                "reward": rollout["reward"],
+            }
+            assert list(sample.keys()) == self.samples_cols, (
+                "Order of columns in the table must be the same as order of the keys here"
+            )
+            self.samples_table.add_data(*sample.values())
+            self.samples.append(sample)
         wandb.log({"samples": self.samples_table}, step=step)
         self.last_log_samples_step = step
         self.logger.debug(f"Logged samples at step {step} to W&B table in {time.perf_counter() - start_time:.2f}s")
