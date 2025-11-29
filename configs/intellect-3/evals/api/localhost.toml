@@ -1,0 +1,4 @@
+max_concurrent = 1024
+
+[client]
+base_url = [ "http://localhost:8000/v1" ]

@@ -70,6 +70,14 @@ def train(config: SFTTrainerConfig):
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model, config.data.seq_len)
 
+    total_micro_batches = config.data.batch_size * config.model.cp * config.model.tp
+    micro_batches_per_step = world.world_size * config.data.micro_batch_size
+    assert total_micro_batches % micro_batches_per_step == 0, (
+        f"batch_size * cp * tp ({total_micro_batches}) must be divisible by "
+        f"world_size * micro_batch_size ({micro_batches_per_step})"
+    )
+    grad_accum_steps = total_micro_batches // micro_batches_per_step
+
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
     model = setup_model(config.model, parallel_dims)
@@ -102,17 +110,6 @@ def train(config: SFTTrainerConfig):
     dataset = setup_dataset(tokenizer, config.data, config.model.cp * config.model.tp)
     dataloader = setup_dataloader(dataset, config.data)
     dataiter = iter(dataloader)
-
-    # Check that the world size and batch configuration is compatible
-    num_micro_batches = config.data.batch_size // config.data.micro_batch_size
-    if world.world_size > num_micro_batches:
-        raise ValueError(
-            f"There must be at least one micro batch per rank, but only have {num_micro_batches} micro batches for {world.world_size} ranks."
-        )
-    if num_micro_batches % world.world_size != 0:
-        raise ValueError(
-            f"The number of micro batches ({num_micro_batches}) must be divisible by the world size ({world.world_size})."
-        )
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -188,12 +185,6 @@ def train(config: SFTTrainerConfig):
 
         step_start_time = time.perf_counter()
         forward_backward_start_time = time.perf_counter()
-        grad_accum_steps = (
-            config.data.batch_size
-            * config.model.cp
-            * config.model.tp
-            // (world.world_size * config.data.micro_batch_size)
-        )
 
         batch_loss = torch.tensor(0.0).to("cuda")
         nan_loss_count = torch.tensor(0).to("cuda")
@@ -289,7 +280,8 @@ def train(config: SFTTrainerConfig):
         dist.all_reduce(nan_loss_count, op=dist.ReduceOp.SUM)
 
         # Compute step metrics
-        num_tokens = config.data.batch_size * config.data.seq_len
+        # Divide by CP and TP since those ranks process the same data
+        num_tokens = config.data.batch_size * config.data.seq_len // (config.model.cp * config.model.tp)
         progress.total_tokens += num_tokens
         progress.total_samples = dataset.step
         perf_counter = get_perf_counter(model, config.data.seq_len)

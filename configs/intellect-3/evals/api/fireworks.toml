@@ -1,0 +1,6 @@
+max_concurrent = 128
+
+[client]
+base_url = ["https://api.fireworks.ai/inference/v1"]
+
+api_key_var = "FIREWORKS_API_KEY"
