@@ -5,16 +5,22 @@ from datetime import timedelta
 # Import environment before any other imports
 # ruff: noqa: I001
 
+from prime_rl.trainer.models.layers.attn import substitute_prime_rl_flash_attn
 from prime_rl.trainer.rl.broadcast import setup_weight_broadcast
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 import torch.distributed as dist
+import torch.distributed.nn as dist_nn
 from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_managers
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
+from prime_rl.utils.cp import (
+    get_padding_logit_from_prev_cp_rank,
+    prepare_for_cp,
+)
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
     shift_logits,
@@ -46,9 +52,14 @@ from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format
 
 
+from ring_flash_attn import substitute_hf_flash_attn
+
+
 @clean_exit
 @logger.catch(reraise=True)
 def train(config: RLTrainerConfig):
+    torch.manual_seed(42)
+    torch.cuda.manual_seed_all(42)
     # Setup world and logger
     world = get_world()
     logger = setup_logger(
@@ -73,10 +84,7 @@ def train(config: RLTrainerConfig):
 
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
-    if config.model.cp > 1:
-        raise ValueError(
-            "CP is not supported for RL. No reason it shouldn't, we just didn't test it. If you need it, please open an issue."
-        )
+    num_non_data_parallel_ranks = parallel_dims.cp * parallel_dims.tp * parallel_dims.pp
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
@@ -101,6 +109,10 @@ def train(config: RLTrainerConfig):
         config.output_dir, config.weight_broadcast, config.model.experimental.lora
     )
 
+    if parallel_dims.cp_enabled:
+        substitute_hf_flash_attn(parallel_dims.world_mesh["cp"].get_group(), heads_k_stride=1)
+        substitute_prime_rl_flash_attn(parallel_dims.world_mesh["cp"].get_group(), heads_k_stride=1)
+
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint managers ({config.ckpt})")
     ckpt_manager, weight_ckpt_manager = setup_ckpt_managers(
@@ -118,9 +130,9 @@ def train(config: RLTrainerConfig):
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
-    dataloader = DataLoader(config.output_dir, progress.step)
+    dataloader = DataLoader(config.output_dir, progress.step, num_non_data_parallel_ranks)
     if config.data.fake:
-        dataloader = FakeDataLoader(config.data.fake)
+        dataloader = FakeDataLoader(config.data.fake, num_non_data_parallel_ranks)
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     is_first_step = True
@@ -213,21 +225,51 @@ def train(config: RLTrainerConfig):
 
         logger.info(f"Starting forward and backward pass ({batch_size=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
+        cp_enabled = parallel_dims.cp_enabled
+        cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
+        cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
+        cp_size = parallel_dims.cp
+
         for micro_step, micro_batch in enumerate(micro_batches):
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
             inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
+
+            logger.info(f"Input IDs: {input_ids.shape}")
+            logger.info(f"Position IDs: {position_ids.shape}")
+
+            if cp_enabled:
+                input_ids, forward_position_ids = prepare_for_cp(
+                    input_ids=input_ids,
+                    position_ids=position_ids,
+                    cp_rank=cp_rank,
+                    cp_world_size=cp_size,
+                    cp_group=cp_group,
+                )
+
+            else:
+                forward_position_ids = position_ids
+
             temperature = micro_batch["temperature"]
 
             # Forward pass
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                logits = forward(model, input_ids, position_ids).float().contiguous()
+                logits = forward(model, input_ids, forward_position_ids).float().contiguous()
 
-            shifted_logits = shift_logits(logits)
+            if cp_enabled:
+                left_pad_logit = get_padding_logit_from_prev_cp_rank(logits, cp_rank, cp_size, cp_group)
+            else:
+                left_pad_logit = None
+
+            shifted_logits = shift_logits(logits, left_pad_logit=left_pad_logit)
             shifted_logits = shifted_logits / temperature
             trainer_logprobs = selective_log_softmax(shifted_logits, input_ids)
+
+            if cp_enabled:
+                trainer_logprobs = dist_nn.all_gather(trainer_logprobs, group=cp_group)
+                trainer_logprobs = torch.cat(trainer_logprobs, dim=1)
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
@@ -242,6 +284,11 @@ def train(config: RLTrainerConfig):
 
             # Compute entropy
             entropy = compute_entropy(shifted_logits)
+
+            if cp_enabled:
+                entropies = [torch.zeros_like(entropy) for _ in range(cp_size)]
+                dist.all_gather(entropies, entropy, group=cp_group)
+                entropy = torch.cat(entropies, dim=1)
 
             # Delete logits and shifted_logits before backward pass to avoid memory spike
             del logits, shifted_logits
