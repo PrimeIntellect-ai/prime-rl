@@ -24,6 +24,7 @@ from huggingface_hub import snapshot_download
 from loguru import logger
 from safetensors.torch import save_file
 
+# TODO: fix
 from prime_rl.trainer.weights import _convert_tt_moe_to_hf_, _has_tt_moe_layers
 
 TARGET_SHARD_SIZE = 3 * 2**30

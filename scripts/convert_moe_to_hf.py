@@ -19,6 +19,7 @@ from loguru import logger
 from safetensors import safe_open
 from safetensors.torch import save_file
 
+# TODO: fix
 from prime_rl.trainer.weights import _convert_tt_moe_to_hf_
 
 TARGET_SHARD_SIZE = 3 * 2**30
