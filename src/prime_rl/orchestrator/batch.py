@@ -122,7 +122,7 @@ def prepare_micro_batch_packing(
     micro_batch["temperature"] = temperature
 
     if pad_to_multiple_of > 1:
-        padding_size = pad_to_multiple_of - micro_batch["input_ids"].shape[1] % pad_to_multiple_of
+        padding_size = micro_batch["input_ids"].shape[1] % pad_to_multiple_of
         if padding_size > 0:
             input_ids = torch.ones(
                 1, padding_size, dtype=micro_batch["input_ids"].dtype, device=micro_batch["input_ids"].device
