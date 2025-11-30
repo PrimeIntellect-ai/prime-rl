@@ -36,7 +36,7 @@ num_examples = 32
 rollouts_per_example = 16
 
 [orchestrator.buffer]
-env_probabilities = [0.5, 0.5]
+env_ratios = [0.5, 0.5]
 easy_threshold = 1.0
 hard_threshold = 0.0
 
