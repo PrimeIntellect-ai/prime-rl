@@ -99,7 +99,6 @@ async def orchestrate(config: OrchestratorConfig):
         envs=[vf.load_environment(env.id, **env.args) for env in config.env],
         env_names=[env.name or env.id for env in config.env],
         map_kwargs=dict(writer_batch_size=1),  # Set defensively to not error on map operations on large datasets
-        env_mix_strategy="concatenate",
     )
     env.set_max_seq_len(config.seq_len)
     dataset = env.get_dataset(seed=config.seed)
@@ -107,7 +106,7 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup buffer
     env_names = [env.name or env.id for env in config.env]
-    buffer_config = config.buffer.model_copy(update={"env_probabilities": config.buffer.env_probabilities})
+    buffer_config = config.buffer.model_copy(update={"env_ratios": config.buffer.env_ratios})
     logger.info(f"Setting up buffer ({buffer_config})")
     buffer = Buffer(dataset, buffer_config, env_names)
     val_buffer = Buffer(val_dataset, BufferConfig(), env_names) if val_dataset else None

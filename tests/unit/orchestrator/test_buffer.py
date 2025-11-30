@@ -41,7 +41,7 @@ def multi_env_dataset() -> Dataset:
 
 @pytest.fixture
 def make_rollouts():
-    def _make_rollouts(dataset: Dataset, rewards: list[float]) -> list[Rollout]:
+    def _make_rollouts(dataset: Dataset, rewards: list[float]) -> list[vf.State]:
         rollouts = []
         for i, reward in enumerate(rewards):
             task = dataset[i]["task"]
@@ -124,7 +124,7 @@ def test_buffer_save_load_with_conversion(dataset, make_rollouts, tmp_path):
 
 
 def test_buffer_multi_env(multi_env_dataset):
-    buffer = Buffer(multi_env_dataset, BufferConfig(env_probabilities=[0.8, 0.2]), ["env_a", "env_b"])
+    buffer = Buffer(multi_env_dataset, BufferConfig(env_ratios=[0.8, 0.2]), ["env_a", "env_b"])
     assert len(buffer.problem_buffer["env_a"]) == 3
     assert len(buffer.problem_buffer["env_b"]) == 2
 
@@ -133,9 +133,30 @@ def test_buffer_multi_env(multi_env_dataset):
     assert 60 <= env_a_count <= 95
 
 
-def test_buffer_env_probabilities_validation(multi_env_dataset):
-    with pytest.raises(AssertionError, match="env_probabilities length"):
-        Buffer(multi_env_dataset, BufferConfig(env_probabilities=[0.5, 0.3, 0.2]), ["env_a", "env_b"])
+def test_buffer_env_ratios_validation(multi_env_dataset):
+    with pytest.raises(AssertionError, match="env_ratios length"):
+        Buffer(multi_env_dataset, BufferConfig(env_ratios=[0.5, 0.3, 0.2]), ["env_a", "env_b"])
 
-    with pytest.raises(AssertionError, match="must sum to 1.0"):
-        Buffer(multi_env_dataset, BufferConfig(env_probabilities=[0.5, 0.3]), ["env_a", "env_b"])
+
+def test_buffer_no_cross_env_pool_assignment(tmp_path):
+    """Pool assignments don't transfer if example_id exists but task/env changed."""
+    # Original: example_id 0 is in env_a and marked easy
+    original_dataset = Dataset.from_list([
+        {"example_id": 0, "problem": "problem_a", "task": "env_a"},
+    ])
+    buffer = Buffer(original_dataset, BufferConfig(easy_threshold=1.0), ["env_a"])
+    buffer.easy_problems[0] = dict(original_dataset[0])
+    buffer.problem_buffer["env_a"].pop(0)
+    buffer.save(tmp_path / "buffer")
+
+    # Resume: example_id 0 now belongs to env_b (different task)
+    new_dataset = Dataset.from_list([
+        {"example_id": 0, "problem": "different_problem", "task": "env_b"},
+    ])
+    new_buffer = Buffer(new_dataset, BufferConfig(), ["env_b"])
+    new_buffer.load(tmp_path / "buffer")
+
+    # Should NOT be in easy pool (task mismatch)
+    assert 0 not in new_buffer.easy_problems
+    # Should be in normal pool for env_b
+    assert 0 in new_buffer.problem_buffer["env_b"]

@@ -297,10 +297,10 @@ class BufferConfig(BaseConfig):
         ),
     ] = None
 
-    env_probabilities: Annotated[
+    env_ratios: Annotated[
         list[float] | None,
         Field(
-            description="Probabilities for sampling from each environment. Must sum to 1.0 if provided. "
+            description="Ratios for sampling from each environment. "
             "If None, samples uniformly across all available problems (not environments).",
         ),
     ] = None

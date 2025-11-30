@@ -10,7 +10,7 @@ from datasets import Dataset, load_from_disk
 
 from prime_rl.orchestrator.config import BufferConfig
 from prime_rl.utils.utils import mean_normalize
-from prime_rl.utils.vf import to_serializable_state
+from prime_rl.utils.vf import from_serializable_state, to_serializable_state
 
 
 class Buffer:
@@ -30,15 +30,21 @@ class Buffer:
 
         self.env_names = env_names
         
-        if self.config.env_probabilities is not None:
-            assert len(self.config.env_probabilities) == len(self.env_names), (
-                f"env_probabilities length ({len(self.config.env_probabilities)}) must match "
+        if self.config.env_ratios is not None:
+            assert len(self.config.env_ratios) == len(self.env_names), (
+                f"env_ratios length ({len(self.config.env_ratios)}) must match "
                 f"number of environments ({len(self.env_names)})"
             )
-            assert abs(sum(self.config.env_probabilities) - 1.0) < 1e-6, "env_probabilities must sum to 1.0"
-            self.env_probabilities = self.config.env_probabilities
+            self.env_probabilities = mean_normalize(self.config.env_ratios) # Convert ratios to probabilities
         else:
-            self.env_probabilities = [1.0 / len(self.env_names)] * len(self.env_names)
+            # Count problems per environment for uniform sampling across problems
+            problem_counts = {env: 0 for env in self.env_names}
+            for problem in dataset:
+                env_name = problem["task"]
+                if env_name in problem_counts:
+                    problem_counts[env_name] += 1
+            counts = [problem_counts[env] for env in self.env_names]
+            self.env_probabilities = mean_normalize(counts)
 
         self._init_problem_pools()
 
@@ -48,7 +54,7 @@ class Buffer:
             env_name = problem_dict["task"]
             self.problem_buffer[env_name][example_id] = problem_dict
 
-        self.rollout_buffer: list[Rollout] = []
+        self.rollout_buffer: list[vf.State] = []
         self._reset_step_metrics()
 
     def _init_problem_pools(self) -> None:
@@ -66,8 +72,11 @@ class Buffer:
         """Saves pool assignments and rollouts."""
         path.mkdir(parents=True, exist_ok=True)
 
-        (path / "easy.json").write_text(json.dumps(list(self.easy_problems.keys())))
-        (path / "hard.json").write_text(json.dumps(list(self.hard_problems.keys())))
+        easy_pairs = [[eid, p["task"]] for eid, p in self.easy_problems.items()]
+        hard_pairs = [[eid, p["task"]] for eid, p in self.hard_problems.items()]
+
+        (path / "easy.json").write_text(json.dumps(easy_pairs))
+        (path / "hard.json").write_text(json.dumps(hard_pairs))
 
         rollouts_path = path / "rollouts"
         if self.rollout_buffer:
@@ -76,14 +85,17 @@ class Buffer:
         elif rollouts_path.exists():
             shutil.rmtree(rollouts_path)
 
-    def _load_ids(self, path: Path) -> set[int]:
-        """Load problem IDs from a JSON file, returning empty set if not found."""
-        return set(json.loads(path.read_text())) if path.exists() else set()
+    def _load_pool_ids(self, path: Path) -> set[tuple[int, str]]:
+        """Load (example_id, task) pairs from JSON. Returns empty set if not found."""
+        if not path.exists():
+            return set()
+        data = json.loads(path.read_text())
+        return {(eid, task) for eid, task in data}
 
     def load(self, path: Path) -> None:
         """Loads pool assignments and rollouts."""
-        easy_ids = self._load_ids(path / "easy.json")
-        hard_ids = self._load_ids(path / "hard.json")
+        easy_ids = self._load_pool_ids(path / "easy.json")
+        hard_ids = self._load_pool_ids(path / "hard.json")
 
         self._init_problem_pools()
 
@@ -91,18 +103,25 @@ class Buffer:
             problem_dict = dict(problem)
             example_id = problem_dict["example_id"]
             env_name = problem_dict["task"]
+            key = (example_id, env_name)
 
-            if example_id in easy_ids:
+            if key in easy_ids:
                 self.easy_problems[example_id] = problem_dict
-            elif example_id in hard_ids:
+            elif key in hard_ids:
                 self.hard_problems[example_id] = problem_dict
             else:
                 self.problem_buffer[env_name][example_id] = problem_dict
 
+        # Load rollouts, filtering out removed environments
         rollouts_path = path / "rollouts"
         self.rollout_buffer = []
         if rollouts_path.exists():
-            self.rollout_buffer = [Rollout(**cast(dict, row)) for row in load_from_disk(rollouts_path)]
+            rollouts_dataset = load_from_disk(rollouts_path)
+            env_names_set = set(self.env_names)
+            for row in rollouts_dataset:
+                state = from_serializable_state(cast(dict, row))
+                if state["task"] in env_names_set:
+                    self.rollout_buffer.append(state)
 
         self.convert_difficulty_pools()
 
