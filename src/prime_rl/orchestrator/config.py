@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 
 from prime_rl.utils.config import ClientConfig, LogConfig, ModelConfig, WandbMonitorConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
@@ -297,23 +297,16 @@ class BufferConfig(BaseConfig):
         ),
     ] = None
 
-    easy_fraction: Annotated[
-        float,
+    env_ratios: Annotated[
+        list[float] | None,
         Field(
-            ge=0,
-            le=1,
-            description="Fraction of the batch that should consist of easy samples.",
+            description=(
+                "Ratios for sampling from each environment. Accepts the legacy key 'env_probabilities'. "
+                "If None, samples uniformly across all available problems (not environments)."
+            ),
+            validation_alias=AliasChoices("env_ratios", "env_probabilities"),
         ),
-    ] = 0.0
-
-    hard_fraction: Annotated[
-        float,
-        Field(
-            ge=0,
-            le=1,
-            description="Fraction of the batch that should consist of hard samples.",
-        ),
-    ] = 0.0
+    ] = None
 
     easy_threshold: Annotated[
         float | None,
@@ -329,13 +322,30 @@ class BufferConfig(BaseConfig):
         ),
     ] = None
 
+    easy_fraction: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            description="Fraction of easy problems to convert to normal when resuming or starting training. Only problems with difficulty 'normal' are sampled.",
+        ),
+    ] = 0.0
+
+    hard_fraction: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            description="Fraction of hard problems to convert to normal when resuming or starting training. Only problems with difficulty 'normal' are sampled.",
+        ),
+    ] = 0.0
+
     online_difficulty_filtering: Annotated[
         bool,
         Field(
-            description="Whether to filter rollouts based on their average reward. If True, rollouts with average reward == 0.0 will be marked as hard and rollouts with average reward == 1.0 will be marked as easy.",
+            description="Whether to filter rollouts based on difficulty. If True, only rollouts with average reward 0.0 or 1.0 are added to the buffer.",
         ),
     ] = False
-
 
 class AdvantageConfig(BaseConfig):
     length_weighted_mean: bool = False
@@ -359,19 +369,6 @@ class NCCLWeightBroadcastConfig(BaseModel):
 
 WeightBroadcastConfigType: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig
 
-
-class EnvMixConfig(BaseModel):
-    """Configures the mixing of environments."""
-
-    strategy: Literal["interleave", "concatenate"] = "interleave"
-    probabilities: Annotated[list[float] | None, Field(description="Probabilities to use for each environment.")] = None
-    stopping_strategy: Annotated[
-        Literal["first_exhausted", "all_exhausted"],
-        Field(description="Stopping strategy to use for interleaving environment datasets."),
-    ] = "all_exhausted"
-    seed: Annotated[int | None, Field(description="Random seed to use for the environment mixing.")] = None
-
-
 class OrchestratorConfig(BaseSettings):
     """Configures the orchestrator for RL training."""
 
@@ -383,9 +380,6 @@ class OrchestratorConfig(BaseSettings):
 
     # The sampling configuration
     sampling: SamplingConfig = SamplingConfig()
-
-    # The environment mixing configuration
-    env_mix: EnvMixConfig = EnvMixConfig()
 
     # The environment configuration
     env: list[EnvConfig] = [EnvConfig()]
