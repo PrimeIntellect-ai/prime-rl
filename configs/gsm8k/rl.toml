@@ -3,6 +3,10 @@ trainer_gpu_ids = [1]
 
 max_steps = 100
 
+[wandb]
+project = "gsm8k-debug"
+name = "gsm8k"
+
 [model]
 name = "PrimeIntellect/Qwen3-0.6B"
 
@@ -10,6 +14,9 @@ name = "PrimeIntellect/Qwen3-0.6B"
 batch_size = 512
 rollouts_per_example = 16
 seq_len = 2048
+
+[orchestrator.sampling]
+max_tokens = 2048
 
 [[orchestrator.env]]
 id = "primeintellect/single-turn-math"

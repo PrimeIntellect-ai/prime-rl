@@ -75,7 +75,7 @@ uv run inference --model.name <user>/Qwen3-0.6B-GSM8K-RL
 ```bash
 # In the `Trainer` pane
 uv run vf-eval single-turn-math \
-  -a '{"dataset_name": "openai/gsm8k", "dataset_subset": "main"}'
+  -a '{"dataset_name": "openai/gsm8k", "dataset_subset": "main"}' \
   -m <user>/Qwen3-0.6B-GSM8K-RL \
   -b http://localhost:8000/v1 \
   -n 20 \
