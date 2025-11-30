@@ -36,6 +36,7 @@ num_examples = 32
 rollouts_per_example = 16
 
 [orchestrator.buffer]
+# Keep this aligned with BufferConfig.env_ratios for 50/50 sampling.
 env_ratios = [0.5, 0.5]
 easy_threshold = 1.0
 hard_threshold = 0.0

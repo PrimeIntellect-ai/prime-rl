@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 
 from prime_rl.utils.config import ClientConfig, LogConfig, ModelConfig, WandbMonitorConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
@@ -300,8 +300,11 @@ class BufferConfig(BaseConfig):
     env_ratios: Annotated[
         list[float] | None,
         Field(
-            description="Ratios for sampling from each environment. "
-            "If None, samples uniformly across all available problems (not environments).",
+            description=(
+                "Ratios for sampling from each environment. Accepts the legacy key 'env_probabilities'. "
+                "If None, samples uniformly across all available problems (not environments)."
+            ),
+            validation_alias=AliasChoices("env_ratios", "env_probabilities"),
         ),
     ] = None
 
