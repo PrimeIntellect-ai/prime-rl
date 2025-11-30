@@ -7,6 +7,7 @@ from prime_rl.trainer.config import (
     AdamWConfig,
     CheckpointConfig,
     ConstantSchedulerConfig,
+    HeartbeatConfig,
     ModelConfig,
     OptimizerConfigType,
     SchedulerConfigType,
@@ -152,6 +153,10 @@ class RLTrainerConfig(BaseSettings):
             description="Timeout in seconds for torch distributed ops. Defaults to 600 seconds.",
         ),
     ] = 600
+
+    heartbeat: Annotated[
+        HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
+    ] = None
 
     @model_validator(mode="after")
     def auto_setup_bench(self):
