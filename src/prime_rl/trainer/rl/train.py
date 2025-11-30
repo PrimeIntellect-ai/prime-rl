@@ -67,10 +67,10 @@ def train(config: RLTrainerConfig):
     monitor = setup_monitor(config.wandb, output_dir=config.output_dir, run_config=config)
 
     # Setup heartbeat (only on rank 0)
-    heartbeat = None
+    heart = None
     if config.heartbeat is not None and world.rank == 0:
-        logger.info(f"Initializing heartbeat (interval={config.heartbeat.interval}s)")
-        heartbeat = Heartbeat(config.heartbeat.url, config.heartbeat.interval)
+        logger.info("Initializing heartbeat")
+        heart = Heartbeat(config.heartbeat.url)
 
     # Set precision
     setup_torch_distributed(
@@ -370,8 +370,8 @@ def train(config: RLTrainerConfig):
         is_first_step = False
 
         # Send heartbeat if configured
-        if heartbeat is not None:
-            heartbeat.step()
+        if heart is not None:
+            heart.beat()
 
     if config.trace_path:
         prof.__exit__(None, None, None)

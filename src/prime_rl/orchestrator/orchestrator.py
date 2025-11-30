@@ -93,10 +93,10 @@ async def orchestrate(config: OrchestratorConfig):
     )
 
     # Setup heartbeat (only on rank 0, orchestrator is single process)
-    heartbeat = None
+    heart = None
     if config.heartbeat is not None:
-        logger.info(f"Initializing heartbeat (interval={config.heartbeat.interval}s)")
-        heartbeat = Heartbeat(config.heartbeat.url, config.heartbeat.interval)
+        logger.info("Initializing heartbeat")
+        heart = Heartbeat(config.heartbeat.url)
 
     # Load environment and extract dataset
     logger.info(
@@ -440,8 +440,8 @@ async def orchestrate(config: OrchestratorConfig):
         is_first_step = False
 
         # Send heartbeat if configured
-        if heartbeat is not None:
-            heartbeat.step()
+        if heart is not None:
+            heart.beat()
 
     if config.eval:
         logger.info("Running final evals")
