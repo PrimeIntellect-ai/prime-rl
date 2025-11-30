@@ -23,8 +23,6 @@ from prime_rl.trainer.lora import apply_lora_to_model
 from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.weights import (
-    convert_hf_to_tt_moe,
-    convert_tt_to_hf_moe,
     has_hf_moe_layers,
     has_tt_moe_layers,
     load_state_dict,
@@ -208,7 +206,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
                 logger.debug(
                     f"Converting snapshot state dict to TT format and saving to {snapshot_path} on master rank. This is a one-time operation."
                 )
-                convert_hf_to_tt_moe(snapshot_state_dict)
+                model.convert_hf_to_tt_moe(snapshot_state_dict)
                 save_state_dict(snapshot_state_dict, snapshot_path)
 
     elif has_tt_moe_layers(snapshot_state_dict) and has_hf_moe_layers(model_state_dict):
@@ -223,7 +221,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
                 logger.debug(
                     f"Converting snapshot state dict to HF format and saving to {snapshot_path} on master rank. This is a one-time operation."
                 )
-                convert_tt_to_hf_moe(snapshot_state_dict)
+                model.convert_tt_to_hf_moe(snapshot_state_dict)
                 save_state_dict(snapshot_state_dict, snapshot_path)
 
     # All ranks wait for master rank to finish conversion

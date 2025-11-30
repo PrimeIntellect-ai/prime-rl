@@ -9,7 +9,6 @@ from prime_rl.trainer.lora import save_lora_config
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.rl.config import FileSystemWeightBroadcastConfig
 from prime_rl.trainer.weights import (
-    convert_tt_to_hf_moe,
     gather_weights_on_master,
     get_adapter_state_dict,
     has_tt_moe_layers,
@@ -45,7 +44,7 @@ class FileSystemWeightBroadcast(WeightBroadcast):
         if self.world.is_master:
             # Convert TT-MoE layers to HF format if needed
             if has_tt_moe_layers(state_dict):
-                convert_tt_to_hf_moe(state_dict)
+                model.convert_tt_to_hf_moe(state_dict)
 
             # Save weights to shared filesystem
             save_dir = get_step_path(self.broadcast_dir, step)

@@ -20,7 +20,6 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from prime_rl.trainer.config import CheckpointConfig, LoRAConfig, WeightCheckpointConfig
 from prime_rl.trainer.lora import has_lora_layers, save_lora_config
 from prime_rl.trainer.weights import (
-    convert_tt_to_hf_moe,
     gather_weights_on_master,
     get_adapter_state_dict,
     has_tt_moe_layers,
@@ -317,7 +316,7 @@ class WeightCheckpointManager:
         if has_tt_moe_layers(state_dict):
             self.logger.debug("Converting TT-MoE layers to HF format for weight checkpoint")
             start_time = time.perf_counter()
-            convert_tt_to_hf_moe(state_dict)
+            model.convert_tt_to_hf_moe(state_dict)
             self.logger.debug(f"Converted TT-MoE layers to HF format in {time.perf_counter() - start_time:.2f} seconds")
 
         # Save weight checkpoint on master rank
