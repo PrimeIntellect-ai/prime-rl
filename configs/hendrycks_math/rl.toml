@@ -19,7 +19,7 @@ seq_len = 2048
 max_tokens = 2048
 
 [[orchestrator.env]]
-id = "primeintellect/hendrycks-math"
+id = "primeintellect/single-turn-math"
 args = { dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "default" }
 
 [orchestrator.buffer]
