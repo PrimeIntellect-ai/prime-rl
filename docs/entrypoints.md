@@ -135,3 +135,51 @@ uv run eval \
   --model.name <model-name> \
   --environment-ids math500,aime2025
 ```
+
+## Synthetic Data
+
+You can generate synthetic data in any [verifiers](https://github.com/willccbb/verifiers) environment using the `synthesize` entrypoint. The entrypoint shares configuration with evals (`ModelConfig`, `ClientConfig`, `SamplingConfig`, and `EnvConfig`), making it easy to generate data using the same models and sampling settings as your evaluations.
+
+The synthesize entrypoint supports single-turn, multi-turn, and tool-calling environments, and can generate data across multiple environments in parallel. It automatically parses reasoning content from model responses (configurable via `--reasoning-field`, defaults to `reasoning_content`), and saves data in append mode using the same schema as verifiers, making it straightforward to convert to SFT datasets. The entrypoint is robust to errors during generation, scoring, or saving—failed groups are simply dropped. Environments specified in the format `{env_org}/{env_id}` are automatically installed, similar to the RL entrypoint.
+
+By default, the entrypoint uses the OpenAI API with `gpt-4.1-mini` (also the default for evals) to provide a smooth out-of-the-box experience without requiring a vLLM server.
+
+To check all available configuration options, run `uv run synthesize --help`.
+
+### Single-Turn Environments
+
+Generate synthetic data in a single-turn environment (e.g., `gsm8k`):
+
+```bash
+uv run synthesize @ configs/debug/synthesize/single_turn.toml
+```
+
+By default, the entrypoint parses and saves the `reasoning_content` field from raw responses, as returned by vLLM when a reasoning parser is set. This behavior can be configured to handle different APIs:
+
+```bash
+uv run synthesize @ configs/debug/synthesize/single_turn.toml --reasoning-field reasoning
+```
+
+### Multiple Environments
+
+Generate synthetic data across multiple environments (e.g., `gsm8k` and `hendrycks-math`):
+
+```bash
+uv run synthesize @ configs/debug/synthesize/multi_env.toml
+```
+
+### Multi-Turn Environments
+
+Generate synthetic data in a multi-turn environment (e.g., `alphabet-sort`):
+
+```bash
+uv run synthesize @ configs/debug/synthesize/multi_turn.toml
+```
+
+### Multi-Turn Environments with Tool Calls
+
+Generate synthetic data in a multi-turn environment with tool calls (e.g., `wiki-search`):
+
+```bash
+uv run synthesize @ configs/debug/synthesize/multi_turn_tool_call.toml
+```
