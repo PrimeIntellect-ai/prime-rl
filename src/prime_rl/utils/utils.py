@@ -298,13 +298,13 @@ def mean_normalize(values: list[float] | list[int]) -> list[float]:
 def install_env(env_id: str) -> None:
     """Install an environment in subprocess."""
     logger = get_logger()
-    logger.info(f"Installing environment: {env_id}")
+    logger.info(f"Installing environment {env_id}")
     install_cmd = ["uv", "run", "--no-sync", "prime", "env", "install", env_id]
     result = subprocess.run(install_cmd, capture_output=True, text=True)
     if result.returncode != 0:
         logger.error(f"Failed to install environment {env_id}: {result.stderr}")
         raise RuntimeError(f"Failed to install environment {env_id}")
-    logger.info(f"Successfully installed environment: {env_id}")
+    logger.info(f"Successfully installed environment {env_id}")
 
 
 def get_env_ids_to_install(env_configs: list[EnvConfig] | list[EvalEnvConfig]) -> set[str]:
