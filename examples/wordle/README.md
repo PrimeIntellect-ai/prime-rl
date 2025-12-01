@@ -61,6 +61,7 @@ To train on multiple GPUs, run
 ```bash
 # In the `Trainer` pane
 uv run torchrun \
+  --local-ranks-filter 0 \
   --nproc-per-node ... \
   src/prime_rl/trainer/sft/train.py @ examples/wordle/sft.toml \
   --wandb.project ... \
