@@ -12,10 +12,12 @@ class SynthesizeConfig(EvalConfig, BaseSettings):
     """Configures synthetic data generation."""
 
     # The client configuration
-    client: ClientConfig = ClientConfig(timeout=36000)
+    client: ClientConfig = ClientConfig(
+        timeout=36000, base_url=["https://api.openai.com/v1"], api_key_var="OPENAI_API_KEY"
+    )
 
     # The model configuration
-    model: ModelConfig = ModelConfig()
+    model: ModelConfig = ModelConfig(name="gpt-4.1-mini")
 
     # The logging configuration
     log: LogConfig = LogConfig()
