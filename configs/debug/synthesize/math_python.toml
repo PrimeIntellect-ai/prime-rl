@@ -3,4 +3,4 @@ num_examples = 16
 rollouts_per_example = 4
 
 [[env]]
-id = "math-python"
+id = "primeintellect/math-python"

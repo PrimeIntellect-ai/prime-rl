@@ -17,7 +17,7 @@ from prime_rl.utils.client import (
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
-from prime_rl.utils.utils import clean_exit, get_step_path
+from prime_rl.utils.utils import clean_exit, get_env_ids_to_install, get_step_path, install_env
 
 
 @clean_exit
@@ -28,10 +28,14 @@ async def eval(config: OfflineEvalConfig):
     )
     vf.setup_logging(level=config.log.vf_level.upper())
 
-    logger.info("Starting evaluation")
-    logger.info(f"Model: {config.model}")
-    logger.info(f"Environments: {', '.join([env.name or env.id for env in config.env])}")
-    logger.info(f"Sampling: {config.sampling}")
+    env_names = [env.name or env.id for env in config.env]
+    logger.info(f"Starting evals for {config.model.name} in environments {', '.join(env_names)}")
+    logger.info(f"Using sampling config {config.sampling}")
+
+    # Install environments
+    env_ids_to_install = get_env_ids_to_install(config.env)
+    for env_id in env_ids_to_install:
+        install_env(env_id)
 
     # Initialize the monitor
     logger.info(f"Initializing monitor ({config.wandb})")
