@@ -1,0 +1,7 @@
+# Example of generating data in a multi-turn environment (alphabet-sort)
+num_examples = 16
+rollouts_per_example = 4
+
+[[env]]
+id = "alphabet-sort"
+args = { min_turns = 2, max_turns = 2 }

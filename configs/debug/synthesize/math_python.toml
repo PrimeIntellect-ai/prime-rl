@@ -1,0 +1,6 @@
+# Example of generating data in a multi-turn environment with tool calls (math-python)
+num_examples = 16
+rollouts_per_example = 4
+
+[[env]]
+id = "math-python"
