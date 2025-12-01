@@ -118,41 +118,6 @@ class WandbMonitor:
         self.last_log_samples_step = step
         self.logger.debug(f"Logged samples at step {step} to W&B table in {time.perf_counter() - start_time:.2f}s")
 
-    def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:
-        if not self.is_master:
-            return
-        if (
-            not self.config
-            or not self.config.log_extras
-            or not self.config.log_extras.distributions
-            or step % self.config.log_extras.interval != 0
-        ):
-            return
-        assert self.last_log_distributions_step <= step, "Step must be greater than last logged step"
-        self.logger.info(f"Logging distributions for keys {list(distributions.keys())} to W&B table at step {step}")
-
-        # Initialize incremental table if not already done
-        if self.distributions_table is None:
-            self.distributions_cols = list(distributions.keys())
-            self.distributions_table = wandb.Table(
-                columns=["step"] + self.distributions_cols,
-                log_mode="INCREMENTAL",
-            )
-        assert self.distributions_cols == list(distributions.keys()), (
-            "Columns in the table must be the same across all steps"
-        )
-
-        # Append to distributions
-        start_time = time.perf_counter()
-        row = {"step": step, **distributions}
-        self.distributions.append(row)
-        self.distributions_table.add_data(*row.values())
-        wandb.log({"distributions": self.distributions_table}, step=step)
-        self.last_log_distributions_step = step
-        self.logger.debug(
-            f"Logged distributions at step {step} to W&B table in {time.perf_counter() - start_time:.2f}s"
-        )
-
     def log_final_samples(self) -> None:
         """Log final samples to W&B table."""
         if not self.is_master:
@@ -163,17 +128,6 @@ class WandbMonitor:
         df = pd.DataFrame(self.samples)
         table = wandb.Table(dataframe=df)
         wandb.log({"final-samples": table})
-
-    def log_final_distributions(self) -> None:
-        """Log final distributions to W&B table."""
-        if not self.is_master:
-            return
-        if not self.config or not self.config.log_extras or not self.config.log_extras.distributions:
-            return
-        self.logger.info("Logging final distributions to W&B table")
-        df = pd.DataFrame(self.distributions)
-        table = wandb.Table(dataframe=df)
-        wandb.log({"final-distributions": table})
 
     def save_final_summary(self, filename: str = "final_summary.json") -> None:
         """Save final summary to W&B table."""

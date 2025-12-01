@@ -383,9 +383,6 @@ def train(config: SFTTrainerConfig):
         prof.export_chrome_trace(trace_file)
         logger.info(f"Saved trace to {trace_file}")
 
-    # Log final (immutable) distributions to W&B table
-    monitor.log_final_distributions()
-
     # Write final checkpoint
     if ckpt_manager is not None:
         logger.info("Writing final checkpoint")

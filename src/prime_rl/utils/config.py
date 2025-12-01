@@ -94,20 +94,13 @@ class LogConfig(BaseConfig):
     ] = False
 
 
-class LogExtrasConfig(BaseConfig):
+class WandbExtrasConfig(BaseConfig):
     """Configures extra logging for W&B tables."""
 
     samples: Annotated[
         bool,
         Field(
             description="Whether to log prompt/response samples to W&B tables.",
-        ),
-    ] = True
-
-    distributions: Annotated[
-        bool,
-        Field(
-            description="Whether to log distributions (like rewards, advantages, etc.) to W&B tables.",
         ),
     ] = True
 
@@ -120,7 +113,7 @@ class LogExtrasConfig(BaseConfig):
     ] = 10
 
 
-class WandbMonitorConfig(BaseConfig):
+class WandbConfig(BaseConfig):
     """Configures logging to Weights and Biases."""
 
     # Shared configs (May be overwritten by WandbConfig from `rl.py`)
@@ -143,9 +136,8 @@ class WandbMonitorConfig(BaseConfig):
         ),
     ] = None
 
-    log_extras: Annotated[
-        LogExtrasConfig | None,
-        Field(
-            description="Configuration for logging extras to W&B tables. If None, no extras are logged.",
-        ),
-    ] = None
+
+class WandbWithExtrasConfig(WandbConfig):
+    """Configures logging to Weights and Biases with extras."""
+
+    log_extras: WandbExtrasConfig | None = WandbExtrasConfig()

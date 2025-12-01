@@ -358,14 +358,6 @@ def train(config: RLTrainerConfig):
         }
         monitor.log(time_metrics)
 
-        # Log distributions to W&B table if enabled
-        assert all(len(tensors) == 1 for tensors in tensors.values()), "Tensors must be lists of length 1"
-        distributions = {key: tensors[key][0] for key in tensors.keys()}
-        monitor.log_distributions(
-            distributions=distributions,
-            step=progress.step,
-        )
-
         progress.step += 1
         is_first_step = False
 
@@ -380,9 +372,6 @@ def train(config: RLTrainerConfig):
         logger.info(f"Saving trace to {trace_file}")
         prof.export_chrome_trace(trace_file)
         logger.info(f"Saved trace to {trace_file}")
-
-    # Log final (immutable) distributions to W&B table
-    monitor.log_final_distributions()
 
     # Write final checkpoint
     if ckpt_manager is not None:

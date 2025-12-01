@@ -13,7 +13,7 @@ from prime_rl.trainer.config import (
     SchedulerConfigType,
     TokenizerConfig,
 )
-from prime_rl.utils.config import LogConfig, WandbMonitorConfig
+from prime_rl.utils.config import LogConfig, WandbConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
@@ -112,7 +112,7 @@ class RLTrainerConfig(BaseSettings):
     log: LogConfig = LogConfig()
 
     # The wandb configuration
-    wandb: WandbMonitorConfig | None = None
+    wandb: WandbConfig | None = None
 
     output_dir: Annotated[
         Path,
@@ -164,16 +164,8 @@ class RLTrainerConfig(BaseSettings):
             self.max_steps = 4  # 1 Warmup + 3 Benchmark
             if not self.data.fake:
                 self.data.fake = FakeDataLoaderConfig()
-            if self.wandb:  # Do not log extras
-                self.wandb.log_extras = None
             if self.ckpt:  # Do not checkpoint
                 self.ckpt = None
-        return self
-
-    @model_validator(mode="after")
-    def disable_logging_wandb_samples(self):
-        if self.wandb and self.wandb.log_extras:
-            self.wandb.log_extras.samples = False
         return self
 
     @model_validator(mode="after")
