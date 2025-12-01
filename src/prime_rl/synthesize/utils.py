@@ -36,15 +36,14 @@ def prepare_sampling_args(sampling_config: EvalSamplingConfig, client_config: Cl
     extra_body: dict[str, Any] = sampling_config.extra_body
 
     # Apply vLLM-specific sampling arguments, if specified
-    if client_config.server_type == "vllm":
-        if sampling_config.top_k is not None:
-            extra_body["top_k"] = sampling_config.top_k
-        if sampling_config.min_p is not None:
-            extra_body["min_p"] = sampling_config.min_p
-        if sampling_config.min_tokens is not None:
-            extra_body["min_tokens"] = sampling_config.min_tokens
-        if sampling_config.repetition_penalty is not None:
-            extra_body["repetition_penalty"] = sampling_config.repetition_penalty
+    if sampling_config.top_k is not None:
+        extra_body["top_k"] = sampling_config.top_k
+    if sampling_config.min_p is not None:
+        extra_body["min_p"] = sampling_config.min_p
+    if sampling_config.min_tokens is not None:
+        extra_body["min_tokens"] = sampling_config.min_tokens
+    if sampling_config.repetition_penalty is not None:
+        extra_body["repetition_penalty"] = sampling_config.repetition_penalty
 
     sampling_args["extra_body"] = extra_body
 
