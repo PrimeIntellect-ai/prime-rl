@@ -49,8 +49,10 @@ from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import (
     clean_exit,
     get_broadcast_dir,
+    get_env_ids_to_install,
     get_rollout_dir,
     get_step_path,
+    install_env,
     to_col_format,
 )
 from prime_rl.utils.vf import generate_batch, get_completion_len, get_is_truncated, get_prompt_len, get_seq_len
@@ -69,6 +71,15 @@ async def orchestrate(config: OrchestratorConfig):
     # Print warning if running in benchmark mode
     if config.bench:
         logger.warning(f"Running in benchmark mode (max_steps={config.max_steps})")
+
+    # Install environments
+    env_ids_to_install = set()
+    env_ids_to_install.update(get_env_ids_to_install(config.env))
+    if config.eval is not None:
+        env_ids_to_install.update(get_env_ids_to_install(config.eval.env))
+
+    for env_id in env_ids_to_install:
+        install_env(env_id)
 
     # Setup client
     logger.info(

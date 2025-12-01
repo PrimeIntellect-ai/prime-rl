@@ -30,11 +30,9 @@ from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pydantic_config import BaseSettings, get_temp_toml_file, parse_argv
 from prime_rl.utils.utils import (
     get_broadcast_dir,
-    get_env_ids_to_install,
     get_free_port,
     get_log_dir,
     get_rollout_dir,
-    install_env,
 )
 from prime_rl.utils.validation import (
     validate_shared_ckpt_config,
@@ -429,15 +427,6 @@ def rl(config: RLConfig):
     start_command = sys.argv
     logger.info("Starting RL run")
     logger.debug(f"RL start command: {' '.join(start_command)}")
-
-    # Collect environment IDs to install
-    env_ids_to_install = set()
-    env_ids_to_install.update(get_env_ids_to_install(config.orchestrator.env))
-    if config.orchestrator.eval is not None:
-        env_ids_to_install.update(get_env_ids_to_install(config.orchestrator.eval.env))
-
-    for env_id in env_ids_to_install:
-        install_env(env_id)
 
     # Prepare paths to communicate with the trainer
     log_dir = get_log_dir(config.output_dir)
