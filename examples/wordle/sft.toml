@@ -1,5 +1,7 @@
 max_steps = 20
 
+[ckpt] # Checkpoint at the end of training
+
 [model]
 name = "PrimeIntellect/Qwen3-1.7B"
 

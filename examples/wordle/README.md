@@ -44,17 +44,16 @@ We got an **average reward of ~0.2** across the 20x3 rollouts. From the summary,
 
 We will fine-tune `PrimeIntellect/Qwen3-1.7B` ([HF](https://huggingface.co/PrimeIntellect/Qwen3-1.7B)), which is a clone of `Qwen/Qwen3-1.7B` ([HF](https://huggingface.co/Qwen/Qwen3-1.7B)) with a chat template suitable for multi-turn RL, on `willcb/V3-wordle` ([HF](https://huggingface.co/datasets/willcb/V3-wordle)). It is a multi-SFT dataset with traces of Wordle games from the environment. A few steps should be enough to get the model to learn the expected response format of the environment.
 
-![SFT](sft/wandb.png)
+![SFT](sft.png)
 *Check out the logs of the SFT run on [W&B](https://wandb.ai/primeintellect/examples?nw=h8yesgpmst).*
 
 To train on a single GPU, run
 
 ```bash
 # In the `Trainer` pane
-uv run sft @ examples/wordle/sft/train.toml \
+uv run sft @ examples/wordle/sft.toml \
   --wandb.project ... \
-  --wandb.name ... \
-  --ckpt
+  --wandb.name ...
 ```
 
 To train on multiple GPUs, run
@@ -63,10 +62,9 @@ To train on multiple GPUs, run
 # In the `Trainer` pane
 uv run torchrun \
   --nproc-per-node ... \
-  src/prime_rl/trainer/sft/train.py @ examples/wordle/sft/train.toml \
+  src/prime_rl/trainer/sft/train.py @ examples/wordle/sft.toml \
   --wandb.project ... \
-  --wandb.name ... \
-  --ckpt
+  --wandb.name ... 
 ```
 
 After training completes, you will find the final weight checkpoint in `outputs/weights/step_20`. Upload it to HF to be able to use it as the base model for RL we will do in the next section.
@@ -81,19 +79,16 @@ We have uploaded the final model as [`PrimeIntellect/Qwen3-1.7B-Wordle-SFT`](htt
 
 Finally, we will do multi-turn RL against the `wordle` environment using the model `PrimeIntellect/Qwen3-1.7B-Wordle-SFT` ([HF](https://huggingface.co/PrimeIntellect/Qwen3-1.7B-Wordle-SFT)), we obtained from the SFT warmup. We will do sizable RL training, with 100 training steps, each generating training batches of 64x16 rollouts, for a total batch size of 1024, at a context length of 4096.
 
-![RL](rl/wandb.png)
+![RL](rl.png)
 *Check out the logs of the RL run on [W&B](https://wandb.ai/primeintellect/examples?nw=2isof8knxo5).*
 
 
 ```bash
 # Run this in the `Trainer` pane
-uv run rl \
-  --trainer @ examples/wordle/rl/train.toml \
-  --orchestrator @ examples/wordle/rl/orch.toml \
-  --inference @ examples/wordle/rl/infer.toml \
+uv run rl @ examples/wordle/rl.toml \
   --model.name ... \
   --wandb.project ... \
-  --wandb.name ...
+  --wandb.name ... 
 ```
 
 This will write a weight checkpoint in `outputs/weights/step_100`. As before, let's upload it to HF.
