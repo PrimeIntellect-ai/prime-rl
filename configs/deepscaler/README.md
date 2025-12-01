@@ -27,19 +27,9 @@ bash scripts/tmux.sh -s stage1 -o outputs/stage1
 ```
 
 ```bash
-# Run this in the `Inference` pane
-uv run inference @ configs/deepscaler/stage1/rl/infer.toml --parallel.tp 2 --parallel.dp 3 --max-model-len 16384
-```
-
-```bash
 # Run this in the `Trainer` pane
-uv run rl \
-  --trainer @ configs/deepscaler/stage1/rl/train.toml \
-  --orchestrator @ configs/deepscaler/stage1/rl/orch.toml \
-  --trainer-gpu-ids 6,7 \
-  --output-dir outputs/stage1 \
-  --wandb.project deepscaler \
-  --wandb.name stage1
+uv run rl @ configs/deepscaler/stage1.toml \
+  --output-dir outputs/stage1
 ```
 
 ### Stage 2
@@ -50,28 +40,15 @@ bash scripts/tmux.sh -s stage2 -o outputs/stage2
 
 ```bash
 mkdir -p outputs/stage2/checkpoints
-cp -r outputs/stage1/checkpoints/step_400 outputs/stage2/checkpoints/step_400
+ln -s outputs/stage1/checkpoints/step_500 outputs/stage2/checkpoints/step_500
 mkdir -p outputs/stage2/weights
-cp -r outputs/stage1/weights/step_398 outputs/stage2/weights/step_398
-cp -r outputs/stage1/weights/step_399 outputs/stage2/weights/step_399
-cp -r outputs/stage1/weights/step_400 outputs/stage2/weights/step_400
-```
-
-```bash
-# Run this in the `Inference` pane
-uv run inference @ configs/deepscaler/stage2/rl/infer.toml --parallel.tp 2 --parallel.dp 3 --max-model-len 32768
+ln -s outputs/stage1/weights/step_500 outputs/stage2/weights/step_500
 ```
 
 ```bash
 # Run this in the `Trainer` pane
-uv run rl \
-  --trainer @ configs/deepscaler/stage2/rl/train.toml \
-  --orchestrator @ configs/deepscaler/stage2/rl/orch.toml \
-  --trainer-gpu-ids 6,7 \
-  --output-dir outputs/stage2 \
-  --wandb.project deepscaler \
-  --wandb.name stage2 \
-  --ckpt.resume-step 400
+uv run rl @ configs/deepscaler/stage2.toml \
+  --output-dir outputs/stage2
 ```
 
 ### Stage 3
@@ -82,28 +59,15 @@ bash scripts/tmux.sh -s stage3 -o outputs/stage3
 
 ```bash
 mkdir -p outputs/stage3/checkpoints
-cp -r outputs/stage2/checkpoints/step_850 outputs/stage3/checkpoints/step_850
+ln -s outputs/stage2/checkpoints/step_1000 outputs/stage3/checkpoints/step_1000
 mkdir -p outputs/stage3/weights
-cp -r outputs/stage2/weights/step_848 outputs/stage3/weights/step_848
-cp -r outputs/stage2/weights/step_849 outputs/stage3/weights/step_849
-cp -r outputs/stage2/weights/step_850 outputs/stage3/weights/step_850
-```
-
-```bash
-# Run this in the `Inference` pane
-uv run inference @ configs/deepscaler/stage3/rl/infer.toml --parallel.tp 2 --parallel.dp 2 --max-model-len 32768
+ln -s outputs/stage2/weights/step_1000 outputs/stage3/weights/step_1000
 ```
 
 ```bash
 # Run this in the `Trainer` pane
-uv run rl \
-  --trainer @ configs/deepscaler/stage3/rl/train.toml \
-  --orchestrator @ configs/deepscaler/stage3/rl/orch.toml \
-  --trainer-gpu-ids 4,5,6,7 \
-  --output-dir outputs/stage3 \
-  --wandb.project deepscaler \
-  --wandb.name stage3 \
-  --ckpt.resume-step 850
+uv run rl @ configs/deepscaler/stage3.toml \
+  --output-dir outputs/stage3
 ```
 
 ## Evals
