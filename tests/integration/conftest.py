@@ -1,9 +1,19 @@
 import os
 import re
+import shutil
 import subprocess
-from typing import Callable
+from pathlib import Path
+from typing import Callable, Generator
 
 import pytest
+
+
+@pytest.fixture(autouse=True, scope="module")
+def cleanup_zombies():
+    """Cleanup zombies in between module tests."""
+    subprocess.run(["pkill", "-f", "torchrun"])
+    subprocess.run(["pkill", "-f", "VLLM"])
+    yield
 
 
 @pytest.fixture(scope="session")
@@ -32,6 +42,15 @@ def commit_hash() -> str:
 
 
 @pytest.fixture(scope="session")
+def output_dir(tmp_path_factory: pytest.TempPathFactory) -> Generator[Path, None, None]:
+    """Create temporary output directory for tests with automatic cleanup"""
+    output_dir = Path(os.environ.get("PYTEST_OUTPUT_DIR", tmp_path_factory.mktemp("outputs")))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    yield output_dir
+    shutil.rmtree(output_dir, ignore_errors=True)
+
+
+@pytest.fixture(scope="session")
 def get_wandb_project(user: str) -> Callable[[str], str]:
     """Factory function to get W&B project name"""
 
@@ -52,37 +71,21 @@ DEFAULT_TIMEOUT = 120
 class ProcessResult:
     """Result object containing process information and captured output."""
 
-    def __init__(self, process: subprocess.Popen, stdout: bytes, stderr: bytes):
+    def __init__(self, process: subprocess.Popen):
         self.returncode = process.returncode
-        self.stdout = stdout.decode("utf-8", errors="replace")
-        self.stderr = stderr.decode("utf-8", errors="replace")
-        self._process = process
-
-    @staticmethod
-    def strip_escape_codes(text: str) -> str:
-        return re.sub(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", "", text)
-
-    @property
-    def readable_stdout(self) -> list[str]:
-        return self.strip_escape_codes(self.stdout).splitlines()
-
-    @property
-    def readable_stderr(self) -> list[str]:
-        return self.strip_escape_codes(self.stderr).splitlines()
+        self.pid = process.pid
 
     def __repr__(self):
-        return (
-            f"ProcessResult(returncode={self.returncode}, stdout={self.readable_stdout}, stderr={self.readable_stderr})"
-        )
+        return f"ProcessResult(returncode={self.returncode}, pid={self.pid})"
 
 
 @pytest.fixture(scope="module")
 def run_process() -> Callable[[Command, Environment, int], ProcessResult]:
     """Factory fixture for running a single process."""
 
-    def _run_process(command: Command, env: Environment, timeout: int = DEFAULT_TIMEOUT) -> ProcessResult:
+    def _run_process(command: Command, env: Environment = {}, timeout: int = DEFAULT_TIMEOUT) -> ProcessResult:
         """Run a subprocess with given command and environment with a timeout"""
-        process = subprocess.Popen(command, env={**os.environ, **env}, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        process = subprocess.Popen(command, env={**os.environ, **env})
         try:
             process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -93,32 +96,83 @@ def run_process() -> Callable[[Command, Environment, int], ProcessResult]:
                 process.kill()
                 process.wait()
 
-        # Read stdout and stderr after process has finished or been killed
-        stdout, stderr = process.communicate()
-
-        return ProcessResult(process, stdout, stderr)
+        return ProcessResult(process)
 
     return _run_process
 
 
-def check_zero_return_code(process: ProcessResult):
-    """Helper to assert that a process has a zero return code"""
-    assert process.returncode == 0, f"Process has non-zero return code ({process})"
+def strip_escape_codes(text: str) -> str:
+    """Helper to strip escape codes from text"""
+    return re.sub(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", "", text)
 
 
-def check_loss_goes_down(process: ProcessResult, loss_pattern: str = r"Loss:\s*(\d+\.\d{4})"):
-    """Helper to assert that the last step's loss is less than the first step's loss"""
-    lines = process.readable_stdout
+def check_number_goes_up_or_down(
+    lines: list[str],
+    start_step: int = 0,
+    end_step: int = -1,
+    pattern: str = r"Reward:\s*(\d+\.\d{4})",
+    go_up: bool = True,
+):
+    """Helper to assert that a number in lines goes up from a specified start to end step"""
     step_lines = [line for line in lines if "Step" in line]
-    assert len(step_lines) > 0, f"No step lines found in output ({process})"
-    first_match = re.search(loss_pattern, step_lines[0])
-    last_match = re.search(loss_pattern, step_lines[-1])
-    assert first_match is not None and last_match is not None, (
-        f"Could not find loss in step lines. First line: {step_lines[0]}, Last line: {step_lines[-1]} ({process})"
+    assert len(step_lines) > 0, f"No step lines found in output ({lines})"
+    try:
+        start_step_line = step_lines[start_step]
+    except IndexError:
+        start_step_line = ""
+    try:
+        end_step_line = step_lines[end_step]
+    except IndexError:
+        end_step_line = ""
+    assert start_step_line, f"Could not find start step {start_step} in output ({lines})"
+    assert end_step_line, f"Could not find end step {end_step} in output ({lines})"
+    start_step_match = re.search(pattern, start_step_line)
+    end_step_match = re.search(pattern, end_step_line)
+    assert start_step_match is not None, (
+        f"Could not find number for start step {start_step} in line {start_step_line} ({lines})"
     )
-    first_step_loss = float(first_match.group(1))
-    last_step_loss = float(last_match.group(1))
-    assert first_step_loss > last_step_loss, (
-        f"Loss did not go down. Found first_loss={first_step_loss} >= last_loss={last_step_loss} "
-        f"(first line: {step_lines[0]}, last line: {step_lines[-1]}) ({process})"
+    assert end_step_match is not None, (
+        f"Could not find number for end step {end_step} in line {end_step_line} ({lines})"
     )
+    start_step_number = float(start_step_match.group(1))
+    end_step_number = float(end_step_match.group(1))
+    if go_up:
+        assert start_step_number < end_step_number, (
+            f"Number did not go up. Found start_number={start_step_number} <= end_number={end_step_number} "
+            f"(start line: {start_step_line}, end line: {end_step_line}) ({lines})"
+        )
+    else:
+        assert start_step_number > end_step_number, (
+            f"Number did not go down. Found start_number={start_step_number} >= end_number={end_step_number} "
+            f"(start line: {start_step_line}, end line: {end_step_line}) ({lines})"
+        )
+
+
+def check_number_in_range(
+    lines: list[str],
+    step: int = -1,
+    min_threshold: float | None = 0.0,
+    max_threshold: float | None = None,
+    pattern: str = r"Reward:\s*(\d+\.\d{4})",
+):
+    """Helper to assert that a number in step logs is within a threshold"""
+    step_lines = [line for line in lines if "Step" in line]
+    assert len(step_lines) > 0, f"No step lines found in output ({lines})"
+    try:
+        step_line = step_lines[step]
+    except IndexError:
+        step_line = ""
+    assert step_line, f"Could not find step {step} in output ({lines})"
+    step_reward = re.search(pattern, step_line)
+    assert step_reward is not None, f"Could not find reward for step {step}. Line: {step_line} ({lines})"
+    step_reward = float(step_reward.group(1))
+    if min_threshold is not None:
+        assert step_reward >= min_threshold, (
+            f"Reward did not reach minimum threshold. Found reward={step_reward} < {min_threshold} "
+            f"(line: {step_line}) ({lines})"
+        )
+    if max_threshold is not None:
+        assert step_reward <= max_threshold, (
+            f"Reward did not reach maximum threshold. Found reward={step_reward} > {max_threshold} "
+            f"(line: {step_line}) ({lines})"
+        )

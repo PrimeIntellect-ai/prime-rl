@@ -2,7 +2,7 @@ from typing import Callable
 
 import pytest
 
-from tests.integration.conftest import Command, Environment, ProcessResult, check_zero_return_code
+from tests.integration.conftest import Command, Environment, ProcessResult
 
 pytestmark = [pytest.mark.slow]
 
@@ -23,9 +23,9 @@ def multi_env_eval_process(run_process: Callable[[Command, Environment], Process
 
 def test_no_error_single_env(single_env_eval_process: ProcessResult):
     """Tests that the single environment eval process does not fail."""
-    check_zero_return_code(single_env_eval_process)
+    assert single_env_eval_process.returncode == 0, f"Process has non-zero return code ({single_env_eval_process})"
 
 
 def test_no_error_multi_env(multi_env_eval_process: ProcessResult):
     """Tests that the multi environment eval process does not fail."""
-    check_zero_return_code(multi_env_eval_process)
+    assert multi_env_eval_process.returncode == 0, f"Process has non-zero return code ({multi_env_eval_process})"

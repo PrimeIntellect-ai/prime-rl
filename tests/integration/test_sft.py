@@ -1,14 +1,14 @@
+from functools import partial
 from pathlib import Path
 from typing import Callable
 
 import pytest
 
-from tests.integration.conftest import Command, Environment, ProcessResult, check_loss_goes_down, check_zero_return_code
+from tests.integration.conftest import ProcessResult, check_number_goes_up_or_down, strip_escape_codes
 
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
 
 TIMEOUT = 300  # 5 minutes
-ENV = {"CUDA_VISIBLE_DEVICES": "1"}
 
 
 @pytest.fixture(scope="module")
@@ -19,7 +19,7 @@ def wandb_project(get_wandb_project: Callable[[str], str]) -> str:
 
 @pytest.fixture(scope="module")
 def sft_process(
-    run_process: Callable[[Command, Environment, int], ProcessResult],
+    run_process: Callable[..., ProcessResult],
     wandb_project: str,
     output_dir: Path,
     branch_name: str,
@@ -27,19 +27,32 @@ def sft_process(
 ) -> ProcessResult:
     """Fixture for running SFT CI integration test"""
     wandb_name = f"{branch_name}-{commit_hash}"
-    sft_cmd = ["uv", "run", "sft", "@", "configs/ci/integration/sft/regular.toml"]
+    cmd = [
+        "uv",
+        "run",
+        "torchrun",
+        "--local-ranks-filter",
+        "0",
+        "--nproc-per-node",
+        "2",
+        "src/prime_rl/trainer/sft/train.py",
+        "@",
+        "configs/ci/integration/sft/start.toml",
+        "--wandb.project",
+        wandb_project,
+        "--wandb.name",
+        wandb_name,
+        "--output-dir",
+        output_dir.as_posix(),
+    ]
 
-    return run_process(
-        sft_cmd + ["--wandb.project", wandb_project, "--wandb.name", wandb_name, "--output-dir", output_dir.as_posix()],
-        ENV,
-        TIMEOUT,
-    )
+    return run_process(cmd, timeout=TIMEOUT)
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def sft_resume_process(
     sft_process,  # Resume training can only start when regular SFT process is finished
-    run_process: Callable[[Command, Environment, int], ProcessResult],
+    run_process: Callable[..., ProcessResult],
     wandb_project: str,
     output_dir: Path,
     branch_name: str,
@@ -47,38 +60,54 @@ def sft_resume_process(
 ) -> ProcessResult:
     """Fixture for resuming SFT CI integration test"""
     wandb_name = f"{branch_name}-{commit_hash}-resume"
-    sft_resume_cmd = ["uv", "run", "sft", "@", "configs/ci/integration/sft/resume.toml"]
+    cmd = [
+        "uv",
+        "run",
+        "torchrun",
+        "--local-ranks-filter",
+        "0",
+        "--nproc-per-node",
+        "2",
+        "src/prime_rl/trainer/sft/train.py",
+        "@",
+        "configs/ci/integration/sft/resume.toml",
+        "--wandb.project",
+        wandb_project,
+        "--wandb.name",
+        wandb_name,
+        "--output-dir",
+        output_dir.as_posix(),
+    ]
 
-    return run_process(
-        sft_resume_cmd
-        + [
-            "--wandb.project",
-            wandb_project,
-            "--wandb.name",
-            wandb_name,
-            "--output-dir",
-            output_dir.as_posix(),
-        ],
-        ENV,
-        TIMEOUT,
-    )
+    return run_process(cmd, timeout=TIMEOUT)
+
+
+check_loss_goes_down = partial(check_number_goes_up_or_down, go_up=False, pattern=r"Loss:\s*(\d+\.\d{4})")
 
 
 def test_no_error(sft_process: ProcessResult):
     """Tests that the SFT process does not fail."""
-    check_zero_return_code(sft_process)
+    assert sft_process.returncode == 0, f"Process has non-zero return code ({sft_process})"
 
 
-def test_loss_goes_down(sft_process: ProcessResult):
+def test_loss_goes_down(sft_process: ProcessResult, output_dir: Path):
     """Tests that the loss goes down in the SFT process"""
-    check_loss_goes_down(sft_process)
+    trainer_log_path = output_dir / "logs" / "trainer" / "rank_0.log"
+    print(f"Checking trainer path in {trainer_log_path}")
+    with open(trainer_log_path, "r") as f:
+        trainer_stdout = strip_escape_codes(f.read()).splitlines()
+    check_loss_goes_down(trainer_stdout)
 
 
 def test_no_error_resume(sft_resume_process: ProcessResult):
-    """Tests that the SFT resume process has a zero return code"""
-    check_zero_return_code(sft_resume_process)
+    """Tests that the SFT resume process does not fail."""
+    assert sft_resume_process.returncode == 0, f"Process has non-zero return code ({sft_resume_process})"
 
 
-def test_loss_goes_down_resume(sft_resume_process: ProcessResult):
+def test_loss_goes_down_resume(sft_resume_process: ProcessResult, output_dir: Path):
     """Tests that the loss goes down in the SFT resume process"""
-    check_loss_goes_down(sft_resume_process)
+    trainer_log_path = output_dir / "logs" / "trainer" / "rank_0.log"
+    print(f"Checking trainer path in {trainer_log_path}")
+    with open(trainer_log_path, "r") as f:
+        trainer_stdout = strip_escape_codes(f.read()).splitlines()
+    check_loss_goes_down(trainer_stdout)

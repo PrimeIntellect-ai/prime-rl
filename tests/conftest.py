@@ -1,6 +1,5 @@
 import atexit
 import os
-import shutil
 import signal
 import socket
 import subprocess
@@ -35,15 +34,6 @@ def setup_world():
     """Reset world info across tests"""
     yield
     reset_world()
-
-
-@pytest.fixture(scope="session")
-def output_dir(tmp_path_factory: pytest.TempPathFactory) -> Generator[Path, None, None]:
-    """Create temporary output directory for tests with automatic cleanup"""
-    output_dir = Path(os.environ.get("PYTEST_OUTPUT_DIR", tmp_path_factory.mktemp("outputs")))
-    output_dir.mkdir(parents=True, exist_ok=True)
-    yield output_dir
-    shutil.rmtree(output_dir, ignore_errors=True)
 
 
 VLLM_SERVER_ENV = {"CUDA_VISIBLE_DEVICES": "0"}
