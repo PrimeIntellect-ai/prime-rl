@@ -33,7 +33,7 @@ def prepare_sampling_args(sampling_config: EvalSamplingConfig, client_config: Cl
     if sampling_config.reasoning_effort is not None:
         sampling_args["reasoning_effort"] = sampling_config.reasoning_effort
 
-    extra_body: dict[str, Any] = sampling_config.extra_body
+    extra_body: dict[str, Any] = sampling_config.extra_body.copy()
 
     # Apply vLLM-specific sampling arguments, if specified
     if sampling_config.top_k is not None:
