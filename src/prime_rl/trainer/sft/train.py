@@ -86,8 +86,7 @@ def train(config: SFTTrainerConfig):
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
-    skip_load_weights = config.ckpt is not None and config.ckpt.resume_step is not None
-    model = setup_model(config.model, parallel_dims, skip_load_weights=skip_load_weights)
+    model = setup_model(config.model, parallel_dims)
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
@@ -120,7 +119,7 @@ def train(config: SFTTrainerConfig):
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
-    if ckpt_manager is not None and config.ckpt and config.ckpt.resume_step is not None:
+    if ckpt_manager is not None and config.ckpt and config.ckpt.resume_step:
         logger.info(f"Resuming training from checkpoint step {config.ckpt.resume_step}")
         ckpt_manager.load(
             config.ckpt.resume_step,
