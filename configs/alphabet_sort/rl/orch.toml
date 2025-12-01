@@ -10,8 +10,6 @@ name = "Qwen/Qwen2.5-3B-Instruct"
 project = "alphabet-sort"
 
 [wandb.log_extras]
-samples = true
-distributions = true
 interval = 2
 
 [[env]]
