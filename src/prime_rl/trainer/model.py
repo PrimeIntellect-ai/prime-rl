@@ -274,8 +274,10 @@ def fix_model_post_empty(model: nn.Module):
         inv_freq, rotary_emb.attention_scaling = rotary_emb.rope_init_fn(rotary_emb.config, rotary_emb.inv_freq.device)
         rotary_emb.inv_freq.copy_(inv_freq)
 
-    # TODO: Init TT MoE buffers
-    # I think .to_empty() on gpu by default fills 0 so we are ok but this might not be guaranteed behavior
+    # Initialize TT MoE buffers (tokens_per_expert is non-persistent and must be zeroed)
+    for name, buffer in model.named_buffers():
+        if name.startswith("model.layers.") and name.endswith("mlp.tokens_per_expert"):
+            buffer.zero_()
 
 
 def reshard_module(model: nn.Module):
@@ -300,22 +302,26 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
     get_logger().info(f"Compiled {len(model.model.layers)} layers (fullgraph={compile_config.fullgraph})")
 
 
-def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
+def setup_model(config: ModelConfig, parallel_dims: ParallelDims, skip_load_weights: bool = False) -> nn.Module:
     if config.attn == "flash_attention_3" and not is_flash_attn_3_available():
         raise ValueError(
             "Flash attention 3 is only supported if the flash_attn_3 package is installed. Install with `uv pip install 'flash-attn-3 @ git+https://github.com/Dao-AILab/flash-attention.git@main#subdirectory=hopper' --no-build-isolation`"
         )
 
     logger = get_logger()
+
+    # When resuming from checkpoint, always use meta device to skip loading base weights
+    use_meta = config.load_using_meta or skip_load_weights
+
     # Get model from specified device
     model = get_model(
         config,
-        device=torch.device("meta" if config.load_using_meta else "cpu"),
+        device=torch.device("meta" if use_meta else "cpu"),
         dtype=DTYPE_MAP[config.optimization_dtype],
     )
 
-    # Reload the model to CPU if we cannot load from
-    if config.load_using_meta and not can_load_dcp_from_hf(model):
+    # Reload the model to CPU if we cannot load from meta device (only when not skipping weights)
+    if use_meta and not can_load_dcp_from_hf(model) and not skip_load_weights:
         logger.warning("Cannot load model from meta device. Loading model to CPU instead.")
         model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype])
 
@@ -331,8 +337,16 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
 
     setup_fsdp(model, config, parallel_dims)
 
-    if config.load_using_meta and can_load_dcp_from_hf(model):
-        load_dcp_from_hf(model, config)
+    if use_meta:
+        if skip_load_weights:
+            # When resuming from checkpoint, just allocate empty tensors on GPU
+            # The checkpoint loading will fill in the weights
+            logger.info("Skipping base weight loading (will load from checkpoint)")
+            model.to_empty(device="cuda")
+            torch.distributed.barrier()
+            fix_model_post_empty(model)
+        elif can_load_dcp_from_hf(model):
+            load_dcp_from_hf(model, config)
 
     logger.debug(f"Model signature: {get_module_signature(model, compress=True)}")
     return model
