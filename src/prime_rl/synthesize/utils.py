@@ -125,7 +125,7 @@ async def generate_and_save_group(
         states = await generate_group(client, env, model_name, example, rollouts_per_example, sampling_args)
         await asyncio.gather(*[make_and_save_result(state, save_file, reasoning_field) for state in states])
         pbar.update(rollouts_per_example)
-    except BaseException as e:
+    except Exception as e:
         logger.error(f"Error generating synthetic data for group {index}: {repr(e)}")
 
 
