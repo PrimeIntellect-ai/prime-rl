@@ -15,3 +15,5 @@ id = "wordle"
 
 [orchestrator.sampling]
 max_tokens = 1024
+
+[trainer]
