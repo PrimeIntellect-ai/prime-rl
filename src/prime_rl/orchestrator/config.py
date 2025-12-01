@@ -49,6 +49,8 @@ class SamplingConfig(BaseConfig):
         ),
     ] = None
 
+    # Strictly speaking, extra_body is not a sampling parameter, but it is the
+    # easiest way to pass arbitrary extra parameters to the server via verifiers
     extra_body: Annotated[
         dict[str, Any],
         Field(
@@ -125,6 +127,8 @@ class EvalSamplingConfig(BaseConfig):
         ),
     ] = None
 
+    # Strictly speaking, extra_body is not a sampling parameter, but it is the
+    # easiest way to pass arbitrary extra parameters to the server via verifiers
     extra_body: Annotated[
         dict[str, Any],
         Field(
