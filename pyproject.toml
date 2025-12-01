@@ -39,6 +39,7 @@ dependencies = [
     "prime-evals>=0.1.4",
     "prime-sandboxes>=0.2.4",
     "flash-attn>=2.8.3",
+    "weave>=0.51.56",
 ]
 
 [project.scripts]
