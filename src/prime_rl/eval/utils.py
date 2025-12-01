@@ -12,7 +12,7 @@ from verifiers import load_environment
 from verifiers.utils.eval_utils import get_hf_hub_dataset_name, make_dataset, sanitize_metadata, save_to_disk
 
 from prime_rl.eval.config import OfflineEvalConfig
-from prime_rl.orchestrator.config import ClientConfig, EvalConfig, EvalSamplingConfig, EvalSaveConfig, ModelConfig
+from prime_rl.orchestrator.config import EvalConfig, EvalSamplingConfig, EvalSaveConfig, ModelConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor import get_monitor
 from prime_rl.utils.utils import capitalize, get_eval_dir, get_step_path
@@ -37,7 +37,7 @@ def compute_pass_at_k(rewards: list[int]) -> dict[str, float]:
     return {f"pass@{k}": float(np.mean(pass_rates))}
 
 
-def prepare_sampling_args(sampling_config: EvalSamplingConfig, client_config: ClientConfig) -> dict[str, Any]:
+def prepare_sampling_args(sampling_config: EvalSamplingConfig) -> dict[str, Any]:
     """Prepare sampling args for the client."""
     # Initialize sampling args
     sampling_args: dict[str, Any] = {}
@@ -52,21 +52,20 @@ def prepare_sampling_args(sampling_config: EvalSamplingConfig, client_config: Cl
     if sampling_config.reasoning_effort is not None:
         sampling_args["reasoning_effort"] = sampling_config.reasoning_effort
 
-    if client_config.server_type == "vllm":
-        # Always return logprobs and token IDs from vLLM server
-        extra_body: dict[str, Any] = {"return_token_ids": True, "logprobs": True}
+    # Always return logprobs and token IDs from vLLM server
+    extra_body: dict[str, Any] = {**sampling_config.extra_body, "return_token_ids": True, "logprobs": True}
 
-        # Apply vLLM-specific sampling arguments, if specified
-        if sampling_config.top_k is not None:
-            extra_body["top_k"] = sampling_config.top_k
-        if sampling_config.min_p is not None:
-            extra_body["min_p"] = sampling_config.min_p
-        if sampling_config.min_tokens is not None:
-            extra_body["min_tokens"] = sampling_config.min_tokens
-        if sampling_config.repetition_penalty is not None:
-            extra_body["repetition_penalty"] = sampling_config.repetition_penalty
+    # Apply vLLM-specific sampling arguments, if specified
+    if sampling_config.top_k is not None:
+        extra_body["top_k"] = sampling_config.top_k
+    if sampling_config.min_p is not None:
+        extra_body["min_p"] = sampling_config.min_p
+    if sampling_config.min_tokens is not None:
+        extra_body["min_tokens"] = sampling_config.min_tokens
+    if sampling_config.repetition_penalty is not None:
+        extra_body["repetition_penalty"] = sampling_config.repetition_penalty
 
-        sampling_args["extra_body"] = extra_body
+    sampling_args["extra_body"] = extra_body
 
     return sampling_args
 
@@ -82,7 +81,6 @@ async def run_eval(
     ckpt_step: int,
     model_config: ModelConfig,
     sampling_config: EvalSamplingConfig,
-    client_config: ClientConfig,
     save_config: EvalSaveConfig,
     evals_client: AsyncEvalsClient,
     step: int | None = None,
@@ -96,7 +94,7 @@ async def run_eval(
     env_name_or_id = env_name or env_id
     env = load_environment(env_id, **env_args)
     dataset = env.get_eval_dataset(n=num_examples)
-    sampling_args = prepare_sampling_args(sampling_config, client_config)
+    sampling_args = prepare_sampling_args(sampling_config)
 
     logger.info(
         f"Evaluating {env_name_or_id} ({num_examples=}, {rollouts_per_example=}) {'with default args' if env_args == {} else f'with args {env_args}'}"
@@ -225,7 +223,6 @@ async def run_evals(
     eval_config: EvalConfig | OfflineEvalConfig,
     model_config: ModelConfig,
     sampling_config: EvalSamplingConfig,
-    client_config: ClientConfig,
     evals_client: AsyncEvalsClient,
     output_dir: Path,
     ckpt_step: int,
@@ -243,7 +240,6 @@ async def run_evals(
                 output_dir=output_dir,
                 model_config=model_config,
                 sampling_config=sampling_config,
-                client_config=client_config,
                 save_config=eval_config.save,
                 evals_client=evals_client,
                 ckpt_step=ckpt_step,
