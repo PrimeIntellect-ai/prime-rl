@@ -1,5 +1,0 @@
-max_concurrent = 256
-
-[[env]]
-id = "deepswe"
-args = { dataset_name = "PrimeIntellect/SWE-smith-First-Half" }
