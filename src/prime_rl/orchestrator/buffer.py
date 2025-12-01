@@ -152,14 +152,13 @@ class Buffer:
             return []
 
         weights = [self.env_probabilities[self.env_names.index(env)] for env in non_empty]
-        total_weight = sum(weights)
-        if total_weight == 0:
-            # All remaining environments correspond to zero-ratio entries, fall back to uniform sampling.
-            normalized_weights = [1.0] * len(non_empty)
-        else:
-            normalized_weights = [w / total_weight for w in weights]
+        if sum(weights) == 0:
+            raise RuntimeError(
+                f"All environments with problems have zero sampling weight. "
+                f"Non-empty environments: {non_empty}, but their configured ratios are all 0."
+            )
         sampled = []
-        for env_name in random.choices(non_empty, weights=normalized_weights, k=n):
+        for env_name in random.choices(non_empty, weights=weights, k=n):
             sampled.append(random.choice(list(self.problem_buffer[env_name].values())))
         return sampled
 
