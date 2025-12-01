@@ -68,7 +68,7 @@ def train(config: RLTrainerConfig):
 
     # Setup heartbeat (only on rank 0)
     heart = None
-    if config.heartbeat is not None and world.rank == 0:
+    if config.heartbeat is not None and world.is_master:
         logger.info("Initializing heartbeat")
         heart = Heartbeat(config.heartbeat.url)
 
