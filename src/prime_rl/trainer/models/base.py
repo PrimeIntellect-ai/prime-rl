@@ -51,7 +51,7 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         raise NotImplementedError(f"convert_to_hf is not implemented for {cls.__name__}")
 
     @classmethod
-    def convert_to_prime(state_dict: dict[str, Tensor]) -> None:
+    def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> None:
         """
         Convert state dict from HuggingFace format to PrimeRL training format in-place.
 
