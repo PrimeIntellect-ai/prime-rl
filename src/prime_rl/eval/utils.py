@@ -52,8 +52,7 @@ def prepare_sampling_args(sampling_config: EvalSamplingConfig) -> dict[str, Any]
     if sampling_config.reasoning_effort is not None:
         sampling_args["reasoning_effort"] = sampling_config.reasoning_effort
 
-    # Always return logprobs and token IDs from vLLM server
-    extra_body: dict[str, Any] = {**sampling_config.extra_body, "return_token_ids": True, "logprobs": True}
+    extra_body: dict[str, Any] = sampling_config.extra_body
 
     # Apply vLLM-specific sampling arguments, if specified
     if sampling_config.top_k is not None:
