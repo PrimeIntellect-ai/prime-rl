@@ -36,7 +36,7 @@ For example, it may be that the LLM, during decoding, produced the number `11` a
 - If we choose to add `1` and `1`, the logprobs from turn 2 might be off because the attention of the trainer and inference LLM is different.
 - If we choose to add `11`, the logprobs from turn 1 might be off because `11` has a different likelihood than `1` and `1`.
 
-In moderately complex multi-turn environments (e.g. `wordle` or `wiki-search`) we have found that our Icepop-style double-sided masking is able to mitigate such discrepancies, but it is unclear whether remains robust for large-scale agentic training in environments that are many hundreds of turns long. A simple solution to this problem is given by allowing for token-in requests, but this is neither standard OAI nor vLLM spec, which is why it is not easily supported yet.
+In moderately complex multi-turn environments (e.g. `wordle` or `wiki-search`) we have found that our Icepop-style double-sided masking is able to mitigate such discrepancies, but it is unclear whether it remains robust for large-scale agentic training in environments that are many hundreds of turns long. A simple solution to this problem is given by allowing for token-in requests, but this is neither standard OAI nor vLLM spec, which is why it is not easily supported yet.
 
 ### Arbitrary Chat Templates
 
