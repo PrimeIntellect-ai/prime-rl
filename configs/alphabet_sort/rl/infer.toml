@@ -1,5 +1,0 @@
-[model]
-name = "Qwen/Qwen2.5-3B-Instruct"
-
-[parallel]
-dp = 6

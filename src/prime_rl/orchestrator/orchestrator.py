@@ -42,6 +42,7 @@ from prime_rl.utils.client import (
     setup_evals_client,
     update_weights,
 )
+from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
@@ -90,6 +91,12 @@ async def orchestrate(config: OrchestratorConfig):
         tokenizer=tokenizer,
         run_config=config,
     )
+
+    # Setup heartbeat (only on rank 0, orchestrator is single process)
+    heart = None
+    if config.heartbeat is not None:
+        logger.info("Initializing heartbeat")
+        heart = Heartbeat(config.heartbeat.url)
 
     # Load environment and extract dataset
     logger.info(
@@ -409,17 +416,9 @@ async def orchestrate(config: OrchestratorConfig):
         # Log metrics to W&B
         monitor.log(to_log)
 
-        # Log samples and distributions to W&B table if enabled
+        # Log samples to W&B table if enabled
         subset_train_rollouts = random.sample(train_rollouts, min(8, len(train_rollouts)))
         monitor.log_samples(subset_train_rollouts, step=progress.step)
-
-        distributions = {
-            "rewards": results_df.reward.tolist(),
-            "problem_rewards": results_df.groupby("example_id").reward.mean().tolist(),
-        }
-
-        # Log distributions to W&B table
-        monitor.log_distributions(distributions=distributions, step=progress.step)
 
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} |{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.groupby('example_id').seq_len.mean().mean():.1f} tokens/sample | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
         logger.success(step_message)
@@ -427,6 +426,10 @@ async def orchestrate(config: OrchestratorConfig):
         # Increment step
         progress.step += 1
         is_first_step = False
+
+        # Send heartbeat if configured
+        if heart is not None:
+            heart.beat()
 
     if config.eval:
         logger.info("Running final evals")
@@ -442,9 +445,8 @@ async def orchestrate(config: OrchestratorConfig):
             step=progress.step,
         )
 
-    # Log final (immutable) samples and distributions to W&B table
+    # Log final (immutable) samples to W&B table
     monitor.log_final_samples()
-    monitor.log_final_distributions()
     monitor.save_final_summary()
 
     # Write final checkpoint
