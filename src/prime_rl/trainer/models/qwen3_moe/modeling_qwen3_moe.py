@@ -16,17 +16,17 @@
 from typing import Optional, Union
 
 import torch
-from torch import nn
+from torch import Tensor, nn
 from transformers.cache_utils import Cache
 from transformers.generation import GenerationMixin
 from transformers.modeling_layers import (
     GradientCheckpointingLayer,
 )
 from transformers.modeling_outputs import MoeCausalLMOutputWithPast, MoeModelOutputWithPast
-from transformers.modeling_utils import PreTrainedModel
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple, logging
 
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
@@ -116,7 +116,7 @@ class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
 
 
 @auto_docstring
-class Qwen3MoePreTrainedModel(PreTrainedModel):
+class Qwen3MoePreTrainedModel(PreTrainedModelPrimeRL):
     config: Qwen3MoeConfig
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
@@ -131,10 +131,35 @@ class Qwen3MoePreTrainedModel(PreTrainedModel):
         "hidden_states": Qwen3MoeDecoderLayer,
     }
 
-    convert_tt_layer_to_hf = staticmethod(convert_tt_layer_to_hf)
-    convert_tt_to_hf_moe = staticmethod(convert_tt_to_hf_moe)
-    convert_hf_layer_to_tt = staticmethod(convert_hf_layer_to_tt)
-    convert_hf_to_tt_moe = staticmethod(convert_hf_to_tt_moe)
+    @classmethod
+    def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
+        """Check if the state dict contains MoE layers in HuggingFace format."""
+        return any("mlp.experts.1.up_proj" in module_name for module_name in state_dict.keys())
+
+    @classmethod
+    def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
+        """Check if the state dict contains MoE layers in PrimeRL training format."""
+        return any("mlp.experts.w1" in module_name for module_name in state_dict.keys())
+
+    @classmethod
+    def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> None:
+        """Convert MoE weights from PrimeRL training format to HuggingFace format in-place."""
+        convert_tt_to_hf_moe(state_dict)
+
+    @classmethod
+    def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> None:
+        """Convert MoE weights from HuggingFace format to PrimeRL training format in-place."""
+        convert_hf_to_tt_moe(state_dict)
+
+    @classmethod
+    def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> None:
+        """Convert a single layer's MoE weights from PrimeRL format to HuggingFace format in-place."""
+        convert_tt_layer_to_hf(state_dict, layer_idx)
+
+    @classmethod
+    def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> None:
+        """Convert a single layer's MoE weights from HuggingFace format to PrimeRL format in-place."""
+        convert_hf_layer_to_tt(state_dict, layer_idx)
 
 
 @auto_docstring
@@ -402,6 +427,19 @@ class Qwen3MoeForCausalLM(Qwen3MoePreTrainedModel, GenerationMixin):
             attentions=outputs.attentions,
             router_logits=outputs.router_logits,
         )
+
+    def init_buffers_post_meta(self):
+        buffer_names = [name for name, _ in self.named_buffers()]
+        # HF standard transformer model
+        if "model.rotary_emb.inv_freq" in buffer_names:
+            rotary_emb = self.model.rotary_emb
+            inv_freq, rotary_emb.attention_scaling = rotary_emb.rope_init_fn(
+                rotary_emb.config, rotary_emb.inv_freq.device
+            )
+            rotary_emb.inv_freq.copy_(inv_freq)
+
+        # TODO: Init TT MoE buffers
+        # I think .to_empty() on gpu by default fills 0 so we are ok but this might not be guaranteed behavior
 
 
 __all__ = [

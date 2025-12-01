@@ -20,11 +20,9 @@ from transformers.utils.import_utils import is_flash_attn_3_available
 
 from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, ModelConfig, TokenizerConfig
 from prime_rl.trainer.lora import apply_lora_to_model
-from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL
+from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL, PreTrainedModelPrimeRL
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.weights import (
-    has_hf_moe_layers,
-    has_tt_moe_layers,
     load_state_dict,
     save_state_dict,
 )
@@ -194,35 +192,36 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     model_state_dict = model.state_dict()
 
     # Dynamically convert between different weight formats if needed
-    if has_hf_moe_layers(snapshot_state_dict) and has_tt_moe_layers(model_state_dict):
-        logger.warning(
-            "Found HF weight format in snapshot state dict and TT weight format in model state dict. Trying to auto-convert..."
-        )
-        snapshot_path = snapshot_path / "tt"
-        if snapshot_path.exists():
-            logger.debug(f"Conversion found at {snapshot_path}.")
-        else:
-            if get_world().is_master:
-                logger.debug(
-                    f"Converting snapshot state dict to TT format and saving to {snapshot_path} on master rank. This is a one-time operation."
-                )
-                model.convert_hf_to_tt_moe(snapshot_state_dict)
-                save_state_dict(snapshot_state_dict, snapshot_path)
+    if isinstance(model, PreTrainedModelPrimeRL):
+        if model.is_hf_state_dict(snapshot_state_dict) and model.is_prime_state_dict(model_state_dict):
+            logger.warning(
+                "Found HF weight format in snapshot state dict and PrimeRL weight format in model state dict. Trying to auto-convert..."
+            )
+            snapshot_path = snapshot_path / "prime"
+            if snapshot_path.exists():
+                logger.debug(f"Conversion found at {snapshot_path}.")
+            else:
+                if get_world().is_master:
+                    logger.debug(
+                        f"Converting snapshot state dict to PrimeRL format and saving to {snapshot_path} on master rank. This is a one-time operation."
+                    )
+                    model.convert_to_prime(snapshot_state_dict)
+                    save_state_dict(snapshot_state_dict, snapshot_path)
 
-    elif has_tt_moe_layers(snapshot_state_dict) and has_hf_moe_layers(model_state_dict):
-        logger.warning(
-            "Found TT weight format in snapshot state dict and HF weight format in model state dict. Trying to auto-convert..."
-        )
-        snapshot_path = snapshot_path / "hf"
-        if snapshot_path.exists():
-            logger.debug(f"Conversion found at {snapshot_path}.")
-        else:
-            if get_world().is_master:
-                logger.debug(
-                    f"Converting snapshot state dict to HF format and saving to {snapshot_path} on master rank. This is a one-time operation."
-                )
-                model.convert_tt_to_hf_moe(snapshot_state_dict)
-                save_state_dict(snapshot_state_dict, snapshot_path)
+        elif model.is_prime_state_dict(snapshot_state_dict) and model.is_hf_state_dict(model_state_dict):
+            logger.warning(
+                "Found PrimeRL weight format in snapshot state dict and HF weight format in model state dict. Trying to auto-convert..."
+            )
+            snapshot_path = snapshot_path / "hf"
+            if snapshot_path.exists():
+                logger.debug(f"Conversion found at {snapshot_path}.")
+            else:
+                if get_world().is_master:
+                    logger.debug(
+                        f"Converting snapshot state dict to HF format and saving to {snapshot_path} on master rank. This is a one-time operation."
+                    )
+                    model.convert_to_hf(snapshot_state_dict)
+                    save_state_dict(snapshot_state_dict, snapshot_path)
 
     # All ranks wait for master rank to finish conversion
     torch.distributed.barrier()

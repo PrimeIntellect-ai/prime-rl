@@ -25,16 +25,6 @@ from prime_rl.trainer.lora import (
 from prime_rl.utils.logger import get_logger
 
 
-def has_hf_moe_layers(state_dict: dict[str, Tensor]) -> bool:
-    """Whether the model contains MoE layers in HF format."""
-    return any("mlp.experts.1.up_proj" in module_name for module_name in state_dict.keys())
-
-
-def has_tt_moe_layers(state_dict: dict[str, Tensor]) -> bool:
-    """Whether the model contains MoE layers in TT format."""
-    return any("mlp.experts.w1" in module_name for module_name in state_dict.keys())
-
-
 def get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
     """Get the maximum number of layers in the model."""
     return max(int(i.split(".")[2]) for i in state_dict.keys() if "model.layers." in i) + 1

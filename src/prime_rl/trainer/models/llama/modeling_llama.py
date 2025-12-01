@@ -20,7 +20,7 @@
 from typing import Optional, Union
 
 import torch
-from torch import nn
+from torch import Tensor, nn
 from transformers.cache_utils import Cache
 from transformers.generation import GenerationMixin
 from transformers.modeling_layers import (
@@ -30,12 +30,12 @@ from transformers.modeling_outputs import (
     BaseModelOutputWithPast,
     CausalLMOutputWithPast,
 )
-from transformers.modeling_utils import PreTrainedModel
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple, logging
 from transformers.utils.deprecation import deprecate_kwarg
 
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
@@ -99,7 +99,7 @@ class LlamaDecoderLayer(GradientCheckpointingLayer):
 
 
 @auto_docstring
-class LlamaPreTrainedModel(PreTrainedModel):
+class LlamaPreTrainedModel(PreTrainedModelPrimeRL):
     config: LlamaConfig
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
@@ -114,6 +114,37 @@ class LlamaPreTrainedModel(PreTrainedModel):
     _can_record_outputs = {
         "hidden_states": LlamaDecoderLayer,
     }
+
+    # Llama models don't need format conversion - they use standard HF format for both training and inference
+    @classmethod
+    def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
+        """Check if the state dict is in HuggingFace format."""
+        return True
+
+    @classmethod
+    def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
+        """Check if the state dict is in PrimeRL training format."""
+        return True
+
+    @classmethod
+    def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> None:
+        """Convert state dict from PrimeRL training format to HuggingFace format in-place."""
+        pass
+
+    @classmethod
+    def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> None:
+        """Convert state dict from HuggingFace format to PrimeRL training format in-place."""
+        pass
+
+    @classmethod
+    def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> None:
+        """Convert a single layer's state dict from PrimeRL format to HuggingFace format in-place."""
+        pass
+
+    @classmethod
+    def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> None:
+        """Convert a single layer's state dict from HuggingFace format to PrimeRL format in-place."""
+        pass
 
 
 @auto_docstring
@@ -267,3 +298,13 @@ class LlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
+
+    def init_buffers_post_meta(self):
+        buffer_names = [name for name, _ in self.named_buffers()]
+        # HF standard transformer model
+        if "model.rotary_emb.inv_freq" in buffer_names:
+            rotary_emb = self.model.rotary_emb
+            inv_freq, rotary_emb.attention_scaling = rotary_emb.rope_init_fn(
+                rotary_emb.config, rotary_emb.inv_freq.device
+            )
+            rotary_emb.inv_freq.copy_(inv_freq)
