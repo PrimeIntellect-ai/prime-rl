@@ -1,6 +1,7 @@
 import asyncio
 import functools
 import os
+import subprocess
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -10,6 +11,7 @@ import torch
 import torch.distributed as dist
 import wandb
 
+from prime_rl.orchestrator.config import EnvConfig, EvalEnvConfig
 from prime_rl.utils.logger import get_logger
 
 
@@ -291,3 +293,24 @@ def mean_normalize(values: list[float] | list[int]) -> list[float]:
     """Mean-Normalize a list of values to 0-1."""
     sum_values = sum(values)
     return [value / sum_values if sum_values > 0 else 0 for value in values]
+
+
+def install_env(env_id: str) -> None:
+    """Install an environment in subprocess."""
+    logger = get_logger()
+    logger.info(f"Installing environment {env_id}")
+    install_cmd = ["uv", "run", "--no-sync", "prime", "env", "install", env_id]
+    result = subprocess.run(install_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        logger.error(f"Failed to install environment {env_id}: {result.stderr}")
+        raise RuntimeError(f"Failed to install environment {env_id}")
+    logger.info(f"Successfully installed environment {env_id}")
+
+
+def get_env_ids_to_install(env_configs: list[EnvConfig] | list[EvalEnvConfig]) -> set[str]:
+    """Get the list of environment IDs to install."""
+    env_ids_to_install = set()
+    for env_config in env_configs:
+        if "/" in env_config.id:
+            env_ids_to_install.add(env_config.id)
+    return env_ids_to_install

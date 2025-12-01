@@ -213,6 +213,13 @@ class EvalEnvConfig(EnvConfig):
         ),
     ] = None
 
+    skip_first: Annotated[
+        int,
+        Field(
+            description="Number of examples to skip from the beginning of the dataset.",
+        ),
+    ] = 0
+
 
 class ValConfig(BaseConfig):
     """Configures the validation of the model."""

@@ -12,10 +12,10 @@ class OfflineEvalConfig(EvalConfig, BaseSettings):
     """Configures evaluation."""
 
     # The client configuration
-    client: ClientConfig = ClientConfig(timeout=36000)
+    client: ClientConfig = ClientConfig(timeout=36000, base_url=["https://api.openai.com/v1"])
 
     # The model configuration
-    model: ModelConfig = ModelConfig()
+    model: ModelConfig = ModelConfig(name="gpt-4.1-mini")
 
     # The wandb configuration
     wandb: WandbConfig | None = None
