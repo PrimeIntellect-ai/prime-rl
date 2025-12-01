@@ -85,8 +85,8 @@ def make_result(state: vf.State, reasoning_field: str) -> dict:
         "generation_ms": state["timing"]["generation_ms"],
         "scoring_ms": state["timing"]["scoring_ms"],
         "total_ms": state["timing"]["total_ms"],
-        "info": state["info"],
-        "answer": state["answer"],
+        "info": state.get("info", {}),
+        "answer": state.get("answer", ""),
     }
     for metric_name, metric_value in state["metrics"].items():
         result_dict[metric_name] = metric_value
