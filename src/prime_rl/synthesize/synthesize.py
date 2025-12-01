@@ -58,6 +58,7 @@ async def synthesize(config: SynthesizeConfig):
                 env_args=env.args,
                 num_examples=env.num_examples or config.num_examples,
                 rollouts_per_example=env.rollouts_per_example or config.rollouts_per_example,
+                reasoning_field=config.reasoning_field,
                 skip_first=env.skip_first,
                 output_dir=config.output_dir,
                 model_config=config.model,

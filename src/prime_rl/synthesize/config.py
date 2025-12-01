@@ -20,6 +20,13 @@ class SynthesizeConfig(EvalConfig, BaseSettings):
     # The logging configuration
     log: LogConfig = LogConfig()
 
+    reasoning_field: Annotated[
+        str,
+        Field(
+            description="The field in the raw model response that contains the reasoning content. Defaults to 'reasoning_content', which is the default for vLLM when serving a model with a reasoning parser. Other APIs (e.g. DeepSeek, GLM, etc.) may use different field names.",
+        ),
+    ] = "reasoning_content"
+
     output_dir: Annotated[
         Path,
         Field(

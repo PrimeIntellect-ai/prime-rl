@@ -51,19 +51,16 @@ def prepare_sampling_args(sampling_config: EvalSamplingConfig, client_config: Cl
     return sampling_args
 
 
-def serialize_oai_tools(oai_tools) -> str:
-    return json.dumps(oai_tools)
-
-
 def merge_reasoning_content(
     completion: list[vf.ChatMessage],
     trajectory: list[vf.TrajectoryStep],
     reasoning_field: str = "reasoning_content",
 ) -> list[vf.ChatMessage]:
-    """Temporary hotfix to also save reasoning content if"""
+    """Parse reasoning content from the raw model response and add it to the completion."""
     # Parse responses from trajectory
     responses: list[vf.ModelResponse] = [trajectory_step["response"] for trajectory_step in trajectory]
     assistant_messages: list[vf.ChatMessage] = [c for c in completion if c.get("role") == "assistant"]
+    assert len(assistant_messages) == len(responses), "Number of assistant messages and responses must match"
 
     for assistant_message, response in zip(assistant_messages, responses):
         assert isinstance(response, vf.ChatCompletion)
@@ -74,9 +71,9 @@ def merge_reasoning_content(
     return completion
 
 
-def make_result(state: vf.State, save_file: Path):
+def make_result(state: vf.State, reasoning_field: str) -> dict:
     """Translates a finished rollout state to a synthetic dataset row."""
-    completion = merge_reasoning_content(state["completion"], state["trajectory"])
+    completion = merge_reasoning_content(state["completion"], state["trajectory"], reasoning_field)
     result_dict = {
         "example_id": state["example_id"],
         "prompt": state["prompt"],
@@ -92,22 +89,21 @@ def make_result(state: vf.State, save_file: Path):
     for metric_name, metric_value in state["metrics"].items():
         result_dict[metric_name] = metric_value
 
-    # Add tools and trajectory columns
     result_dict["oai_tools"] = json.dumps(state["oai_tools"])
 
     return result_dict
 
 
 async def save_result(result_dict: dict, save_file: Path):
-    """Saves a finished rollout state to a file."""
+    """Saves a finished rollout to a file."""
     async with WRITE_LOCK:
         async with aiofiles.open(save_file, "a") as f:
             await f.write(json.dumps(result_dict) + "\n")
 
 
-async def make_and_save_result(state: vf.State, save_file: Path):
-    """Makes a finished rollout state to a synthetic dataset row and saves it to a file."""
-    result_dict = await asyncio.to_thread(make_result, state, save_file)
+async def make_and_save_result(state: vf.State, save_file: Path, reasoning_field: str):
+    """Translates and saves a finished rollout state to a synthetic dataset row."""
+    result_dict = await asyncio.to_thread(make_result, state, reasoning_field)
     await save_result(result_dict, save_file)
 
 
@@ -120,16 +116,16 @@ async def generate_and_save_group(
     rollouts_per_example: int,
     sampling_args: dict,
     save_file: Path,
+    reasoning_field: str,
     pbar: tqdm,
-):
+) -> None:
     logger = get_logger()
     try:
         states = await generate_group(client, env, model_name, example, rollouts_per_example, sampling_args)
+        await asyncio.gather(*[make_and_save_result(state, save_file, reasoning_field) for state in states])
         pbar.update(rollouts_per_example)
-        await asyncio.gather(*[make_and_save_result(state, save_file) for state in states])
-    except:
-        logger.error(f"Error generating synthetic data for group {index}")
-        return
+    except BaseException as e:
+        logger.error(f"Error generating synthetic data for group {index}: {repr(e)}")
 
 
 async def generate_synthetic_data(
@@ -140,15 +136,17 @@ async def generate_synthetic_data(
     num_examples: int,
     rollouts_per_example: int,
     skip_first: int,
+    reasoning_field: str,
     output_dir: Path,
     model_config: ModelConfig,
     sampling_config: EvalSamplingConfig,
     client_config: ClientConfig,
 ) -> None:
+    """Generates synthetic data for an environment."""
     # Get the logger
     logger = get_logger()
 
-    # Load the eval environment
+    # Load the environment
     env_name_or_id = env_name or env_id
     env = load_environment(env_id, **env_args)
     dataset = env.get_dataset(n=num_examples)
@@ -165,11 +163,19 @@ async def generate_synthetic_data(
     total_rollouts = len(dataset) * rollouts_per_example
     pbar = tqdm(total=total_rollouts, desc="Generating synthetic data")
 
-    # Run async generation and scoring
     await asyncio.gather(
         *[
             generate_and_save_group(
-                client, env, model_config.name, example, index, rollouts_per_example, sampling_args, path_to_save, pbar
+                client,
+                env,
+                model_config.name,
+                example,
+                index,
+                rollouts_per_example,
+                sampling_args,
+                path_to_save,
+                reasoning_field,
+                pbar,
             )
             for index, (client, example) in enumerate(zip(cycle(clients), dataset.to_list()))
         ]
