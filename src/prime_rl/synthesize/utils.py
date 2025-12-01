@@ -51,6 +51,7 @@ def prepare_sampling_args(sampling_config: EvalSamplingConfig, client_config: Cl
     return sampling_args
 
 
+# TODO: This is a hotfix for as long as verifiers doesn't support reasoning content parsing
 def merge_reasoning_content(
     completion: list[vf.ChatMessage],
     trajectory: list[vf.TrajectoryStep],
@@ -71,6 +72,7 @@ def merge_reasoning_content(
     return completion
 
 
+# TODO: Move to verifiers to avoid code drift
 def make_result(state: vf.State, reasoning_field: str) -> dict:
     """Translates a finished rollout state to a synthetic dataset row."""
     completion = merge_reasoning_content(state["completion"], state["trajectory"], reasoning_field)
