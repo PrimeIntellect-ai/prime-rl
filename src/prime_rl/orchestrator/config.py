@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import AliasChoices, BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from prime_rl.utils.config import ClientConfig, LogConfig, ModelConfig, WandbMonitorConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
@@ -301,10 +301,9 @@ class BufferConfig(BaseConfig):
         list[float] | None,
         Field(
             description=(
-                "Ratios for sampling from each environment. Accepts the legacy key 'env_probabilities'. "
+                "Ratios for sampling from each environment. "
                 "If None, samples uniformly across all available problems (not environments)."
             ),
-            validation_alias=AliasChoices("env_ratios", "env_probabilities"),
         ),
     ] = None
 
@@ -343,7 +342,7 @@ class BufferConfig(BaseConfig):
     online_difficulty_filtering: Annotated[
         bool,
         Field(
-            description="Whether to filter rollouts based on difficulty. If True, only rollouts with average reward 0.0 or 1.0 are added to the buffer.",
+            description="Whether to filter rollouts based on difficulty. If True, rollouts with average reward 0.0 or 1.0 are not added to the buffer.",
         ),
     ] = False
 

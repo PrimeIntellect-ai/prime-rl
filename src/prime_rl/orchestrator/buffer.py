@@ -24,6 +24,7 @@ class Buffer:
             random.seed(self.config.seed)
 
         assert "example_id" in dataset.column_names, "The dataset must contain a `example_id` column."
+        assert len(dataset) > 0, "The dataset must contain at least one problem."
         assert isinstance(dataset["example_id"][0], int), "The `example_id` column must be of type int."
         assert len(set(dataset["example_id"])) == len(dataset), "The `example_id` column must be unique."
         self.dataset = dataset
@@ -35,14 +36,15 @@ class Buffer:
                 f"env_ratios length ({len(self.config.env_ratios)}) must match "
                 f"number of environments ({len(self.env_names)})"
             )
+            assert all(ratio >= 0 for ratio in self.config.env_ratios), "All env_ratios must be non-negative."
+            assert not all(ratio == 0 for ratio in self.config.env_ratios), "At least one env_ratio must be non-zero."
             self.env_probabilities = mean_normalize(self.config.env_ratios) # Convert ratios to probabilities
         else:
             # Count problems per environment for uniform sampling across problems
             problem_counts = {env: 0 for env in self.env_names}
             for problem in dataset:
                 env_name = problem["task"]
-                if env_name in problem_counts:
-                    problem_counts[env_name] += 1
+                problem_counts[env_name] += 1
             counts = [problem_counts[env] for env in self.env_names]
             self.env_probabilities = mean_normalize(counts)
 
@@ -112,15 +114,16 @@ class Buffer:
             else:
                 self.problem_buffer[env_name][example_id] = problem_dict
 
-        # Load rollouts, filtering out removed environments
+        # Load rollouts, filtering out removed environments and problems
         rollouts_path = path / "rollouts"
         self.rollout_buffer = []
         if rollouts_path.exists():
             rollouts_dataset = load_from_disk(rollouts_path)
+            valid_example_ids = set(self.dataset["example_id"])
             env_names_set = set(self.env_names)
             for row in rollouts_dataset:
                 state = from_serializable_state(cast(dict, row))
-                if state["task"] in env_names_set:
+                if state["task"] in env_names_set and state["example_id"] in valid_example_ids:
                     self.rollout_buffer.append(state)
 
         self.convert_difficulty_pools()
@@ -179,14 +182,12 @@ class Buffer:
             if self.config.online_difficulty_filtering:
                 if avg_reward == 0.0:
                     self.num_rollouts_per_pool[env_name]["hard"] += len(example_rollouts)
+                    continue
                 elif avg_reward == 1.0:
                     self.num_rollouts_per_pool[env_name]["easy"] += len(example_rollouts)
-                else:
-                    self.num_rollouts_per_pool[env_name]["normal"] += len(example_rollouts)
-                    self.rollout_buffer.extend(example_rollouts)
-            else:
-                self.num_rollouts_per_pool[env_name]["normal"] += len(example_rollouts)
-                self.rollout_buffer.extend(example_rollouts)
+                    continue
+            self.num_rollouts_per_pool[env_name]["normal"] += len(example_rollouts)
+            self.rollout_buffer.extend(example_rollouts)
 
     def sample_rollouts(self, n: int) -> list[vf.State]:
         """Samples the latest `n` rollouts from the buffer."""
@@ -199,7 +200,7 @@ class Buffer:
         metrics = {}
 
         for env_name in self.env_names:
-            env_suffix = f"/{env_name}" if len(self.env_names) > 1 else ""
+            env_suffix = f"/{env_name}"
             problems = self.num_problems_per_pool[env_name]
             rollouts = self.num_rollouts_per_pool[env_name]
             num_problems = sum(problems.values())
