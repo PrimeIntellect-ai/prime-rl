@@ -13,7 +13,8 @@ name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
 [wandb]
 
 [[env]]
-id = "acereason-math"
+id = "single-turn-math"
+args = { dataset_name = "nvidia/AceReason-Math", dataset_subset = "default", question_key = "problem" }
 
 [wandb.log_extras]
 interval = 50
