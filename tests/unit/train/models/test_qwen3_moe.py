@@ -35,7 +35,7 @@ def get_model_pairs():
     with torch.no_grad():
         state_dict = hf_model.state_dict()
         prime_state_keys = prime_model.state_dict().keys()
-        prime_model.convert_hf_to_tt_moe(state_dict)
+        prime_model.convert_to_prime(state_dict)
         prime_model.load_state_dict(state_dict)
     assert set(prime_state_keys) - set(state_dict.keys()) == set()
     return hf_model, prime_model
