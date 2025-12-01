@@ -151,7 +151,13 @@ async def generate_synthetic_data(
     # Load the environment
     env_name_or_id = env_name or env_id
     env = load_environment(env_id, **env_args)
-    dataset = env.get_dataset(n=num_examples)
+    try:
+        dataset = env.get_dataset(n=num_examples)
+    except ValueError:
+        logger.error(
+            f"Could not find a training dataset for {env_name_or_id}. Generating synthetic data is only supported for environments with a training dataset."
+        )
+        raise
     if skip_first > 0:
         dataset = dataset.skip(skip_first)
     sampling_args = prepare_sampling_args(sampling_config, client_config)
