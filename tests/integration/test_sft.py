@@ -3,7 +3,7 @@ from typing import Callable
 
 import pytest
 
-from tests import Command, Environment, ProcessResult
+from tests.integration.conftest import Command, Environment, ProcessResult, check_loss_goes_down, check_zero_return_code
 
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
 
@@ -25,26 +25,15 @@ def sft_process(
     branch_name: str,
     commit_hash: str,
 ) -> ProcessResult:
+    """Fixture for running SFT CI integration test"""
     wandb_name = f"{branch_name}-{commit_hash}"
     sft_cmd = ["uv", "run", "sft", "@", "configs/ci/integration/sft/regular.toml"]
 
     return run_process(
-        sft_cmd
-        + [
-            "--wandb.project",
-            wandb_project,
-            "--wandb.name",
-            wandb_name,
-            "--output-dir",
-            output_dir.as_posix(),
-        ],
+        sft_cmd + ["--wandb.project", wandb_project, "--wandb.name", wandb_name, "--output-dir", output_dir.as_posix()],
         ENV,
         TIMEOUT,
     )
-
-
-def test_no_error(sft_process: ProcessResult):
-    assert sft_process.returncode == 0, f"SFT process failed with return code {sft_process.returncode}"
 
 
 @pytest.fixture
@@ -56,6 +45,7 @@ def sft_resume_process(
     branch_name: str,
     commit_hash: str,
 ) -> ProcessResult:
+    """Fixture for resuming SFT CI integration test"""
     wandb_name = f"{branch_name}-{commit_hash}-resume"
     sft_resume_cmd = ["uv", "run", "sft", "@", "configs/ci/integration/sft/resume.toml"]
 
@@ -74,7 +64,21 @@ def sft_resume_process(
     )
 
 
+def test_no_error(sft_process: ProcessResult):
+    """Tests that the SFT process does not fail."""
+    check_zero_return_code(sft_process)
+
+
+def test_loss_goes_down(sft_process: ProcessResult):
+    """Tests that the loss goes down in the SFT process"""
+    check_loss_goes_down(sft_process)
+
+
 def test_no_error_resume(sft_resume_process: ProcessResult):
-    assert sft_resume_process.returncode == 0, (
-        f"SFT resume process failed with return code {sft_resume_process.returncode}"
-    )
+    """Tests that the SFT resume process has a zero return code"""
+    check_zero_return_code(sft_resume_process)
+
+
+def test_loss_goes_down_resume(sft_resume_process: ProcessResult):
+    """Tests that the loss goes down in the SFT resume process"""
+    check_loss_goes_down(sft_resume_process)

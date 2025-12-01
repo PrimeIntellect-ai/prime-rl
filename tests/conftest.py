@@ -1,31 +1,21 @@
 import atexit
-import concurrent.futures
 import os
 import shutil
 import signal
 import socket
 import subprocess
 from pathlib import Path
-from typing import Callable, Generator
+from typing import Generator
 
 import pytest
-from huggingface_hub import HfApi
 
 from prime_rl.trainer.world import reset_world
 from prime_rl.utils.logger import reset_logger, setup_logger
 
-TIMEOUT = 120
-
-
-Environment = dict[str, str]
-Command = list[str]
-
 
 @pytest.fixture(autouse=True)
 def setup_logging():
-    """
-    Fixture to set and reset the logger after each test.
-    """
+    """Auto-setup logger across tests"""
     setup_logger("debug")
     yield
     reset_logger()
@@ -33,9 +23,7 @@ def setup_logging():
 
 @pytest.fixture(autouse=True)
 def setup_env():
-    """
-    Fixture to reset environment variables after each test.
-    """
+    """Reset environment variables across tests"""
     original_env = dict(os.environ)
     yield
     os.environ.clear()
@@ -44,99 +32,18 @@ def setup_env():
 
 @pytest.fixture(autouse=True)
 def setup_world():
-    """
-    Fixture to reset the world info after each test.
-    """
+    """Reset world info across tests"""
     yield
     reset_world()
 
 
 @pytest.fixture(scope="session")
 def output_dir(tmp_path_factory: pytest.TempPathFactory) -> Generator[Path, None, None]:
+    """Create temporary output directory for tests with automatic cleanup"""
     output_dir = Path(os.environ.get("PYTEST_OUTPUT_DIR", tmp_path_factory.mktemp("outputs")))
     output_dir.mkdir(parents=True, exist_ok=True)
     yield output_dir
     shutil.rmtree(output_dir, ignore_errors=True)
-
-
-@pytest.fixture(scope="session")
-def hf_api() -> HfApi:
-    """Hugging Face API to use for tests."""
-    return HfApi()
-
-
-@pytest.fixture(scope="module")
-def username() -> str:
-    return os.environ.get("USERNAME_CI", os.environ.get("USER", "none"))
-
-
-@pytest.fixture(scope="module")
-def branch_name() -> str:
-    branch_name_ = os.environ.get("GITHUB_REF_NAME", None)
-
-    if branch_name_ is None:
-        branch_name = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"]).decode("utf-8").strip()
-    else:
-        branch_name = branch_name_.replace("/merge", "")
-        branch_name = f"pr-{branch_name}"
-    return branch_name
-
-
-@pytest.fixture(scope="module")
-def commit_hash() -> str:
-    return subprocess.check_output(["git", "rev-parse", "--short", "HEAD"]).decode("utf-8").strip()
-
-
-class ProcessResult:
-    def __init__(self, returncode: int, pid: int):
-        self.returncode = returncode
-        self.pid = pid
-
-
-def run_subprocess(command: Command, env: Environment, timeout: int = TIMEOUT) -> ProcessResult:
-    """Run a subprocess with given command and environment with a timeout"""
-    process = subprocess.Popen(command, env={**os.environ, **env})
-    try:
-        process.wait(timeout=timeout)
-        return ProcessResult(process.returncode, process.pid)
-    except subprocess.TimeoutExpired:
-        process.terminate()
-        try:
-            process.wait(timeout=10)  # Give it 10 seconds to terminate gracefully
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
-        return ProcessResult(1, process.pid)
-
-
-def run_subprocesses_in_parallel(
-    commands: list[Command], envs: list[Environment], timeout: int = TIMEOUT
-) -> list[ProcessResult]:
-    """Start multiple processes in parallel using ProcessPoolExecutor and wait for completion."""
-    assert len(commands) == len(envs), "Should have an environment for each command"
-    with concurrent.futures.ProcessPoolExecutor(max_workers=len(commands)) as executor:
-        futures = [executor.submit(run_subprocess, cmd, env, timeout) for cmd, env in zip(commands, envs)]
-        results = []
-        for i, future in enumerate(futures):
-            try:
-                result = future.result(timeout=timeout)
-                results.append(result)
-            except concurrent.futures.TimeoutError:
-                raise TimeoutError(f"Process {i} did not complete within {timeout} seconds")
-
-    return results
-
-
-@pytest.fixture(scope="module")
-def run_process() -> Callable[[Command, Environment, int], ProcessResult]:
-    """Factory fixture for running a single process."""
-    return run_subprocess
-
-
-@pytest.fixture(scope="module")
-def run_processes() -> Callable[[list[Command], list[Environment], int], list[ProcessResult]]:
-    """Factory fixture for running multiple processes in parallel."""
-    return run_subprocesses_in_parallel
 
 
 VLLM_SERVER_ENV = {"CUDA_VISIBLE_DEVICES": "0"}
