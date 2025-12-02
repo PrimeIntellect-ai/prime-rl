@@ -10,6 +10,8 @@ def get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
 def convert_hf_layer_to_tt(state_dict: dict[str, Tensor], layer_idx: int):
     i = layer_idx
     num_experts = len([j for j in state_dict.keys() if f"model.layers.{i}.mlp.experts" in j]) // 3
+    if num_experts == 0:
+        return
 
     state_dict[f"model.layers.{i}.mlp.router.gate.weight"] = state_dict[f"model.layers.{i}.mlp.gate.weight"]
     del state_dict[f"model.layers.{i}.mlp.gate.weight"]
@@ -57,8 +59,8 @@ def convert_hf_layer_to_tt(state_dict: dict[str, Tensor], layer_idx: int):
 
 def convert_hf_to_tt_moe(state_dict: dict[str, Tensor]):
     """Convert MoE weights from HF to TT format in-place."""
-    num_layers = len(list(i for i in state_dict.keys() if "mlp.gate.weight" in i))
-    for i in range(1, num_layers + 1):
+    num_layers = get_max_layer_num(state_dict)
+    for i in range(num_layers):
         convert_hf_layer_to_tt(state_dict, i)
 
 
@@ -127,5 +129,5 @@ def convert_tt_layer_to_hf(state_dict: dict[str, Tensor], layer_index: int):
 def convert_tt_to_hf_moe(state_dict: dict[str, Tensor]):
     """Convert MoE weights from TT to HF format in-place."""
     num_layers = get_max_layer_num(state_dict)
-    for i in range(1, num_layers + 1):
+    for i in range(num_layers):
         convert_tt_layer_to_hf(state_dict, i)
