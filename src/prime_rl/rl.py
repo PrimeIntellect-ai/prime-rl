@@ -66,7 +66,7 @@ class SharedWandbConfig(BaseSettings):
 class SharedCheckpointConfig(BaseSettings):
     """Configures shared checkpoint configs."""
 
-    interval: Annotated[int | None, Field(description="The interval at which to save checkpoints.")] = 50
+    interval: Annotated[int | None, Field(description="The interval at which to save checkpoints.")] = None
 
     resume_step: Annotated[
         int | None, Field(description="The step to resume from. If None, will not resume from a checkpoint.")
