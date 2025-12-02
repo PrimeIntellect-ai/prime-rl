@@ -1,3 +1,4 @@
+import os
 from argparse import Namespace
 from typing import Annotated, Literal
 
@@ -140,6 +141,12 @@ class InferenceConfig(BaseSettings):
     def nccl_and_dp(self):
         if self.weight_broadcast.type == "nccl" and self.parallel.dp != 1:
             raise ValueError("NCCL broadcast backend requires data parallel size to be 1")
+        return self
+
+    @model_validator(mode="after")
+    def set_env_var_for_lora(self):
+        if self.enable_lora:
+            os.environ["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "True"
         return self
 
     def to_vllm(self) -> Namespace:
