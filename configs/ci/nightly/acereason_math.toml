@@ -1,7 +1,8 @@
+# Run on 8xH200
 # Similar to configs/acereason_math/stage1.toml, but
 # - 300 instead of 500 steps
 # - No checkpointing
-# - Use TP=2
+# - No evals
 inference_gpu_ids = [0,1,2,3,4,5]
 trainer_gpu_ids = [6,7]
 
@@ -24,16 +25,7 @@ id = "primeintellect/single-turn-math"
 name = "acereason-math"
 args = { dataset_name = "nvidia/AceReason-Math", dataset_subset = "default", question_key = "problem" }
 
-[orchestrator.eval]
-interval = 50
-
-[[orchestrator.eval.env]]
-id = "primeintellect/aime2024"
-name = "aime2024"
-rollouts_per_example = 32
-
-[trainer.model.ac]
+[trainer]
 
 [inference.parallel]
-dp = 3
-tp = 2
+dp = 6
