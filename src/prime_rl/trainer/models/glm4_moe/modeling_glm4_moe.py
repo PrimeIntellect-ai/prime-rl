@@ -139,24 +139,28 @@ class Glm4MoePreTrainedModel(PreTrainedModelPrimeRL):
         return any("mlp.experts.w1" in module_name for module_name in state_dict.keys())
 
     @classmethod
-    def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> None:
+    def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         """Convert MoE weights from PrimeRL training format to HuggingFace format in-place."""
         convert_tt_to_hf_moe(state_dict)
+        return state_dict
 
     @classmethod
-    def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> None:
+    def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         """Convert MoE weights from HuggingFace format to PrimeRL training format in-place."""
         convert_hf_to_tt_moe(state_dict)
+        return state_dict
 
     @classmethod
-    def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> None:
+    def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
         """Convert a single layer's MoE weights from PrimeRL format to HuggingFace format in-place."""
         convert_tt_layer_to_hf(state_dict, layer_idx)
+        return state_dict
 
     @classmethod
-    def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> None:
+    def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
         """Convert a single layer's MoE weights from HuggingFace format to PrimeRL format in-place."""
         convert_hf_layer_to_tt(state_dict, layer_idx)
+        return state_dict
 
 
 @auto_docstring

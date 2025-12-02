@@ -127,24 +127,24 @@ class LlamaPreTrainedModel(PreTrainedModelPrimeRL):
         return True
 
     @classmethod
-    def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> None:
+    def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         """Convert state dict from PrimeRL training format to HuggingFace format in-place."""
-        pass
+        return state_dict
 
     @classmethod
-    def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> None:
+    def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         """Convert state dict from HuggingFace format to PrimeRL training format in-place."""
-        pass
+        return state_dict
 
     @classmethod
-    def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> None:
+    def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
         """Convert a single layer's state dict from PrimeRL format to HuggingFace format in-place."""
-        pass
+        return state_dict
 
     @classmethod
-    def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> None:
+    def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
         """Convert a single layer's state dict from HuggingFace format to PrimeRL format in-place."""
-        pass
+        return state_dict
 
 
 @auto_docstring
