@@ -75,6 +75,7 @@ async def eval(config: OfflineEvalConfig):
             reasoning_field=config.reasoning_field,
             output_dir=config.output_dir,
             ckpt_step=0,
+            resume_uuid=config.resume_uuid,
         )
 
     # If specified, evaluate all checkpoints found in the weights directory
@@ -102,6 +103,7 @@ async def eval(config: OfflineEvalConfig):
                 evals_client=evals_client,
                 output_dir=config.output_dir,
                 ckpt_step=ckpt_step,
+                resume_uuid=config.resume_uuid,
             )
 
     logger.success("Eval finished!")
