@@ -14,12 +14,6 @@ TIMEOUT = 600  # 10 minutes
 
 
 @pytest.fixture(scope="module")
-def wandb_project(get_wandb_project: Callable[[str], str]) -> str:
-    """Get W&B project name for RL CI integration tests."""
-    return get_wandb_project("reverse-text-rl-lora")
-
-
-@pytest.fixture(scope="module")
 def rl_process(
     vllm_server,  # Can only run with vLLM server
     run_process: Callable[..., ProcessResult],

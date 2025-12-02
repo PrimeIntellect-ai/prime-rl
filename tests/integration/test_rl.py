@@ -14,15 +14,19 @@ TIMEOUT = 600  # 10 minutes
 
 
 @pytest.fixture(scope="module")
+def wandb_name(branch_name: str, commit_hash: str) -> str:
+    """Fixture for W&B name for RL CI integration tests."""
+    return f"rl-{branch_name}-{commit_hash}"
+
+
+@pytest.fixture(scope="module")
 def rl_process(
     vllm_server,  # Can only run with vLLM server
     run_process: Callable[..., ProcessResult],
     output_dir: Path,
     wandb_project: str,
-    branch_name: str,
-    commit_hash: str,
+    wandb_name: str,
 ) -> ProcessResult:
-    wandb_name = f"{branch_name}-{commit_hash}"
     cmd = [
         "uv",
         "run",
@@ -46,12 +50,11 @@ def rl_resume_process(
     run_process: Callable[..., ProcessResult],
     output_dir: Path,
     wandb_project: str,
-    branch_name: str,
-    commit_hash: str,
+    wandb_name: str,
 ) -> ProcessResult:
     if rl_process.returncode != 0:
         pytest.skip("Full weight RL process failed")
-    wandb_name = f"{branch_name}-{commit_hash}-resume"
+    wandb_name = f"{wandb_name}-resume"
     cmd = [
         "uv",
         "run",

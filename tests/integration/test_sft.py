@@ -13,21 +13,19 @@ TIMEOUT = 300  # 5 minutes
 
 
 @pytest.fixture(scope="module")
-def wandb_project(get_wandb_project: Callable[[str], str]) -> str:
-    """Get W&B project name for SFT integration tests."""
-    return get_wandb_project("reverse-text-sft")
+def wandb_name(branch_name: str, commit_hash: str) -> str:
+    """Fixture for W&B name for SFT CI integration tests."""
+    return f"sft-{branch_name}-{commit_hash}"
 
 
 @pytest.fixture(scope="module")
 def sft_process(
     run_process: Callable[..., ProcessResult],
     wandb_project: str,
+    wandb_name: str,
     output_dir: Path,
-    branch_name: str,
-    commit_hash: str,
 ) -> ProcessResult:
     """Fixture for running SFT CI integration test"""
-    wandb_name = f"{branch_name}-{commit_hash}"
     cmd = [
         "uv",
         "run",
@@ -55,12 +53,11 @@ def sft_resume_process(
     sft_process,  # Resume training can only start when regular SFT process is finished
     run_process: Callable[..., ProcessResult],
     wandb_project: str,
+    wandb_name: str,
     output_dir: Path,
-    branch_name: str,
-    commit_hash: str,
 ) -> ProcessResult:
     """Fixture for resuming SFT CI integration test"""
-    wandb_name = f"{branch_name}-{commit_hash}-resume"
+    wandb_name += "-resume"
     cmd = [
         "uv",
         "run",
