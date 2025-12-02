@@ -61,6 +61,7 @@ jobs:
         container:
             image: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
             options: --gpus all
+        timeout-minutes: 1440 # 24 hours
         strategy:
             fail-fast: false
             matrix: ${{ fromJSON(needs.discover-experiments.outputs.matrix) }}
