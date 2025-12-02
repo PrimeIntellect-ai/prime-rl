@@ -24,6 +24,7 @@ def get_model_pairs():
         num_hidden_layers=3,
         rope_theta=1000000.0,
         use_qk_norm=True,
+        mlp_only_layers=[1],
     )
     # TODO: We should test this path because it's the most performant
     # But the grad seems to be off in attn because of precision
