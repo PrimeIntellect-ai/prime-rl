@@ -1,7 +1,7 @@
 max_steps = 100
 
 [model]
-name = "Qwen/Qwen3-4B-Instruct-2507"
+name = "PrimeIntellect/Qwen3-1.7B"
 
 [orchestrator]
 batch_size = 512
@@ -12,7 +12,7 @@ seq_len = 2048
 max_tokens = 512
 
 [[orchestrator.env]]
-id = "alphabet-sort"
+id = "primeintellect/alphabet-sort"
 args = { min_turns = 2, max_turns = 2 }
 
 [trainer]
