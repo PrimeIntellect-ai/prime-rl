@@ -5,7 +5,7 @@ on:
     workflow_dispatch:
     pull_request:
         branches:
-            - nightly-ci
+            - main
 
     # Scheduled run at 3AM PST (11AM UTC)
     # schedule:
