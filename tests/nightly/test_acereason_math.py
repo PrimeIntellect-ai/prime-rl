@@ -5,7 +5,7 @@ from typing import Callable
 import pytest
 
 from tests.conftest import ProcessResult
-from tests.utils import check_number_goes_up_or_down, strip_escape_codes
+from tests.utils import check_no_error, check_number_goes_up_or_down, strip_escape_codes
 
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
@@ -45,14 +45,7 @@ check_reward_goes_up = partial(check_number_goes_up_or_down, go_up=True, pattern
 @pytest.fixture(scope="module")
 def test_no_error(rl_process: ProcessResult, output_dir: Path):
     """Tests that the RL process does not fail."""
-    if rl_process.returncode != 0:
-        print("=== Inference Outputs ===")
-        with open(output_dir / "logs" / "inference.stdout", "r") as f:
-            print(*f.readlines()[-100:], sep="\n")
-        print("=== Orchestrator Outputs ===")
-        with open(output_dir / "logs" / "orchestrator.stdout", "r") as f:
-            print(*f.readlines()[-100:], sep="\n")
-    assert rl_process.returncode == 0, f"Process has non-zero return code ({rl_process})"
+    check_no_error(rl_process, output_dir)
 
 
 def test_reward_goes_up(rl_process: ProcessResult, test_no_error, output_dir: Path):

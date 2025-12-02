@@ -1,9 +1,25 @@
 import re
+from pathlib import Path
+
+from tests.conftest import ProcessResult
 
 
 def strip_escape_codes(text: str) -> str:
     """Helper to strip escape codes from text"""
     return re.sub(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", "", text)
+
+
+def check_no_error(process: ProcessResult, output_dir: Path) -> None:
+    """Helper to assert that a process did not error"""
+    assert process.returncode == 0, f"Process has non-zero return code ({process})"
+    if process.returncode != 0:
+        print("=== Inference Outputs ===")
+        with open(output_dir / "logs" / "inference.stdout", "r") as f:
+            print(*f.readlines()[-100:])
+        print("=== Orchestrator Outputs ===")
+        with open(output_dir / "logs" / "orchestrator.stdout", "r") as f:
+            print(*f.readlines()[-100:])
+    assert process.returncode == 0, f"Process has non-zero return code ({process})"
 
 
 def check_number_goes_up_or_down(
