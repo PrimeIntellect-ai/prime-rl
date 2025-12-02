@@ -3,6 +3,9 @@ name: Nightly CI
 on:
     # Allow to manually trigger the workflow
     workflow_dispatch:
+    pull_request:
+        branches:
+            - nightly-ci
 
     # Scheduled run at 3AM PST (11AM UTC)
     # schedule:
