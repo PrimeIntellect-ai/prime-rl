@@ -84,6 +84,8 @@ jobs:
                   HF_TOKEN: ${{ secrets.HF_TOKEN }}
                   OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
                   PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
+                  PRIME_BASE_URL: ${{ secrets.PRIME_BASE_URL }}
+                  PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
                   GITHUB_REF_NAME: ${{ github.ref_name }}
                   GITHUB_HEAD_REF: ${{ github.head_ref }}
               run: |
