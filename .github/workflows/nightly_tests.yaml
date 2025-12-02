@@ -58,11 +58,19 @@ jobs:
         name: Run experiment
         needs: discover-experiments
         runs-on: research-cluster
+        container:
+            image: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
+            options: --gpus all
         strategy:
             fail-fast: false
             matrix: ${{ fromJSON(needs.discover-experiments.outputs.matrix) }}
 
         steps:
+            - name: Install Git
+              run: |
+                  apt-get update
+                  apt-get install -y git
+                  git config --global --add safe.directory "$GITHUB_WORKSPACE"
             - name: Checkout repository
               uses: actions/checkout@v4
               with:
@@ -74,19 +82,6 @@ jobs:
                   cache-dependency-glob: "uv.lock"
             - name: Install dependencies
               run: uv sync --locked
-
-            - name: Cleanup GPU processes
-              run: |
-                  echo "Checking for stray GPU processes..."
-                  pids=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | xargs)
-                  if [ -n "$pids" ]; then
-                    echo "Forcefully killing stray GPU processes: $pids"
-                    kill -9 "$pids" 2>/dev/null || true
-                  else
-                    echo "No stray GPU processes found. All good!"
-                  fi
-                  echo "GPU status after cleanup:"
-                  nvidia-smi || true
             - name: Run experiment
               env:
                   USERNAME_CI: CI_RUNNER
