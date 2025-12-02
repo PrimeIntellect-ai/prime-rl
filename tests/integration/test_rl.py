@@ -16,7 +16,7 @@ TIMEOUT = 600  # 10 minutes
 @pytest.fixture(scope="module")
 def wandb_name(branch_name: str, commit_hash: str) -> str:
     """Fixture for W&B name for RL CI integration tests."""
-    return f"rl-{branch_name}-{commit_hash}"
+    return f"test-rl-{branch_name}-{commit_hash}"
 
 
 @pytest.fixture(scope="module")
