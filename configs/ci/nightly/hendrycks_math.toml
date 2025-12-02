@@ -16,6 +16,7 @@ max_tokens = 2048
 
 [[orchestrator.env]]
 id = "primeintellect/single-turn-math"
+name = "hendrycks-math"
 args = { dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "default" }
 
 [orchestrator.buffer]
@@ -36,6 +37,7 @@ max_tokens = 2048
 
 [[orchestrator.eval.env]]
 id = "primeintellect/math500"
+name = "math500"
 num_examples = 30
 rollouts_per_example = 4
 

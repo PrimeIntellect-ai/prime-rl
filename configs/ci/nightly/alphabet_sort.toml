@@ -16,6 +16,7 @@ max_tokens = 512
 
 [[orchestrator.env]]
 id = "primeintellect/alphabet-sort"
+name = "alphabet-sort"
 args = { min_turns = 2, max_turns = 2 }
 
 [trainer]

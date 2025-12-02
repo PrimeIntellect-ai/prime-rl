@@ -19,6 +19,7 @@ max_tokens = 8192
 
 [[orchestrator.env]]
 id = "primeintellect/single-turn-math"
+name = "acereason-math"
 args = { dataset_name = "nvidia/AceReason-Math", dataset_subset = "default", question_key = "problem" }
 
 [orchestrator.eval]
@@ -26,14 +27,17 @@ interval = 50
 
 [[orchestrator.eval.env]]
 id = "primeintellect/math500"
+name = "math500"
 rollouts_per_example = 1
 
 [[orchestrator.eval.env]]
 id = "primeintellect/aime2024"
+name = "aime2024"
 rollouts_per_example = 32
 
 [[orchestrator.eval.env]]
 id = "primeintellect/aime2025"
+name = "aime2025"
 rollouts_per_example = 32
 
 [trainer.model.ac]
