@@ -313,8 +313,7 @@ def install_env(env_id: str) -> None:
     install_cmd = ["uv", "run", "--no-sync", "prime", "env", "install", env_id]
     result = subprocess.run(install_cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        logger.error(f"Failed to install environment {env_id}: {result.stderr}")
-        raise RuntimeError(f"Failed to install environment {env_id}")
+        raise RuntimeError(f"Failed to install environment {env_id} (stdout={result.stdout}, stderr={result.stderr})")
     logger.info(f"Successfully installed environment {env_id}")
 
 
