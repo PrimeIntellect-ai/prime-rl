@@ -21,7 +21,6 @@ def wandb_name(branch_name: str, commit_hash: str) -> str:
 
 @pytest.fixture(scope="module")
 def rl_process(
-    vllm_server,  # Can only run with vLLM server
     run_process: Callable[..., ProcessResult],
     output_dir: Path,
     wandb_project: str,
@@ -45,7 +44,6 @@ def rl_process(
 
 @pytest.fixture(scope="module")
 def rl_resume_process(
-    vllm_server,  # Can only run with vLLM server
     rl_process,  # Resume training can only start when regular RL process is finished
     run_process: Callable[..., ProcessResult],
     output_dir: Path,
