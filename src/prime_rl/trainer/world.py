@@ -37,17 +37,3 @@ def get_world() -> World:
     if _WORLD is None:
         _WORLD = World()
     return _WORLD
-
-
-def reset_world():
-    global _WORLD
-    _WORLD = None
-
-
-if __name__ == "__main__":
-    # Used in tests/units/test_world_info.py to test init with torchrun
-    import torch.distributed as dist
-
-    print(get_world())
-    if dist.is_initialized():
-        dist.destroy_process_group()

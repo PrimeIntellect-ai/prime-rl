@@ -4,23 +4,13 @@ from typing import Callable
 
 import pytest
 
-from tests.integration.conftest import (
-    ProcessResult,
-    check_number_goes_up_or_down,
-    check_number_in_range,
-    strip_escape_codes,
-)
+from tests.conftest import ProcessResult
+from tests.utils import check_number_goes_up_or_down, check_number_in_range, strip_escape_codes
 
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
 
 TIMEOUT = 600  # 10 minutes
-
-
-@pytest.fixture(scope="module")
-def wandb_project(get_wandb_project: Callable[[str], str]) -> str:
-    """Get W&B project name for RL CI integration tests."""
-    return get_wandb_project("reverse-text-rl")
 
 
 @pytest.fixture(scope="module")

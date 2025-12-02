@@ -4,7 +4,8 @@ from typing import Callable
 
 import pytest
 
-from tests.integration.conftest import ProcessResult, check_number_goes_up_or_down, strip_escape_codes
+from tests.conftest import ProcessResult
+from tests.utils import check_number_goes_up_or_down, strip_escape_codes
 
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
 

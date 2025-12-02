@@ -2,7 +2,7 @@ from typing import Callable
 
 import pytest
 
-from tests.integration.conftest import Command, Environment, ProcessResult
+from tests.conftest import Command, Environment, ProcessResult
 
 pytestmark = [pytest.mark.slow]
 
