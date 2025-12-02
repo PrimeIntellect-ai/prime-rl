@@ -8,6 +8,7 @@ from typing import Any
 import pandas as pd
 import verifiers as vf
 import wandb
+import weave
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.utils.config import WandbConfig, WandbWithExtrasConfig
@@ -49,6 +50,7 @@ class WandbMonitor:
             config=run_config.model_dump() if run_config else None,
             mode="offline" if config.offline else None,
         )
+        weave.init(config.project)
 
         # Optionally, initialize sample logging attributes
         if config is not None and isinstance(config, WandbWithExtrasConfig) and config.log_extras:
