@@ -13,7 +13,7 @@ pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 @pytest.fixture(scope="module")
 def wandb_name(branch_name: str, commit_hash: str) -> str:
     """Fixture for W&B name for RL CI integration tests."""
-    return f"wordle-{branch_name}-{commit_hash}"
+    return f"hendrycks-math-{branch_name}-{commit_hash}"
 
 
 @pytest.fixture(scope="module")
@@ -28,7 +28,7 @@ def rl_process(
         "run",
         "rl",
         "@",
-        "configs/ci/nightly/wordle.toml",
+        "configs/ci/nightly/hendrycks_math.toml",
         "--wandb.project",
         wandb_project,
         "--wandb.name",

@@ -4,7 +4,7 @@ trainer_gpu_ids = [6,7]
 max_steps = 100
 
 [model]
-name = "Qwen/Qwen3-4B-Instruct-2507"
+name = "PrimeIntellect/Qwen3-1.7B"
 
 [orchestrator]
 batch_size = 512
