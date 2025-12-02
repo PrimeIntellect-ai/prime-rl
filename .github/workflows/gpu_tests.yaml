@@ -64,9 +64,6 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-      # Move this into project's venv
-      - name: Install prime
-        run: uv tool install prime
       - name: Install dependencies
         run: uv sync --locked
       - name: Run integration tests

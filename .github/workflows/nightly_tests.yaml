@@ -54,8 +54,8 @@ jobs:
                   json=$(printf '%s\n' "$files" | jq -R . | jq -sc '{test_file: .}')
 
                   echo "matrix=$json" >> "$GITHUB_OUTPUT"
-    run-experiments:
-        name: Run experiments
+    run-experiment:
+        name: Run experiment
         needs: discover-experiments
         runs-on: research-cluster
         strategy:
@@ -72,11 +72,9 @@ jobs:
               with:
                   enable-cache: true
                   cache-dependency-glob: "uv.lock"
-            - name: Install prime
-              run: uv tool install prime
             - name: Install dependencies
               run: uv sync --locked
-            - name: Run tests
+            - name: Run experiment
               env:
                   USERNAME_CI: CI_RUNNER
                   WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
