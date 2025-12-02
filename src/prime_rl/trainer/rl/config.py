@@ -21,20 +21,16 @@ class LossConfig(BaseConfig):
     """Base config for loss."""
 
     ratio_type: Annotated[Literal["token", "sequence"], Field(description="Type of importance ratio to use.")] = "token"
-
     mask_ratio_high: Annotated[float, Field(ge=0)] = 8.0
     mask_ratio_low: Annotated[float, Field(ge=0)] = 0.125
     sequence_mask_ratio_low: Annotated[
         float,
         Field(
             ge=0,
-            description=(
-                "If set, masks entire sequences when any generated token has an importance ratio below this value."
-            ),
+            description="If set, masks entire sequences when any generated token has an importance ratio below this value.",
         ),
     ] = 0.0
     kl_tau: Annotated[float, Field(ge=0)] = 0.0
-    kl_mask_type: Annotated[Literal["masked", "unmasked", "all"], Field(description="Type of KL mask to use.")] = "all"
 
 
 class FakeDataLoaderConfig(BaseConfig):
