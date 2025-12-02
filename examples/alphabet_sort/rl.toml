@@ -13,24 +13,11 @@ impl = "liger_kernel"
 freq = 1
 
 [trainer.model.experimental.lora]
-rank = 32
+rank = 16
 alpha = 64
-dropout = 0.0
-target_modules = [
-    "q_proj",
-    "k_proj",
-    "v_proj",
-    "o_proj",
-    "gate_proj",
-    "up_proj",
-    "down_proj"
-]
-modules_to_save = [
-    "embed_tokens",
-    "norm",
-    "layernorm",
-    "lm_head$"
-]
+
+[trainer.weight_broadcast]
+adapter_only = true
 
 [trainer.optim]
 lr = 1e-5
@@ -39,12 +26,15 @@ lr = 1e-5
 batch_size = 512
 rollouts_per_example = 8
 seq_len = 2048
+lora_name = "r16-64-1e-5"
 
 [orchestrator.sampling]
 max_tokens = 768
 
 [[orchestrator.env]]
 id = "primeintellect/alphabet-sort"
+name = "alphabet-sort"
 args = { min_turns = 3, max_turns = 3, min_names_per_turn = 1, max_names_per_turn = 4, similarity_power = 8, power_per_turn = false }
 
-[inference] # Default inference config
+[inference]
+enable_lora = true
