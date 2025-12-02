@@ -1,0 +1,20 @@
+max_concurrent = 32
+reasoning_field = "reasoning"
+
+[model]
+name = "openai/gpt-oss-120b"
+
+
+[client]
+base_url = ["https://openrouter.ai/api/v1"]
+api_key_var = "OPENROUTER_API_KEY"
+
+[sampling]
+# reasoning_effort = "high"
+reasoning_effort = "low"
+temperature = 1.0
+
+[sampling.extra_body.provider]
+only = ["google-vertex"]
+allow_fallbacks = false
+require_parameters = true
