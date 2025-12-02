@@ -13,8 +13,8 @@ on:
             - main
 
     # Scheduled run at 3AM PST (11AM UTC)
-    # schedule:
-    #     - cron: "0 11 * * *"
+    schedule:
+        - cron: "0 11 * * *"
 
 jobs:
     discover-experiments:
