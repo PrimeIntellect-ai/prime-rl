@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Callable
 
 import pytest
@@ -8,25 +9,54 @@ pytestmark = [pytest.mark.slow]
 
 
 @pytest.fixture(scope="module")
-def single_env_synthesize_process(run_process: Callable[[Command, Environment], ProcessResult]) -> ProcessResult:
+def single_env_synthesize_process(
+    run_process: Callable[[Command, Environment], ProcessResult], output_dir: Path
+) -> ProcessResult:
     """Fixture for running single-env synthesize CI integration test"""
-    cmd = ["uv", "run", "synthesize", "@", "configs/ci/integration/synthesize/single_env.toml"]
+    cmd = [
+        "uv",
+        "run",
+        "synthesize",
+        "@",
+        "configs/ci/integration/synthesize/single_env.toml",
+        "--output-dir",
+        output_dir.as_posix(),
+    ]
     return run_process(cmd, {})
 
 
 @pytest.fixture(scope="module")
-def multi_env_synthesize_process(run_process: Callable[[Command, Environment], ProcessResult]) -> ProcessResult:
+def multi_env_synthesize_process(
+    run_process: Callable[[Command, Environment], ProcessResult], output_dir: Path
+) -> ProcessResult:
     """Fixture for running multi-env synthesize CI integration test"""
-    cmd = ["uv", "run", "synthesize", "@", "configs/ci/integration/synthesize/multi_env.toml"]
+    cmd = [
+        "uv",
+        "run",
+        "synthesize",
+        "@",
+        "configs/ci/integration/synthesize/multi_env.toml",
+        "--output-dir",
+        output_dir.as_posix(),
+    ]
     return run_process(cmd, {})
 
 
 @pytest.fixture(scope="module")
 def multi_turn_tool_call_synthesize_process(
     run_process: Callable[[Command, Environment], ProcessResult],
+    output_dir: Path,
 ) -> ProcessResult:
     """Fixture for running multi-turn tool call synthesize CI integration test"""
-    cmd = ["uv", "run", "synthesize", "@", "configs/ci/integration/synthesize/multi_turn_tool_call.toml"]
+    cmd = [
+        "uv",
+        "run",
+        "synthesize",
+        "@",
+        "configs/ci/integration/synthesize/multi_turn_tool_call.toml",
+        "--output-dir",
+        output_dir.as_posix(),
+    ]
     return run_process(cmd, {})
 
 
