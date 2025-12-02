@@ -18,22 +18,22 @@ temperature = 0.6
 max_tokens = 8192
 
 [[orchestrator.env]]
-id = "single-turn-math"
+id = "primeintellect/single-turn-math"
 args = { dataset_name = "nvidia/AceReason-Math", dataset_subset = "default", question_key = "problem" }
 
 [orchestrator.eval]
 interval = 50
 
 [[orchestrator.eval.env]]
-id = "math500"
+id = "primeintellect/math500"
 rollouts_per_example = 1
 
 [[orchestrator.eval.env]]
-id = "aime2024"
+id = "primeintellect/aime2024"
 rollouts_per_example = 32
 
 [[orchestrator.eval.env]]
-id = "aime2025"
+id = "primeintellect/aime2025"
 rollouts_per_example = 32
 
 [trainer.model.ac]

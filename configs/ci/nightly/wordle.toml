@@ -14,7 +14,7 @@ batch_size = 1024
 rollouts_per_example = 16
 
 [[orchestrator.env]]
-id = "wordle"
+id = "will/wordle"
 
 [orchestrator.sampling]
 max_tokens = 1024
