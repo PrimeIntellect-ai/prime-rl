@@ -111,6 +111,13 @@ class InferenceConfig(BaseSettings):
     # The parallel configuration
     parallel: ParallelConfig = ParallelConfig()
 
+    enable_lora: Annotated[
+        bool,
+        Field(
+            description="Whether to enable LORA. Passed to vLLM as `--enable-lora`",
+        ),
+    ] = False
+
     gpu_memory_utilization: Annotated[
         float,
         Field(
@@ -150,6 +157,7 @@ class InferenceConfig(BaseSettings):
             "model.tool_call_parser": "tool_call_parser",
             "parallel.tp": "tensor_parallel_size",
             "parallel.dp": "data_parallel_size",
+            "enable_lora": "enable_lora",
             "gpu_memory_utilization": "gpu_memory_utilization",
         }
 
