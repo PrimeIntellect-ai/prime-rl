@@ -11,7 +11,6 @@ from prime_rl.utils.client import (
     reload_weights,
     setup_admin_clients,
     setup_clients,
-    setup_evals_client,
     update_weights,
 )
 from prime_rl.utils.logger import setup_logger
@@ -51,7 +50,6 @@ async def eval(config: OfflineEvalConfig):
     )
     clients = setup_clients(config.client)
     admin_clients = setup_admin_clients(config.client)
-    evals_client = setup_evals_client()
 
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")
@@ -100,7 +98,7 @@ async def eval(config: OfflineEvalConfig):
                 eval_config=config,
                 model_config=config.model,
                 sampling_config=config.sampling,
-                evals_client=evals_client,
+                reasoning_field=config.reasoning_field,
                 output_dir=config.output_dir,
                 ckpt_step=ckpt_step,
                 resume_uuid=config.resume_uuid,

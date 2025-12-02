@@ -226,13 +226,13 @@ async def run_eval(
 
         logger.info(
             f"Resuming evaluation of {env_name_or_id} and saving results to {path_to_save}: filtered dataset from {original_size} to {remaining_size} remaining examples\n"
-            f"({num_examples=}, {rollouts_per_example=}) {'with default args' if env_args == {} else f'with args {env_args}'}"
+            f"({num_examples=}, {rollouts_per_example=}) {'with default args' if env_args == {} else f'with args {env_args}'} and extra_body {sampling_args['extra_body']}"
         )
     else:
         path_to_save = get_results_path(env_name_or_id, model_config.name, base_path=output_dir) / "results.jsonl"
         path_to_save.parent.mkdir(parents=True, exist_ok=True)
         logger.info(
-            f"Evaluating {env_name_or_id} ({num_examples=}, {rollouts_per_example=}) {'with default args' if env_args == {} else f'with args {env_args}'}\n"
+            f"Evaluating {env_name_or_id} ({num_examples=}, {rollouts_per_example=}) {'with default args' if env_args == {} else f'with args {env_args}'} and extra_body {sampling_args['extra_body']}\n"
             f"Saving results to {path_to_save}"
         )
     total_rollouts = len(dataset) * rollouts_per_example
