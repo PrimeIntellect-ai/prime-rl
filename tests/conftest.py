@@ -71,12 +71,6 @@ def branch_name() -> str:
 
 
 @pytest.fixture(scope="session")
-def commit_hash() -> str:
-    """Fixture for current commit hash for test session."""
-    return subprocess.check_output(["git", "rev-parse", "--short", "HEAD"]).decode("utf-8").strip()
-
-
-@pytest.fixture(scope="session")
 def output_dir(tmp_path_factory: pytest.TempPathFactory) -> Generator[Path, None, None]:
     """Fixture for temporary output directory for tests with automatic cleanup"""
     output_dir = Path(os.environ.get("PYTEST_OUTPUT_DIR", tmp_path_factory.mktemp("outputs")))
