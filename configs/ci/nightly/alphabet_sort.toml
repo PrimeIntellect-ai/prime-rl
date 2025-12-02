@@ -1,53 +1,24 @@
 inference_gpu_ids = [0,1,2,3,4,5]
 trainer_gpu_ids = [6,7]
 
-max_steps = 100 
-
-[ckpt] # Checkpoint at the end of training
+max_steps = 100
 
 [model]
 name = "Qwen/Qwen3-4B-Instruct-2507"
 
 [orchestrator]
 batch_size = 512
-rollouts_per_example = 8
+rollouts_per_example = 16
 seq_len = 2048
 
 [orchestrator.sampling]
-max_tokens = 768
+max_tokens = 512
 
 [[orchestrator.env]]
 id = "primeintellect/alphabet-sort"
-args = { min_turns = 3, max_turns = 3, min_names_per_turn = 1, max_names_per_turn = 4, similarity_power = 8, power_per_turn = false }
+args = { min_turns = 2, max_turns = 2 }
 
-[trainer.model]
-impl = "liger_kernel"
+[trainer]
 
-[trainer.model.ac]
-
-[trainer.model.experimental.lora]
-rank = 32
-alpha = 64
-dropout = 0.0
-target_modules = [
-    "q_proj",
-    "k_proj",
-    "v_proj",
-    "o_proj",
-    "gate_proj",
-    "up_proj",
-    "down_proj"
-]
-modules_to_save = [
-    "embed_tokens",
-    "norm",
-    "layernorm",
-    "lm_head$"
-]
-
-[trainer.optim]
-lr = 1e-5
-
-
-[inference.parallel] # Default inference config
+[inference.parallel]
 dp = 6
