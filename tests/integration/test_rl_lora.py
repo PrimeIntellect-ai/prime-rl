@@ -74,7 +74,7 @@ check_reward_goes_up = partial(check_number_goes_up_or_down, go_up=True, pattern
 check_reward_in_range = partial(check_number_in_range, pattern=r"Reward:\s*(\d+\.\d{4})")
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def test_no_error(rl_process: ProcessResult, output_dir: Path):
     """Tests that the RL process does not fail."""
     if rl_process.returncode != 0:
@@ -101,7 +101,7 @@ def test_reward_in_range(rl_process: ProcessResult, test_no_error, output_dir: P
     check_reward_in_range(orchestrator_stdout, min_threshold=0.65)
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def test_no_error_resume(rl_resume_process: ProcessResult, output_dir: Path):
     if rl_resume_process.returncode != 0:
         print("=== Inference Outputs ===")

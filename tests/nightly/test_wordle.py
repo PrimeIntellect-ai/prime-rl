@@ -42,6 +42,7 @@ def rl_process(
 check_reward_goes_up = partial(check_number_goes_up_or_down, go_up=True, pattern=r"Reward:\s*(\d+\.\d{4})")
 
 
+@pytest.fixture(scope="module")
 def test_no_error(rl_process: ProcessResult, output_dir: Path):
     """Tests that the RL process does not fail."""
     if rl_process.returncode != 0:
@@ -54,7 +55,7 @@ def test_no_error(rl_process: ProcessResult, output_dir: Path):
     assert rl_process.returncode == 0, f"Process has non-zero return code ({rl_process})"
 
 
-def test_reward_goes_up(rl_process: ProcessResult, output_dir: Path):
+def test_reward_goes_up(rl_process: ProcessResult, test_no_error, output_dir: Path):
     """Tests that the reward goes up in the RL process"""
     with open(output_dir / "logs" / "orchestrator.stdout", "r") as f:
         orchestrator_stdout = strip_escape_codes(f.read()).splitlines()
