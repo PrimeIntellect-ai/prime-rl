@@ -1,3 +1,4 @@
+# Matches examples/reverse_text/rl.toml exactly
 max_steps = 20
 
 [model]
