@@ -18,7 +18,7 @@ from prime_rl.utils.vf import generate_group
 WRITE_LOCK = asyncio.Lock()
 
 
-def prepare_sampling_args(sampling_config: EvalSamplingConfig, client_config: ClientConfig) -> dict[str, Any]:
+def prepare_sampling_args(sampling_config: EvalSamplingConfig) -> dict[str, Any]:
     """Prepare sampling args for synthetic data generation."""
     # Initialize sampling args
     sampling_args: dict[str, Any] = {}
@@ -153,10 +153,8 @@ async def generate_synthetic_data(
     try:
         dataset = env.get_dataset(n=num_examples + skip_first)
     except ValueError:
-        logger.error(
-            f"Could not find a training dataset for {env_name_or_id}. Generating synthetic data is only supported for environments with a training dataset."
-        )
-        raise
+        logger.warning(f"Could not find a training dataset for {env_name_or_id}. Falling back to eval dataset.")
+        dataset = env.get_eval_dataset(n=num_examples + skip_first)
     if skip_first > 0:
         dataset = dataset.skip(skip_first)
     sampling_args = prepare_sampling_args(sampling_config, client_config)

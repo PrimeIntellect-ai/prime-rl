@@ -72,7 +72,7 @@ async def eval(config: OfflineEvalConfig):
             eval_config=config,
             model_config=config.model,
             sampling_config=config.sampling,
-            evals_client=evals_client,
+            reasoning_field=config.reasoning_field,
             output_dir=config.output_dir,
             ckpt_step=0,
         )
