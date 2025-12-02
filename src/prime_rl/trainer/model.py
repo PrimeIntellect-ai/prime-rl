@@ -234,7 +234,10 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
         # Note: This allow is needed by weight tying but could cause silent issues
         # planner=DefaultLoadPlanner(allow_partial_load=True),
     )
-    fix_model_post_empty(model)
+    if isinstance(model, PreTrainedModelPrimeRL):
+        model.init_buffers_post_meta()
+    else:
+        fix_model_post_empty(model)
     logger.debug(f"Loaded weights using HF DCP in {time.perf_counter() - load_dcp_start_time:.2f} seconds")
 
 
@@ -270,9 +273,6 @@ def fix_model_post_empty(model: nn.Module):
         rotary_emb = model.model.rotary_emb
         inv_freq, rotary_emb.attention_scaling = rotary_emb.rope_init_fn(rotary_emb.config, rotary_emb.inv_freq.device)
         rotary_emb.inv_freq.copy_(inv_freq)
-
-    # TODO: Init TT MoE buffers
-    # I think .to_empty() on gpu by default fills 0 so we are ok but this might not be guaranteed behavior
 
 
 def reshard_module(model: nn.Module):
