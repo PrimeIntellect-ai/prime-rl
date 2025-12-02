@@ -7,9 +7,10 @@ from transformers.models.auto.auto_factory import _BaseAutoModelClass, _LazyAuto
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
 from transformers.models.llama.configuration_llama import LlamaConfig
 
-from prime_rl.trainer.models.glm import Glm4MoeConfig, Glm4MoeForCausalLM
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig, Glm4MoeForCausalLM
 from prime_rl.trainer.models.llama import LlamaForCausalLM
-from prime_rl.trainer.models.qwen import Qwen3MoeConfig, Qwen3MoeForCausalLM
+from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig, Qwen3MoeForCausalLM
 
 # Make custom config discoverable by AutoConfig
 AutoConfig.register("glm4_moe", Glm4MoeConfig, exist_ok=True)
@@ -28,4 +29,4 @@ class AutoModelForCausalLMPrimeRL(_BaseAutoModelClass):
 AutoModelForCausalLMPrimeRL = auto_class_update(AutoModelForCausalLMPrimeRL, head_doc="causal language modeling")
 
 
-__all__ = ["AutoModelForCausalLMPrimeRL"]
+__all__ = ["AutoModelForCausalLMPrimeRL", "PreTrainedModelPrimeRL"]

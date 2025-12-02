@@ -12,8 +12,6 @@ CMD = [
     "eval",
     "@",
     "configs/debug/eval.toml",
-    "--model.name",
-    "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT",
 ]
 ENV = {"CUDA_VISIBLE_DEVICES": "1"}
 

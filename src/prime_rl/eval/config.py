@@ -4,7 +4,7 @@ from typing import Annotated
 from pydantic import Field, model_validator
 
 from prime_rl.orchestrator.config import EvalConfig
-from prime_rl.utils.config import ClientConfig, LogConfig, ModelConfig, WandbMonitorConfig
+from prime_rl.utils.config import ClientConfig, LogConfig, ModelConfig, WandbConfig
 from prime_rl.utils.pydantic_config import BaseSettings
 
 
@@ -12,13 +12,13 @@ class OfflineEvalConfig(EvalConfig, BaseSettings):
     """Configures evaluation."""
 
     # The client configuration
-    client: ClientConfig = ClientConfig(timeout=36000)
+    client: ClientConfig = ClientConfig(timeout=36000, base_url=["https://api.openai.com/v1"])
 
     # The model configuration
-    model: ModelConfig = ModelConfig()
+    model: ModelConfig = ModelConfig(name="gpt-4.1-mini")
 
     # The wandb configuration
-    wandb: WandbMonitorConfig | None = None
+    wandb: WandbConfig | None = None
 
     # The logging configuration
     log: LogConfig = LogConfig()

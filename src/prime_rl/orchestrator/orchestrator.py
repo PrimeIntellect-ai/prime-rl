@@ -42,14 +42,17 @@ from prime_rl.utils.client import (
     setup_evals_client,
     update_weights,
 )
+from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import (
     clean_exit,
     get_broadcast_dir,
+    get_env_ids_to_install,
     get_rollout_dir,
     get_step_path,
+    install_env,
     to_col_format,
 )
 from prime_rl.utils.vf import generate_batch, get_completion_len, get_is_truncated, get_prompt_len, get_seq_len
@@ -69,10 +72,18 @@ async def orchestrate(config: OrchestratorConfig):
     if config.bench:
         logger.warning(f"Running in benchmark mode (max_steps={config.max_steps})")
 
+    # Install environments
+    env_ids_to_install = set()
+    env_ids_to_install.update(get_env_ids_to_install(config.env))
+    if config.eval is not None:
+        env_ids_to_install.update(get_env_ids_to_install(config.eval.env))
+
+    for env_id in env_ids_to_install:
+        install_env(env_id)
+
     # Setup client
-    assert config.client.server_type == "vllm", "Orchestrator only supports vLLM server type."
     logger.info(
-        f"Initializing OpenAI client (base_url={', '.join(config.client.base_url)}, api_key_var={config.client.api_key_var}, server_type={config.client.server_type}, headers={config.client.headers})"
+        f"Initializing OpenAI client (base_url={', '.join(config.client.base_url)}, api_key_var={config.client.api_key_var}, headers={config.client.headers})"
     )
     clients = setup_clients(config.client)
     admin_clients = setup_admin_clients(config.client)
@@ -90,6 +101,12 @@ async def orchestrate(config: OrchestratorConfig):
         tokenizer=tokenizer,
         run_config=config,
     )
+
+    # Setup heartbeat (only on rank 0, orchestrator is single process)
+    heart = None
+    if config.heartbeat is not None:
+        logger.info("Initializing heartbeat")
+        heart = Heartbeat(config.heartbeat.url)
 
     # Load environment and extract dataset
     logger.info(
@@ -237,7 +254,6 @@ async def orchestrate(config: OrchestratorConfig):
                     eval_config=config.eval,
                     model_config=config.model,
                     sampling_config=config.eval.sampling,
-                    client_config=config.client,
                     evals_client=evals_client,
                     output_dir=config.output_dir,
                     ckpt_step=ckpt_step,
@@ -414,17 +430,9 @@ async def orchestrate(config: OrchestratorConfig):
         # Log metrics to W&B
         monitor.log(to_log)
 
-        # Log samples and distributions to W&B table if enabled
+        # Log samples to W&B table if enabled
         subset_train_rollouts = random.sample(train_rollouts, min(8, len(train_rollouts)))
         monitor.log_samples(subset_train_rollouts, step=progress.step)
-
-        distributions = {
-            "rewards": results_df.reward.tolist(),
-            "problem_rewards": results_df.groupby("example_id").reward.mean().tolist(),
-        }
-
-        # Log distributions to W&B table
-        monitor.log_distributions(distributions=distributions, step=progress.step)
 
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} |{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.groupby('example_id').seq_len.mean().mean():.1f} tokens/sample | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
         logger.success(step_message)
@@ -433,6 +441,10 @@ async def orchestrate(config: OrchestratorConfig):
         progress.step += 1
         is_first_step = False
 
+        # Send heartbeat if configured
+        if heart is not None:
+            heart.beat()
+
     if config.eval:
         logger.info("Running final evals")
         await run_evals(
@@ -440,16 +452,14 @@ async def orchestrate(config: OrchestratorConfig):
             eval_config=config.eval,
             model_config=config.model,
             sampling_config=config.eval.sampling,
-            client_config=config.client,
             evals_client=evals_client,
             output_dir=config.output_dir,
             ckpt_step=scheduler.ckpt_step,
             step=progress.step,
         )
 
-    # Log final (immutable) samples and distributions to W&B table
+    # Log final (immutable) samples to W&B table
     monitor.log_final_samples()
-    monitor.log_final_distributions()
     monitor.save_final_summary()
 
     # Write final checkpoint

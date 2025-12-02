@@ -49,6 +49,7 @@ orchestrator = "prime_rl.orchestrator.orchestrator:main"
 inference = "prime_rl.inference.server:main"
 sft = "prime_rl.trainer.sft.train:main"
 eval = "prime_rl.eval.eval:main"
+synthesize = "prime_rl.synthesize.synthesize:main"
 
 [dependency-groups]
 dev = [
