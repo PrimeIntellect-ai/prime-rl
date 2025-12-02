@@ -36,11 +36,22 @@ jobs:
                   # Find all nightly test files
                   files=$(ls tests/nightly/test_*.py)
 
+                  # Filter to specific test file if provided in workflow_dispatch
+                  if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.test_file }}" ]; then
+                      # Filter to only the specified test file
+                      filtered=$(echo "$files" | grep -F "${{ github.event.inputs.test_file }}" || true)
+                      if [ -z "$filtered" ]; then
+                          echo "Error: Test file '${{ github.event.inputs.test_file }}' not found"
+                          exit 1
+                      fi
+                      files="$filtered"
+                  fi
+
                   echo "Discovered nightly tests:"
                   echo "$files"
 
                   # Build JSON of the form: { "test_file": ["tests/nightly/test_a.py", ...] }
-                  json=$(printf '%s\n' "$files" | jq -R . | jq -s '{test_file: .}')
+                  json=$(printf '%s\n' "$files" | jq -R . | jq -sc '{test_file: .}')
 
                   echo "matrix=$json" >> "$GITHUB_OUTPUT"
     run-experiments:
@@ -51,14 +62,6 @@ jobs:
             fail-fast: false
             matrix: ${{ fromJSON(needs.discover-experiments.outputs.matrix) }}
 
-        # For PRs & schedule: run all matrix entries.
-        # For manual runs:
-        #   - if inputs.test_file == "" → run all
-        #   - else only run the matching test_file
-        if: >
-            github.event_name != 'workflow_dispatch' ||
-            github.event.inputs.test_file == '' ||
-            inputs.test_file == github.event.inputs.test_file
         steps:
             - name: Checkout repository
               uses: actions/checkout@v4
