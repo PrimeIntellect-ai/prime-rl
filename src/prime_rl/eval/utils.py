@@ -181,6 +181,9 @@ async def generate_and_save_group(
         return states
     except Exception as e:
         logger.error(f"Error evaluating group {index}: {repr(e)}")
+        import traceback
+
+        logger.debug(f"Traceback for group {index}:\n{traceback.format_exc()}")
 
 
 async def run_eval(
