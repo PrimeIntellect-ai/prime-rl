@@ -2,7 +2,7 @@ name: CPU Tests
 
 on:
   push:
-    branches: [main, refactor]
+    branches: [main]
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
 
