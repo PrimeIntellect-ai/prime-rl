@@ -39,4 +39,5 @@ rollouts_per_example = 32
 [trainer.model.ac]
 
 [inference.parallel]
-dp = 6
+dp = 3
+tp = 2
