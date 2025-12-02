@@ -33,3 +33,4 @@ max_tokens = 128
 id = "reverse-text"
 
 [inference]
+enable_lora = true
