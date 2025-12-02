@@ -1,10 +1,5 @@
 # coding=utf-8
-# Copyright 2022 EleutherAI and the HuggingFace Inc. team. All rights reserved.
-#
-# This code is based on EleutherAI's GPT-NeoX library and the GPT-NeoX
-# and OPT implementations in this library. It has been modified from its
-# original forms to accommodate minor architectural differences compared
-# to GPT-NeoX and OPT used by the Meta AI team that trained the model.
+# Copyright 2025 The ZhipuAI Inc. team and HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,57 +12,73 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 from typing import Optional, Union
 
 import torch
-from torch import nn
+from torch import Tensor, nn
 from transformers.cache_utils import Cache
 from transformers.generation import GenerationMixin
-from transformers.modeling_layers import (
-    GradientCheckpointingLayer,
-)
-from transformers.modeling_outputs import (
-    BaseModelOutputWithPast,
-    CausalLMOutputWithPast,
-)
-from transformers.modeling_utils import PreTrainedModel
-from transformers.models.llama.configuration_llama import LlamaConfig
+from transformers.modeling_layers import GradientCheckpointingLayer
+from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
 from transformers.processing_utils import Unpack
-from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple, logging
+from transformers.utils import TransformersKwargs, auto_docstring
 from transformers.utils.deprecation import deprecate_kwarg
 
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.glm4_moe.configuration_glm4_moe import Glm4MoeConfig
+from prime_rl.trainer.models.glm4_moe.converting_glm4_moe import (
+    convert_hf_layer_to_tt,
+    convert_hf_to_tt_moe,
+    convert_tt_layer_to_hf,
+    convert_tt_to_hf_moe,
+)
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
+from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 
-logger = logging.get_logger(__name__)
 
-
-class LlamaDecoderLayer(GradientCheckpointingLayer):
-    def __init__(self, config: LlamaConfig, layer_idx: int):
+class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
+    def __init__(self, config: Glm4MoeConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
-
         attn_config = AttentionConfig(
             hidden_size=config.hidden_size,
-            head_dim=config.hidden_size // config.num_attention_heads,
+            head_dim=getattr(config, "head_dim", config.hidden_size // config.num_attention_heads),
             num_attention_heads=config.num_attention_heads,
             num_key_value_heads=config.num_key_value_heads,
             is_causal=True,
             attention_bias=config.attention_bias,
-            use_qk_norm=False,
+            use_qk_norm=config.use_qk_norm,
             rms_norm_eps=config.rms_norm_eps,
         )
         self.self_attn = ATTN_IMPL2CLASS[config._attn_implementation](attn_config)
 
+        moe_args = MoEArgs(
+            num_experts=config.n_routed_experts,
+            num_shared_experts=config.n_shared_experts,
+            score_func="sigmoid",
+            route_norm=config.norm_topk_prob,
+            route_scale=config.routed_scaling_factor,
+            score_before_experts=False,
+            top_k=config.num_experts_per_tok,
+            load_balance_coeff=1e-3,
+            use_grouped_mm=config.use_grouped_mm,
+        )
         mlp_config = MLPConfig(
             hidden_size=config.hidden_size,
             intermediate_size=config.intermediate_size,
             gate_act=config.hidden_act,
-            bias=config.mlp_bias,
+            bias=False,
         )
-        self.mlp = MLP(mlp_config)
+
+        if layer_idx >= config.first_k_dense_replace:
+            self.mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
+        else:
+            self.mlp = MLP(mlp_config)
+
         self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
         self.post_attention_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
 
@@ -99,35 +110,74 @@ class LlamaDecoderLayer(GradientCheckpointingLayer):
 
 
 @auto_docstring
-class LlamaPreTrainedModel(PreTrainedModel):
-    config: LlamaConfig
+class Glm4MoePreTrainedModel(PreTrainedModelPrimeRL):
+    config: Glm4MoeConfig
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
-    _no_split_modules = ["LlamaDecoderLayer"]
+    _no_split_modules = ["Glm4MoeDecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
     _supports_flash_attn = True
     _supports_sdpa = True
     _supports_flex_attn = True
-
-    _can_compile_fullgraph = True
+    _can_compile_fullgraph = False
     _supports_attention_backend = True
     _can_record_outputs = {
-        "hidden_states": LlamaDecoderLayer,
+        "hidden_states": Glm4MoeDecoderLayer,
     }
+
+    def _init_weights(self, module):
+        super()._init_weights(module)
+
+    @classmethod
+    def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
+        """Check if the state dict contains MoE layers in HuggingFace format."""
+        return any("mlp.experts.1.up_proj" in module_name for module_name in state_dict.keys())
+
+    @classmethod
+    def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
+        """Check if the state dict contains MoE layers in PrimeRL training format."""
+        return any("mlp.experts.w1" in module_name for module_name in state_dict.keys())
+
+    @classmethod
+    def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+        """Convert MoE weights from PrimeRL training format to HuggingFace format in-place."""
+        convert_tt_to_hf_moe(state_dict)
+        return state_dict
+
+    @classmethod
+    def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+        """Convert MoE weights from HuggingFace format to PrimeRL training format in-place."""
+        convert_hf_to_tt_moe(state_dict)
+        return state_dict
+
+    @classmethod
+    def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
+        """Convert a single layer's MoE weights from PrimeRL format to HuggingFace format in-place."""
+        convert_tt_layer_to_hf(state_dict, layer_idx)
+        return state_dict
+
+    @classmethod
+    def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
+        """Convert a single layer's MoE weights from HuggingFace format to PrimeRL format in-place."""
+        convert_hf_layer_to_tt(state_dict, layer_idx)
+        return state_dict
 
 
 @auto_docstring
-class LlamaModel(LlamaPreTrainedModel):
-    def __init__(self, config: LlamaConfig):
+class Glm4MoeModel(Glm4MoePreTrainedModel):
+    _keys_to_ignore_on_load_unexpected = [r"model\.layers\.92.*", r"model\.layers\.46.*"]
+
+    def __init__(self, config: Glm4MoeConfig):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList(
-            [LlamaDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+            [Glm4MoeDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
         self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
+
         if hasattr(config, "rope_scaling") and isinstance(config.rope_scaling, dict):
             rope_type = config.rope_scaling.get("rope_type", config.rope_scaling.get("type"))
         else:
@@ -184,28 +234,24 @@ class LlamaModel(LlamaPreTrainedModel):
             )
 
         hidden_states = self.norm(hidden_states)
-        return BaseModelOutputWithPast(
-            last_hidden_state=hidden_states,
-        )
+        return BaseModelOutputWithPast(last_hidden_state=hidden_states)
 
 
 @auto_docstring
-class LlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
+class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
     _tied_weights_keys = ["lm_head.weight"]
     _tp_plan = {"lm_head": "colwise_rep"}
     _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
 
     def __init__(self, config):
         super().__init__(config)
-
-        self.model = LlamaModel(config)
+        self.model = Glm4MoeModel(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
         # Initialize weights and apply final processing
         self.post_init()
 
-    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -223,10 +269,10 @@ class LlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
         Example:
 
         ```python
-        >>> from transformers import AutoTokenizer, LlamaForCausalLM
+        >>> from transformers import AutoTokenizer, Glm4MoeForCausalLM
 
-        >>> model = LlamaForCausalLM.from_pretrained("meta-llama/Llama-2-7b-hf")
-        >>> tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
+        >>> model = Glm4MoeForCausalLM.from_pretrained("meta-glm4_moe/Glm4Moe-2-7b-hf")
+        >>> tokenizer = AutoTokenizer.from_pretrained("meta-glm4_moe/Glm4Moe-2-7b-hf")
 
         >>> prompt = "Hey, are you conscious? Can you talk to me?"
         >>> inputs = tokenizer(prompt, return_tensors="pt")
@@ -267,3 +313,19 @@ class LlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
+
+    def init_buffers_post_meta(self):
+        buffer_names = [name for name, _ in self.named_buffers()]
+        # HF standard transformer model
+        if "model.rotary_emb.inv_freq" in buffer_names:
+            rotary_emb = self.model.rotary_emb
+            inv_freq, rotary_emb.attention_scaling = rotary_emb.rope_init_fn(
+                rotary_emb.config, rotary_emb.inv_freq.device
+            )
+            rotary_emb.inv_freq.copy_(inv_freq)
+
+        # TODO: Init TT MoE buffers
+        # I think .to_empty() on gpu by default fills 0 so we are ok but this might not be guaranteed behavior
+
+
+__all__ = ["Glm4MoeConfig", "Glm4MoePreTrainedModel", "Glm4MoeModel", "Glm4MoeForCausalLM"]

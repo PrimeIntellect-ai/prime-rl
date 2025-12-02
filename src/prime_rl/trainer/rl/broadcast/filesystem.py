@@ -6,13 +6,12 @@ import torch.nn as nn
 
 from prime_rl.trainer.config import LoRAConfig
 from prime_rl.trainer.lora import save_lora_config
+from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.rl.config import FileSystemWeightBroadcastConfig
 from prime_rl.trainer.weights import (
-    convert_tt_to_hf_moe,
     gather_weights_on_master,
     get_adapter_state_dict,
-    has_tt_moe_layers,
     save_state_dict,
 )
 from prime_rl.trainer.world import get_world
@@ -43,9 +42,9 @@ class FileSystemWeightBroadcast(WeightBroadcast):
             state_dict = gather_weights_on_master(model, is_master=self.world.is_master)
 
         if self.world.is_master:
-            # Convert TT-MoE layers to HF format if needed
-            if has_tt_moe_layers(state_dict):
-                convert_tt_to_hf_moe(state_dict)
+            # Convert PrimeRL format to HF format if needed
+            if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
+                model.convert_to_hf(state_dict)
 
             # Save weights to shared filesystem
             save_dir = get_step_path(self.broadcast_dir, step)

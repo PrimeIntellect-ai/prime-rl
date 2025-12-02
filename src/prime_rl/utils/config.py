@@ -1,6 +1,6 @@
 from typing import Annotated, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field
 
 from prime_rl.utils.pydantic_config import BaseConfig
 
@@ -51,19 +51,6 @@ class ClientConfig(BaseConfig):
             description="Headers to use for the OpenAI API. By default, it is set to an empty dictionary.",
         ),
     ] = {}
-
-    server_type: Annotated[
-        ServerType,
-        Field(
-            description="Type of inference server that the client is connected to. Can be 'vllm' or 'openai'. Defaults to vLLM, which is our default client for training.",
-        ),
-    ] = "vllm"
-
-    @model_validator(mode="after")
-    def auto_setup_server_type(self):
-        if any(base_url == "https://api.openai.com/v1" for base_url in self.base_url):
-            self.server_type = "openai"
-        return self
 
 
 class LogConfig(BaseConfig):

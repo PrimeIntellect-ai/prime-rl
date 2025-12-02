@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -48,6 +48,15 @@ class SamplingConfig(BaseConfig):
             description="Random seed to use for sampling. If None, no seeding is used.",
         ),
     ] = None
+
+    # Strictly speaking, extra_body is not a sampling parameter, but it is the
+    # easiest way to pass arbitrary extra parameters to the server via verifiers
+    extra_body: Annotated[
+        dict[str, Any],
+        Field(
+            description="Extra body to pass with each request to the inference server. By default, it is set to an empty dictionary.",
+        ),
+    ] = {}
 
 
 class EvalSamplingConfig(BaseConfig):
@@ -117,6 +126,15 @@ class EvalSamplingConfig(BaseConfig):
             description="Random seed to use for sampling. If None, no seeding is used. Defaults to None, which means we fall back to the inference server's default value.",
         ),
     ] = None
+
+    # Strictly speaking, extra_body is not a sampling parameter, but it is the
+    # easiest way to pass arbitrary extra parameters to the server via verifiers
+    extra_body: Annotated[
+        dict[str, Any],
+        Field(
+            description="Extra body to use for the OpenAI API. By default, it is set to an empty dictionary.",
+        ),
+    ] = {}
 
 
 class EvalSaveDiskConfig(BaseConfig):
@@ -194,6 +212,13 @@ class EvalEnvConfig(EnvConfig):
             description="Number of samples to generate per example for each environment. If not set, will use 'rollouts_per_example' from main config."
         ),
     ] = None
+
+    skip_first: Annotated[
+        int,
+        Field(
+            description="Number of examples to skip from the beginning of the dataset.",
+        ),
+    ] = 0
 
 
 class ValConfig(BaseConfig):
