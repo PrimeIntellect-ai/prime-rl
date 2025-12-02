@@ -3,26 +3,25 @@ import time
 from itertools import cycle
 from typing import NamedTuple
 
+import verifiers as vf
 from httpx import AsyncClient
 from openai import AsyncOpenAI
 from tqdm import tqdm
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from verifiers import Environment
-from verifiers.types import GenerateOutputs, ProcessedOutputs
 
-from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.config import OrchestratorConfig
-from prime_rl.orchestrator.utils import get_sampling_args, parse_is_truncated_completions
+from prime_rl.orchestrator.utils import get_sampling_args
 from prime_rl.utils.client import update_weights
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import (
     get_broadcast_dir,
     get_latest_ckpt_step,
     get_step_path,
-    sync_wait_for_path,
+    wait_for_path,
 )
-from prime_rl.utils.vf import Rollout, generate_group, make_rollouts
+from prime_rl.utils.vf import generate_group
 
 
 class InflightRolloutInfo(NamedTuple):
@@ -76,49 +75,6 @@ class Scheduler:
         self.sampling_args = get_sampling_args(config.sampling)
         self.model_name = self.config.model.name
 
-    def process_generate_outputs(
-        self,
-        generate_outputs: GenerateOutputs,
-    ) -> list[Rollout]:
-        processed_outputs: ProcessedOutputs = self.env.process_env_results_vllm(
-            prompts=generate_outputs.prompt,
-            completions=generate_outputs.completion,
-            states=generate_outputs.state,
-            rewards=generate_outputs.reward,
-            processing_class=self.tokenizer,
-            max_seq_len=self.seq_len,
-            mask_env_responses=self.config.mask_env_responses,
-            zero_truncated_completions=self.config.zero_truncated_completions,
-            mask_truncated_completions=self.config.mask_truncated_completions,
-        )
-
-        # Compute advantages
-        advantages = compute_advantages(
-            rewards=processed_outputs.rewards,
-            completion_lengths=list(map(len, processed_outputs.completion_ids)),
-            samples_per_problem=self.config.rollouts_per_example,
-            advantage_config=self.config.advantage,
-        )
-
-        # Parse whether the completions were truncated
-        responses = [state["responses"] for state in generate_outputs.state]
-        is_truncated = parse_is_truncated_completions(responses=responses)
-
-        # Make rollouts
-        rollouts = make_rollouts(
-            generate_outputs,
-            processed_outputs,
-            advantages,
-            is_truncated,
-        )
-
-        # Update and sample rollouts from the buffer
-        self.buffer.update(rollouts)
-        num_problems = len(set(generate_outputs.example_id))
-        accepted_rollouts = self.buffer.sample_rollouts(n=num_problems * self.config.rollouts_per_example)
-
-        return accepted_rollouts
-
     async def schedule_group_rollout(self, client: AsyncOpenAI | None = None):
         """Asynchronously schedules a group rollout request."""
         problem = self.buffer.sample_problems(n=1)[0]
@@ -129,7 +85,7 @@ class Scheduler:
                 client=client,
                 env=self.env,
                 model_name=self.model_name,
-                problem=problem,
+                example=problem,
                 rollouts_per_example=self.config.rollouts_per_example,
                 sampling_args=self.sampling_args,
             )
@@ -152,11 +108,8 @@ class Scheduler:
         )
         if next_ckpt_step > self.ckpt_step:
             if next_ckpt_step == async_away_ckpt_step:
-                self.logger.info(
-                    f"Hit async barrier because we are >{self.max_async_level} step(s) async. Waiting for checkpoint {next_ckpt_step}"
-                )
                 wait_for_ckpt_start_time = time.perf_counter()
-                sync_wait_for_path(get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
+                await wait_for_path(get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
                 self.wait_for_ckpt_time = time.perf_counter() - wait_for_ckpt_start_time
                 self.logger.debug(f"Waited for checkpoint {next_ckpt_step} for {self.wait_for_ckpt_time:.2f}s")
             self.logger.debug(
@@ -179,39 +132,69 @@ class Scheduler:
             tasks_to_update = []
 
             for task, (off_policy_steps, client) in self.inflight_group_rollouts.items():
-                if off_policy_steps > self.max_off_policy_steps:
-                    task.cancel()
+                if off_policy_steps > self.max_off_policy_steps and task.cancel():
                     tasks_to_remove.append((task, client))
                 else:
                     tasks_to_update.append((task, off_policy_steps + 1, client))
 
             # Remove cancelled tasks
             for task, client in tasks_to_remove:
-                self.inflight_group_rollouts.pop(task)
-                await self.schedule_group_rollout(client)
+                if self.inflight_group_rollouts.pop(task, None):
+                    await self.schedule_group_rollout(client)
 
             # Update retention steps for remaining tasks
             for task, off_policy_steps, client in tasks_to_update:
-                self.inflight_group_rollouts[task] = InflightRolloutInfo(
-                    off_policy_steps=off_policy_steps, client=client
-                )
+                if self.inflight_group_rollouts.get(task, None):
+                    self.inflight_group_rollouts[task] = InflightRolloutInfo(
+                        off_policy_steps=off_policy_steps, client=client
+                    )
+
             if len(tasks_to_remove) > 0:
                 self.logger.warning(f"Cancelled and re-scheduled {len(tasks_to_remove)} old rollout requests.")
 
             self.ckpt_step = next_ckpt_step
 
-    async def generate_batch(self, step: int, semaphore: asyncio.Semaphore | None = None) -> list[Rollout]:
+    async def generate_batch(self, step: int) -> list[vf.State]:
         """Continuously schedules group rollouts, allowing them to be in-flight across steps."""
         self.step = step
 
         # Schedule initial tasks
         self.logger.debug("Starting to generate batch rollouts")
         while len(self.inflight_group_rollouts) < self.problems_per_batch:
+            if self.async_level > self.max_async_level:
+                self.logger.debug(
+                    f"Initial fill paused at {len(self.inflight_group_rollouts)} due to async barrier (level {self.async_level})."
+                )
+                break
             await self.schedule_group_rollout()  # Schedule requests in round-robin fashion
 
-        batch_rollouts: list[Rollout] = []
+        batch_rollouts: list[vf.State] = []
         pbar = tqdm(total=self.config.batch_size, desc="Generating rollouts (train)")
+        was_waiting = False
+
         while len(batch_rollouts) < self.config.batch_size:
+            if not self.inflight_group_rollouts:
+                if self.async_level > self.max_async_level:
+                    # Async barrier active: We are too far ahead of the trainer.
+                    # We have no inflight rollouts to process, so we must wait.
+                    # We use asyncio.sleep to yield control to the event loop, allowing
+                    # the concurrent update_policy_loop to run, fetch new checkpoints,
+                    # and eventually reduce self.async_level.
+                    if not was_waiting:
+                        self.logger.info(
+                            f"Async barrier active (async_level={self.async_level} > max_level={self.max_async_level}). No longer scheduling group rollouts. Waiting for trainer to catch up..."
+                        )
+                        was_waiting = True
+                        pbar.set_description("Waiting for trainer")
+                    await asyncio.sleep(0.1)
+                    continue
+                elif was_waiting:
+                    self.logger.info("Async barrier cleared. Resuming rollout generation.")
+                    pbar.set_description("Generating rollouts (train)")
+                    was_waiting = False
+
+                await self.schedule_group_rollout()
+
             finished_group_rollouts, _ = await asyncio.wait(
                 self.inflight_group_rollouts, return_when=asyncio.FIRST_COMPLETED
             )
@@ -221,14 +204,24 @@ class Scheduler:
                     batch_rollouts = batch_rollouts[: self.config.batch_size]
                     break
 
-                _, client = self.inflight_group_rollouts.pop(finished_group_rollout)
-                generate_outputs: GenerateOutputs = finished_group_rollout.result()
+                # Safely pop the task info. If it returns None, the task was removed externally.
+                # This handles the race condition where update_policy() might have concurrently
+                # cancelled the task and removed it from inflight_group_rollouts.
+                popped_info = self.inflight_group_rollouts.pop(finished_group_rollout, None)
+                if popped_info is None:
+                    continue
+                _, client = popped_info
 
-                accepted_rollouts = self.process_generate_outputs(generate_outputs=generate_outputs)
+                group_states: list[vf.State] = finished_group_rollout.result()
+
+                self.buffer.update(group_states)
+                accepted_rollouts = self.buffer.sample_rollouts(n=self.config.rollouts_per_example)
+
                 batch_rollouts.extend(accepted_rollouts)
                 pbar.update(len(accepted_rollouts))
 
-                await self.schedule_group_rollout(client)
+                if self.async_level <= self.max_async_level:
+                    await self.schedule_group_rollout(client)
 
             self.logger.debug(
                 f"Got {len(batch_rollouts)} rollout(s) in batch. Need {self.config.batch_size - len(batch_rollouts)} more."

@@ -17,7 +17,7 @@ from prime_rl.utils.client import (
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
-from prime_rl.utils.utils import clean_exit, get_step_path
+from prime_rl.utils.utils import clean_exit, get_env_ids_to_install, get_step_path, install_env
 
 
 @clean_exit
@@ -28,10 +28,14 @@ async def eval(config: OfflineEvalConfig):
     )
     vf.setup_logging(level=config.log.vf_level.upper())
 
-    logger.info("Starting evaluation")
-    logger.info(f"Model: {config.model}")
-    logger.info(f"Environments: {', '.join([env.name or env.id for env in config.env])}")
-    logger.info(f"Sampling: {config.sampling}")
+    env_names = [env.name or env.id for env in config.env]
+    logger.info(f"Starting evals for {config.model.name} in environments {', '.join(env_names)}")
+    logger.info(f"Using sampling config {config.sampling}")
+
+    # Install environments
+    env_ids_to_install = get_env_ids_to_install(config.env)
+    for env_id in env_ids_to_install:
+        install_env(env_id)
 
     # Initialize the monitor
     logger.info(f"Initializing monitor ({config.wandb})")
@@ -43,7 +47,7 @@ async def eval(config: OfflineEvalConfig):
 
     # Setup clients
     logger.info(
-        f"Initializing OpenAI client (base_url={', '.join(config.client.base_url)}, api_key_var={config.client.api_key_var}, server_type={config.client.server_type}, headers={config.client.headers})"
+        f"Initializing OpenAI client (base_url={', '.join(config.client.base_url)}, api_key_var={config.client.api_key_var}, headers={config.client.headers})"
     )
     clients = setup_clients(config.client)
     admin_clients = setup_admin_clients(config.client)
@@ -60,9 +64,7 @@ async def eval(config: OfflineEvalConfig):
     await reload_weights(admin_clients)
 
     # Run benchmarks on base model
-    if config.max_concurrent is not None:
-        semaphore = asyncio.Semaphore(config.max_concurrent)
-        set_semaphore(semaphore)
+    await set_semaphore(config.max_concurrent or -1)
     if config.eval_base:
         logger.info(f"Evaluating model {config.model.name}")
         await run_evals(
@@ -70,7 +72,6 @@ async def eval(config: OfflineEvalConfig):
             eval_config=config,
             model_config=config.model,
             sampling_config=config.sampling,
-            client_config=config.client,
             evals_client=evals_client,
             output_dir=config.output_dir,
             ckpt_step=0,
@@ -98,7 +99,6 @@ async def eval(config: OfflineEvalConfig):
                 eval_config=config,
                 model_config=config.model,
                 sampling_config=config.sampling,
-                client_config=config.client,
                 evals_client=evals_client,
                 output_dir=config.output_dir,
                 ckpt_step=ckpt_step,

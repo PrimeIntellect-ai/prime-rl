@@ -1,11 +1,11 @@
-import asyncio
-from typing import Any
+from typing import Any, AsyncContextManager
 
 import pandas as pd
 from openai.types.chat.chat_completion import ChatCompletion, Choice
 from openai.types.completion_usage import CompletionUsage
 from rich.console import Console
 from rich.table import Table
+from verifiers.utils.async_utils import maybe_semaphore
 
 from prime_rl.orchestrator.config import SamplingConfig
 from prime_rl.utils.utils import (
@@ -13,16 +13,17 @@ from prime_rl.utils.utils import (
     format_time,
 )
 
-SEMAPHORE: asyncio.Semaphore | None = None
+SEMAPHORE: AsyncContextManager | None = None
 
 
-def set_semaphore(semaphore: asyncio.Semaphore):
+async def set_semaphore(limit: int):
     global SEMAPHORE
-    SEMAPHORE = semaphore
+    SEMAPHORE = await maybe_semaphore(limit)
 
 
-def get_semaphore() -> asyncio.Semaphore | None:
+async def get_semaphore() -> AsyncContextManager:
     global SEMAPHORE
+    assert SEMAPHORE is not None, "Semaphore not set"
     return SEMAPHORE
 
 
@@ -33,7 +34,9 @@ def get_sampling_args(sampling_config: SamplingConfig) -> dict:
     sampling_args["top_p"] = 1.0
     sampling_args["logprobs"] = True
     sampling_args["extra_body"] = {
-        "return_tokens_as_token_ids": True,
+        **sampling_config.extra_body,
+        "return_token_ids": True,  # Always return token IDs
+        "prompt_logprobs": True,  # Always return prompt logprobs
         "top_k": -1,
         "min_p": 0.0,
     }

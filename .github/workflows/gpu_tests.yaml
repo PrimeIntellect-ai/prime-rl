@@ -72,6 +72,7 @@ jobs:
           # This is to allow running tests on forks without WANDB_API_KEY
           WANDB_MODE: ${{ secrets.WANDB_API_KEY && 'online' || 'offline' }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
           GITHUB_HEAD_REF: ${{ github.head_ref }}

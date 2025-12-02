@@ -3,11 +3,11 @@ import random
 from copy import deepcopy
 
 import pytest
+import verifiers as vf
 from datasets import Dataset
 
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.config import BufferConfig
-from prime_rl.utils.vf import Rollout
 
 
 @pytest.fixture(autouse=True)
@@ -45,24 +45,17 @@ def make_rollouts():
 
     def _make_rollouts(
         dataset: Dataset, rewards: list[float] | None = None, advantages: list[float] | None = None
-    ) -> list[Rollout]:
+    ) -> list[vf.State]:
         rollouts = []
         rewards = rewards or [1.0] * len(dataset)
         advantages = advantages or [1.0] * len(dataset)
         for i, (reward, advantage) in enumerate(zip(rewards, advantages)):
             problem_rollouts = [
-                Rollout(
+                vf.State(
                     example_id=i,
                     task="default",
-                    prompt_ids=[0],
-                    prompt_mask=[1],
-                    completion_ids=[1],
-                    completion_mask=[1],
-                    completion_logprobs=[0.0],
-                    is_truncated=False,
                     reward=reward,
                     advantage=advantage,
-                    metrics={},
                 )
             ] * 2
             rollouts.extend(problem_rollouts)
@@ -72,20 +65,21 @@ def make_rollouts():
 
 
 def test_buffer_init(dataset):
-    Buffer(dataset, BufferConfig())
+    buffer_config = BufferConfig()
+    Buffer(dataset, buffer_config)
 
 
 def test_buffer_sample_problems(dataset):
-    buffer = Buffer(dataset, BufferConfig())
+    buffer_config = BufferConfig()
+    buffer = Buffer(dataset, buffer_config)
     sampled_problems = buffer.sample_problems(2)
     assert sampled_problems[0] == {"example_id": 0, "problem": "0"}
     assert sampled_problems[1] == {"example_id": 4, "problem": "4"}
 
 
 def test_buffer_sample_problems_with_difficulty_pools(difficulty_dataset, make_rollouts):
-    buffer = Buffer(
-        difficulty_dataset, BufferConfig(easy_fraction=0.5, hard_fraction=0.5, easy_threshold=1.0, hard_threshold=0.0)
-    )
+    buffer_config = BufferConfig(easy_fraction=0.5, hard_fraction=0.5, easy_threshold=1.0, hard_threshold=0.0)
+    buffer = Buffer(difficulty_dataset, buffer_config)
     # First, set up difficulties by updating with rollouts
     # Set problems 0,1 to easy (advantage=0, reward=1.0), problem 4 to hard (advantage=0, reward=0.0)
     rollouts = make_rollouts(
@@ -102,7 +96,8 @@ def test_buffer_sample_problems_with_difficulty_pools(difficulty_dataset, make_r
 
 
 def test_buffer_sample_rollouts(dataset, make_rollouts):
-    buffer = Buffer(dataset, BufferConfig(online_difficulty_filtering=False))
+    buffer_config = BufferConfig(online_difficulty_filtering=False)
+    buffer = Buffer(dataset, buffer_config)
     # Use rewards that won't be filtered (0.5 instead of 1.0)
     rollouts = make_rollouts(dataset, rewards=[0.5] * len(dataset))
     buffer.update(rollouts)
@@ -112,7 +107,8 @@ def test_buffer_sample_rollouts(dataset, make_rollouts):
 
 
 def test_buffer_sample_rollouts_more_than_available(dataset, make_rollouts):
-    buffer = Buffer(dataset, BufferConfig(online_difficulty_filtering=False))
+    buffer_config = BufferConfig(online_difficulty_filtering=False)
+    buffer = Buffer(dataset, buffer_config)
     # Use rewards that won't be filtered (0.5 instead of 1.0)
     rollouts = make_rollouts(dataset, rewards=[0.5] * len(dataset))
     buffer.update(rollouts)
@@ -122,7 +118,8 @@ def test_buffer_sample_rollouts_more_than_available(dataset, make_rollouts):
 
 
 def test_buffer_update_with_advantage_nonzero(difficulty_dataset, make_rollouts):
-    buffer = Buffer(difficulty_dataset, BufferConfig())
+    buffer_config = BufferConfig()
+    buffer = Buffer(difficulty_dataset, buffer_config)
     # Rollouts with advantage != 0 should be added to buffer and marked as normal
     rollouts = make_rollouts(
         difficulty_dataset, rewards=[0.5, 0.5, 0.5, 0.5, 0.5], advantages=[1.0, 1.0, 1.0, 1.0, 1.0]
@@ -137,10 +134,8 @@ def test_buffer_update_with_advantage_nonzero(difficulty_dataset, make_rollouts)
 
 def test_buffer_online_difficulty_filtering(dataset, make_rollouts):
     """Test that only rollouts with avg_reward == 0.0 or 1.0 are filtered."""
-    buffer = Buffer(
-        dataset,
-        BufferConfig(online_difficulty_filtering=True, easy_threshold=1.0, hard_threshold=0.0),
-    )
+    buffer_config = BufferConfig(online_difficulty_filtering=True, easy_threshold=1.0, hard_threshold=0.0)
+    buffer = Buffer(dataset, buffer_config)
     # Mix of rewards: 1.0 (filtered), 0.5 (kept), 0.0 (filtered), 0.5 (kept), 0.5 (kept)
     rollouts = make_rollouts(dataset, rewards=[1.0, 0.5, 0.0, 0.5, 0.5])
     buffer.update(rollouts)

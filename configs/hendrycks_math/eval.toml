@@ -1,0 +1,5 @@
+[sampling]
+max_tokens = 2048
+
+[[env]]
+id = "math500"

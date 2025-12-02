@@ -25,7 +25,7 @@ from prime_rl.trainer.rl.config import FakeDataLoaderConfig
 from prime_rl.trainer.rl.config import FileSystemWeightBroadcastConfig as TrainerFileSystemWeightBroadcastConfig
 from prime_rl.trainer.rl.config import NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig
 from prime_rl.trainer.rl.config import RLTrainerConfig as TrainerConfig
-from prime_rl.utils.config import WandbMonitorConfig
+from prime_rl.utils.config import WandbConfig, WandbWithExtrasConfig
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pydantic_config import BaseSettings, get_temp_toml_file, parse_argv
 from prime_rl.utils.utils import (
@@ -45,7 +45,7 @@ from prime_rl.utils.validation import (
 )
 
 
-class LogConfig(BaseSettings):
+class SharedLogConfig(BaseSettings):
     """Configures shared logging."""
 
     level: Annotated[str | None, Field(description="The log level to use.")] = "info"
@@ -53,7 +53,7 @@ class LogConfig(BaseSettings):
     file: Annotated[bool | None, Field(description="Whether to log to a file.")] = True
 
 
-class WandbConfig(BaseSettings):
+class SharedWandbConfig(BaseSettings):
     """Configures shared W&B configs."""
 
     project: Annotated[str | None, Field(description="The W&B project to use.")] = "prime-rl"
@@ -63,7 +63,7 @@ class WandbConfig(BaseSettings):
     offline: Annotated[bool | None, Field(description="Whether to run W&B in offline mode.")] = False
 
 
-class CheckpointConfig(BaseSettings):
+class SharedCheckpointConfig(BaseSettings):
     """Configures shared checkpoint configs."""
 
     interval: Annotated[int | None, Field(description="The interval at which to save checkpoints.")] = 50
@@ -81,7 +81,7 @@ class CheckpointConfig(BaseSettings):
     ] = None
 
 
-class ModelConfig(BaseSettings):
+class SharedModelConfig(BaseSettings):
     """Configures shared model settings."""
 
     name: Annotated[
@@ -90,7 +90,7 @@ class ModelConfig(BaseSettings):
     ] = "Qwen/Qwen3-0.6B"
 
 
-class WeightBroadcastConfig(BaseSettings):
+class SharedWeightBroadcastConfig(BaseSettings):
     """Configures shared weight broadcast settings."""
 
     type: Annotated[Literal["nccl", "filesystem"], Field(description="The type of weight broadcast to use.")] = (
@@ -115,11 +115,11 @@ class RLConfig(BaseSettings):
     ### Top-level configurations
 
     log: Annotated[
-        LogConfig,
+        SharedLogConfig,
         Field(
             description="Shared log configs. If None, will fallback to the log configs specified on submodule configs."
         ),
-    ] = LogConfig()
+    ] = SharedLogConfig()
 
     clean: Annotated[
         bool,
@@ -139,21 +139,21 @@ class RLConfig(BaseSettings):
     ] = Path("outputs")  # NOTE: Must match `OUTPUT_DIR` in `tmux.sh` to see logs
 
     ckpt: Annotated[
-        CheckpointConfig | None,
+        SharedCheckpointConfig | None,
         Field(
             description="Shared checkpoint configs. If None, will fallback to the checkpoint configs specified on submodule configs."
         ),
     ] = None
 
     wandb: Annotated[
-        WandbConfig | None,
+        SharedWandbConfig | None,
         Field(
             description="Shared W&B configs. If None, will fallback to the W&B configs specified on submodule configs."
         ),
     ] = None
 
     model: Annotated[
-        ModelConfig | None,
+        SharedModelConfig | None,
         Field(
             description="Shared model configs. If None, will fallback to the model configs specified on submodule configs."
         ),
@@ -187,7 +187,9 @@ class RLConfig(BaseSettings):
         ),
     ] = False
 
-    weight_broadcast: Annotated[WeightBroadcastConfig | None, Field(description="The weight broadcast config.")] = None
+    weight_broadcast: Annotated[
+        SharedWeightBroadcastConfig | None, Field(description="The weight broadcast config.")
+    ] = None
 
     @model_validator(mode="after")
     def auto_setup_dp(self):
@@ -253,9 +255,9 @@ class RLConfig(BaseSettings):
         # If specified, automatically use shared W&B project for orchestrator and trainer
         if self.wandb is not None:
             if not self.trainer.wandb:
-                self.trainer.wandb = WandbMonitorConfig()
+                self.trainer.wandb = WandbConfig()
             if not self.orchestrator.wandb:
-                self.orchestrator.wandb = WandbMonitorConfig()
+                self.orchestrator.wandb = WandbWithExtrasConfig()
 
             if self.wandb.project:
                 self.trainer.wandb.project = self.wandb.project
@@ -425,30 +427,6 @@ def rl(config: RLConfig):
     start_command = sys.argv
     logger.info("Starting RL run")
     logger.debug(f"RL start command: {' '.join(start_command)}")
-
-    # Install any environments given in user/env-id format
-    env_ids_to_install = set()
-
-    # Collect training environment IDs
-    for env_config in config.orchestrator.env:
-        if "/" in env_config.id:
-            env_ids_to_install.add(env_config.id)
-
-    # Collect evaluation environment IDs
-    if config.orchestrator.eval:
-        for eval_env_config in config.orchestrator.eval.env:
-            if "/" in eval_env_config.id:
-                env_ids_to_install.add(eval_env_config.id)
-
-    # Install each environment
-    for env_id in env_ids_to_install:
-        logger.info(f"Installing environment: {env_id}")
-        install_cmd = ["uv", "run", "--no-sync", "prime", "env", "install", env_id]
-        result = subprocess.run(install_cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            logger.error(f"Failed to install environment {env_id}: {result.stderr}")
-            raise RuntimeError(f"Failed to install environment {env_id}")
-        logger.info(f"Successfully installed environment: {env_id}")
 
     # Prepare paths to communicate with the trainer
     log_dir = get_log_dir(config.output_dir)

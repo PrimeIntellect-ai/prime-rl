@@ -264,13 +264,15 @@ def parse_argv(config_cls: Type[T], allow_extras: bool = False) -> T:
     """
     toml_paths, cli_args = extract_toml_paths(sys.argv[1:])
     config_cls.set_toml_files(toml_paths)
-    if allow_extras:
-        cli_args, unknown_args = parse_unknown_args(cli_args, config_cls)
-    config = config_cls(_cli_parse_args=to_kebab_case(cli_args))
-    config_cls.clear_toml_files()
-    if allow_extras:
-        config.set_unknown_args(unknown_args)
-    return config
+    try:
+        if allow_extras:
+            cli_args, unknown_args = parse_unknown_args(cli_args, config_cls)
+        config = config_cls(_cli_parse_args=to_kebab_case(cli_args))
+        if allow_extras:
+            config.set_unknown_args(unknown_args)
+        return config
+    finally:
+        config_cls.clear_toml_files()  # Always clear, even on exception
 
 
 def get_temp_toml_file() -> Path:

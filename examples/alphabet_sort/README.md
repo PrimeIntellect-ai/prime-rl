@@ -1,6 +1,6 @@
 # Alphabet Sort
 
-In this example, we demonstrate how to train `Qwen3-4B-Instruct-2507` to sort names alphabetically using LoRA. Unlike other examples, this task doesn't require SFT warmup as the base model already understands the conversation format. We proceed directly to multi-turn RL against the [`kalomaze/alphabet-sort`](https://app.primeintellect.ai/dashboard/environments/kalomaze/alphabet-sort) environment.
+In this example, we demonstrate how to train `Qwen3-4B-Instruct-2507` to sort names alphabetically using LoRA. Unlike other examples, this task doesn't require SFT warmup as the base model already understands the conversation format. We proceed directly to multi-turn RL against the [`primeintellect/alphabet-sort`](https://app.primeintellect.ai/dashboard/environments/primeintellect/alphabet-sort) environment.
 
 > This example runs on a single H100 GPU.
 
@@ -8,7 +8,7 @@ In this example, we demonstrate how to train `Qwen3-4B-Instruct-2507` to sort na
 
 Install the environment:
 ```bash
-prime env install kalomaze/alphabet-sort
+prime env install primeintellect/alphabet-sort
 ```
 
 Verify installation:
@@ -94,16 +94,13 @@ We train with LoRA (rank 32, alpha 64) for 100 steps. By default, LoRA weights a
 *Check out the logs on [W&B](https://wandb.ai/primeintellect/alphabet-sort-4b-lora/workspace?nw=nwuserandrewpi).*
 ```bash
 # In the `Trainer` pane
-uv run rl \
-  --trainer @ examples/alphabet_sort/rl/train.toml \
-  --orchestrator @ examples/alphabet_sort/rl/orch.toml \
-  --inference @ examples/alphabet_sort/rl/infer.toml \
-  --model.name Qwen/Qwen3-4B-Instruct-2507 \
+uv run rl @ examples/alphabet_sort/rl.toml \
   --wandb.project ... \
   --wandb.name ...
 ```
 
 This will write a weight checkpoint in `outputs/weights/step_100`. Upload it to HF to be able to use it as the final model for evaluation.
+
 ```bash
 uv run hf upload <user>/Qwen3-4B-Instruct-AlphabetSort-RL outputs/weights/step_100
 ```
@@ -117,6 +114,7 @@ Let's see how our final RL checkpoint performs on the eval set.
 # In the `Inference` pane
 uv run inference --model.name PrimeIntellect/Qwen3-4B-Instruct-AlphabetSort-RL
 ```
+
 ```bash
 # In the `Trainer` pane
 uv run vf-eval alphabet-sort \

@@ -34,6 +34,7 @@ from prime_rl.trainer.utils import (
     print_benchmark,
 )
 from prime_rl.trainer.world import get_world
+from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format
@@ -59,6 +60,12 @@ def train(config: SFTTrainerConfig):
     # Setup the monitor
     logger.info(f"Initializing monitor ({config.wandb})")
     monitor = setup_monitor(config.wandb, output_dir=config.output_dir, run_config=config)
+
+    # Setup heartbeat (only on rank 0)
+    heart = None
+    if config.heartbeat is not None and world.rank == 0:
+        logger.info("Initializing heartbeat")
+        heart = Heartbeat(config.heartbeat.url)
 
     # Set precision
     setup_torch_distributed(
@@ -364,6 +371,10 @@ def train(config: SFTTrainerConfig):
         is_first_step = False
         progress.step += 1
 
+        # Send heartbeat if configured
+        if heart is not None:
+            heart.beat()
+
     if config.trace_path:
         prof.__exit__(None, None, None)
         config.trace_path.mkdir(parents=True, exist_ok=True)
@@ -371,9 +382,6 @@ def train(config: SFTTrainerConfig):
         logger.info(f"Saving trace to {trace_file}")
         prof.export_chrome_trace(trace_file)
         logger.info(f"Saved trace to {trace_file}")
-
-    # Log final (immutable) distributions to W&B table
-    monitor.log_final_distributions()
 
     # Write final checkpoint
     if ckpt_manager is not None:

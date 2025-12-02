@@ -43,10 +43,9 @@ To train on a single GPU, run
 
 ```bash
 # In the `Trainer` pane
-uv run sft @ examples/reverse_text/sft/train.toml \
+uv run sft @ examples/reverse_text/sft.toml \
   --wandb.project ... \
-  --wandb.name ... \
-  --weights
+  --wandb.name ...
 ```
 
 To train on multiple GPUs, run
@@ -54,11 +53,11 @@ To train on multiple GPUs, run
 ```bash
 # In the `Trainer` pane
 uv run torchrun \
+  --local-ranks-filter 0 \
   --nproc-per-node ... \
   src/prime_rl/trainer/sft/train.py @ examples/reverse_text/sft/train.toml \
   --wandb.project ... \
-  --wandb.name ... \
-  --weights
+  --wandb.name ...
 ```
 
 This should write a weight checkpoint in `outputs/weights/step_100`. Upload it to HF to be able to use it as the base model for RL.
@@ -78,10 +77,7 @@ For the RL we will only do 20 steps at 8x16 rollouts, for a total batch size of 
 
 ```bash
 # Run this in the `Trainer` pane
-uv run rl \
-  --trainer @ examples/reverse_text/rl/train.toml \
-  --orchestrator @ examples/reverse_text/rl/orch.toml \
-  --inference @ examples/reverse_text/rl/infer.toml \
+uv run rl @ examples/reverse_text/rl.toml \
   --model.name ... \
   --wandb.project ... \
   --wandb.name ...
@@ -137,7 +133,7 @@ Exec into the trainer pod and run SFT:
 
 ```bash
 kubectl exec -it my-exp-trainer-0 -- bash
-uv run sft @ /app/examples/reverse_text/sft/train.toml --output-dir /data/outputs
+uv run sft @ /app/examples/reverse_text/sft.toml --output-dir /data/outputs
 # This will save checkpoints to /data/outputs/weights/step_100
 ```
 
