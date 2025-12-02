@@ -23,6 +23,13 @@ class OfflineEvalConfig(EvalConfig, BaseSettings):
     # The logging configuration
     log: LogConfig = LogConfig()
 
+    reasoning_field: Annotated[
+        str,
+        Field(
+            description="The field in the raw model response that contains the reasoning content. Defaults to 'reasoning_content', which is the default for vLLM when serving a model with a reasoning parser. Other APIs (e.g. DeepSeek, GLM, etc.) may use different field names.",
+        ),
+    ] = "reasoning_content"
+
     output_dir: Annotated[
         Path,
         Field(
@@ -62,6 +69,13 @@ class OfflineEvalConfig(EvalConfig, BaseSettings):
         int | None,
         Field(
             description="Maximum number of concurrent rollouts to generate and score. Will create a global semaphore and pass to verifiers Environment. If None, will not limit concurrency.",
+        ),
+    ] = None
+
+    resume_uuid: Annotated[
+        str | None,
+        Field(
+            description="UUID of the run to resume from. When set, will read existing example_ids from the results.jsonl file, filter the dataset to exclude already-evaluated examples, and append new results to the existing file.",
         ),
     ] = None
 
