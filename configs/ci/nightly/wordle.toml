@@ -3,7 +3,7 @@ trainer_gpu_ids = [6,7]
 
 max_steps = 100
 
-[ckpt] # Checkpoint a the end of training
+[ckpt] # Checkpoint at the end of training
 
 [model]
 name = "PrimeIntellect/Qwen3-1.7B-Wordle-SFT"
@@ -14,7 +14,7 @@ batch_size = 1024
 rollouts_per_example = 16
 
 [[orchestrator.env]]
-id = "will/wordle"
+id = "primeintellect/wordle"
 
 [orchestrator.sampling]
 max_tokens = 1024
