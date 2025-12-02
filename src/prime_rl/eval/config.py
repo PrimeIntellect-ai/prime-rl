@@ -72,6 +72,13 @@ class OfflineEvalConfig(EvalConfig, BaseSettings):
         ),
     ] = None
 
+    resume_uuid: Annotated[
+        str | None,
+        Field(
+            description="UUID of the run to resume from. When set, will read existing example_ids from the results.jsonl file, filter the dataset to exclude already-evaluated examples, and append new results to the existing file.",
+        ),
+    ] = None
+
     @model_validator(mode="after")
     def validate_steps(self):
         if self.steps is not None and self.weights_dir is not None:

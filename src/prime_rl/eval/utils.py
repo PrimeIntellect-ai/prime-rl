@@ -15,13 +15,40 @@ from verifiers import load_environment
 from verifiers.envs.environment import get_results_path
 
 from prime_rl.eval.config import OfflineEvalConfig
-from prime_rl.orchestrator.config import ClientConfig, EvalConfig, EvalSamplingConfig, ModelConfig
+from prime_rl.orchestrator.config import EvalConfig, EvalSamplingConfig, ModelConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor import get_monitor
 from prime_rl.utils.utils import capitalize
 from prime_rl.utils.vf import generate_group, get_completion_len, get_is_truncated
 
 WRITE_LOCK = asyncio.Lock()
+
+
+def read_existing_example_ids(results_file: Path) -> set[int]:
+    example_ids = set()
+    with open(results_file, "r") as f:
+        for line in f:
+            result = json.loads(line)
+            example_id = result["example_id"]
+            example_ids.add(example_id)
+    return example_ids
+
+
+def read_existing_results(results_file: Path) -> pd.DataFrame:
+    results = []
+    with open(results_file, "r") as f:
+        for line in f:
+            result = json.loads(line)
+            results.append(
+                {
+                    "example_id": result["example_id"],
+                    "reward": result["reward"],
+                    "completion_len": result["completion_len"],
+                    "is_truncated": result["is_truncated"],
+                }
+            )
+
+    return pd.DataFrame(results)
 
 
 def compute_pass_at_k(rewards: list[int]) -> dict[str, float]:
@@ -110,6 +137,8 @@ def make_result(state: vf.State, reasoning_field: str) -> dict:
         "total_ms": state["timing"]["total_ms"],
         "info": state.get("info", {}),
         "answer": state.get("answer", ""),
+        "completion_len": get_completion_len(state),
+        "is_truncated": get_is_truncated(state),
     }
     for metric_name, metric_value in state["metrics"].items():
         result_dict[metric_name] = metric_value
@@ -166,9 +195,8 @@ async def run_eval(
     ckpt_step: int,
     model_config: ModelConfig,
     sampling_config: EvalSamplingConfig,
-    # save_config: EvalSaveConfig,
-    client_config: ClientConfig,
     step: int | None = None,
+    resume_uuid: str | None = None,
 ) -> None:
     # Get the logger
     logger = get_logger()
@@ -180,12 +208,30 @@ async def run_eval(
     env = load_environment(env_id, **env_args)
     dataset = env.get_eval_dataset(n=num_examples)
     sampling_args = prepare_sampling_args(sampling_config)
-    path_to_save = get_results_path(env_name_or_id, model_config.name, base_path=output_dir) / "results.jsonl"
-    path_to_save.parent.mkdir(parents=True, exist_ok=True)
 
-    logger.info(
-        f"Evaluating {env_name_or_id} ({num_examples=}, {rollouts_per_example=}) {'with default args' if env_args == {} else f'with args {env_args}'}"
-    )
+    if resume_uuid is not None:
+        base_path = get_results_path(env_name_or_id, model_config.name, base_path=output_dir)
+        # Replace the UUID directory with the one provided by `resume_uuid`
+        path_to_save = base_path.parent / resume_uuid / "results.jsonl"
+        existing_example_ids = read_existing_example_ids(path_to_save)
+        logger.info(f"Resuming from {path_to_save}: found {len(existing_example_ids)} already-evaluated examples")
+
+        # Filter dataset to exclude already-evaluated examples
+        original_size = len(dataset)
+        dataset = dataset.filter(lambda example: example["example_id"] not in existing_example_ids)
+        remaining_size = len(dataset)
+
+        logger.info(
+            f"Resuming evaluation of {env_name_or_id} and saving results to {path_to_save}: filtered dataset from {original_size} to {remaining_size} remaining examples\n"
+            f"({num_examples=}, {rollouts_per_example=}) {'with default args' if env_args == {} else f'with args {env_args}'}"
+        )
+    else:
+        path_to_save = get_results_path(env_name_or_id, model_config.name, base_path=output_dir) / "results.jsonl"
+        path_to_save.parent.mkdir(parents=True, exist_ok=True)
+        logger.info(
+            f"Evaluating {env_name_or_id} ({num_examples=}, {rollouts_per_example=}) {'with default args' if env_args == {} else f'with args {env_args}'}\n"
+            f"Saving results to {path_to_save}"
+        )
     total_rollouts = len(dataset) * rollouts_per_example
     pbar = tqdm(total=total_rollouts, desc="Evaluating")
 
@@ -210,7 +256,7 @@ async def run_eval(
     # Parse vLLM responses
     k = rollouts_per_example
     all_states = [state for group in all_groups for state in group]
-    results_df = pd.DataFrame(
+    new_results_df = pd.DataFrame(
         {
             "example_id": [state["example_id"] for state in all_states],
             "reward": [state["reward"] for state in all_states],
@@ -218,6 +264,17 @@ async def run_eval(
             "is_truncated": [get_is_truncated(state) for state in all_states],
         }
     )
+
+    # If resuming, combine with existing results for accurate metrics
+    if resume_uuid is not None:
+        existing_results_df = read_existing_results(path_to_save)
+        results_df = pd.concat([existing_results_df, new_results_df], ignore_index=True)
+        logger.info(
+            f"Combined existing ({len(existing_results_df)}) and new ({len(new_results_df)}) results for metrics"
+        )
+    else:
+        results_df = new_results_df
+
     unique_rewards = results_df.reward.unique()
     could_be_binary = set(unique_rewards).issubset({0.0, 1.0})
     if could_be_binary:
@@ -256,65 +313,7 @@ async def run_eval(
     eval_metrics.update({"progress/ckpt_step": ckpt_step, "step": step or ckpt_step})
     monitor.log(eval_metrics)
 
-    # # Save results
-    # if save_config.disk is not None or save_config.hf is not None or save_config.env_hub:
-    #     outputs = env._prepare_rollout_results(
-    #         all_states=[to_serializable_state(state) for state in states],  # type: ignore
-    #         model=model_config.name,
-    #         client=clients[0],  # We use the first client
-    #         state_columns=None,
-    #         results_path=None,
-    #         gen_sampling_args=sampling_args,
-    #         start_time=eval_start_time,
-    #     )
-    #     dataset = make_dataset(outputs)
-    #     metadata_dict = sanitize_metadata(outputs["metadata"])
-
-    #     if save_config.disk is not None:
-    #         is_online = step is not None
-    #         default_save_path = (
-    #             get_step_path(get_eval_dir(output_dir), ckpt_step) / env_name_or_id
-    #             if is_online
-    #             else outputs["metadata"]["path_to_save"]
-    #         )
-    #         save_path = save_config.disk.path or default_save_path
-    #         save_to_disk(dataset, metadata_dict, save_path)
-    #         logger.info(f"Saved eval results for {env_name_or_id} to disk ({save_path})")
-
-    #     if save_config.hf is not None:
-    #         dataset_name = save_config.hf.dataset_name or get_hf_hub_dataset_name(outputs)
-    #         dataset_subset = save_config.hf.dataset_subset or env.env_id
-    #         dataset_split = save_config.hf.dataset_split or "evals"
-    #         dataset.push_to_hub(dataset_name, dataset_subset, split=dataset_split, private=save_config.hf.private)
-    #         default_org = whoami().get("name", "")
-    #         repo_name = dataset_name if "/" in dataset_name else f"{default_org}/{dataset_name}"
-    #         logger.info(
-    #             f"Pushed {'private' if save_config.hf.private else 'public'} eval results for {env_name_or_id} to HF Hub (https://huggingface.co/datasets/{repo_name})"
-    #         )
-
-    #     if save_config.env_hub:
-    #         eval_name = f"{env_id}--{model_config.name.replace('/', '--')}"
-
-    #         # Create evaluation for environment
-    #         create_response = await evals_client.create_evaluation(
-    #             name=eval_name,
-    #             environments=[{"id": env_id}],
-    #             model_name=model_config.name,
-    #             framework="verifiers",
-    #             metadata=metadata_dict,
-    #             metrics=eval_metrics,
-    #         )
-
-    #         eval_id = create_response.get("evaluation_id")
-    #         assert eval_id is not None
-
-    #         # Push samples
-    #         await evals_client.push_samples(eval_id, dataset.to_list())
-
-    #         # Finalize evaluation
-    #         await evals_client.finalize_evaluation(eval_id, metrics=eval_metrics)
-
-    #         logger.info(f"Pushed eval results for {env_id} to Environment Hub (eval_id: {eval_id})")
+    logger.info(f"Evaluated {env_name_or_id} and saved results to {path_to_save}")
 
 
 async def run_evals(
@@ -326,6 +325,7 @@ async def run_evals(
     output_dir: Path,
     ckpt_step: int,
     step: int | None = None,
+    resume_uuid: str | None = None,
 ):
     await asyncio.gather(
         *[
@@ -340,10 +340,9 @@ async def run_evals(
                 output_dir=output_dir,
                 model_config=model_config,
                 sampling_config=sampling_config,
-                # save_config=eval_config.save,
-                client_config=eval_config.client,
                 ckpt_step=ckpt_step,
                 step=step,
+                resume_uuid=resume_uuid,
             )
             for env in eval_config.env
         ]
