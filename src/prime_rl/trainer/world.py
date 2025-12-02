@@ -37,3 +37,8 @@ def get_world() -> World:
     if _WORLD is None:
         _WORLD = World()
     return _WORLD
+
+
+def reset_world():
+    global _WORLD
+    _WORLD = None

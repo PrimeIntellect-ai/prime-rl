@@ -7,6 +7,7 @@ from typing import Callable, Generator
 
 import pytest
 
+from prime_rl.trainer.world import reset_world
 from prime_rl.utils.logger import reset_logger, setup_logger
 
 
@@ -25,6 +26,13 @@ def setup_env():
     yield
     os.environ.clear()
     os.environ.update(original_env)
+
+
+@pytest.fixture(autouse=True)
+def setup_world():
+    """Auto-fixture to reset the world between tests."""
+    yield
+    reset_world()
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -81,11 +89,10 @@ def output_dir(tmp_path_factory: pytest.TempPathFactory) -> Generator[Path, None
 def get_wandb_project(user: str) -> Callable[[str], str]:
     """Factory fixture to get W&B project name. Used to setup shared W&B projects for integration & nightly tests."""
 
-    def _get_wandb_project(name: str) -> str:
-        project = f"ci-{name}"
+    def _get_wandb_project(wandb_project: str) -> str:
         if user != "CI_RUNNER":
-            project += "-local"
-        return project
+            wandb_project += "-local"
+        return wandb_project
 
     return _get_wandb_project
 
