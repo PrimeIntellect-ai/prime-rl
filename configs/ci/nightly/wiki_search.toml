@@ -25,19 +25,16 @@ target_modules = [
 ]
 
 [orchestrator]
-batch_size = 512
+batch_size = 1024
 rollouts_per_example = 16
 seq_len = 4096
-oversampling_factor = 2.0
 
 [orchestrator.sampling]
 max_tokens = 512
 
-[orchestrator.buffer]
-online_difficulty_filtering = true
-
 [[orchestrator.env]]
 id = "primeintellect/wiki-search"
+name = "wiki-search"
 
 [inference.model]
 enable_auto_tool_choice = true
