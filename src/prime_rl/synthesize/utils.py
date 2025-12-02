@@ -18,7 +18,7 @@ from prime_rl.utils.vf import generate_group
 WRITE_LOCK = asyncio.Lock()
 
 
-def prepare_sampling_args(sampling_config: EvalSamplingConfig, client_config: ClientConfig) -> dict[str, Any]:
+def prepare_sampling_args(sampling_config: EvalSamplingConfig) -> dict[str, Any]:
     """Prepare sampling args for synthetic data generation."""
     # Initialize sampling args
     sampling_args: dict[str, Any] = {}

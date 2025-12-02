@@ -5,11 +5,29 @@ from typing import Any, cast
 import verifiers as vf
 from openai import AsyncOpenAI
 from openai.types.chat.chat_completion import ChatCompletion
+from tenacity import RetryCallState, retry, stop_after_attempt, wait_exponential
 from tqdm import tqdm
 
 from prime_rl.orchestrator.utils import get_semaphore
+from prime_rl.utils.logger import get_logger
 
 
+def _log_retry_attempt(retry_state: RetryCallState) -> None:
+    """Log retry attempts at WARNING level using the global logger."""
+    logger = get_logger()
+    exception = retry_state.outcome.exception()
+    wait_time = retry_state.next_action.sleep
+    logger.warning(
+        f"Retrying {retry_state.fn.__name__} in {wait_time:.1f} seconds as it raised {exception.__class__.__name__}: {exception}"
+    )
+
+
+@retry(
+    stop=stop_after_attempt(10),
+    wait=wait_exponential(multiplier=1, min=1, max=60),
+    before_sleep=_log_retry_attempt,
+    reraise=True,
+)
 async def generate_group(
     client: AsyncOpenAI,
     env: vf.Environment,
