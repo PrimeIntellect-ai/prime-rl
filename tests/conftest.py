@@ -99,7 +99,6 @@ def get_wandb_project(user: str) -> Callable[[str], str]:
 
 Environment = dict[str, str]
 Command = list[str]
-DEFAULT_TIMEOUT = 120
 
 
 class ProcessResult:
@@ -117,7 +116,7 @@ class ProcessResult:
 def run_process() -> Callable[[Command, Environment, int], ProcessResult]:
     """Factory fixture for running a single process."""
 
-    def _run_process(command: Command, env: Environment = {}, timeout: int = DEFAULT_TIMEOUT) -> ProcessResult:
+    def _run_process(command: Command, env: Environment = {}, timeout: int | None = None) -> ProcessResult:
         """Run a subprocess with given command and environment with a timeout"""
         process = subprocess.Popen(command, env={**os.environ, **env})
         try:

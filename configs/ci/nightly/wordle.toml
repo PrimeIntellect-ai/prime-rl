@@ -1,0 +1,25 @@
+inference_gpu_ids = [0,1,2,3,4,5]
+trainer_gpu_ids = [6,7]
+
+max_steps = 100
+
+[ckpt] # Checkpoint a the end of training
+
+[model]
+name = "PrimeIntellect/Qwen3-1.7B-Wordle-SFT"
+
+[orchestrator]
+seq_len = 4096
+batch_size = 1024
+rollouts_per_example = 16
+
+[[orchestrator.env]]
+id = "wordle"
+
+[orchestrator.sampling]
+max_tokens = 1024
+
+[trainer] # Default trainer config
+
+[inference]
+parallel = 6
