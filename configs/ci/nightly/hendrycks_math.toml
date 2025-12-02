@@ -1,0 +1,45 @@
+inference_gpu_ids = [0,1,2,3,4,5]
+trainer_gpu_ids = [6,7]
+
+max_steps = 500
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[orchestrator]
+batch_size = 512
+rollouts_per_example = 16
+seq_len = 2048
+
+[orchestrator.sampling]
+max_tokens = 2048
+
+[[orchestrator.env]]
+id = "primeintellect/single-turn-math"
+args = { dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "default" }
+
+[orchestrator.buffer]
+easy_fraction = 0.0
+hard_fraction = 0.0
+easy_threshold = 1.0
+hard_threshold = 0.0
+
+[orchestrator.val]
+interval = 5
+num_examples = 128
+
+[orchestrator.eval]
+interval = 10
+
+[orchestrator.eval.sampling]
+max_tokens = 2048
+
+[[orchestrator.eval.env]]
+id = "primeintellect/math500"
+num_examples = 30
+rollouts_per_example = 4
+
+[trainer] # Default trainer config
+
+[inference.parallel]
+dp = 6
