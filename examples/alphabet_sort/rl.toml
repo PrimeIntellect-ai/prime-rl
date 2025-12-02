@@ -9,8 +9,8 @@ name = "Qwen/Qwen3-4B-Instruct-2507"
 [trainer.model]
 impl = "liger_kernel"
 
-[trainer.model.ac]
-freq = 1
+# [trainer.model.ac]
+# freq = 1
 
 [trainer.model.experimental.lora]
 rank = 16
