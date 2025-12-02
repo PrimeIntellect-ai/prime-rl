@@ -16,3 +16,5 @@ id = "reverse-text"
 
 [trainer.optim]
 lr = 3e-6
+
+[inference]

@@ -17,3 +17,5 @@ id = "wordle"
 max_tokens = 1024
 
 [trainer]
+
+[inference]
