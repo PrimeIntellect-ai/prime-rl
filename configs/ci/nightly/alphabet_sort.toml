@@ -49,5 +49,5 @@ modules_to_save = [
 lr = 1e-5
 
 
-[inference] # Default inference config
-parallel = 6
+[inference.parallel] # Default inference config
+dp = 6
