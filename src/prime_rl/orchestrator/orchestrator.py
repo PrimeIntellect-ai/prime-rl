@@ -365,7 +365,7 @@ async def orchestrate(config: OrchestratorConfig):
         solve_none = results_df.groupby("example_id").apply(lambda x: x.reward.sum() == 0, include_groups=False).mean()
         effective_batch_size = 1 - solve_none - solve_all
 
-        # Compute per-env reuslts
+        # Compute per-env results
         num_envs_in_batch = results_df.task.nunique()
         per_env_reward = results_df.groupby("task").reward.mean().to_dict() if num_envs_in_batch > 1 else None
         per_env_count = results_df.task.value_counts().to_dict() if num_envs_in_batch > 1 else None
@@ -434,12 +434,21 @@ async def orchestrate(config: OrchestratorConfig):
                 per_env_count = val_results_df.task.value_counts().to_dict()
                 to_log.update({f"val_batch/{env}": count for env, count in per_env_count.items()})
 
-        # Log metrics to W&B
+        # Log metrics to monitor(s)
         monitor.log(to_log)
 
-        # Log samples to W&B table if enabled
+        # Log samples to monitor(s) if enabled
         subset_train_rollouts = random.sample(train_rollouts, min(8, len(train_rollouts)))
         monitor.log_samples(subset_train_rollouts, step=progress.step)
+
+        # Log distributions (rewards, advantages) if enabled
+        monitor.log_distributions(
+            distributions={
+                "rewards": rewards,
+                "advantages": advantages,
+            },
+            step=progress.step,
+        )
 
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} |{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.groupby('example_id').seq_len.mean().mean():.1f} tokens/sample | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
         logger.success(step_message)
@@ -466,8 +475,9 @@ async def orchestrate(config: OrchestratorConfig):
             step=progress.step,
         )
 
-    # Log final (immutable) samples to W&B table
+    # Log final (immutable) samples and distributions to monitor(s)
     monitor.log_final_samples()
+    monitor.log_final_distributions()
     monitor.save_final_summary()
 
     # Write final checkpoint
