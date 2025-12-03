@@ -186,8 +186,6 @@ ATTN_IMPL2CLASS = {
 def substitute_prime_rl_flash_attn(process_group: torch.distributed.ProcessGroup, heads_k_stride: int) -> None:
     from ring_flash_attn import llama3_flash_attn_varlen_func
 
-    global ATTN_IMPL2CLASS
-
     class RingFlashAttention(FlashAttention):
         def forward(
             self,
@@ -196,6 +194,7 @@ def substitute_prime_rl_flash_attn(process_group: torch.distributed.ProcessGroup
             cu_seqlens: torch.LongTensor | None = None,
             max_seqlen: int | None = None,
         ) -> tuple[torch.Tensor, torch.Tensor | None]:
+            print("RingFlashAttention.forward called")
             input_shape = hidden_states.shape[:-1]
             hidden_shape = (*input_shape, -1, self.head_dim)
 
@@ -243,8 +242,7 @@ def substitute_prime_rl_flash_attn(process_group: torch.distributed.ProcessGroup
             attn_output = out.view(1, out.shape[0], -1)
             attn_weights = None
 
-            # attn_output = attn_output.reshape(*input_shape, -1).contiguous()
             attn_output = self.o_proj(attn_output)
             return attn_output, attn_weights
 
-    ATTN_IMPL2CLASS["flash_attention_2"].forward = RingFlashAttention.forward
+    FlashAttention.forward = RingFlashAttention.forward
