@@ -128,8 +128,11 @@ def setup_tokenizer(config: TokenizerConfig) -> PreTrainedTokenizer:
 
 def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=DTYPE_MAP[config.reduce_dtype])
-    # Always use 2D mesh format for consistency (dp_replicate dimension always present)
-    hsdp_mesh = parallel_dims.world_mesh["dp_replicate", "dp_shard_cp"]
+    # TODO: Support dp_replicate
+    if config.dp_replicate > 1:
+        hsdp_mesh = parallel_dims.world_mesh["dp_replicate", "dp_shard_cp"]
+    else:
+        hsdp_mesh = parallel_dims.world_mesh["dp_shard_cp"]
 
     offload_policy: OffloadPolicy = CPUOffloadPolicy(pin_memory=True) if config.fsdp_cpu_offload else OffloadPolicy()
 

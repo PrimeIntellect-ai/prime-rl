@@ -55,7 +55,7 @@ def interleave_rollout(state: vf.State) -> list[TrainingExample]:
         interleaved_rollout["completion_logprobs"].extend(completion_logprobs)
 
         # New prefix is the the current prompt and completion ids concatenated
-        prefix_tokens = prompt_ids + completion_ids
+        prefix_tokens = tokens["prompt_ids"] + tokens["completion_ids"]
 
     return [interleaved_rollout]
 

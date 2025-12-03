@@ -528,7 +528,7 @@ class OrchestratorConfig(BaseSettings):
         Field(
             description="Whether to strictly enforce the max async level. If True, will always ensure that the policy used for generating rollouts is exactly `max_async_level` steps ahead of training. If False, any policy that is at most `max_async_level` steps ahead of training is allowed, i.e. we always use the latest available policy.",
         ),
-    ] = True
+    ] = False
 
     bench: Annotated[
         bool,
