@@ -24,6 +24,14 @@ from prime_rl.trainer.lora import (
 )
 from prime_rl.utils.logger import get_logger
 
+PYTORCH_WRAPPER_PREFIXES = ["_fsdp_wrapped_module.", "_orig_module.", "_checkpoint_wrapped_module."]
+
+
+def _strip_pytorch_wrapper_prefix(key: str) -> str:
+    for prefix in PYTORCH_WRAPPER_PREFIXES:
+        key = key.replace(prefix, "")
+    return key
+
 
 def get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
     """Get the maximum number of layers in the model."""
@@ -136,8 +144,9 @@ def get_adapter_state_dict(model: nn.Module, is_master: bool) -> dict[str, Tenso
     """Get adapter weights with clean keys for PEFT compatibility."""
     lora_state = {}
 
+    named_params = {_strip_pytorch_wrapper_prefix(key): value for key, value in model.named_parameters()}
     for key, value in model.state_dict().items():
-        param = dict(model.named_parameters()).get(key)
+        param = named_params.get(key)
         if param is None or not param.requires_grad:
             continue
 
