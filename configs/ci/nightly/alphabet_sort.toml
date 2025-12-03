@@ -8,7 +8,7 @@
 inference_gpu_ids = [0,1,2,3]
 trainer_gpu_ids = [4,5,6,7]
 
-max_steps = 100
+max_steps = 200
 
 [model]
 name = "PrimeIntellect/Qwen3-1.7B"
