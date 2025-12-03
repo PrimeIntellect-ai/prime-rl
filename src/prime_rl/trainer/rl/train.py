@@ -87,7 +87,7 @@ def train(config: RLTrainerConfig):
 
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
-    num_non_data_parallel_ranks = parallel_dims.cp * parallel_dims.tp * parallel_dims.pp
+    num_non_data_parallel_ranks = parallel_dims.non_data_parallel_size
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
