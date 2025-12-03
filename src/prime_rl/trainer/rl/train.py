@@ -244,8 +244,9 @@ def train(config: RLTrainerConfig):
                 advantages=advantages.squeeze().split(response_lengths),
                 loss_mask=loss_mask.squeeze().split(response_lengths),
                 loss_config=config.loss,
-                loss_scale=loss_scale,
             )
+
+            loss = loss / loss_scale
 
             # Compute entropy
             entropy = compute_entropy(shifted_logits)
