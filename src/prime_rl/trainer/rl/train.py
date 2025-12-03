@@ -244,9 +244,6 @@ def train(config: RLTrainerConfig):
             loss_mask = micro_batch["loss_mask"].to("cuda")
             inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
 
-            logger.info(f"Input IDs: {input_ids.shape}")
-            logger.info(f"Position IDs: {position_ids.shape}")
-
             if cp_enabled:
                 input_ids, forward_position_ids = prepare_for_cp(
                     input_ids=input_ids,
