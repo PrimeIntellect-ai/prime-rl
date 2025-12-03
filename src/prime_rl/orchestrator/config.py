@@ -4,7 +4,13 @@ from typing import Annotated, Literal, TypeAlias
 from pydantic import BaseModel, Field, model_validator
 
 from prime_rl.trainer.config import HeartbeatConfig
-from prime_rl.utils.config import ClientConfig, LogConfig, ModelConfig, PrimeMonitorWithExtrasConfig, WandbWithExtrasConfig
+from prime_rl.utils.config import (
+    ClientConfig,
+    LogConfig,
+    ModelConfig,
+    PrimeMonitorWithExtrasConfig,
+    WandbWithExtrasConfig,
+)
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
