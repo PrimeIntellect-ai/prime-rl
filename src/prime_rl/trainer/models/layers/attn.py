@@ -194,7 +194,6 @@ def substitute_prime_rl_flash_attn(process_group: torch.distributed.ProcessGroup
             cu_seqlens: torch.LongTensor | None = None,
             max_seqlen: int | None = None,
         ) -> tuple[torch.Tensor, torch.Tensor | None]:
-            print("RingFlashAttention.forward called")
             input_shape = hidden_states.shape[:-1]
             hidden_shape = (*input_shape, -1, self.head_dim)
 
