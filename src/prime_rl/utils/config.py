@@ -186,13 +186,6 @@ class PrimeMonitorConfig(BaseConfig):
         ),
     ] = None
 
-    log_extras: Annotated[
-        LogExtrasConfig | None,
-        Field(
-            description="Configuration for logging extras. If None, no extras are logged.",
-        ),
-    ] = None
-
 
 class PrimeMonitorWithExtrasConfig(PrimeMonitorConfig):
     """Configures logging to Prime Intellect API with extras."""
