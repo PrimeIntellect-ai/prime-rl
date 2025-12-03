@@ -178,7 +178,14 @@ class Scheduler:
                     batch_rollouts = batch_rollouts[: self.config.batch_size]
                     break
 
-                _, client = self.inflight_group_rollouts.pop(finished_group_rollout)
+                # Safely pop the task info. If it returns None, the task was removed externally.
+                # This handles the race condition where update_policy() might have concurrently
+                # cancelled the task and removed it from inflight_group_rollouts.
+                popped_info = self.inflight_group_rollouts.pop(finished_group_rollout, None)
+                if popped_info is None:
+                    continue
+                _, client = popped_info
+
                 group_states: list[vf.State] = finished_group_rollout.result()
 
                 self.buffer.update(group_states)
