@@ -8,9 +8,6 @@ on:
                 description: "Single nightly test file to run (e.g. tests/nightly/test_my_exp.py). Leave empty to run all."
                 required: false
                 default: ""
-    pull_request:
-        branches:
-            - main
 
     # Scheduled run at 3AM PST (11AM UTC)
     schedule:
