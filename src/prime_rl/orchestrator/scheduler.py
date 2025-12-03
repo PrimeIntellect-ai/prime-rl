@@ -193,10 +193,7 @@ class Scheduler:
                     pbar.set_description("Generating rollouts (train)")
                     was_waiting = False
 
-                while len(self.inflight_group_rollouts) < self.problems_per_batch:
-                    if self.async_level > self.max_async_level:
-                        break
-                    await self.schedule_group_rollout()
+                await self.schedule_group_rollout()
 
             finished_group_rollouts, _ = await asyncio.wait(
                 self.inflight_group_rollouts, return_when=asyncio.FIRST_COMPLETED
