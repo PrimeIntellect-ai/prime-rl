@@ -86,8 +86,7 @@ def train(config: SFTTrainerConfig):
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
-    skip_load_weights = config.ckpt and config.ckpt.resume_step
-    model = setup_model(config.model, parallel_dims, skip_load_weights=skip_load_weights)
+    model = setup_model(config.model, parallel_dims)
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
