@@ -63,7 +63,8 @@ class PrimeMonitor(Monitor):
             if config.log_extras.samples:
                 self.last_log_samples_step = -1
                 self.tokenizer = tokenizer
-                self.samples = []
+            if config.log_extras.distributions:
+                self.last_log_distributions_step = -1
 
     def log(self, metrics: dict[str, Any]) -> None:
         self.history.append(metrics)
@@ -111,7 +112,6 @@ class PrimeMonitor(Monitor):
                 "reward": rollout["reward"],
             }
             samples.append(sample)
-            self.samples.append(sample)
 
         # Upload samples
         self._make_request(
@@ -126,27 +126,43 @@ class PrimeMonitor(Monitor):
         self.logger.debug(f"Logged samples at step {step} to Prime Intellect API in {time.perf_counter() - start_time:.2f}s")
 
     def log_final_samples(self) -> None:
-        """Log final samples to Prime Intellect API."""
+        """Log final samples (no-op - samples are logged per-step only)."""
+        pass
+
+    def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:
+        """Log distributions to Prime Intellect API."""
         if not self.is_master:
             return
         if (
             not self.config
             or not self.config.log_extras
-            or not self.config.log_extras.samples
+            or not self.config.log_extras.distributions
+            or step % self.config.log_extras.interval != 0
         ):
+            # Do not log distributions if not enabled or not log interval step
             return
 
-        self.logger.info("Logging final samples to Prime Intellect API")
-        # Get step from last sample if available, otherwise use 0
-        step = self.samples[-1].get("step", 0) if self.samples else 0
+        assert self.last_log_distributions_step <= step, "Step must be greater than last logged step"
+        assert self.logger is not None, "Logger is required for distribution logging"
+
+        self.logger.info(f"Logging distributions to Prime Intellect API at step {step}")
+        start_time = time.perf_counter()
+
+        # Upload distributions
         self._make_request(
-            "final-samples",
+            "distributions",
             {
                 "run_id": self.run_id,
                 "step": step,
-                "samples": self.samples,
+                "distributions": distributions,
             },
         )
+        self.last_log_distributions_step = step
+        self.logger.debug(f"Logged distributions at step {step} to Prime Intellect API in {time.perf_counter() - start_time:.2f}s")
+
+    def log_final_distributions(self) -> None:
+        """Log final distributions (no-op - distributions are logged per-step only)."""
+        pass
 
     def save_final_summary(self, filename: str = "final_summary.json") -> None:
         """Save final summary to Prime Intellect API."""
@@ -154,7 +170,6 @@ class PrimeMonitor(Monitor):
             return
 
         self.logger.info("Saving final summary to Prime Intellect API")
-        # For Prime Intellect, we can upload the summary as part of finalizing the run
         self._make_request(
             "finalize",
             {

@@ -136,6 +136,14 @@ class WandbMonitor(Monitor):
         table = wandb.Table(dataframe=df)
         wandb.log({"final-samples": table})
 
+    def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:
+        """Log distributions (no-op for W&B)."""
+        pass
+
+    def log_final_distributions(self) -> None:
+        """Log final distributions (no-op for W&B)."""
+        pass
+
     def save_final_summary(self, filename: str = "final_summary.json") -> None:
         """Save final summary to W&B table."""
         if not self.is_master or not self.enabled:
