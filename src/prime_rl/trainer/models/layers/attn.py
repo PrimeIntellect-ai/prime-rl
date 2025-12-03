@@ -88,7 +88,7 @@ class FlashAttention(nn.Module):
         cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
-        # TODO: Can we optimize the rotary applicaiton instead of double transpose?
+        # TODO: Can we optimize the rotary application instead of double transpose?
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
@@ -109,7 +109,6 @@ class FlashAttention(nn.Module):
         attn_output = out.view(1, out.shape[0], -1)
         attn_weights = None
 
-        # attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
         return attn_output, attn_weights
 
@@ -164,7 +163,7 @@ class SDPAAttention(nn.Module):
         cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
-        # TODO: Can we optimize the rotary applicaiton instead of double transpose?
+        # TODO: Can we optimize the rotary application instead of double transpose?
         key_states = key_states.repeat_interleave(self.num_key_value_groups, dim=1)
         value_states = value_states.repeat_interleave(self.num_key_value_groups, dim=1)
         out = F.scaled_dot_product_attention(query_states, key_states, value_states, is_causal=True)
@@ -223,7 +222,7 @@ def substitute_prime_rl_flash_attn(process_group: torch.distributed.ProcessGroup
             max_seqlen_k = DATA_PARAMS["max_seqlen_k"]
             local_k_slice = DATA_PARAMS["local_k_slice"]
 
-            # TODO: Can we optimize the rotary applicaiton instead of double transpose?
+            # TODO: Can we optimize the rotary application instead of double transpose?
             query_states = query_states.transpose(1, 2)
             key_states = key_states.transpose(1, 2)
             value_states = value_states.transpose(1, 2)

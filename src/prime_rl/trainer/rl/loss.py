@@ -35,9 +35,6 @@ def shift_logits(
     batch, seq, vocab = logits.shape
     logits = logits[:, :-1, :]  # (batch, seq-1, vocab)
     if left_pad_logit is None:
-        # This is true if:
-        # - no CP is enabled
-        # - this is the first CP rank, in which case we can't get the last logit from the previous rank
         left_pad_logit = torch.zeros(batch, 1, vocab, device=logits.device, dtype=logits.dtype)  # (batch, 1, vocab)
     logits = torch.cat([left_pad_logit, logits], dim=1)  # (batch, seq, vocab)
     return logits

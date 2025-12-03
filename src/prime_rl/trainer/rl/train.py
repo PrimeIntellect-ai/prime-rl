@@ -59,8 +59,6 @@ from ring_flash_attn import substitute_hf_flash_attn
 @clean_exit
 @logger.catch(reraise=True)
 def train(config: RLTrainerConfig):
-    torch.manual_seed(42)
-    torch.cuda.manual_seed_all(42)
     # Setup world and logger
     world = get_world()
     logger = setup_logger(
