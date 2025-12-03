@@ -172,11 +172,21 @@ async def generate_and_save_group(
     save_file: Path,
     reasoning_field: str,
     pbar: tqdm,
+    rewards_accumulator: list,
+    rewards_lock: asyncio.Lock,
 ) -> list[vf.State]:
     logger = get_logger()
     try:
         states = await generate_group(client, env, model_name, example, rollouts_per_example, sampling_args)
         await asyncio.gather(*[make_and_save_result(state, save_file, reasoning_field) for state in states])
+
+        # Accumulate rewards and update progress bar
+        async with rewards_lock:
+            group_rewards = [state["reward"] for state in states]
+            rewards_accumulator.extend(group_rewards)
+            avg_reward = sum(rewards_accumulator) / len(rewards_accumulator)
+            pbar.set_postfix(f"Avg Reward: {avg_reward:.4f}")
+
         pbar.update(rollouts_per_example)
         return states
     except Exception as e:
@@ -238,6 +248,18 @@ async def run_eval(
     total_rollouts = len(dataset) * rollouts_per_example
     pbar = tqdm(total=total_rollouts, desc="Evaluating")
 
+    # Create shared structure for tracking rewards
+    rewards_accumulator: list = []
+    rewards_lock = asyncio.Lock()
+
+    # If resuming, populate rewards_accumulator with existing rewards
+    if resume_uuid is not None:
+        existing_results_df = read_existing_results(path_to_save)
+        rewards_accumulator.extend(existing_results_df.reward.tolist())
+        if len(rewards_accumulator) > 0:
+            avg_reward = sum(rewards_accumulator) / len(rewards_accumulator)
+            pbar.set_postfix(f"Avg Reward: {avg_reward:.4f}")
+
     # Run async generation and scoring
     all_groups = await asyncio.gather(
         *[
@@ -252,6 +274,8 @@ async def run_eval(
                 path_to_save,
                 reasoning_field,
                 pbar,
+                rewards_accumulator,
+                rewards_lock,
             )
             for index, (client, example) in enumerate(zip(cycle(clients), dataset.to_list()))
         ]
