@@ -2,8 +2,8 @@
 # - 300 instead of 500 steps (short runtime)
 # - No LoRA
 
-inference_gpu_ids = [0,1,2,3,4,5]
-trainer_gpu_ids = [6,7]
+inference_gpu_ids = [0,1,2,3]
+trainer_gpu_ids = [4,5,6,7]
 
 max_steps = 300
 
@@ -14,7 +14,6 @@ name = "Qwen/Qwen3-4B-Instruct-2507"
 batch_size = 512
 rollouts_per_example = 16
 seq_len = 4096
-oversampling_factor = 2.0
 
 [orchestrator.sampling]
 max_tokens = 512
@@ -22,9 +21,6 @@ max_tokens = 512
 [[orchestrator.env]]
 id = "primeintellect/wiki-search"
 name = "wiki-search"
-
-[orchestrator.buffer]
-online_difficulty_filtering = true
 
 [inference.model]
 enable_auto_tool_choice = true
