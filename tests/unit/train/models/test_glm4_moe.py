@@ -1,3 +1,5 @@
+import os
+
 import pytest
 import torch
 from torch import nn
@@ -10,6 +12,12 @@ from prime_rl.utils.utils import default_dtype
 pytestmark = [pytest.mark.gpu]
 
 SEED = 42
+
+# Enable deterministic algorithms for reproducible gradient comparisons
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+torch.use_deterministic_algorithms(True)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
 
 
 def get_model_pairs() -> tuple[HFGlm4MoeForCausalLM, PrimeRLGlm4MoeForCausalLM]:
