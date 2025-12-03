@@ -1,5 +1,7 @@
 from typing import Any
 
+import verifiers as vf
+
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor.base import Monitor
 
@@ -28,36 +30,13 @@ class MultiMonitor(Monitor):
             except Exception as e:
                 self.logger.warning(f"Failed to log metrics to {monitor.__class__.__name__}: {e}")
 
-    def log_samples(
-        self,
-        input_tokens: list[list[int]],
-        output_tokens: list[list[int]],
-        rewards: list[float],
-        advantages: list[float],
-        rollouts_per_problem: int,
-        step: int,
-    ) -> None:
+    def log_samples(self, rollouts: list[vf.State], step: int) -> None:
         """Log samples to all monitors."""
         for monitor in self.monitors:
             try:
-                monitor.log_samples(
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    rewards=rewards,
-                    advantages=advantages,
-                    rollouts_per_problem=rollouts_per_problem,
-                    step=step,
-                )
+                monitor.log_samples(rollouts=rollouts, step=step)
             except Exception as e:
                 self.logger.warning(f"Failed to log samples to {monitor.__class__.__name__}: {e}")
-
-    def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:
-        """Log distributions to all monitors."""
-        for monitor in self.monitors:
-            try:
-                monitor.log_distributions(distributions=distributions, step=step)
-            except Exception as e:
-                self.logger.warning(f"Failed to log distributions to {monitor.__class__.__name__}: {e}")
 
     def log_final_samples(self) -> None:
         """Log final samples to all monitors."""
@@ -67,14 +46,6 @@ class MultiMonitor(Monitor):
             except Exception as e:
                 self.logger.warning(f"Failed to log final samples to {monitor.__class__.__name__}: {e}")
 
-    def log_final_distributions(self) -> None:
-        """Log final distributions to all monitors."""
-        for monitor in self.monitors:
-            try:
-                monitor.log_final_distributions()
-            except Exception as e:
-                self.logger.warning(f"Failed to log final distributions to {monitor.__class__.__name__}: {e}")
-
     def save_final_summary(self, filename: str = "final_summary.json") -> None:
         """Save final summary to all monitors."""
         for monitor in self.monitors:
@@ -82,4 +53,3 @@ class MultiMonitor(Monitor):
                 monitor.save_final_summary(filename=filename)
             except Exception as e:
                 self.logger.warning(f"Failed to save final summary to {monitor.__class__.__name__}: {e}")
-
