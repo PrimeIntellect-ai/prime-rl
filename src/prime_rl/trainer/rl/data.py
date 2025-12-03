@@ -31,6 +31,7 @@ class FakeDataLoader:
         self.num_micro_batches = self.batch_size // self.num_dp_ranks
         self.seq_len = config.seq_len
         self.generate_documents = config.generate_documents
+        self.batch_counter = 0
 
     def wait_for_batch(self) -> None:
         return
@@ -40,18 +41,27 @@ class FakeDataLoader:
             get_micro_batch_fn = self._get_micro_batch
         else:
             get_micro_batch_fn = self._get_document_micro_batch
-        return [get_micro_batch_fn() for _ in range(self.num_micro_batches)]
 
-    def _get_document_micro_batch(self) -> MicroBatch:
+        # This is a pretty ugly hack to ensure that all CP ranks in a data parallel group receive the same micro batch.
+        micro_batches = []
+        for micro_batch_idx in range(self.num_micro_batches):
+            seed = self.dp_rank * 1000000 + self.batch_counter * 1000 + micro_batch_idx
+            generator = torch.Generator().manual_seed(seed)
+            micro_batches.append(get_micro_batch_fn(generator))
+
+        self.batch_counter += 1
+        return micro_batches
+
+    def _get_document_micro_batch(self, generator: torch.Generator) -> MicroBatch:
         total_seq_len = 0
         input_ids = []
         position_ids = []
 
         while total_seq_len < self.seq_len:
             # Generate reasonably long documents
-            seq_len = torch.randint(1, self.seq_len // 8, (1,)).item()
+            seq_len = torch.randint(1, self.seq_len // 8, (1,), generator=generator).item()
             total_seq_len += seq_len
-            tmp_input_ids = torch.randint(0, 120000, (seq_len,)).long()
+            tmp_input_ids = torch.randint(0, 120000, (seq_len,), generator=generator).long()
             tmp_position_ids = torch.arange(seq_len).long()
 
             input_ids.append(tmp_input_ids)
@@ -60,8 +70,8 @@ class FakeDataLoader:
         input_ids = torch.cat(input_ids, dim=0)
         position_ids = torch.cat(position_ids, dim=0)
         loss_mask = torch.ones(input_ids.shape[0], dtype=torch.bool)
-        advantages = torch.randn(input_ids.shape[0])
-        inference_logprobs = torch.randn(input_ids.shape[0])
+        advantages = torch.randn(input_ids.shape[0], generator=generator)
+        inference_logprobs = torch.randn(input_ids.shape[0], generator=generator)
 
         return {
             "input_ids": input_ids.unsqueeze(0),
@@ -72,7 +82,7 @@ class FakeDataLoader:
             "loss_mask": loss_mask.unsqueeze(0),
         }
 
-    def _get_micro_batch(self) -> MicroBatch:
+    def _get_micro_batch(self, generator: torch.Generator) -> MicroBatch:
         return {
             "input_ids": torch.randint(
                 0,
@@ -81,10 +91,11 @@ class FakeDataLoader:
                     1,
                     self.seq_len,
                 ),
+                generator=generator,
             ),
             "position_ids": torch.cat([torch.arange(self.seq_len)]).unsqueeze(0),
-            "advantages": torch.randn(self.seq_len).unsqueeze(0),
-            "inference_logprobs": torch.randn(self.seq_len).unsqueeze(0),
+            "advantages": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
+            "inference_logprobs": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
             "temperature": 1.0,
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
         }
