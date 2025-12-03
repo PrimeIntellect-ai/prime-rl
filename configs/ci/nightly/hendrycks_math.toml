@@ -43,5 +43,4 @@ rollouts_per_example = 4
 
 [trainer] # Default trainer config
 
-[inference.parallel]
-dp = 6
+[inference]

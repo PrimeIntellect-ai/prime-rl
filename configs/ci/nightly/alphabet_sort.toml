@@ -28,5 +28,4 @@ args = { min_turns = 3, max_turns = 3, min_names_per_turn = 1, max_names_per_tur
 
 [trainer]
 
-[inference.parallel]
-dp = 6
+[inference]
