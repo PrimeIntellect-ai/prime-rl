@@ -51,6 +51,42 @@ def prepare_sample(
     )
 
 
+def pad_micro_batch(micro_batch: MicroBatch, padding_size: int) -> MicroBatch:
+    """
+    Pad a micro batch with the given padding size sample
+    Return the padded micro batch.
+    Args:
+        micro_batch: The micro batch to pad.
+        padding_size: The number of padding tokens to add.
+    Returns:
+        The padded micro batch.
+    """
+    padding_shape = (1, padding_size)
+    pad_input_ids = torch.ones(
+        padding_shape, dtype=micro_batch["input_ids"].dtype, device=micro_batch["input_ids"].device
+    )
+    pad_advantages = torch.zeros(
+        padding_shape, dtype=micro_batch["advantages"].dtype, device=micro_batch["advantages"].device
+    )
+    pad_loss_mask = torch.zeros(
+        padding_shape, dtype=micro_batch["loss_mask"].dtype, device=micro_batch["loss_mask"].device
+    )
+    pad_position_ids = torch.arange(padding_size).unsqueeze(0)
+    pad_inference_logprobs = torch.zeros(
+        padding_shape,
+        dtype=micro_batch["inference_logprobs"].dtype,
+        device=micro_batch["inference_logprobs"].device,
+    )
+
+    for k, v in zip(
+        ["input_ids", "advantages", "loss_mask", "position_ids", "inference_logprobs"],
+        [pad_input_ids, pad_advantages, pad_loss_mask, pad_position_ids, pad_inference_logprobs],
+    ):
+        micro_batch[k] = torch.cat([micro_batch[k], v], dim=1)
+
+    return micro_batch
+
+
 def prepare_micro_batch(samples: list[MicroBatch], temperature: float):
     micro_batch = {}
 
@@ -110,46 +146,9 @@ def prepare_micro_batch_packing(
 
     micro_batch["temperature"] = temperature
 
-    if pad_to_multiple_of > 1:
-        padding_size = micro_batch["input_ids"].shape[1] % pad_to_multiple_of
-        if padding_size > 0:
-            input_ids = torch.ones(
-                1, padding_size, dtype=micro_batch["input_ids"].dtype, device=micro_batch["input_ids"].device
-            )
-            micro_batch["input_ids"] = torch.cat([micro_batch["input_ids"], input_ids], dim=1)
-            micro_batch["advantages"] = torch.cat(
-                [
-                    micro_batch["advantages"],
-                    torch.zeros(
-                        1, padding_size, dtype=micro_batch["advantages"].dtype, device=micro_batch["advantages"].device
-                    ),
-                ],
-                dim=1,
-            )
-            micro_batch["loss_mask"] = torch.cat(
-                [
-                    micro_batch["loss_mask"],
-                    torch.zeros(
-                        1, padding_size, dtype=micro_batch["loss_mask"].dtype, device=micro_batch["loss_mask"].device
-                    ),
-                ],
-                dim=1,
-            )
-            micro_batch["position_ids"] = torch.cat(
-                [micro_batch["position_ids"], torch.arange(padding_size).unsqueeze(0)], dim=1
-            )
-            micro_batch["inference_logprobs"] = torch.cat(
-                [
-                    micro_batch["inference_logprobs"],
-                    torch.zeros(
-                        1,
-                        padding_size,
-                        dtype=micro_batch["inference_logprobs"].dtype,
-                        device=micro_batch["inference_logprobs"].device,
-                    ),
-                ],
-                dim=1,
-            )
+    padding_size = micro_batch["input_ids"].shape[1] % pad_to_multiple_of
+    if pad_to_multiple_of > 1 and padding_size > 0:
+        micro_batch = pad_micro_batch(micro_batch, padding_size)
 
     return micro_batch
 

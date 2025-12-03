@@ -25,13 +25,11 @@ class MicroBatch(TypedDict):
 class FakeDataLoader:
     def __init__(self, config: FakeDataLoaderConfig, num_non_data_parallel_ranks: int = 1):
         self.world = get_world()
-        num_dp_ranks = self.world.world_size // num_non_data_parallel_ranks
-
+        self.num_dp_ranks = self.world.world_size // num_non_data_parallel_ranks
         self.dp_rank = self.world.rank // num_non_data_parallel_ranks
         self.batch_size = config.batch_size
-        self.num_micro_batches = self.batch_size // num_dp_ranks
+        self.num_micro_batches = self.batch_size // self.num_dp_ranks
         self.seq_len = config.seq_len
-
         self.generate_documents = config.generate_documents
 
     def wait_for_batch(self) -> None:
@@ -39,10 +37,10 @@ class FakeDataLoader:
 
     def get_batch(self) -> list[MicroBatch]:
         if not self.generate_documents:
-            fn = self._get_micro_batch
+            get_micro_batch_fn = self._get_micro_batch
         else:
-            fn = self._get_document_micro_batch
-        return [fn() for _ in range(self.num_micro_batches)]
+            get_micro_batch_fn = self._get_document_micro_batch
+        return [get_micro_batch_fn() for _ in range(self.num_micro_batches)]
 
     def _get_document_micro_batch(self) -> MicroBatch:
         total_seq_len = 0
@@ -50,9 +48,8 @@ class FakeDataLoader:
         position_ids = []
 
         while total_seq_len < self.seq_len:
+            # Generate reasonably long documents
             seq_len = torch.randint(1, self.seq_len // 8, (1,)).item()
-            seq_len = seq_len if seq_len % 2 == 0 else seq_len + 1
-
             total_seq_len += seq_len
             tmp_input_ids = torch.randint(0, 120000, (seq_len,)).long()
             tmp_position_ids = torch.arange(seq_len).long()

@@ -51,8 +51,6 @@ from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format
-
-
 from ring_flash_attn import substitute_hf_flash_attn
 
 
@@ -243,14 +241,7 @@ def train(config: RLTrainerConfig):
             inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
 
             if cp_enabled:
-                input_ids, forward_position_ids = prepare_for_cp(
-                    input_ids=input_ids,
-                    position_ids=position_ids,
-                    cp_rank=cp_rank,
-                    cp_world_size=cp_size,
-                    cp_group=cp_group,
-                )
-
+                input_ids, forward_position_ids = prepare_for_cp(input_ids, position_ids, cp_rank, cp_size, cp_group)
             else:
                 forward_position_ids = position_ids
 
