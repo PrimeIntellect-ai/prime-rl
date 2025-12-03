@@ -397,7 +397,7 @@ def cleanup_processes(processes: list[Popen]):
         if process.poll() is None:  # Process is still running
             process.terminate()
             try:
-                process.wait(timeout=5)
+                process.wait(timeout=60)  # 60 seconds to terminate gracefully
             except subprocess.TimeoutExpired:
                 process.kill()
 
