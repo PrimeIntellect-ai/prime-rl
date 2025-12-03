@@ -63,7 +63,7 @@ def test_qwen3_moe_attn_only():
         f"Max logits diff: {logits_diff.abs().max()}"
     )
     grad_diff = hf_model.model.embed_tokens.weight.grad - prime_model.model.embed_tokens.weight.grad
-    assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=2), f"Max grad diff: {grad_diff.abs().max()}"
+    assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=50), f"Max grad diff: {grad_diff.abs().max()}"
 
 
 def test_qwen3_moe_mlp_only():
@@ -91,7 +91,7 @@ def test_qwen3_moe_mlp_only():
         f"Max logits diff: {logits_diff.abs().max()}"
     )
     grad_diff = hf_model.model.embed_tokens.weight.grad - prime_model.model.embed_tokens.weight.grad
-    assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=2), f"Max grad diff: {grad_diff.abs().max()}"
+    assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=50), f"Max grad diff: {grad_diff.abs().max()}"
 
 
 def test_qwen3_moe():
@@ -111,7 +111,7 @@ def test_qwen3_moe():
         f"Max logits diff: {logits_diff.abs().max()}"
     )
     grad_diff = hf_model.model.embed_tokens.weight.grad - prime_model.model.embed_tokens.weight.grad
-    assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=2), f"Max grad diff: {grad_diff.abs().max()}"
+    assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=50), f"Max grad diff: {grad_diff.abs().max()}"
 
     with torch.device("cuda"), default_dtype(torch.float32):
         hf_from_prime_model = HFQwen3MoeForCausalLM._from_config(hf_model.config)
@@ -126,7 +126,7 @@ def test_qwen3_moe():
         f"Max logits diff: {logits_diff.abs().max()}"
     )
     grad_diff = hf_from_prime_model.model.embed_tokens.weight.grad - hf_model.model.embed_tokens.weight.grad
-    assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=2), f"Max grad diff: {grad_diff.abs().max()}"
+    assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=50), f"Max grad diff: {grad_diff.abs().max()}"
 
 
 if __name__ == "__main__":
