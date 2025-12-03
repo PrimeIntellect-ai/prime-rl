@@ -34,12 +34,12 @@ def shift_logits(
     # We drop the last logit because it corresponds to the next token that will be sampled but is not here yet
     batch, seq, vocab = logits.shape
     logits = logits[:, :-1, :]  # (batch, seq-1, vocab)
-    if left_pad_logit is not None:
-        # left pad logit is not None if this is not the first CP rank, in which case we use the last logit from the previous rank as the left pad
-        zeros = left_pad_logit
-    else:
-        zeros = torch.zeros(batch, 1, vocab, device=logits.device, dtype=logits.dtype)  # (batch, 1, vocab)
-    logits = torch.cat([zeros, logits], dim=1)  # (batch, seq, vocab)
+    if left_pad_logit is None:
+        # This is true if:
+        # - no CP is enabled
+        # - this is the first CP rank, in which case we can't get the last logit from the previous rank
+        left_pad_logit = torch.zeros(batch, 1, vocab, device=logits.device, dtype=logits.dtype)  # (batch, 1, vocab)
+    logits = torch.cat([left_pad_logit, logits], dim=1)  # (batch, seq, vocab)
     return logits
 
 
