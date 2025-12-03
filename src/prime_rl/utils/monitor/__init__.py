@@ -40,30 +40,18 @@ def setup_monitor(
     # Backward compatibility: support old 'config' keyword argument
     config: WandbWithExtrasConfig | None = None,
 ) -> Monitor:
-    """Sets up monitors to log metrics.
-
-    Args:
-        wandb_config: Optional W&B monitor configuration (can be passed positionally for backward compatibility)
-        output_dir: Optional output directory for monitors
-        tokenizer: Optional tokenizer for sample logging
-        run_config: Optional run configuration to log
-        prime_config: Optional Prime Intellect monitor configuration (keyword-only)
-        config: Optional W&B monitor configuration (old style keyword argument, for backward compatibility)
-
-    Returns:
-        Monitor instance (MultiMonitor if multiple configs provided, single monitor if one, NoOpMonitor if none)
+    """
+    Sets up monitors to log metrics.
     """
     global _MONITOR
     if _MONITOR is not None:
         raise RuntimeError("Monitor already initialized. Please call `setup_monitor` only once.")
 
-    # Backward compatibility: if config is provided (old style), use it as wandb_config
     if config is not None and wandb_config is None:
         wandb_config = config
 
     monitors: list[Monitor] = []
 
-    # Create W&B monitor if configured
     if wandb_config is not None:
         monitors.append(
             WandbMonitor(
@@ -74,7 +62,6 @@ def setup_monitor(
             )
         )
 
-    # Create Prime monitor if configured
     if prime_config is not None:
         monitors.append(
             PrimeMonitor(
@@ -85,7 +72,6 @@ def setup_monitor(
             )
         )
 
-    # Return appropriate monitor
     if len(monitors) == 0:
         _MONITOR = NoOpMonitor()
     elif len(monitors) == 1:
