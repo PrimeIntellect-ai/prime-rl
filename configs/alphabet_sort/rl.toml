@@ -1,7 +1,10 @@
+inference_gpu_ids = [0]
+trainer_gpu_ids = [1]
+
 max_steps = 100
 
 [model]
-name = "PrimeIntellect/Qwen3-1.7B"
+name = "Qwen/Qwen3-4B-Instruct-2507"
 
 [orchestrator]
 batch_size = 512
@@ -12,9 +15,7 @@ seq_len = 2048
 max_tokens = 512
 
 [[orchestrator.env]]
-id = "primeintellect/alphabet-sort"
+id = "alphabet-sort"
 args = { min_turns = 2, max_turns = 2 }
 
 [trainer]
-
-[inference]

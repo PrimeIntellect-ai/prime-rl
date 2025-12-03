@@ -17,29 +17,31 @@ weight_decay = 0.0
 [trainer.model.experimental.lora]
 rank = 8
 alpha = 32
-
-[trainer.weight_broadcast]
-adapter_only = true
+dropout = 0.0
+target_modules = [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj"
+]
 
 [orchestrator]
 batch_size = 512
 rollouts_per_example = 16
 seq_len = 4096
-lora_name = "r8-32-1e-5"
 oversampling_factor = 2.0
 
 [orchestrator.sampling]
 max_tokens = 512
 
-[[orchestrator.env]]
-id = "primeintellect/wiki-search"
-name = "wiki-search"
-
 [orchestrator.buffer]
 online_difficulty_filtering = true
 
-[inference]
-enable_lora = true
+[[orchestrator.env]]
+id = "primeintellect/wiki-search"
 
 [inference.model]
 enable_auto_tool_choice = true

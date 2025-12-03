@@ -11,11 +11,9 @@ batch_size = 1024
 rollouts_per_example = 16
 
 [[orchestrator.env]]
-id = "primeintellect/wordle"
+id = "wordle"
 
 [orchestrator.sampling]
 max_tokens = 1024
 
 [trainer]
-
-[inference]
