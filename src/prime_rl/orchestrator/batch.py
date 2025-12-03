@@ -146,7 +146,7 @@ def prepare_micro_batch_packing(
 
     micro_batch["temperature"] = temperature
 
-    padding_size = micro_batch["input_ids"].shape[1] % pad_to_multiple_of
+    padding_size = (pad_to_multiple_of - (micro_batch["input_ids"].shape[1] % pad_to_multiple_of)) % pad_to_multiple_of
     if pad_to_multiple_of > 1 and padding_size > 0:
         micro_batch = pad_micro_batch(micro_batch, padding_size)
 
