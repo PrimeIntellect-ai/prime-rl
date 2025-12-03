@@ -59,10 +59,12 @@ class FakeDataLoader:
 
         while total_seq_len < self.seq_len:
             # Generate reasonably long documents
-            seq_len = torch.randint(1, self.seq_len // 8, (1,), generator=generator).item()
-            total_seq_len += seq_len
-            tmp_input_ids = torch.randint(0, 120000, (seq_len,), generator=generator).long()
-            tmp_position_ids = torch.arange(seq_len).long()
+            seq_len_to_generate = torch.randint(1, self.seq_len // 8, (1,), generator=generator).item()
+            if seq_len_to_generate + total_seq_len > self.seq_len:
+                seq_len_to_generate = self.seq_len - total_seq_len
+            total_seq_len += seq_len_to_generate
+            tmp_input_ids = torch.randint(0, 120000, (seq_len_to_generate,), generator=generator).long()
+            tmp_position_ids = torch.arange(seq_len_to_generate).long()
 
             input_ids.append(tmp_input_ids)
             position_ids.append(tmp_position_ids)
