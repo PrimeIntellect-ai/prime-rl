@@ -6,7 +6,7 @@ import time
 from collections import defaultdict
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import torch
 import torch.distributed as dist
@@ -92,32 +92,43 @@ def capitalize(s: str) -> str:
     return s[0].upper() + s[1:]
 
 
-def clean_exit(func):
+def clean_exit(func: Callable) -> Callable:
     """
     A decorator that ensures the a torch.distributed process group is properly
     cleaned up after the decorated function runs or raises an exception.
-
-    Args:
-        func: The function to decorate
-
-    Returns:
-        The decorated function
     """
+    if asyncio.iscoroutinefunction(func):
 
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        try:
-            ret = func(*args, **kwargs)
-            wandb.finish()
-            return ret
-        except Exception as e:
-            wandb.finish(exit_code=1)
-            raise e
-        finally:
-            if dist.is_initialized():
-                dist.destroy_process_group()
+        @functools.wraps(func)
+        async def async_wrapper(*args, **kwargs):
+            try:
+                ret = await func(*args, **kwargs)
+                wandb.finish()
+                return ret
+            except Exception as e:
+                wandb.finish(exit_code=1)
+                raise e
+            finally:
+                if dist.is_initialized():
+                    dist.destroy_process_group()
 
-    return wrapper
+        return async_wrapper
+    else:
+
+        @functools.wraps(func)
+        def sync_wrapper(*args, **kwargs):
+            try:
+                ret = func(*args, **kwargs)
+                wandb.finish()
+                return ret
+            except Exception as e:
+                wandb.finish(exit_code=1)
+                raise e
+            finally:
+                if dist.is_initialized():
+                    dist.destroy_process_group()
+
+        return sync_wrapper
 
 
 def sync_wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:
