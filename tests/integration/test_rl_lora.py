@@ -16,7 +16,7 @@ TIMEOUT = 600  # 10 minutes
 @pytest.fixture(scope="module")
 def wandb_name(branch_name: str) -> str:
     """Fixture for W&B name for RL CI integration tests."""
-    return f"test-rl-{branch_name}"
+    return f"test-rl-lora-{branch_name}"
 
 
 @pytest.fixture(scope="module")
@@ -31,7 +31,7 @@ def rl_process(
         "run",
         "rl",
         "@",
-        "configs/ci/integration/rl/start.toml",
+        "configs/ci/integration/rl_lora/start.toml",
         "--wandb.project",
         wandb_project,
         "--wandb.name",
@@ -39,7 +39,7 @@ def rl_process(
         "--output-dir",
         output_dir.as_posix(),
     ]
-    return run_process(cmd, timeout=TIMEOUT)
+    return run_process(cmd, env={"VLLM_ALLOW_RUNTIME_LORA_UPDATING": "True"}, timeout=TIMEOUT)
 
 
 @pytest.fixture(scope="module")
@@ -52,13 +52,13 @@ def rl_resume_process(
 ) -> ProcessResult:
     if rl_process.returncode != 0:
         pytest.skip("Full weight RL process failed")
-    wandb_name = f"{wandb_name}-resume"
+    wandb_name += "-resume"
     cmd = [
         "uv",
         "run",
         "rl",
         "@",
-        "configs/ci/integration/rl/resume.toml",
+        "configs/ci/integration/rl_lora/resume.toml",
         "--wandb.project",
         wandb_project,
         "--wandb.name",
@@ -67,7 +67,7 @@ def rl_resume_process(
         output_dir.as_posix(),
     ]
 
-    return run_process(cmd, timeout=TIMEOUT)
+    return run_process(cmd, env={"VLLM_ALLOW_RUNTIME_LORA_UPDATING": "True"}, timeout=TIMEOUT)
 
 
 check_reward_goes_up = partial(check_number_goes_up_or_down, go_up=True, pattern=r"Reward:\s*(\d+\.\d{4})")
@@ -97,14 +97,7 @@ def test_reward_in_range(rl_process: ProcessResult, test_no_error, output_dir: P
 @pytest.fixture(scope="module")
 def test_no_error_resume(rl_resume_process: ProcessResult, output_dir: Path):
     """Tests that the RL resume process does not fail."""
-    if rl_resume_process.returncode != 0:
-        print("=== Inference Outputs ===")
-        with open(output_dir / "logs" / "inference.stdout", "r") as f:
-            print(*f.readlines()[-100:], sep="\n")
-        print("=== Orchestrator Outputs ===")
-        with open(output_dir / "logs" / "orchestrator.stdout", "r") as f:
-            print(*f.readlines()[-100:], sep="\n")
-    assert rl_resume_process.returncode == 0, f"Process has non-zero return code ({rl_resume_process})"
+    check_no_error(rl_resume_process, output_dir)
 
 
 def test_reward_in_range_resume(rl_resume_process: ProcessResult, test_no_error_resume, output_dir: Path):

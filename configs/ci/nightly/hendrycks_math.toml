@@ -1,0 +1,46 @@
+inference_gpu_ids = [0,1,2,3]
+trainer_gpu_ids = [4,5,6,7]
+
+max_steps = 300
+
+[model]
+name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+
+[orchestrator]
+batch_size = 1024
+rollouts_per_example = 16
+seq_len = 2048
+
+[orchestrator.sampling]
+max_tokens = 2048
+
+[[orchestrator.env]]
+id = "primeintellect/single-turn-math"
+name = "hendrycks-math"
+args = { dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "default" }
+
+[orchestrator.buffer]
+easy_fraction = 0.0
+hard_fraction = 0.0
+easy_threshold = 1.0
+hard_threshold = 0.0
+
+[orchestrator.val]
+interval = 5
+num_examples = 128
+
+[orchestrator.eval]
+interval = 10
+
+[orchestrator.eval.sampling]
+max_tokens = 2048
+
+[[orchestrator.eval.env]]
+id = "primeintellect/math500"
+name = "math500"
+num_examples = 30
+rollouts_per_example = 4
+
+[trainer] # Default trainer config
+
+[inference]

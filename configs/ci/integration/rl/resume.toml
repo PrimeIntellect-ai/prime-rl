@@ -1,7 +1,16 @@
-max_steps = 20
+inference_gpu_ids = [0]
+trainer_gpu_ids = [1]
+
+max_steps = 25
+
+[ckpt]
+resume_step = 20
 
 [model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[trainer.optim]
+lr = 3e-6
 
 [orchestrator]
 batch_size = 128
@@ -13,8 +22,5 @@ max_tokens = 128
 
 [[orchestrator.env]]
 id = "reverse-text"
-
-[trainer.optim]
-lr = 3e-6
 
 [inference]

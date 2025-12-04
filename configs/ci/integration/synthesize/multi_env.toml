@@ -1,0 +1,15 @@
+num_examples = 5
+rollouts_per_example = 3
+
+[sampling]
+max_tokens = 16
+
+[[env]]
+id = "primeintellect/single-turn-math"
+name = "gsm8k"
+args = { dataset_name = "openai/gsm8k", dataset_subset = "main" }
+
+[[env]]
+id = "primeintellect/single-turn-math"
+name = "hendrycks"
+args = { dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "default" }

@@ -66,7 +66,7 @@ class SharedWandbConfig(BaseSettings):
 class SharedCheckpointConfig(BaseSettings):
     """Configures shared checkpoint configs."""
 
-    interval: Annotated[int | None, Field(description="The interval at which to save checkpoints.")] = 50
+    interval: Annotated[int | None, Field(description="The interval at which to save checkpoints.")] = None
 
     resume_step: Annotated[
         int | None, Field(description="The step to resume from. If None, will not resume from a checkpoint.")
@@ -397,7 +397,7 @@ def cleanup_processes(processes: list[Popen]):
         if process.poll() is None:  # Process is still running
             process.terminate()
             try:
-                process.wait(timeout=5)
+                process.wait(timeout=60)  # 60 seconds to terminate gracefully
             except subprocess.TimeoutExpired:
                 process.kill()
 

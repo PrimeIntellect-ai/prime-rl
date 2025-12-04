@@ -1,0 +1,31 @@
+# Similar to examples/alphabet_sort/rl.toml, but
+# - No LoRA (full fine-tune)
+# - No checkpointing
+# - No liger kernel
+# - LR 1e-6 (default), instead of 1e-5 (examples/alphabet_sort/rl.toml)
+# - Uses full node (4 trainer, 4 inference GPUs)
+
+inference_gpu_ids = [0,1,2,3]
+trainer_gpu_ids = [4,5,6,7]
+
+max_steps = 200
+
+[model]
+name = "PrimeIntellect/Qwen3-1.7B"
+
+[orchestrator]
+batch_size = 512
+rollouts_per_example = 16
+seq_len = 2048
+
+[orchestrator.sampling]
+max_tokens = 768
+
+[[orchestrator.env]]
+id = "primeintellect/alphabet-sort"
+name = "alphabet-sort"
+args = { min_turns = 3, max_turns = 3, min_names_per_turn = 1, max_names_per_turn = 4, similarity_power = 8, power_per_turn = false }
+
+[trainer]
+
+[inference]
