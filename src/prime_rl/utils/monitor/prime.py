@@ -93,7 +93,6 @@ class PrimeMonitor(Monitor):
             # Do not log samples if not enabled or not log interval step
             return
 
-        assert self.tokenizer is not None, "Tokenizer is required for sample logging"
         assert self.last_log_samples_step <= step, "Step must be greater than last logged step"
         assert self.logger is not None, "Logger is required for sample logging"
 
@@ -103,13 +102,42 @@ class PrimeMonitor(Monitor):
         # Prepare samples for API
         samples = []
         for rollout in rollouts:
-            messages = rollout["trajectory"][-1]["prompt"] + rollout["trajectory"][-1]["completion"]
+            # Extract prompt and completion separately from the last trajectory step
+            last_step = rollout["trajectory"][-1]
+            prompt_messages = last_step["prompt"]
+            completion_messages = last_step["completion"]
+            
+            # Serialize full trajectory array (excluding large response objects and token arrays)
+            trajectory_data = []
+            for traj_step in rollout["trajectory"]:
+                trajectory_data.append({
+                    "prompt": traj_step["prompt"],
+                    "completion": traj_step["completion"],
+                    "reward": traj_step.get("reward"),
+                    "advantage": traj_step.get("advantage"),
+                    "extras": traj_step.get("extras", {}),
+                    "num_input_tokens": len(traj_step.get("tokens", {}).get("prompt_ids", [])) if traj_step.get("tokens") else None,
+                    "num_output_tokens": len(traj_step.get("tokens", {}).get("completion_ids", [])) if traj_step.get("tokens") else None,
+                })
+            
+            # Get info, timing, and metrics fields - send raw data, backend will serialize
+            info = rollout.get("info")
+            timing = rollout.get("timing")
+            metrics = rollout.get("metrics")
+
             sample = {
                 "step": step,
-                "example_id": rollout["example_id"],
-                "messages": self.tokenizer.apply_chat_template(messages, tokenize=False),
-                "input_ids": str(self.tokenizer.apply_chat_template(messages)),
-                "reward": rollout["reward"],
+                "example_id": rollout.get("example_id"),
+                "prompt": prompt_messages,
+                "completion": completion_messages,
+                "trajectory": trajectory_data,
+                "reward": rollout.get("reward"),
+                "advantage": rollout.get("advantage"),
+                "answer": rollout.get("answer"),
+                "task": rollout.get("task"),
+                "info": info,
+                "metrics": metrics,
+                "timing": timing,
             }
             samples.append(sample)
 
