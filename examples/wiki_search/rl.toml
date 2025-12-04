@@ -1,5 +1,5 @@
-inference_gpu_ids = [0,1,2,3,4,5]
-trainer_gpu_ids = [6,7]
+inference_gpu_ids = [0]
+trainer_gpu_ids = [1]
 
 max_steps = 500
 
@@ -33,6 +33,7 @@ batch_size = 512
 rollouts_per_example = 16
 seq_len = 4096
 oversampling_factor = 2.0
+lora_name = "qwen3-4b-wiki-search"
 
 [orchestrator.sampling]
 max_tokens = 512
@@ -42,6 +43,9 @@ online_difficulty_filtering = true
 
 [[orchestrator.env]]
 id = "primeintellect/wiki-search"
+
+[inference]
+enable_lora = true
 
 [inference.model]
 enable_auto_tool_choice = true
