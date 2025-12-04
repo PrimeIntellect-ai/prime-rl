@@ -3,6 +3,9 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
+# ruff: noqa
+import vllm.entrypoints.openai.api_server
+
 import uvloop
 import vllm.envs as envs
 from fastapi import Request
