@@ -167,6 +167,6 @@ def get_adapter_state_dict(model: nn.Module, is_master: bool) -> dict[str, Tenso
             lora_state[peft_key] = value.to("cpu", non_blocking=False)
 
     torch.distributed.barrier()
-    if len(lora_state) == 0:
+    if is_master and len(lora_state) == 0:
         raise ValueError("The LoRA state dict is empty. Something went wrong.")
     return lora_state
