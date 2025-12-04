@@ -201,22 +201,6 @@ class RLConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_lora(self):
-        if self.trainer.model.experimental.lora is not None:
-            # Setup orchestrator
-            if self.orchestrator.lora_name is None:
-                self.orchestrator.lora_name = "default"
-            # Setup inference
-            if self.inference is not None:
-                self.inference.enable_lora = True
-            else:
-                warnings.warn(
-                    "LoRA is enabled, but inference is not configured. When manually starting the inference server, make sure to set `--enable_lora`."
-                )
-
-        return self
-
-    @model_validator(mode="after")
     def auto_setup_num_train_workers(self):
         if len(self.trainer_gpu_ids) > 1:
             self.orchestrator.num_train_workers = len(self.trainer_gpu_ids)
@@ -377,6 +361,24 @@ class RLConfig(BaseSettings):
                 self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
 
         validate_shared_weight_broadcast(self.trainer, self.orchestrator, self.inference)
+
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_lora(self):
+        if self.trainer.model.experimental.lora is not None:
+            self.trainer.weight_broadcast.adapter_only = True
+            if self.orchestrator.lora_name is None:
+                lora_name = (
+                    f"r{self.trainer.model.experimental.lora.rank}-a{self.trainer.model.experimental.lora.alpha}"
+                )
+                self.orchestrator.lora_name = lora_name
+            if self.inference is not None:
+                self.inference.enable_lora = True
+            else:
+                warnings.warn(
+                    "LoRA is enabled, but inference is not configured. When manually starting the inference server, make sure to set `--enable_lora`."
+                )
 
         return self
 
