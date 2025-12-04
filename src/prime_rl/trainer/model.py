@@ -247,6 +247,10 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
         model.init_buffers_post_meta()
     else:
         fix_model_post_empty(model)
+
+    for module in model.modules():
+        if hasattr(module, "_init_lora_parameters"):
+            module._init_lora_parameters()
     logger.debug(f"Loaded weights using HF DCP in {time.perf_counter() - load_dcp_start_time:.2f} seconds")
 
 

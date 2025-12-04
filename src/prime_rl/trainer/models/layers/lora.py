@@ -48,7 +48,7 @@ class LoRALinear(nn.Module):
         # checkpoint-wrapped module.
         self.register_load_state_dict_pre_hook(self._pre_load_state_dict_hook)
 
-    def _init_parameters(self):
+    def _init_lora_parameters(self):
         """Initialize LoRA parameters following standard LoRA initialization."""
         nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
         nn.init.zeros_(self.lora_B)
