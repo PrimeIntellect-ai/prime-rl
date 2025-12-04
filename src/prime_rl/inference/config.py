@@ -151,7 +151,7 @@ class InferenceConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def set_env_var_for_lora(self):
+    def auto_setup_dynamic_lora_updating(self):
         if self.enable_lora:
             os.environ["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "True"
         return self
