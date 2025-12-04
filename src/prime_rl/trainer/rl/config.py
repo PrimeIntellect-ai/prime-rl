@@ -21,17 +21,41 @@ class LossConfig(BaseConfig):
     """Base config for loss."""
 
     ratio_type: Annotated[Literal["token", "sequence"], Field(description="Type of importance ratio to use.")] = "token"
-    mask_ratio_high: Annotated[float, Field(ge=0)] = 8.0
-    mask_ratio_low: Annotated[float, Field(ge=0)] = 0.125
-    sequence_mask_ratio_low: Annotated[
+
+    # Token-level masking thresholds
+    mask_low: Annotated[float, Field(ge=0, description="Mask tokens with importance ratio below this.")] = 0.125
+    mask_high: Annotated[float, Field(ge=0, description="Mask tokens with importance ratio above this.")] = 8.0
+
+    # Sequence-level masking thresholds
+    seq_mask_low: Annotated[
+        float, Field(ge=0, description="Mask sequences with importance ratio below this. Set to 0 to disable.")
+    ] = 0.0
+    seq_mask_high: Annotated[
+        float, Field(ge=0, description="Mask sequences with importance ratio above this. Set to inf to disable.")
+    ] = float("inf")
+    seq_mask_neg_adv: Annotated[
         float,
         Field(
             ge=0,
-            description="If set, masks entire sequences when any generated token has an importance ratio below this value.",
+            description="Mask sequences with importance ratio below this AND negative advantage. Set to 0 to disable.",
         ),
     ] = 0.0
-    kl_tau: Annotated[float, Field(ge=0)] = 0.0
+    seq_mask_pos_adv: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="Mask sequences with importance ratio above this AND positive advantage. Set to inf to disable.",
+        ),
+    ] = float("inf")
 
+    # Sequence mode settings
+    seq_clip: Annotated[
+        float,
+        Field(ge=0, description="Clip unnormalized log sequence ratio to this before exp. Only for ratio_type='sequence'."),
+    ] = 10.0
+
+    kl_tau: Annotated[float, Field(ge=0)] = 0.0
+    constant_norm: Annotated[bool, Field(description="Whether to use a constant norm for the loss.")] = False
 
 class FakeDataLoaderConfig(BaseConfig):
     """Configures a fake data loader sampling random micro batches for debugging."""

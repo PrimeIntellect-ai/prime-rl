@@ -6,26 +6,33 @@ from torch import Tensor
 from prime_rl.trainer.rl.config import LossConfig
 
 
+@jaxtyped(typechecker=typechecker)
 @torch.compile(dynamic=True)
-def selective_log_softmax(logits: Tensor, index: Tensor) -> Tensor:
+def selective_log_softmax(
+    logits: Float[Tensor, "batch seq vocab"], index: Int[Tensor, "batch seq"]
+) -> Float[Tensor, "batch seq"]:
     logprobs = logits.log_softmax(dim=-1)
     return torch.gather(logprobs, dim=-1, index=index.unsqueeze(-1)).squeeze(-1)
 
 
+@jaxtyped(typechecker=typechecker)
 @torch.compile(dynamic=True)
-def compute_entropy(shifted_logits: Tensor) -> Tensor:
+def compute_entropy(shifted_logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq"]:
     with torch.no_grad():
         pd = torch.nn.functional.softmax(shifted_logits, dim=-1)
         entropy = torch.logsumexp(shifted_logits, dim=-1) - torch.sum(pd * shifted_logits, dim=-1)
     return entropy
 
 
-def shift_logits(logits: Tensor) -> Tensor:
+@jaxtyped(typechecker=typechecker)
+def shift_logits(logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq vocab"]:
     """Removes final token logits and adds a zero logit for the first token."""
+    # We drop the last logit because it corresponds to the next token that will be sampled but is not here yet
     batch, seq, vocab = logits.shape
-    logits = logits[:, :-1, :]
-    zeros = torch.zeros(batch, 1, vocab, device=logits.device, dtype=logits.dtype)
-    return torch.cat([zeros, logits], dim=1)
+    logits = logits[:, :-1, :]  # (batch, seq-1, vocab)
+    zeros = torch.zeros(batch, 1, vocab, device=logits.device, dtype=logits.dtype)  # (batch, 1, vocab)
+    logits = torch.cat([zeros, logits], dim=1)  # (batch, seq, vocab)
+    return logits
 
 
 def compute_loss(
@@ -33,69 +40,80 @@ def compute_loss(
     inference_logprobs: list[Tensor],
     advantages: list[Tensor],
     loss_mask: list[Tensor],
-    loss_config: LossConfig,    
+    loss_config: LossConfig,
 ) -> tuple[Tensor, dict[str, Any]]:
     """Compute loss for packed sequences."""
+    cfg = loss_config
     total_loss = 0
-    total_mismatch_kl = []
-    total_masked_mismatch_kl = []
-    total_unmasked_mismatch_kl = []
-    total_is_masked = []
-    total_is_masked_low = []
-    total_is_masked_high = []
-    total_sequence_masked_low = []
+    metrics = {
+        "mismatch_kl": [],
+        "masked_mismatch_kl": [],
+        "unmasked_mismatch_kl": [],
+        "token_masked": [],
+        "token_masked_low": [],
+        "token_masked_high": [],
+        "seq_masked_low": [],
+        "seq_masked_high": [],
+        "seq_masked_neg_adv": [],
+        "seq_masked_pos_adv": [],
+    }
 
-    for trainer_logprobs, inference_logprobs, advantages, loss_mask in zip(
-        trainer_logprobs, inference_logprobs, advantages, loss_mask
-    ):
-        log_importance_ratio = trainer_logprobs - inference_logprobs
+    for trainer_logprobs, inference_logprobs, advantages, loss_mask in zip(trainer_logprobs, inference_logprobs, advantages, loss_mask):
+        log_ratio = trainer_logprobs - inference_logprobs
+        token_kl = torch.exp(log_ratio) - log_ratio - 1
 
-        # Compute trainer-inference mismatch KL
-        token_mismatch_kl = torch.exp(log_importance_ratio) - log_importance_ratio - 1
+        seq_len = torch.clamp_min(loss_mask.sum(), 1)
+        seq_log_ratio = log_ratio[loss_mask].sum()
+        seq_ratio = torch.exp(seq_log_ratio / seq_len)
+        seq_adv = advantages[loss_mask].mean()
 
-        if loss_config.ratio_type == "sequence":
-            seq_log_importance_ratio = (log_importance_ratio[loss_mask]).sum()
-            log_importance_ratio = trainer_logprobs - trainer_logprobs.detach() + seq_log_importance_ratio.detach()
-            log_importance_ratio = torch.clamp(log_importance_ratio, max=10.0)
+        seq_mask_neg_adv = (seq_ratio < cfg.seq_mask_neg_adv) & (seq_adv < 0)
+        seq_mask_pos_adv = (seq_ratio > cfg.seq_mask_pos_adv) & (seq_adv > 0)
 
-        importance_ratio = torch.exp(log_importance_ratio)
-        is_masked_low = importance_ratio < loss_config.mask_ratio_low
-        is_masked_high = importance_ratio > loss_config.mask_ratio_high
-        is_masked = is_masked_low | is_masked_high
-        seq_min_ratio = importance_ratio.masked_fill(~loss_mask, torch.inf).min()
-        seq_should_mask = seq_min_ratio < loss_config.sequence_mask_ratio_low
-        is_masked = is_masked | seq_should_mask
-        keep_mask = loss_mask & ~is_masked
-        loss = (-importance_ratio * advantages)[keep_mask].sum()
-        loss = loss + loss_config.kl_tau * (log_importance_ratio[loss_mask]).sum()
+        if cfg.ratio_type == "sequence":
+            log_ratio = trainer_logprobs - trainer_logprobs.detach() + torch.clamp(seq_log_ratio, max=cfg.seq_clip).detach()
+            seq_mask_low = seq_ratio < cfg.seq_mask_low
+            seq_mask_high = seq_ratio > cfg.seq_mask_high
+        else:
+            ratio = torch.exp(log_ratio)
+            min_ratio = ratio.masked_fill(~loss_mask, torch.inf).min()
+            max_ratio = ratio.masked_fill(~loss_mask, -torch.inf).max()
+            seq_mask_low = min_ratio < cfg.seq_mask_low
+            seq_mask_high = max_ratio > cfg.seq_mask_high
 
-        # Apply sequence-level normalization if configured
-        if loss_config.ratio_type == "sequence":
-            loss = loss / torch.clamp_min(loss_mask.sum(), 1)
+        seq_mask = seq_mask_low | seq_mask_high | seq_mask_neg_adv | seq_mask_pos_adv
 
+        ratio = torch.exp(log_ratio)
+        token_mask_low = ratio < cfg.mask_low
+        token_mask_high = ratio > cfg.mask_high
+        token_mask = token_mask_low | token_mask_high | seq_mask
+
+        keep = loss_mask & ~token_mask
+        loss = (-ratio * advantages)[keep].sum() + cfg.kl_tau * log_ratio[loss_mask].sum()
+        if cfg.ratio_type == "sequence":
+            loss = loss / seq_len
         total_loss = total_loss + loss
 
-        mismatch_kl = token_mismatch_kl[loss_mask].sum() / torch.clamp_min(loss_mask.sum(), 1)
-        masked_mismatch_kl = token_mismatch_kl[loss_mask & is_masked].sum() / torch.clamp_min(
-            (loss_mask & is_masked).sum(), 1
-        )
-        unmasked_mismatch_kl = token_mismatch_kl[keep_mask].sum() / torch.clamp_min(keep_mask.sum(), 1)
-
-        # Aggregate loss tensors
-        total_mismatch_kl.append(mismatch_kl)
-        total_masked_mismatch_kl.append(masked_mismatch_kl)
-        total_unmasked_mismatch_kl.append(unmasked_mismatch_kl)
-        total_is_masked.append(is_masked[loss_mask].float())
-        total_is_masked_low.append(is_masked_low[loss_mask].float())
-        total_is_masked_high.append(is_masked_high[loss_mask].float())
-        total_sequence_masked_low.append(seq_should_mask.float())
+        metrics["mismatch_kl"].append(token_kl[loss_mask].sum() / seq_len)
+        metrics["masked_mismatch_kl"].append(token_kl[loss_mask & token_mask].sum() / torch.clamp_min((loss_mask & token_mask).sum(), 1))
+        metrics["unmasked_mismatch_kl"].append(token_kl[keep].sum() / torch.clamp_min(keep.sum(), 1))
+        metrics["token_masked"].append(token_mask[loss_mask].float())
+        metrics["token_masked_low"].append(token_mask_low[loss_mask].float())
+        metrics["token_masked_high"].append(token_mask_high[loss_mask].float())
+        metrics["seq_masked_low"].append(seq_mask_low.float())
+        metrics["seq_masked_high"].append(seq_mask_high.float())
+        metrics["seq_masked_neg_adv"].append(seq_mask_neg_adv.float())
+        metrics["seq_masked_pos_adv"].append(seq_mask_pos_adv.float())
 
     return total_loss, {
-        "mismatch_kl": torch.stack(total_mismatch_kl),
-        "masked_mismatch_kl": torch.stack(total_masked_mismatch_kl),
-        "unmasked_mismatch_kl": torch.stack(total_unmasked_mismatch_kl),
-        "is_masked": torch.cat(total_is_masked),
-        "is_masked_low": torch.cat(total_is_masked_low),
-        "is_masked_high": torch.cat(total_is_masked_high),
-        "sequence_masked_low": torch.stack(total_sequence_masked_low),
+        "mismatch_kl": torch.stack(metrics["mismatch_kl"]),
+        "masked_mismatch_kl": torch.stack(metrics["masked_mismatch_kl"]),
+        "unmasked_mismatch_kl": torch.stack(metrics["unmasked_mismatch_kl"]),
+        "token_masked": torch.cat(metrics["token_masked"]),
+        "token_masked_low": torch.cat(metrics["token_masked_low"]),
+        "token_masked_high": torch.cat(metrics["token_masked_high"]),
+        "seq_masked_low": torch.stack(metrics["seq_masked_low"]),
+        "seq_masked_high": torch.stack(metrics["seq_masked_high"]),
+        "seq_masked_neg_adv": torch.stack(metrics["seq_masked_neg_adv"]),
+        "seq_masked_pos_adv": torch.stack(metrics["seq_masked_pos_adv"]),
     }
