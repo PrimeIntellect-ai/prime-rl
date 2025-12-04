@@ -91,6 +91,13 @@ class ModelConfig(BaseConfig):
         ),
     ] = "hermes"
 
+    reasoning_parser: Annotated[
+        str | None,
+        Field(
+            description="Parser for extracting reasoning content from model outputs. Passed to vLLM as `--reasoning-parser`. Setting this enables reasoning mode.",
+        ),
+    ] = None
+
 
 class WeightBroadcastConfig(BaseSettings):
     """Configures weight broadcast settings."""
@@ -162,6 +169,7 @@ class InferenceConfig(BaseSettings):
             "model.trust_remote_code": "trust_remote_code",
             "model.enable_auto_tool_choice": "enable_auto_tool_choice",
             "model.tool_call_parser": "tool_call_parser",
+            "model.reasoning_parser": "reasoning_parser",
             "parallel.tp": "tensor_parallel_size",
             "parallel.dp": "data_parallel_size",
             "enable_lora": "enable_lora",
@@ -174,5 +182,9 @@ class InferenceConfig(BaseSettings):
 
         # Set `logprobs_mode` to `processed_logprobs` by default
         rsetattr(namespace, "logprobs_mode", "processed_logprobs")
+
+        # Remove reasoning_parser if not set (vLLM doesn't accept None)
+        if namespace.reasoning_parser is None:
+            delattr(namespace, "reasoning_parser")
 
         return namespace
