@@ -185,15 +185,12 @@ async def generate_and_save_group(
             group_rewards = [state["reward"] for state in states]
             rewards_accumulator.extend(group_rewards)
             avg_reward = sum(rewards_accumulator) / len(rewards_accumulator)
-            pbar.set_postfix(f"Avg Reward: {avg_reward:.4f}")
+            pbar.set_postfix({"Avg Reward": f"{avg_reward:.4f}"})
 
         pbar.update(rollouts_per_example)
         return states
     except Exception as e:
-        logger.error(f"Error evaluating group {index}: {repr(e)}")
-        import traceback
-
-        logger.debug(f"Traceback for group {index}:\n{traceback.format_exc()}")
+        logger.exception(f"Error evaluating group {index}: {repr(e)}")
 
 
 async def run_eval(
@@ -258,7 +255,7 @@ async def run_eval(
         rewards_accumulator.extend(existing_results_df.reward.tolist())
         if len(rewards_accumulator) > 0:
             avg_reward = sum(rewards_accumulator) / len(rewards_accumulator)
-            pbar.set_postfix(f"Avg Reward: {avg_reward:.4f}")
+            pbar.set_postfix({"Avg Reward": f"{avg_reward:.4f}"})
 
     # Run async generation and scoring
     all_groups = await asyncio.gather(
