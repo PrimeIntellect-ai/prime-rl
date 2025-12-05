@@ -214,7 +214,7 @@ def train(config: RLTrainerConfig):
         # Normalize by the local number of unmasked tokens in the batch (per-batch length normalization)
         if config.loss.ratio_type == "token":
             loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
-        elif config.loss.ratio_type == "sequence":
+        elif config.loss.ratio_type == "sequence" or config.loss.constant_norm:
             loss_scale = batch_size
         loss_scale = max(loss_scale, 1)
 
@@ -244,8 +244,9 @@ def train(config: RLTrainerConfig):
                 advantages=advantages.squeeze().split(response_lengths),
                 loss_mask=loss_mask.squeeze().split(response_lengths),
                 loss_config=config.loss,
-                loss_scale=loss_scale,
             )
+
+            loss = loss / loss_scale
 
             # Compute entropy
             entropy = compute_entropy(shifted_logits)
