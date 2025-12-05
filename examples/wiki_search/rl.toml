@@ -44,9 +44,6 @@ online_difficulty_filtering = true
 [[orchestrator.env]]
 id = "primeintellect/wiki-search"
 
-[inference]
-enable_lora = true
-
 [inference.model]
 enable_auto_tool_choice = true
 tool_call_parser = "hermes"
