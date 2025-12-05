@@ -378,7 +378,7 @@ class RLConfig(BaseSettings):
                 self.inference.max_lora_rank = self.trainer.model.experimental.lora.rank
             else:
                 warnings.warn(
-                    "LoRA is enabled, but inference is not configured. When manually starting the inference server, make sure to set `--enable_lora`."
+                    "LoRA is enabled, but inference is not configured. When manually starting the inference server, make sure to set `--enable_lora` and `--max-lora-rank`."
                 )
 
         return self
