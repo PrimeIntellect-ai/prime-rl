@@ -1,0 +1,8 @@
+gpu_memory_utilization=0.4
+
+[server]
+host="0.0.0.0"
+port=8000
+
+[model]
+name = "PrimeIntellect/Qwen3-4B"
