@@ -13,6 +13,8 @@ impl = "liger_kernel"
 freq = 1
 
 [trainer.model.experimental.lora]
+rank = 32
+alpha = 64
 
 [trainer.optim]
 lr = 1e-5
