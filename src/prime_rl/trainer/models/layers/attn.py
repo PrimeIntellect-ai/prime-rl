@@ -88,7 +88,7 @@ class FlashAttention(nn.Module):
         cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
-        # TODO: Can we optimize the rotary applicaiton instead of double transpose?
+        # TODO: Can we optimize the rotary application instead of double transpose?
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
@@ -109,7 +109,6 @@ class FlashAttention(nn.Module):
         attn_output = out.view(1, out.shape[0], -1)
         attn_weights = None
 
-        # attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
         return attn_output, attn_weights
 
@@ -164,7 +163,7 @@ class SDPAAttention(nn.Module):
         cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
-        # TODO: Can we optimize the rotary applicaiton instead of double transpose?
+        # TODO: Can we optimize the rotary application instead of double transpose?
         key_states = key_states.repeat_interleave(self.num_key_value_groups, dim=1)
         value_states = value_states.repeat_interleave(self.num_key_value_groups, dim=1)
         out = F.scaled_dot_product_attention(query_states, key_states, value_states, is_causal=True)
@@ -182,3 +181,67 @@ ATTN_IMPL2CLASS = {
     "sdpa": SDPAAttention,
     "flash_attention_3": functools.partial(FlashAttention, flash_attn_version=3),
 }
+
+
+def substitute_prime_rl_flash_attn(process_group: torch.distributed.ProcessGroup, heads_k_stride: int) -> None:
+    from ring_flash_attn import llama3_flash_attn_varlen_func
+
+    class RingFlashAttention(FlashAttention):
+        def forward(
+            self,
+            hidden_states: torch.Tensor,
+            position_embeddings: tuple[torch.Tensor, torch.Tensor],
+            cu_seqlens: torch.LongTensor | None = None,
+            max_seqlen: int | None = None,
+        ) -> tuple[torch.Tensor, torch.Tensor | None]:
+            input_shape = hidden_states.shape[:-1]
+            hidden_shape = (*input_shape, -1, self.head_dim)
+
+            query_states = self.q_proj(hidden_states).view(hidden_shape)
+            key_states = self.k_proj(hidden_states).view(hidden_shape)
+            value_states = self.v_proj(hidden_states).view(hidden_shape)
+
+            if self.use_qk_norm:  # main diff from Llama
+                query_states = self.q_norm(query_states)
+                key_states = self.k_norm(key_states)
+
+            query_states = query_states.transpose(1, 2)
+            key_states = key_states.transpose(1, 2)
+            value_states = value_states.transpose(1, 2)
+
+            cos, sin = position_embeddings
+            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+
+            from ring_flash_attn.adapters.hf_adapter import DATA_PARAMS
+
+            cu_seqlens_q = DATA_PARAMS["cu_seqlens_q"]
+            cu_seqlens_k = DATA_PARAMS["cu_seqlens_k"]
+            max_seqlen_q = DATA_PARAMS["max_seqlen_q"]
+            max_seqlen_k = DATA_PARAMS["max_seqlen_k"]
+            local_k_slice = DATA_PARAMS["local_k_slice"]
+
+            # TODO: Can we optimize the rotary application instead of double transpose?
+            query_states = query_states.transpose(1, 2)
+            key_states = key_states.transpose(1, 2)
+            value_states = value_states.transpose(1, 2)
+            out = llama3_flash_attn_varlen_func(
+                query_states[0],
+                key_states[0],
+                value_states[0],
+                cu_seqlens_q=cu_seqlens_q,
+                cu_seqlens_k=cu_seqlens_k,
+                max_seqlen_q=max_seqlen_q,
+                max_seqlen_k=max_seqlen_k,
+                local_k_slice=local_k_slice,
+                causal=True,
+                group=process_group,
+                heads_k_stride=heads_k_stride,
+            )
+            out = out.contiguous()
+            attn_output = out.view(1, out.shape[0], -1)
+            attn_weights = None
+
+            attn_output = self.o_proj(attn_output)
+            return attn_output, attn_weights
+
+    FlashAttention.forward = RingFlashAttention.forward

@@ -23,18 +23,68 @@ class MicroBatch(TypedDict):
 
 
 class FakeDataLoader:
-    def __init__(self, config: FakeDataLoaderConfig):
+    def __init__(self, config: FakeDataLoaderConfig, num_non_data_parallel_ranks: int = 1):
+        self.world = get_world()
+        self.num_dp_ranks = self.world.world_size // num_non_data_parallel_ranks
+        self.dp_rank = self.world.rank // num_non_data_parallel_ranks
         self.batch_size = config.batch_size
-        self.num_micro_batches = self.batch_size // get_world().world_size
+        self.num_micro_batches = self.batch_size // self.num_dp_ranks
         self.seq_len = config.seq_len
+        self.generate_documents = config.generate_documents
+        self.batch_counter = 0
 
     def wait_for_batch(self) -> None:
         return
 
     def get_batch(self) -> list[MicroBatch]:
-        return [self._get_micro_batch() for _ in range(self.num_micro_batches)]
+        if not self.generate_documents:
+            get_micro_batch_fn = self._get_micro_batch
+        else:
+            get_micro_batch_fn = self._get_document_micro_batch
 
-    def _get_micro_batch(self) -> MicroBatch:
+        # This is a pretty ugly hack to ensure that all CP ranks in a data parallel group receive the same micro batch.
+        micro_batches = []
+        for micro_batch_idx in range(self.num_micro_batches):
+            seed = self.dp_rank * 1000000 + self.batch_counter * 1000 + micro_batch_idx
+            generator = torch.Generator().manual_seed(seed)
+            micro_batches.append(get_micro_batch_fn(generator))
+
+        self.batch_counter += 1
+        return micro_batches
+
+    def _get_document_micro_batch(self, generator: torch.Generator) -> MicroBatch:
+        total_seq_len = 0
+        input_ids = []
+        position_ids = []
+
+        while total_seq_len < self.seq_len:
+            # Generate reasonably long documents
+            seq_len_to_generate = torch.randint(1, self.seq_len // 8, (1,), generator=generator).item()
+            if seq_len_to_generate + total_seq_len > self.seq_len:
+                seq_len_to_generate = self.seq_len - total_seq_len
+            total_seq_len += seq_len_to_generate
+            tmp_input_ids = torch.randint(0, 120000, (seq_len_to_generate,), generator=generator).long()
+            tmp_position_ids = torch.arange(seq_len_to_generate).long()
+
+            input_ids.append(tmp_input_ids)
+            position_ids.append(tmp_position_ids)
+
+        input_ids = torch.cat(input_ids, dim=0)
+        position_ids = torch.cat(position_ids, dim=0)
+        loss_mask = torch.ones(input_ids.shape[0], dtype=torch.bool)
+        advantages = torch.randn(input_ids.shape[0], generator=generator)
+        inference_logprobs = torch.randn(input_ids.shape[0], generator=generator)
+
+        return {
+            "input_ids": input_ids.unsqueeze(0),
+            "position_ids": position_ids.unsqueeze(0),
+            "advantages": advantages.unsqueeze(0),
+            "inference_logprobs": inference_logprobs.unsqueeze(0),
+            "temperature": 1.0,
+            "loss_mask": loss_mask.unsqueeze(0),
+        }
+
+    def _get_micro_batch(self, generator: torch.Generator) -> MicroBatch:
         return {
             "input_ids": torch.randint(
                 0,
@@ -43,10 +93,11 @@ class FakeDataLoader:
                     1,
                     self.seq_len,
                 ),
+                generator=generator,
             ),
             "position_ids": torch.cat([torch.arange(self.seq_len)]).unsqueeze(0),
-            "advantages": torch.randn(self.seq_len).unsqueeze(0),
-            "inference_logprobs": torch.randn(self.seq_len).unsqueeze(0),
+            "advantages": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
+            "inference_logprobs": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
             "temperature": 1.0,
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
         }
@@ -55,13 +106,15 @@ class FakeDataLoader:
 class DataLoader:
     """Loads serialized data from a data path written by the orchestrator."""
 
-    def __init__(self, output_dir: Path, start_step: int):
+    def __init__(self, output_dir: Path, start_step: int, num_non_data_parallel_ranks: int = 1):
         self.rollout_dir = get_rollout_dir(output_dir)
         self.current_step = start_step
         self.world = get_world()
 
+        self.dp_rank = self.world.rank // num_non_data_parallel_ranks
+
     def get_rollout_path(self) -> Path:
-        return self.rollout_dir / f"step_{self.current_step}" / f"rank_{self.world.rank}.pt"
+        return self.rollout_dir / f"step_{self.current_step}" / f"rank_{self.dp_rank}.pt"
 
     def wait_for_batch(self) -> None:
         sync_wait_for_path(self.get_rollout_path())
