@@ -19,7 +19,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
 from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, ModelConfig, TokenizerConfig
-from prime_rl.trainer.lora import apply_lora_to_model
+from prime_rl.trainer.lora import apply_lora_to_model, strip_lora_from_state_dict
 from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL, PreTrainedModelPrimeRL
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.weights import (
@@ -237,8 +237,10 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
 
     logger.info(f"Loading weights using HF DCP from {snapshot_path}")
     load_dcp_start_time = time.perf_counter()
+    state_dict = model.state_dict()
+    state_dict = strip_lora_from_state_dict(state_dict)
     dcp_load(
-        model.state_dict(),
+        state_dict,
         storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),
         # Note: This allow is needed by weight tying but could cause silent issues
         # planner=DefaultLoadPlanner(allow_partial_load=True),
@@ -247,6 +249,9 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
         model.init_buffers_post_meta()
     else:
         fix_model_post_empty(model)
+    for module in model.modules():
+        if hasattr(module, "_init_lora_parameters"):
+            module._init_lora_parameters()
     logger.debug(f"Loaded weights using HF DCP in {time.perf_counter() - load_dcp_start_time:.2f} seconds")
 
 
