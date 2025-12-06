@@ -239,11 +239,11 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     load_dcp_start_time = time.perf_counter()
     state_dict = model.state_dict()
     state_dict = strip_lora_from_state_dict(state_dict)
+    if model.config.tie_word_embeddings:
+        del state_dict["lm_head.weight"]
     dcp_load(
         state_dict,
         storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),
-        # Note: This allow is needed by weight tying but could cause silent issues
-        # planner=DefaultLoadPlanner(allow_partial_load=True),
     )
     if isinstance(model, PreTrainedModelPrimeRL):
         model.init_buffers_post_meta()
