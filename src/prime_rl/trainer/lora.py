@@ -140,7 +140,11 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
         )
         raise RuntimeError("Cannot apply LoRA to FSDP-wrapped model. Apply LoRA before setup_fsdp().")
 
+    logger.debug(f"Applying LoRA to model: {model} for {config.target_modules}")
     target_modules = _find_target_modules(model, config.target_modules)
+    logger.debug(
+        f"Found {len(target_modules)} target modules for LoRA: {target_modules[:10]} ... {target_modules[-10:]}"
+    )
 
     if not target_modules:
         logger.warning("No target modules found for LoRA. Check your target_modules patterns.")
