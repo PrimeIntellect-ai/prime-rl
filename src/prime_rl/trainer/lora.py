@@ -1,59 +1,12 @@
-import math
 import re
 from typing import Dict, List
 
 import torch
 import torch.nn as nn
-from torch.nn.parameter import Parameter
 
 from prime_rl.trainer.config import LoRAConfig
+from prime_rl.trainer.models.layers.lora import LoRALinear
 from prime_rl.utils.logger import get_logger
-
-
-class LoRALinear(nn.Module):
-    """
-    LoRA (Low-Rank Adaptation) linear layer.
-
-    Implements the low-rank decomposition: ΔW = B @ A
-    where A ∈ R^(rank x in_features), B ∈ R^(out_features x rank)
-
-    Forward pass: y = x @ (W + ΔW).T = x @ W.T + x @ A.T @ B.T * (alpha / rank)
-    """
-
-    def __init__(
-        self,
-        base_layer: nn.Linear,
-        rank: int,
-        alpha: float = 1.0,
-        dropout: float = 0.0,
-    ):
-        super().__init__()
-        self.base_layer = base_layer
-        self.rank = rank
-        self.alpha = alpha
-        self.scaling = alpha / rank
-
-        self.lora_A = Parameter(torch.empty(rank, base_layer.in_features))
-        self.lora_B = Parameter(torch.empty(base_layer.out_features, rank))
-
-        self.lora_dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
-
-        self._init_parameters()
-
-        for param in self.base_layer.parameters():
-            param.requires_grad = False
-
-    def _init_parameters(self):
-        """Initialize LoRA parameters following standard LoRA initialization."""
-        nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
-        nn.init.zeros_(self.lora_B)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass: base_output + lora_output"""
-        base_output = self.base_layer(x)
-        lora_x = self.lora_dropout(x)
-        lora_output = (lora_x @ self.lora_A.T) @ self.lora_B.T * self.scaling
-        return base_output + lora_output
 
 
 def _get_module_by_name(model: nn.Module, module_name: str) -> nn.Module:
