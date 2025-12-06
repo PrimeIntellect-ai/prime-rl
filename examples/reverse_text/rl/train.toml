@@ -1,7 +1,7 @@
 max_steps = 20
 
 [model]
-name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+name = "Qwen/Qwen3-30B-A3B-Instruct-2507"
 
 [optim]
 lr = 3e-6
