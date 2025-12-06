@@ -36,7 +36,7 @@ class LoRALinear(nn.Module):
 
         self.lora_dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
 
-        self._init_parameters()
+        self._init_lora_parameters()
 
         for param in self.base_layer.parameters():
             param.requires_grad = False

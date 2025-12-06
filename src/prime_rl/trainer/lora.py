@@ -109,6 +109,16 @@ def freeze_all_except_lora_and_specified(model: nn.Module, config: LoRAConfig) -
             param.requires_grad = False
 
 
+def strip_lora_from_state_dict(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Strip LoRA from the state dict."""
+    new_state_dict = {}
+    for key, value in state_dict.items():
+        if "lora_A" in key or "lora_B" in key:
+            continue
+        new_state_dict[key] = value
+    return new_state_dict
+
+
 def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
     """
     Apply LoRA to target modules in the model and freeze non-LoRA parameters.
@@ -130,7 +140,11 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
         )
         raise RuntimeError("Cannot apply LoRA to FSDP-wrapped model. Apply LoRA before setup_fsdp().")
 
+    logger.debug(f"Finding target modules for LoRA: {config.target_modules}")
     target_modules = _find_target_modules(model, config.target_modules)
+    logger.debug(
+        f"Found {len(target_modules)} target modules for LoRA: {target_modules[:10]} ... {target_modules[-10:]}"
+    )
 
     if not target_modules:
         logger.warning("No target modules found for LoRA. Check your target_modules patterns.")
