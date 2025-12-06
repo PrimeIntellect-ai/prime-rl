@@ -9,6 +9,16 @@ from prime_rl.trainer.models.layers.lora import LoRALinear
 from prime_rl.utils.logger import get_logger
 
 
+def strip_lora_from_state_dict(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Strip LoRA from the state dict."""
+    new_state_dict = {}
+    for key, value in state_dict.items():
+        if "lora_A" in key or "lora_B" in key:
+            continue
+        new_state_dict[key] = value
+    return new_state_dict
+
+
 def _get_module_by_name(model: nn.Module, module_name: str) -> nn.Module:
     """Get a module by its fully qualified name."""
     parts = module_name.split(".")
