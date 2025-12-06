@@ -23,7 +23,14 @@ class BaseDataConfig(BaseModel):
     batch_size: Annotated[int, Field(ge=1)] = 128
     seq_len: Annotated[int, Field(ge=1)] = 128
     pack_function: Literal["cat", "stack"] = "cat"
+    packing_seq_len: Annotated[int | None, Field(ge=1)] = None
     micro_batch_size: Annotated[int, Field(ge=1)] = 1
+
+    @model_validator(mode="after")
+    def resolve_packing_seq_len(self):
+        if self.packing_seq_len is None:
+            self.packing_seq_len = self.seq_len
+        return self
 
     @model_validator(mode="after")
     def validate_batch_size(self):
@@ -186,8 +193,10 @@ class SFTTrainerConfig(BaseSettings):
     @model_validator(mode="after")
     def validate_seq_len(self):
         if self.data.pack_function == "stack":
-            if self.data.seq_len % 256 != 0:
-                raise ValueError("The sequence length must be divisible by 256 when using pack function stack")
+            if self.data.packing_seq_len % 256 != 0:
+                raise ValueError(
+                    f"The packing sequence length ({self.data.packing_seq_len}) must be divisible by 256 when using pack function stack"
+                )
         return self
 
     @model_validator(mode="after")

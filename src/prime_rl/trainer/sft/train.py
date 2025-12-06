@@ -74,7 +74,7 @@ def train(config: SFTTrainerConfig):
     torch.set_float32_matmul_precision("high")
 
     # Initialize parallel dimensions
-    parallel_dims = get_parallel_dims(config.model, config.data.seq_len)
+    parallel_dims = get_parallel_dims(config.model, config.data.packing_seq_len)
 
     total_micro_batches = config.data.batch_size * config.model.cp * config.model.tp
     micro_batches_per_step = world.world_size * config.data.micro_batch_size
@@ -287,10 +287,10 @@ def train(config: SFTTrainerConfig):
 
         # Compute step metrics
         # Divide by CP and TP since those ranks process the same data
-        num_tokens = config.data.batch_size * config.data.seq_len // (config.model.cp * config.model.tp)
+        num_tokens = config.data.batch_size * config.data.packing_seq_len // (config.model.cp * config.model.tp)
         progress.total_tokens += num_tokens
         progress.total_samples = dataset.step
-        perf_counter = get_perf_counter(model, config.data.seq_len)
+        perf_counter = get_perf_counter(model, config.data.packing_seq_len)
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_tokens_per_second() or 0
         mfu = perf_counter.get_mfu() or 0
