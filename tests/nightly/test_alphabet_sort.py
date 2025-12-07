@@ -28,7 +28,7 @@ def rl_process(
         "run",
         "rl",
         "@",
-        "configs/ci/nightly/alphabet_sort.toml",
+        "examples/alphabet_sort/rl.toml",
         "--wandb.project",
         wandb_project,
         "--wandb.name",
