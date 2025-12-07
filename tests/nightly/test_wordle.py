@@ -13,7 +13,7 @@ pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 @pytest.fixture(scope="module")
 def wandb_name(branch_name: str) -> str:
     """Fixture for W&B name for RL CI integration tests."""
-    return f"alphabet-sort-{branch_name}"
+    return f"wordle-{branch_name}"
 
 
 @pytest.fixture(scope="module")
@@ -28,7 +28,7 @@ def rl_process(
         "run",
         "rl",
         "@",
-        "examples/alphabet_sort/rl.toml",
+        "examples/wordle/rl.toml",
         "--wandb.project",
         wandb_project,
         "--wandb.name",
