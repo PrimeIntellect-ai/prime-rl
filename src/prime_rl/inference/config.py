@@ -126,6 +126,13 @@ class InferenceConfig(BaseSettings):
         ),
     ] = False
 
+    max_lora_rank: Annotated[
+        int | None,
+        Field(
+            description="The maximum LoRA rank to use. Passed to vLLM as `--max-lora-rank`",
+        ),
+    ] = None
+
     gpu_memory_utilization: Annotated[
         float,
         Field(
@@ -151,7 +158,7 @@ class InferenceConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def set_env_var_for_lora(self):
+    def auto_setup_dynamic_lora_updating(self):
         if self.enable_lora:
             os.environ["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "True"
         return self
@@ -173,6 +180,7 @@ class InferenceConfig(BaseSettings):
             "parallel.tp": "tensor_parallel_size",
             "parallel.dp": "data_parallel_size",
             "enable_lora": "enable_lora",
+            "max_lora_rank": "max_lora_rank",
             "gpu_memory_utilization": "gpu_memory_utilization",
         }
 
