@@ -39,11 +39,13 @@ def interleave_rollout(state: vf.State) -> list[TrainingExample]:
     final_completion_logprobs = final_tokens["completion_logprobs"]
     first_prompt_len = len(first_step["tokens"]["prompt_ids"])
 
+    # Fall back to legacy behavior if prompt_logprobs not available
     if final_prompt_logprobs is None:
-        raise ValueError(
-            f"prompt_logprobs not available for multi-turn example {state.get('example_id', 'unknown')}. "
-            f"Ensure vLLM is configured with prompt_logprobs=True."
+        logger.warning(
+            f"prompt_logprobs not available for example {state.get('example_id', 'unknown')}. "
+            f"Using legacy interleave logic."
         )
+        return _interleave_rollout_legacy(state)
 
     completion_ids = deepcopy(final_prompt_ids[first_prompt_len:]) + deepcopy(final_completion_ids)
     completion_logprobs = deepcopy(final_prompt_logprobs[first_prompt_len:]) + deepcopy(final_completion_logprobs)
@@ -64,6 +66,59 @@ def interleave_rollout(state: vf.State) -> list[TrainingExample]:
     return [
         TrainingExample(
             prompt_ids=deepcopy(final_prompt_ids[:first_prompt_len]),
+            prompt_mask=[0] * first_prompt_len,
+            completion_ids=completion_ids,
+            completion_mask=completion_mask,
+            completion_logprobs=completion_logprobs,
+            advantage=None,
+        )
+    ]
+
+
+def _interleave_rollout_legacy(state: vf.State) -> list[TrainingExample]:
+    """
+    Legacy interleave logic for backwards compatibility.
+
+    Uses original token IDs and logprobs from each step. This is susceptible to
+    re-tokenization issues in multi-turn scenarios where BPE may produce different
+    token IDs for the same text when context changes.
+    """
+    trajectory = state["trajectory"]
+    first_step = trajectory[0]
+    first_prompt_len = len(first_step["tokens"]["prompt_ids"])
+
+    completion_ids: list[int] = []
+    completion_logprobs: list[float] = []
+    completion_mask: list[int] = []
+
+    for step_idx, step in enumerate(trajectory):
+        tokens = step["tokens"]
+        assert tokens is not None
+
+        if step_idx == 0:
+            # First step: add completion directly
+            completion_ids.extend(deepcopy(tokens["completion_ids"]))
+            completion_logprobs.extend(deepcopy(tokens["completion_logprobs"]))
+            completion_mask.extend([1] * len(tokens["completion_ids"]))
+        else:
+            # Later steps: add new prompt tokens (user/tool), then completion
+            prev_tokens = trajectory[step_idx - 1]["tokens"]
+            prev_total_len = len(prev_tokens["prompt_ids"]) + len(prev_tokens["completion_ids"])
+            new_prompt_len = len(tokens["prompt_ids"]) - prev_total_len
+
+            if new_prompt_len > 0:
+                new_prompt_ids = tokens["prompt_ids"][prev_total_len:]
+                completion_ids.extend(deepcopy(new_prompt_ids))
+                completion_logprobs.extend([0.0] * new_prompt_len)
+                completion_mask.extend([0] * new_prompt_len)
+
+            completion_ids.extend(deepcopy(tokens["completion_ids"]))
+            completion_logprobs.extend(deepcopy(tokens["completion_logprobs"]))
+            completion_mask.extend([1] * len(tokens["completion_ids"]))
+
+    return [
+        TrainingExample(
+            prompt_ids=deepcopy(first_step["tokens"]["prompt_ids"]),
             prompt_mask=[0] * first_prompt_len,
             completion_ids=completion_ids,
             completion_mask=completion_mask,
