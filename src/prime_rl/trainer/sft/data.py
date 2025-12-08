@@ -557,21 +557,22 @@ def setup_dataset(
         probabilities = None
         
         if config.subsets is not None and isinstance(config.subsets, dict):
-            # NEW nested format: subsets = {"subset_name": {"split_name": probability, ...}, ...}
+            # NEW nested format: subsets = {"subset_name": {"split_name": weight, ...}, ...}
+            # Weights are relative and normalized globally across all subset-split combinations
             logger.debug(f"Loading datasets using nested format: {config.subsets}")
             for subset_name, split_dict in config.subsets.items():
-                for split_name, prob in split_dict.items():
+                for split_name, weight in split_dict.items():
                     subsets_and_splits.append((subset_name, split_name))
-            # Probabilities are now embedded in the nested dict
-            # Extract them in the same order as subsets_and_splits
+            # Extract weights in the same order as subsets_and_splits
             probabilities = []
             for subset_name, split_dict in config.subsets.items():
-                for split_name, prob in split_dict.items():
-                    probabilities.append(prob)
-            # Normalize probabilities if they don't sum to 1.0
+                for split_name, weight in split_dict.items():
+                    probabilities.append(weight)
+            # Normalize probabilities globally
             total = sum(probabilities)
-            if total > 0 and abs(total - 1.0) > 1e-6:
+            if total > 0:
                 probabilities = [p / total for p in probabilities]
+                logger.debug(f"Normalized sampling probabilities: {probabilities}")
         elif config.old_subsets is None and config.splits is None:
             # No subsets or splits specified - use default
             subsets_and_splits = [(None, "train")]

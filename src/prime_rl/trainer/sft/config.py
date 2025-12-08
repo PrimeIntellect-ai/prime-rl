@@ -70,8 +70,9 @@ class SFTDataConfig(BaseDataConfig):
     subsets: Annotated[
         Optional[Dict[str, Dict[str, float]]],
         Field(
-            description="Mapping from subset name → its own split ratios. "
-                        "Example: {'wiki': {'train': 0.8, 'test': 0.2}, 'news': {'train': 0.95}}"
+            description="Mapping from subset name → split sampling weights (relative, normalized globally). "
+                        "Example: {'wiki': {'train': 0.8, 'test': 0.2}, 'news': {'train': 1.0}} "
+                        "means 40% wiki/train, 10% wiki/test, 50% news/train after normalization."
         ),
     ] = None
 
@@ -122,14 +123,17 @@ class SFTDataConfig(BaseDataConfig):
             if not self.subsets:
                 raise ValueError("subsets dictionary cannot be empty. Provide at least one subset with splits.")
             
-            for subset_name, split_ratios in self.subsets.items():
-                if not split_ratios:
+            for subset_name, split_weights in self.subsets.items():
+                if not split_weights:
                     raise ValueError(f"Subset '{subset_name}' must have at least one split defined")
-                total = sum(split_ratios.values())
-                if abs(total - 1.0) > 1e-6:
-                    raise ValueError(
-                        f"Subset '{subset_name}' split ratios must sum to 1.0 (got {total:.6f})"
-                    )
+                # Check that all weights are positive
+                for split_name, weight in split_weights.items():
+                    if weight <= 0:
+                        raise ValueError(
+                            f"Subset '{subset_name}' split '{split_name}' has invalid weight {weight}. "
+                            "All weights must be positive numbers."
+                        )
+            # Note: weights are relative and will be normalized globally at runtime
         return self
 
 DataConfigType: TypeAlias = FakeDataConfig | SFTDataConfig
