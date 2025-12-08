@@ -1,0 +1,12 @@
+max_steps = 20
+
+[ckpt]
+resume_step = 10
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B"
+
+[data]
+name = "PrimeIntellect/Reverse-Text-SFT"
+batch_size = 4
+seq_len = 1024

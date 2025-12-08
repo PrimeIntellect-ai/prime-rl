@@ -1,0 +1,33 @@
+inference_gpu_ids = [0,1,2,3,4,5]
+trainer_gpu_ids = [6,7]
+
+max_steps = 1000
+
+[model]
+name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+
+[wandb]
+project = "deepscaler"
+name = "stage2"
+
+[ckpt]
+interval = 100
+resume_step = 500
+
+[orchestrator]
+batch_size = 1024
+seq_len = 16384
+rollouts_per_example = 8
+
+[orchestrator.sampling]
+temperature = 0.6
+max_tokens = 16384
+
+[[orchestrator.env]]
+id = "single-turn-math"
+args = {dataset_name= "agentica-org/DeepScaleR-Preview-Dataset", dataset_subset = "default", question_key = "problem", answer_key = "solution"}
+
+[trainer.model.ac]
+
+[inference.parallel]
+dp = 6

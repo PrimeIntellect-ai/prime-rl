@@ -1,7 +1,8 @@
+import os
 from argparse import Namespace
 from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings, get_all_fields
 from prime_rl.utils.utils import rgetattr, rsetattr
@@ -69,6 +70,42 @@ class ModelConfig(BaseConfig):
         ),
     ] = False
 
+    trust_remote_code: Annotated[
+        bool,
+        Field(
+            description="Whether to trust remote code. Passed to vLLM engine init",
+        ),
+    ] = False
+
+    enable_auto_tool_choice: Annotated[
+        bool,
+        Field(
+            description="Whether to enable auto tool choice. Passed to vLLM as `--enable-auto-tool-choice`",
+        ),
+    ] = False
+
+    tool_call_parser: Annotated[
+        str,
+        Field(
+            description="The tool call parser to use. Passed to vLLM as `--tool-call-parser`",
+        ),
+    ] = "hermes"
+
+    reasoning_parser: Annotated[
+        str | None,
+        Field(
+            description="Parser for extracting reasoning content from model outputs. Passed to vLLM as `--reasoning-parser`. Setting this enables reasoning mode.",
+        ),
+    ] = None
+
+
+class WeightBroadcastConfig(BaseSettings):
+    """Configures weight broadcast settings."""
+
+    type: Annotated[Literal["nccl", "filesystem"], Field(description="The type of weight broadcast to use.")] = (
+        "filesystem"
+    )
+
 
 class InferenceConfig(BaseSettings):
     """Configures inference."""
@@ -82,12 +119,49 @@ class InferenceConfig(BaseSettings):
     # The parallel configuration
     parallel: ParallelConfig = ParallelConfig()
 
+    enable_lora: Annotated[
+        bool,
+        Field(
+            description="Whether to enable LORA. Passed to vLLM as `--enable-lora`",
+        ),
+    ] = False
+
+    max_lora_rank: Annotated[
+        int | None,
+        Field(
+            description="The maximum LoRA rank to use. Passed to vLLM as `--max-lora-rank`",
+        ),
+    ] = None
+
+    gpu_memory_utilization: Annotated[
+        float,
+        Field(
+            description="The GPU memory utilization to use. Passed to vLLM as `--gpu-memory-utilization`",
+        ),
+    ] = 0.9
+
     seed: Annotated[
         int | None,
         Field(
             description="Seed the inference components. If None, no seeding is used. Passed to vLLM as `--seed`",
         ),
     ] = None
+
+    weight_broadcast: Annotated[WeightBroadcastConfig, Field(description="The weight broadcast config.")] = (
+        WeightBroadcastConfig()
+    )
+
+    @model_validator(mode="after")
+    def nccl_and_dp(self):
+        if self.weight_broadcast.type == "nccl" and self.parallel.dp != 1:
+            raise ValueError("NCCL broadcast backend requires data parallel size to be 1")
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_dynamic_lora_updating(self):
+        if self.enable_lora:
+            os.environ["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "True"
+        return self
 
     def to_vllm(self) -> Namespace:
         """Convert InferenceConfig to vLLM-compatible Namespace."""
@@ -99,8 +173,15 @@ class InferenceConfig(BaseSettings):
             "model.dtype": "dtype",
             "model.max_model_len": "max_model_len",
             "model.enforce_eager": "enforce_eager",
+            "model.trust_remote_code": "trust_remote_code",
+            "model.enable_auto_tool_choice": "enable_auto_tool_choice",
+            "model.tool_call_parser": "tool_call_parser",
+            "model.reasoning_parser": "reasoning_parser",
             "parallel.tp": "tensor_parallel_size",
             "parallel.dp": "data_parallel_size",
+            "enable_lora": "enable_lora",
+            "max_lora_rank": "max_lora_rank",
+            "gpu_memory_utilization": "gpu_memory_utilization",
         }
 
         for key in get_all_fields(self):
@@ -109,5 +190,9 @@ class InferenceConfig(BaseSettings):
 
         # Set `logprobs_mode` to `processed_logprobs` by default
         rsetattr(namespace, "logprobs_mode", "processed_logprobs")
+
+        # Remove reasoning_parser if not set (vLLM doesn't accept None)
+        if namespace.reasoning_parser is None:
+            delattr(namespace, "reasoning_parser")
 
         return namespace

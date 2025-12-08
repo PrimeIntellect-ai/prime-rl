@@ -19,6 +19,10 @@ class World:
         # TODO: This is only true if we have evenly distributed node groups, which is probably a fair assumption (maybe at some point we want to run uneven node groups for pipelined inference)
         assert self.world_size % self.local_world_size == 0
 
+    @property
+    def is_master(self):
+        return self.rank == 0
+
     def __repr__(self):
         return f"World(world_size={self.world_size}, rank={self.rank}, local_rank={self.local_rank}, local_world_size={self.local_world_size}, num_nodes={self.num_nodes})"
 
@@ -38,12 +42,3 @@ def get_world() -> World:
 def reset_world():
     global _WORLD
     _WORLD = None
-
-
-if __name__ == "__main__":
-    # Used in tests/units/test_world_info.py to test init with torchrun
-    import torch.distributed as dist
-
-    print(get_world())
-    if dist.is_initialized():
-        dist.destroy_process_group()

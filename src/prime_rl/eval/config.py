@@ -1,135 +1,55 @@
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
-from prime_rl.eval.registry import Benchmark
-from prime_rl.orchestrator.config import (
-    ClientConfig,
-    LogConfig,
-)
-from prime_rl.utils.config import ModelConfig, MultiMonitorConfig
-from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
+from prime_rl.orchestrator.config import EvalConfig
+from prime_rl.utils.config import ClientConfig, LogConfig, ModelConfig, WandbConfig
+from prime_rl.utils.pydantic_config import BaseSettings
 
 
-class SamplingConfig(BaseConfig):
-    """Configures how tokens are sampled from the model. Largely follows the vLLM sampling parameters."""
-
-    temperature: Annotated[
-        float,
-        Field(
-            ge=0,
-            description="Scales the output probability distribution. Lower values => more deterministic, higher values => more random. If 0, will sample greedily.",
-        ),
-    ] = 1.0
-
-    top_p: Annotated[
-        float,
-        Field(
-            gt=0,
-            le=1,
-            description="Cumulative probability of the top tokens to consider. If 1, all tokens are considered.",
-        ),
-    ] = 1
-
-    top_k: Annotated[
-        int,
-        Field(
-            ge=-1,
-            description="Number of top tokens to consider. If -1, all tokens are considered.",
-        ),
-    ] = -1
-
-    min_p: Annotated[
-        float,
-        Field(
-            ge=0,
-            description="Minimum probability for a token to be considered, relative to the probability of the most likely token. If 0, all tokens are considered.",
-        ),
-    ] = 0.0
-
-    max_tokens: Annotated[
-        int | None,
-        Field(
-            description="Maximum number of output tokens to generate per turn. If None, will generate until maximum context length or EOS token is hit.",
-        ),
-    ] = None
-
-    min_tokens: Annotated[
-        int,
-        Field(
-            ge=0,
-            description="Minimum number of output tokens to generate per sequence.",
-        ),
-    ] = 0
-
-    seed: Annotated[
-        int | None,
-        Field(
-            description="Random seed to use for sampling. If None, no seeding is used.",
-        ),
-    ] = None
-
-
-class OnlineEvalConfig(BaseConfig):
-    """Configures online evaluation."""
-
-    ckpt_path: Annotated[
-        Path,
-        Field(
-            description="Path to read checkpoints from when doing online evaluation. Expects subdirectories named 'step_x' within the directory.",
-        ),
-    ] = Path("checkpoints")
-
-    interval: Annotated[
-        int,
-        Field(
-            ge=0,
-            description="Interval at which to evaluate the model.",
-        ),
-    ] = 100
-
-    max_steps: Annotated[
-        int | None,
-        Field(
-            description="Maximum number of steps to run online evaluation for. If None, will run indefinitely.",
-        ),
-    ] = None
-
-
-class EvalConfig(BaseSettings):
+class OfflineEvalConfig(EvalConfig, BaseSettings):
     """Configures evaluation."""
 
     # The client configuration
-    client: ClientConfig = ClientConfig()
+    client: ClientConfig = ClientConfig(timeout=36000, base_url=["https://api.openai.com/v1"])
 
     # The model configuration
-    model: ModelConfig = ModelConfig()
+    model: ModelConfig = ModelConfig(name="gpt-4.1-mini")
 
-    # The sampling configuration
-    sampling: SamplingConfig = SamplingConfig()
-
-    benchmarks: Annotated[
-        list[Benchmark],
-        Field(
-            description="Benchmarks to evaluate on. By default, it will evaluate only on the MATH-500 benchmark.",
-        ),
-    ] = ["math500"]
-
-    rollouts_per_prompt: Annotated[
-        list[int],
-        Field(
-            description="Number of samples to generate for each benchmark.",
-        ),
-    ] = [1]
-
-    online: Annotated[OnlineEvalConfig | None, Field(description="Whether to do online evaluation.")] = None
-
-    # The monitor configuration
-    monitor: MultiMonitorConfig = MultiMonitorConfig()
+    # The wandb configuration
+    wandb: WandbConfig | None = None
 
     # The logging configuration
     log: LogConfig = LogConfig()
+
+    output_dir: Annotated[
+        Path,
+        Field(
+            description="Directory to write outputs to. Will be populated with artifacts such as reports and HF datasets as subdirectories. Should be set to a persistent directory with enough disk space."
+        ),
+    ] = Path("outputs")
+
+    weights_dir: Annotated[
+        Path | None,
+        Field(
+            description="Directory to load weight checkpoints (searches for `{weights_dir}/step_{x}`) generated during a training run (RL/ SFT). If set, will automatically eval all checkpoints found, including the base model. If None, will only eval the base model.",
+        ),
+    ] = None
+
+    steps: Annotated[
+        list[int] | None,
+        Field(
+            description="Steps to evaluate. If None, will evaluate all steps found in the weights directory. If set, will only evaluate the specified steps. If any of the specified steps are not found in the weights directory, will raise an error.",
+        ),
+    ] = None
+
+    eval_base: Annotated[
+        bool,
+        Field(
+            description="Whether to evaluate the base model. If True, will evaluate the base model before evaluating the checkpoints.",
+        ),
+    ] = True
 
     use_tqdm: Annotated[
         bool,
@@ -137,3 +57,27 @@ class EvalConfig(BaseSettings):
             description="Whether to use tqdm to display progress bars during model generation.",
         ),
     ] = False
+
+    max_concurrent: Annotated[
+        int | None,
+        Field(
+            description="Maximum number of concurrent rollouts to generate and score. Will create a global semaphore and pass to verifiers Environment. If None, will not limit concurrency.",
+        ),
+    ] = None
+
+    @model_validator(mode="after")
+    def validate_steps(self):
+        if self.steps is not None and self.weights_dir is not None:
+            ckpt_steps = sorted([int(step_path.name.split("_")[-1]) for step_path in self.weights_dir.glob("step_*")])
+            for step in self.steps:
+                if step not in ckpt_steps:
+                    raise ValueError(f"Step {step} not found in weights directory {self.weights_dir}")
+        return self
+
+    @model_validator(mode="after")
+    def validate_eval_base(self):
+        if self.weights_dir is None and not self.eval_base:
+            raise ValueError(
+                "You should either evaluate the base model and/or checkpoints. Set `--eval-base` or specify a weight checkpoint directory with `--weights-dir`."
+            )
+        return self

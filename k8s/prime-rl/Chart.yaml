@@ -1,0 +1,16 @@
+apiVersion: v2
+name: prime-rl
+description: A Helm chart for deploying PRIME-RL training infrastructure on Kubernetes
+type: application
+version: 0.1.0
+appVersion: "main"
+keywords:
+  - machine-learning
+  - reinforcement-learning
+  - training
+  - gpu
+maintainers:
+  - name: Prime Intellect
+    url: https://github.com/PrimeIntellect-ai/prime-rl
+sources:
+  - https://github.com/PrimeIntellect-ai/prime-rl

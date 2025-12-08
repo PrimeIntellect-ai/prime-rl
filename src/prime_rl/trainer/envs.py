@@ -7,9 +7,6 @@ if TYPE_CHECKING:
     # ruff: noqa
     from prime_rl.utils.envs import *
 
-    # Prime
-    SHARDCAST_OUTPUT_DIR: str | None = None
-
     # PyTorch
     RANK: int
     WORLD_SIZE: int
@@ -20,7 +17,6 @@ if TYPE_CHECKING:
 
 
 _TRAINING_ENV_PARSERS = {
-    "SHARDCAST_OUTPUT_DIR": str,
     "RANK": int,
     "WORLD_SIZE": int,
     "LOCAL_RANK": int,

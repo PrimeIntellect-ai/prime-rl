@@ -3,17 +3,13 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
-# Monkeypatch vLLM Sampler before importing any vLLM modules
-# ruff: noqa: I001
-from prime_rl.inference.vllm.sampler import Sampler as CustomSampler
-
-import importlib
-
-setattr(importlib.import_module("vllm.v1.sample.sampler"), "Sampler", CustomSampler)
+# ruff: noqa
+import vllm.entrypoints.openai.api_server
 
 import uvloop
 import vllm.envs as envs
 from fastapi import Request
+from vllm.config import LogprobsMode
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server
@@ -23,16 +19,23 @@ from vllm.entrypoints.openai.api_server import (
     build_async_engine_client_from_engine_args,
     init_app_state,
     load_log_config,
+    maybe_register_tokenizer_info_endpoint,
     setup_server,
 )
 from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
 from vllm.entrypoints.openai.tool_parsers import ToolParserManager
 from vllm.logger import init_logger
-from vllm.utils import FlexibleArgumentParser
+from vllm.utils import FlexibleArgumentParser, decorate_logs
 
 from prime_rl.inference.config import InferenceConfig
 
 logger = init_logger("vllm.entrypoints.openai.api_server")
+
+
+WORKER_EXTENSION_CLS = {
+    "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
+    "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
+}
 
 
 # Copied from vllm/entrypoints/openai/api_server.py
@@ -45,10 +48,11 @@ async def custom_build_async_engine_client(
     # Context manager to handle engine_client lifecycle
     # Ensures everything is shutdown and cleaned up on error/exit
     engine_args = AsyncEngineArgs.from_cli_args(args)
-    engine_args.worker_extension_cls = "prime_rl.inference.vllm.worker.CheckpointWorker"
+    engine_args.worker_extension_cls = args.worker_extension_cls
+    engine_args.logprobs_mode = LogprobsMode.PROCESSED_LOGPROBS
 
     async with build_async_engine_client_from_engine_args(
-        engine_args, args.disable_frontend_multiprocessing, client_config
+        engine_args, disable_frontend_multiprocessing=args.disable_frontend_multiprocessing, client_config=client_config
     ) as engine:
         yield engine
 
@@ -56,6 +60,8 @@ async def custom_build_async_engine_client(
 # Copied from vllm/entrypoints/openai/api_server.py
 # Only difference is that we inject custom routes and build async engine client differently
 async def custom_run_server_worker(listen_address, sock, args, client_config=None, **uvicorn_kwargs) -> None:
+    """Run a single API server worker."""
+
     if args.tool_parser_plugin and len(args.tool_parser_plugin) > 3:
         ToolParserManager.import_tool_parser(args.tool_parser_plugin)
 
@@ -67,14 +73,14 @@ async def custom_run_server_worker(listen_address, sock, args, client_config=Non
         uvicorn_kwargs["log_config"] = log_config
 
     async with custom_build_async_engine_client(args, client_config) as engine_client:
+        maybe_register_tokenizer_info_endpoint(args)
         app = build_app(args)
 
         ### CUSTOM ENDPOINTS ###
         @app.post("/update_weights")
         async def _update_weights(request: Request):
             data = await request.json()
-            model_path = data.get("model_path")
-            await engine_client.collective_rpc("update_weights", args=(model_path,))
+            await engine_client.collective_rpc("update_weights", args=(data.get("weight_dir"),))
             return {"status": "ok"}
 
         @app.post("/reload_weights")
@@ -82,8 +88,29 @@ async def custom_run_server_worker(listen_address, sock, args, client_config=Non
             await engine_client.collective_rpc("reload_weights")
             return {"status": "ok"}
 
+        @app.post("/init_broadcaster")
+        async def _init_broadcaster(request: Request):
+            data = await request.json()
+            host = data.get("host")
+            port = data.get("port")
+            timeout = data.get("timeout")
+            # Support both legacy and new field names
+            server_rank = data.get("server_rank")
+            num_inference_server = data.get("num_inference_server")
+            await engine_client.collective_rpc(
+                "init_broadcaster",
+                args=(host, port, server_rank, num_inference_server, timeout),
+            )
+            return {"status": "ok"}
+
         vllm_config = await engine_client.get_vllm_config()
         await init_app_state(engine_client, vllm_config, app.state, args)
+
+        # This hack allows us to update lora adapters in-place by skipping the check for already loaded adapters.
+        async def do_nothing(*args, **kwargs):
+            return None
+
+        app.state.openai_serving_models._check_load_lora_adapter_request = do_nothing
 
         logger.info("Starting vLLM API server %d on %s", server_index, listen_address)
         shutdown_task = await serve_http(
@@ -113,7 +140,12 @@ async def custom_run_server_worker(listen_address, sock, args, client_config=Non
 
 # Copied from vllm/entrypoints/openai/api_server.py
 # Only difference is that we call `custom_run_server_worker` instead of `run_server_worker`
-async def custom_run_server(args: Namespace, **uvicorn_kwargs) -> None:
+async def custom_run_server(args, **uvicorn_kwargs) -> None:
+    """Run a single-worker API server."""
+
+    # Add process-specific prefix to stdout and stderr.
+    decorate_logs("APIServer")
+
     listen_address, sock = setup_server(args)
     await custom_run_server_worker(listen_address, sock, args, **uvicorn_kwargs)
 
@@ -124,7 +156,11 @@ def server(config: InferenceConfig, vllm_args: list[str]):
     parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")
     parser = make_arg_parser(parser)
     args = parser.parse_args(args=vllm_args, namespace=config.to_vllm())
+    assert args is not None
     validate_parsed_serve_args(args)
+
+    # Set the worker extension class based on the broadcast backend
+    args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]
 
     # Raise error if logprobs_mode is not set to processed_logprobs
     if args.logprobs_mode != "processed_logprobs":

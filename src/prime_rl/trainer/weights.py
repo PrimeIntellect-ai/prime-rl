@@ -1,141 +1,172 @@
-import shutil
-import threading
-import time
+import json
+import warnings
 from pathlib import Path
+from typing import Literal, cast
 
 import torch
-from torch import Tensor
+from huggingface_hub import split_torch_state_dict_into_shards
+from safetensors import safe_open
+from safetensors.torch import save_file
+from torch import Tensor, nn
 from torch.distributed.checkpoint.state_dict import _get_fqns as get_fqns
 from torch.distributed.tensor import DTensor
-from transformers import AutoTokenizer
+from transformers.utils import (
+    ADAPTER_SAFE_WEIGHTS_NAME,
+    ADAPTER_WEIGHTS_NAME,
+    SAFE_WEIGHTS_INDEX_NAME,
+    SAFE_WEIGHTS_NAME,
+    WEIGHTS_INDEX_NAME,
+    WEIGHTS_NAME,
+)
 
-from prime_rl.trainer.config import CheckpointConfig
-from prime_rl.trainer.model import Model
-from prime_rl.trainer.rl.config import WeightCheckpointConfig
-from prime_rl.trainer.world import get_world
+from prime_rl.trainer.lora import (
+    clean_lora_state_dict,
+)
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.utils import get_step_path, get_weight_ckpt_model_path, get_weights_dir
+
+PYTORCH_WRAPPER_PREFIXES = ["_fsdp_wrapped_module.", "_orig_module.", "_checkpoint_wrapped_module."]
 
 
-class WeightCheckpointManager:
-    """Utility class to save and cleanup HF-compatible weight checkpoints."""
+def _strip_pytorch_wrapper_prefix(key: str) -> str:
+    for prefix in PYTORCH_WRAPPER_PREFIXES:
+        key = key.replace(prefix, "")
+    return key
 
-    def __init__(
-        self, outputs_dir: Path, config: WeightCheckpointConfig, ckpt_config: CheckpointConfig, async_level: int
-    ):
-        self.weights_dir = get_weights_dir(outputs_dir)
-        self.config = config
-        self.ckpt_config = ckpt_config
-        self.async_level = async_level
-        self._logger = get_logger()
-        self._world = get_world()
-        self._is_master = self._world.rank == 0
 
-    def _get_model_path(self, step: int) -> Path:
-        return get_weight_ckpt_model_path(self.weights_dir, step)
+def get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
+    """Get the maximum number of layers in the model."""
+    return max(int(i.split(".")[2]) for i in state_dict.keys() if "model.layers." in i) + 1
 
-    def _get_step_path(self, step: int) -> Path:
-        return get_step_path(self.weights_dir, step)
 
-    def _gather_weights(self, model: Model, dtype: torch.dtype = torch.bfloat16) -> dict[str, Tensor]:
-        """Gather distributed weights for weight checkpoint."""
-        start_time = time.time()
-        self._logger.debug("Gathering sharded weights")
+def load_state_dict(save_dir: Path) -> dict[str, Tensor]:
+    """Load a state dict from a local directory with safetensor files."""
+    safetensors_paths = list(save_dir.glob("*.safetensors"))
+    if len(safetensors_paths) > 1:
+        safetensors_paths.sort(key=lambda x: int(x.stem.split("-")[1].split("of")[0]))
+    state_dict = {}
+    for safetensor_path in safetensors_paths:
+        with safe_open(safetensor_path, framework="pt", device="cpu") as f:
+            for key in f.keys():
+                state_dict[key] = f.get_tensor(key)
+    return state_dict
+
+
+def save_state_dict(
+    state_dict: dict[str, Tensor],
+    save_dir: Path,
+    save_format: Literal["torch", "safetensors"] = "safetensors",
+    save_sharded: bool = True,
+    adapter: bool = False,
+):
+    """Save a state dict to a local directory in safetensors or torch format."""
+    logger = get_logger()
+    if adapter:
+        weights_name = ADAPTER_SAFE_WEIGHTS_NAME if save_format == "safetensors" else ADAPTER_WEIGHTS_NAME
+    else:
+        weights_name = SAFE_WEIGHTS_NAME if save_format == "safetensors" else WEIGHTS_NAME
+    save_dir.mkdir(parents=True, exist_ok=True)
+    if save_sharded:
+        filename_pattern = weights_name.replace(".bin", "{suffix}.bin").replace(".safetensors", "{suffix}.safetensors")
+        state_dict_split = split_torch_state_dict_into_shards(
+            state_dict,
+            filename_pattern=filename_pattern,
+        )
+        if state_dict_split.is_sharded:
+            filenames = state_dict_split.filename_to_tensors.keys()
+            logger.debug(f"Saving sharded weights to {len(filenames)} files: ({', '.join(filenames)})")
+        else:
+            logger.debug(f"Saving unsharded weights to {weights_name}")
+
+        # Save weights (https://github.com/huggingface/transformers/blob/cd74917ffc3e8f84e4a886052c5ab32b7ac623cc/src/transformers/modeling_utils.py#L4252)
+        filename_to_tensors = state_dict_split.filename_to_tensors.items()
+        for shard_file, tensors in filename_to_tensors:
+            shard = {}
+            for tensor in tensors:
+                assert isinstance(state_dict[tensor], Tensor)
+                shard[tensor] = state_dict[tensor].contiguous()
+                # delete reference, see https://github.com/huggingface/transformers/pull/34890
+                del state_dict[tensor]
+            if save_format == "safetensors":
+                save_file(shard, save_dir / shard_file, metadata={"format": "pt"})
+            else:
+                torch.save(shard, save_dir / shard_file)
+        del state_dict
+
+        # Save index (https://github.com/huggingface/transformers/blob/cd74917ffc3e8f84e4a886052c5ab32b7ac623cc/src/transformers/modeling_utils.py#L4301)
+        if state_dict_split.is_sharded:
+            index = {
+                "metadata": {**state_dict_split.metadata},
+                "weight_map": state_dict_split.tensor_to_filename,
+            }
+            save_index_file = SAFE_WEIGHTS_INDEX_NAME if save_format == "safetensors" else WEIGHTS_INDEX_NAME
+            save_index_file = save_dir / save_index_file
+            # Save the index as well
+            with open(save_index_file, "w", encoding="utf-8") as f:
+                content = json.dumps(index, indent=2, sort_keys=True) + "\n"
+                f.write(content)
+    else:
+        if save_format == "safetensors":
+            save_file(state_dict, save_dir / weights_name, metadata={"format": "pt"})
+        else:
+            torch.save(state_dict, save_dir / weights_name)
+
+
+def gather_weights_on_master(
+    model: nn.Module, is_master: bool, dtype: torch.dtype = torch.bfloat16
+) -> dict[str, Tensor]:
+    """Gather distributed weights on CPU on master rank."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
+        warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
 
         cpu_state = {}
         for key, value in model.state_dict().items():
             if isinstance(value, DTensor):
-                value = value.to(dtype)
                 # only gather after the downcast to dtype as it will be faster
-                value = value.full_tensor()
+                value = cast(DTensor, value.to(dtype)).full_tensor()
 
-            if self._is_master:
+            if is_master:
                 key = get_fqns(model, key)
                 assert len(key) == 1
                 key = next(iter(key))
                 # TODO(Sami) Blocking to avoid race condition, should make non-blocking long-term tho
                 cpu_state[key] = value.to("cpu", non_blocking=False)
-
         torch.distributed.barrier()
-        self._logger.debug(f"Gathered sharded weights in {time.time() - start_time:.2f} seconds")
 
-        return cpu_state
+    # Always clean up the state dict for HF compatibility
+    if any(".base_layer." in key or "lora_A" in key or "lora_B" in key for key in cpu_state.keys()):
+        cpu_state = clean_lora_state_dict(cpu_state)
 
-    def _save_to_path(self, cpu_state: dict[str, Tensor], model: Model, tokenizer: AutoTokenizer, step: int):
-        """Save weight checkpoint for given step."""
-        step_path = self._get_step_path(step)
-        step_path.mkdir(parents=True, exist_ok=True)
+    return cpu_state
 
-        self._logger.debug(f"Saving weight checkpoint to {step_path}")
-        start_time = time.time()
 
-        # Save model weights to temporary file to avoid race condition
-        model_path = self._get_model_path(step)
-        tmp_model_path = model_path.with_suffix(".tmp")
-        torch.save(cpu_state, tmp_model_path)
-        # Rename temporary file to indicate checkpoint is complete
-        tmp_model_path.rename(model_path)
+def get_adapter_state_dict(model: nn.Module, is_master: bool) -> dict[str, Tensor]:
+    """Get adapter weights with clean keys for PEFT compatibility."""
+    lora_state = {}
 
-        # Save model config, generation arguments and tokenizer
-        model.config.save_pretrained(step_path)
-        model.generation_config.save_pretrained(step_path)
-        tokenizer.save_pretrained(step_path)
+    named_params = {_strip_pytorch_wrapper_prefix(key): value for key, value in model.named_parameters()}
+    for key, value in model.state_dict().items():
+        param = named_params.get(key)
+        if param is None or not param.requires_grad:
+            continue
 
-        self._logger.debug(f"Saved weight checkpoint to {step_path} in {time.time() - start_time:.2f} seconds")
+        if isinstance(value, DTensor):
+            value = value.full_tensor()
 
-    def save(
-        self,
-        model: Model,
-        tokenizer: AutoTokenizer,
-        step: int,
-        dtype: torch.dtype = torch.bfloat16,
-    ):
-        """Save a HF-compatible weight-only checkpoint for a given step."""
-        cpu_state = self._gather_weights(model, dtype)
+        if is_master:
+            clean_key = next(iter(get_fqns(model, key)))
+            clean_key = clean_key.replace(".base_layer.", ".")
 
-        if self._is_master:
-            if self.config.save_async:
-                thread = threading.Thread(
-                    target=self._save_to_path,
-                    args=(cpu_state, model, tokenizer, step),
-                    name=f"weight-checkpoint-save-{step}",
-                )
-                thread.start()
-            else:
-                self._save_to_path(cpu_state, model, tokenizer, step)
+            # Add PEFT-expected prefix
+            peft_key = f"base_model.model.{clean_key}"
 
-        return self._get_model_path(step)
+            # Add .weight suffix for LoRA parameters if missing
+            if ("lora_A" in peft_key or "lora_B" in peft_key) and not peft_key.endswith(".weight"):
+                peft_key = f"{peft_key}.weight"
 
-    def _maybe_clean(self, step: int):
-        """Synchronous helper of `clean`."""
-        step = max(step - (self.async_level + 1), 0)  # Consider deleting async_level + 1 steps ago
-        candidate_path_to_delete = self._get_step_path(step)
-        keep_for_eval = self.config.interval and step % self.config.interval == 0
-        # For checkpointing step x, we need all weight checkpoints in [x-async_level, x] (for logprob model)
-        # To get [n-k, n] with interval n and buffer k over all natural numbers x, we use the condition (n - (x % n)) % n <= k
-        keep_for_ckpt = (
-            self.ckpt_config
-            and (self.ckpt_config.interval - (step % self.ckpt_config.interval)) % self.ckpt_config.interval
-            <= self.async_level
-        )
-        if not (keep_for_eval or keep_for_ckpt):
-            self._logger.debug(
-                f"Removing past weight checkpoint {candidate_path_to_delete} ({keep_for_eval=}, {keep_for_ckpt=})"
-            )
-            shutil.rmtree(candidate_path_to_delete, ignore_errors=True)
+            lora_state[peft_key] = value.to("cpu", non_blocking=False)
 
-    def maybe_clean(self, step: int):
-        """
-        Considers deleting a past weight checkpoint at a given step. There are two reasons not to delete a checkpoint:
-        1. The step is an evaluation step (e.g. step % weights.interval == 0)
-        2. The step is a checkpoint step or at most async_level steps earlier
-        """
-        if self.config.save_async:
-            thread = threading.Thread(
-                target=self._maybe_clean,
-                args=(step,),
-                name=f"weight-checkpoint-clean-{step}",
-            )
-            thread.start()
-        else:
-            self._maybe_clean(step)
+    torch.distributed.barrier()
+    if is_master and len(lora_state) == 0:
+        raise ValueError("The LoRA state dict is empty. Something went wrong.")
+    return lora_state

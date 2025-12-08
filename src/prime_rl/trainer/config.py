@@ -1,10 +1,128 @@
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from prime_rl.utils.pydantic_config import BaseConfig
 
-AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2"]
+AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2", "flash_attention_3"]
+
+MOE_MODEL_MAPS = {
+    "Qwen/Qwen3-30B-A3B": "Jackmin108/Qwen3-30B-A3B-Fast",
+    "moonshotai/Moonlight-16B-A3B-Instruct": "Jackmin108/Moonlight-16B-A3B-Instruct-Fast",
+}
+
+
+class ActivationCheckpointConfig(BaseConfig):
+    """Configures activation checkpointing."""
+
+    freq: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Applies activation checkpointing to every `freq` layers. Defaults to 1, which will is full activation checkpointing.",
+        ),
+    ] = 1
+
+
+class ActivationOffloadingConfig(BaseConfig):
+    """Configures the activation offloading."""
+
+    pin_memory: Annotated[bool, Field(description="Whether to pin the offloaded activations to CPU memory.")] = True
+
+    max_inflight_activations: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="The maximum number of activations to keep in while offloading further. (More activations means smoother overlap, but more gpu memory usage)",
+        ),
+    ] = 5
+
+
+class CompileConfig(BaseConfig):
+    """Configures model compilation."""
+
+    fullgraph: Annotated[
+        bool,
+        Field(description="Whether to compile the transformer blocks with fullgraph."),
+    ] = False
+
+
+class DebugModelConfig(BaseConfig):
+    """Debugging feature around model and distributed training."""
+
+    num_layers: Annotated[
+        int | None,
+        Field(description="The number of layers in the model."),
+    ] = None
+
+    random_init: Annotated[
+        bool,
+        Field(
+            description="Whether to random initialize the model.",
+        ),
+    ] = False
+
+
+class LoRAConfig(BaseConfig):
+    """Configuration for LoRA (Low-Rank Adaptation)."""
+
+    rank: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Rank of the low-rank decomposition matrices.",
+        ),
+    ] = 16
+
+    alpha: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="LoRA scaling parameter.",
+        ),
+    ] = 16.0
+
+    dropout: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            description="LoRA dropout rate.",
+        ),
+    ] = 0.0
+
+    target_modules: Annotated[
+        list[str],
+        Field(
+            description="Module names or regex patterns for modules to apply LoRA to. Simple names (e.g., 'q_proj') match any component in the module path. Regex patterns match anywhere in the name.",
+        ),
+    ] = [
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+    ]
+
+    modules_to_save: Annotated[
+        list[str],
+        Field(
+            description="Module names or regex patterns for modules to keep fully trainable (not freeze). Simple names match any component in the module path. Regex patterns match anywhere in the name.",
+        ),
+    ] = []
+
+
+class ExperimentalConfig(BaseConfig):
+    """Experimental modeling features."""
+
+    lora: Annotated[
+        LoRAConfig | None,
+        Field(
+            description="Whether to apply LoRA to the model. If None, will not apply LoRA.",
+        ),
+    ] = None
 
 
 class ModelConfig(BaseConfig):
@@ -20,22 +138,165 @@ class ModelConfig(BaseConfig):
     attn: Annotated[AttnImplementation, Field(description="The attention implementation to use.")] = "flash_attention_2"
 
     compile: Annotated[
-        bool,
+        CompileConfig | None,
         Field(
-            description="Whether to compile the model using `torch.compile`. Currently discouraged because it was found to destabilize training.",
+            description="Whether to compile the model using `torch.compile`.",
         ),
-    ] = False
+    ] = None
 
     ac: Annotated[
+        ActivationCheckpointConfig | None,
+        Field(
+            description="Whether to apply activation checkpointing to the model. If None, will not apply activation checkpointing.",
+        ),
+    ] = None
+
+    ac_offloading: Annotated[
+        ActivationOffloadingConfig | None,
+        Field(
+            description="Whether to apply activation offloading to the model. If None, will not apply activation offloading.",
+        ),
+    ] = None
+
+    fsdp_cpu_offload: Annotated[
         bool,
         Field(
-            description="Whether to apply activation checkpointing to the model.",
+            description="Whether to enable FSDP CPU offloading for parameters, gradients, and optimizer states. When enabled, uses pinned memory for efficient CPU-GPU transfers.",
         ),
     ] = False
 
     reshard_after_forward: Annotated[
         bool, Field(description="Whether to reshard the model after each forward pass.")
     ] = True
+
+    trust_remote_code: Annotated[
+        bool,
+        Field(
+            description="Whether to trust remote code for model and tokenizer initialization.",
+        ),
+    ] = False
+
+    dp_replicate: Annotated[
+        int,
+        Field(
+            description="The data parallel dim where model weights are replicated.",
+        ),
+    ] = 1
+
+    ep: Annotated[
+        int,
+        Field(
+            description="The expert parallelism to use if the model has MoE layers. If 1, then no EP will be used.",
+        ),
+    ] = 1
+
+    tp: Annotated[
+        int,
+        Field(
+            description="The tensor parallelism size to use. If 1, then no TP will be used.",
+        ),
+    ] = 1
+
+    cp: Annotated[
+        int,
+        Field(
+            description="The context parallelism size to use. If 1, then no CP will be used.",
+        ),
+    ] = 1
+
+    impl: Annotated[
+        Literal["hf", "liger_kernel", "custom"],
+        Field(
+            description="Whether to use Liger Kernel.",
+        ),
+    ] = "hf"
+
+    load_using_meta: Annotated[
+        bool,
+        Field(
+            description="Whether to load the model using meta device then load from HF ckpt.",
+        ),
+    ] = False
+
+    optimization_dtype: Annotated[
+        Literal["bfloat16", "float32"],
+        Field(
+            description="The dtype to use for the model optimization.",
+        ),
+    ] = "float32"
+
+    reduce_dtype: Annotated[
+        Literal["bfloat16", "float32"],
+        Field(
+            description="The dtype to use for the model reduce.",
+        ),
+    ] = "float32"
+
+    moe_use_grouped_mm: Annotated[
+        bool,
+        Field(
+            description="Whether to use grouped mm for the MoE layers. Require compute capability >= 9.0",
+        ),
+    ] = True
+
+    debug: Annotated[
+        DebugModelConfig,
+        Field(
+            description="Debugging feature around model and distributed training.",
+        ),
+    ] = DebugModelConfig()
+
+    experimental: Annotated[
+        ExperimentalConfig,
+        Field(
+            description="Experimental modeling features.",
+        ),
+    ] = ExperimentalConfig()
+
+    @model_validator(mode="after")
+    def _map_model_name_for_moe(self):
+        """Map model name if it exists in MOE_MODEL_MAPS."""
+        if self.name in MOE_MODEL_MAPS:
+            self.name = MOE_MODEL_MAPS[self.name]
+        return self
+
+    @model_validator(mode="after")
+    def trust_remote_code_only_with_hf(self):
+        """Trust remote code only if the model is from HF."""
+        if self.trust_remote_code:
+            if self.impl != "hf":
+                raise ValueError("Trust remote code is only supported with the HF implementation.")
+        return self
+
+    @model_validator(mode="after")
+    def random_init_only_with_meta(self):
+        """Random initialize is only supported with the custom implementation."""
+        if self.debug.random_init and not self.load_using_meta:
+            raise ValueError("Random initialize is only supported when loading with meta.")
+        return self
+
+
+class TokenizerConfig(BaseConfig):
+    """Configuration for the tokenizer."""
+
+    name: Annotated[
+        str | None,
+        Field(description="The name or path of the tokenizer to use. If None, will use the model's default tokenizer."),
+    ] = None
+
+    trust_remote_code: Annotated[
+        bool | None,
+        Field(
+            description="Whether to trust remote code for tokenizer initialization. If None, will use the model's default trust remote code setting.",
+        ),
+    ] = None
+
+    chat_template: Annotated[
+        str | None,
+        Field(
+            description="The chat template to use for the tokenizer. If None, will use the tokenizer's default chat template."
+        ),
+    ] = None
 
 
 class ConstantSchedulerConfig(BaseModel):
@@ -49,15 +310,19 @@ class LinearSchedulerConfig(BaseModel):
 
     type: Literal["linear"] = "linear"
 
-    warmup_steps: Annotated[int, Field(ge=0, description="Number of warmup steps for the learning rate scheduler.")] = 0
+    warmup_steps: Annotated[int, Field(ge=0, description="Number of warmup steps for the learning rate scheduler.")] = (
+        10
+    )
 
     decay_steps: Annotated[
-        int | None,
+        int,
         Field(
-            ge=1,
-            description="Number of steps to decay the learning rate during the final portion of training. If None, will use remaining steps after warmup.",
+            ge=0,
+            description="Number of steps to decay the learning rate during the final portion of training.",
         ),
-    ] = None
+    ] = 10
+
+    min_lr: Annotated[float, Field(ge=0, description="Minimum learning rate to converge to.")] = 0.0
 
 
 class CosineSchedulerConfig(BaseModel):
@@ -65,22 +330,18 @@ class CosineSchedulerConfig(BaseModel):
 
     type: Literal["cosine"] = "cosine"
 
-    warmup_steps: Annotated[int, Field(ge=0, description="Number of warmup steps for the learning rate scheduler.")] = 0
+    warmup_steps: Annotated[int, Field(ge=0, description="Number of warmup steps for the learning rate scheduler.")] = (
+        10
+    )
 
-    decay_steps: Annotated[
-        int | None,
-        Field(
-            ge=1,
-            description="Number of steps to decay the learning rate during the final portion of training. If None, will use remaining steps after warmup.",
-        ),
-    ] = None
+    min_lr: Annotated[float, Field(ge=0, description="Minimum learning rate to converge to.")] = 0.0
 
 
 SchedulerConfigType: TypeAlias = ConstantSchedulerConfig | LinearSchedulerConfig | CosineSchedulerConfig
 
 
 class BaseOptimizerConfig(BaseModel):
-    lr: Annotated[float, Field(ge=0)] = 4e-4
+    lr: Annotated[float, Field(ge=0)] = 1e-6
     weight_decay: Annotated[float, Field(ge=0)] = 0.01
     max_norm: Annotated[float, Field(ge=0, description="Maximum gradient norm to clip.")] = 1.0
 
@@ -108,6 +369,31 @@ class MuonConfig(BaseOptimizerConfig):
 OptimizerConfigType: TypeAlias = SGDConfig | AdamWConfig | MuonConfig
 
 
+class WeightCheckpointConfig(BaseConfig):
+    """Configures saving HF-compatible weight checkpoints."""
+
+    save_sharded: Annotated[
+        bool,
+        Field(
+            description="Whether to save the weight checkpoint in sharded format.",
+        ),
+    ] = True
+
+    save_format: Annotated[
+        Literal["safetensors", "torch"],
+        Field(
+            description="The format to save the weight checkpoint in.",
+        ),
+    ] = "safetensors"
+
+    save_adapter_separately: Annotated[
+        bool,
+        Field(
+            description="Whether to save LoRA adapters separately before merging into full model weights.",
+        ),
+    ] = False
+
+
 class CheckpointConfig(BaseConfig):
     """Configures checkpointing the full model, optimizer and training state for resuming training."""
 
@@ -115,22 +401,17 @@ class CheckpointConfig(BaseConfig):
         int | None,
         Field(
             ge=1,
-            description="Interval at which to save the checkpoint. If None, will only checkpoint at the end of training.",
+            description="Interval at which to save the training checkpoint. If None, will only checkpoint at the end of training.",
         ),
     ] = None
 
-    save_async: Annotated[
-        bool,
-        Field(
-            description="Whether to save the checkpoint asynchronously.",
-        ),
-    ] = False
+    weights: WeightCheckpointConfig | None = WeightCheckpointConfig()
 
     resume_step: Annotated[
         int | None,
         Field(
-            ge=1,
-            description="Step to resume training from. If None, will start from scratch.",
+            ge=-1,
+            description="Step to resume training from. If None, will start from scratch. If -1, will restart from latest checkpoint available.",
         ),
     ] = None
 
@@ -142,21 +423,29 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = None
 
-
-class WeightCheckpointConfig(BaseConfig):
-    """Configures checkpointing the model weights for updating the inference engines (RL trainer) or continued post-training (on SFT trainer)."""
-
-    interval: Annotated[
-        int | None,
-        Field(
-            ge=1,
-            description="Interval at which to save the weights. If None, will only keep necessary weight checkpoints for resuming training.",
-        ),
-    ] = None
-
-    save_async: Annotated[
+    skip_progress: Annotated[
         bool,
         Field(
-            description="Whether to save the weights asynchronously.",
+            description="Whether to skip loading the progress from checkpoint.",
         ),
-    ] = True
+    ] = False
+
+    skip_scheduler: Annotated[
+        bool,
+        Field(
+            description="Whether to skip loading the scheduler from checkpoint.",
+        ),
+    ] = False
+
+    skip_dataloader: Annotated[
+        bool,
+        Field(
+            description="Whether to skip loading the dataloader from checkpoint.",
+        ),
+    ] = False
+
+
+class HeartbeatConfig(BaseConfig):
+    """Configures the heartbeat for BetterStack."""
+
+    url: Annotated[str, Field(description="The URL to send the heartbeat to.")]

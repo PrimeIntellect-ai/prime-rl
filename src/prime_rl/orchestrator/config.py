@@ -1,47 +1,29 @@
 from pathlib import Path
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
 
-from prime_rl.eval.registry import Benchmark
-from prime_rl.orchestrator.advantage import AdvantageType
-from prime_rl.utils.config import LogConfig, ModelConfig, MultiMonitorConfig
+from prime_rl.trainer.config import HeartbeatConfig
+from prime_rl.utils.config import ClientConfig, LogConfig, ModelConfig, WandbWithExtrasConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
-class ClientConfig(BaseConfig):
-    """Configures the client to be used for inference."""
-
-    host: Annotated[
-        str,
-        Field(
-            description="Host to use for the OpenAI API. By default, it is set to a local inference server.",
-        ),
-    ] = "localhost"
-
-    port: Annotated[
-        int,
-        Field(
-            description="Port to use for the OpenAI API. By default, it is set to a local inference server.",
-        ),
-    ] = 8000
-
-    api_key: Annotated[
-        str,
-        Field(
-            description="API key to use for the OpenAI API. An arbitrary string can be passed if the inference server is not protected by an API key.",
-        ),
-    ] = "insecure"
-
-
 class SamplingConfig(BaseConfig):
-    """Configures how tokens are sampled from the model. Largely follows the vLLM sampling parameters."""
+    """Configures how tokens are sampled from the model for training. Largely follows the vLLM sampling parameters."""
 
     temperature: Annotated[
         float,
         Field(
             ge=0,
             description="Scales the output probability distribution. Lower values => more deterministic, higher values => more random. If 0, will sample greedily.",
+        ),
+    ] = 1.0
+
+    repetition_penalty: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="Penalty for repeating tokens. Values > 1.0 discourage repetition, values < 1.0 encourage repetition, and 1.0 means no penalty.",
         ),
     ] = 1.0
 
@@ -67,35 +49,215 @@ class SamplingConfig(BaseConfig):
         ),
     ] = None
 
+    # Strictly speaking, extra_body is not a sampling parameter, but it is the
+    # easiest way to pass arbitrary extra parameters to the server via verifiers
+    extra_body: Annotated[
+        dict[str, Any],
+        Field(
+            description="Extra body to pass with each request to the inference server. By default, it is set to an empty dictionary.",
+        ),
+    ] = {}
 
-class EnvironmentConfig(BaseConfig):
-    """Configures the environment to be used for inference."""
 
-    id: Annotated[str, Field(description="ID of the environment to use.")] = "vf-reverse-text"
+class EvalSamplingConfig(BaseConfig):
+    """Configures how tokens are sampled from the model for evaluation. Largely follows the vLLM sampling parameters."""
+
+    temperature: Annotated[
+        float | None,
+        Field(
+            ge=0,
+            description="Scales the output probability distribution. Lower values => more deterministic, higher values => more random. If 0, will sample greedily. Defaults to None, which means we fall back to the inference server's default value.",
+        ),
+    ] = None
+
+    repetition_penalty: Annotated[
+        float | None,
+        Field(
+            ge=0,
+            description="Penalty for repeating tokens. Values > 1.0 discourage repetition, values < 1.0 encourage repetition, and 1.0 means no penalty. Defaults to None, which means we fall back to the inference server's default value.",
+        ),
+    ] = None
+
+    top_p: Annotated[
+        float | None,
+        Field(
+            description="Cumulative probability of the top tokens to consider. If 1, all tokens are considered. Defaults to None, which means we fall back to the inference server's default value.",
+        ),
+    ] = None
+
+    top_k: Annotated[
+        int | None,
+        Field(
+            description="Number of top tokens to consider. If -1, all tokens are considered. Defaults to None, which means we fall back to the inference server's default value.",
+        ),
+    ] = None
+
+    min_p: Annotated[
+        float | None,
+        Field(
+            description="Minimum probability for a token to be considered, relative to the probability of the most likely token. If 0, all tokens are considered. Defaults to None, which means we fall back to the inference server's default value.",
+        ),
+    ] = None
+
+    max_tokens: Annotated[
+        int | None,
+        Field(
+            description="Maximum number of output tokens to generate per turn. If None, will generate until maximum context length or EOS token is hit.",
+        ),
+    ] = None
+
+    min_tokens: Annotated[
+        int | None,
+        Field(
+            description="Minimum number of output tokens to generate per sequence. Defaults to None, which means we fall back to the inference server's default value.",
+        ),
+    ] = None
+
+    reasoning_effort: Annotated[
+        Literal["minimal", "low", "medium", "high"] | None,
+        Field(
+            description="Constrains effort on reasoning for reasoning models. Currently supported values are minimal, low, medium, and high. Defaults to None, which means we fall back to the inference server's default value.",
+        ),
+    ] = None
+
+    seed: Annotated[
+        int | None,
+        Field(
+            description="Random seed to use for sampling. If None, no seeding is used. Defaults to None, which means we fall back to the inference server's default value.",
+        ),
+    ] = None
+
+    # Strictly speaking, extra_body is not a sampling parameter, but it is the
+    # easiest way to pass arbitrary extra parameters to the server via verifiers
+    extra_body: Annotated[
+        dict[str, Any],
+        Field(
+            description="Extra body to use for the OpenAI API. By default, it is set to an empty dictionary.",
+        ),
+    ] = {}
+
+
+class EvalSaveDiskConfig(BaseConfig):
+    """Configures how to save the eval results to disk."""
+
+    path: Annotated[
+        Path | None,
+        Field(
+            description="The path to save the eval results to. If None, will default to <output_dir>/evals/<step_path>/<env_id> for online evals and the verifiers default for offline evals."
+        ),
+    ] = None
+
+
+class EvalSaveHFConfig(BaseConfig):
+    """Configures how to save the eval results to HF."""
+
+    dataset_name: Annotated[
+        str | None,
+        Field(
+            description="The name of the HF dataset to save the eval results to. If None, will auto-generate a name."
+        ),
+    ] = None
+
+    dataset_subset: Annotated[
+        str | None,
+        Field(
+            description="The subset name of the HF dataset to save the evaluation results. If None, will default to the environment ID.",
+        ),
+    ] = None
+
+    dataset_split: Annotated[
+        str | None,
+        Field(
+            description="The split name of the HF dataset to save the evaluation results. If None, will default to 'evals'.",
+        ),
+    ] = None
+
+    private: Annotated[
+        bool,
+        Field(description="Whether to save the eval results to a private HF dataset."),
+    ] = False
+
+
+class EvalSaveConfig(BaseConfig):
+    disk: EvalSaveDiskConfig | None = None
+    hf: EvalSaveHFConfig | None = None
+    env_hub: Annotated[
+        bool,
+        Field(
+            description="Whether to push eval results to Prime Environment Hub. Automatically pushes all evaluated environments. Requires PRIME_API_KEY and authorization for the environments."
+        ),
+    ] = False
+
+
+class EnvConfig(BaseConfig):
+    """Configures an environment for training."""
+
+    id: Annotated[str, Field(description="ID of the environment to use.")] = "reverse-text"
     args: Annotated[dict, Field(description="Arguments to pass to the environment.")] = {}
+    name: Annotated[str | None, Field(description="Name of the environment to use.")] = None
+
+
+class EvalEnvConfig(EnvConfig):
+    """Configures an environment for evaluation."""
+
+    num_examples: Annotated[
+        int | None,
+        Field(
+            description="Number of examples to evaluate per environment. If not set, will use 'num_examples' from main config."
+        ),
+    ] = None
+    rollouts_per_example: Annotated[
+        int | None,
+        Field(
+            description="Number of samples to generate per example for each environment. If not set, will use 'rollouts_per_example' from main config."
+        ),
+    ] = None
+
+    skip_first: Annotated[
+        int,
+        Field(
+            description="Number of examples to skip from the beginning of the dataset.",
+        ),
+    ] = 0
+
+
+class ValConfig(BaseConfig):
+    """Configures the validation of the model."""
+
+    num_examples: Annotated[
+        int, Field(ge=1, description="Number of examples to use for validation. If -1, will use all examples.")
+    ] = 16
+    rollouts_per_example: Annotated[
+        int, Field(ge=1, description="Number of samples to generate per example for validation.")
+    ] = 1
+    interval: Annotated[int, Field(description="Interval at which to validate the model.")] = 10
 
 
 class EvalConfig(BaseConfig):
-    """Configures evaluation."""
+    """Configures evaluation using verifiers environments."""
 
-    benchmarks: Annotated[
-        list[Benchmark],
-        Field(
-            description="Benchmarks to evaluate on. By default, it will evaluate only on the MATH-500 benchmark.",
-        ),
-    ] = ["math500"]
+    env: list[EvalEnvConfig] = [EvalEnvConfig()]
+    sampling: EvalSamplingConfig = Field(
+        default_factory=EvalSamplingConfig,
+        description="Shared sampling configuration for evals; can differ from training sampling.",
+    )
+    save: EvalSaveConfig = Field(
+        default_factory=EvalSaveConfig,
+        description="Configures how to save the eval results.",
+    )
+    num_examples: Annotated[int, Field(description="Number of examples to evaluate per environment.")] = -1
+    rollouts_per_example: Annotated[
+        int, Field(ge=1, description="Number of samples to generate per example for each environment.")
+    ] = 1
 
-    rollouts_per_prompt: Annotated[
-        list[int],
-        Field(
-            description="Number of samples to generate for each benchmark.",
-        ),
-    ] = [1]
+
+class OnlineEvalConfig(EvalConfig):
+    """Configures online evaluation."""
 
     interval: Annotated[
         int,
         Field(
-            ge=0,
+            ge=1,
             description="Interval at which to evaluate the model.",
         ),
     ] = 100
@@ -107,12 +269,6 @@ class EvalConfig(BaseConfig):
         ),
     ] = True
 
-    @model_validator(mode="after")
-    def validate_rollouts_per_prompt(self):
-        if len(self.rollouts_per_prompt) != len(self.benchmarks):
-            raise ValueError("Number of rollouts per prompt must be the same as the number of benchmarks")
-        return self
-
 
 class CheckpointConfig(BaseConfig):
     """Configures checkpointing the orchestrator."""
@@ -122,8 +278,8 @@ class CheckpointConfig(BaseConfig):
     resume_step: Annotated[
         int | None,
         Field(
-            ge=1,
-            description="Step to resume orchestrator from. If None, will start from scratch.",
+            ge=-1,
+            description="Step to resume orchestrator from. If None, will start from scratch. If -1, will restart from latest checkpoint available.",
         ),
     ] = None
 
@@ -135,40 +291,38 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = None
 
-
-class SimpleBufferConfig(BaseModel):
-    type: Literal["simple"] = "simple"
-
-
-class DifficultyPoolBufferConfig(BaseModel):
-    type: Literal["difficulty-pool"] = "difficulty-pool"
-
-    difficulty_field: Annotated[
-        str | None,
+    skip_progress: Annotated[
+        bool,
         Field(
-            description="Field name in the dataset that contains difficulty information. Should only contain `easy`, `normal` and `hard`. If None, all samples are treated as `normal` initially.",
+            description="Whether to skip loading the progress from checkpoint.",
+        ),
+    ] = False
+
+    skip_buffer: Annotated[
+        bool,
+        Field(
+            description="Whether to skip loading the buffer from checkpoint.",
+        ),
+    ] = False
+
+    buffer_path: Annotated[
+        Path | None,
+        Field(
+            description="The path to load buffer state (metadata and rollouts) from. If None, will start with an empty buffer. The buffer state is saved at <ckpt_dir>/step_<step>/orchestrator/buffer.",
         ),
     ] = None
 
-    easy_border: Annotated[
-        float,
-        Field(
-            ge=0,
-            le=1,
-            description="If a problem has more than `easy_border` average reward across rollouts, it will be moved to the easy pool.",
-        ),
-    ] = 0.8
 
-    hard_border: Annotated[
-        float,
-        Field(
-            ge=0,
-            le=1,
-            description="If a problem has less than `hard_border` average reward across rollouts, it will be moved to the hard pool.",
-        ),
-    ] = 0.2
+class BufferConfig(BaseConfig):
+    """Configures the buffer for the orchestrator."""
 
-    # TODO: Maybe make this float | int to allow for specific numbers of easy/hard samples?
+    seed: Annotated[
+        int | None,
+        Field(
+            description="Random seed to use for the buffer. If set, the sampling from the buffer will be deterministic.",
+        ),
+    ] = None
+
     easy_fraction: Annotated[
         float,
         Field(
@@ -176,7 +330,7 @@ class DifficultyPoolBufferConfig(BaseModel):
             le=1,
             description="Fraction of the batch that should consist of easy samples.",
         ),
-    ] = 0.1
+    ] = 0.0
 
     hard_fraction: Annotated[
         float,
@@ -185,40 +339,63 @@ class DifficultyPoolBufferConfig(BaseModel):
             le=1,
             description="Fraction of the batch that should consist of hard samples.",
         ),
-    ] = 0.1
+    ] = 0.0
 
-
-class OnlineDifficultyBufferConfig(BaseModel):
-    type: Literal["online-difficulty"] = "online-difficulty"
-
-    min_reward: Annotated[
+    easy_threshold: Annotated[
         float | None,
         Field(
-            ge=0,
-            le=1,
-            description="Minimum reward to include the sample in a batch.",
+            description="Threshold for easy difficulty classification. If average reward >= this threshold, mark as easy.",
         ),
-    ] = 0.01
+    ] = None
 
-    max_reward: Annotated[
+    hard_threshold: Annotated[
         float | None,
         Field(
-            ge=0,
-            le=1,
-            description="Maximum reward to include the sample in a batch.",
+            description="Threshold for hard difficulty classification. If average reward <= this threshold, mark as hard.",
         ),
-    ] = 0.99
+    ] = None
 
-    oversampling_factor: Annotated[
-        float,
+    online_difficulty_filtering: Annotated[
+        bool,
         Field(
-            gt=0,
-            description="Factor by which to oversample during filtering to ensure sufficient samples.",
+            description="Whether to filter rollouts based on their average reward. If True, rollouts with average reward == 0.0 will be marked as hard and rollouts with average reward == 1.0 will be marked as easy.",
         ),
-    ] = 1.0
+    ] = False
 
 
-DataBufferConfigType: TypeAlias = SimpleBufferConfig | DifficultyPoolBufferConfig | OnlineDifficultyBufferConfig
+class AdvantageConfig(BaseConfig):
+    length_weighted_mean: bool = False
+
+
+class FileSystemWeightBroadcastConfig(BaseModel):
+    """Configures the filesystem weight broadcast."""
+
+    type: Literal["filesystem"] = "filesystem"
+
+
+class NCCLWeightBroadcastConfig(BaseModel):
+    """Configures the NCCL weight broadcast."""
+
+    type: Literal["nccl"] = "nccl"
+
+    host: Annotated[str, Field(description="The host to use for the NCCL broadcast.")] = "localhost"
+    port: Annotated[int, Field(description="The port to use for the NCCL broadcast.")] = 29501
+    timeout: Annotated[int, Field(description="The timeout in seconds to use for the NCCL broadcast.")] = 1200
+
+
+WeightBroadcastConfigType: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig
+
+
+class EnvMixConfig(BaseModel):
+    """Configures the mixing of environments."""
+
+    strategy: Literal["interleave", "concatenate"] = "interleave"
+    probabilities: Annotated[list[float] | None, Field(description="Probabilities to use for each environment.")] = None
+    stopping_strategy: Annotated[
+        Literal["first_exhausted", "all_exhausted"],
+        Field(description="Stopping strategy to use for interleaving environment datasets."),
+    ] = "all_exhausted"
+    seed: Annotated[int | None, Field(description="Random seed to use for the environment mixing.")] = None
 
 
 class OrchestratorConfig(BaseSettings):
@@ -233,57 +410,75 @@ class OrchestratorConfig(BaseSettings):
     # The sampling configuration
     sampling: SamplingConfig = SamplingConfig()
 
+    # The environment mixing configuration
+    env_mix: EnvMixConfig = EnvMixConfig()
+
     # The environment configuration
-    environment: EnvironmentConfig = EnvironmentConfig()
+    env: list[EnvConfig] = [EnvConfig()]
 
     # The evaluation configuration
-    eval: EvalConfig | None = None
+    eval: OnlineEvalConfig | None = None
 
     # Data buffer configuration
-    buffer: Annotated[DataBufferConfigType, Field(discriminator="type")] = SimpleBufferConfig()
+    buffer: BufferConfig = BufferConfig()
+
+    # The advantage configuration
+    advantage: AdvantageConfig | None = AdvantageConfig()
 
     # The logging configuration
     log: LogConfig = LogConfig()
 
-    # The monitor configuration
-    monitor: MultiMonitorConfig = MultiMonitorConfig()
+    # The wandb configuration
+    wandb: WandbWithExtrasConfig | None = None
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
 
-    outputs_dir: Annotated[
+    # The validation configuration
+    val: ValConfig | None = None
+
+    weight_broadcast: Annotated[WeightBroadcastConfigType, Field(discriminator="type")] = (
+        FileSystemWeightBroadcastConfig()
+    )
+
+    trajectory_strategy: Annotated[
+        Literal["interleaved", "branching"],
+        Field(
+            description="Strategy to use for building training examples from multi-turn rollouts. If interleaved, will try to concatenate consecutive trajectory steps into a single training example. If branching, will create a separate training example for each trajectory step."
+        ),
+    ] = "interleaved"
+
+    output_dir: Annotated[
         Path,
         Field(
             description="Directory to write outputs to. Will be populated with checkpoints, weights, rollouts and logs as subdirectories. Should be set to a persistent directory with enough disk space. This value should be distinct across experiments running on a single node. See the README for more details."
         ),
     ] = Path("outputs")
 
-    collate_mode: Annotated[Literal["packing", "padding"], Field(description="Collate mode to use.")] = "packing"
+    max_concurrent: Annotated[
+        int | None,
+        Field(
+            description="Maximum number of concurrent rollouts to generate and score. Will create a global semaphore and pass to verifiers Environment. If None, will not limit concurrency.",
+        ),
+    ] = None
 
     batch_size: Annotated[int, Field(ge=1, description="Number of samples to train on per step.")] = 128
 
-    micro_batch_size: Annotated[
-        int,
+    oversampling_factor: Annotated[
+        float,
         Field(
             ge=1,
-            description="Number of samples to train on per micro batch. This value should be tuned based on the hardware available. Usually, to the largest value divisble by the training batch size.",
+            description="Factor by which to oversample the batch. Will lead to more in-flight group rollout requests at the same time.",
         ),
-    ] = 128
+    ] = 1.0
 
-    rollouts_per_prompt: Annotated[
+    rollouts_per_example: Annotated[
         int,
         Field(
             ge=1,
-            description="Number of output sequences to return for the given prompt.",
+            description="Number of output sequences to return per example during training.",
         ),
     ] = 1
-
-    advantage_type: Annotated[
-        AdvantageType,
-        Field(
-            description="Type of advantage computation to use. For details on the variants please refer directly to their docstrings."
-        ),
-    ] = "drgrpo"
 
     seq_len: Annotated[
         int,
@@ -308,20 +503,6 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = True
 
-    mask_truncated_completions: Annotated[
-        bool,
-        Field(
-            description="Whether to mask truncated completions from the loss.",
-        ),
-    ] = False
-
-    zero_truncated_completions: Annotated[
-        bool,
-        Field(
-            description="Whether to override reward scores with 0 for truncated completions.",
-        ),
-    ] = False
-
     # TODO(Mika): This should be automatic from the number of ZMQ connections
     num_train_workers: Annotated[
         int,
@@ -335,13 +516,28 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = None
 
-    async_level: Annotated[
+    max_off_policy_steps: Annotated[
         int,
         Field(
             ge=0,
-            description="Maximum number of async levels to use. If 0, will do synchronous RL. Else, it will allow to go `async_level` steps ahead of training.",
+            description="Maximum number of policies that are allowed to generate a single rollout. Rollouts that are generated from more than `max_off_policy_steps` steps ahead of training will be discarded. Higher values yield better throughput, but lead to more off-policyness in training.",
         ),
-    ] = 2
+    ] = 8
+
+    max_async_level: Annotated[
+        int,
+        Field(
+            ge=0,
+            description="Maximum number of steps the inference can be ahead of training. If 0, will degenerate to synchronous on-policy RL. If >=1, training and inference will be overlapped.",
+        ),
+    ] = 1
+
+    strict_async_level: Annotated[
+        bool,
+        Field(
+            description="Whether to strictly enforce the max async level. If True, will always ensure that the policy used for generating rollouts is exactly `max_async_level` steps ahead of training. If False, any policy that is at most `max_async_level` steps ahead of training is allowed, i.e. we always use the latest available policy.",
+        ),
+    ] = False
 
     bench: Annotated[
         bool,
@@ -352,27 +548,47 @@ class OrchestratorConfig(BaseSettings):
 
     seed: Annotated[int | None, Field(description="Random seed for the orchestrator.")] = 42
 
+    lora_name: Annotated[
+        str | None,
+        Field(
+            description="Name of the LoRA to use for the orchestrator. If None, will not use any LoRA.",
+        ),
+    ] = None
+
+    heartbeat: Annotated[
+        HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
+    ] = None
+
+    @model_validator(mode="after")
+    def nccl_max_async_level(self):
+        if self.weight_broadcast.type == "nccl":
+            if not self.max_async_level == 1:
+                raise ValueError("max_async_level must be 1 for NCCL broadcast")
+        return self
+
     @model_validator(mode="after")
     def validate_batch_size(self):
-        if self.batch_size % self.rollouts_per_prompt != 0:
+        if self.batch_size % self.rollouts_per_example != 0:
             raise ValueError("Batch size must be divisible by the number of samples per problem")
+
         if self.batch_size % self.micro_batch_size != 0:
             raise ValueError("Batch size must be divisible by micro batch size")
         if self.batch_size < self.micro_batch_size:
             raise ValueError("Batch size must be greater than or equal to micro batch size")
         if self.packing_seq_len is not None and self.packing_seq_len < self.seq_len:
             raise ValueError("packing_seq_len must be >= seq_len when configured")
+
         return self
 
     @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench:
             self.max_steps = 4  # Run for 1 warmup step + 3 evaluation steps
-            self.async_level = int(1e9)  # Never wait for RL weight checkpoints
+            self.max_async_level = int(1e9)  # Never wait for RL weight checkpoints
 
             # Disable evaluation
             self.eval = None
-            if self.monitor.wandb:
-                self.monitor.wandb.log_extras = None
+            if self.wandb:
+                self.wandb.log_extras = None
 
         return self

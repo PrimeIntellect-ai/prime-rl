@@ -1,43 +1,70 @@
 #!/usr/bin/env bash
-
-set -e
+set -euo pipefail
 
 # Colors for output
 GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-log_info() {
-    echo -e "${GREEN}[INFO]${NC} $1"
+log_info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
+log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
+
+REPO_ID="prime-rl"
+
+# Flag defaults (can be overridden via env)
+SKIP_CLONE=${SKIP_CLONE:-0}
+
+has_ssh_access() {
+    # Probe SSH auth to GitHub without prompting; treat any nonzero as "no ssh"
+    # We try a quick ls-remote to avoid cloning on failure.
+    # Disable -e for the probe so the script doesn't exit on a failed test.
+    set +e
+    timeout 5s git ls-remote --heads git@github.com:PrimeIntellect-ai/${REPO_ID}.git >/dev/null 2>&1
+    rc=$?
+    set -e
+    return $rc
+}
+
+ensure_known_hosts() {
+    # Make sure ~/.ssh exists with the right perms, then add GitHub host key.
+    mkdir -p "${HOME}/.ssh"
+    chmod 700 "${HOME}/.ssh"
+    # Use -H to hash hostnames; merge uniquely to avoid dupes.
+    if command -v ssh-keyscan >/dev/null 2>&1; then
+    ssh-keyscan -H github.com 2>/dev/null | sort -u \
+        | tee -a "${HOME}/.ssh/known_hosts" >/dev/null
+    chmod 600 "${HOME}/.ssh/known_hosts"
+    fi
 }
 
 main() {
-    # Check if sudo is installed
-    if ! command -v sudo &> /dev/null; then
+    # Ensure sudo exists
+    if ! command -v sudo &>/dev/null; then
         apt update
-        apt install sudo -y
+        apt install -y sudo
     fi
 
-    log_info "Updating apt..."
-    sudo apt update
+    log_info "Installing base packages..."
+    sudo apt update && sudo apt install -y build-essential openssh-client curl git tmux htop nvtop
 
-    log_info "Installing git, tmux, htop, nvtop, cmake, python3-dev, cgroup-tools..."
-    sudo apt install git tmux htop nvtop cmake python3-dev cgroup-tools -y
+    log_info "Configuring SSH known_hosts for GitHub..."
+    ensure_known_hosts
 
-    log_info "Configuring SSH to automatically accept GitHub's host key..."
-    ssh-keyscan github.com >>~/.ssh/known_hosts 2>/dev/null
+    if [ "$SKIP_CLONE" -eq 1 ]; then
+        log_info "Skipping clone; assuming we are already inside the repo."
+    else
+        log_info "Determining best way to clone (SSH vs HTTPS)..."
+        if has_ssh_access; then
+            log_info "SSH access to GitHub works. Cloning via SSH."
+            git clone git@github.com:PrimeIntellect-ai/${REPO_ID}.git
+        else
+            log_warn "SSH auth to GitHub not available. Cloning via HTTPS."
+            git clone https://github.com/PrimeIntellect-ai/${REPO_ID}.git
+        fi
 
-    log_info "Cloning repository..."
-    git clone git@github.com:PrimeIntellect-ai/prime-rl.git
-
-    log_info "Entering project directory..."
-    cd prime-rl
-
-    log_info "Installing gsutil..."
-    curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
-    echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list
-    sudo apt-get update -y
-    sudo apt-get install -y google-cloud-cli
-    sudo apt-get install -y build-essential
+        log_info "Entering project directory..."
+        cd ${REPO_ID}
+    fi
 
     log_info "Installing uv..."
     curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -47,8 +74,15 @@ main() {
         source $HOME/.local/bin/env
     fi
 
-    log_info "Installing dependencies in virtual environment..."
-    uv sync && uv sync --all-extras
+    log_info "Installing prime..."
+    uv tool install prime
+
+    log_info "Syncing virtual environment..."
+    uv sync
+
+    log_info "Installing pre-commit hooks..."
+    uv run pre-commit install
+
     log_info "Installation completed!"
 }
 

@@ -34,6 +34,8 @@ def validate_shared_model_name(
     orchestrator: OrchestratorConfig,
     inference: Optional[InferenceConfig] = None,
 ) -> None:
+    if trainer.model.name.startswith("Jackmin108/"):  # The TT MoE models will have a different name on the orchestrator
+        return
     if trainer.model.name != orchestrator.model.name:
         raise ValueError(
             f"Trainer model name ({trainer.model.name}) and orchestrator model name ({orchestrator.model.name}) are not the same. Please specify the same model name for both."
@@ -45,23 +47,13 @@ def validate_shared_model_name(
         )
 
 
-def validate_shared_max_model_len(
-    orchestrator: OrchestratorConfig,
-    inference: Optional[InferenceConfig] = None,
-) -> None:
-    if inference and inference.model.max_model_len and orchestrator.seq_len != inference.model.max_model_len:
-        raise ValueError(
-            f"Orchestrator sequence length ({orchestrator.seq_len}) and inference model max model length ({inference.model.max_model_len}) are not the same. Please specify the same max model length for both."
-        )
-
-
-def validate_shared_outputs_dir(
+def validate_shared_output_dir(
     trainer: RLTrainerConfig,
     orchestrator: OrchestratorConfig,
 ) -> None:
-    if trainer.outputs_dir != orchestrator.outputs_dir:
+    if trainer.output_dir != orchestrator.output_dir:
         raise ValueError(
-            f"Trainer outputs directory ({trainer.outputs_dir}) and orchestrator outputs directory ({orchestrator.outputs_dir}) are not the same. Please specify the same outputs directory for both."
+            f"Trainer outputs directory ({trainer.output_dir}) and orchestrator outputs directory ({orchestrator.output_dir}) are not the same. Please specify the same outputs directory for both."
         )
 
 
@@ -69,10 +61,10 @@ def validate_shared_wandb_config(
     trainer: RLTrainerConfig,
     orchestrator: OrchestratorConfig,
 ) -> None:
-    if trainer.monitor.wandb and orchestrator.monitor.wandb:
-        if trainer.monitor.wandb.project != orchestrator.monitor.wandb.project:
+    if trainer.wandb and orchestrator.wandb:
+        if trainer.wandb.project != orchestrator.wandb.project:
             raise ValueError(
-                f"Trainer W&B project ({trainer.monitor.wandb.project}) and orchestrator W&B project ({orchestrator.monitor.wandb.project}) are not the same. Please specify the same W&B project for both."
+                f"Trainer W&B project ({trainer.wandb.project}) and orchestrator W&B project ({orchestrator.wandb.project}) are not the same. Please specify the same W&B project for both."
             )
 
 
@@ -86,11 +78,29 @@ def validate_shared_max_steps(
         )
 
 
-def validate_shared_async_level(
+def validate_shared_max_async_level(
     trainer: RLTrainerConfig,
     orchestrator: OrchestratorConfig,
 ) -> None:
-    if trainer.async_level != orchestrator.async_level:
+    if trainer.max_async_level != orchestrator.max_async_level:
         raise ValueError(
-            f"Trainer async level ({trainer.async_level}) and orchestrator async level ({orchestrator.async_level}) are not the same. Please specify the same async level for both."
+            f"Trainer max async level ({trainer.max_async_level}) and orchestrator max async level ({orchestrator.max_async_level}) are not the same. Please specify the same max async level for both."
+        )
+
+
+def validate_shared_weight_broadcast(
+    trainer: RLTrainerConfig,
+    orchestrator: OrchestratorConfig,
+    inference: Optional[InferenceConfig] = None,
+) -> None:
+    if (
+        inference
+        and trainer.weight_broadcast.type != orchestrator.weight_broadcast.type != inference.weight_broadcast.type
+    ):
+        raise ValueError(
+            f"Inference weight broadcast type ({inference.weight_broadcast.type}) and orchestrator weight broadcast type ({orchestrator.weight_broadcast.type}) are not the same. Please specify the same weight broadcast type for both."
+        )
+    elif trainer.weight_broadcast.type != orchestrator.weight_broadcast.type:
+        raise ValueError(
+            f"Trainer weight broadcast type ({trainer.weight_broadcast.type}) and orchestrator weight broadcast type ({orchestrator.weight_broadcast.type}) are not the same. Please specify the same weight broadcast type for both."
         )

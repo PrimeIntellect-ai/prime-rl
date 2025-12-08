@@ -7,7 +7,7 @@ from torch import Tensor
 
 from prime_rl.trainer.rl.config import FakeDataLoaderConfig
 from prime_rl.trainer.world import get_world
-from prime_rl.utils.utils import get_rollout_dir, wait_for_path
+from prime_rl.utils.utils import get_rollout_dir, sync_wait_for_path
 
 
 class MicroBatch(TypedDict):
@@ -15,19 +15,17 @@ class MicroBatch(TypedDict):
     input_ids: Int[Tensor, "batch seq"]
     position_ids: Int[Tensor, "batch seq"]
     advantages: Float[Tensor, "batch seq"]
-    logprobs: Float[Tensor, "batch seq"]
+    inference_logprobs: Float[Tensor, "batch seq"]
     loss_mask: Bool[Tensor, "batch seq"]
 
     # Batch level
     temperature: float
-    total_tokens: int
 
 
 class FakeDataLoader:
     def __init__(self, config: FakeDataLoaderConfig):
         self.batch_size = config.batch_size
-        self.micro_batch_size = config.micro_batch_size
-        self.num_micro_batches = self.batch_size // self.micro_batch_size // get_world().world_size
+        self.num_micro_batches = self.batch_size // get_world().world_size
         self.seq_len = config.seq_len
 
     def wait_for_batch(self) -> None:
@@ -38,20 +36,27 @@ class FakeDataLoader:
 
     def _get_micro_batch(self) -> MicroBatch:
         return {
-            "input_ids": torch.randint(0, 100, (self.micro_batch_size, self.seq_len)),
-            "position_ids": torch.stack([torch.arange(self.seq_len)] * self.micro_batch_size, dim=0),
-            "advantages": torch.randn(self.micro_batch_size, self.seq_len),
-            "logprobs": torch.randn(self.micro_batch_size, self.seq_len),
+            "input_ids": torch.randint(
+                0,
+                100,
+                (
+                    1,
+                    self.seq_len,
+                ),
+            ),
+            "position_ids": torch.cat([torch.arange(self.seq_len)]).unsqueeze(0),
+            "advantages": torch.randn(self.seq_len).unsqueeze(0),
+            "inference_logprobs": torch.randn(self.seq_len).unsqueeze(0),
             "temperature": 1.0,
-            "loss_mask": torch.ones(self.micro_batch_size, self.seq_len, dtype=torch.bool),
+            "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
         }
 
 
 class DataLoader:
     """Loads serialized data from a data path written by the orchestrator."""
 
-    def __init__(self, outputs_dir: Path, start_step: int):
-        self.rollout_dir = get_rollout_dir(outputs_dir)
+    def __init__(self, output_dir: Path, start_step: int):
+        self.rollout_dir = get_rollout_dir(output_dir)
         self.current_step = start_step
         self.world = get_world()
 
@@ -59,7 +64,7 @@ class DataLoader:
         return self.rollout_dir / f"step_{self.current_step}" / f"rank_{self.world.rank}.pt"
 
     def wait_for_batch(self) -> None:
-        wait_for_path(self.get_rollout_path())
+        sync_wait_for_path(self.get_rollout_path())
 
     def get_batch(self) -> list[MicroBatch]:
         batches = torch.load(self.get_rollout_path())

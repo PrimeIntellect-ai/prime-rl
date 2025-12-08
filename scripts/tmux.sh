@@ -1,13 +1,13 @@
 #!/bin/bash
 
 SESSION_NAME="prime-rl"
-OUTPUTS_DIR="outputs"
+OUTPUT_DIR="outputs"
 
 # Optional CLI parsing
 # Supports:
 #   -s|--session-name NAME
-#   -o|--outputs-dir DIR
-#   Positional: [SESSION_NAME [OUTPUTS_DIR]]
+#   -o|--output-dir DIR
+#   Positional: [SESSION_NAME [OUTPUT_DIR]]
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -19,16 +19,16 @@ while [[ $# -gt 0 ]]; do
       SESSION_NAME="$2"
       shift 2
       ;;
-    -o|--outputs-dir)
+    -o|--output-dir)
       if [[ -z "$2" ]]; then
-        echo "Error: --outputs-dir requires a value" >&2
+        echo "Error: --output-dir requires a value" >&2
         exit 1
       fi
-      OUTPUTS_DIR="$2"
+      OUTPUT_DIR="$2"
       shift 2
       ;;
     -h|--help)
-      echo "Usage: $0 [-s SESSION_NAME] [-o OUTPUTS_DIR] [SESSION_NAME [OUTPUTS_DIR]]"
+      echo "Usage: $0 [-s SESSION_NAME] [-o OUTPUT_DIR] [SESSION_NAME [OUTPUT_DIR]]" >&2
       exit 0
       ;;
     --)
@@ -46,7 +46,7 @@ if [[ ${#POSITIONAL[@]} -ge 1 ]]; then
   SESSION_NAME="${POSITIONAL[0]}"
 fi
 if [[ ${#POSITIONAL[@]} -ge 2 ]]; then
-  OUTPUTS_DIR="${POSITIONAL[1]}"
+  OUTPUT_DIR="${POSITIONAL[1]}"
 fi
 
 if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
@@ -71,17 +71,17 @@ else
   # Logs: Orchestrator
   tmux send-keys -t "$SESSION_NAME:RL.1" 'while true; do
 echo "Waiting for orchestrator log file..."
-while [ ! -f '"$OUTPUTS_DIR"'/logs/orchestrator.log ]; do sleep 1; done
-echo "Following orchestrator.log..."
-tail -F '"$OUTPUTS_DIR"'/logs/orchestrator.log
+while [ ! -f '"$OUTPUT_DIR"'/logs/orchestrator.stdout ]; do sleep 1; done
+echo "Following orchestrator.stdout..."
+tail -F '"$OUTPUT_DIR"'/logs/orchestrator.stdout
 done' C-m
 
   # Logs: Inference
   tmux send-keys -t "$SESSION_NAME:RL.2" 'while true; do
 echo "Waiting for inference log file..."
-while [ ! -f '"$OUTPUTS_DIR"'/logs/inference.log ]; do sleep 1; done
-echo "Following inference.log..."
-tail -F '"$OUTPUTS_DIR"'/logs/inference.log
+while [ ! -f '"$OUTPUT_DIR"'/logs/inference.stdout ]; do sleep 1; done
+echo "Following inference.stdout..."
+tail -F '"$OUTPUT_DIR"'/logs/inference.stdout
 done' C-m
 
   # Window 2: Monitor

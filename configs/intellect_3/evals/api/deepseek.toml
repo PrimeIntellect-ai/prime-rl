@@ -1,0 +1,5 @@
+max_concurrent = 128
+
+[client]
+base_url = ["https://api.deepseek.com"]
+api_key_var = "DEEPSEEK_API_KEY"

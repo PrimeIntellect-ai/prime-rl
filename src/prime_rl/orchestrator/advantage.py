@@ -1,78 +1,31 @@
-from typing import Callable, Literal
-
 import torch
-from beartype import beartype as typechecker
-from jaxtyping import Float, Int, jaxtyped
+from jaxtyping import Float, Int
 from torch import Tensor
 
-
-@jaxtyped(typechecker=typechecker)
-def compute_advantage_drgrpo(rewards: Float[Tensor, "group"], _: Int[Tensor, "group"]) -> Float[Tensor, "group"]:
-    """
-    Computes DR.GRPO advantages for a single group.
-    For example:
-    - `[0.0, 0.0, 1.0, 1.0]` -> `[-0.5, -0.5, 0.5, 0.5]`
-    - `[0.0, 0.0, 0.0, 0.0]` -> `[0.0, 0.0, 0.0, 0.0]`
-    - `[1.0, 1.0, 1.0, 1.0]` -> `[0.0, 0.0, 0.0, 0.0]`
-    """
-    return rewards - rewards.mean()
+from prime_rl.orchestrator.config import AdvantageConfig
 
 
-@jaxtyped(typechecker=typechecker)
-def compute_advantage_drgrpo_negclipped(
-    rewards: Float[Tensor, "group"], _: Int[Tensor, "group"]
+def compute_advantage(
+    rewards: Float[Tensor, "group"],
+    lengths: Int[Tensor, "group"],
+    advantage_config: AdvantageConfig,
 ) -> Float[Tensor, "group"]:
     """
-    Computes DR.GRPO advantages for a single group, but clips all negative advantages to zero.
-    For example:
-    - `[0.0, 0.0, 1.0, 1.0]` -> `[0.0, 0.0, 0.5, 0.5]`
-    - `[0.0, 0.0, 0.0, 0.0]` -> `[0.0, 0.0, 0.0, 0.0]`
-    - `[1.0, 1.0, 1.0, 1.0]` -> `[0.0, 0.0, 0.0, 0.0]`
+    Computes advantages for a single group.
     """
-    return torch.maximum(rewards - rewards.mean(), torch.zeros_like(rewards))
-
-
-@jaxtyped(typechecker=typechecker)
-def compute_advantage_rloo(rewards: Float[Tensor, "group"], _: Int[Tensor, "group"]) -> Float[Tensor, "group"]:
-    """
-    Computes RLOO (rescaled leave-one-out) advantages for a single group by
-    scaling the standard DR.GRPO advantage by the factor G / (G - 1).
-    """
-    group_size = rewards.shape[0]
-    advantages = rewards - rewards.mean()
-    return advantages * group_size / (group_size - 1)
-
-
-@jaxtyped(typechecker=typechecker)
-def compute_advantage_opo(
-    rewards: Float[Tensor, "group"], response_lengths: Int[Tensor, "group"]
-) -> Float[Tensor, "group"]:
-    """
-    Computes OPO advantages for a single group.
-    The baseline is the *weighted* mean of rewards where each reward is
-    weighted by the length of the corresponding model response (in tokens).
-    """
-    weights = response_lengths.to(dtype=rewards.dtype)
-    baseline = (rewards * weights).sum() / weights.sum()
-    return rewards - baseline
-
-
-AdvantageType = Literal["drgrpo", "drgrpo-negclipped", "rloo", "opo"]
-
-# Map of advantage types to their corresponding functions
-REGISTRY: dict[AdvantageType, Callable[[Float[Tensor, "group"], Int[Tensor, "group"]], Float[Tensor, "group"]]] = {
-    "drgrpo": compute_advantage_drgrpo,
-    "drgrpo-negclipped": compute_advantage_drgrpo_negclipped,
-    "rloo": compute_advantage_rloo,
-    "opo": compute_advantage_opo,
-}
+    if advantage_config.length_weighted_mean:
+        baseline = (rewards * lengths).sum() / lengths.sum()
+    else:
+        baseline = rewards.mean()
+    advantages = rewards - baseline
+    return advantages
 
 
 def compute_advantages(
     rewards: list[float],
     completion_lengths: list[int],
     samples_per_problem: int,
-    advantage_type: AdvantageType,
+    advantage_config: AdvantageConfig | None,
 ) -> list[float]:
     """
     Computes advantages and statistics for logging from a flattened list of rewards for a given advantage type.
@@ -80,23 +33,23 @@ def compute_advantages(
     Args:
         rewards: Flattened list of rewards where first `samples_per_problem` rewards are for the first problem
         samples_per_problem: Number of samples (and thus, rewards) per problem
-        advantage_type: Type of advantage computation to use
+        advantage_config: Configuration for advantage computation
         completion_lengths: List of completion lengths for each reward. Required for OPO advantage computation.
-
     Returns:
         Tuple of (advantages, advantage_stats)
     """
+    if not advantage_config:
+        return rewards
     advantages = []
     assert len(rewards) % samples_per_problem == 0
     all_group_rewards = [rewards[i : i + samples_per_problem] for i in range(0, len(rewards), samples_per_problem)]
     all_group_lengths = [
         completion_lengths[i : i + samples_per_problem] for i in range(0, len(completion_lengths), samples_per_problem)
     ]
-    compute_advantage = REGISTRY[advantage_type]
     for group_rewards, group_lengths in zip(all_group_rewards, all_group_lengths):
         group_rewards_tensor = torch.tensor(group_rewards)
         group_lengths_tensor = torch.tensor(group_lengths)
-        group_advantages_tensor = compute_advantage(group_rewards_tensor, group_lengths_tensor)
+        group_advantages_tensor = compute_advantage(group_rewards_tensor, group_lengths_tensor, advantage_config)
         assert len(group_advantages_tensor) == len(group_rewards_tensor)
         advantages.extend(group_advantages_tensor.tolist())
     assert len(rewards) == len(advantages)

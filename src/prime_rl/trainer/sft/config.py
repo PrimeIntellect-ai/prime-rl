@@ -1,23 +1,25 @@
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, TypeAlias
 
-from pydantic import Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from prime_rl.trainer.config import (
     AdamWConfig,
     CheckpointConfig,
     ConstantSchedulerConfig,
+    HeartbeatConfig,
     ModelConfig,
     OptimizerConfigType,
     SchedulerConfigType,
-    WeightCheckpointConfig,
+    TokenizerConfig,
 )
-from prime_rl.utils.config import LogConfig, MultiMonitorConfig
+from prime_rl.utils.config import LogConfig, WandbConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
-class DataConfig(BaseConfig):
-    """Configures the data used for training."""
+class BaseDataConfig(BaseModel):
+    """Base config for SFT data."""
+
 
     name: Annotated[str, Field(description="Name or path of the HF dataset to use.")] = (
         "PrimeIntellect/Reverse-Text-SFT"
@@ -28,11 +30,11 @@ class DataConfig(BaseConfig):
     # Defaults to legacy behavior if unset.
     packing_seq_len: Annotated[int | None, Field(ge=1, description="Packed sequence length to target.")] = None
     micro_batch_size: Annotated[int, Field(ge=1)] = 8
+
     batch_size: Annotated[int, Field(ge=1)] = 128
     seq_len: Annotated[int, Field(ge=1)] = 128
-    shuffle: Annotated[bool, Field(description="Whether to shuffle the dataset at the beginning of each epoch.")] = True
-
-    fake: Annotated[bool, Field(description="Whether to use a fake dataset.")] = False
+    pack_function: Literal["cat", "stack"] = "cat"
+    micro_batch_size: Annotated[int, Field(ge=1)] = 1
 
     @model_validator(mode="after")
     def validate_batch_size(self):
@@ -47,14 +49,87 @@ class DataConfig(BaseConfig):
         return self
 
 
+class FakeDataConfig(BaseDataConfig):
+    """Configures fake data used for debugging."""
+
+    type: Literal["fake"] = "fake"
+
+    length: Literal["fixed", "variable"] = "fixed"
+    input_ids: Literal["increasing", "random"] = "increasing"
+
+
+class LossMaskConfig(BaseConfig):
+    """Configures which message types contribute to the loss. If True, the loss_mask will be True and the message type will contribute to the loss."""
+
+    system: Annotated[bool, Field(description="Whether system messages contribute to the loss.")] = False
+    user: Annotated[bool, Field(description="Whether user messages contribute to the loss.")] = False
+    assistant: Annotated[bool, Field(description="Whether assistant messages contribute to the loss.")] = True
+    tool: Annotated[bool, Field(description="Whether tool messages contribute to the loss.")] = False
+
+
+class SFTDataConfig(BaseDataConfig):
+    """Configures the data used for training."""
+
+    type: Literal["sft"] = "sft"
+
+    name: Annotated[str, Field(description="Name or path of the HF dataset to use.")] = (
+        "PrimeIntellect/Reverse-Text-SFT"
+    )
+    subsets: Annotated[list[str] | None, Field(description="Subsets to use from the HF dataset.")] = None
+    splits: Annotated[list[str] | None, Field(description="Splits to use from the HF dataset.")] = None
+    probabilities: Annotated[list[float] | None, Field(description="Probabilities to use for each subset/split.")] = (
+        None
+    )
+    stopping_strategy: Annotated[
+        Literal["first_exhausted", "all_exhausted"],
+        Field(description=""),
+    ] = "all_exhausted"
+    shuffle: Annotated[bool, Field(description="Whether to shuffle the dataset at the beginning of each epoch.")] = True
+    seed: Annotated[
+        int,
+        Field(
+            description="Random seed to use for shuffling the dataset. We also shuffle at the end of each epoch by adding epoch count to the seed."
+        ),
+    ] = 0
+
+    # Configuring
+    loss_mask: LossMaskConfig = LossMaskConfig()
+
+    @model_validator(mode="after")
+    def validate_subsets_and_splits(self):
+        if self.subsets is not None or self.splits is not None:
+            if self.subsets is not None and self.splits is not None:
+                if len(self.subsets) != len(self.splits):
+                    raise ValueError(
+                        "Number of subsets must be equal to number of splits. Please specify which split to load for each subset."
+                    )
+            if self.subsets is not None and self.probabilities is not None:
+                if len(self.probabilities) != len(self.subsets):
+                    raise ValueError(
+                        "Number of probabilities must be equal to number of subsets. Please specify a probability for each subset."
+                    )
+            if self.splits is not None and self.probabilities is not None:
+                if len(self.probabilities) != len(self.splits):
+                    raise ValueError(
+                        "Number of probabilities must be equal to number of splits. Please specify a probability for each split."
+                    )
+        return self
+
+
+DataConfigType: TypeAlias = FakeDataConfig | SFTDataConfig
+
+
 class SFTTrainerConfig(BaseSettings):
     """Configures the SFT trainer"""
 
     # The model configuration
     model: ModelConfig = ModelConfig()
 
+    # The tokenizer configuration
+    tokenizer: TokenizerConfig = TokenizerConfig()
+
     # The data configuration
-    data: DataConfig = DataConfig()
+    data: Annotated[DataConfigType, Field(discriminator="type")] = SFTDataConfig()
 
     # The optimizer configuration
     optim: Annotated[OptimizerConfigType, Field(discriminator="type")] = AdamWConfig()
@@ -65,16 +140,13 @@ class SFTTrainerConfig(BaseSettings):
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
 
-    # The weight checkpoint configuration
-    weights: WeightCheckpointConfig = WeightCheckpointConfig()
-
     # The logging configuration
     log: LogConfig = LogConfig()
 
-    # The monitor configuration
-    monitor: MultiMonitorConfig = MultiMonitorConfig()
+    # The wandb configuration
+    wandb: WandbConfig | None = None
 
-    outputs_dir: Annotated[
+    output_dir: Annotated[
         Path,
         Field(
             description="Directory to write outputs to. Will be populated with checkpoints and logs as subdirectories. Should be set to a persistent directory with enough disk space. This value should be distinct across experiments running on a single node. See the README for more details."
@@ -86,7 +158,7 @@ class SFTTrainerConfig(BaseSettings):
         Field(description="Maximum number of steps to run training for. If None, will run indefinitely."),
     ] = None
 
-    profile_path: Annotated[Path | None, Field(description="Path to write memory profile to.")] = None
+    memory_profiler_path: Annotated[Path | None, Field(description="Path to write memory profile to.")] = None
 
     bench: Annotated[
         bool,
@@ -95,43 +167,76 @@ class SFTTrainerConfig(BaseSettings):
         ),
     ] = False
 
+    trace_path: Annotated[Path | None, Field(description="Path to write pytorch profiler trace to.")] = None
+
+    dist_timeout_seconds: Annotated[
+        int,
+        Field(
+            description="Timeout in seconds for torch distributed ops. Defaults to 600 seconds.",
+        ),
+    ] = 600
+
+    loss_impl: Annotated[
+        Literal["liger", "torch"], Field(description="Implementation of the cross entropy loss function to use.")
+    ] = "torch"
+
+    heartbeat: Annotated[
+        HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
+    ] = None
+
     @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench:
             self.max_steps = 4  # 1 Warmup + 3 Benchmark
-            if not self.data.fake:
-                self.data.fake = True
+            if self.ckpt:  # Do not checkpoint
+                self.ckpt = None
         return self
 
     @model_validator(mode="after")
-    def validate_scheduler(self):
-        # Constant scheduler does not require any validation/ setup
-        if self.scheduler.type == "constant":
-            return self
+    def validate_pack_function(self):
+        if self.model.cp > 1 and self.data.pack_function != "stack":
+            raise ValueError("Packing function must be 'stack' when CP is enabled")
+        return self
 
-        # Must specify max_steps when using a scheduler other than `constant`
-        if self.max_steps is None:
-            raise ValueError("Must specify max_steps when using a scheduler other than `constant`")
+    @model_validator(mode="after")
+    def validate_seq_len(self):
+        if self.data.pack_function == "stack":
+            if self.data.seq_len % 256 != 0:
+                raise ValueError("The sequence length must be divisible by 256 when using pack function stack")
+        return self
 
-        # If decay_steps is not specified, use remaining steps after warmup
-        if self.scheduler.decay_steps is None:
-            if not (self.warmup_steps <= self.max_steps):
-                raise ValueError("config.scheduler.warmup_steps must be less than or equal to config.max_steps")
-
-            self.scheduler.decay_steps = self.max_steps - self.scheduler.warmup_steps
-            assert self.scheduler.decay_steps >= 0, "config.scheduler.decay_steps must be positive"
-
-        # If decay_steps is specified, validate it
-        else:
-            if not (self.scheduler.warmup_steps + self.scheduler.decay_steps <= self.max_steps):
+    @model_validator(mode="after")
+    def dont_do_massive_traces(self):
+        if self.trace_path:
+            if self.max_steps is None:
+                raise ValueError("Must specify max_steps when tracing")
+            if self.max_steps >= 10:
                 raise ValueError(
-                    "config.scheduler.warmup_steps + config.scheduler.decay_steps must be less than or equal to config.max_steps"
+                    "Tracing more than 10 steps is not recommended as your trace will be massive. Remove this line if you really want to trace more steps."
                 )
-
         return self
 
     @model_validator(mode="after")
-    def disable_logging_wandb_samples(self):
-        if self.monitor.wandb and self.monitor.wandb.log_extras:
-            self.monitor.wandb.log_extras.samples = False
+    def validate_lora_adapter_saving(self):
+        if self.ckpt and self.ckpt.weights and self.ckpt.weights.save_adapter_separately:
+            lora_enabled = self.model and self.model.experimental and self.model.experimental.lora
+            if not lora_enabled:
+                raise ValueError(
+                    "save_adapter_separately=True requires LoRA to be enabled. "
+                    "Set model.experimental.lora or disable save_adapter_separately."
+                )
+        return self
+
+    @model_validator(mode="after")
+    def validate_opt_and_fsdp_offload(self):
+        if self.optim.type == "muon" and self.model.fsdp_cpu_offload:
+            raise ValueError("Muon optimizer does not support FSDP CPU offload")
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_tokenizer(self):
+        if self.tokenizer.name is None:
+            self.tokenizer.name = self.model.name
+        if self.tokenizer.trust_remote_code is None:
+            self.tokenizer.trust_remote_code = self.model.trust_remote_code
         return self

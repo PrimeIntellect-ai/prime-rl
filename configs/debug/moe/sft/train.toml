@@ -1,0 +1,15 @@
+max_steps = 5
+
+[model]
+name = "PrimeIntellect/GLM-0.5B" 
+moe_use_grouped_mm = false
+impl = "custom"
+attn = "sdpa"
+load_using_meta = true
+
+[model.compile]
+
+[data]
+type = "fake"
+batch_size = 2
+seq_len = 1024

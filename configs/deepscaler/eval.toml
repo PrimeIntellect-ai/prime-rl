@@ -1,0 +1,12 @@
+[model]
+name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+
+[[env]]
+id = "math500"
+args = { use_think = true }
+rollouts_per_example = 1
+
+[[env]]
+id = "aime2024"
+args = { use_think = true }
+rollouts_per_example = 16
