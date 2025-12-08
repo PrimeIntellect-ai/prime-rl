@@ -1,5 +1,5 @@
 import math
-from typing import Any, Iterator
+from typing import Any
 
 import torch
 from torch import nn
@@ -17,8 +17,10 @@ class LoRALinear(nn.Module):
 
     def __init__(
         self,
-        base_layer: nn.Linear,
+        base_layer: nn.Module,
         rank: int,
+        in_features: int | None = None,
+        out_features: int | None = None,
         alpha: float = 1.0,
         dropout: float = 0.0,
     ):
@@ -28,8 +30,13 @@ class LoRALinear(nn.Module):
         self.alpha = alpha
         self.scaling = alpha / rank
 
-        self.lora_A = nn.Parameter(torch.empty(rank, base_layer.in_features))
-        self.lora_B = nn.Parameter(torch.empty(base_layer.out_features, rank))
+        if in_features is None:
+            in_features = base_layer.in_features
+        if out_features is None:
+            out_features = base_layer.out_features
+
+        self.lora_A = nn.Parameter(torch.empty(rank, in_features))
+        self.lora_B = nn.Parameter(torch.empty(out_features, rank))
 
         self.lora_dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
 
@@ -67,18 +74,6 @@ class LoRALinear(nn.Module):
     def __getitem__(self, key: int) -> Any:
         """Forward indexing calls in case the module is a nn.Sequential."""
         return self.base_layer.__getitem__(key)  # type: ignore[operator]
-
-    def named_parameters(
-        self,
-        *args,
-        **kwargs,
-    ) -> Iterator[tuple[str, torch.nn.Parameter]]:
-        """
-        Override :meth:`named_parameters()` to intercept parameter names.
-        remove all occurrences of ``_LORA_PREFIX``.
-        """
-        for param_name, param in super().named_parameters(*args, **kwargs):
-            yield param_name.replace(_LORA_PREFIX, ""), param
 
     @staticmethod
     def _post_state_dict_hook(
