@@ -551,38 +551,54 @@ def setup_dataset(
         )
     elif config.type == "sft":
         logger = get_logger()
-        if config.subsets is None and config.splits is None:
-            dataset = setup_and_interleave_datasets(
-                dataset_name=config.name,
-                subsets_and_splits=[(None, "train")],
-                probabilities=config.probabilities,
-                stopping_strategy=config.stopping_strategy,
-            )
+        
+        # Handle both old flat format and new nested dict format
+        subsets_and_splits = []
+        probabilities = None
+        
+        if config.subsets is not None and isinstance(config.subsets, dict):
+            # NEW nested format: subsets = {"subset_name": {"split_name": probability, ...}, ...}
+            logger.debug(f"Loading datasets using nested format: {config.subsets}")
+            for subset_name, split_dict in config.subsets.items():
+                for split_name, prob in split_dict.items():
+                    subsets_and_splits.append((subset_name, split_name))
+            # Probabilities are now embedded in the nested dict
+            # Extract them in the same order as subsets_and_splits
+            probabilities = []
+            for subset_name, split_dict in config.subsets.items():
+                for split_name, prob in split_dict.items():
+                    probabilities.append(prob)
+            # Normalize probabilities if they don't sum to 1.0
+            total = sum(probabilities)
+            if total > 0 and abs(total - 1.0) > 1e-6:
+                probabilities = [p / total for p in probabilities]
+        elif config.subsets is None and config.splits is None:
+            # No subsets or splits specified - use default
+            subsets_and_splits = [(None, "train")]
+            probabilities = config.probabilities
         elif config.subsets is not None and config.splits is None:
+            # OLD format: list of subsets, default split 'train'
             logger.debug(f"Loading datasets for subsets {config.subsets} with default split 'train'")
-            dataset = setup_and_interleave_datasets(
-                dataset_name=config.name,
-                subsets_and_splits=[(subset, "train") for subset in config.subsets],
-                probabilities=config.probabilities,
-                stopping_strategy=config.stopping_strategy,
-            )
+            subsets_and_splits = [(subset, "train") for subset in config.subsets]
+            probabilities = config.probabilities
         elif config.subsets is None and config.splits is not None:
+            # OLD format: list of splits, default subset None
             logger.debug(f"Loading datasets for splits {config.splits} with default subset 'None'")
-            dataset = setup_and_interleave_datasets(
-                dataset_name=config.name,
-                subsets_and_splits=[(None, split) for split in config.splits],
-                probabilities=config.probabilities,
-                stopping_strategy=config.stopping_strategy,
-            )
+            subsets_and_splits = [(None, split) for split in config.splits]
+            probabilities = config.probabilities
         else:
+            # OLD format: both subsets and splits as lists
             assert config.subsets is not None and config.splits is not None
             logger.debug(f"Loading datasets for subsets {config.subsets} with splits {config.splits}")
-            dataset = setup_and_interleave_datasets(
-                dataset_name=config.name,
-                subsets_and_splits=list(zip(config.subsets, config.splits)),
-                probabilities=config.probabilities,
-                stopping_strategy=config.stopping_strategy,
-            )
+            subsets_and_splits = list(zip(config.subsets, config.splits))
+            probabilities = config.probabilities
+        
+        dataset = setup_and_interleave_datasets(
+            dataset_name=config.name,
+            subsets_and_splits=subsets_and_splits,
+            probabilities=probabilities,
+            stopping_strategy=config.stopping_strategy,
+        )
         return SFTDataset(
             dataset,
             tokenizer,
