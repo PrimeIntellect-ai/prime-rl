@@ -179,7 +179,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     )
 
 
-def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
+def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
     model.to_empty(device="cuda")
     torch.distributed.barrier()
 
@@ -251,7 +251,10 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
         fix_model_post_empty(model)
     for module in model.modules():
         if hasattr(module, "_init_lora_parameters"):
-            module._init_lora_parameters()
+            # This is necessary to ensure that the same parameters are initialized for all dp_replicate ranks
+            generator = torch.Generator(device=model.device)
+            generator.manual_seed(42 + parallel_dims.world_mesh["dp_replicate"].get_rank())
+            module._init_lora_parameters(generator=generator)
     logger.debug(f"Loaded weights using HF DCP in {time.perf_counter() - load_dcp_start_time:.2f} seconds")
 
 
@@ -343,7 +346,7 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
     setup_fsdp(model, config, parallel_dims)
 
     if config.load_using_meta and can_load_dcp_from_hf(model):
-        load_dcp_from_hf(model, config)
+        load_dcp_from_hf(model, config, parallel_dims)
 
     logger.debug(f"Model signature: {get_module_signature(model, compress=True)}")
     return model
