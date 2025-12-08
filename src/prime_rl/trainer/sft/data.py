@@ -198,7 +198,11 @@ def setup_dataset(tokenizer: AutoTokenizer, config: DataConfig) -> IterableDatas
     return SFTDataset(tokenizer, name=config.name, split=config.split)
 
 def setup_dataloader(dataset: IterableDataset, tokenizer: AutoTokenizer, config: DataConfig) -> DataLoader:
-    seq_len = config.micro_batch_size * config.seq_len if config.collate_mode == "packing" else config.seq_len
+    seq_len = (
+        config.packing_seq_len
+        if config.collate_mode == "packing" and config.packing_seq_len is not None
+        else (config.micro_batch_size * config.seq_len if config.collate_mode == "packing" else config.seq_len)
+    )
     if config.collate_mode == "packing":
         packing_dataset = PackingDataset(dataset, seq_len)
         return DataLoader(packing_dataset, batch_size=1, collate_fn=collate)

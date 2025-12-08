@@ -24,6 +24,9 @@ class DataConfig(BaseConfig):
     )
     split: Annotated[str, Field(description="Split to use from the HF dataset.")] = "train"
     collate_mode: Annotated[Literal["padding", "packing"], Field(description="Collate mode to use.")] = "packing"
+    # Optional explicit packing length so users can decouple packing bins from seq_len.
+    # Defaults to legacy behavior if unset.
+    packing_seq_len: Annotated[int | None, Field(ge=1, description="Packed sequence length to target.")] = None
     micro_batch_size: Annotated[int, Field(ge=1)] = 8
     batch_size: Annotated[int, Field(ge=1)] = 128
     seq_len: Annotated[int, Field(ge=1)] = 128
@@ -37,6 +40,8 @@ class DataConfig(BaseConfig):
             raise ValueError("Batch size must be divisible by micro batch size")
         if self.batch_size < self.micro_batch_size:
             raise ValueError("Batch size must be greater than or equal to micro batch size")
+        if self.packing_seq_len is not None and self.packing_seq_len < 1:
+            raise ValueError("packing_seq_len must be positive")
         return self
 
 

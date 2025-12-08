@@ -177,27 +177,29 @@ def prepare_batch_packing(
     micro_batch_size: int,
     seq_len: int,
     num_train_workers: int,
+    packing_seq_len: int | None,
 ) -> list[list[MicroBatch]]:
     """
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
     Each micro batch is shape [1, micro_bs * max_seq_len], the namber of sample is not fixed per micro batch.
     """
     rollouts = copy.deepcopy(rollouts)
-    max_seq_len = seq_len * micro_batch_size
+    per_sample_max_len = seq_len
+    max_packed_len = packing_seq_len or seq_len * micro_batch_size
 
     all_samples = [
         prepare_sample(
             rollout,
-            max_seq_len,
+            per_sample_max_len,
             tokenizer,
             pad=False,
         )
         for rollout in rollouts
     ]
 
-    micro_batches_list = packed_samples_into_micro_bs(all_samples, max_seq_len)
+    micro_batches_list = packed_samples_into_micro_bs(all_samples, max_packed_len)
     micro_batches = [
-        prepare_micro_batch_packing(micro_batch, max_seq_len, temperature) for micro_batch in micro_batches_list
+        prepare_micro_batch_packing(micro_batch, max_packed_len, temperature) for micro_batch in micro_batches_list
     ]
 
     num_padding_batch = num_train_workers - len(micro_batches) % num_train_workers
@@ -234,6 +236,7 @@ def prepare_batch(
     seq_len: int,
     num_train_workers: int,
     collate_mode: Literal["packing", "padding"],
+    packing_seq_len: int | None = None,
 ) -> list[list[MicroBatch]]:
     """
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
@@ -258,6 +261,7 @@ def prepare_batch(
                 micro_batch_size,
                 seq_len,
                 num_train_workers,
+                packing_seq_len,
             )
         case _:
             raise ValueError(f"Invalid collate mode: {collate_mode}")

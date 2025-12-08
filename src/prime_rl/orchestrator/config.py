@@ -292,6 +292,15 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = 2048
 
+    # Optional packed length to decouple training bin size from per-sample context.
+    packing_seq_len: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Packed sequence length when using collate_mode=packing. If None, defaults to seq_len * micro_batch_size.",
+        ),
+    ] = None
+
     mask_env_responses: Annotated[
         bool,
         Field(
