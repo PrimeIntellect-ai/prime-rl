@@ -64,14 +64,14 @@ spec:
         - name: INFERENCE_URL
           {{- $releaseName := .Release.Name }}
           {{- $namespace := .Values.namespace }}
-          {{- $port := .Values.inference.service.port }}
+          {{- $port := int .Values.inference.service.port }}
           {{- $replicas := int .Values.inference.replicas }}
           {{- $urls := list }}
           {{- range $i := until $replicas }}
           {{- $url := printf "http://%s-inference-%d.%s-inference-headless.%s.svc.cluster.local:%d/v1" $releaseName $i $releaseName $namespace $port }}
           {{- $urls = append $urls $url }}
           {{- end }}
-          value: {{ $urls | toJson | quote }}
+          value: {{ $urls | join "," | quote }}
         {{- with .Values.orchestrator.env }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -274,14 +274,14 @@ spec:
         - name: INFERENCE_URL
           {{- $releaseName := .Release.Name }}
           {{- $namespace := .Values.namespace }}
-          {{- $port := .Values.inference.service.port }}
+          {{- $port := int .Values.inference.service.port }}
           {{- $replicas := int .Values.inference.replicas }}
           {{- $urls := list }}
           {{- range $i := until $replicas }}
           {{- $url := printf "http://%s-inference-%d.%s-inference-headless.%s.svc.cluster.local:%d/v1" $releaseName $i $releaseName $namespace $port }}
           {{- $urls = append $urls $url }}
           {{- end }}
-          value: {{ $urls | toJson | quote }}
+          value: {{ $urls | join "," | quote }}
         {{- with .Values.trainer.env }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
