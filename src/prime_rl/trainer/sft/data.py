@@ -572,25 +572,25 @@ def setup_dataset(
             total = sum(probabilities)
             if total > 0 and abs(total - 1.0) > 1e-6:
                 probabilities = [p / total for p in probabilities]
-        elif config.subsets is None and config.splits is None:
+        elif config.old_subsets is None and config.splits is None:
             # No subsets or splits specified - use default
             subsets_and_splits = [(None, "train")]
             probabilities = config.probabilities
-        elif config.subsets is not None and config.splits is None:
+        elif config.old_subsets is not None and config.splits is None:
             # OLD format: list of subsets, default split 'train'
-            logger.debug(f"Loading datasets for subsets {config.subsets} with default split 'train'")
-            subsets_and_splits = [(subset, "train") for subset in config.subsets]
+            logger.debug(f"Loading datasets for subsets {config.old_subsets} with default split 'train'")
+            subsets_and_splits = [(subset, "train") for subset in config.old_subsets]
             probabilities = config.probabilities
-        elif config.subsets is None and config.splits is not None:
+        elif config.old_subsets is None and config.splits is not None:
             # OLD format: list of splits, default subset None
             logger.debug(f"Loading datasets for splits {config.splits} with default subset 'None'")
             subsets_and_splits = [(None, split) for split in config.splits]
             probabilities = config.probabilities
         else:
             # OLD format: both subsets and splits as lists
-            assert config.subsets is not None and config.splits is not None
-            logger.debug(f"Loading datasets for subsets {config.subsets} with splits {config.splits}")
-            subsets_and_splits = list(zip(config.subsets, config.splits))
+            assert config.old_subsets is not None and config.splits is not None
+            logger.debug(f"Loading datasets for subsets {config.old_subsets} with splits {config.splits}")
+            subsets_and_splits = list(zip(config.old_subsets, config.splits))
             probabilities = config.probabilities
         
         dataset = setup_and_interleave_datasets(

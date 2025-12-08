@@ -118,6 +118,10 @@ class SFTDataConfig(BaseDataConfig):
 
         # Validate the new nested format
         if self.subsets is not None:
+            # Check that subsets is not empty
+            if not self.subsets:
+                raise ValueError("subsets dictionary cannot be empty. Provide at least one subset with splits.")
+            
             for subset_name, split_ratios in self.subsets.items():
                 if not split_ratios:
                     raise ValueError(f"Subset '{subset_name}' must have at least one split defined")
