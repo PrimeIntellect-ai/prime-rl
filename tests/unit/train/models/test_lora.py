@@ -170,3 +170,127 @@ def test_forward_with_zero_lora_b_equals_base() -> None:
 
     # Outputs should be the same when lora_B is zero
     assert torch.allclose(base_output, lora_output, atol=1e-6), "With zero lora_B, output should match base layer"
+
+
+def test_getattr_forwards_to_base_layer() -> None:
+    """__getattr__ should forward missing attributes to the base layer."""
+    base_layer = nn.Linear(in_features=64, out_features=32, bias=True)
+    lora_layer = LoRALinear(base_layer, rank=8)
+
+    # in_features and out_features should be accessible via __getattr__
+    assert lora_layer.in_features == 64
+    assert lora_layer.out_features == 32
+
+    # weight and bias should also be accessible
+    assert lora_layer.weight is base_layer.weight
+    assert lora_layer.bias is base_layer.bias
+
+
+def test_getattr_raises_for_missing_attribute() -> None:
+    """__getattr__ should raise AttributeError for truly missing attributes."""
+    base_layer = nn.Linear(in_features=64, out_features=32)
+    lora_layer = LoRALinear(base_layer, rank=8)
+
+    with pytest.raises(AttributeError):
+        _ = lora_layer.nonexistent_attribute
+
+
+def test_sequential_base_layer_getitem() -> None:
+    """__getitem__ should forward to base layer when base is Sequential."""
+    layer0 = nn.Linear(64, 128)
+    layer1 = nn.ReLU()
+    layer2 = nn.Linear(128, 32)
+    base_sequential = nn.Sequential(layer0, layer1, layer2)
+
+    lora_layer = LoRALinear(base_sequential, rank=8, in_features=64, out_features=32)
+
+    # __getitem__ should return the correct sublayer
+    assert lora_layer[0] is layer0
+    assert lora_layer[1] is layer1
+    assert lora_layer[2] is layer2
+
+
+def test_sequential_base_layer_state_dict() -> None:
+    """state_dict should work correctly when base layer is Sequential."""
+    base_sequential = nn.Sequential(
+        nn.Linear(64, 128),
+        nn.ReLU(),
+        nn.Linear(128, 32),
+    )
+    lora_layer = LoRALinear(base_sequential, rank=8, in_features=64, out_features=32)
+
+    state_dict = lora_layer.state_dict()
+
+    # Should contain Sequential sublayer keys without base_layer prefix
+    assert "0.weight" in state_dict
+    assert "0.bias" in state_dict
+    assert "2.weight" in state_dict
+    assert "2.bias" in state_dict
+
+    # Should contain LoRA params
+    assert "lora_A" in state_dict
+    assert "lora_B" in state_dict
+
+    # Should NOT have base_layer prefix
+    for key in state_dict.keys():
+        assert not key.startswith(_LORA_PREFIX), f"Key '{key}' should not have prefix '{_LORA_PREFIX}'"
+
+
+def test_sequential_base_layer_load_state_dict() -> None:
+    """Loading state_dict should work correctly when base layer is Sequential."""
+    base_sequential = nn.Sequential(
+        nn.Linear(64, 128),
+        nn.ReLU(),
+        nn.Linear(128, 32),
+    )
+    lora_layer = LoRALinear(base_sequential, rank=8, in_features=64, out_features=32)
+    original_state_dict = lora_layer.state_dict()
+
+    # Create new LoRA with Sequential base and load state dict
+    torch.manual_seed(999)
+    new_base_sequential = nn.Sequential(
+        nn.Linear(64, 128),
+        nn.ReLU(),
+        nn.Linear(128, 32),
+    )
+    new_lora = LoRALinear(new_base_sequential, rank=8, in_features=64, out_features=32)
+
+    # Verify weights differ before loading
+    assert not torch.allclose(new_lora.state_dict()["0.weight"], original_state_dict["0.weight"])
+
+    new_lora.load_state_dict(original_state_dict)
+
+    # Verify all weights match after loading
+    for key in original_state_dict:
+        assert torch.allclose(new_lora.state_dict()[key], original_state_dict[key]), (
+            f"State dict key '{key}' did not match after loading"
+        )
+
+
+def test_sequential_base_layer_forward() -> None:
+    """Forward pass should work correctly when base layer is Sequential."""
+    torch.manual_seed(42)
+    base_sequential = nn.Sequential(
+        nn.Linear(64, 128),
+        nn.ReLU(),
+        nn.Linear(128, 32),
+    )
+
+    # Clone for comparison
+    base_sequential_clone = nn.Sequential(
+        nn.Linear(64, 128),
+        nn.ReLU(),
+        nn.Linear(128, 32),
+    )
+    base_sequential_clone.load_state_dict(base_sequential.state_dict())
+
+    lora_layer = LoRALinear(base_sequential, rank=8, in_features=64, out_features=32)
+    # lora_B is initialized to zero by default
+
+    x = torch.randn(2, 64)
+
+    base_output = base_sequential_clone(x)
+    lora_output = lora_layer(x)
+
+    # With zero lora_B, outputs should match
+    assert torch.allclose(base_output, lora_output, atol=1e-6), "With zero lora_B, Sequential output should match base"
