@@ -3,6 +3,11 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
 
+
+from typing import Dict, Optional
+from typing_extensions import Annotated, Literal
+from pydantic import Field, model_validator
+
 from prime_rl.trainer.config import (
     AdamWConfig,
     CheckpointConfig,
@@ -51,30 +56,52 @@ class LossMaskConfig(BaseConfig):
     assistant: Annotated[bool, Field(description="Whether assistant messages contribute to the loss.")] = True
     tool: Annotated[bool, Field(description="Whether tool messages contribute to the loss.")] = False
 
-
 class SFTDataConfig(BaseDataConfig):
     """Configures the data used for training."""
 
     type: Literal["sft"] = "sft"
 
-    name: Annotated[str, Field(description="Name or path of the HF dataset to use.")] = (
-        "PrimeIntellect/Reverse-Text-SFT"
-    )
-    subsets: Annotated[list[str] | None, Field(description="Subsets to use from the HF dataset.")] = None
-    splits: Annotated[list[str] | None, Field(description="Splits to use from the HF dataset.")] = None
-    probabilities: Annotated[list[float] | None, Field(description="Probabilities to use for each subset/split.")] = (
-        None
-    )
+    name: Annotated[
+        str,
+        Field(description="Name or path of the HF dataset to use."),
+    ] = "PrimeIntellect/Reverse-Text-SFT"
+
+    # NEW: proper nested structure for complex multi-subset data loading
+    subsets: Annotated[
+        Optional[Dict[str, Dict[str, float]]],
+        Field(
+            description="Mapping from subset name → its own split ratios. "
+                        "Example: {'wiki': {'train': 0.8, 'test': 0.2}, 'news': {'train': 0.95}}"
+        ),
+    ] = None
+
+    # Keep old flat fields for backward compatibility (deprecated)
+    old_subsets: Annotated[
+        Optional[list[str]],
+        Field(description="DEPRECATED: use nested `subsets` instead"),
+    ] = None
+    splits: Annotated[
+        Optional[list[str]],
+        Field(description="DEPRECATED: use nested `subsets` instead"),
+    ] = None
+    probabilities: Annotated[
+        Optional[list[float]],
+        Field(description="DEPRECATED: use nested `subsets` instead"),
+    ] = None
+
     stopping_strategy: Annotated[
         Literal["first_exhausted", "all_exhausted"],
-        Field(description=""),
+        Field(description="Stop when first subset is exhausted or when all are."),
     ] = "all_exhausted"
-    shuffle: Annotated[bool, Field(description="Whether to shuffle the dataset at the beginning of each epoch.")] = True
+
+    shuffle: Annotated[
+        bool,
+        Field(description="Whether to shuffle the dataset at the beginning of each epoch."),
+    ] = True
+
     seed: Annotated[
         int,
-        Field(
-            description="Random seed to use for shuffling the dataset. We also shuffle at the end of each epoch by adding epoch count to the seed."
-        ),
+        Field(description="Random seed for shuffling (epoch count is added each epoch)."),
     ] = 0
 
     # Configuring
@@ -82,24 +109,24 @@ class SFTDataConfig(BaseDataConfig):
 
     @model_validator(mode="after")
     def validate_subsets_and_splits(self):
-        if self.subsets is not None or self.splits is not None:
-            if self.subsets is not None and self.splits is not None:
-                if len(self.subsets) != len(self.splits):
+        # Warn if someone still uses the old flat style
+        if self.old_subsets is not None or self.splits is not None or self.probabilities is not None:
+            print(
+                "Warning: old_subsets/splits/probabilities are deprecated → "
+                "use the new nested `subsets` dictionary instead."
+            )
+
+        # Validate the new nested format
+        if self.subsets is not None:
+            for subset_name, split_ratios in self.subsets.items():
+                if not split_ratios:
+                    raise ValueError(f"Subset '{subset_name}' must have at least one split defined")
+                total = sum(split_ratios.values())
+                if abs(total - 1.0) > 1e-6:
                     raise ValueError(
-                        "Number of subsets must be equal to number of splits. Please specify which split to load for each subset."
-                    )
-            if self.subsets is not None and self.probabilities is not None:
-                if len(self.probabilities) != len(self.subsets):
-                    raise ValueError(
-                        "Number of probabilities must be equal to number of subsets. Please specify a probability for each subset."
-                    )
-            if self.splits is not None and self.probabilities is not None:
-                if len(self.probabilities) != len(self.splits):
-                    raise ValueError(
-                        "Number of probabilities must be equal to number of splits. Please specify a probability for each split."
+                        f"Subset '{subset_name}' split ratios must sum to 1.0 (got {total:.6f})"
                     )
         return self
-
 
 DataConfigType: TypeAlias = FakeDataConfig | SFTDataConfig
 
