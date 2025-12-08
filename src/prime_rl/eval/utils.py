@@ -214,7 +214,9 @@ async def run_eval(
             # Finalize evaluation
             await evals_client.finalize_evaluation(eval_id, metrics=eval_metrics)
 
-            logger.info(f"Pushed eval results for {env_id} to Environment Hub (eval_id: {eval_id})")
+            logger.info(
+                f"Pushed eval results for {env_id} to Environments Hub (https://app.primeintellect.ai/dashboard/evaluations/{eval_id})"
+            )
 
 
 async def run_evals(
