@@ -14,7 +14,7 @@ from prime_rl.trainer.models.llama import LlamaForCausalLM
 from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig, Qwen3MoeForCausalLM
 
 # Make custom config discoverable by AutoConfig
-AutoConfig.register("AFMoE", AfMoeConfig, exist_ok=True)
+AutoConfig.register("afmoe", AfMoeConfig, exist_ok=True)
 AutoConfig.register("glm4_moe", Glm4MoeConfig, exist_ok=True)
 AutoConfig.register("qwen3_moe", Qwen3MoeConfig, exist_ok=True)
 
