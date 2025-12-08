@@ -487,6 +487,11 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = 2048
 
+    collate_mode: Annotated[
+        Literal["packing", "padding"],
+        Field(description="Collate mode to use for orchestrator-prepared batches."),
+    ] = "packing"
+
     # Optional packed length to decouple training bin size from per-sample context.
     packing_seq_len: Annotated[
         int | None,
