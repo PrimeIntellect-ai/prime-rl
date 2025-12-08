@@ -90,15 +90,7 @@ def compute_loss(
         is_masked = is_masked_low | is_masked_high | seq_should_mask
         keep_mask = loss_mask & ~is_masked
         loss = (-importance_ratio * advantages)[keep_mask].sum()
-        if loss_config.kl_mask_type == "masked":
-            kl_mask = loss_mask & is_masked
-        elif loss_config.kl_mask_type == "unmasked":
-            kl_mask = keep_mask
-        elif loss_config.kl_mask_type == "all":
-            kl_mask = loss_mask
-        else:
-            raise ValueError(f"Invalid KL mask type: {loss_config.kl_mask_type}")
-        loss = loss + loss_config.kl_tau * (log_importance_ratio[kl_mask]).sum()
+        loss = loss + loss_config.kl_tau * (log_importance_ratio[loss_mask]).sum()
 
         # Apply sequence-level normalization if configured
         if loss_config.ratio_type == "sequence":

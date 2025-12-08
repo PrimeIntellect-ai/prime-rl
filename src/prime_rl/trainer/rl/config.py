@@ -34,7 +34,6 @@ class LossConfig(BaseConfig):
         ),
     ] = 0.0
     kl_tau: Annotated[float, Field(ge=0)] = 0.0
-    kl_mask_type: Annotated[Literal["masked", "unmasked", "all"], Field(description="Type of KL mask to use.")] = "all"
 
 
 class FakeDataLoaderConfig(BaseConfig):
