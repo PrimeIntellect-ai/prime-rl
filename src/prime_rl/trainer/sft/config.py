@@ -42,6 +42,8 @@ class DataConfig(BaseConfig):
             raise ValueError("Batch size must be greater than or equal to micro batch size")
         if self.packing_seq_len is not None and self.packing_seq_len < 1:
             raise ValueError("packing_seq_len must be positive")
+        if self.packing_seq_len is not None and self.packing_seq_len < self.seq_len:
+            raise ValueError("packing_seq_len must be >= seq_len when configured")
         return self
 
 
