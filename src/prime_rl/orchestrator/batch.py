@@ -113,47 +113,28 @@ def prepare_micro_batch_packing(
     return micro_batch
 
 
-def prepare_batch(
+def prepare_batch_packing(
     rollouts: list[TrainingExample],
     temperature: float,
+    tokenizer,  # unused but kept for signature symmetry
+    batch_size: int,
+    micro_batch_size: int,
     seq_len: int,
     num_train_workers: int,
     packing_seq_len: int | None,
 ) -> list[list[MicroBatch]]:
-    """
-    Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
-    Each micro batch is shape [1, seq_len], the namber of sample is not fixed per micro batch.
-    """
     rollouts = copy.deepcopy(rollouts)
-
     per_sample_max_len = seq_len
     max_packed_len = packing_seq_len or seq_len * micro_batch_size
 
-    all_samples = [
-        prepare_sample(
-            rollout,
-            per_sample_max_len,
-            tokenizer,
-            pad=False,
-        )
-        for rollout in rollouts
-    ]
-
-    max_seq_len = seq_len
-
-    all_samples = [prepare_sample(rollout, max_seq_len) for rollout in rollouts]
-
-
+    all_samples = [prepare_sample(rollout, per_sample_max_len) for rollout in rollouts]
     micro_batches_list = packed_samples_into_micro_bs(all_samples, max_packed_len)
     micro_batches = [
         prepare_micro_batch_packing(micro_batch, max_packed_len, temperature) for micro_batch in micro_batches_list
     ]
 
     num_padding_batch = -len(micro_batches) % num_train_workers
-
-    # because of fsdp we need to make sure that each data ran has the same number of micro batches otherwise training will hang.
-    # We create fake micro batches to fill the gap with real data but zero advantages, they would not contribute to the loss.
-    if num_train_workers > 1 and num_padding_batch > 0:
+    if num_train_workers > 1 and num_padding_batch > 0 and micro_batches:
         padded_batch = copy.deepcopy(micro_batches[0])
         padded_batch["advantages"] = torch.zeros_like(padded_batch["advantages"])
         padded_batch["loss_mask"] = torch.zeros_like(padded_batch["loss_mask"], dtype=torch.bool)
@@ -174,6 +155,47 @@ def prepare_batch(
     return batches_per_gpu
 
 
+def prepare_batch_padding(
+    rollouts: list[TrainingExample],
+    temperature: float,
+    tokenizer,  # unused but kept for signature symmetry
+    batch_size: int,
+    micro_batch_size: int,
+    seq_len: int,
+    num_train_workers: int,
+) -> list[list[MicroBatch]]:
+    rollouts = copy.deepcopy(rollouts)
+    total = len(rollouts)
+    assert total % num_train_workers == 0, "Number of rollouts must be divisible by num_train_workers"
+    per_rank = total // num_train_workers
+
+    batches_per_gpu = []
+    idx = 0
+    for _ in range(num_train_workers):
+        batches = []
+        for _ in range(per_rank):
+            sample = prepare_sample(rollouts[idx], seq_len)
+            idx += 1
+            # pad to seq_len if needed
+            for key in ["input_ids", "loss_mask", "position_ids", "advantages", "inference_logprobs"]:
+                pad_len = seq_len - len(sample[key])
+                if pad_len > 0:
+                    pad_value = 0 if key != "loss_mask" else False
+                    sample[key] = torch.cat(
+                        [sample[key], torch.full((pad_len,), pad_value, device=sample[key].device, dtype=sample[key].dtype)]
+                    )
+            micro_batch = {
+                "input_ids": sample["input_ids"].unsqueeze(0),
+                "position_ids": sample["position_ids"].unsqueeze(0),
+                "advantages": sample["advantages"].unsqueeze(0),
+                "inference_logprobs": sample["inference_logprobs"].unsqueeze(0),
+                "loss_mask": sample["loss_mask"].unsqueeze(0),
+                "temperature": temperature,
+            }
+            batches.append(micro_batch)
+        batches_per_gpu.append(batches)
+
+    return batches_per_gpu
 
 def prepare_batch(
     rollouts: list[Rollout],
