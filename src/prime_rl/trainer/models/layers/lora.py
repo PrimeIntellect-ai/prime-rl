@@ -3,7 +3,6 @@ from typing import Any, Iterator
 
 import torch
 from torch import nn
-from torch.distributed.utils import _replace_by_prefix
 
 _LORA_PREFIX = "base_layer."
 
@@ -95,7 +94,14 @@ class LoRALinear(nn.Module):
         It would still be able to be loaded into LoRALinear modules as this class,
         adds the prefix back before loading the state_dict.
         """
-        _replace_by_prefix(state_dict, f"{prefix}{_LORA_PREFIX}", prefix)
+        old_prefix = f"{prefix}{_LORA_PREFIX}"
+        new_prefix = prefix
+        for key in list(state_dict.keys()):
+            if not key.startswith(old_prefix):
+                continue
+            new_key = new_prefix + key[len(old_prefix) :]
+            state_dict[new_key] = state_dict[key]
+            del state_dict[key]
         return state_dict
 
     @staticmethod
@@ -111,4 +117,11 @@ class LoRALinear(nn.Module):
         prefix so that non-LoRALinear modules can be loaded into
         LoRALinear modules properly.
         """
-        _replace_by_prefix(state_dict, prefix, prefix + f"{_LORA_PREFIX}")
+        old_prefix = prefix
+        new_prefix = f"{prefix}{_LORA_PREFIX}"
+        for key in list(state_dict.keys()):
+            if not key.startswith(old_prefix) or key.endswith("lora_A") or key.endswith("lora_B"):
+                continue
+            new_key = new_prefix + key[len(old_prefix) :]
+            state_dict[new_key] = state_dict[key]
+            del state_dict[key]
