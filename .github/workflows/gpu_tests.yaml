@@ -15,7 +15,7 @@ jobs:
     name: Unit tests
     runs-on: vm-runner
     container:
-      image: nvcr.io/nvidia/pytorch:25.05-py3
+      image: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
       options: --gpus all --ipc=host --ulimit memlock=-1 --ulimit stack=67108864
       env:
         NVIDIA_DRIVER_CAPABILITIES: all
@@ -57,7 +57,7 @@ jobs:
     name: Integration tests
     runs-on: vm-runner
     container:
-      image: nvcr.io/nvidia/pytorch:25.05-py3
+      image: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
       options: --gpus all --ipc=host --ulimit memlock=-1 --ulimit stack=67108864
       env:
         NVIDIA_DRIVER_CAPABILITIES: all
