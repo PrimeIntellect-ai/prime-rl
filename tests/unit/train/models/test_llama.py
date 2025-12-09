@@ -9,13 +9,6 @@ from prime_rl.utils.utils import default_dtype
 
 pytestmark = [pytest.mark.gpu]
 
-SEED = 42
-
-# Note: SDPA gradient comparisons have inherent numerical variance due to
-# different cuBLAS/cuDNN algorithm selection across CUDA versions.
-# Tolerances are set to accommodate this variance while still catching
-# significant implementation differences.
-
 
 def get_model_pairs():
     hf_config = LlamaConfig(
@@ -45,7 +38,6 @@ def get_model_pairs():
 
 
 def test_llama_attn_only():
-    torch.manual_seed(SEED)
     hf_model, prime_model = get_model_pairs()
     for layer in hf_model.model.layers:
         layer.mlp = nn.Identity()
@@ -66,11 +58,10 @@ def test_llama_attn_only():
         f"Max logits diff: {logits_diff.abs().max()}"
     )
     grad_diff = hf_model.model.embed_tokens.weight.grad - prime_model.model.embed_tokens.weight.grad
-    assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=15), f"Max grad diff: {grad_diff.abs().max()}"
+    assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=2), f"Max grad diff: {grad_diff.abs().max()}"
 
 
 def test_llama_mlp_only():
-    torch.manual_seed(SEED)
     hf_model, prime_model = get_model_pairs()
 
     def foo(hidden_states: torch.Tensor, *args, **kwargs):
@@ -95,11 +86,10 @@ def test_llama_mlp_only():
         f"Max logits diff: {logits_diff.abs().max()}"
     )
     grad_diff = hf_model.model.embed_tokens.weight.grad - prime_model.model.embed_tokens.weight.grad
-    assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=15), f"Max grad diff: {grad_diff.abs().max()}"
+    assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=2), f"Max grad diff: {grad_diff.abs().max()}"
 
 
 def test_llama():
-    torch.manual_seed(SEED)
     hf_model, prime_model = get_model_pairs()
 
     with torch.device("cuda"), default_dtype(torch.float32):
@@ -116,7 +106,7 @@ def test_llama():
         f"Max logits diff: {logits_diff.abs().max()}"
     )
     grad_diff = hf_model.model.embed_tokens.weight.grad - prime_model.model.embed_tokens.weight.grad
-    assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=15), f"Max grad diff: {grad_diff.abs().max()}"
+    assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=2), f"Max grad diff: {grad_diff.abs().max()}"
 
     with torch.device("cuda"), default_dtype(torch.float32):
         hf_from_prime_model = HFLlamaForCausalLM._from_config(hf_model.config)
@@ -131,7 +121,7 @@ def test_llama():
         f"Max logits diff: {logits_diff.abs().max()}"
     )
     grad_diff = hf_from_prime_model.model.embed_tokens.weight.grad - hf_model.model.embed_tokens.weight.grad
-    assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=15), f"Max grad diff: {grad_diff.abs().max()}"
+    assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=2), f"Max grad diff: {grad_diff.abs().max()}"
 
 
 if __name__ == "__main__":
