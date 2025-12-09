@@ -17,6 +17,8 @@ jobs:
     container:
       image: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
       options: --gpus all --ipc=host --ulimit memlock=-1 --ulimit stack=67108864
+      env:
+        NVIDIA_DRIVER_CAPABILITIES: all
     timeout-minutes: 45
     if: github.event_name == 'push' || github.event.pull_request.draft == false
     steps:
@@ -57,6 +59,8 @@ jobs:
     container:
       image: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
       options: --gpus all --ipc=host --ulimit memlock=-1 --ulimit stack=67108864
+      env:
+        NVIDIA_DRIVER_CAPABILITIES: all
     timeout-minutes: 60
     if: github.event_name == 'push' || github.event.pull_request.draft == false
     steps:
