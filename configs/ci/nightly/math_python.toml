@@ -1,0 +1,29 @@
+inference_gpu_ids = [0,1,2,3,4,5]
+trainer_gpu_ids = [6,7]
+
+max_steps = 500
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[model.ac]
+freq = 1
+
+[trainer]
+
+[orchestrator]
+batch_size = 512
+rollouts_per_example = 16
+seq_len = 16384
+
+[orchestrator.sampling]
+temperature = 0.8
+max_tokens = 16384
+
+[[orchestrator.env]]
+id = "i3-math-python"
+args = { difficulty_key = "avg@8_qwen3_4b_instruct_2507", min_avg_reward = 0.1 }
+
+[inference.model]
+enable_auto_tool_choice = true
+tool_call_parser = "hermes"
