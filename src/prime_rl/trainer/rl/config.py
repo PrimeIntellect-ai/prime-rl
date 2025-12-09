@@ -22,9 +22,13 @@ class LossConfig(BaseConfig):
 
     ratio_type: Annotated[Literal["token", "sequence"], Field(description="Type of importance ratio to use.")] = "token"
 
-    mask_ratio_high: Annotated[float, Field(ge=0)] = 8.0
-    mask_ratio_low: Annotated[float, Field(ge=0)] = 0.125
-    sequence_mask_ratio_low: Annotated[
+    token_mask_high: Annotated[float, Field(ge=0)] = 8.0
+    token_mask_low: Annotated[float, Field(ge=0)] = 0.125
+    sequence_clip_high: Annotated[float, Field(ge=0)] = 10.0
+    geo_mask_high: Annotated[float, Field(ge=0)] = 10.0
+    geo_mask_low: Annotated[float, Field(ge=0)] = 0.1
+    kl_tau: Annotated[float, Field(ge=0)] = 0.0
+    sequence_mask_low: Annotated[
         float,
         Field(
             ge=0,
@@ -33,8 +37,15 @@ class LossConfig(BaseConfig):
             ),
         ),
     ] = 0.0
-    kl_tau: Annotated[float, Field(ge=0)] = 0.0
-    kl_mask_type: Annotated[Literal["masked", "unmasked", "all"], Field(description="Type of KL mask to use.")] = "all"
+    sequence_mask_high: Annotated[
+        float,
+        Field(
+            ge=0,
+            description=(
+                "If set, masks entire sequences when any generated token has an importance ratio above this value."
+            ),
+        ),
+    ] = 100.0
 
 
 class FakeDataLoaderConfig(BaseConfig):
@@ -132,7 +143,7 @@ class RLTrainerConfig(BaseSettings):
         int,
         Field(
             ge=0,
-            description="Maximum number of steps that inference can be ahead of training. Determines how 'off-policy' the inference engines can be. Higher values yield better throughput through async execution, but may yield lower powerofrmance. If 0, will be fully synchronous.",
+            description="Maximum number of steps that inference can be ahead of training. Determines how 'off-policy' the inference engines can be. Higher values yield better throughput through async execution, but may yield lower performance. If 0, will be fully synchronous.",
         ),
     ] = 1
 
