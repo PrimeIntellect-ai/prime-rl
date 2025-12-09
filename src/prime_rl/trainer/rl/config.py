@@ -47,6 +47,22 @@ class LossConfig(BaseConfig):
         ),
     ] = 100.0
 
+    @model_validator(mode="after")
+    def validate_mask_bounds(self):
+        if self.token_mask_low >= self.token_mask_high:
+            raise ValueError(
+                f"token_mask_low ({self.token_mask_low}) must be less than token_mask_high ({self.token_mask_high})"
+            )
+        if self.geo_mask_low >= self.geo_mask_high:
+            raise ValueError(
+                f"geo_mask_low ({self.geo_mask_low}) must be less than geo_mask_high ({self.geo_mask_high})"
+            )
+        if self.sequence_mask_low >= self.sequence_mask_high:
+            raise ValueError(
+                f"sequence_mask_low ({self.sequence_mask_low}) must be less than sequence_mask_high ({self.sequence_mask_high})"
+            )
+        return self
+
 
 class FakeDataLoaderConfig(BaseConfig):
     """Configures a fake data loader sampling random micro batches for debugging."""
