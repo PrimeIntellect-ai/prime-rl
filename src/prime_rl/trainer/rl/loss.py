@@ -113,7 +113,7 @@ def compute_loss(
         loss = -(coeff.detach() * trainer_logprobs)[keep_mask].sum()
 
         if loss_config.ratio_type == "sequence":
-            loss = _safe_mean(loss, loss_mask)
+            loss = loss / torch.clamp_min(loss_mask.sum(), 1)
 
         total_loss = total_loss + loss
 
