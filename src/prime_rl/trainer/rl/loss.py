@@ -17,6 +17,61 @@ def selective_log_softmax(
     return torch.gather(logprobs, dim=-1, index=index.unsqueeze(-1)).squeeze(-1)
 
 
+def _apply_top_k_top_p(
+    logits: Float[Tensor, "batch seq vocab"],
+    top_k: int,
+    top_p: float,
+) -> Float[Tensor, "batch seq vocab"]:
+    """Apply top-k and top-p masks to logits, matching vLLM's implementation."""
+    use_top_k = top_k > 0
+    use_top_p = top_p < 1.0
+
+    if not use_top_k and not use_top_p:
+        return logits
+
+    original_shape = logits.shape
+    logits = logits.view(-1, original_shape[-1])
+
+    if use_top_k and not use_top_p:
+        top_k = min(top_k, logits.size(-1))
+        top_k_values, _ = torch.topk(logits, top_k, dim=-1)
+        logits = logits.masked_fill(logits < top_k_values[:, -1:], float("-inf"))
+        return logits.view(original_shape)
+
+    logits_sort, logits_idx = logits.sort(dim=-1, descending=False)
+
+    if use_top_k:
+        vocab_size = logits_sort.size(-1)
+        top_k = min(top_k, vocab_size)
+        top_k_idx = vocab_size - top_k
+        top_k_mask = logits_sort < logits_sort[:, top_k_idx : top_k_idx + 1]
+        logits_sort = logits_sort.masked_fill(top_k_mask, float("-inf"))
+
+    if use_top_p:
+        probs_sort = logits_sort.softmax(dim=-1)
+        probs_sum = torch.cumsum(probs_sort, dim=-1)
+        top_p_mask = probs_sum <= (1.0 - top_p)
+        top_p_mask[:, -1] = False
+        logits_sort = logits_sort.masked_fill(top_p_mask, float("-inf"))
+
+    logits = logits_sort.scatter(dim=-1, index=logits_idx, src=logits_sort)
+    return logits.view(original_shape)
+
+
+@jaxtyped(typechecker=typechecker)
+@torch.compile(dynamic=True)
+def selective_log_softmax_with_filtering(
+    logits: Float[Tensor, "batch seq vocab"],
+    index: Int[Tensor, "batch seq"],
+    top_p: float,
+    top_k: int,
+) -> Float[Tensor, "batch seq"]:
+    """Compute log softmax with top-p and top-k filtering to match vLLM inference."""
+    logits = _apply_top_k_top_p(logits, top_k, top_p)
+    logprobs = logits.log_softmax(dim=-1)
+    return torch.gather(logprobs, dim=-1, index=index.unsqueeze(-1)).squeeze(-1)
+
+
 @jaxtyped(typechecker=typechecker)
 @torch.compile(dynamic=True)
 def compute_entropy(shifted_logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq"]:

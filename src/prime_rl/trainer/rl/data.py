@@ -20,6 +20,8 @@ class MicroBatch(TypedDict):
 
     # Batch level
     temperature: float
+    top_p: float
+    top_k: int
 
 
 class FakeDataLoader:
@@ -48,6 +50,8 @@ class FakeDataLoader:
             "advantages": torch.randn(self.seq_len).unsqueeze(0),
             "inference_logprobs": torch.randn(self.seq_len).unsqueeze(0),
             "temperature": 1.0,
+            "top_p": 1.0,
+            "top_k": -1,
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
         }
 

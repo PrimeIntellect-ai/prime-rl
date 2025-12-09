@@ -31,6 +31,8 @@ def test_prepare_batch_balances_micro_batches_across_workers(
     batches_per_gpu = prepare_batch(
         rollouts=examples,
         temperature=0.5,
+        top_p=1.0,
+        top_k=-1,
         seq_len=4,
         num_train_workers=num_train_workers,
     )

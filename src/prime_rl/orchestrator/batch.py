@@ -51,13 +51,15 @@ def prepare_sample(
     )
 
 
-def prepare_micro_batch(samples: list[MicroBatch], temperature: float):
+def prepare_micro_batch(samples: list[MicroBatch], temperature: float, top_p: float, top_k: int):
     micro_batch = {}
 
     for key in ["input_ids", "advantages", "loss_mask", "inference_logprobs", "position_ids"]:
         micro_batch[key] = torch.stack([sample[key] for sample in samples], dim=0)
 
     micro_batch["temperature"] = temperature
+    micro_batch["top_p"] = top_p
+    micro_batch["top_k"] = top_k
 
     return micro_batch
 
@@ -94,7 +96,7 @@ def packed_samples_into_micro_bs(
 
 
 def prepare_micro_batch_packing(
-    samples: list[TensorTrainingExample], max_seq_len: int, temperature: float
+    samples: list[TensorTrainingExample], max_seq_len: int, temperature: float, top_p: float, top_k: int
 ) -> MicroBatch:
     """
     Prepare a micro batch for packing mode. take multi sample and return a batch of shape [1, micro_bs * max_seq_len].
@@ -109,6 +111,8 @@ def prepare_micro_batch_packing(
         micro_batch[key] = torch.cat([sample[key] for sample in samples], dim=0).unsqueeze(0)
 
     micro_batch["temperature"] = temperature
+    micro_batch["top_p"] = top_p
+    micro_batch["top_k"] = top_k
 
     return micro_batch
 
@@ -116,6 +120,8 @@ def prepare_micro_batch_packing(
 def prepare_batch(
     rollouts: list[TrainingExample],
     temperature: float,
+    top_p: float,
+    top_k: int,
     seq_len: int,
     num_train_workers: int,
 ) -> list[list[MicroBatch]]:
@@ -130,7 +136,8 @@ def prepare_batch(
 
     micro_batches_list = packed_samples_into_micro_bs(all_samples, max_seq_len)
     micro_batches = [
-        prepare_micro_batch_packing(micro_batch, max_seq_len, temperature) for micro_batch in micro_batches_list
+        prepare_micro_batch_packing(micro_batch, max_seq_len, temperature, top_p, top_k)
+        for micro_batch in micro_batches_list
     ]
 
     num_padding_batch = -len(micro_batches) % num_train_workers

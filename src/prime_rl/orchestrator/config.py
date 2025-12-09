@@ -19,6 +19,23 @@ class SamplingConfig(BaseConfig):
         ),
     ] = 1.0
 
+    top_p: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            description="Cumulative probability of the top tokens to consider (nucleus sampling). If 1.0, all tokens are considered (no filtering).",
+        ),
+    ] = 1.0
+
+    top_k: Annotated[
+        int,
+        Field(
+            ge=-1,
+            description="Number of top tokens to consider. If -1, all tokens are considered (no filtering).",
+        ),
+    ] = -1
+
     repetition_penalty: Annotated[
         float,
         Field(

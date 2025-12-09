@@ -18,7 +18,7 @@ from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
     shift_logits,
-    selective_log_softmax,
+    selective_log_softmax_with_filtering,
     compute_entropy,
     compute_loss,
 )
@@ -227,6 +227,8 @@ def train(config: RLTrainerConfig):
             loss_mask = micro_batch["loss_mask"].to("cuda")
             inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
             temperature = micro_batch["temperature"]
+            top_p = micro_batch["top_p"]
+            top_k = micro_batch["top_k"]
 
             # Forward pass
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
@@ -234,7 +236,7 @@ def train(config: RLTrainerConfig):
 
             shifted_logits = shift_logits(logits)
             shifted_logits = shifted_logits / temperature
-            trainer_logprobs = selective_log_softmax(shifted_logits, input_ids)
+            trainer_logprobs = selective_log_softmax_with_filtering(shifted_logits, input_ids, top_p, top_k)
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
