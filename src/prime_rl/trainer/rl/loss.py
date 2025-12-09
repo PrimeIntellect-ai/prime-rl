@@ -85,12 +85,21 @@ def compute_loss(
         importance_ratio = torch.exp(log_importance_ratio)
         is_masked_low = importance_ratio < loss_config.mask_ratio_low
         is_masked_high = importance_ratio > loss_config.mask_ratio_high
+        is_masked = is_masked_low | is_masked_high
         seq_min_ratio = importance_ratio.masked_fill(~loss_mask, torch.inf).min()
         seq_should_mask = seq_min_ratio < loss_config.sequence_mask_ratio_low
-        is_masked = is_masked_low | is_masked_high | seq_should_mask
+        is_masked = is_masked | seq_should_mask
         keep_mask = loss_mask & ~is_masked
         loss = (-importance_ratio * advantages)[keep_mask].sum()
-        loss = loss + loss_config.kl_tau * (log_importance_ratio[loss_mask]).sum()
+        if loss_config.kl_mask_type == "masked":
+            kl_mask = loss_mask & is_masked
+        elif loss_config.kl_mask_type == "unmasked":
+            kl_mask = keep_mask
+        elif loss_config.kl_mask_type == "all":
+            kl_mask = loss_mask
+        else:
+            raise ValueError(f"Invalid KL mask type: {loss_config.kl_mask_type}")
+        loss = loss + loss_config.kl_tau * (log_importance_ratio[kl_mask]).sum()
 
         # Apply sequence-level normalization if configured
         if loss_config.ratio_type == "sequence":
