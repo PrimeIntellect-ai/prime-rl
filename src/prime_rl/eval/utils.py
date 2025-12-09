@@ -185,9 +185,10 @@ async def generate_and_save_group(
             group_rewards = [state["reward"] for state in states]
             rewards_accumulator.extend(group_rewards)
             avg_reward = sum(rewards_accumulator) / len(rewards_accumulator)
-            pbar.set_postfix({"Avg Reward": f"{avg_reward:.4f}"})
+            pbar.set_postfix({"Avg Reward": f"{avg_reward:.4f}"}, refresh=True)
 
         pbar.update(rollouts_per_example)
+        pbar.refresh()
         return states
     except Exception as e:
         logger.exception(f"Error evaluating group {index}: {repr(e)}")
@@ -243,7 +244,7 @@ async def run_eval(
             f"Saving results to {path_to_save}"
         )
     total_rollouts = len(dataset) * rollouts_per_example
-    pbar = tqdm(total=total_rollouts, desc="Evaluating")
+    pbar = tqdm(total=total_rollouts, desc="Evaluating", mininterval=0.1)
 
     # Create shared structure for tracking rewards
     rewards_accumulator: list = []

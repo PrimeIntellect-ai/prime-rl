@@ -1,9 +1,11 @@
 import asyncio
+import re
+from copy import deepcopy
 from itertools import cycle
 from typing import Any, cast
 
 import verifiers as vf
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, BadRequestError
 from openai.types.chat.chat_completion import ChatCompletion
 from tenacity import RetryCallState, retry, stop_after_attempt, wait_exponential
 from tqdm import tqdm
@@ -22,6 +24,22 @@ def _log_retry_attempt(retry_state: RetryCallState) -> None:
     )
 
 
+def _parse_and_calculate_max_tokens(error_message: str) -> int | None:
+    """
+    Example error message:
+    "This endpoint's maximum context length is 131072 tokens. However, you requested
+    about 131419 tokens (347 of text input, 131072 in the output)."
+    """
+    context_match = re.search(r"maximum context length is (\d+) tokens", error_message)
+    prompt_match = re.search(r"(\d+) of text input", error_message)
+
+    if context_match and prompt_match:
+        context_length = int(context_match.group(1))
+        prompt_tokens = int(prompt_match.group(1))
+        return context_length - prompt_tokens
+    return None
+
+
 @retry(
     stop=stop_after_attempt(10),
     wait=wait_exponential(multiplier=1, min=1, max=60),
@@ -37,16 +55,37 @@ async def generate_group(
     sampling_args: dict,
 ) -> list[vf.State]:
     """Asynchronously generate and score rollouts for a single group."""
+    logger = get_logger()
     semaphore = await get_semaphore()
     group_inputs = [vf.RolloutInput(**example) for _ in range(rollouts_per_example)]
-    return await env.run_group(
-        group_inputs=group_inputs,
-        client=client,
-        model=model_name,
-        gen_sampling_args=sampling_args,
-        gen_sem=semaphore,
-        score_sem=semaphore,
-    )
+
+    try:
+        return await env.run_group(
+            group_inputs=group_inputs,
+            client=client,
+            model=model_name,
+            gen_sampling_args=sampling_args,
+            gen_sem=semaphore,
+            score_sem=semaphore,
+        )
+    except BadRequestError as e:
+        # Check if this is a context length error and retry with adjusted max_tokens
+        error_message = str(e)
+        new_max_tokens = _parse_and_calculate_max_tokens(error_message)
+
+        if new_max_tokens is not None:
+            logger.warning(f"Context length error: reducing max_tokens to {new_max_tokens}.")
+            retry_sampling_args = deepcopy(sampling_args)
+            retry_sampling_args["max_tokens"] = new_max_tokens
+            return await env.run_group(
+                group_inputs=group_inputs,
+                client=client,
+                model=model_name,
+                gen_sampling_args=retry_sampling_args,
+                gen_sem=semaphore,
+                score_sem=semaphore,
+            )
+        raise
 
 
 async def generate_batch(
