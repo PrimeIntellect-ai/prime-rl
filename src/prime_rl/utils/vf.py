@@ -132,6 +132,8 @@ def from_serializable_state(serializable_state: dict) -> vf.State:
     # Reverse of the logic in `to_serializable_state`
     for field in state.INPUT_FIELDS:
         if field in state:
+            if "input" not in state:
+                state["input"] = {}
             state["input"][field] = state.pop(field)
 
     if "trajectory" in state:
