@@ -30,8 +30,14 @@ uv run --no-sync vf-eval math-python -n 16 -r 1 -v -m Qwen/Qwen3-4B-Instruct-250
 
 ## RL
 
+Again, make sure to have installed the environment as local packages from research-environments
+
+```bash
+uv pip install -e ~/research-environments/environments/math_python
+```
+
 Then, run RL in debug mode (small batch size, limited turns, 2 GPUs, etc.)
 
 ```bash
-uv run rl @ configs/math_python/math_python_debug.toml
+uv run --no-sync rl @ configs/math_python/math_python.toml --log.level debug
 ```
