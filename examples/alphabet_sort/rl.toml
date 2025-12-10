@@ -34,6 +34,6 @@ max_tokens = 768
 [[orchestrator.env]]
 id = "primeintellect/alphabet-sort"
 name = "alphabet-sort"
-args = { min_turns = 3, max_turns = 3, min_names_per_turn = 1, max_names_per_turn = 4, similarity_power = 8, power_per_turn = false }
+args = { min_turns = 3, max_turns = 5, power_per_turn = false }
 
 [inference] # Default inference config
