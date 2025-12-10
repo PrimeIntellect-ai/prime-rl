@@ -1,7 +1,7 @@
 inference_gpu_ids = [0,1,2,3,4,5]
 trainer_gpu_ids = [6,7]
 
-max_steps = 500
+max_steps = 200
 
 [model]
 name = "Qwen/Qwen3-4B-Instruct-2507"

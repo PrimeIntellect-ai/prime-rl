@@ -1,5 +1,5 @@
 
-max_steps = 100 
+max_steps = 200 
 
 [ckpt] # Checkpoint at the end of training
 
