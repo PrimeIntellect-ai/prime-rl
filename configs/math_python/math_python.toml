@@ -16,7 +16,7 @@ rollouts_per_example = 16
 id = "math-python"
 args = { difficulty_key = "avg@8_qwen3_4b_instruct_2507", min_avg_reward = 0.5 }
 
-[trainer] # Default trainer config
+[trainer.model.ac]
 
 [inference.model] # Default inference config
 enable_auto_tool_choice = true
