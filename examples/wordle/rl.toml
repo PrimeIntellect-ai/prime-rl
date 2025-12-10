@@ -1,3 +1,6 @@
+inference_gpu_ids = [0,1,2,3,4,5]
+trainer_gpu_ids = [6,7]
+
 max_steps = 100
 
 [wandb]
@@ -23,4 +26,5 @@ max_tokens = 1024
 
 [trainer] # Default trainer config
 
-[inference] # Default inference config
+[inference.model] # Default inference config
+max_model_len = 4096
