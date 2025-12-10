@@ -3,6 +3,11 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
+from prime_rl.inference.patches import monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode
+
+# Monkeypatch PrometheusStatLogger to avoid NotImplementedError for LoRA in DP mode
+monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode()
+
 # ruff: noqa
 import vllm.entrypoints.openai.api_server
 
