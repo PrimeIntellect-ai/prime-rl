@@ -159,7 +159,7 @@ class WandbWithExtrasConfig(WandbConfig):
         Field(
             description="Configuration for logging extras. If None, no extras are logged.",
         ),
-    ] = None
+    ] = LogExtrasConfig()
 
 
 class PrimeMonitorConfig(BaseConfig):
@@ -195,4 +195,4 @@ class PrimeMonitorWithExtrasConfig(PrimeMonitorConfig):
         Field(
             description="Configuration for logging extras. If None, no extras are logged.",
         ),
-    ] = None
+    ] = LogExtrasConfig()
