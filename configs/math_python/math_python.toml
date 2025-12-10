@@ -15,6 +15,13 @@ seq_len = 8192
 batch_size = 512
 rollouts_per_example = 16
 
+[orchestrator.buffer]
+online_difficulty_filtering = true
+
+[orchestrator.val]
+interval = 1
+num_examples = 128
+
 [[orchestrator.env]]
 id = "math-python"
 args = { difficulty_key = "avg@8_qwen3_4b_instruct_2507", min_avg_reward = 0.5 }
