@@ -1,5 +1,9 @@
 max_steps = 100
 
+[wandb]
+project = "wordle"
+name = "wordle"
+
 [ckpt] # Checkpoint at the end of training
 
 [model]
