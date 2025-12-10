@@ -20,17 +20,6 @@ from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 class BaseDataConfig(BaseModel):
     """Base config for SFT data."""
 
-
-    name: Annotated[str, Field(description="Name or path of the HF dataset to use.")] = (
-        "PrimeIntellect/Reverse-Text-SFT"
-    )
-    split: Annotated[str, Field(description="Split to use from the HF dataset.")] = "train"
-    collate_mode: Annotated[Literal["padding", "packing"], Field(description="Collate mode to use.")] = "packing"
-    # Optional explicit packing length so users can decouple packing bins from seq_len.
-    # Defaults to legacy behavior if unset.
-    packing_seq_len: Annotated[int | None, Field(ge=1, description="Packed sequence length to target.")] = None
-    micro_batch_size: Annotated[int, Field(ge=1)] = 8
-
     batch_size: Annotated[int, Field(ge=1)] = 128
     seq_len: Annotated[int, Field(ge=1)] = 128
     pack_function: Literal["cat", "stack"] = "cat"
@@ -42,10 +31,6 @@ class BaseDataConfig(BaseModel):
             raise ValueError("Batch size must be divisible by micro batch size")
         if self.batch_size < self.micro_batch_size:
             raise ValueError("Batch size must be greater than or equal to micro batch size")
-        if self.packing_seq_len is not None and self.packing_seq_len < 1:
-            raise ValueError("packing_seq_len must be positive")
-        if self.packing_seq_len is not None and self.packing_seq_len < self.seq_len:
-            raise ValueError("packing_seq_len must be >= seq_len when configured")
         return self
 
 
@@ -75,6 +60,11 @@ class SFTDataConfig(BaseDataConfig):
     name: Annotated[str, Field(description="Name or path of the HF dataset to use.")] = (
         "PrimeIntellect/Reverse-Text-SFT"
     )
+    split: Annotated[str, Field(description="Split to use from the HF dataset.")] = "train"
+    # Optional explicit packing length so users can decouple packing bins from seq_len.
+    # Defaults to legacy behavior if unset.
+    packing_seq_len: Annotated[int | None, Field(ge=1, description="Packed sequence length to target.")] = None
+
     subsets: Annotated[list[str] | None, Field(description="Subsets to use from the HF dataset.")] = None
     splits: Annotated[list[str] | None, Field(description="Splits to use from the HF dataset.")] = None
     probabilities: Annotated[list[float] | None, Field(description="Probabilities to use for each subset/split.")] = (
@@ -113,6 +103,12 @@ class SFTDataConfig(BaseDataConfig):
                     raise ValueError(
                         "Number of probabilities must be equal to number of splits. Please specify a probability for each split."
                     )
+        return self
+
+    @model_validator(mode="after")
+    def validate_packing_seq_len(self):
+        if self.packing_seq_len is not None and self.packing_seq_len < self.seq_len:
+            raise ValueError("packing_seq_len must be >= seq_len when configured")
         return self
 
 

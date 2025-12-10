@@ -510,24 +510,6 @@ def cat_collate(samples: list[Sample]) -> Batch:
     }
 
 
-def setup_dataset(tokenizer: AutoTokenizer, config: DataConfig) -> IterableDataset:
-    if config.fake:
-        return FakeDataset(tokenizer, config.seq_len)
-    return SFTDataset(tokenizer, name=config.name, split=config.split)
-
-def setup_dataloader(dataset: IterableDataset, tokenizer: AutoTokenizer, config: DataConfig) -> DataLoader:
-    seq_len = (
-        config.packing_seq_len
-        if config.collate_mode == "packing" and config.packing_seq_len is not None
-        else (config.micro_batch_size * config.seq_len if config.collate_mode == "packing" else config.seq_len)
-    )
-    if config.collate_mode == "packing":
-        packing_dataset = PackingDataset(dataset, seq_len)
-        return DataLoader(packing_dataset, batch_size=1, collate_fn=collate)
-    padding_dataset = PaddingDataset(dataset, seq_len, tokenizer.pad_token_id)
-    return DataLoader(padding_dataset, batch_size=config.micro_batch_size, collate_fn=collate)
-
-
 def setup_and_interleave_datasets(
     dataset_name: str,
     subsets_and_splits: list[tuple[str | None, str]],
@@ -615,11 +597,12 @@ def setup_dataset(
 
 
 def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfigType) -> StatefulDataLoader:
+    pack_len = config.packing_seq_len or config.seq_len * config.micro_batch_size
     if config.pack_function == "stack":
-        stacking_dataset = StackDataset(dataset, config.seq_len * config.micro_batch_size)
+        stacking_dataset = StackDataset(dataset, pack_len)
         return StatefulDataLoader(stacking_dataset, batch_size=1, collate_fn=stack_collate)
     elif config.pack_function == "cat":
-        packing_dataset = CatDataset(dataset, config.seq_len * config.micro_batch_size)
+        packing_dataset = CatDataset(dataset, pack_len)
         return StatefulDataLoader(packing_dataset, batch_size=1, collate_fn=cat_collate)
     else:
         raise ValueError(f"Invalid pack function: {config.pack_function}")
