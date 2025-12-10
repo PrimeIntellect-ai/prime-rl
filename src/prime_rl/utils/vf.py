@@ -114,24 +114,27 @@ def to_serializable_state(state: vf.State) -> dict:
     serializable_state = cast(dict, state.copy())
 
     # This is a little bit of a hacky workaround to accommodate verifier's backwards compatibility with the old state object. Because we serialize, we cannot forward inputs anymore, so we populate the flatten input fields into the serialized state as-is
-    for field in state.INPUT_FIELDS:
-        if state.get(field):
-            serializable_state[field] = state[field]
-    serializable_state.pop("input")
+    if "input" in state:
+        input = serializable_state.pop("input")
+        for field, value in input.items():
+            serializable_state[field] = value
 
     if "trajectory" in state:
         serializable_state["trajectory"] = [to_serializable_trajectory_step(step) for step in state["trajectory"]]
+
     return serializable_state
 
 
-def from_serializable_state(state: dict) -> vf.State:
+def from_serializable_state(serializable_state: dict) -> vf.State:
     """Inverse of to_serializable_state."""
-    deserialized_state = vf.State(**state)
+    state = vf.State(**serializable_state)
 
     # Reverse of the logic in `to_serializable_state`
-    for field in deserialized_state.INPUT_FIELDS:
-        deserialized_state["input"][field] = state.pop(field)
+    for field in state.INPUT_FIELDS:
+        if field in state:
+            state["input"][field] = state.pop(field)
 
     if "trajectory" in state:
-        deserialized_state["trajectory"] = [from_serializable_trajectory_step(step) for step in state["trajectory"]]
-    return deserialized_state
+        state["trajectory"] = [from_serializable_trajectory_step(step) for step in state["trajectory"]]
+
+    return state
