@@ -151,7 +151,7 @@ class WandbMonitorConfig(BaseConfig):
     ] = None
 
 
-class WandbWithExtrasConfig(WandbConfig):
+class WandbWithExtrasConfig(WandbMonitorConfig):
     """Configures logging to Weights and Biases with extras."""
 
     log_extras: Annotated[
