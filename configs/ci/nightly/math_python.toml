@@ -6,10 +6,8 @@ max_steps = 500
 [model]
 name = "Qwen/Qwen3-4B-Instruct-2507"
 
-[model.ac]
+[trainer.model.ac]
 freq = 1
-
-[trainer]
 
 [orchestrator]
 batch_size = 512
