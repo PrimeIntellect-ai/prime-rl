@@ -84,6 +84,8 @@ class PrimeMonitor(Monitor):
         """Logs rollouts to Prime Intellect API."""
         if not self.is_master:
             return
+        if not self.enabled:
+            return
         if (
             not self.config
             or not self.config.log_extras
@@ -160,6 +162,8 @@ class PrimeMonitor(Monitor):
     def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:
         """Log distributions to Prime Intellect API."""
         if not self.is_master:
+            return
+        if not self.enabled:
             return
         if (
             not self.config
