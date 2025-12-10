@@ -1,0 +1,24 @@
+max_steps = 100
+
+[wandb]
+project = "math-python-debug"
+name = "math-python"
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[orchestrator]
+seq_len = 8192
+batch_size = 512
+rollouts_per_example = 16
+
+[[orchestrator.env]]
+id = "math-python"
+args = { difficulty_key = "avg@8_qwen3_4b_instruct_2507", min_avg_reward = 0.5 }
+
+[trainer] # Default trainer config
+
+[inference.model] # Default inference config
+enable_auto_tool_choice = true
+tool_call_parser = "hermes"
+max_model_len = 8192
