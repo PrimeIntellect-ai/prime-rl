@@ -1,5 +1,4 @@
 import os
-import warnings
 from argparse import Namespace
 from typing import Annotated, Literal
 
@@ -185,10 +184,6 @@ class InferenceConfig(BaseSettings):
             else:
                 raise ValueError(
                     f"max_lora_rank={original_rank} exceeds vLLM maximum of {VALID_VLLM_LORA_RANKS[-1]}"
-                )
-            if self.max_lora_rank != original_rank:
-                warnings.warn(
-                    f"vLLM max_lora_rank {original_rank} -> {self.max_lora_rank} (serving allocation only, adapter rank unchanged)"
                 )
         return self
 
