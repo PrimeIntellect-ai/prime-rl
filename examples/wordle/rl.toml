@@ -13,7 +13,7 @@ name = "wordle"
 name = "PrimeIntellect/Qwen3-1.7B-Wordle-SFT"
 
 [orchestrator]
-seq_len = 4096
+seq_len = 8192
 batch_size = 1024
 rollouts_per_example = 16
 
@@ -26,5 +26,4 @@ max_tokens = 1024
 
 [trainer] # Default trainer config
 
-[inference.model] # Default inference config
-max_model_len = 4096
+[inference] # Default inference config
