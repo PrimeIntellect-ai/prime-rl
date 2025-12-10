@@ -251,11 +251,10 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
         fix_model_post_empty(model)
     for module in model.modules():
         if hasattr(module, "_init_lora_parameters"):
-            # This is necessary to ensure that the same parameters are initialized for all dp_replicate ranks
-            generator = torch.Generator(device=model.device)
             if parallel_dims.dp_replicate_enabled:
-                generator.manual_seed(42 + parallel_dims.world_mesh["dp_replicate"].get_rank())
-            module._init_lora_parameters(generator=generator)
+                # We need to make sure we init the same across all dp_replicate ranks
+                raise NotImplementedError("LoRA initialization is not supported for DP replicate mode yet")
+            module._init_lora_parameters()
     logger.debug(f"Loaded weights using HF DCP in {time.perf_counter() - load_dcp_start_time:.2f} seconds")
 
 
