@@ -88,6 +88,7 @@ class PrimeMonitor(Monitor):
             return
         if (
             not self.config
+            or not isinstance(self.config, PrimeMonitorWithExtrasConfig)
             or not self.config.log_extras
             or not self.config.log_extras.samples
             or step % self.config.log_extras.interval != 0
@@ -167,6 +168,7 @@ class PrimeMonitor(Monitor):
             return
         if (
             not self.config
+            or not isinstance(self.config, PrimeMonitorWithExtrasConfig)
             or not self.config.log_extras
             or not self.config.log_extras.distributions
             or step % self.config.log_extras.interval != 0
