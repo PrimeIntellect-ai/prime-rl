@@ -159,13 +159,6 @@ class PrimeMonitorConfig(BaseConfig):
         ),
     ] = "PRIME_INTELLECT_API_KEY"
 
-    run_name: Annotated[
-        str | None,
-        Field(
-            description="The run name for Prime Intellect monitoring. If None, a default name will be used.",
-        ),
-    ] = None
-
 
 class PrimeMonitorWithExtrasConfig(PrimeMonitorConfig):
     """Configures logging to Prime Intellect API with extras."""
@@ -176,3 +169,9 @@ class PrimeMonitorWithExtrasConfig(PrimeMonitorConfig):
             description="Configuration for logging extras. If None, no extras are logged.",
         ),
     ] = LogExtrasConfig()
+
+
+class HeartbeatConfig(BaseConfig):
+    """Configures the heartbeat for BetterStack."""
+
+    url: Annotated[str, Field(description="The URL to send the heartbeat to.")]

@@ -3,10 +3,10 @@ from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
 
-from prime_rl.trainer.config import HeartbeatConfig
 from prime_rl.transport.config import FileSystemTransportConfig, TransportConfigType
 from prime_rl.utils.config import (
     ClientConfig,
+    HeartbeatConfig,
     LogConfig,
     ModelConfig,
     PrimeMonitorWithExtrasConfig,
