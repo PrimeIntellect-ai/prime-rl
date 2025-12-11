@@ -26,7 +26,7 @@ from transformers.utils import TransformersKwargs, auto_docstring
 from transformers.utils.deprecation import deprecate_kwarg
 
 from prime_rl.trainer.models.afmoe.configuration_afmoe import AfMoeConfig
-from prime_rl.trainer.models.afmoe.converting_af_moe import (
+from prime_rl.trainer.models.afmoe.converting_afmoe import (
     convert_hf_layer_to_tt,
     convert_hf_to_tt_moe,
     convert_tt_layer_to_hf,
@@ -284,8 +284,8 @@ class AfMoeForCausalLM(AfMoePreTrainedModel, GenerationMixin):
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
-        assert use_cache is None, "use_cache is not supported for custom af_moe for now"
-        assert past_key_values is None, "past_key_values is not supported for custom af_moe for now"
+        assert use_cache is None, "use_cache is not supported for custom afmoe for now"
+        assert past_key_values is None, "past_key_values is not supported for custom afmoe for now"
 
         if position_ids is None:
             if inputs_embeds is not None:
