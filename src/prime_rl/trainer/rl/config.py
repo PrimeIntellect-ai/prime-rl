@@ -10,8 +10,9 @@ from prime_rl.trainer.config import (
     ModelConfig,
     OptimizerConfigType,
     SchedulerConfigType,
+    TokenizerConfig,
 )
-from prime_rl.utils.config import LogConfig, WandbMonitorConfig
+from prime_rl.utils.config import HeartbeatConfig, LogConfig, WandbConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
@@ -39,6 +40,7 @@ class FakeDataLoaderConfig(BaseConfig):
     """Configures a fake data loader sampling random micro batches for debugging."""
 
     batch_size: Annotated[int, Field(ge=1)] = 2
+    seq_len: Annotated[int, Field(ge=1)] = 128
 
 
 class DataLoaderConfig(BaseConfig):
@@ -83,6 +85,9 @@ class RLTrainerConfig(BaseSettings):
     # The model configuration
     model: ModelConfig = ModelConfig()
 
+    # The tokenizer configuration
+    tokenizer: TokenizerConfig = TokenizerConfig()
+
     # The data configuration
     data: DataLoaderConfig = DataLoaderConfig()
 
@@ -106,7 +111,7 @@ class RLTrainerConfig(BaseSettings):
     log: LogConfig = LogConfig()
 
     # The wandb configuration
-    wandb: WandbMonitorConfig | None = None
+    wandb: WandbConfig | None = None
 
     output_dir: Annotated[
         Path,
@@ -148,13 +153,9 @@ class RLTrainerConfig(BaseSettings):
         ),
     ] = 600
 
-    max_concurrent_runs: Annotated[
-        int,
-        Field(
-            ge=1,
-            description="The maximum number of concurrent runs to allow. If 1, then only one run will be allowed at a time.",
-        ),
-    ] = 2
+    heartbeat: Annotated[
+        HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
+    ] = None
 
     @model_validator(mode="after")
     def auto_setup_bench(self):
@@ -162,16 +163,8 @@ class RLTrainerConfig(BaseSettings):
             self.max_steps = 4  # 1 Warmup + 3 Benchmark
             if not self.data.fake:
                 self.data.fake = FakeDataLoaderConfig()
-            if self.wandb:  # Do not log extras
-                self.wandb.log_extras = None
             if self.ckpt:  # Do not checkpoint
                 self.ckpt = None
-        return self
-
-    @model_validator(mode="after")
-    def disable_logging_wandb_samples(self):
-        if self.wandb and self.wandb.log_extras:
-            self.wandb.log_extras.samples = False
         return self
 
     @model_validator(mode="after")
@@ -215,4 +208,12 @@ class RLTrainerConfig(BaseSettings):
         if self.weight_broadcast.type == "nccl" and self.weight_broadcast.adapter_only:
             # TODO: Support this
             raise ValueError("NCCL weight broadcast does not support LoRA yet.")
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_tokenizer(self):
+        if self.tokenizer.name is None:
+            self.tokenizer.name = self.model.name
+        if self.tokenizer.trust_remote_code is None:
+            self.tokenizer.trust_remote_code = self.model.trust_remote_code
         return self

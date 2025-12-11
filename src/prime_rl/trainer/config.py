@@ -135,8 +135,6 @@ class ModelConfig(BaseConfig):
         ),
     ] = "Qwen/Qwen3-0.6B"
 
-    seq_len: Annotated[int, Field(description="The sequence length to use for the model.")] = 2048
-
     attn: Annotated[AttnImplementation, Field(description="The attention implementation to use.")] = "flash_attention_2"
 
     compile: Annotated[
@@ -276,6 +274,29 @@ class ModelConfig(BaseConfig):
         if self.debug.random_init and not self.load_using_meta:
             raise ValueError("Random initialize is only supported when loading with meta.")
         return self
+
+
+class TokenizerConfig(BaseConfig):
+    """Configuration for the tokenizer."""
+
+    name: Annotated[
+        str | None,
+        Field(description="The name or path of the tokenizer to use. If None, will use the model's default tokenizer."),
+    ] = None
+
+    trust_remote_code: Annotated[
+        bool | None,
+        Field(
+            description="Whether to trust remote code for tokenizer initialization. If None, will use the model's default trust remote code setting.",
+        ),
+    ] = None
+
+    chat_template: Annotated[
+        str | None,
+        Field(
+            description="The chat template to use for the tokenizer. If None, will use the tokenizer's default chat template."
+        ),
+    ] = None
 
 
 class ConstantSchedulerConfig(BaseModel):
@@ -422,3 +443,5 @@ class CheckpointConfig(BaseConfig):
             description="Whether to skip loading the dataloader from checkpoint.",
         ),
     ] = False
+
+

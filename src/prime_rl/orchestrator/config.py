@@ -1,10 +1,10 @@
 from pathlib import Path
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
 
-from prime_rl.trainer.config import HeartbeatConfig
 from prime_rl.utils.config import (
+    HeartbeatConfig,
     ClientConfig,
     LogConfig,
     ModelConfig,
@@ -54,6 +54,15 @@ class SamplingConfig(BaseConfig):
             description="Random seed to use for sampling. If None, no seeding is used.",
         ),
     ] = None
+
+    # Strictly speaking, extra_body is not a sampling parameter, but it is the
+    # easiest way to pass arbitrary extra parameters to the server via verifiers
+    extra_body: Annotated[
+        dict[str, Any],
+        Field(
+            description="Extra body to pass with each request to the inference server. By default, it is set to an empty dictionary.",
+        ),
+    ] = {}
 
 
 class EvalSamplingConfig(BaseConfig):
@@ -123,6 +132,15 @@ class EvalSamplingConfig(BaseConfig):
             description="Random seed to use for sampling. If None, no seeding is used. Defaults to None, which means we fall back to the inference server's default value.",
         ),
     ] = None
+
+    # Strictly speaking, extra_body is not a sampling parameter, but it is the
+    # easiest way to pass arbitrary extra parameters to the server via verifiers
+    extra_body: Annotated[
+        dict[str, Any],
+        Field(
+            description="Extra body to use for the OpenAI API. By default, it is set to an empty dictionary.",
+        ),
+    ] = {}
 
 
 class EvalSaveDiskConfig(BaseConfig):
@@ -200,6 +218,13 @@ class EvalEnvConfig(EnvConfig):
             description="Number of samples to generate per example for each environment. If not set, will use 'rollouts_per_example' from main config."
         ),
     ] = None
+
+    skip_first: Annotated[
+        int,
+        Field(
+            description="Number of examples to skip from the beginning of the dataset.",
+        ),
+    ] = 0
 
 
 class ValConfig(BaseConfig):
@@ -410,7 +435,7 @@ class OrchestratorConfig(BaseSettings):
     log: LogConfig = LogConfig()
 
     # The wandb configuration
-    wandb: WandbMonitorConfig | None = None
+    wandb: WandbWithExtrasConfig | None = None
 
     # The prime monitor configuration
     prime: PrimeMonitorWithExtrasConfig | None = None
@@ -425,12 +450,19 @@ class OrchestratorConfig(BaseSettings):
         FileSystemWeightBroadcastConfig()
     )
 
+    trajectory_strategy: Annotated[
+        Literal["interleaved", "branching"],
+        Field(
+            description="Strategy to use for building training examples from multi-turn rollouts. If interleaved, will try to concatenate consecutive trajectory steps into a single training example. If branching, will create a separate training example for each trajectory step."
+        ),
+    ] = "interleaved"
+
     output_dir: Annotated[
         Path,
         Field(
             description="Directory to write outputs to. Will be populated with checkpoints, weights, rollouts and logs as subdirectories. Should be set to a persistent directory with enough disk space. This value should be distinct across experiments running on a single node. See the README for more details."
         ),
-    ] = Path("outputs/run_default")
+    ] = Path("outputs")
 
     max_concurrent: Annotated[
         int | None,
@@ -471,20 +503,6 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = True
 
-    mask_truncated_completions: Annotated[
-        bool,
-        Field(
-            description="Whether to mask truncated completions from the loss.",
-        ),
-    ] = False
-
-    zero_truncated_completions: Annotated[
-        bool,
-        Field(
-            description="Whether to override reward scores with 0 for truncated completions.",
-        ),
-    ] = False
-
     # TODO(Mika): This should be automatic from the number of ZMQ connections
     num_train_workers: Annotated[
         int,
@@ -519,7 +537,7 @@ class OrchestratorConfig(BaseSettings):
         Field(
             description="Whether to strictly enforce the max async level. If True, will always ensure that the policy used for generating rollouts is exactly `max_async_level` steps ahead of training. If False, any policy that is at most `max_async_level` steps ahead of training is allowed, i.e. we always use the latest available policy.",
         ),
-    ] = True
+    ] = False
 
     bench: Annotated[
         bool,
@@ -535,6 +553,10 @@ class OrchestratorConfig(BaseSettings):
         Field(
             description="Name of the LoRA to use for the orchestrator. If None, will not use any LoRA.",
         ),
+    ] = None
+
+    heartbeat: Annotated[
+        HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
     ] = None
 
     @model_validator(mode="after")

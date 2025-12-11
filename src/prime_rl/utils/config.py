@@ -1,6 +1,6 @@
 from typing import Annotated, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field
 
 from prime_rl.utils.pydantic_config import BaseConfig
 
@@ -52,19 +52,6 @@ class ClientConfig(BaseConfig):
         ),
     ] = {}
 
-    server_type: Annotated[
-        ServerType,
-        Field(
-            description="Type of inference server that the client is connected to. Can be 'vllm' or 'openai'. Defaults to vLLM, which is our default client for training.",
-        ),
-    ] = "vllm"
-
-    @model_validator(mode="after")
-    def auto_setup_server_type(self):
-        if any(base_url == "https://api.openai.com/v1" for base_url in self.base_url):
-            self.server_type = "openai"
-        return self
-
 
 class LogConfig(BaseConfig):
     """Configures the logger."""
@@ -111,13 +98,6 @@ class LogExtrasConfig(BaseConfig):
         ),
     ] = True
 
-    distributions: Annotated[
-        bool,
-        Field(
-            description="Whether to log distributions (like rewards, advantages, etc.) to W&B tables.",
-        ),
-    ] = True
-
     interval: Annotated[
         int,
         Field(
@@ -127,7 +107,7 @@ class LogExtrasConfig(BaseConfig):
     ] = 10
 
 
-class WandbMonitorConfig(BaseConfig):
+class WandbConfig(BaseConfig):
     """Configures logging to Weights and Biases."""
 
     # Shared configs (May be overwritten by WandbConfig from `rl.py`)
@@ -151,7 +131,7 @@ class WandbMonitorConfig(BaseConfig):
     ] = None
 
 
-class WandbWithExtrasConfig(WandbMonitorConfig):
+class WandbWithExtrasConfig(WandbConfig):
     """Configures logging to Weights and Biases with extras."""
 
     log_extras: Annotated[
@@ -179,13 +159,6 @@ class PrimeMonitorConfig(BaseConfig):
         ),
     ] = "PRIME_INTELLECT_API_KEY"
 
-    run_name: Annotated[
-        str | None,
-        Field(
-            description="The run name for Prime Intellect monitoring. If None, a default name will be used.",
-        ),
-    ] = None
-
 
 class PrimeMonitorWithExtrasConfig(PrimeMonitorConfig):
     """Configures logging to Prime Intellect API with extras."""
@@ -196,3 +169,9 @@ class PrimeMonitorWithExtrasConfig(PrimeMonitorConfig):
             description="Configuration for logging extras. If None, no extras are logged.",
         ),
     ] = LogExtrasConfig()
+
+
+class HeartbeatConfig(BaseConfig):
+    """Configures the heartbeat for BetterStack."""
+
+    url: Annotated[str, Field(description="The URL to send the heartbeat to.")]
