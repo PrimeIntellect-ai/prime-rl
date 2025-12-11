@@ -16,8 +16,7 @@ class FileSystemTrainingBatchSender(TrainingBatchSender):
 
     def send(self, batch: TrainingBatch) -> None:
         """Send a batch by writing it to disk"""
-        step = batch.step
-        step_path = get_step_path(self.rollout_dir, step)
+        step_path = get_step_path(self.rollout_dir, batch.step)
         step_path.mkdir(parents=True, exist_ok=True)
 
         buffer = self.encoder.encode(batch)

@@ -2,7 +2,7 @@ from copy import deepcopy
 
 import verifiers as vf
 
-from prime_rl.orchestrator.types import TrainingExample
+from prime_rl.transport import TrainingExample
 from prime_rl.utils.logger import get_logger
 
 
@@ -43,16 +43,16 @@ def interleave_rollout(state: vf.State) -> list[TrainingExample]:
 
         # Extend the completion with the new prompt
         prompt_ids = deepcopy(prev_trajectory_and_new_prompt_ids[len(prefix_tokens) :])
-        interleaved_rollout["completion_ids"].extend(prompt_ids)
-        interleaved_rollout["completion_mask"].extend([0] * len(prompt_ids))
-        interleaved_rollout["completion_logprobs"].extend([0.0] * len(prompt_ids))
+        interleaved_rollout.completion_ids.extend(prompt_ids)
+        interleaved_rollout.completion_mask.extend([0] * len(prompt_ids))
+        interleaved_rollout.completion_logprobs.extend([0.0] * len(prompt_ids))
 
         # Extend the completion with the new completion tokens
         completion_ids = deepcopy(tokens["completion_ids"])
         completion_logprobs = deepcopy(tokens["completion_logprobs"])
-        interleaved_rollout["completion_ids"].extend(completion_ids)
-        interleaved_rollout["completion_mask"].extend([1] * len(completion_ids))
-        interleaved_rollout["completion_logprobs"].extend(completion_logprobs)
+        interleaved_rollout.completion_ids.extend(completion_ids)
+        interleaved_rollout.completion_mask.extend([1] * len(completion_ids))
+        interleaved_rollout.completion_logprobs.extend(completion_logprobs)
 
         # New prefix is the the current prompt and completion ids concatenated
         prefix_tokens = tokens["prompt_ids"] + tokens["completion_ids"]

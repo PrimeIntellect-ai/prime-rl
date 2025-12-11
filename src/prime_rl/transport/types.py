@@ -2,7 +2,7 @@ import msgspec
 
 
 # Orchestrator -> Packer
-class TrainingExample(msgspec.Struct, array_like=True, gc=False):
+class TrainingExample(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A single training example."""
 
     prompt_ids: list[int]
@@ -10,7 +10,7 @@ class TrainingExample(msgspec.Struct, array_like=True, gc=False):
     completion_ids: list[int]
     completion_mask: list[int]
     completion_logprobs: list[float]
-    advantage: float
+    advantage: float | None = None
 
 
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False):
