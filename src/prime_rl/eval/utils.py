@@ -226,13 +226,14 @@ async def run_eval(
 
     # Determine streaming save path
     stream_save = save_config.stream
-    path_to_save = get_results_path(env_name_or_id, model_config.name, base_path=output_dir) / "results.jsonl"
+    base_path = get_results_path(env_name_or_id, model_config.name, base_path=output_dir)
     if resume_uuid is not None:
         if not stream_save:
             logger.warning("Resume requested but stream=False. Enabling streaming saves for resume to work.")
             stream_save = True
-        path_to_save = path_to_save.parent / resume_uuid / "results.jsonl"  # replace the uuid in the path
+        path_to_save = base_path.parent / resume_uuid / "results.jsonl"  # replace the uuid in the path
     else:
+        path_to_save = base_path / "results.jsonl"
         if stream_save:
             path_to_save.parent.mkdir(parents=True, exist_ok=True)
 
