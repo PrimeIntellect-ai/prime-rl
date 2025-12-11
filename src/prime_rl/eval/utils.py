@@ -1,6 +1,8 @@
 import asyncio
 import json
+import re
 import time
+from copy import deepcopy
 from itertools import cycle
 from pathlib import Path
 from typing import Any
@@ -10,15 +12,16 @@ import numpy as np
 import pandas as pd
 import verifiers as vf
 from huggingface_hub import whoami
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, BadRequestError
 from prime_evals import AsyncEvalsClient
+from tenacity import RetryCallState, retry, stop_after_attempt, wait_exponential
 from tqdm.asyncio import tqdm
 from verifiers import load_environment
 from verifiers.envs.environment import get_results_path
 from verifiers.utils.eval_utils import get_hf_hub_dataset_name, make_dataset, sanitize_metadata, save_to_disk
 
 from prime_rl.eval.config import OfflineEvalConfig
-from prime_rl.orchestrator.config import EvalConfig, EvalSamplingConfig, EvalSaveConfig, ModelConfig
+from prime_rl.orchestrator.config import EvalConfig, EvalSamplingConfig, EvalSaveConfig, ModelConfig, RetryConfig
 from prime_rl.synthesize.utils import merge_reasoning_content
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor import get_monitor
@@ -139,6 +142,32 @@ async def save_result(result_dict: dict, save_file: Path):
             await f.write(json.dumps(result_dict) + "\n")
 
 
+def log_retry_attempt(retry_state: RetryCallState) -> None:
+    """Log retry attempts at WARNING level using the global logger."""
+    logger = get_logger()
+    exception = retry_state.outcome.exception()
+    wait_time = retry_state.next_action.sleep
+    logger.warning(
+        f"Retrying {retry_state.fn.__name__} in {wait_time:.1f} seconds as it raised {exception.__class__.__name__}: {exception}"
+    )
+
+
+def parse_and_calculate_max_tokens(error_message: str) -> int | None:
+    """
+    Example error message:
+    "This endpoint's maximum context length is 131072 tokens. However, you requested
+    about 131419 tokens (347 of text input, 131072 in the output)."
+    """
+    context_match = re.search(r"maximum context length is (\d+) tokens", error_message)
+    prompt_match = re.search(r"(\d+) of text input", error_message)
+
+    if context_match and prompt_match:
+        context_length = int(context_match.group(1))
+        prompt_tokens = int(prompt_match.group(1))
+        return context_length - prompt_tokens
+    return None
+
+
 async def generate_and_save_rollout(
     client: AsyncOpenAI,
     env: vf.Environment,
@@ -148,14 +177,47 @@ async def generate_and_save_rollout(
     sampling_args: dict,
     save_file: Path | None,
     reasoning_field: str,
+    retry_config: RetryConfig,
     pbar: tqdm,
     rewards_accumulator: list,
     rewards_lock: asyncio.Lock,
 ) -> vf.State:
     """Generate and optionally save a single rollout, updating progress bar per-rollout."""
     logger = get_logger()
+
+    @retry(
+        stop=stop_after_attempt(retry_config.max_attempts),
+        wait=wait_exponential(
+            multiplier=retry_config.wait_multiplier, min=retry_config.wait_min, max=retry_config.wait_max
+        ),
+        before_sleep=log_retry_attempt,
+        reraise=retry_config.reraise,
+    )
+    async def _generate_rollout(
+        client: AsyncOpenAI,
+        env: vf.Environment,
+        model_name: str,
+        example: dict,
+        sampling_args: dict,
+    ) -> vf.State:
+        """Asynchronously generate and score a single rollout."""
+        logger = get_logger()
+        try:
+            return await generate_rollout(client, env, model_name, example, sampling_args)
+        except BadRequestError as e:
+            # Check if this is a context length error and retry with adjusted max_tokens
+            error_message = str(e)
+            new_max_tokens = parse_and_calculate_max_tokens(error_message)
+
+            if new_max_tokens is not None:
+                logger.warning(f"Context length error: reducing max_tokens to {new_max_tokens}.")
+                retry_sampling_args = deepcopy(sampling_args)
+                retry_sampling_args["max_tokens"] = new_max_tokens
+                return await generate_rollout(client, env, model_name, example, retry_sampling_args)
+            raise
+
     try:
-        state = await generate_rollout(client, env, model_name, example, sampling_args)
+        state = await _generate_rollout(client, env, model_name, example, sampling_args)
 
         # Save with rollout_idx if streaming saves enabled
         if save_file is not None:
@@ -190,6 +252,7 @@ async def run_eval(
     model_config: ModelConfig,
     sampling_config: EvalSamplingConfig,
     save_config: EvalSaveConfig,
+    retry_config: RetryConfig,
     evals_client: AsyncEvalsClient,
     step: int | None = None,
     resume_uuid: str | None = None,
@@ -262,6 +325,7 @@ async def run_eval(
                 sampling_args,
                 path_to_save if save_config.stream else None,
                 reasoning_field,
+                retry_config,
                 pbar,
                 rewards_accumulator,
                 rewards_lock,
@@ -417,6 +481,7 @@ async def run_evals(
                 model_config=model_config,
                 sampling_config=sampling_config,
                 save_config=eval_config.save,
+                retry_config=eval_config.retry,
                 evals_client=evals_client,
                 ckpt_step=ckpt_step,
                 step=step,

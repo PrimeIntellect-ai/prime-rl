@@ -195,6 +195,49 @@ class EvalSaveConfig(BaseConfig):
     ] = False
 
 
+class RetryConfig(BaseConfig):
+    """Configures retry behavior for rollout generation."""
+
+    max_attempts: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Maximum number of retry attempts.",
+        ),
+    ] = 10
+
+    wait_multiplier: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="Multiplier for exponential backoff wait time.",
+        ),
+    ] = 1.0
+
+    wait_min: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="Minimum wait time in seconds between retries.",
+        ),
+    ] = 1.0
+
+    wait_max: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="Maximum wait time in seconds between retries.",
+        ),
+    ] = 60.0
+
+    reraise: Annotated[
+        bool,
+        Field(
+            description="Whether to reraise the exception after all retries are exhausted.",
+        ),
+    ] = True
+
+
 class EnvConfig(BaseConfig):
     """Configures an environment for training."""
 
@@ -250,6 +293,10 @@ class EvalConfig(BaseConfig):
     save: EvalSaveConfig = Field(
         default_factory=EvalSaveConfig,
         description="Configures how to save the eval results.",
+    )
+    retry: RetryConfig = Field(
+        default_factory=RetryConfig,
+        description="Configures retry behavior for rollout generation.",
     )
     num_examples: Annotated[int, Field(description="Number of examples to evaluate per environment.")] = -1
     rollouts_per_example: Annotated[
