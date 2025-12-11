@@ -38,7 +38,7 @@ def get_model_pairs():
     config._attn_implementation = "sdpa"
 
     with torch.device("cuda"), default_dtype(torch.float32):
-        model1 = AutoModelForCausalLM._from_config(config, trust_remote_code=True)
+        model1 = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
         model2 = PrimeRLAfMoeForCausalLM._from_config(config)
 
     # Copy weights from model1 to model2 to ensure they're identical
