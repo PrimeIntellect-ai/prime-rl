@@ -1,6 +1,7 @@
 import pytest
 import torch
 from torch import nn
+from transformers import AfmoeForCausalLM as HFAfmoeForCausalLM
 
 from prime_rl.trainer.models.afmoe import AfMoeConfig
 from prime_rl.trainer.models.afmoe import AfMoeForCausalLM as PrimeRLAfMoeForCausalLM
@@ -35,23 +36,23 @@ def get_model_pairs():
         use_grouped_mm=True,
     )
     config._attn_implementation = "sdpa"
-    
+
     with torch.device("cuda"), default_dtype(torch.float32):
-        model1 = PrimeRLAfMoeForCausalLM._from_config(config)
+        model1 = HFAfmoeForCausalLM._from_config(config, trust_remote_code=True)
         model2 = PrimeRLAfMoeForCausalLM._from_config(config)
-    
+
     # Copy weights from model1 to model2 to ensure they're identical
     with torch.no_grad():
         state_dict = model1.state_dict()
         model2.load_state_dict(state_dict)
-    
+
     return model1, model2
 
 
 def test_afmoe_attn_only():
     """Test attention-only forward pass."""
     model1, model2 = get_model_pairs()
-    
+
     # Replace MLP with Identity to test only attention
     for layer in model1.model.layers:
         layer.mlp = nn.Identity()
@@ -139,24 +140,24 @@ def test_afmoe_conversion():
     with torch.device("cuda"), default_dtype(torch.float32):
         # Get state dict in TT format
         tt_state_dict = model1.state_dict()
-        
+
         # Convert TT -> HF
         hf_state_dict = model1.convert_to_hf(tt_state_dict.copy())
-        
+
         # Convert HF -> TT
         tt_state_dict_2 = model1.convert_to_prime(hf_state_dict.copy())
-        
+
         # Create a new model and load the converted state dict
         model2 = PrimeRLAfMoeForCausalLM._from_config(model1.config)
         model2.load_state_dict(tt_state_dict_2)
-        
+
         # Test forward pass with converted weights
         input_ids = torch.randint(0, model1.config.vocab_size, (1, 100))
         position_ids = torch.arange(1, 101).unsqueeze(0)
-        
+
         output1 = model1(input_ids, position_ids)
         output2 = model2(input_ids, position_ids)
-        
+
         logits_diff = output1.logits - output2.logits
         assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=2e-2), (
             f"Max logits diff after conversion: {logits_diff.abs().max()}"
@@ -188,10 +189,10 @@ def test_afmoe_dense_vs_moe_layers():
         use_grouped_mm=True,
     )
     config._attn_implementation = "sdpa"
-    
+
     with torch.device("cuda"), default_dtype(torch.float32):
         model = PrimeRLAfMoeForCausalLM._from_config(config)
-    
+
     # Check that first num_dense_layers are dense MLP
     for i in range(config.num_dense_layers):
         assert not hasattr(model.model.layers[i].mlp, "experts"), (
@@ -200,7 +201,7 @@ def test_afmoe_dense_vs_moe_layers():
         assert isinstance(model.model.layers[i].mlp, nn.Module), (
             f"Layer {i} should have MLP"
         )
-    
+
     # Check that remaining layers are MoE
     for i in range(config.num_dense_layers, config.num_hidden_layers):
         assert hasattr(model.model.layers[i].mlp, "experts"), (
