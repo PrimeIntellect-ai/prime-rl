@@ -38,7 +38,7 @@ def test_state_dict_keys_without_prefix(lora_layer: LoRALinear) -> None:
 def test_base_layer_params_frozen(lora_layer: LoRALinear) -> None:
     """Base layer parameters should have requires_grad=False."""
     for name, param in lora_layer.named_parameters():
-        if name in ("weight", "bias"):
+        if name not in ("lora_A", "lora_B"):
             assert not param.requires_grad, f"Base layer param '{name}' should be frozen"
 
 
