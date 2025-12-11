@@ -48,7 +48,6 @@ class PrimeMonitor(Monitor):
 
         self.api_key = api_key
         self.api_endpoint = config.api_endpoint
-        self.run_name = config.run_name or "prime-rl-run"
 
         # Get run_id from environment variable
         run_id = os.getenv("RUN_ID")
