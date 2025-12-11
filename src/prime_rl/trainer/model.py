@@ -47,18 +47,24 @@ def is_tt_moe_model(model: nn.Module) -> bool:
     return hasattr(model.config, "num_experts") or hasattr(model.config, "n_routed_experts")
 
 
-def get_load_balance_stats(model: nn.Module, reset_stats: bool = True) -> dict[str, Tensor | None]:
+def get_load_balance_stats(
+    model: nn.Module, reset_stats: bool = True, try_to_avoid_padding_experts: bool = True
+) -> dict[str, Tensor | None]:
     per_layer_max_vio = []
     for transformer_block in model.model.layers:
         # This is necessary for models that have mixed dense layers
         if not hasattr(transformer_block.mlp, "tokens_per_expert"):
             continue
-        tokens_per_expert = transformer_block.mlp.tokens_per_expert
+        tokens_per_expert: torch.Tensor = transformer_block.mlp.tokens_per_expert
+        if try_to_avoid_padding_experts:
+            tokens_per_expert = tokens_per_expert.sort(dim=0, descending=True).values[
+                transformer_block.mlp.router.top_k :
+            ]
         balanced_load = tokens_per_expert.mean()
         max_vio = (tokens_per_expert.max() - balanced_load) / balanced_load
         per_layer_max_vio.append(max_vio.item())
         if reset_stats:
-            tokens_per_expert.zero_()
+            transformer_block.mlp.tokens_per_expert.zero_()
     if len(per_layer_max_vio) == 0:
         return {"max_vio": None}
     return {"max_vio": torch.tensor(per_layer_max_vio, device=torch.device("cuda"))}

@@ -48,7 +48,9 @@ class FileSystemWeightBroadcast(WeightBroadcast):
 
             # Save weights to shared filesystem
             save_dir = get_step_path(self.broadcast_dir, step)
-            save_state_dict(state_dict, save_dir, self.save_format, self.save_sharded, adapter=adapter_only)
+            save_state_dict(
+                state_dict, save_dir, self.save_format, self.save_sharded and not adapter_only, adapter=adapter_only
+            )
 
             if adapter_only:
                 save_lora_config(self.lora_config, model, save_dir)

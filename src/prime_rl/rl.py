@@ -66,7 +66,7 @@ class SharedWandbConfig(BaseSettings):
 class SharedCheckpointConfig(BaseSettings):
     """Configures shared checkpoint configs."""
 
-    interval: Annotated[int | None, Field(description="The interval at which to save checkpoints.")] = 50
+    interval: Annotated[int | None, Field(description="The interval at which to save checkpoints.")] = None
 
     resume_step: Annotated[
         int | None, Field(description="The step to resume from. If None, will not resume from a checkpoint.")
@@ -365,6 +365,27 @@ class RLConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_lora(self):
+        if self.trainer.model.experimental.lora is not None:
+            if self.trainer.weight_broadcast.type == "nccl":
+                raise ValueError("NCCL weight broadcast does not support LoRA yet.")
+            self.trainer.weight_broadcast.adapter_only = True
+            if self.orchestrator.lora_name is None:
+                lora_name = (
+                    f"r{self.trainer.model.experimental.lora.rank}-a{self.trainer.model.experimental.lora.alpha}"
+                )
+                self.orchestrator.lora_name = lora_name
+            if self.inference is not None:
+                self.inference.enable_lora = True
+                self.inference.max_lora_rank = self.trainer.model.experimental.lora.rank
+            else:
+                warnings.warn(
+                    "LoRA is enabled, but inference is not configured. When manually starting the inference server, make sure to set `--enable_lora` and `--max-lora-rank`."
+                )
+
+        return self
+
+    @model_validator(mode="after")
     def warn_wandb_resume_id_missing(self):
         if self.trainer.ckpt is not None and self.trainer.ckpt.resume_step is not None:
             if self.trainer.wandb and not self.trainer.wandb.id:
@@ -397,7 +418,7 @@ def cleanup_processes(processes: list[Popen]):
         if process.poll() is None:  # Process is still running
             process.terminate()
             try:
-                process.wait(timeout=5)
+                process.wait(timeout=60)  # 60 seconds to terminate gracefully
             except subprocess.TimeoutExpired:
                 process.kill()
 

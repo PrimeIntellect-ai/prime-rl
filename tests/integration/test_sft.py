@@ -1,115 +1,111 @@
+from functools import partial
 from pathlib import Path
 from typing import Callable
 
 import pytest
 
-from tests import Command, Environment, ProcessResult
+from tests.conftest import ProcessResult
+from tests.utils import check_number_goes_up_or_down, strip_escape_codes
 
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
 
 TIMEOUT = 300  # 5 minutes
-ENV = {"CUDA_VISIBLE_DEVICES": "1"}
-SFT_CMD = ["uv", "run", "sft", "@", "configs/reverse_text/sft/train.toml", "--max-steps", "10", "--ckpt"]
-SFT_RESUME_CMD = [
-    "uv",
-    "run",
-    "sft",
-    "@",
-    "configs/reverse_text/sft/train.toml",
-    "--max-steps",
-    "20",
-    "--ckpt.resume-step",
-    "10",
-]
 
 
 @pytest.fixture(scope="module")
-def wandb_project(username: str) -> str:
-    project = "ci-reverse-text-sft"
-    if username != "CI_RUNNER":
-        project += "-local"
-    return project
+def wandb_name(branch_name: str) -> str:
+    """Fixture for W&B name for SFT CI integration tests."""
+    return f"test-sft-{branch_name}"
 
 
 @pytest.fixture(scope="module")
 def sft_process(
-    run_process: Callable[[Command, Environment, int], ProcessResult],
-    output_dir: Path,
+    run_process: Callable[..., ProcessResult],
     wandb_project: str,
-    branch_name: str,
-    commit_hash: str,
+    wandb_name: str,
+    output_dir: Path,
 ) -> ProcessResult:
-    wandb_name = f"{branch_name}-{commit_hash}"
+    """Fixture for running SFT CI integration test"""
+    cmd = [
+        "uv",
+        "run",
+        "torchrun",
+        "--local-ranks-filter",
+        "0",
+        "--nproc-per-node",
+        "2",
+        "src/prime_rl/trainer/sft/train.py",
+        "@",
+        "configs/ci/integration/sft/start.toml",
+        "--wandb.project",
+        wandb_project,
+        "--wandb.name",
+        wandb_name,
+        "--output-dir",
+        output_dir.as_posix(),
+    ]
 
-    return run_process(
-        SFT_CMD
-        + [
-            "--wandb.project",
-            wandb_project,
-            "--wandb.name",
-            wandb_name,
-            "--output-dir",
-            output_dir.as_posix(),
-        ],
-        ENV,
-        TIMEOUT,
-    )
+    return run_process(cmd, timeout=TIMEOUT)
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def sft_resume_process(
     sft_process,  # Resume training can only start when regular SFT process is finished
-    run_process: Callable[[Command, Environment, int], ProcessResult],
-    output_dir: Path,
+    run_process: Callable[..., ProcessResult],
     wandb_project: str,
-    branch_name: str,
-    commit_hash: str,
-) -> ProcessResult:
-    wandb_name = f"{branch_name}-{commit_hash}-resume"
-
-    return run_process(
-        SFT_RESUME_CMD
-        + [
-            "--wandb.project",
-            wandb_project,
-            "--wandb.name",
-            wandb_name,
-            "--output-dir",
-            output_dir.as_posix(),
-        ],
-        ENV,
-        TIMEOUT,
-    )
-
-
-SFT_CMD_MOE = ["uv", "run", "sft", "@", "configs/debug/moe/sft/train.toml"]
-
-
-@pytest.fixture
-def sft_moe_process(
-    run_process: Callable[[Command, Environment, int], ProcessResult],
+    wandb_name: str,
     output_dir: Path,
 ) -> ProcessResult:
-    return run_process(
-        SFT_CMD_MOE
-        + [
-            "--output-dir",
-            output_dir.as_posix(),
-        ],
-        ENV,
-        TIMEOUT,
-    )
+    """Fixture for resuming SFT CI integration test"""
+    wandb_name += "-resume"
+    cmd = [
+        "uv",
+        "run",
+        "torchrun",
+        "--local-ranks-filter",
+        "0",
+        "--nproc-per-node",
+        "2",
+        "src/prime_rl/trainer/sft/train.py",
+        "@",
+        "configs/ci/integration/sft/resume.toml",
+        "--wandb.project",
+        wandb_project,
+        "--wandb.name",
+        wandb_name,
+        "--output-dir",
+        output_dir.as_posix(),
+    ]
+
+    return run_process(cmd, timeout=TIMEOUT)
+
+
+check_loss_goes_down = partial(check_number_goes_up_or_down, go_up=False, pattern=r"Loss:\s*(\d+\.\d{4})")
 
 
 def test_no_error(sft_process: ProcessResult):
-    assert sft_process.returncode == 0, f"SFT process failed with return code {sft_process.returncode}"
+    """Tests that the SFT process does not fail."""
+    assert sft_process.returncode == 0, f"Process has non-zero return code ({sft_process})"
+
+
+def test_loss_goes_down(sft_process: ProcessResult, output_dir: Path):
+    """Tests that the loss goes down in the SFT process"""
+    trainer_log_path = output_dir / "logs" / "trainer" / "rank_0.log"
+    print(f"Checking trainer path in {trainer_log_path}")
+    with open(trainer_log_path, "r") as f:
+        trainer_stdout = strip_escape_codes(f.read()).splitlines()
+    check_loss_goes_down(trainer_stdout)
 
 
 def test_no_error_resume(sft_resume_process: ProcessResult):
-    assert sft_resume_process.returncode == 0, (
-        f"SFT resume process failed with return code {sft_resume_process.returncode}"
-    )
+    """Tests that the SFT resume process does not fail."""
+    assert sft_resume_process.returncode == 0, f"Process has non-zero return code ({sft_resume_process})"
 
 
-def test_no_error_moe(sft_moe_process: ProcessResult):
-    assert sft_moe_process.returncode == 0, f"SFT MOE process failed with return code {sft_moe_process.returncode}"
+def test_loss_goes_down_resume(sft_resume_process: ProcessResult, output_dir: Path):
+    """Tests that the loss goes down in the SFT resume process"""
+    trainer_log_path = output_dir / "logs" / "trainer" / "rank_0.log"
+    print(f"Checking trainer path in {trainer_log_path}")
+    with open(trainer_log_path, "r") as f:
+        trainer_stdout = strip_escape_codes(f.read()).splitlines()
+    check_loss_goes_down(trainer_stdout)

@@ -3,6 +3,14 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
+from prime_rl.inference.patches import monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode
+
+# Monkeypatch PrometheusStatLogger to avoid NotImplementedError for LoRA in DP mode
+monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode()
+
+# ruff: noqa
+import vllm.entrypoints.openai.api_server
+
 import uvloop
 import vllm.envs as envs
 from fastapi import Request
@@ -16,12 +24,13 @@ from vllm.entrypoints.openai.api_server import (
     build_async_engine_client_from_engine_args,
     init_app_state,
     load_log_config,
+    maybe_register_tokenizer_info_endpoint,
     setup_server,
 )
 from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
 from vllm.entrypoints.openai.tool_parsers import ToolParserManager
 from vllm.logger import init_logger
-from vllm.utils import FlexibleArgumentParser
+from vllm.utils import FlexibleArgumentParser, decorate_logs
 
 from prime_rl.inference.config import InferenceConfig
 
@@ -56,6 +65,8 @@ async def custom_build_async_engine_client(
 # Copied from vllm/entrypoints/openai/api_server.py
 # Only difference is that we inject custom routes and build async engine client differently
 async def custom_run_server_worker(listen_address, sock, args, client_config=None, **uvicorn_kwargs) -> None:
+    """Run a single API server worker."""
+
     if args.tool_parser_plugin and len(args.tool_parser_plugin) > 3:
         ToolParserManager.import_tool_parser(args.tool_parser_plugin)
 
@@ -67,6 +78,7 @@ async def custom_run_server_worker(listen_address, sock, args, client_config=Non
         uvicorn_kwargs["log_config"] = log_config
 
     async with custom_build_async_engine_client(args, client_config) as engine_client:
+        maybe_register_tokenizer_info_endpoint(args)
         app = build_app(args)
 
         ### CUSTOM ENDPOINTS ###
@@ -133,7 +145,12 @@ async def custom_run_server_worker(listen_address, sock, args, client_config=Non
 
 # Copied from vllm/entrypoints/openai/api_server.py
 # Only difference is that we call `custom_run_server_worker` instead of `run_server_worker`
-async def custom_run_server(args: Namespace, **uvicorn_kwargs) -> None:
+async def custom_run_server(args, **uvicorn_kwargs) -> None:
+    """Run a single-worker API server."""
+
+    # Add process-specific prefix to stdout and stderr.
+    decorate_logs("APIServer")
+
     listen_address, sock = setup_server(args)
     await custom_run_server_worker(listen_address, sock, args, **uvicorn_kwargs)
 

@@ -1,6 +1,6 @@
 import asyncio
 from itertools import cycle
-from typing import cast
+from typing import Any, cast
 
 import verifiers as vf
 from openai import AsyncOpenAI
@@ -112,14 +112,35 @@ def from_serializable_trajectory_step(step: dict) -> vf.TrajectoryStep:
 def to_serializable_state(state: vf.State) -> dict:
     """Returns a serializable copy of vf.State."""
     serializable_state = cast(dict, state.copy())
+
+    # Flatten input fields to top level for serialization
+    # This is necessary because the dict object cannot forward access to input fields anymore, e.g. state["prompt"] will automatically forward to state["input"]["prompt"] in vf.State but not in dict. We solve this by populating the inputs into the top-level explicitly
+    if "input" in state:
+        input_dict = serializable_state.pop("input")
+        for field in vf.State.INPUT_FIELDS:
+            if field in input_dict:
+                serializable_state[field] = input_dict[field]
+
     if "trajectory" in state:
         serializable_state["trajectory"] = [to_serializable_trajectory_step(step) for step in state["trajectory"]]
+
     return serializable_state
 
 
-def from_serializable_state(state: dict) -> vf.State:
+def from_serializable_state(serializable_state: dict) -> vf.State:
     """Inverse of to_serializable_state."""
-    deserialized_state = vf.State(**state)
+    # Extract input fields from top level and reconstruct input dict
+    input_dict: dict[str, Any] = {}
+    for field in vf.State.INPUT_FIELDS:
+        if field in serializable_state:
+            input_dict[field] = serializable_state.pop(field)
+
+    if input_dict:
+        serializable_state["input"] = input_dict
+
+    state = vf.State(**serializable_state)
+
     if "trajectory" in state:
-        deserialized_state["trajectory"] = [from_serializable_trajectory_step(step) for step in state["trajectory"]]
-    return deserialized_state
+        state["trajectory"] = [from_serializable_trajectory_step(step) for step in state["trajectory"]]
+
+    return state
