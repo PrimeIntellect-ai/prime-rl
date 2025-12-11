@@ -11,14 +11,14 @@ from tqdm.asyncio import tqdm
 from verifiers import load_environment
 from verifiers.envs.environment import get_results_path
 
-from prime_rl.orchestrator.config import EvalSamplingConfig, ModelConfig
+from prime_rl.orchestrator.config import ClientConfig, EvalSamplingConfig, ModelConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.vf import generate_group
 
 WRITE_LOCK = asyncio.Lock()
 
 
-def prepare_sampling_args(sampling_config: EvalSamplingConfig) -> dict[str, Any]:
+def prepare_sampling_args(sampling_config: EvalSamplingConfig, client_config: ClientConfig) -> dict[str, Any]:
     """Prepare sampling args for synthetic data generation."""
     # Initialize sampling args
     sampling_args: dict[str, Any] = {}
@@ -141,6 +141,7 @@ async def generate_synthetic_data(
     output_dir: Path,
     model_config: ModelConfig,
     sampling_config: EvalSamplingConfig,
+    client_config: ClientConfig,
 ) -> None:
     """Generates synthetic data for an environment."""
     # Get the logger
@@ -156,7 +157,7 @@ async def generate_synthetic_data(
         dataset = env.get_eval_dataset(n=num_examples + skip_first)
     if skip_first > 0:
         dataset = dataset.skip(skip_first)
-    sampling_args = prepare_sampling_args(sampling_config)
+    sampling_args = prepare_sampling_args(sampling_config, client_config)
     path_to_save = get_results_path(env_name_or_id, model_config.name, base_path=output_dir) / "results.jsonl"
     path_to_save.parent.mkdir(parents=True, exist_ok=True)
 
