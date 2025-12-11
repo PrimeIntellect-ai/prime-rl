@@ -25,7 +25,6 @@ from prime_rl.trainer.rl.config import FakeDataLoaderConfig
 from prime_rl.trainer.rl.config import FileSystemWeightBroadcastConfig as TrainerFileSystemWeightBroadcastConfig
 from prime_rl.trainer.rl.config import NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig
 from prime_rl.trainer.rl.config import RLTrainerConfig as TrainerConfig
-from prime_rl.utils.config import WandbMonitorConfig
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pydantic_config import BaseSettings, get_temp_toml_file, parse_argv
 from prime_rl.utils.utils import (
@@ -253,9 +252,9 @@ class RLConfig(BaseSettings):
         # If specified, automatically use shared W&B project for orchestrator and trainer
         if self.wandb is not None:
             if not self.trainer.wandb:
-                self.trainer.wandb = WandbMonitorConfig()
+                self.trainer.wandb = WandbConfig()
             if not self.orchestrator.wandb:
-                self.orchestrator.wandb = WandbMonitorConfig()
+                self.orchestrator.wandb = WandbConfig()
 
             if self.wandb.project:
                 self.trainer.wandb.project = self.wandb.project

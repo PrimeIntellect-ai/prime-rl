@@ -107,10 +107,10 @@ class LogExtrasConfig(BaseConfig):
     ] = 10
 
 
-class WandbConfig(BaseConfig):
+class WandbMonitorConfig(BaseConfig):
     """Configures logging to Weights and Biases."""
 
-    # Shared configs (May be overwritten by WandbConfig from `rl.py`)
+    # Shared configs (May be overwritten by local WandbConfig from `rl.py`)
     project: Annotated[str, Field(description="The W&B project to log to.")] = "prime-rl"
 
     name: Annotated[
@@ -131,7 +131,7 @@ class WandbConfig(BaseConfig):
     ] = None
 
 
-class WandbWithExtrasConfig(WandbConfig):
+class WandbWithExtrasConfig(WandbMonitorConfig):
     """Configures logging to Weights and Biases with extras."""
 
     log_extras: Annotated[
@@ -158,6 +158,13 @@ class PrimeMonitorConfig(BaseConfig):
             description="Name of environment variable containing the API key for Prime Intellect API. Will parse using `os.getenv(prime_monitor_config.api_key_var)`.",
         ),
     ] = "PRIME_INTELLECT_API_KEY"
+
+    run_name: Annotated[
+        str | None,
+        Field(
+            description="The name of the run for Prime Intellect monitoring.",
+        ),
+    ] = None
 
 
 class PrimeMonitorWithExtrasConfig(PrimeMonitorConfig):
