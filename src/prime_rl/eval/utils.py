@@ -18,6 +18,7 @@ from verifiers.utils.eval_utils import make_dataset, sanitize_metadata, save_to_
 
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.orchestrator.config import EvalConfig, EvalSamplingConfig, EvalSaveConfig, ModelConfig
+from prime_rl.synthesize.utils import merge_reasoning_content
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor import get_monitor
 from prime_rl.utils.utils import capitalize, get_eval_dir, get_step_path
@@ -101,27 +102,6 @@ def prepare_sampling_args(sampling_config: EvalSamplingConfig) -> dict[str, Any]
     sampling_args["extra_body"] = extra_body
 
     return sampling_args
-
-
-# TODO: This is a hotfix for as long as verifiers doesn't support reasoning content parsing
-def merge_reasoning_content(
-    completion: list[vf.ChatMessage],
-    trajectory: list[vf.TrajectoryStep],
-    reasoning_field: str = "reasoning_content",
-) -> list[vf.ChatMessage]:
-    """Parse reasoning content from the raw model response and add it to the completion."""
-    # Parse responses from trajectory
-    responses: list[vf.ModelResponse] = [trajectory_step["response"] for trajectory_step in trajectory]
-    assistant_messages: list[vf.ChatMessage] = [c for c in completion if c.get("role") == "assistant"]
-    assert len(assistant_messages) == len(responses), "Number of assistant messages and responses must match"
-
-    for assistant_message, response in zip(assistant_messages, responses):
-        assert isinstance(response, vf.ChatCompletion)
-        response_message = response.choices[0].message
-        if getattr(response_message, reasoning_field, None) is not None:
-            assistant_message[reasoning_field] = getattr(response_message, reasoning_field)
-
-    return completion
 
 
 # TODO: Move to verifiers to avoid code drift
