@@ -187,6 +187,7 @@ async def generate_and_save_rollout(
 ) -> vf.State:
     """Generate and optionally save a single rollout, updating progress bar per-rollout."""
     logger = get_logger()
+    _sampling_args = deepcopy(sampling_args)
 
     @retry(
         stop=stop_after_attempt(retry_config.max_attempts),
@@ -214,13 +215,12 @@ async def generate_and_save_rollout(
 
             if new_max_tokens is not None:
                 logger.warning(f"Context length error: reducing max_tokens to {new_max_tokens}.")
-                retry_sampling_args = deepcopy(sampling_args)
-                retry_sampling_args["max_tokens"] = new_max_tokens
-                return await generate_rollout(client, env, model_name, example, retry_sampling_args)
+                sampling_args["max_tokens"] = new_max_tokens
+                return await generate_rollout(client, env, model_name, example, sampling_args)
             raise
 
     try:
-        state = await _generate_rollout(client, env, model_name, example, sampling_args)
+        state = await _generate_rollout(client, env, model_name, example, _sampling_args)
 
         # Save with rollout_idx if streaming saves enabled
         if save_file is not None:
