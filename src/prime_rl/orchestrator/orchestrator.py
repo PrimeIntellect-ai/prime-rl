@@ -339,6 +339,7 @@ async def orchestrate(config: OrchestratorConfig):
                 "completion_len": [get_completion_len(rollout) for rollout in train_rollouts],
                 "prompt_len": [get_prompt_len(rollout) for rollout in train_rollouts],
                 "seq_len": [get_seq_len(rollout) for rollout in train_rollouts],
+                "has_error": [rollout["error"] is not None for rollout in train_rollouts],
             }
         )
 
@@ -409,6 +410,7 @@ async def orchestrate(config: OrchestratorConfig):
             "batch/solve_none": solve_none,
             "batch/solve_all": solve_all,
             "batch/effective_batch_size": effective_batch_size,
+            "batch/has_error": results_df.has_error.mean(),
             # Env metrics
             **{f"metrics/{metric}": metrics_df[metric].mean() for metric in metrics_df.columns},
             # Time metrics
