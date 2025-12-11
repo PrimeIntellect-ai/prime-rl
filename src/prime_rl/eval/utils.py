@@ -164,7 +164,10 @@ def parse_and_calculate_max_tokens(error_message: str) -> int | None:
     if context_match and prompt_match:
         context_length = int(context_match.group(1))
         prompt_tokens = int(prompt_match.group(1))
-        return context_length - prompt_tokens
+        max_tokens = context_length - prompt_tokens
+        if max_tokens < 1:
+            return None
+        return max_tokens
     return None
 
 
