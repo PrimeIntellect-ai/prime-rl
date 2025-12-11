@@ -205,16 +205,12 @@ async def run_eval(
     sampling_args = prepare_sampling_args(sampling_config)
 
     # Determine streaming save path
-    stream_save = save_config.stream
     base_path = get_results_path(env_name_or_id, model_config.name, base_path=output_dir)
     if resume_uuid is not None:
-        if not stream_save:
-            logger.warning("Resume requested but stream=False. Enabling streaming saves for resume to work.")
-            stream_save = True
         path_to_save = base_path.parent / resume_uuid / "results.jsonl"  # replace the uuid in the path
     else:
         path_to_save = base_path / "results.jsonl"
-        if stream_save:
+        if save_config.stream:
             path_to_save.parent.mkdir(parents=True, exist_ok=True)
 
     # Build list of all (example, rollout_idx) pairs to run
@@ -236,7 +232,7 @@ async def run_eval(
     logger.info(
         f"Evaluating {env_name_or_id} ({num_examples=}, {rollouts_per_example=}) "
         f"{'with default args' if env_args == {} else f'with args {env_args}'} and extra_body {sampling_args['extra_body']}\n"
-        f"{'Saving results to ' + str(path_to_save) if stream_save else 'Results will be saved at end of evaluation'}"
+        f"{'Saving results to ' + str(path_to_save) if save_config.stream else 'Results will be saved at end of evaluation'}"
     )
 
     total_rollouts = len(all_rollouts)
@@ -263,7 +259,7 @@ async def run_eval(
                 example,
                 rollout_idx,
                 sampling_args,
-                path_to_save if stream_save else None,
+                path_to_save if save_config.stream else None,
                 reasoning_field,
                 pbar,
                 rewards_accumulator,

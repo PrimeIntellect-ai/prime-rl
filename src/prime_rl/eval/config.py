@@ -95,3 +95,10 @@ class OfflineEvalConfig(EvalConfig, BaseSettings):
                 "You should either evaluate the base model and/or checkpoints. Set `--eval-base` or specify a weight checkpoint directory with `--weights-dir`."
             )
         return self
+
+    @model_validator(mode="after")
+    def validate_resume_stream(self):
+        """Enable streaming saves when resume_uuid is set, as streaming is required for resume functionality."""
+        if self.resume_uuid is not None and not self.save.stream:
+            self.save.stream = True
+        return self
