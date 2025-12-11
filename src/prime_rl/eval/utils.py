@@ -10,16 +10,18 @@ import numpy as np
 import pandas as pd
 import verifiers as vf
 from openai import AsyncOpenAI
+from prime_evals import AsyncEvalsClient
 from tqdm.asyncio import tqdm
 from verifiers import load_environment
 from verifiers.envs.environment import get_results_path
+from verifiers.utils.eval_utils import make_dataset, sanitize_metadata, save_to_disk
 
 from prime_rl.eval.config import OfflineEvalConfig
-from prime_rl.orchestrator.config import EvalConfig, EvalSamplingConfig, ModelConfig
+from prime_rl.orchestrator.config import EvalConfig, EvalSamplingConfig, EvalSaveConfig, ModelConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor import get_monitor
-from prime_rl.utils.utils import capitalize
-from prime_rl.utils.vf import generate_group, get_completion_len, get_is_truncated
+from prime_rl.utils.utils import capitalize, get_eval_dir, get_step_path
+from prime_rl.utils.vf import generate_group, get_completion_len, get_is_truncated, to_serializable_state
 
 WRITE_LOCK = asyncio.Lock()
 
@@ -206,6 +208,8 @@ async def run_eval(
     ckpt_step: int,
     model_config: ModelConfig,
     sampling_config: EvalSamplingConfig,
+    save_config: EvalSaveConfig,
+    evals_client: AsyncEvalsClient,
     step: int | None = None,
     resume_uuid: str | None = None,
 ) -> None:
@@ -338,67 +342,56 @@ async def run_eval(
     eval_metrics.update({"progress/ckpt_step": ckpt_step, "step": step or ckpt_step})
     monitor.log(eval_metrics)
 
-    # # Save results
-    # if save_config.disk is not None or save_config.hf is not None or save_config.env_hub:
-    #     outputs = env._prepare_rollout_results(
-    #         all_states=[to_serializable_state(state) for state in states],  # type: ignore
-    #         model=model_config.name,
-    #         client=clients[0],  # We use the first client
-    #         state_columns=None,
-    #         results_path=None,
-    #         gen_sampling_args=sampling_args,
-    #         start_time=eval_start_time,
-    #     )
-    #     dataset = make_dataset(outputs)
-    #     metadata_dict = sanitize_metadata(outputs["metadata"])
+    # Save results
+    if save_config.disk is not None or save_config.env_hub:
+        outputs = env._prepare_rollout_results(
+            all_states=[to_serializable_state(state) for state in all_states],  # type: ignore
+            model=model_config.name,
+            client=clients[0],  # We use the first client
+            state_columns=None,
+            results_path=None,
+            gen_sampling_args=sampling_args,
+            start_time=eval_start_time,
+        )
+        dataset = make_dataset(outputs)
+        metadata_dict = sanitize_metadata(outputs["metadata"])
 
-    #     if save_config.disk is not None:
-    #         is_online = step is not None
-    #         default_save_path = (
-    #             get_step_path(get_eval_dir(output_dir), ckpt_step) / env_name_or_id
-    #             if is_online
-    #             else outputs["metadata"]["path_to_save"]
-    #         )
-    #         save_path = save_config.disk.path or default_save_path
-    #         save_to_disk(dataset, metadata_dict, save_path)
-    #         logger.info(f"Saved eval results for {env_name_or_id} to disk ({save_path})")
+        if save_config.disk is not None:
+            is_online = step is not None
+            default_save_path = (
+                get_step_path(get_eval_dir(output_dir), ckpt_step) / env_name_or_id
+                if is_online
+                else outputs["metadata"]["path_to_save"]
+            )
+            save_path = save_config.disk.path or default_save_path
+            save_to_disk(dataset, metadata_dict, save_path)
+            logger.info(f"Saved eval results for {env_name_or_id} to disk ({save_path})")
 
-    #     if save_config.hf is not None:
-    #         dataset_name = save_config.hf.dataset_name or get_hf_hub_dataset_name(outputs)
-    #         dataset_subset = save_config.hf.dataset_subset or env.env_id
-    #         dataset_split = save_config.hf.dataset_split or "evals"
-    #         dataset.push_to_hub(dataset_name, dataset_subset, split=dataset_split, private=save_config.hf.private)
-    #         default_org = whoami().get("name", "")
-    #         repo_name = dataset_name if "/" in dataset_name else f"{default_org}/{dataset_name}"
-    #         logger.info(
-    #             f"Pushed {'private' if save_config.hf.private else 'public'} eval results for {env_name_or_id} to HF Hub (https://huggingface.co/datasets/{repo_name})"
-    #         )
+        if save_config.env_hub:
+            eval_name = f"{env_id}--{model_config.name.replace('/', '--')}"
 
-    #     if save_config.env_hub:
-    #         eval_name = f"{env_id}--{model_config.name.replace('/', '--')}"
+            # Create evaluation for environment
+            create_response = await evals_client.create_evaluation(
+                name=eval_name,
+                environments=[{"id": env_id}],
+                model_name=model_config.name,
+                framework="verifiers",
+                metadata=metadata_dict,
+                metrics=eval_metrics,
+            )
 
-    #         # Create evaluation for environment
-    #         create_response = await evals_client.create_evaluation(
-    #             name=eval_name,
-    #             environments=[{"id": env_id}],
-    #             model_name=model_config.name,
-    #             framework="verifiers",
-    #             metadata=metadata_dict,
-    #             metrics=eval_metrics,
-    #         )
+            eval_id = create_response.get("evaluation_id")
+            assert eval_id is not None
 
-    #         eval_id = create_response.get("evaluation_id")
-    #         assert eval_id is not None
+            # Push samples
+            await evals_client.push_samples(eval_id, dataset.to_list())
 
-    #         # Push samples
-    #         await evals_client.push_samples(eval_id, dataset.to_list())
+            # Finalize evaluation
+            await evals_client.finalize_evaluation(eval_id, metrics=eval_metrics)
 
-    #         # Finalize evaluation
-    #         await evals_client.finalize_evaluation(eval_id, metrics=eval_metrics)
-
-            # logger.info(
-            #     f"Pushed eval results for {env_id} to Environments Hub (https://app.primeintellect.ai/dashboard/evaluations/{eval_id})"
-            # )
+            logger.info(
+                f"Pushed eval results for {env_id} to Environments Hub (https://app.primeintellect.ai/dashboard/evaluations/{eval_id})"
+            )
 
 
 async def run_evals(
@@ -406,6 +399,7 @@ async def run_evals(
     eval_config: EvalConfig | OfflineEvalConfig,
     model_config: ModelConfig,
     sampling_config: EvalSamplingConfig,
+    evals_client: AsyncEvalsClient,
     reasoning_field: str,
     output_dir: Path,
     ckpt_step: int,
@@ -425,6 +419,8 @@ async def run_evals(
                 output_dir=output_dir,
                 model_config=model_config,
                 sampling_config=sampling_config,
+                save_config=eval_config.save,
+                evals_client=evals_client,
                 ckpt_step=ckpt_step,
                 step=step,
                 resume_uuid=resume_uuid,
