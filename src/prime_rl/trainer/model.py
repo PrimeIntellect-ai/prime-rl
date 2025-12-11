@@ -249,12 +249,19 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
         model.init_buffers_post_meta()
     else:
         fix_model_post_empty(model)
-    for module in model.modules():
-        if hasattr(module, "_init_lora_parameters"):
-            if parallel_dims.dp_replicate_enabled:
-                # We need to make sure we init the same across all dp_replicate ranks
-                raise NotImplementedError("LoRA initialization is not supported for DP replicate mode yet")
-            module._init_lora_parameters()
+    lora_modules = [m for m in model.modules() if hasattr(m, "_init_lora_parameters")]
+    if lora_modules:
+        generator: torch.Generator | None = None
+        if parallel_dims.dp_replicate_enabled:
+            # Synchronize LoRA initialization across dp_replicate ranks by broadcasting a seed
+            dp_replicate_mesh = parallel_dims.world_mesh["dp_replicate"]
+            seed_tensor = torch.empty(1, dtype=torch.long, device="cuda")
+            if dp_replicate_mesh.get_local_rank() == 0:
+                seed_tensor.random_()
+            torch.distributed.broadcast(seed_tensor, src=0, group=dp_replicate_mesh.get_group())
+            generator = torch.Generator(device="cuda").manual_seed(seed_tensor.item())
+        for module in lora_modules:
+            module._init_lora_parameters(generator)
     logger.debug(f"Loaded weights using HF DCP in {time.perf_counter() - load_dcp_start_time:.2f} seconds")
 
 
