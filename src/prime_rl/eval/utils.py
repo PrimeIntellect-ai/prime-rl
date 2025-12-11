@@ -72,7 +72,7 @@ def compute_pass_at_k(rewards: list[int]) -> dict[str, float]:
 
 
 def prepare_sampling_args(sampling_config: EvalSamplingConfig) -> dict[str, Any]:
-    """Prepare sampling args for synthetic data generation."""
+    """Prepare sampling args for the client."""
     # Initialize sampling args
     sampling_args: dict[str, Any] = {}
 
@@ -185,7 +185,7 @@ async def generate_and_save_rollout(
         async with rewards_lock:
             rewards_accumulator.append(state["reward"])
             avg_reward = sum(rewards_accumulator) / len(rewards_accumulator)
-            pbar.set_postfix({"Avg Reward": f"{avg_reward:.4f}"}, refresh=True)
+            pbar.set_postfix({"Avg Reward": f"{avg_reward:.4f}"})
 
         pbar.update(1)
         return state
@@ -260,7 +260,7 @@ async def run_eval(
     )
 
     total_rollouts = len(all_rollouts)
-    pbar = tqdm(total=total_rollouts, desc="Evaluating", mininterval=0.1)
+    pbar = tqdm(total=total_rollouts, desc="Evaluating")
 
     # Create shared structure for tracking rewards
     rewards_accumulator = []
