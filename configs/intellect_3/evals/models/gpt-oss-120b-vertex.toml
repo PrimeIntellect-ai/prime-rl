@@ -11,11 +11,8 @@ api_key_var = "OPENROUTER_API_KEY"
 
 [sampling]
 reasoning_effort = "high"
-# reasoning_effort = "low"
 temperature = 1.0
 max_tokens = 122880
-# max_tokens = 131072
-# transforms = ["middle-out"]
 
 [sampling.extra_body.provider]
 only = ["google-vertex"]
