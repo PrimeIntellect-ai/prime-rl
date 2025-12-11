@@ -2,7 +2,7 @@ from pathlib import Path
 
 from prime_rl.transport.base import MicroBatchReceiver, MicroBatchSender, TrainingBatchReceiver, TrainingBatchSender
 from prime_rl.transport.types import MicroBatch, TrainingBatch
-from prime_rl.utils.utils import get_rollout_dir, get_step_path, sync_wait_for_path
+from prime_rl.utils.pathing import get_rollout_dir, get_step_path, sync_wait_for_path
 
 BATCH_FILE_NAME = "rollouts.bin"
 
