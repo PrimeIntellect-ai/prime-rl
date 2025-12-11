@@ -157,6 +157,14 @@ class RLTrainerConfig(BaseSettings):
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
     ] = None
 
+    max_concurrent_runs: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Maximum number of concurrent RL runs to support. Used for multi-run training scenarios.",
+        ),
+    ] = 1
+
     @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench:

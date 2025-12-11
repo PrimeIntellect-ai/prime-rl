@@ -503,6 +503,20 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = True
 
+    mask_truncated_completions: Annotated[
+        bool,
+        Field(
+            description="Whether to mask truncated completions from the loss.",
+        ),
+    ] = False
+
+    zero_truncated_completions: Annotated[
+        bool,
+        Field(
+            description="Whether to zero out rewards for truncated completions.",
+        ),
+    ] = False
+
     # TODO(Mika): This should be automatic from the number of ZMQ connections
     num_train_workers: Annotated[
         int,
