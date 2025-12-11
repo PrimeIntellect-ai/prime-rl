@@ -1,7 +1,7 @@
 import pytest
 import torch
 from torch import nn
-from transformers import AfmoeForCausalLM as HFAfmoeForCausalLM
+from transformers import AutoModelForCausalLM
 
 from prime_rl.trainer.models.afmoe import AfMoeConfig
 from prime_rl.trainer.models.afmoe import AfMoeForCausalLM as PrimeRLAfMoeForCausalLM
@@ -38,7 +38,7 @@ def get_model_pairs():
     config._attn_implementation = "sdpa"
 
     with torch.device("cuda"), default_dtype(torch.float32):
-        model1 = HFAfmoeForCausalLM._from_config(config, trust_remote_code=True)
+        model1 = AutoModelForCausalLM._from_config(config, trust_remote_code=True)
         model2 = PrimeRLAfMoeForCausalLM._from_config(config)
 
     # Copy weights from model1 to model2 to ensure they're identical

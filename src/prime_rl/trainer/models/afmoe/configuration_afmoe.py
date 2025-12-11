@@ -1,7 +1,7 @@
-import warnings
 
 from transformers.configuration_utils import PretrainedConfig
 from transformers.modeling_rope_utils import rope_config_validation
+
 
 class AfMoeConfig(PretrainedConfig):
     r"""
