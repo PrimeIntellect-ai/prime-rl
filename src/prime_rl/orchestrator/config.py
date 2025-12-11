@@ -148,8 +148,39 @@ class EvalSaveDiskConfig(BaseConfig):
     ] = None
 
 
+class EvalSaveHFConfig(BaseConfig):
+    """Configures how to save the eval results to HF."""
+
+    dataset_name: Annotated[
+        str | None,
+        Field(
+            description="The name of the HF dataset to save the eval results to. If None, will auto-generate a name."
+        ),
+    ] = None
+
+    dataset_subset: Annotated[
+        str | None,
+        Field(
+            description="The subset name of the HF dataset to save the evaluation results. If None, will default to the environment ID.",
+        ),
+    ] = None
+
+    dataset_split: Annotated[
+        str | None,
+        Field(
+            description="The split name of the HF dataset to save the evaluation results. If None, will default to 'evals'.",
+        ),
+    ] = None
+
+    private: Annotated[
+        bool,
+        Field(description="Whether to save the eval results to a private HF dataset."),
+    ] = False
+
+
 class EvalSaveConfig(BaseConfig):
     disk: EvalSaveDiskConfig | None = None
+    hf: EvalSaveHFConfig | None = None
     env_hub: Annotated[
         bool,
         Field(

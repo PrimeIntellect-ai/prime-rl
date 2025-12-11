@@ -9,12 +9,13 @@ import aiofiles
 import numpy as np
 import pandas as pd
 import verifiers as vf
+from huggingface_hub import whoami
 from openai import AsyncOpenAI
 from prime_evals import AsyncEvalsClient
 from tqdm.asyncio import tqdm
 from verifiers import load_environment
 from verifiers.envs.environment import get_results_path
-from verifiers.utils.eval_utils import make_dataset, sanitize_metadata, save_to_disk
+from verifiers.utils.eval_utils import get_hf_hub_dataset_name, make_dataset, sanitize_metadata, save_to_disk
 
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.orchestrator.config import EvalConfig, EvalSamplingConfig, EvalSaveConfig, ModelConfig
@@ -328,7 +329,7 @@ async def run_eval(
     monitor.log(eval_metrics)
 
     # Save results
-    if save_config.disk is not None or save_config.env_hub:
+    if save_config.disk is not None or save_config.hf is not None or save_config.env_hub:
         outputs = env._prepare_rollout_results(
             all_states=[to_serializable_state(state) for state in all_states],  # type: ignore
             model=model_config.name,
@@ -351,6 +352,17 @@ async def run_eval(
             save_path = save_config.disk.path or default_save_path
             save_to_disk(dataset, metadata_dict, save_path)
             logger.info(f"Saved eval results for {env_name_or_id} to disk ({save_path})")
+
+        if save_config.hf is not None:
+            dataset_name = save_config.hf.dataset_name or get_hf_hub_dataset_name(outputs)
+            dataset_subset = save_config.hf.dataset_subset or env.env_id
+            dataset_split = save_config.hf.dataset_split or "evals"
+            dataset.push_to_hub(dataset_name, dataset_subset, split=dataset_split, private=save_config.hf.private)
+            default_org = whoami().get("name", "")
+            repo_name = dataset_name if "/" in dataset_name else f"{default_org}/{dataset_name}"
+            logger.info(
+                f"Pushed {'private' if save_config.hf.private else 'public'} eval results for {env_name_or_id} to HF Hub (https://huggingface.co/datasets/{repo_name})"
+            )
 
         if save_config.env_hub:
             eval_name = f"{env_id}--{model_config.name.replace('/', '--')}"
