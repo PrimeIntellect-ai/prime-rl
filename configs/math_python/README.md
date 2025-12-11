@@ -21,11 +21,11 @@ This will automatically install the environment, and a pinned verifiers commit (
 Get a quick vibe-check of the model
 
 ```bash
-vllm serve Qwen/Qwen3-4B-Instruct-2507
+vllm serve Qwen/Qwen3-4B-Instruct-2507 --enable-auto-tool-choice --tool-call-parser hermes --max-model-len 8192
 ```
 
 ```bash
-uv run --no-sync vf-eval math-python -n 16 -r 1 -v -m Qwen/Qwen3-4B-Instruct-2507 -b http://localhost:8000/v1 -a '{"max_turns": 10, "difficulty_key": "avg@8_qwen3_4b_thinking_2507", "min_avg_reward": 0.5}' -t 4096
+uv run --no-sync vf-eval math-python -n 16 -r 1 -c -1 -v -m Qwen/Qwen3-4B-Instruct-2507 -b http://localhost:8000/v1 -a '{"dataset_name": "PrimeIntellect/Hendrycks-Math", "dataset_subset": "default"}' -t 512
 ```
 
 ## RL
