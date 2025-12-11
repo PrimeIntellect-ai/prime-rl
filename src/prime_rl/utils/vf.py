@@ -88,6 +88,43 @@ async def generate_group(
         raise
 
 
+@retry(
+    stop=stop_after_attempt(10),
+    wait=wait_exponential(multiplier=1, min=1, max=60),
+    before_sleep=_log_retry_attempt,
+    reraise=True,
+)
+async def generate_rollout(
+    client: AsyncOpenAI,
+    env: vf.Environment,
+    model_name: str,
+    example: dict,
+    sampling_args: dict,
+) -> vf.State:
+    """Asynchronously generate and score a single rollout."""
+    logger = get_logger()
+    semaphore = await get_semaphore()
+    rollout_input = vf.RolloutInput(**example)
+
+    try:
+        state = await env.run_rollout(semaphore, rollout_input, client, model_name, sampling_args)
+        await env.rubric.score_rollout(state, score_sem=semaphore)
+        return state
+    except BadRequestError as e:
+        # Check if this is a context length error and retry with adjusted max_tokens
+        error_message = str(e)
+        new_max_tokens = _parse_and_calculate_max_tokens(error_message)
+
+        if new_max_tokens is not None:
+            logger.warning(f"Context length error: reducing max_tokens to {new_max_tokens}.")
+            retry_sampling_args = deepcopy(sampling_args)
+            retry_sampling_args["max_tokens"] = new_max_tokens
+            state = await env.run_rollout(semaphore, rollout_input, client, model_name, retry_sampling_args)
+            await env.rubric.score_rollout(state, score_sem=semaphore)
+            return state
+        raise
+
+
 async def generate_batch(
     clients: list[AsyncOpenAI],
     env: vf.Environment,

@@ -156,6 +156,12 @@ class EvalSaveConfig(BaseConfig):
             description="Whether to push eval results to Prime Environment Hub. Automatically pushes all evaluated environments. Requires PRIME_API_KEY and authorization for the environments."
         ),
     ] = False
+    stream: Annotated[
+        bool,
+        Field(
+            description="Whether to save results incrementally as rollouts complete.",
+        ),
+    ] = False
 
 
 class EnvConfig(BaseConfig):
