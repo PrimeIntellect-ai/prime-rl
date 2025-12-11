@@ -11,12 +11,12 @@ name = "math-python"
 name = "Qwen/Qwen3-4B-Instruct-2507"
 
 [orchestrator]
-seq_len = 12288
+seq_len = 8192
 batch_size = 512
 rollouts_per_example = 16
 
 [orchestrator.sampling]
-max_tokens = 2048
+max_tokens = 512
 
 [orchestrator.buffer]
 online_difficulty_filtering = true
@@ -27,7 +27,7 @@ num_examples = 128
 
 [[orchestrator.env]]
 id = "math-python"
-args = { difficulty_key = "avg@8_qwen3_4b_instruct_2507", min_avg_reward = 0.5 }
+args = { dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "default" }
 
 [trainer] # Default trainer config
 
