@@ -224,6 +224,12 @@ class EvalConfig(BaseConfig):
     rollouts_per_example: Annotated[
         int, Field(ge=1, description="Number of samples to generate per example for each environment.")
     ] = 1
+    reasoning_field: Annotated[
+        str,
+        Field(
+            description="The field in the raw model response that contains the reasoning content. Defaults to 'reasoning_content', which is the default for vLLM when serving a model with a reasoning parser. Other APIs (e.g. DeepSeek, GLM, etc.) may use different field names.",
+        ),
+    ] = "reasoning_content"
 
 
 class OnlineEvalConfig(EvalConfig):
