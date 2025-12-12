@@ -1,6 +1,3 @@
-inference_gpu_ids = [0]
-trainer_gpu_ids = [1]
-
 max_steps = 100
 
 [model]
@@ -19,3 +16,5 @@ id = "alphabet-sort"
 args = { min_turns = 2, max_turns = 2 }
 
 [trainer]
+
+[inference]
