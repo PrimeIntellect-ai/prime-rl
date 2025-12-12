@@ -299,12 +299,6 @@ async def generate_and_save_group(
     try:
         states = await _generate_group(client, env, model_name, example, rollouts_per_example, _sampling_args)
 
-        # Save each state with rollout_idx if streaming saves enabled
-        if save_file is not None:
-            for rollout_idx, state in enumerate(states):
-                result_dict = await asyncio.to_thread(make_result, state, reasoning_field, rollout_idx)
-                await save_result(result_dict, save_file)
-
         # Update running average after group completes
         async with rewards_lock:
             for state in states:
