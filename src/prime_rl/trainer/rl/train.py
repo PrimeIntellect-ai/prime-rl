@@ -18,7 +18,7 @@ from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
     shift_logits,
-    selective_log_softmax_with_filtering,
+    selective_log_softmax,
     compute_entropy,
     compute_loss,
 )
@@ -236,7 +236,7 @@ def train(config: RLTrainerConfig):
 
             shifted_logits = shift_logits(logits)
             shifted_logits = shifted_logits / temperature
-            trainer_logprobs = selective_log_softmax_with_filtering(shifted_logits, input_ids, top_p, top_k)
+            trainer_logprobs = selective_log_softmax(shifted_logits, input_ids, top_p, top_k)
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)

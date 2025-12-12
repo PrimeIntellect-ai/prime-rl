@@ -8,15 +8,6 @@ from torch import Tensor
 from prime_rl.trainer.rl.config import LossConfig
 
 
-@jaxtyped(typechecker=typechecker)
-@torch.compile(dynamic=True)
-def selective_log_softmax(
-    logits: Float[Tensor, "batch seq vocab"], index: Int[Tensor, "batch seq"]
-) -> Float[Tensor, "batch seq"]:
-    logprobs = logits.log_softmax(dim=-1)
-    return torch.gather(logprobs, dim=-1, index=index.unsqueeze(-1)).squeeze(-1)
-
-
 def _apply_top_k_top_p(
     logits: Float[Tensor, "batch seq vocab"],
     top_k: int,
@@ -60,7 +51,7 @@ def _apply_top_k_top_p(
 
 @jaxtyped(typechecker=typechecker)
 @torch.compile(dynamic=True)
-def selective_log_softmax_with_filtering(
+def selective_log_softmax(
     logits: Float[Tensor, "batch seq vocab"],
     index: Int[Tensor, "batch seq"],
     top_p: float,
