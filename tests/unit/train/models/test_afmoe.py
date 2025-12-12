@@ -17,8 +17,8 @@ def get_model_pairs():
             trust_remote_code=True,
     )
     config.num_hidden_layers=3
-    config.num_experts=16,
-    config.num_experts_per_tok=4,
+    config.num_experts=16
+    config.num_experts_per_tok=4
     config._attn_implementation = "sdpa"
 
     with torch.device("cuda"), default_dtype(torch.float32):
