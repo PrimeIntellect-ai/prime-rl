@@ -72,10 +72,10 @@ class OfflineEvalConfig(EvalConfig, BaseSettings):
         ),
     ] = None
 
-    resume_uuid: Annotated[
-        str | None,
+    resume_path: Annotated[
+        Path | None,
         Field(
-            description="UUID of the run to resume from. When set, will read existing example_ids from the results.jsonl file, filter the dataset to exclude already-evaluated examples, and append new results to the existing file.",
+            description="Path to the directory containing results.jsonl to resume from. When set, will read existing example_ids from the results.jsonl file, filter the dataset to exclude already-evaluated examples, and append new results to the existing file. Can be an absolute path or relative to the current working directory.",
         ),
     ] = None
 
@@ -98,7 +98,7 @@ class OfflineEvalConfig(EvalConfig, BaseSettings):
 
     @model_validator(mode="after")
     def validate_resume_stream(self):
-        """Enable streaming saves when resume_uuid is set, as streaming is required for resume functionality."""
-        if self.resume_uuid is not None and not self.save.stream:
+        """Enable streaming saves when resume_path is set, as streaming is required for resume functionality."""
+        if self.resume_path is not None and not self.save.stream:
             self.save.stream = True
         return self

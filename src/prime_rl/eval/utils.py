@@ -336,7 +336,7 @@ async def run_eval(
     evals_client: AsyncEvalsClient,
     per_rollout: bool = False,
     step: int | None = None,
-    resume_uuid: str | None = None,
+    resume_path: Path | None = None,
 ) -> None:
     # Get the logger
     logger = get_logger()
@@ -350,13 +350,14 @@ async def run_eval(
     sampling_args = prepare_sampling_args(sampling_config)
 
     # Determine streaming save path
-    base_path = get_results_path(env_name_or_id, model_config.name, base_path=output_dir)
-    if resume_uuid is not None:
-        path_to_save = base_path.parent / resume_uuid / "results.jsonl"  # replace the uuid in the path
-    else:
-        path_to_save = base_path / "results.jsonl"
-        if save_config.stream:
-            path_to_save.parent.mkdir(parents=True, exist_ok=True)
+    if save_config.stream:
+        if resume_path is not None:
+            # resume_path points to a directory containing results.jsonl
+            path_to_save = resume_path / "results.jsonl"
+        else:
+            base_path = get_results_path(env_name_or_id, model_config.name, base_path=output_dir)
+            path_to_save = base_path / "results.jsonl"
+        path_to_save.parent.mkdir(parents=True, exist_ok=True)
 
     # Create shared structure for tracking rewards
     rewards_accumulator: list = []
@@ -370,7 +371,7 @@ async def run_eval(
         ]
 
         # Filter out already-completed rollouts on resume
-        if resume_uuid is not None:
+        if resume_path is not None:
             existing_rollout_ids = read_existing_rollout_ids(path_to_save)
             original_count = len(all_rollouts)
             all_rollouts = [
@@ -459,7 +460,7 @@ async def run_eval(
     )
 
     # If resuming (per_rollout mode only), combine with existing results for accurate metrics
-    if per_rollout and resume_uuid is not None:
+    if per_rollout and resume_path is not None:
         existing_results_df = read_existing_results(path_to_save)
         results_df = pd.concat([existing_results_df, new_results_df], ignore_index=True)
         logger.info(
@@ -579,7 +580,7 @@ async def run_evals(
     output_dir: Path,
     ckpt_step: int,
     step: int | None = None,
-    resume_uuid: str | None = None,
+    resume_path: Path | None = None,
 ):
     await asyncio.gather(
         *[
@@ -600,7 +601,7 @@ async def run_evals(
                 per_rollout=eval_config.per_rollout,
                 ckpt_step=ckpt_step,
                 step=step,
-                resume_uuid=resume_uuid,
+                resume_path=resume_path,
             )
             for env in eval_config.env
         ]
