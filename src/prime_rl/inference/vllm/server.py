@@ -11,7 +11,10 @@ from vllm.entrypoints.openai.protocol import ChatCompletionRequest, ChatCompleti
 from vllm.entrypoints.utils import load_aware_call, with_cancellation
 
 from prime_rl.inference.patches import monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode
-from prime_rl.inference.vllm.serving_chat_tokens import OpenAIServingChatTokens
+from prime_rl.inference.vllm.serving_chat_with_tokens import (
+    ChatCompletionRequestWithTokens,
+    OpenAIServingChatCompletionWithTokens,
+)
 
 # Monkeypatch PrometheusStatLogger to avoid NotImplementedError for LoRA in DP mode
 monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode()
@@ -90,8 +93,8 @@ async def custom_init_app_state(engine_client: EngineClient, vllm_config: VllmCo
     resolved_chat_template = load_chat_template(args.chat_template)
 
     # Also serve OAI chat completion tokens
-    state.openai_serving_chat_tokens = (
-        OpenAIServingChatTokens(
+    state.openai_serving_chat_completion_with_tokens = (
+        OpenAIServingChatCompletionWithTokens(
             engine_client,
             model_config,
             state.openai_serving_models,
@@ -160,8 +163,8 @@ async def custom_run_server_worker(listen_address, sock, args, client_config=Non
             )
             return {"status": "ok"}
 
-        def chat_tokens(request: Request) -> Optional[OpenAIServingChatTokens]:
-            return request.app.state.openai_serving_chat_tokens
+        def chat_with_tokens(request: Request) -> Optional[OpenAIServingChatCompletionWithTokens]:
+            return request.app.state.openai_serving_chat_completion_with_tokens
 
         @app.post(
             "/generate",
@@ -175,14 +178,14 @@ async def custom_run_server_worker(listen_address, sock, args, client_config=Non
         )
         @with_cancellation
         @load_aware_call
-        async def create_chat_completion_tokens(request: ChatCompletionRequest, raw_request: Request):
-            handler = chat_tokens(raw_request)
+        async def generate(request: ChatCompletionRequestWithTokens, raw_request: Request):
+            handler = chat_with_tokens(raw_request)
             if handler is None:
                 return base(raw_request).create_error_response(
                     message="The model does not support Chat Completions API"
                 )
             try:
-                generator = await handler.create_chat_completion(request, raw_request)
+                generator = await handler.create_chat_completion_with_tokens(request, raw_request)
             except Exception as e:
                 raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR.value, detail=str(e)) from e
             if isinstance(generator, ErrorResponse):
