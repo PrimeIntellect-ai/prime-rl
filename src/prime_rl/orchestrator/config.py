@@ -664,7 +664,7 @@ class OrchestratorConfig(BaseSettings):
             self.eval = None
             if self.wandb:
                 self.wandb.log_extras = None
-            if self.prime:
-                self.prime.log_extras = None
+            if self.prime_monitor:
+                self.prime_monitor.log_extras = None
 
         return self
