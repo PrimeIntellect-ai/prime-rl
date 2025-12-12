@@ -11,7 +11,7 @@ import torch
 import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
-from prime_rl.trainer.ckpt import Progress, setup_ckpt_managers
+from prime_rl.trainer.ckpt import setup_ckpt_managers
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
@@ -41,6 +41,7 @@ from prime_rl.trainer.utils import (
     get_response_lengths,
 )
 from prime_rl.trainer.world import get_world
+from prime_rl.trainer.runs import setup_runs, Progress
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
@@ -57,6 +58,9 @@ def train(config: RLTrainerConfig):
         log_file=config.output_dir / "logs" / "trainer" / f"rank_{world.rank}.log" if config.log.file else None,
     )
     logger.info(f"Starting RL trainer in {world}")
+
+    setup_runs(config.output_dir, config.max_concurrent_runs)
+    logger.info(f"Starting RL trainer in {world} in {config.output_dir}")
 
     # Print warning if running in benchmark mode
     if config.bench:
@@ -125,9 +129,17 @@ def train(config: RLTrainerConfig):
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
-    dataloader = DataLoader(config.output_dir, progress.step)
     if config.data.fake:
-        dataloader = FakeDataLoader(config.data.fake)
+        dataloader = FakeDataLoader(config.data.fake, config.model.seq_len)
+    else:
+        dataloader = DataLoader(
+            config.output_dir,
+            progress.step,
+            parallel_dims.world_mesh["dp"].size(),
+            config.model.seq_len,
+            tokenizer,
+            config.transport,
+        )
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     is_first_step = True
@@ -290,6 +302,10 @@ def train(config: RLTrainerConfig):
         # Update the model parameters
         optimizer.step()
         optimizer.zero_grad()
+        # Fix when we have multi-brdcst
+        from prime_rl.trainer.runs import get_runs
+
+        get_runs().ready_to_update = [False] * len(get_runs().ready_to_update)
 
         # Update learning rate scheduler
         current_lr = optimizer.param_groups[0]["lr"]

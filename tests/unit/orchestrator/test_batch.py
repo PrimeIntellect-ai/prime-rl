@@ -1,8 +1,8 @@
 import pytest
 import torch
 
-from prime_rl.orchestrator.batch import prepare_batch
-from prime_rl.orchestrator.types import TrainingExample
+from prime_rl.trainer.batch import prepare_batch
+from prime_rl.transport.types import TrainingExample
 
 
 @pytest.fixture
