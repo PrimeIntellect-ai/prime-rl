@@ -54,7 +54,7 @@ class WandbMonitor:
         if config is not None and isinstance(config, WandbWithExtrasConfig) and config.log_extras:
             if config.log_extras.samples:
                 self.last_log_samples_step = -1
-                self.samples_cols = ["step", "example_id", "prompt", "messages", "input_ids", "reward"]
+                self.samples_cols = ["step", "example_id", "messages", "input_ids", "reward"]
                 self.samples_table = wandb.Table(
                     columns=self.samples_cols,
                     log_mode="INCREMENTAL",
@@ -96,19 +96,14 @@ class WandbMonitor:
         self.logger.info(f"Logging samples to W&B table at step {step}")
         start_time = time.perf_counter()
         for rollout in rollouts:
-            messages = rollout["trajectory"][-1]["prompt"] + rollout["trajectory"][-1]["completion"]
             tokens = rollout["trajectory"][-1]["tokens"]
-            if tokens is not None and "prompt_ids" in tokens:
-                prompt_text = self.tokenizer.decode(tokens["prompt_ids"])
-            else:
-                prompt = rollout["trajectory"][-1]["prompt"]
-                prompt_text = self.tokenizer.apply_chat_template(prompt, tokenize=False)
+            full_ids = tokens["prompt_ids"] + tokens["completion_ids"]
+            messages_text = self.tokenizer.decode(full_ids)
             sample = {
                 "step": step,
                 "example_id": rollout["example_id"],
-                "prompt": prompt_text,
-                "messages": self.tokenizer.apply_chat_template(messages, tokenize=False),
-                "input_ids": str(self.tokenizer.apply_chat_template(messages)),
+                "messages": messages_text,
+                "input_ids": str(full_ids),
                 "reward": rollout["reward"],
             }
             assert list(sample.keys()) == self.samples_cols, (
