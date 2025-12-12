@@ -618,6 +618,13 @@ class OrchestratorConfig(BaseSettings):
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
     ] = None
 
+    use_token_prompts: Annotated[
+        bool,
+        Field(
+            description="Whether the environment should use token prompts for rollouts. Disabling this feature may lead to retokenization discrepancies in multi-turn conversations. For more details read docs/trajectories.md",
+        ),
+    ] = False
+
     @model_validator(mode="after")
     def nccl_max_async_level(self):
         if self.weight_broadcast.type == "nccl":
