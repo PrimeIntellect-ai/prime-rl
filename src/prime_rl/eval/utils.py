@@ -582,6 +582,14 @@ async def run_evals(
     step: int | None = None,
     resume_path: Path | None = None,
 ):
+    # Raise error if resume_path is set with multiple environments
+    if resume_path is not None and len(eval_config.env) > 1:
+        raise ValueError(
+            f"resume_path is set with {len(eval_config.env)} environments configured. "
+            f"All environments will read from and write to the same file ({resume_path / 'results.jsonl'}), "
+            f"which may cause environments to incorrectly skip rollouts based on other environments' data, "
+            f"Consider evaluating environments separately."
+        )
     await asyncio.gather(
         *[
             run_eval(
