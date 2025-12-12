@@ -4,6 +4,7 @@ from typing import Optional, Union
 
 import jinja2
 from fastapi import Request
+from pydantic import Field
 from vllm.entrypoints.openai.protocol import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -26,7 +27,7 @@ logger = init_logger(__name__)
 
 
 class ChatCompletionRequestWithTokens(ChatCompletionRequest):
-    tokens: list[int]
+    tokens: list[int] = Field(description=("Prompt tokens to use for the request."))
 
 
 class OpenAIServingChatCompletionWithTokens(OpenAIServingChat):
