@@ -104,8 +104,4 @@ class OfflineEvalConfig(EvalConfig, BaseSettings):
                 raise ValueError(
                     "resume_path requires save.stream. Streaming saves are required for resume functionality."
                 )
-        if (self.resume_path is not None or self.save.stream) and not self.per_rollout:
-            raise ValueError(
-                "per_rollout is required when using resume_path or save.stream. Both features only work with per-rollout scheduling."
-            )
         return self
