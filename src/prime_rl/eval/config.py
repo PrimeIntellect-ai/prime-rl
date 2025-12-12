@@ -105,3 +105,30 @@ class OfflineEvalConfig(EvalConfig, BaseSettings):
                     "resume_path requires save.stream. Streaming saves are required for resume functionality."
                 )
         return self
+
+    @model_validator(mode="after")
+    def validate_resume_multiple_environments(self):
+        """Prevent resume_path when multiple environments are configured, as they would share the same results.jsonl file."""
+        if self.resume_path is not None and len(self.env) > 1:
+            raise ValueError(
+                f"resume_path cannot be used when evaluating multiple environments ({len(self.env)} environments configured). "
+                f"All environments will read from and write to the same file ({self.resume_path / 'results.jsonl'}), "
+                f"which may cause environments to incorrectly skip rollouts based on other environments' data. "
+                f"Consider evaluating environments separately."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_resume_multiple_checkpoints(self):
+        """Prevent resume_path when multiple checkpoints will be evaluated, as they would share the same results.jsonl file."""
+        if self.resume_path is not None and self.weights_dir is not None:
+            # When weights_dir is set, multiple checkpoint evaluations will occur (at least 1 checkpoint,
+            # and possibly the base model if eval_base=True). All would write to the same results.jsonl file.
+            raise ValueError(
+                f"resume_path cannot be used when evaluating multiple checkpoints (weights_dir is set). "
+                f"When resume_path is set, all checkpoint evaluations (including base model if eval_base=True) "
+                f"would write to the same results.jsonl file ({self.resume_path / 'results.jsonl'}), "
+                f"causing later checkpoints to incorrectly skip examples that were already evaluated for earlier checkpoints. "
+                f"Consider evaluating checkpoints separately, each with its own resume_path, or remove resume_path to use checkpoint-specific output directories."
+            )
+        return self
