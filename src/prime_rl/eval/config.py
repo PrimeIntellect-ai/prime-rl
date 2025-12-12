@@ -98,7 +98,14 @@ class OfflineEvalConfig(EvalConfig, BaseSettings):
 
     @model_validator(mode="after")
     def validate_resume_stream(self):
-        """Enable streaming saves when resume_path is set, as streaming is required for resume functionality."""
-        if self.resume_path is not None and not self.save.stream:
-            self.save.stream = True
+        """Enforce per_rollout when resume_path or save.stream is enabled, as both require per-rollout scheduling."""
+        if self.resume_path is not None:
+            if not self.save.stream:
+                raise ValueError(
+                    "resume_path requires save.stream. Streaming saves are required for resume functionality."
+                )
+        if (self.resume_path is not None or self.save.stream) and not self.per_rollout:
+            raise ValueError(
+                "per_rollout is required when using resume_path or save.stream. Both features only work with per-rollout scheduling."
+            )
         return self
