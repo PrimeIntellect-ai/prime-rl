@@ -7,7 +7,7 @@ import tomli_w
 from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.trajectories import branch_rollout, interleave_rollout
-from prime_rl.transport import TrainingBatch, TrainingExample, setup_transport_sender
+from prime_rl.transport import TrainingBatch, TrainingExample, setup_training_batch_sender
 
 # This monkey patch is necessary to avoid Pydantic validating fields using typing.Iterable (e.g. in multimodal or tool call messages) lazily which leads to tokenization errors, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1249
 monkey_patch_oai_iterable_types()
@@ -169,9 +169,9 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
     ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
 
-    # Setup transport for sending training examples to trainer
-    logger.info(f"Initializing transport ({config.transport})")
-    transport_sender = setup_transport_sender(config.output_dir, config.transport)
+    # Setup training batch sender for sending training examples to trainer
+    logger.info(f"Initializing training batch sender ({config.transport})")
+    training_batch_sender = setup_training_batch_sender(config.output_dir, config.transport)
 
     # Reset weights to base model if starting from scratch
     progress = Progress()
@@ -299,14 +299,13 @@ async def orchestrate(config: OrchestratorConfig):
             f"Converted {len(train_rollouts)} training rollouts to {len(train_examples)} training examples using {config.trajectory_strategy} strategy"
         )
 
-        # Convert TrainingExamples to TransportTrainingExamples and send via transport
-        transport_batch = TrainingBatch(
+        training_batch = TrainingBatch(
             examples=train_examples,
             temperature=config.sampling.temperature,
             seq_len=config.seq_len,
             step=progress.step,
         )
-        transport_sender.send(transport_batch)
+        training_batch_sender.send(training_batch)
 
         # Await and process val results
         await val_task
@@ -468,8 +467,8 @@ async def orchestrate(config: OrchestratorConfig):
         logger.info("Writing final checkpoint")
         ckpt_manager.save(progress, buffer, step=progress.step)
 
-    # Close transport sender
-    transport_sender.close()
+    # Close training batch sender
+    training_batch_sender.close()
 
     logger.success("Orchestrator finished.")
 

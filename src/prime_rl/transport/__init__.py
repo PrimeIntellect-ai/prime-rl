@@ -11,14 +11,14 @@ from prime_rl.transport.filesystem import (
 from prime_rl.transport.types import MicroBatch, TrainingBatch, TrainingExample
 
 
-def setup_transport_sender(output_dir: Path, transport: TransportConfigType) -> TrainingBatchSender:
+def setup_training_batch_sender(output_dir: Path, transport: TransportConfigType) -> TrainingBatchSender:
     if transport.type == "filesystem":
         return FileSystemTrainingBatchSender(output_dir)
     else:
         raise ValueError(f"Invalid transport type: {transport.type}")
 
 
-def setup_transport_receiver(output_dir: Path, transport: TransportConfigType) -> TrainingBatchReceiver:
+def setup_training_batch_receiver(output_dir: Path, transport: TransportConfigType) -> TrainingBatchReceiver:
     if transport.type == "filesystem":
         return FileSystemTrainingBatchReceiver(output_dir)
     else:
@@ -33,6 +33,6 @@ __all__ = [
     "TrainingExample",
     "TrainingBatch",
     "MicroBatch",
-    "setup_transport_sender",
-    "setup_transport_receiver",
+    "setup_training_batch_sender",
+    "setup_training_batch_receiver",
 ]
