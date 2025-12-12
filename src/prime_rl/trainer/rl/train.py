@@ -35,7 +35,6 @@ from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     MemoryProfiler,
     Tensors,
-    maybe_clean,
     setup_torch_distributed,
     print_benchmark,
     get_response_lengths,
@@ -165,7 +164,8 @@ def train(config: RLTrainerConfig):
             # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
             ckpt_interval = config.ckpt and config.ckpt.interval
             interval_to_keep = ckpt_interval if config.weight_broadcast.type == "filesystem" else None
-            maybe_clean(weight_broadcast.broadcast_dir, progress.step, config.max_async_level, interval_to_keep)
+            if config.weight_broadcast.type == "filesystem":
+                weight_broadcast.maybe_clean(config.max_async_level, interval_to_keep)
         else:
             broadcast_weights_time = 0
 
@@ -302,10 +302,6 @@ def train(config: RLTrainerConfig):
         # Update the model parameters
         optimizer.step()
         optimizer.zero_grad()
-        # Fix when we have multi-brdcst
-        from prime_rl.trainer.runs import get_runs
-
-        get_runs().ready_to_update = [False] * len(get_runs().ready_to_update)
 
         # Update learning rate scheduler
         current_lr = optimizer.param_groups[0]["lr"]
