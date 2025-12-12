@@ -438,7 +438,7 @@ class OrchestratorConfig(BaseSettings):
     wandb: WandbWithExtrasConfig | None = None
 
     # The prime monitor configuration
-    prime: PrimeMonitorWithExtrasConfig | None = None
+    prime_monitor: PrimeMonitorWithExtrasConfig | None = None
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
