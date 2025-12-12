@@ -1,7 +1,7 @@
 import pytest
 import torch
 from torch import nn
-from transformers import AutoModelForCausalLM
+from transformers import AutoConfig, AutoModelForCausalLM
 
 from prime_rl.trainer.models.afmoe import AfMoeConfig
 from prime_rl.trainer.models.afmoe import AfMoeForCausalLM as PrimeRLAfMoeForCausalLM
@@ -12,29 +12,13 @@ pytestmark = [pytest.mark.gpu]
 
 def get_model_pairs():
     """Create a pair of Prime-RL AF MoE models for testing."""
-    config = AfMoeConfig(
-        vocab_size=151552,  # Reduced from 200192 to save memory
-        hidden_size=1024,
-        intermediate_size=2048,
-        moe_intermediate_size=256,
-        num_hidden_layers=3,
-        num_dense_layers=1,
-        num_attention_heads=16,
-        num_key_value_heads=4,
-        head_dim=128,
-        num_experts=16,
-        num_experts_per_tok=4,
-        num_shared_experts=2,
-        route_scale=1.0,
-        max_position_embeddings=4096,
-        rope_theta=1000000.0,
-        # Add missing parameters that might be needed
-        norm_topk_prob=True,
-        use_qk_norm=False,
-        attention_bias=False,
-        load_balance_coeff=1e-3,
-        use_grouped_mm=True,
+    config = AutoConfig.from_pretrained(
+            'arcee-ai/Trinity-Mini',
+            trust_remote_code=True,
     )
+    config.num_hidden_layers=3
+    config.num_experts=16,
+    config.num_experts_per_tok=4,
     config._attn_implementation = "sdpa"
 
     with torch.device("cuda"), default_dtype(torch.float32):
