@@ -12,8 +12,9 @@ import torch
 from torch.distributed.tensor.experimental import context_parallel
 from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
-from prime_rl.trainer.ckpt import Progress, setup_ckpt_managers
+from prime_rl.trainer.ckpt import setup_ckpt_managers
 from prime_rl.trainer.sft.config import SFTTrainerConfig
+from prime_rl.trainer.runs import Progress
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
