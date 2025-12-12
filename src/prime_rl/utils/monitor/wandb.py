@@ -101,12 +101,14 @@ class WandbMonitor(Monitor):
         start_time = time.perf_counter()
 
         for rollout in rollouts:
-            messages = rollout["trajectory"][-1]["prompt"] + rollout["trajectory"][-1]["completion"]
+            tokens = rollout["trajectory"][-1]["tokens"]
+            full_ids = tokens["prompt_ids"] + tokens["completion_ids"]
+            messages_text = self.tokenizer.decode(full_ids)
             sample = {
                 "step": step,
                 "example_id": rollout["example_id"],
-                "messages": self.tokenizer.apply_chat_template(messages, tokenize=False),
-                "input_ids": str(self.tokenizer.apply_chat_template(messages)),
+                "messages": messages_text,
+                "input_ids": str(full_ids),
                 "reward": rollout["reward"],
             }
             assert list(sample.keys()) == self.samples_cols, (
