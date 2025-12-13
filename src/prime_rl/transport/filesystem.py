@@ -5,6 +5,7 @@ from prime_rl.transport.base import MicroBatchReceiver, MicroBatchSender, Traini
 from prime_rl.transport.types import MicroBatch, TrainingBatch
 from prime_rl.utils.pathing import get_rollout_dir, get_step_path, sync_wait_for_path
 
+BATCH_FILE_TMP_NAME = "rollouts.bin.tmp"
 BATCH_FILE_NAME = "rollouts.bin"
 
 
@@ -21,8 +22,10 @@ class FileSystemTrainingBatchSender(TrainingBatchSender):
         step_path.mkdir(parents=True, exist_ok=True)
 
         buffer = self.encoder.encode(batch)
-        with open(step_path / BATCH_FILE_NAME, "wb") as f:
+        tmp_path = step_path / BATCH_FILE_TMP_NAME
+        with open(tmp_path, "wb") as f:
             f.write(buffer)
+        tmp_path.rename(step_path / BATCH_FILE_NAME)
 
 
 class FileSystemTrainingBatchReceiver(TrainingBatchReceiver):
@@ -85,8 +88,10 @@ class FileSystemMicroBatchSender(MicroBatchSender):
 
         for data_rank in range(self.data_world_size):
             buffer = self.encoder.encode(micro_batch_grid[data_rank])
-            with open(step_path / f"rank_{data_rank}.bin", "wb") as f:
+            tmp_path = step_path / f"rank_{data_rank}.bin.tmp"
+            with open(tmp_path, "wb") as f:
                 f.write(buffer)
+            tmp_path.rename(step_path / f"rank_{data_rank}.bin")
         self.current_step += 1
 
 
