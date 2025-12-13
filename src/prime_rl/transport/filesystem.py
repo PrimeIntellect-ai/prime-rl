@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from prime_rl.trainer.runs import get_runs
 from prime_rl.transport.base import MicroBatchReceiver, MicroBatchSender, TrainingBatchReceiver, TrainingBatchSender
 from prime_rl.transport.types import MicroBatch, TrainingBatch
 from prime_rl.utils.pathing import get_rollout_dir, get_step_path, sync_wait_for_path
@@ -25,30 +26,42 @@ class FileSystemTrainingBatchSender(TrainingBatchSender):
 
 
 class FileSystemTrainingBatchReceiver(TrainingBatchReceiver):
-    """Filesystem-based training batch receiver that reads batches from disk."""
+    """Filesystem-based training batch receiver that reads batches from multiple run directories."""
 
-    def __init__(self, output_dir: Path, current_step: int = 0):
-        super().__init__(output_dir)
-        self.rollout_dir = get_rollout_dir(output_dir)
-        self.current_step = current_step
+    def __init__(self) -> None:
+        super().__init__()
+        self.runs = get_runs()
 
-    def _get_batch_path(self) -> Path:
-        return get_step_path(self.rollout_dir, self.current_step) / BATCH_FILE_NAME
-
-    def wait(self) -> None:
-        """Wait for the batch file to appear on disk."""
-        sync_wait_for_path(self._get_batch_path())
+    def _get_batch_path(self, idx: int) -> Path:
+        """Get the batch file path for a specific run at its current step."""
+        run_dir = self.runs.get_run_dir(idx)
+        rollout_dir = get_rollout_dir(run_dir)
+        step = self.runs.progress[idx].step
+        return get_step_path(rollout_dir, step) / BATCH_FILE_NAME
 
     def can_receive(self) -> bool:
-        """Check if the batch file exists."""
-        return self._get_batch_path().exists()
+        """Check if any run has a batch file available."""
+        for idx in self.runs.used_idxs:
+            if not self.runs.ready_to_update[idx] and self._get_batch_path(idx).exists():
+                return True
+        return False
 
-    def receive(self) -> TrainingBatch:
-        """Read and return the batch from disk."""
-        with open(self._get_batch_path(), "rb") as f:
-            batch: TrainingBatch = self.decoder.decode(f.read())
-        self.current_step += 1
-        return batch
+    def receive(self) -> list[TrainingBatch]:
+        """Read and return all available batches from all runs."""
+        batches: list[TrainingBatch] = []
+        for idx in list(self.runs.used_idxs):
+            if self.runs.ready_to_update[idx]:
+                continue
+            batch_path = self._get_batch_path(idx)
+            if batch_path.exists():
+                try:
+                    with open(batch_path, "rb") as f:
+                        batch: TrainingBatch = self.decoder.decode(f.read())
+                    batch.run_idx = idx
+                    batches.append(batch)
+                except Exception as e:
+                    self.logger.error(f"Error loading rollouts for run {idx}: {e}")
+        return batches
 
 
 class FileSystemMicroBatchSender(MicroBatchSender):

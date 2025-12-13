@@ -32,27 +32,21 @@ class TrainingBatchSender(ABC):
 class TrainingBatchReceiver(ABC):
     """Base class for receiving training examples from orchestrator."""
 
-    def __init__(self, output_dir: Path):
+    def __init__(self) -> None:
         self.logger = get_logger()
         self.decoder = msgspec.msgpack.Decoder(type=TrainingBatch)
-        self.output_dir = output_dir
-
-    @abstractmethod
-    def wait(self) -> None:
-        """Wait for a batch to be available."""
-        pass
 
     @abstractmethod
     def can_receive(self) -> bool:
-        """Check if a batch is available."""
+        """Check if any batch is available."""
         pass
 
     @abstractmethod
-    def receive(self) -> TrainingBatch:
-        """Receive a batch of training examples.
+    def receive(self) -> list[TrainingBatch]:
+        """Receive available batches from all runs.
 
         Returns:
-            The batch of training examples with metadata.
+            List of training batches with idx field set.
         """
         pass
 

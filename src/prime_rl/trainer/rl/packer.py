@@ -1,6 +1,5 @@
 import shutil
 import time
-from pathlib import Path
 
 import torch
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -9,7 +8,7 @@ from prime_rl.trainer.batch import prepare_batch
 from prime_rl.trainer.runs import get_runs
 from prime_rl.transport import TrainingBatch, TrainingExample, TransportConfigType, setup_training_batch_receiver
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.utils import get_rollout_dir, get_step_path
+from prime_rl.utils.utils import get_rollout_dir
 
 
 class Packer:
@@ -20,33 +19,13 @@ class Packer:
         self.seq_len = seq_len
         self.tokenizer = tokenizer
         self.trainer_step = 0
-        self.receiver = setup_training_batch_receiver(self.runs.output_dir, config)
+        self.receiver = setup_training_batch_receiver(config)
         shutil.rmtree(get_rollout_dir(self.runs.output_dir), ignore_errors=True)
 
-    def get_rollout_paths(self) -> list[tuple[int, Path]]:
-        return [
-            (
-                idx,
-                get_step_path(get_rollout_dir(self.runs.get_run_dir(idx)), self.runs.progress[idx].step)
-                / "rollouts.bin",
-            )
-            for idx in self.runs.used_idxs
-        ]
-
     def get_batch(self) -> dict[int, TrainingBatch]:
-        rollouts: dict[int, TrainingBatch] = {}
         self.runs.check_for_changes()
-        self.logger.debug(f"Looking in {self.get_rollout_paths()}")
-        for idx, rollout_path in self.get_rollout_paths():
-            if rollout_path.exists() and not self.runs.ready_to_update[idx]:
-                try:
-                    # TODO: Use the receiver properly
-                    rollouts[idx] = self.receiver.decoder.decode(rollout_path.read_bytes())
-                except Exception as e:
-                    # This might happens if run is deleted midway in this loop
-                    self.logger.error(f"Error loading rollouts for run {idx}: {e}")
-                    self.runs.check_for_changes()
-        return rollouts
+        batches = self.receiver.receive()
+        return {batch.run_idx: batch for batch in batches if batch.run_idx is not None}
 
     def has_enough_tokens(self, rollouts: dict[int, TrainingBatch]) -> bool:
         tokens = 0

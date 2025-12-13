@@ -18,9 +18,9 @@ def setup_training_batch_sender(output_dir: Path, transport: TransportConfigType
         raise ValueError(f"Invalid transport type: {transport.type}")
 
 
-def setup_training_batch_receiver(output_dir: Path, transport: TransportConfigType) -> TrainingBatchReceiver:
+def setup_training_batch_receiver(transport: TransportConfigType) -> TrainingBatchReceiver:
     if transport.type == "filesystem":
-        return FileSystemTrainingBatchReceiver(output_dir)
+        return FileSystemTrainingBatchReceiver()
     else:
         raise ValueError(f"Invalid transport type: {transport.type}")
 

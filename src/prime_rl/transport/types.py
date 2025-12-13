@@ -13,13 +13,14 @@ class TrainingExample(msgspec.Struct, array_like=True, gc=False, omit_defaults=T
     advantage: float | None = None
 
 
-class TrainingBatch(msgspec.Struct, array_like=True, gc=False):
+class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A batch of training examples with metadata for transport."""
 
     examples: list[TrainingExample]
     temperature: float
     seq_len: int
     step: int
+    run_idx: int | None = None
 
 
 # Packer -> Trainer
