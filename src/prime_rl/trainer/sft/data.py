@@ -597,11 +597,13 @@ def setup_dataset(
 
 
 def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfigType) -> StatefulDataLoader:
+    pack_len = config.packing_seq_len or config.seq_len * config.micro_batch_size
     if config.pack_function == "stack":
-        stacking_dataset = StackDataset(dataset, config.seq_len * config.micro_batch_size)
+        stacking_dataset = StackDataset(dataset, pack_len)
         return StatefulDataLoader(stacking_dataset, batch_size=1, collate_fn=stack_collate)
     elif config.pack_function == "cat":
-        packing_dataset = CatDataset(dataset, config.seq_len * config.micro_batch_size)
+        packing_dataset = CatDataset(dataset, pack_len)
         return StatefulDataLoader(packing_dataset, batch_size=1, collate_fn=cat_collate)
     else:
         raise ValueError(f"Invalid pack function: {config.pack_function}")
+

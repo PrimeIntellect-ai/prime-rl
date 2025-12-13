@@ -487,6 +487,20 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = 2048
 
+    collate_mode: Annotated[
+        Literal["packing", "padding"],
+        Field(description="Collate mode to use for orchestrator-prepared batches."),
+    ] = "packing"
+
+    # Optional packed length to decouple training bin size from per-sample context.
+    packing_seq_len: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Packed sequence length when using collate_mode=packing. If None, defaults to seq_len * micro_batch_size.",
+        ),
+    ] = None
+
     mask_env_responses: Annotated[
         bool,
         Field(
@@ -561,6 +575,14 @@ class OrchestratorConfig(BaseSettings):
     def validate_batch_size(self):
         if self.batch_size % self.rollouts_per_example != 0:
             raise ValueError("Batch size must be divisible by the number of samples per problem")
+
+        if self.batch_size % self.micro_batch_size != 0:
+            raise ValueError("Batch size must be divisible by micro batch size")
+        if self.batch_size < self.micro_batch_size:
+            raise ValueError("Batch size must be greater than or equal to micro batch size")
+        if self.packing_seq_len is not None and self.packing_seq_len < self.seq_len:
+            raise ValueError("packing_seq_len must be >= seq_len when configured")
+
         return self
 
     @model_validator(mode="after")
