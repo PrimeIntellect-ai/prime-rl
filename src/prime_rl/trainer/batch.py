@@ -52,11 +52,11 @@ def packed_samples_into_micro_bs(samples: list[MicroBatch], max_seq_len: int) ->
         for bin_content in micro_batches:
             # Check if sequence fits in this bin
             if len(bin_content.input_ids) + len(sample.input_ids) <= max_seq_len:
-                bin_content.input_ids += sample.input_ids
-                bin_content.loss_mask += sample.loss_mask
-                bin_content.advantages += sample.advantages
-                bin_content.inference_logprobs += sample.inference_logprobs
-                bin_content.position_ids += sample.position_ids
+                bin_content.input_ids.extend(sample.input_ids)
+                bin_content.loss_mask.extend(sample.loss_mask)
+                bin_content.advantages.extend(sample.advantages)
+                bin_content.inference_logprobs.extend(sample.inference_logprobs)
+                bin_content.position_ids.extend(sample.position_ids)
                 break
         else:
             micro_batches.append(sample)
