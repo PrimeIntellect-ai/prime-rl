@@ -131,6 +131,13 @@ class InferenceConfig(BaseSettings):
         ),
     ] = False
 
+    max_loras: Annotated[
+        int,
+        Field(
+            description="The maximum number of LoRAs to use. Passed to vLLM as `--max-loras`",
+        ),
+    ] = 8
+
     max_lora_rank: Annotated[
         int | None,
         Field(
@@ -183,9 +190,7 @@ class InferenceConfig(BaseSettings):
                     self.max_lora_rank = valid_rank
                     break
             else:
-                raise ValueError(
-                    f"max_lora_rank={original_rank} exceeds vLLM maximum of {VALID_VLLM_LORA_RANKS[-1]}"
-                )
+                raise ValueError(f"max_lora_rank={original_rank} exceeds vLLM maximum of {VALID_VLLM_LORA_RANKS[-1]}")
         return self
 
     def to_vllm(self) -> Namespace:
@@ -205,6 +210,7 @@ class InferenceConfig(BaseSettings):
             "parallel.tp": "tensor_parallel_size",
             "parallel.dp": "data_parallel_size",
             "enable_lora": "enable_lora",
+            "max_loras": "max_loras",
             "max_lora_rank": "max_lora_rank",
             "gpu_memory_utilization": "gpu_memory_utilization",
         }
