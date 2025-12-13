@@ -135,6 +135,8 @@ class ModelConfig(BaseConfig):
         ),
     ] = "Qwen/Qwen3-0.6B"
 
+    seq_len: Annotated[int, Field(description="The sequence length to use for the model.")] = 2048
+
     attn: Annotated[AttnImplementation, Field(description="The attention implementation to use.")] = "flash_attention_2"
 
     compile: Annotated[

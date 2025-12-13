@@ -13,9 +13,11 @@ from vllm.distributed.utils import StatelessProcessGroup
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.rl.config import NCCLWeightBroadcastConfig
+from prime_rl.trainer.runs import get_runs
 from prime_rl.trainer.utils import get_world
 from prime_rl.trainer.weights import get_max_layer_num
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.utils import get_broadcast_dir, get_step_path
 
 
 def broadcast_integer(integer: int, communicator: PyNcclCommunicator) -> None:
@@ -143,6 +145,7 @@ class NCCLWeightBroadcast(WeightBroadcast):
         super().__init__(output_dir)
         self.logger = get_logger()
         self.world = get_world()
+        self.runs = get_runs()
         self.nccl_broadcast_sender = NCCLWeightBroadcastSender(
             config.host, config.port, 0, config.inference_world_size + 1, device, config.timeout
         )
@@ -155,6 +158,29 @@ class NCCLWeightBroadcast(WeightBroadcast):
         self.logger.debug("Starting broadcasting weights to inference engine via NCCL")
         start_time = time.perf_counter()
         if self.world.is_master:
-            self.notify_orchestrator(step)
+            self.notify_orchestrator()
         self.nccl_broadcast_sender.broadcast_weights(model, step)
         self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
+
+    def notify_orchestrator(self):
+        """Notify the orchestrator that the weights have been broadcast by writing a 'STABLE' file to a shared filesystem."""
+        if self.world.is_master:
+            for idx in self.runs.used_idxs:
+                if not self.runs.ready_to_update[idx]:
+                    continue
+
+                try:
+                    save_dir = get_step_path(
+                        get_broadcast_dir(self.runs.get_run_dir(idx)), self.runs.progress[idx].step
+                    )
+                    save_dir.mkdir(parents=True, exist_ok=True)
+
+                    # Notify the orchestrator at the end of step to signal that it is safe to load weights from shared filesystem
+                    stable_file = save_dir / "STABLE"
+                    stable_file.touch()
+                except FileNotFoundError:
+                    self.logger.warning(f"Run {idx} is deleted, skipping")
+                except Exception as e:
+                    self.logger.error(f"Error broadcasting weights for run {idx}: {e}")
+                finally:
+                    self.runs.ready_to_update[idx] = False
