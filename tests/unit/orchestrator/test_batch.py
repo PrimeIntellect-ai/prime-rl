@@ -1,5 +1,4 @@
 import pytest
-import torch
 
 from prime_rl.trainer.batch import prepare_batch
 from prime_rl.transport.types import TrainingExample
@@ -10,9 +9,9 @@ def make_training_example():
     def _make_training_example() -> TrainingExample:
         return TrainingExample(
             prompt_ids=[1, 2],
-            prompt_mask=[0, 0],
+            prompt_mask=[False, False],
             completion_ids=[3, 4],
-            completion_mask=[1, 1],
+            completion_mask=[True, True],
             completion_logprobs=[-0.1, -0.2],
             advantage=1.0,
         )
@@ -44,10 +43,10 @@ def test_prepare_batch_balances_micro_batches_across_workers(
     # Verify real rollouts have expected non-zero advantages and loss mask
     for batch in flat_batches[: len(examples)]:
         print(batch)
-        assert torch.count_nonzero(batch["advantages"]) == 4
-        assert torch.count_nonzero(batch["loss_mask"]) == 2
+        assert sum(1 for advantage in batch.advantages if advantage != 0.0) == 4
+        assert sum(1 for loss_mask in batch.loss_mask if loss_mask) == 2
 
     # Verify padded batches have zero advantages and loss mask
     for batch in flat_batches[len(examples) :]:
-        assert torch.count_nonzero(batch["advantages"]) == 0
-        assert torch.count_nonzero(batch["loss_mask"]) == 0
+        assert sum(1 for advantage in batch.advantages if advantage != 0.0) == 0
+        assert sum(1 for loss_mask in batch.loss_mask if loss_mask) == 0

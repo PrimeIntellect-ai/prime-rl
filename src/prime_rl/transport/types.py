@@ -6,9 +6,9 @@ class TrainingExample(msgspec.Struct, array_like=True, gc=False, omit_defaults=T
     """A single training example."""
 
     prompt_ids: list[int]
-    prompt_mask: list[int]
+    prompt_mask: list[bool]
     completion_ids: list[int]
-    completion_mask: list[int]
+    completion_mask: list[bool]
     completion_logprobs: list[float]
     advantage: float | None = None
 
@@ -31,4 +31,5 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     loss_mask: list[bool]
     advantages: list[float]
     inference_logprobs: list[float]
+    temperature: float | None = None
     position_ids: list[int] | None = None
