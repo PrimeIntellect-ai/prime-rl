@@ -30,7 +30,8 @@ from vllm.entrypoints.openai.api_server import (
 from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
 from vllm.entrypoints.openai.tool_parsers import ToolParserManager
 from vllm.logger import init_logger
-from vllm.utils.argparse_utils import FlexibleArgumentParser, decorate_logs
+from vllm.utils.argparse_utils import FlexibleArgumentParser
+from vllm.utils.system_utils import decorate_logs
 
 from prime_rl.inference.config import InferenceConfig
 
