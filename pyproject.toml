@@ -17,7 +17,7 @@ dependencies = [
     "pydantic-settings>=2.10.1",
     "pylatexenc>=2.10",
     "tomli>=2.2.1",
-    "torch>=2.8.0",
+    "torch>=2.9.0",
     "transformers>=4.56.0",
     "uvloop>=0.21.0",
     "vllm==0.10.2",

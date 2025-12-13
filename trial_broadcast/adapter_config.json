@@ -1,0 +1,13 @@
+{
+  "peft_type": "LORA",
+  "task_type": "CAUSAL_LM",
+  "base_model_name_or_path": "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT",
+  "r": 8,
+  "lora_alpha": 16.0,
+  "lora_dropout": 0.0,
+  "bias": "none",
+  "target_modules": [
+    "down_proj"
+  ],
+  "modules_to_save": null
+}
