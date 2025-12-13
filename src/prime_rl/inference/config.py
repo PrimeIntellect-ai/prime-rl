@@ -146,11 +146,11 @@ class InferenceConfig(BaseSettings):
     ] = 0.9
 
     seed: Annotated[
-        int | None,
+        int,
         Field(
             description="Seed the inference components. If None, no seeding is used. Passed to vLLM as `--seed`",
         ),
-    ] = None
+    ] = 0
 
     weight_broadcast: Annotated[WeightBroadcastConfig, Field(description="The weight broadcast config.")] = (
         WeightBroadcastConfig()
