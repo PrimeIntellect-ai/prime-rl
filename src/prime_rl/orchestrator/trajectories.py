@@ -28,6 +28,8 @@ def interleave_rollout(state: vf.State) -> list[TrainingExample]:
         advantage=None,
     )
 
+    has_error = state["error"] is not None
+
     # Interleave all other trajectory steps into completion
     prefix_tokens = first_step["tokens"]["prompt_ids"] + first_step["tokens"]["completion_ids"]
     for step_idx, step in enumerate(trajectory[1:], start=2):
@@ -51,7 +53,10 @@ def interleave_rollout(state: vf.State) -> list[TrainingExample]:
         completion_ids = deepcopy(tokens["completion_ids"])
         completion_logprobs = deepcopy(tokens["completion_logprobs"])
         interleaved_rollout["completion_ids"].extend(completion_ids)
-        interleaved_rollout["completion_mask"].extend([1] * len(completion_ids))
+        if has_error:
+            interleaved_rollout["completion_mask"].extend([0] * len(tokens["completion_mask"]))
+        else:
+            interleaved_rollout["completion_mask"].extend(deepcopy(tokens["completion_mask"]))
         interleaved_rollout["completion_logprobs"].extend(completion_logprobs)
 
         # New prefix is the the current prompt and completion ids concatenated
@@ -63,14 +68,19 @@ def interleave_rollout(state: vf.State) -> list[TrainingExample]:
 def branch_rollout(state: vf.State) -> list[TrainingExample]:
     """Convert vf.State to *multiple* trainable rollouts using branching trajectories strategy."""
     rollouts = []
+    has_error = state["error"] is not None
     for step in state["trajectory"]:
         assert "tokens" in step
         tokens = step["tokens"]
+        if has_error:
+            completion_mask = [0] * len(tokens["completion_mask"])
+        else:
+            completion_mask = deepcopy(tokens["completion_mask"])
         rollout = TrainingExample(
             prompt_ids=deepcopy(tokens["prompt_ids"]),
             prompt_mask=deepcopy(tokens["prompt_mask"]),
             completion_ids=deepcopy(tokens["completion_ids"]),
-            completion_mask=deepcopy(tokens["completion_mask"]),
+            completion_mask=completion_mask,
             completion_logprobs=deepcopy(tokens["completion_logprobs"]),
             advantage=None,
         )
