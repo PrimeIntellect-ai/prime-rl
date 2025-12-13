@@ -51,6 +51,42 @@ def prepare_sample(
     )
 
 
+def pad_micro_batch(micro_batch: MicroBatch, padding_size: int) -> MicroBatch:
+    """
+    Pad a micro batch with the given padding size sample
+    Return the padded micro batch.
+    Args:
+        micro_batch: The micro batch to pad.
+        padding_size: The number of padding tokens to add.
+    Returns:
+        The padded micro batch.
+    """
+    padding_shape = (1, padding_size)
+    pad_input_ids = torch.ones(
+        padding_shape, dtype=micro_batch["input_ids"].dtype, device=micro_batch["input_ids"].device
+    )
+    pad_advantages = torch.zeros(
+        padding_shape, dtype=micro_batch["advantages"].dtype, device=micro_batch["advantages"].device
+    )
+    pad_loss_mask = torch.zeros(
+        padding_shape, dtype=micro_batch["loss_mask"].dtype, device=micro_batch["loss_mask"].device
+    )
+    pad_position_ids = torch.arange(padding_size).unsqueeze(0)
+    pad_inference_logprobs = torch.zeros(
+        padding_shape,
+        dtype=micro_batch["inference_logprobs"].dtype,
+        device=micro_batch["inference_logprobs"].device,
+    )
+
+    for k, v in zip(
+        ["input_ids", "advantages", "loss_mask", "position_ids", "inference_logprobs"],
+        [pad_input_ids, pad_advantages, pad_loss_mask, pad_position_ids, pad_inference_logprobs],
+    ):
+        micro_batch[k] = torch.cat([micro_batch[k], v], dim=1)
+
+    return micro_batch
+
+
 def prepare_micro_batch(samples: list[MicroBatch], temperature: float):
     micro_batch = {}
 
@@ -94,7 +130,7 @@ def packed_samples_into_micro_bs(
 
 
 def prepare_micro_batch_packing(
-    samples: list[TensorTrainingExample], max_seq_len: int, temperature: float
+    samples: list[TensorTrainingExample], max_seq_len: int, temperature: float, pad_to_multiple_of: int = 1
 ) -> MicroBatch:
     """
     Prepare a micro batch for packing mode. take multi sample and return a batch of shape [1, micro_bs * max_seq_len].
@@ -110,6 +146,10 @@ def prepare_micro_batch_packing(
 
     micro_batch["temperature"] = temperature
 
+    padding_size = (pad_to_multiple_of - (micro_batch["input_ids"].shape[1] % pad_to_multiple_of)) % pad_to_multiple_of
+    if pad_to_multiple_of > 1 and padding_size > 0:
+        micro_batch = pad_micro_batch(micro_batch, padding_size)
+
     return micro_batch
 
 
@@ -118,6 +158,7 @@ def prepare_batch(
     temperature: float,
     seq_len: int,
     num_train_workers: int,
+    pad_to_multiple_of: int = 1,
 ) -> list[list[MicroBatch]]:
     """
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
@@ -130,7 +171,8 @@ def prepare_batch(
 
     micro_batches_list = packed_samples_into_micro_bs(all_samples, max_seq_len)
     micro_batches = [
-        prepare_micro_batch_packing(micro_batch, max_seq_len, temperature) for micro_batch in micro_batches_list
+        prepare_micro_batch_packing(micro_batch, max_seq_len, temperature, pad_to_multiple_of)
+        for micro_batch in micro_batches_list
     ]
 
     num_padding_batch = -len(micro_batches) % num_train_workers
