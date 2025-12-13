@@ -21,9 +21,9 @@ def interleave_rollout(state: vf.State) -> list[TrainingExample]:
     first_step = trajectory[0]
     interleaved_rollout = TrainingExample(
         prompt_ids=deepcopy(first_step["tokens"]["prompt_ids"]),
-        prompt_mask=[i != 0 for i in first_step["tokens"]["prompt_ids"]],
+        prompt_mask=[i != 0 for i in first_step["tokens"]["prompt_mask"]],
         completion_ids=deepcopy(first_step["tokens"]["completion_ids"]),
-        completion_mask=[i != 0 for i in first_step["tokens"]["completion_ids"]],
+        completion_mask=[i != 0 for i in first_step["tokens"]["completion_mask"]],
         completion_logprobs=deepcopy(first_step["tokens"]["completion_logprobs"]),
         advantage=None,
     )
@@ -68,9 +68,9 @@ def branch_rollout(state: vf.State) -> list[TrainingExample]:
         tokens = step["tokens"]
         rollout = TrainingExample(
             prompt_ids=deepcopy(tokens["prompt_ids"]),
-            prompt_mask=[i != 0 for i in tokens["prompt_ids"]],
+            prompt_mask=[i != 0 for i in tokens["prompt_mask"]],
             completion_ids=deepcopy(tokens["completion_ids"]),
-            completion_mask=[i != 0 for i in tokens["completion_ids"]],
+            completion_mask=[i != 0 for i in tokens["completion_mask"]],
             completion_logprobs=deepcopy(tokens["completion_logprobs"]),
             advantage=None,
         )
