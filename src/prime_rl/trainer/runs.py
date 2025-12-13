@@ -1,11 +1,13 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable, Optional
 
 import tomli
 
-from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from prime_rl.orchestrator.config import OrchestratorConfig
 
 
 @dataclass
@@ -28,13 +30,13 @@ class Runs:
         self.unused_idxs = {i for i in range(self.max_runs)}
 
         self.progress: dict[int, Progress] = {}
-        self.config: dict[int, OrchestratorConfig] = {}
+        self.config: dict[int, "OrchestratorConfig"] = {}
         self.ready_to_update = [False] * max_runs
 
         self._deletion_hooks: list[Callable[[int, str], None]] = []
         self._creation_hooks: list[Callable[[int, str], None]] = []
 
-    def get_orchestrator_config(self, run_id: str) -> OrchestratorConfig | None:
+    def get_orchestrator_config(self, run_id: str) -> Optional["OrchestratorConfig"]:
         # Load orchestrator config first to validate it
         config_path = self.output_dir / run_id / "configs" / "orch.toml"
         config_dir = config_path.parent
@@ -56,6 +58,8 @@ class Runs:
                 config_dict = tomli.load(f)
 
             # Parse config with Pydantic validation
+            from prime_rl.orchestrator.config import OrchestratorConfig
+
             config = OrchestratorConfig(**config_dict)
 
             # Remove error file if it exists (config is now valid)

@@ -49,6 +49,7 @@ class FileSystemTrainingBatchReceiver(TrainingBatchReceiver):
     def receive(self) -> list[TrainingBatch]:
         """Read and return all available batches from all runs."""
         batches: list[TrainingBatch] = []
+        self.logger.debug(f"Looking for batches in {[self._get_batch_path(idx) for idx in self.runs.used_idxs]}")
         for idx in list(self.runs.used_idxs):
             if self.runs.ready_to_update[idx]:
                 continue
