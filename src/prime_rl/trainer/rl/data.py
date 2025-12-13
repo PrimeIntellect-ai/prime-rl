@@ -1,14 +1,41 @@
 from pathlib import Path
+from typing import TypedDict
 
 import torch
+from jaxtyping import Bool, Float, Int
+from torch import Tensor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.trainer.batch import MicroBatch
 from prime_rl.trainer.rl.config import FakeDataLoaderConfig
 from prime_rl.trainer.rl.packer import Packer
 from prime_rl.trainer.world import get_world
-from prime_rl.transport import TransportConfigType
-from prime_rl.utils.utils import get_rollout_dir, sync_wait_for_path
+from prime_rl.transport import MicroBatch, MicroBatchReceiver, TransportConfigType, setup_micro_batch_receiver
+
+
+class TensorMicroBatch(TypedDict):
+    """A micro batch of data for training."""
+
+    # Token level
+    input_ids: Int[Tensor, "batch seq"]
+    position_ids: Int[Tensor, "batch seq"]
+    advantages: Float[Tensor, "batch seq"]
+    inference_logprobs: Float[Tensor, "batch seq"]
+    loss_mask: Bool[Tensor, "batch seq"]
+
+    # Batch level
+    temperature: float
+
+
+def micro_batch_to_tensor(micro_batch: MicroBatch) -> TensorMicroBatch:
+    """Convert a MicroBatch (msgspec struct with lists) to a TensorMicroBatch (dict with tensors)."""
+    return TensorMicroBatch(
+        input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),
+        position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
+        advantages=torch.tensor(micro_batch.advantages, dtype=torch.float).unsqueeze(0),
+        inference_logprobs=torch.tensor(micro_batch.inference_logprobs, dtype=torch.float).unsqueeze(0),
+        loss_mask=torch.tensor(micro_batch.loss_mask, dtype=torch.bool).unsqueeze(0),
+        temperature=micro_batch.temperature if micro_batch.temperature is not None else 1.0,
+    )
 
 
 class FakeDataLoader:
@@ -20,10 +47,10 @@ class FakeDataLoader:
     def wait_for_batch(self) -> None:
         return
 
-    def get_batch(self) -> list[MicroBatch]:
+    def get_batch(self) -> list[TensorMicroBatch]:
         return [self._get_micro_batch() for _ in range(self.num_micro_batches)]
 
-    def _get_micro_batch(self) -> MicroBatch:
+    def _get_micro_batch(self) -> TensorMicroBatch:
         return {
             "input_ids": torch.randint(
                 0,
@@ -53,23 +80,24 @@ class DataLoader:
         tokenizer: PreTrainedTokenizer,
         config: TransportConfigType,
     ):
-        self.rollout_dir = get_rollout_dir(output_dir)
-        self.current_step = start_step
         self.world = get_world()
 
         if self.world.is_master:
-            self.packer = Packer(dp_world_size=dp_world_size, seq_len=seq_len, tokenizer=tokenizer, config=config)
-            self.packer.trainer_step = start_step
+            self.packer = Packer(
+                dp_world_size=dp_world_size,
+                seq_len=seq_len,
+                tokenizer=tokenizer,
+                config=config,
+                start_step=start_step,
+            )
 
-    def get_rollout_path(self) -> Path:
-        return self.rollout_dir / f"step_{self.current_step}" / f"rank_{self.world.rank}.pt"
+        self.receiver: MicroBatchReceiver = setup_micro_batch_receiver(output_dir, self.world.rank, start_step, config)
 
     def wait_for_batch(self) -> None:
         if self.world.is_master:
             self.packer.pack()
-        sync_wait_for_path(self.get_rollout_path())
+        self.receiver.wait()
 
-    def get_batch(self) -> list[MicroBatch]:
-        batches = torch.load(self.get_rollout_path())
-        self.current_step += 1
-        return batches
+    def get_batch(self) -> list[TensorMicroBatch]:
+        micro_batches = self.receiver.receive()
+        return [micro_batch_to_tensor(mb) for mb in micro_batches]

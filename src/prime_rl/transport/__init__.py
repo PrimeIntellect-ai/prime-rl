@@ -25,16 +25,20 @@ def setup_training_batch_receiver(transport: TransportConfigType) -> TrainingBat
         raise ValueError(f"Invalid transport type: {transport.type}")
 
 
-def setup_micro_batch_sender(output_dir: Path, transport: TransportConfigType) -> MicroBatchSender:
+def setup_micro_batch_sender(
+    output_dir: Path, data_world_size: int, current_step: int, transport: TransportConfigType
+) -> MicroBatchSender:
     if transport.type == "filesystem":
-        return FileSystemMicroBatchSender(output_dir)
+        return FileSystemMicroBatchSender(output_dir, data_world_size, current_step)
     else:
         raise ValueError(f"Invalid transport type: {transport.type}")
 
 
-def setup_micro_batch_receiver(output_dir: Path, transport: TransportConfigType) -> MicroBatchReceiver:
+def setup_micro_batch_receiver(
+    output_dir: Path, data_rank: int, current_step: int, transport: TransportConfigType
+) -> MicroBatchReceiver:
     if transport.type == "filesystem":
-        return FileSystemMicroBatchReceiver(output_dir)
+        return FileSystemMicroBatchReceiver(output_dir, data_rank, current_step)
     else:
         raise ValueError(f"Invalid transport type: {transport.type}")
 
@@ -44,9 +48,13 @@ __all__ = [
     "FileSystemTrainingBatchReceiver",
     "FileSystemMicroBatchSender",
     "FileSystemMicroBatchReceiver",
+    "MicroBatchReceiver",
+    "MicroBatchSender",
     "TrainingExample",
     "TrainingBatch",
     "MicroBatch",
     "setup_training_batch_sender",
     "setup_training_batch_receiver",
+    "setup_micro_batch_sender",
+    "setup_micro_batch_receiver",
 ]

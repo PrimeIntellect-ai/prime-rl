@@ -1,26 +1,41 @@
 import shutil
 import time
 
-import torch
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.batch import prepare_batch
 from prime_rl.trainer.runs import get_runs
-from prime_rl.transport import TrainingBatch, TrainingExample, TransportConfigType, setup_training_batch_receiver
+from prime_rl.transport import (
+    MicroBatchSender,
+    TrainingBatch,
+    TrainingExample,
+    TransportConfigType,
+    setup_micro_batch_sender,
+    setup_training_batch_receiver,
+)
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.utils import get_rollout_dir
+from prime_rl.utils.pathing import get_rollout_dir
 
 
 class Packer:
-    def __init__(self, dp_world_size: int, seq_len: int, tokenizer: PreTrainedTokenizer, config: TransportConfigType):
+    def __init__(
+        self,
+        dp_world_size: int,
+        seq_len: int,
+        tokenizer: PreTrainedTokenizer,
+        config: TransportConfigType,
+        start_step: int = 0,
+    ):
         self.logger = get_logger()
         self.runs = get_runs()
         self.dp_world_size = dp_world_size
         self.seq_len = seq_len
         self.tokenizer = tokenizer
-        self.trainer_step = 0
         self.receiver = setup_training_batch_receiver(config)
         shutil.rmtree(get_rollout_dir(self.runs.output_dir), ignore_errors=True)
+        self.sender: MicroBatchSender = setup_micro_batch_sender(
+            self.runs.output_dir, dp_world_size, start_step, config
+        )
 
     def get_batch(self) -> dict[int, TrainingBatch]:
         self.runs.check_for_changes()
@@ -63,7 +78,7 @@ class Packer:
 
         # TODO: Handle different temperatures for each run
         some_temperature = next(iter(training_batches.values())).temperature
-        all_data_ranks_batches = prepare_batch(
+        micro_batch_grid = prepare_batch(
             rollouts=train_examples,
             temperature=some_temperature,
             seq_len=self.seq_len,
@@ -71,13 +86,4 @@ class Packer:
             # idxs=train_idxs, # Needed for lora later
         )
 
-        step_path = get_rollout_dir(self.runs.output_dir) / f"step_{self.trainer_step}"
-        step_path.mkdir(parents=True, exist_ok=True)
-        for i, batches in enumerate(all_data_ranks_batches):
-            batch_path = step_path / f"rank_{i}.pt"
-            tmp_path = batch_path.with_suffix(".tmp")
-            self.logger.debug(f"Saving rollouts for step {self.trainer_step} for rank {i} to {batch_path}")
-            torch.save(batches, tmp_path)
-            tmp_path.rename(batch_path)
-
-        self.trainer_step += 1
+        self.sender.send(micro_batch_grid)
