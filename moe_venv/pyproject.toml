@@ -1,0 +1,109 @@
+[project]
+name = "prime-rl"
+version = "0.1.0"
+description = ""
+readme = "README.md"
+requires-python = "~=3.12.0"
+dependencies = [
+    "beartype>=0.21.0",
+    "cydifflib>=1.2.0",
+    "datasets>=4.0.0",
+    "jaxtyping>=0.3.2",
+    "liger-kernel>=0.5.10",
+    "loguru>=0.7.3",
+    "numpy>=2.2.6",
+    "openai>=1.106.1",
+    "pydantic>=1.10.13",
+    "pydantic-settings>=2.10.1",
+    "pylatexenc>=2.10",
+    "tomli>=2.2.1",
+    "torch>=2.9.0",
+    "transformers>=4.56.0",
+    "uvloop>=0.21.0",
+    "vllm==0.12.0",
+    "wandb>=0.20.1",
+    "lovely-tensors>=0.1.18",
+    "rich>=14.0.0",
+    "tomli-w>=1.2.0",
+    "textarena>=0.6.16",
+    "nltk>=3.9.1",
+    "math-verify>=0.8.0",
+    "torchdata>=0.11.0",
+    "accelerate>=1.10.1",
+    "blobfile>=3.0.0",
+    "reverse-text>=0.1.4",
+    "torchtitan",
+    "dion",
+    "reverse-text",
+    "verifiers>=0.1.8",
+    "prime-evals>=0.1.5",
+    "prime-sandboxes>=0.2.5",
+    "flash-attn>=2.8.3",
+    "prime>=0.5.0"
+]
+
+[project.scripts]
+rl = "prime_rl.rl:main"
+trainer = "prime_rl.trainer.rl.train:main"
+orchestrator = "prime_rl.orchestrator.orchestrator:main"
+inference = "prime_rl.inference.server:main"
+sft = "prime_rl.trainer.sft.train:main"
+eval = "prime_rl.eval.eval:main"
+synthesize = "prime_rl.synthesize.synthesize:main"
+
+[dependency-groups]
+dev = [
+    "ipykernel>=6.29.5",
+    "ipywidgets>=8.1.7",
+    "pre-commit>=4.2.0",
+    "pytest>=8.4.1",
+    "ruff>=0.12.1",
+]
+
+
+[tool.uv]
+no-build-isolation-package = ["flash-attn"]
+prerelease = "allow"
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+reverse-text = { index = "primeintellect" }
+verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "ca6aca7" }
+dion = { git = "https://github.com/samsja/dion.git", rev = "main" }
+torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
+
+[tool.uv.extra-build-dependencies]
+flash-attn = [{ requirement = "torch", match-runtime = true }]
+
+[tool.uv.extra-build-variables]
+flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
+
+[[tool.uv.index]]
+name = "primeintellect"
+url = "https://hub.primeintellect.ai/primeintellect/simple/"
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/test/cu128"
+explicit = true
+
+[tool.ruff.lint]
+select = ["F", "I"]
+ignore = ["F722", "F821"] # Need to ignore for jaxtyping (https://docs.kidger.site/jaxtyping/faq/)
+
+[tool.ruff]
+line-length = 120
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "gpu: marks tests as gpu (deselect with '-m \"not gpu\"')",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
