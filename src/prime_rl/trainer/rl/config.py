@@ -108,7 +108,7 @@ class RLTrainerConfig(BaseSettings):
         FileSystemWeightBroadcastConfig()
     )
 
-    transport: Annotated[TransportConfigType, Field(discriminator="type")] = FileSystemTransportConfig()
+    rollout_transport: Annotated[TransportConfigType, Field(discriminator="type")] = FileSystemTransportConfig()
 
     # The logging configuration
     log: LogConfig = LogConfig()

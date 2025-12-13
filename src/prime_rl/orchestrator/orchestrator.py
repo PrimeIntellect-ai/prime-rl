@@ -170,8 +170,8 @@ async def orchestrate(config: OrchestratorConfig):
     ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
 
     # Setup training batch sender for sending training examples to trainer
-    logger.info(f"Initializing training batch sender ({config.transport})")
-    training_batch_sender = setup_training_batch_sender(config.output_dir, config.transport)
+    logger.info(f"Initializing training batch sender ({config.rollout_transport})")
+    training_batch_sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
 
     # Reset weights to base model if starting from scratch
     progress = Progress()

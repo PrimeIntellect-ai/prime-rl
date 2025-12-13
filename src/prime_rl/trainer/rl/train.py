@@ -137,7 +137,7 @@ def train(config: RLTrainerConfig):
             parallel_dims.world_mesh["dp"].size(),
             config.model.seq_len,
             tokenizer,
-            config.transport,
+            config.rollout_transport,
         )
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")

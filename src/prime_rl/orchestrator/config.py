@@ -442,7 +442,7 @@ class OrchestratorConfig(BaseSettings):
         FileSystemWeightBroadcastConfig()
     )
 
-    transport: Annotated[TransportConfigType, Field(discriminator="type")] = FileSystemTransportConfig()
+    rollout_transport: Annotated[TransportConfigType, Field(discriminator="type")] = FileSystemTransportConfig()
 
     trajectory_strategy: Annotated[
         Literal["interleaved", "branching"],
