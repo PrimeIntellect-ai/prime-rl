@@ -1,26 +1,25 @@
-from collections.abc import AsyncGenerator
-from typing import Optional, Union
+from typing import Any, Callable, Optional, Sequence, Union
 
-import jinja2
-from fastapi import Request
 from pydantic import Field
+from vllm.entrypoints.chat_utils import (
+    ChatCompletionMessageParam,
+    ChatTemplateContentFormatOption,
+    ConversationMessage,
+    apply_hf_chat_template,
+    apply_mistral_chat_template,
+    parse_chat_messages_futures,
+    resolve_chat_template_content_format,
+)
 from vllm.entrypoints.openai.protocol import (
     ChatCompletionRequest,
-    ChatCompletionResponse,
-    ErrorResponse,
-    RequestResponseMetadata,
 )
 from vllm.entrypoints.openai.serving_chat import OpenAIServingChat
-from vllm.entrypoints.utils import get_max_tokens
+from vllm.entrypoints.openai.serving_engine import RequestPrompt, TextTokensPrompt
+from vllm.entrypoints.openai.tool_parsers import ToolParser
+from vllm.inputs.data import TokensPrompt as EngineTokensPrompt
 from vllm.logger import init_logger
-from vllm.outputs import RequestOutput
-from vllm.sampling_params import BeamSearchParams, SamplingParams
-from vllm.transformers_utils.tokenizer import MistralTokenizer
-from vllm.transformers_utils.tokenizers import (
-    maybe_serialize_tool_calls,
-    truncate_tool_call_ids,
-    validate_request_params,
-)
+from vllm.transformers_utils.tokenizer import AnyTokenizer, MistralTokenizer
+from vllm.utils import is_list_of
 
 logger = init_logger(__name__)
 
@@ -32,175 +31,123 @@ class ChatCompletionRequestWithTokens(ChatCompletionRequest):
 class OpenAIServingChatCompletionWithTokens(OpenAIServingChat):
     """OpenAI-compatible generate API that allows token-in."""
 
-    async def create_chat_completion_with_tokens(
+    async def _preprocess_chat(
         self,
         request: ChatCompletionRequestWithTokens,
-        raw_request: Optional[Request] = None,
-    ) -> Union[AsyncGenerator[str, None], ChatCompletionResponse, ErrorResponse]:
-        """
-        Copy of OpenAIServingChat.create_chat_completion, adapted to use prompt
-        ids directly via ChatCompletionRequestWithTokens.
-        """
-        logger.info("Generating with tokens: %s", request.tokens)
-        error_check_ret = await self._check_model(request)
-        if error_check_ret is not None:
-            logger.error("Error with model %s", error_check_ret)
-            return error_check_ret
+        tokenizer: AnyTokenizer,
+        messages: list[ChatCompletionMessageParam],
+        chat_template: Optional[str],
+        chat_template_content_format: ChatTemplateContentFormatOption,
+        add_generation_prompt: bool = True,
+        continue_final_message: bool = False,
+        tool_dicts: Optional[list[dict[str, Any]]] = None,
+        documents: Optional[list[dict[str, str]]] = None,
+        chat_template_kwargs: Optional[dict[str, Any]] = None,
+        tool_parser: Optional[Callable[[AnyTokenizer], ToolParser]] = None,
+        add_special_tokens: bool = False,
+    ) -> tuple[
+        list[ConversationMessage],
+        Sequence[RequestPrompt],
+        list[EngineTokensPrompt],
+    ]:
+        model_config = self.model_config
 
-        # If the engine is dead, raise the engine's DEAD_ERROR.
-        # This is required for the streaming case, where we return a
-        # success status before we actually start generating text :).
-        if self.engine_client.errored:
-            raise self.engine_client.dead_error
+        resolved_content_format = resolve_chat_template_content_format(
+            chat_template,
+            tool_dicts,
+            chat_template_content_format,
+            tokenizer,
+            model_config=model_config,
+        )
+        conversation, mm_data_future, mm_uuids = parse_chat_messages_futures(
+            messages,
+            model_config,
+            tokenizer,
+            content_format=resolved_content_format,
+        )
 
-        try:
-            lora_request = self._maybe_get_adapters(request, supports_default_mm_loras=True)
+        _chat_template_kwargs: dict[str, Any] = dict(
+            chat_template=chat_template,
+            add_generation_prompt=add_generation_prompt,
+            continue_final_message=continue_final_message,
+            tools=tool_dicts,
+            documents=documents,
+        )
+        _chat_template_kwargs.update(chat_template_kwargs or {})
 
-            model_name = self.models.model_name(lora_request)
+        request_prompt: Union[str, list[int]]
 
-            tokenizer = await self.engine_client.get_tokenizer(lora_request)
-
-            tool_parser = self.tool_parser
-
-            if isinstance(tokenizer, MistralTokenizer):
-                # because of issues with pydantic we need to potentially
-                # re-serialize the tool_calls field of the request
-                # for more info: see comment in `maybe_serialize_tool_calls`
-                maybe_serialize_tool_calls(request)
-                truncate_tool_call_ids(request)
-                validate_request_params(request)
-
-            if (
-                request.tool_choice == "auto"
-                and not (self.enable_auto_tools and tool_parser is not None)
-                and not isinstance(tokenizer, MistralTokenizer)
-                and not self.use_harmony
-            ):
-                # for hf tokenizers, "auto" tools requires
-                # --enable-auto-tool-choice and --tool-call-parser
-                return self.create_error_response(
-                    '"auto" tool choice requires --enable-auto-tool-choice and --tool-call-parser to be set'
-                )
-
-            if request.tools is None or (request.tool_choice == "none" and self.exclude_tools_when_tool_choice_none):
-                tool_dicts = None
-            else:
-                tool_dicts = [tool.model_dump() for tool in request.tools]
-
-            if not self.use_harmony:
-                # Common case.
-                (
-                    conversation,
-                    request_prompts,
-                    engine_prompts,
-                ) = await self._preprocess_chat(
-                    request,
-                    tokenizer,
-                    request.messages,
-                    chat_template=request.chat_template or self.chat_template,
-                    chat_template_content_format=self.chat_template_content_format,
-                    add_generation_prompt=request.add_generation_prompt,
-                    continue_final_message=request.continue_final_message,
-                    tool_dicts=tool_dicts,
-                    documents=request.documents,
-                    chat_template_kwargs=request.chat_template_kwargs,
-                    tool_parser=tool_parser,
-                    add_special_tokens=request.add_special_tokens,
-                )
-            else:
-                # For GPT-OSS.
-                (
-                    conversation,
-                    request_prompts,
-                    engine_prompts,
-                ) = self._make_request_with_harmony(request)
-        except (ValueError, TypeError, RuntimeError, jinja2.TemplateError) as e:
-            logger.exception("Error in preprocessing prompt inputs")
-            return self.create_error_response(f"{e} {e.__cause__}")
-
-        # In-place override the engine_prompts with the tokens from the request
-        assert len(engine_prompts) == 1
-        # if engine_prompts[0]["prompt_token_ids"] != request.tokens:
-        #     logger.warning(
-        #         f"Prompt tokens provided in request do not match the engine prompt tokens\nengine_prompt_tokens={engine_prompts[0]['prompt_token_ids']}\nrequest_tokens={request.tokens}\nThis may happen due to retokenization discrepancies in multi-turn conversations. Since you are using the /generate endpoint, we assume you want this behavior and use the provided prompt tokens. If this is undesired, use the standard /v1/chat/completions endpoint instead."
-        #     )
-        engine_prompts[0]["prompt_token_ids"] = request.tokens
-
-        request_id = f"chatcmpl-{self._base_request_id(raw_request, request.request_id)}"
-
-        request_metadata = RequestResponseMetadata(request_id=request_id)
-        if raw_request:
-            raw_request.state.request_metadata = request_metadata
-
-        # Schedule the request and get the result generator.
-        generators: list[AsyncGenerator[RequestOutput, None]] = []
-        try:
-            for i, engine_prompt in enumerate(engine_prompts):
-                sampling_params: Union[SamplingParams, BeamSearchParams]
-
-                if self.default_sampling_params is None:
-                    self.default_sampling_params = {}
-
-                max_tokens = get_max_tokens(
-                    max_model_len=self.max_model_len,
-                    request=request,
-                    input_length=len(engine_prompt["prompt_token_ids"]),
-                    default_sampling_params=self.default_sampling_params,
-                )
-
-                if request.use_beam_search:
-                    sampling_params = request.to_beam_search_params(max_tokens, self.default_sampling_params)
-                else:
-                    sampling_params = request.to_sampling_params(
-                        max_tokens, self.model_config.logits_processor_pattern, self.default_sampling_params
-                    )
-
-                self._log_inputs(request_id, request_prompts[i], params=sampling_params, lora_request=lora_request)
-
-                trace_headers = None if raw_request is None else await self._get_trace_headers(raw_request.headers)
-
-                if isinstance(sampling_params, BeamSearchParams):
-                    generator = self.engine_client.beam_search(
-                        prompt=engine_prompt,
-                        request_id=request_id,
-                        params=sampling_params,
-                        lora_request=lora_request,
-                    )
-                else:
-                    generator = self.engine_client.generate(
-                        engine_prompt,
-                        sampling_params,
-                        request_id,
-                        lora_request=lora_request,
-                        trace_headers=trace_headers,
-                        priority=request.priority,
-                    )
-
-                generators.append(generator)
-        except ValueError as e:
-            # TODO: Use a vllm-specific Validation Error
-            return self.create_error_response(str(e))
-
-        assert len(generators) == 1
-        (result_generator,) = generators
-
-        # Streaming response
-        if request.stream:
-            return self.chat_completion_stream_generator(
-                request,
-                result_generator,
-                request_id,
-                model_name,
-                conversation,
+        if tokenizer is None:
+            request_prompt = "placeholder"
+        elif isinstance(tokenizer, MistralTokenizer):
+            request_prompt = apply_mistral_chat_template(
                 tokenizer,
-                request_metadata,
-                enable_force_include_usage=self.enable_force_include_usage,
+                messages=messages,
+                **_chat_template_kwargs,
+            )
+        else:
+            request_prompt = apply_hf_chat_template(
+                tokenizer=tokenizer,
+                conversation=conversation,
+                model_config=model_config,
+                **_chat_template_kwargs,
             )
 
-        try:
-            return await self.chat_completion_full_generator(
-                request, result_generator, request_id, model_name, conversation, tokenizer, request_metadata
+        mm_data = await mm_data_future
+
+        # tool parsing is done only if a tool_parser has been set and if
+        # tool_choice is not "none" (if tool_choice is "none" but a tool_parser
+        # is set, we want to prevent parsing a tool_call hallucinated by the LLM
+        should_parse_tools = tool_parser is not None and (
+            hasattr(request, "tool_choice") and request.tool_choice != "none"
+        )
+
+        if should_parse_tools:
+            if not isinstance(request, ChatCompletionRequest):
+                msg = "Tool usage is only supported for Chat Completions API"
+                raise NotImplementedError(msg)
+
+            request = tool_parser(tokenizer).adjust_request(  # type: ignore
+                request=request
             )
-        except ValueError as e:
-            # TODO: Use a vllm-specific Validation Error
-            return self.create_error_response(str(e))
+
+        if tokenizer is None:
+            assert isinstance(request_prompt, str), (
+                "Prompt has to be a string",
+                "when the tokenizer is not initialised",
+            )
+            prompt_inputs = TextTokensPrompt(prompt=request_prompt, prompt_token_ids=[1])
+        elif isinstance(request_prompt, str):
+            # NOTE: Main change from the parent class is that we skip the call
+            # to _tokenize_prompt_input_async and directly use the tokens from
+            # the request body
+
+            # prompt_inputs = await self._tokenize_prompt_input_async(
+            #     request,
+            #     tokenizer,
+            #     request_prompt,
+            #     add_special_tokens=add_special_tokens,
+            # )
+            prompt_inputs = TextTokensPrompt(prompt=request_prompt, prompt_token_ids=request.tokens)
+        else:
+            # For MistralTokenizer
+            assert is_list_of(request_prompt, int), "Prompt has to be either a string or a list of token ids"
+            prompt_inputs = TextTokensPrompt(
+                prompt=tokenizer.decode(request_prompt),
+                prompt_token_ids=request_prompt,
+            )
+
+        engine_prompt = EngineTokensPrompt(prompt_token_ids=prompt_inputs["prompt_token_ids"])
+        if mm_data is not None:
+            engine_prompt["multi_modal_data"] = mm_data
+
+        if mm_uuids is not None:
+            engine_prompt["multi_modal_uuids"] = mm_uuids
+
+        if request.mm_processor_kwargs is not None:
+            engine_prompt["mm_processor_kwargs"] = request.mm_processor_kwargs
+
+        if hasattr(request, "cache_salt") and request.cache_salt is not None:
+            engine_prompt["cache_salt"] = request.cache_salt
+
+        return conversation, [request_prompt], [engine_prompt]

@@ -185,7 +185,7 @@ async def custom_run_server_worker(listen_address, sock, args, client_config=Non
                     message="The model does not support Chat Completions API"
                 )
             try:
-                generator = await handler.create_chat_completion_with_tokens(request, raw_request)
+                generator = await handler.create_chat_completion(request, raw_request)
             except Exception as e:
                 raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR.value, detail=str(e)) from e
             if isinstance(generator, ErrorResponse):
