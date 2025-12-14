@@ -8,7 +8,7 @@ from prime_rl.trainer.runs import get_runs
 from prime_rl.transport import (
     MicroBatchSender,
     TrainingBatch,
-    TrainingExample,
+    TrainingSample,
     TransportConfigType,
     setup_micro_batch_sender,
     setup_training_batch_receiver,
@@ -64,7 +64,7 @@ class Packer:
             time.sleep(1)
             training_batches = self.get_batch()
 
-        train_examples: list[TrainingExample] = []
+        train_examples: list[TrainingSample] = []
         train_idxs = []
         for idx, training_batch in training_batches.items():
             self.runs.progress[idx].step += 1

@@ -1,13 +1,13 @@
 import pytest
 
 from prime_rl.trainer.batch import prepare_batch
-from prime_rl.transport.types import TrainingExample
+from prime_rl.transport.types import TrainingSample
 
 
 @pytest.fixture
 def make_training_example():
-    def _make_training_example() -> TrainingExample:
-        return TrainingExample(
+    def _make_training_example() -> TrainingSample:
+        return TrainingSample(
             prompt_ids=[1, 2],
             prompt_mask=[False, False],
             completion_ids=[3, 4],

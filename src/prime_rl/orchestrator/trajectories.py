@@ -2,11 +2,11 @@ from copy import deepcopy
 
 import verifiers as vf
 
-from prime_rl.transport import TrainingExample
+from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 
 
-def interleave_rollout(state: vf.State) -> list[TrainingExample]:
+def interleave_rollout(state: vf.State) -> list[TrainingSample]:
     """
     Convert vf.State to a *single* trainable rollout by interleaving the trajectory.
 
@@ -19,7 +19,7 @@ def interleave_rollout(state: vf.State) -> list[TrainingExample]:
     # Initialize the rollout with prompt and completion from first trajectory step
     trajectory = state["trajectory"]
     first_step = trajectory[0]
-    interleaved_rollout = TrainingExample(
+    interleaved_rollout = TrainingSample(
         prompt_ids=deepcopy(first_step["tokens"]["prompt_ids"]),
         prompt_mask=[i != 0 for i in first_step["tokens"]["prompt_mask"]],
         completion_ids=deepcopy(first_step["tokens"]["completion_ids"]),
@@ -60,13 +60,13 @@ def interleave_rollout(state: vf.State) -> list[TrainingExample]:
     return [interleaved_rollout]
 
 
-def branch_rollout(state: vf.State) -> list[TrainingExample]:
+def branch_rollout(state: vf.State) -> list[TrainingSample]:
     """Convert vf.State to *multiple* trainable rollouts using branching trajectories strategy."""
     rollouts = []
     for step in state["trajectory"]:
         assert "tokens" in step
         tokens = step["tokens"]
-        rollout = TrainingExample(
+        rollout = TrainingSample(
             prompt_ids=deepcopy(tokens["prompt_ids"]),
             prompt_mask=[i != 0 for i in tokens["prompt_mask"]],
             completion_ids=deepcopy(tokens["completion_ids"]),

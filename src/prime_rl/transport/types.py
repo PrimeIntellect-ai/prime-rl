@@ -2,7 +2,7 @@ import msgspec
 
 
 # Orchestrator -> Packer
-class TrainingExample(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
+class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A single training example."""
 
     prompt_ids: list[int]
@@ -16,7 +16,7 @@ class TrainingExample(msgspec.Struct, array_like=True, gc=False, omit_defaults=T
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A batch of training examples with metadata for transport."""
 
-    examples: list[TrainingExample]
+    examples: list[TrainingSample]
     temperature: float
     seq_len: int
     step: int
