@@ -194,6 +194,13 @@ class InferenceConfig(BaseSettings):
                 raise ValueError(f"max_lora_rank={original_rank} exceeds vLLM maximum of {VALID_VLLM_LORA_RANKS[-1]}")
         return self
 
+    @model_validator(mode="after")
+    def ensure_api_server_count_is_at_least_dp_size(self):
+        """Ensures that we have at least as many API servers as data parallel size."""
+        if self.api_server_count < self.parallel.dp:
+            self.api_server_count = self.parallel.dp
+        return self
+
     def to_vllm(self) -> Namespace:
         """Convert InferenceConfig to vLLM-compatible Namespace."""
         namespace = Namespace()
