@@ -40,7 +40,7 @@ from prime_rl.trainer.utils import (
     get_response_lengths,
 )
 from prime_rl.trainer.world import get_world
-from prime_rl.trainer.runs import setup_runs, Progress
+from prime_rl.trainer.runs import setup_runs, Progress, get_runs
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
@@ -59,6 +59,7 @@ def train(config: RLTrainerConfig):
     logger.info(f"Starting RL trainer in {world}")
 
     setup_runs(config.output_dir, config.max_concurrent_runs)
+    runs = get_runs()
     logger.info(f"Starting RL trainer in {world} in {config.output_dir}")
 
     # Print warning if running in benchmark mode
@@ -168,6 +169,9 @@ def train(config: RLTrainerConfig):
                 weight_broadcast.maybe_clean(config.max_async_level, interval_to_keep)
         else:
             broadcast_weights_time = 0
+            # Usually the broadcast will set this. If broadcast is skipped, we need to reset this here.
+            for idx in runs.used_idxs:
+                runs.ready_to_update[idx] = False
 
         if (
             ckpt_manager is not None
