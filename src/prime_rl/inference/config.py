@@ -148,7 +148,7 @@ class InferenceConfig(BaseSettings):
     seed: Annotated[
         int,
         Field(
-            description="Seed the inference components. If None, no seeding is used. Passed to vLLM as `--seed`",
+            description="Seed the inference components. Passed to vLLM as `--seed`",
         ),
     ] = 0
 
