@@ -1,4 +1,4 @@
-from typing import Any, Callable, Optional, Sequence, Union
+from typing import Any, Callable, ClassVar, Optional, Sequence, Union
 
 from pydantic import Field
 from vllm.entrypoints.chat_utils import (
@@ -25,6 +25,7 @@ logger = init_logger(__name__)
 
 
 class ChatCompletionRequestWithTokens(ChatCompletionRequest):
+    field_names: ClassVar[Optional[set[str]]] = None
     tokens: list[int] = Field(description=("Prompt tokens to use for the request."))
 
 
