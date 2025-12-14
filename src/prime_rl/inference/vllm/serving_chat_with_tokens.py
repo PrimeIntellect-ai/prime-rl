@@ -1,5 +1,4 @@
 from collections.abc import AsyncGenerator
-from copy import deepcopy
 from typing import Optional, Union
 
 import jinja2
@@ -121,11 +120,11 @@ class OpenAIServingChatCompletionWithTokens(OpenAIServingChat):
 
         # In-place override the engine_prompts with the tokens from the request
         assert len(engine_prompts) == 1
-        if engine_prompts[0]["prompt_token_ids"] != request.tokens:
-            logger.warning(
-                f"Prompt tokens provided in request do not match the engine prompt tokens\nengine_prompt_tokens={engine_prompts[0]['prompt_token_ids']}\nrequest_tokens={request.tokens}\nThis may happen due to retokenization discrepancies in multi-turn conversations. Since you are using the /generate endpoint, we assume you want this behavior and use the provided prompt tokens. If this is undesired, use the standard /v1/chat/completions endpoint instead."
-            )
-        engine_prompts[0]["prompt_token_ids"] = deepcopy(request.tokens)
+        # if engine_prompts[0]["prompt_token_ids"] != request.tokens:
+        #     logger.warning(
+        #         f"Prompt tokens provided in request do not match the engine prompt tokens\nengine_prompt_tokens={engine_prompts[0]['prompt_token_ids']}\nrequest_tokens={request.tokens}\nThis may happen due to retokenization discrepancies in multi-turn conversations. Since you are using the /generate endpoint, we assume you want this behavior and use the provided prompt tokens. If this is undesired, use the standard /v1/chat/completions endpoint instead."
+        #     )
+        engine_prompts[0]["prompt_token_ids"] = request.tokens
 
         request_id = f"chatcmpl-{self._base_request_id(raw_request, request.request_id)}"
 
