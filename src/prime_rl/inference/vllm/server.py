@@ -24,12 +24,11 @@ from vllm.entrypoints.openai.api_server import (
     init_app_state,
     load_log_config,
     maybe_register_tokenizer_info_endpoint,
-    setup_server,
 )
 from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
 from vllm.entrypoints.openai.tool_parsers import ToolParserManager
 from vllm.logger import init_logger
-from vllm.utils import FlexibleArgumentParser, decorate_logs, set_process_title
+from vllm.utils import FlexibleArgumentParser
 
 from prime_rl.inference.config import InferenceConfig
 
@@ -65,6 +64,7 @@ async def custom_build_async_engine_client(
 # Only difference is that we inject custom routes and build async engine client differently
 async def custom_run_server_worker(listen_address, sock, args, client_config=None, **uvicorn_kwargs) -> None:
     """Run a single API server worker."""
+    print("running custom_run_server_worker")
 
     if args.tool_parser_plugin and len(args.tool_parser_plugin) > 3:
         ToolParserManager.import_tool_parser(args.tool_parser_plugin)
@@ -142,9 +142,30 @@ async def custom_run_server_worker(listen_address, sock, args, client_config=Non
         sock.close()
 
 
-import vllm.entrypoints.openai.api_server
+def custom_run_api_server_worker_proc(listen_address, sock, args, client_config=None, **uvicorn_kwargs) -> None:
+    """Entrypoint for individual API server worker processes."""
+    # Import our module to ensure monkey patches are applied in child processes
+    # This is critical because child processes start fresh and re-import modules
+    import prime_rl.inference.vllm.server  # noqa: F401
 
+    from vllm.utils import set_process_title, decorate_logs
+
+    # Set process title and add process-specific prefix to stdout and stderr.
+    server_index = client_config.get("client_index", 0) if client_config else 0
+    set_process_title("APIServer", str(server_index))
+    decorate_logs()
+
+    uvloop.run(custom_run_server_worker(listen_address, sock, args, client_config, **uvicorn_kwargs))
+
+
+import vllm.entrypoints.openai.api_server
+import vllm.entrypoints.cli.serve
+
+# Also monkey patch run_api_server_worker_proc for multi-api-server mode
+# This is needed because worker processes spawned by run_multi_api_server
+# re-import modules and would otherwise use the original run_server_worker
 vllm.entrypoints.openai.api_server.run_server_worker = custom_run_server_worker
+vllm.entrypoints.cli.serve.run_api_server_worker_proc = custom_run_api_server_worker_proc
 
 
 # Adapted from vllm/entrypoints/cli/serve.py
