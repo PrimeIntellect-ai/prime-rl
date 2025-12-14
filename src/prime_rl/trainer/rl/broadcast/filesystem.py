@@ -65,7 +65,7 @@ class FileSystemWeightBroadcast(WeightBroadcast):
                         save_lora_config(self.lora_config, model, save_dir)
 
                     # Notify the orchestrator at the end of step to signal that it is safe to load weights from shared filesystem
-                    self.notify_orchestrator(save_dir)
+                    self._notify_orchestrator(save_dir)
                 except FileNotFoundError:
                     self.logger.warning(f"Run {idx} is deleted, skipping")
                 except Exception as e:
@@ -74,7 +74,7 @@ class FileSystemWeightBroadcast(WeightBroadcast):
                     self.runs.ready_to_update[idx] = False
             self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
 
-    def notify_orchestrator(self, save_dir: Path):
+    def _notify_orchestrator(self, save_dir: Path):
         """Notify the orchestrator that the weights have been broadcast by writing a 'STABLE' file to a shared filesystem."""
         stable_file = save_dir / "STABLE"
         stable_file.touch()
