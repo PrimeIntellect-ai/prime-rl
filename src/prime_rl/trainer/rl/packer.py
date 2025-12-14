@@ -16,6 +16,8 @@ from prime_rl.transport import (
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_rollout_dir
 
+TIMEOUT_SECONDS = 10
+
 
 class Packer:
     def __init__(
@@ -54,13 +56,15 @@ class Packer:
             if estimated_next_batch_tokens >= threshold:
                 return True
         else:
-            self.logger.warning(f"Not enough tokens to pack. Expected {threshold} tokens, got {tokens}")
             return False
 
     def pack(self):
         training_batches: dict[int, TrainingBatch] = self.get_batch()
-        # TODO: Handle timeout case
+        start_time = time.time()
         while not self.has_enough_tokens(training_batches):
+            if time.time() - start_time > TIMEOUT_SECONDS and training_batches:
+                self.logger.warning("Timeout waiting for enough tokens to pack")
+                break
             time.sleep(1)
             training_batches = self.get_batch()
 
