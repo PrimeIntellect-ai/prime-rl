@@ -14,7 +14,6 @@ import vllm.entrypoints.openai.api_server
 import uvloop
 import vllm.envs as envs
 from fastapi import Request
-from vllm.config.model import LogprobsMode
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server
