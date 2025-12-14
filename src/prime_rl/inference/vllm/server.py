@@ -17,7 +17,6 @@ from fastapi import Request
 from vllm.config import LogprobsMode
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.protocol import EngineClient
-from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server
 from vllm.entrypoints.launcher import serve_http
 from vllm.entrypoints.openai.api_server import (
     build_app,
@@ -30,7 +29,7 @@ from vllm.entrypoints.openai.api_server import (
 from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
 from vllm.entrypoints.openai.tool_parsers import ToolParserManager
 from vllm.logger import init_logger
-from vllm.utils import FlexibleArgumentParser, decorate_logs
+from vllm.utils import FlexibleArgumentParser, decorate_logs, set_process_title
 
 from prime_rl.inference.config import InferenceConfig
 
@@ -143,21 +142,18 @@ async def custom_run_server_worker(listen_address, sock, args, client_config=Non
         sock.close()
 
 
-# Copied from vllm/entrypoints/openai/api_server.py
-# Only difference is that we call `custom_run_server_worker` instead of `run_server_worker`
-async def custom_run_server(args, **uvicorn_kwargs) -> None:
-    """Run a single-worker API server."""
+import vllm.entrypoints.openai.api_server
 
-    # Add process-specific prefix to stdout and stderr.
-    decorate_logs("APIServer")
-
-    listen_address, sock = setup_server(args)
-    await custom_run_server_worker(listen_address, sock, args, **uvicorn_kwargs)
+vllm.entrypoints.openai.api_server.run_server_worker = custom_run_server_worker
 
 
 # Adapted from vllm/entrypoints/cli/serve.py
-# Only difference is that we call `custom_run_server` instead of `run_server` and we do config translation (i.e. pass populated namespace to `parse_args`)
+# Only difference we do some config translation (i.e. pass populated namespace
+# to `parse_args`) and additional arg validation
 def server(config: InferenceConfig, vllm_args: list[str]):
+    from vllm.entrypoints.openai.api_server import run_server
+    from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server
+
     parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")
     parser = make_arg_parser(parser)
     args = parser.parse_args(args=vllm_args, namespace=config.to_vllm())
@@ -178,4 +174,4 @@ def server(config: InferenceConfig, vllm_args: list[str]):
             run_multi_api_server(args)
         else:
             # Single API server (this process).
-            uvloop.run(custom_run_server(args))
+            uvloop.run(run_server(args))
