@@ -64,7 +64,6 @@ async def custom_build_async_engine_client(
 # Only difference is that we inject custom routes and build async engine client differently
 async def custom_run_server_worker(listen_address, sock, args, client_config=None, **uvicorn_kwargs) -> None:
     """Run a single API server worker."""
-    print("running custom_run_server_worker")
 
     if args.tool_parser_plugin and len(args.tool_parser_plugin) > 3:
         ToolParserManager.import_tool_parser(args.tool_parser_plugin)
