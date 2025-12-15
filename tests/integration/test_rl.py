@@ -103,7 +103,7 @@ def test_no_error_resume(rl_resume_process: ProcessResult, output_dir: Path):
             print(*f.readlines()[-100:], sep="\n")
         print("=== Orchestrator Outputs ===")
         with open(output_dir / "logs" / "orchestrator.stdout", "r") as f:
-            print(*f.readlines()[-100:], sep="\n")
+            print(*f.readlines()[-1000:], sep="\n")
     assert rl_resume_process.returncode == 0, f"Process has non-zero return code ({rl_resume_process})"
 
 

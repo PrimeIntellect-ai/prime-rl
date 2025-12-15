@@ -34,3 +34,6 @@ id = "reverse-text"
 
 [inference]
 enable_lora = true
+
+[log]
+level = "debug"
