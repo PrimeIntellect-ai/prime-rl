@@ -91,6 +91,13 @@ class ModelConfig(BaseConfig):
         ),
     ] = "hermes"
 
+    reasoning_parser: Annotated[
+        str | None,
+        Field(
+            description="Parser for extracting reasoning content from model outputs. Passed to vLLM as `--reasoning-parser`. Setting this enables reasoning mode.",
+        ),
+    ] = None
+
 
 class WeightBroadcastConfig(BaseSettings):
     """Configures weight broadcast settings."""
@@ -98,6 +105,11 @@ class WeightBroadcastConfig(BaseSettings):
     type: Annotated[Literal["nccl", "filesystem"], Field(description="The type of weight broadcast to use.")] = (
         "filesystem"
     )
+
+
+# Valid vLLM max_lora_rank values (from vllm/config/lora.py)
+# TODO: on newer vLLM, can import via `get_args(vllm.config.lora.MaxLoRARanks)`
+VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
 
 
 class InferenceConfig(BaseSettings):
@@ -119,12 +131,27 @@ class InferenceConfig(BaseSettings):
         ),
     ] = False
 
+    max_lora_rank: Annotated[
+        int | None,
+        Field(
+            description="The maximum LoRA rank to use. Passed to vLLM as `--max-lora-rank`",
+        ),
+    ] = None
+
     gpu_memory_utilization: Annotated[
         float,
         Field(
             description="The GPU memory utilization to use. Passed to vLLM as `--gpu-memory-utilization`",
         ),
     ] = 0.9
+
+    api_server_count: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="The number of API servers to use. Passed to vLLM as `--api-server-count`",
+        ),
+    ] = 1
 
     seed: Annotated[
         int | None,
@@ -144,9 +171,34 @@ class InferenceConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def set_env_var_for_lora(self):
+    def auto_setup_dynamic_lora_updating(self):
         if self.enable_lora:
             os.environ["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "True"
+        return self
+
+    @model_validator(mode="after")
+    def round_up_max_lora_rank(self):
+        """Round up max_lora_rank to the nearest valid vLLM value.
+
+        vLLM only accepts specific values for max_lora_rank: (1, 8, 16, 32, 64, 128, 256, 320, 512).
+        This validator ensures that any configured rank is rounded up to the minimum valid value
+        that can serve adapters of the requested rank.
+        """
+        if self.max_lora_rank is not None:
+            original_rank = self.max_lora_rank
+            for valid_rank in VALID_VLLM_LORA_RANKS:
+                if valid_rank >= self.max_lora_rank:
+                    self.max_lora_rank = valid_rank
+                    break
+            else:
+                raise ValueError(f"max_lora_rank={original_rank} exceeds vLLM maximum of {VALID_VLLM_LORA_RANKS[-1]}")
+        return self
+
+    @model_validator(mode="after")
+    def ensure_api_server_count_is_at_least_dp_size(self):
+        """Ensures that we have at least as many API servers as data parallel size."""
+        if self.api_server_count < self.parallel.dp:
+            self.api_server_count = self.parallel.dp
         return self
 
     def to_vllm(self) -> Namespace:
@@ -162,10 +214,13 @@ class InferenceConfig(BaseSettings):
             "model.trust_remote_code": "trust_remote_code",
             "model.enable_auto_tool_choice": "enable_auto_tool_choice",
             "model.tool_call_parser": "tool_call_parser",
+            "model.reasoning_parser": "reasoning_parser",
             "parallel.tp": "tensor_parallel_size",
             "parallel.dp": "data_parallel_size",
             "enable_lora": "enable_lora",
+            "max_lora_rank": "max_lora_rank",
             "gpu_memory_utilization": "gpu_memory_utilization",
+            "api_server_count": "api_server_count",
         }
 
         for key in get_all_fields(self):
@@ -174,5 +229,9 @@ class InferenceConfig(BaseSettings):
 
         # Set `logprobs_mode` to `processed_logprobs` by default
         rsetattr(namespace, "logprobs_mode", "processed_logprobs")
+
+        # Remove reasoning_parser if not set (vLLM doesn't accept None)
+        if namespace.reasoning_parser is None:
+            delattr(namespace, "reasoning_parser")
 
         return namespace

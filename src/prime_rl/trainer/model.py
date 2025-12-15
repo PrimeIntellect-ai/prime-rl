@@ -19,7 +19,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
 from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, ModelConfig, TokenizerConfig
-from prime_rl.trainer.lora import apply_lora_to_model
+from prime_rl.trainer.lora import apply_lora_to_model, strip_lora_from_state_dict
 from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL, PreTrainedModelPrimeRL
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.weights import (
@@ -47,18 +47,24 @@ def is_tt_moe_model(model: nn.Module) -> bool:
     return hasattr(model.config, "num_experts") or hasattr(model.config, "n_routed_experts")
 
 
-def get_load_balance_stats(model: nn.Module, reset_stats: bool = True) -> dict[str, Tensor | None]:
+def get_load_balance_stats(
+    model: nn.Module, reset_stats: bool = True, try_to_avoid_padding_experts: bool = True
+) -> dict[str, Tensor | None]:
     per_layer_max_vio = []
     for transformer_block in model.model.layers:
         # This is necessary for models that have mixed dense layers
         if not hasattr(transformer_block.mlp, "tokens_per_expert"):
             continue
-        tokens_per_expert = transformer_block.mlp.tokens_per_expert
+        tokens_per_expert: torch.Tensor = transformer_block.mlp.tokens_per_expert
+        if try_to_avoid_padding_experts:
+            tokens_per_expert = tokens_per_expert.sort(dim=0, descending=True).values[
+                transformer_block.mlp.router.top_k :
+            ]
         balanced_load = tokens_per_expert.mean()
         max_vio = (tokens_per_expert.max() - balanced_load) / balanced_load
         per_layer_max_vio.append(max_vio.item())
         if reset_stats:
-            tokens_per_expert.zero_()
+            transformer_block.mlp.tokens_per_expert.zero_()
     if len(per_layer_max_vio) == 0:
         return {"max_vio": None}
     return {"max_vio": torch.tensor(per_layer_max_vio, device=torch.device("cuda"))}
@@ -173,7 +179,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     )
 
 
-def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
+def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
     model.to_empty(device="cuda")
     torch.distributed.barrier()
 
@@ -231,16 +237,31 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
 
     logger.info(f"Loading weights using HF DCP from {snapshot_path}")
     load_dcp_start_time = time.perf_counter()
+    state_dict = model.state_dict()
+    state_dict = strip_lora_from_state_dict(state_dict)
+    if model.config.tie_word_embeddings:
+        del state_dict["lm_head.weight"]
     dcp_load(
-        model.state_dict(),
+        state_dict,
         storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),
-        # Note: This allow is needed by weight tying but could cause silent issues
-        # planner=DefaultLoadPlanner(allow_partial_load=True),
     )
     if isinstance(model, PreTrainedModelPrimeRL):
         model.init_buffers_post_meta()
     else:
         fix_model_post_empty(model)
+    lora_modules = [m for m in model.modules() if hasattr(m, "_init_lora_parameters")]
+    if lora_modules:
+        generator: torch.Generator | None = None
+        if parallel_dims.dp_replicate_enabled:
+            # Synchronize LoRA initialization across dp_replicate ranks by broadcasting a seed
+            dp_replicate_mesh = parallel_dims.world_mesh["dp_replicate"]
+            seed_tensor = torch.empty(1, dtype=torch.long, device="cuda")
+            if dp_replicate_mesh.get_local_rank() == 0:
+                seed_tensor.random_()
+            torch.distributed.broadcast(seed_tensor, src=0, group=dp_replicate_mesh.get_group())
+            generator = torch.Generator(device="cuda").manual_seed(seed_tensor.item())
+        for module in lora_modules:
+            module._init_lora_parameters(generator)
     logger.debug(f"Loaded weights using HF DCP in {time.perf_counter() - load_dcp_start_time:.2f} seconds")
 
 
@@ -332,7 +353,7 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
     setup_fsdp(model, config, parallel_dims)
 
     if config.load_using_meta and can_load_dcp_from_hf(model):
-        load_dcp_from_hf(model, config)
+        load_dcp_from_hf(model, config, parallel_dims)
 
     logger.debug(f"Model signature: {get_module_signature(model, compress=True)}")
     return model

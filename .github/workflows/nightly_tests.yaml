@@ -1,0 +1,99 @@
+name: Nightly Tests
+
+on:
+    # Allow to manually trigger the workflow
+    workflow_dispatch:
+        inputs:
+            test_file:
+                description: "Single nightly test file to run (e.g. tests/nightly/test_my_exp.py). Leave empty to run all."
+                required: false
+                default: ""
+
+    # Scheduled run at 3AM PST (11AM UTC)
+    schedule:
+        - cron: "0 11 * * *"
+
+jobs:
+    discover-experiments:
+        name: Discover experiments
+        runs-on: ubuntu-latest
+
+        outputs:
+            matrix: ${{ steps.build-matrix.outputs.matrix }}
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+              with:
+                  submodules: true
+
+            - name: Build matrix from nightly test files
+              id: build-matrix
+              run: |
+                  # Find all nightly test files
+                  files=$(ls tests/nightly/test_*.py)
+
+                  # Filter to specific test file if provided in workflow_dispatch
+                  if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.test_file }}" ]; then
+                      # Filter to only the specified test file
+                      filtered=$(echo "$files" | grep -F "${{ github.event.inputs.test_file }}" || true)
+                      if [ -z "$filtered" ]; then
+                          echo "Error: Test file '${{ github.event.inputs.test_file }}' not found"
+                          exit 1
+                      fi
+                      files="$filtered"
+                  fi
+
+                  echo "Discovered nightly tests:"
+                  echo "$files"
+
+                  # Build JSON of the form: { "test_file": ["tests/nightly/test_a.py", ...] }
+                  json=$(printf '%s\n' "$files" | jq -R . | jq -sc '{test_file: .}')
+
+                  echo "matrix=$json" >> "$GITHUB_OUTPUT"
+    run-experiment:
+        name: Run experiment
+        needs: discover-experiments
+        runs-on: research-cluster
+        container:
+            image: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
+            options: --gpus all
+        timeout-minutes: 1440 # 24 hours
+        strategy:
+            fail-fast: false
+            matrix: ${{ fromJSON(needs.discover-experiments.outputs.matrix) }}
+
+        steps:
+            - name: Install Git
+              run: |
+                  apt-get update
+                  apt-get install -y git
+                  git config --global --add safe.directory "$GITHUB_WORKSPACE"
+            - name: Checkout repository
+              uses: actions/checkout@v4
+              with:
+                  submodules: true
+            - name: Install uv
+              uses: astral-sh/setup-uv@v5
+              with:
+                  enable-cache: true
+                  cache-dependency-glob: "uv.lock"
+            - name: Install dependencies
+              run: uv sync --locked
+            - name: Run experiment
+              env:
+                  USERNAME_CI: CI_RUNNER
+                  WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+                  # Set WANDB_MODE to online only if WANDB_API_KEY is available, otherwise set to offline
+                  # This is to allow running tests on forks without WANDB_API_KEY
+                  WANDB_MODE: ${{ secrets.WANDB_API_KEY && 'online' || 'offline' }}
+                  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+                  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+                  PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
+                  PRIME_BASE_URL: ${{ secrets.PRIME_BASE_URL }}
+                  PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
+                  GITHUB_REF_NAME: ${{ github.ref_name }}
+                  GITHUB_HEAD_REF: ${{ github.head_ref }}
+              run: |
+                  echo "Running test file: ${{ matrix.test_file }}"
+                  uv run pytest "${{ matrix.test_file }}"

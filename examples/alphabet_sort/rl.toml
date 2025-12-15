@@ -1,10 +1,14 @@
 
-max_steps = 100 
+max_steps = 200 
 
 [ckpt] # Checkpoint at the end of training
 
 [model]
 name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[wandb]
+project = "alphabet-sort"
+name = "alphabet-sort"
 
 [trainer.model]
 impl = "liger_kernel"
@@ -15,22 +19,6 @@ freq = 1
 [trainer.model.experimental.lora]
 rank = 32
 alpha = 64
-dropout = 0.0
-target_modules = [
-    "q_proj",
-    "k_proj",
-    "v_proj",
-    "o_proj",
-    "gate_proj",
-    "up_proj",
-    "down_proj"
-]
-modules_to_save = [
-    "embed_tokens",
-    "norm",
-    "layernorm",
-    "lm_head$"
-]
 
 [trainer.optim]
 lr = 1e-5
@@ -44,7 +32,8 @@ seq_len = 2048
 max_tokens = 768
 
 [[orchestrator.env]]
-id = "alphabet-sort"
-args = { min_turns = 3, max_turns = 3, min_names_per_turn = 1, max_names_per_turn = 4, similarity_power = 8, power_per_turn = false }
+id = "primeintellect/alphabet-sort"
+name = "alphabet-sort"
+args = { min_turns = 3, max_turns = 5, power_per_turn = false }
 
 [inference] # Default inference config

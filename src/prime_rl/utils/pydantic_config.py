@@ -225,6 +225,7 @@ def parse_unknown_args(args: list[str], config_cls: type) -> tuple[list[str], li
             key = args[i][2:]
         else:
             key = args[i][1:]
+        key = key.replace("-", "_")
         if key in known_fields:
             known_args.append(args[i])
             if has_value:
