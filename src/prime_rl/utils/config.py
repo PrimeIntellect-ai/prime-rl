@@ -152,12 +152,12 @@ class PrimeMonitorConfig(BaseConfig):
         ),
     ] = "https://api.primeintellect.ai/api/internal/rft"
 
-    api_key_var: Annotated[
-        str,
+    api_key: Annotated[
+        str | None,
         Field(
-            description="Name of environment variable containing the API key for Prime Intellect API. Will parse using `os.getenv(prime_monitor_config.api_key_var)`.",
+            description="API key for Prime Intellect API. If None, will read from `PRIME_INTELLECT_API_KEY` environment variable.",
         ),
-    ] 
+    ] = None 
 
 
 class PrimeMonitorWithExtrasConfig(PrimeMonitorConfig):
