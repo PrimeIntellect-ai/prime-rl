@@ -199,16 +199,6 @@ class InferenceConfig(BaseSettings):
                     break
             else:
                 raise ValueError(f"max_lora_rank={original_rank} exceeds vLLM maximum of {VALID_VLLM_LORA_RANKS[-1]}")
-<<<<<<< HEAD
-        return self
-
-    @model_validator(mode="after")
-    def ensure_api_server_count_is_at_least_dp_size(self):
-        """Ensures that we have at least as many API servers as data parallel size."""
-        if self.api_server_count < self.parallel.dp:
-            self.api_server_count = self.parallel.dp
-=======
->>>>>>> origin/working-multi-dir
         return self
 
     def to_vllm(self) -> Namespace:
