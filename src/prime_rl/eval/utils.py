@@ -59,8 +59,6 @@ def prepare_sampling_args(sampling_config: EvalSamplingConfig) -> dict[str, Any]
         extra_body["top_k"] = sampling_config.top_k
     if sampling_config.min_p is not None:
         extra_body["min_p"] = sampling_config.min_p
-    if sampling_config.min_tokens is not None:
-        extra_body["min_tokens"] = sampling_config.min_tokens
     if sampling_config.repetition_penalty is not None:
         extra_body["repetition_penalty"] = sampling_config.repetition_penalty
 

@@ -51,14 +51,6 @@ class SamplingConfig(BaseConfig):
         ),
     ] = None
 
-    min_tokens: Annotated[
-        int,
-        Field(
-            ge=0,
-            description="Minimum number of output tokens to generate per sequence.",
-        ),
-    ] = 0
-
     seed: Annotated[
         int | None,
         Field(
@@ -120,13 +112,6 @@ class EvalSamplingConfig(BaseConfig):
         int | None,
         Field(
             description="Maximum number of output tokens to generate per turn. If None, will generate until maximum context length or EOS token is hit.",
-        ),
-    ] = None
-
-    min_tokens: Annotated[
-        int | None,
-        Field(
-            description="Minimum number of output tokens to generate per sequence. Defaults to None, which means we fall back to the inference server's default value.",
         ),
     ] = None
 
