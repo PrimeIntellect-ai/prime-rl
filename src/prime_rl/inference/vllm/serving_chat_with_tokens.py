@@ -123,7 +123,7 @@ class OpenAIServingChatCompletionWithTokens(OpenAIServingChat):
         assert len(engine_prompts) == 1
         if engine_prompts[0]["prompt_token_ids"] != request.tokens:
             logger.warning(
-                "Prompt tokens provided in request do not match the engine prompt tokens\nThis may happen due to retokenization discrepancies in multi-turn conversations. Since you are using the /generate endpoint, we assume you want this behavior and use the provided prompt tokens. If this is undesired, use the standard /v1/chat/completions endpoint instead."
+                "Prompt tokens provided in request do not match the engine prompt tokens. This may happen due to retokenization discrepancies in multi-turn conversations. Since you are using the /v1/chat/completions/tokens endpoint, we assume you want this behavior and use the provided prompt tokens. If this is undesired, use the standard /v1/chat/completions endpoint instead."
             )
             logger.debug(f"engine_prompt_tokens:\n{engine_prompts[0]['prompt_token_ids']}")
             logger.debug(f"request_tokens:\n{request.tokens}")
