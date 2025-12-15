@@ -30,7 +30,7 @@ class ChatCompletionRequestWithTokens(ChatCompletionRequest):
     tokens: list[int] = Field(description=("Prompt tokens to use for the request."))
 
 
-class OpenAIServingChatCompletionWithTokens(OpenAIServingChat):
+class OpenAIServingChatWithTokens(OpenAIServingChat):
     """OpenAI-compatible generate API that allows token-in."""
 
     async def create_chat_completion_with_tokens(
