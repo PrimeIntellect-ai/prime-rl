@@ -302,7 +302,6 @@ async def orchestrate(config: OrchestratorConfig):
         training_batch = TrainingBatch(
             examples=train_examples,
             temperature=config.sampling.temperature,
-            seq_len=config.seq_len,
             step=progress.step,
         )
         training_batch_sender.send(training_batch)

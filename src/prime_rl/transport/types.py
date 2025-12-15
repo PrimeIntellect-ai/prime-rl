@@ -18,7 +18,6 @@ class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tru
 
     examples: list[TrainingSample]
     temperature: float
-    seq_len: int
     step: int
     run_idx: int | None = None
 
