@@ -41,6 +41,7 @@ dependencies = [
     "flash-attn>=2.8.3",
     "ring-flash-attn>=0.1.8",
     "prime>=0.5.0"
+    "tenacity>=8.2.0",
 ]
 
 [project.scripts]

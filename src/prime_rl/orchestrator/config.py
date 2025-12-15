@@ -188,6 +188,55 @@ class EvalSaveConfig(BaseConfig):
             description="Whether to push eval results to Prime Environment Hub. Automatically pushes all evaluated environments. Requires PRIME_API_KEY and authorization for the environments."
         ),
     ] = False
+    stream: Annotated[
+        bool,
+        Field(
+            description="Whether to save results incrementally as rollouts complete.",
+        ),
+    ] = False
+
+
+class RetryConfig(BaseConfig):
+    """Configures retry behavior for rollout generation."""
+
+    max_attempts: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Maximum number of retry attempts.",
+        ),
+    ] = 10
+
+    wait_multiplier: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="Multiplier for exponential backoff wait time.",
+        ),
+    ] = 1.0
+
+    wait_min: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="Minimum wait time in seconds between retries.",
+        ),
+    ] = 1.0
+
+    wait_max: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="Maximum wait time in seconds between retries.",
+        ),
+    ] = 60.0
+
+    reraise: Annotated[
+        bool,
+        Field(
+            description="Whether to reraise the exception after all retries are exhausted.",
+        ),
+    ] = True
 
 
 class EnvConfig(BaseConfig):
@@ -246,10 +295,26 @@ class EvalConfig(BaseConfig):
         default_factory=EvalSaveConfig,
         description="Configures how to save the eval results.",
     )
+    retry: RetryConfig = Field(
+        default_factory=RetryConfig,
+        description="Configures retry behavior for rollout generation.",
+    )
     num_examples: Annotated[int, Field(description="Number of examples to evaluate per environment.")] = -1
     rollouts_per_example: Annotated[
         int, Field(ge=1, description="Number of samples to generate per example for each environment.")
     ] = 1
+    reasoning_field: Annotated[
+        str,
+        Field(
+            description="The field in the raw model response that contains the reasoning content. Defaults to 'reasoning_content', which is the default for vLLM when serving a model with a reasoning parser. Other APIs (e.g. DeepSeek, GLM, etc.) may use different field names.",
+        ),
+    ] = "reasoning_content"
+    per_rollout: Annotated[
+        bool,
+        Field(
+            description="Schedule rollouts individually instead of as groups. Enables live progress updates and per-rollout resume, but incompatible with group-based rubrics.",
+        ),
+    ] = False
 
 
 class OnlineEvalConfig(EvalConfig):
