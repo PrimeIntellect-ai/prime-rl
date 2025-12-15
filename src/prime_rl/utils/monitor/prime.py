@@ -39,10 +39,10 @@ class PrimeMonitor(Monitor):
         assert config is not None
         self.logger.info(f"Initializing {self.__class__.__name__} ({config})")
 
-        # Get API key from environment
-        api_key = os.getenv(config.api_key_var)
+        # Get API key from config or environment
+        api_key = config.api_key or os.getenv("PRIME_INTELLECT_API_KEY")
         if not api_key:
-            self.logger.warning(f"API key not found in environment variable {config.api_key_var}. PrimeMonitor will not be able to upload data.")
+            self.logger.warning("API key not found. Set api_key in config or PRIME_INTELLECT_API_KEY environment variable. PrimeMonitor will not be able to upload data.")
             self.enabled = False
             return
 
