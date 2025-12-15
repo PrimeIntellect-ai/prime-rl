@@ -145,6 +145,14 @@ class InferenceConfig(BaseSettings):
         ),
     ] = 0.9
 
+    api_server_count: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="The number of API servers to use. Passed to vLLM as `--api-server-count`",
+        ),
+    ] = 1
+
     seed: Annotated[
         int | None,
         Field(
@@ -183,9 +191,14 @@ class InferenceConfig(BaseSettings):
                     self.max_lora_rank = valid_rank
                     break
             else:
-                raise ValueError(
-                    f"max_lora_rank={original_rank} exceeds vLLM maximum of {VALID_VLLM_LORA_RANKS[-1]}"
-                )
+                raise ValueError(f"max_lora_rank={original_rank} exceeds vLLM maximum of {VALID_VLLM_LORA_RANKS[-1]}")
+        return self
+
+    @model_validator(mode="after")
+    def ensure_api_server_count_is_at_least_dp_size(self):
+        """Ensures that we have at least as many API servers as data parallel size."""
+        if self.api_server_count < self.parallel.dp:
+            self.api_server_count = self.parallel.dp
         return self
 
     def to_vllm(self) -> Namespace:
@@ -207,6 +220,7 @@ class InferenceConfig(BaseSettings):
             "enable_lora": "enable_lora",
             "max_lora_rank": "max_lora_rank",
             "gpu_memory_utilization": "gpu_memory_utilization",
+            "api_server_count": "api_server_count",
         }
 
         for key in get_all_fields(self):
