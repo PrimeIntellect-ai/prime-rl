@@ -19,7 +19,7 @@ from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.cp import (
     get_padding_logit_from_prev_cp_rank,
-    prepare_for_cp,
+    setup_cp_params,
 )
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
@@ -241,7 +241,7 @@ def train(config: RLTrainerConfig):
             inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
 
             if cp_enabled:
-                input_ids, forward_position_ids = prepare_for_cp(input_ids, position_ids, cp_rank, cp_size, cp_group)
+                input_ids, forward_position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
             else:
                 forward_position_ids = position_ids
 

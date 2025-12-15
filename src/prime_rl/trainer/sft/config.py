@@ -179,8 +179,14 @@ class SFTTrainerConfig(BaseSettings):
 
     @model_validator(mode="after")
     def validate_pack_function(self):
-        if self.model.cp > 1 and self.data.pack_function != "stack":
-            raise ValueError("Packing function must be 'stack' when CP is enabled")
+        if self.model.cp > 1 and self.data.pack_function != "cat":
+            raise ValueError("Packing function must be 'cat' when CP is enabled")
+        return self
+
+    @model_validator(mode="after")
+    def validate_cp_seq_len(self):
+        if self.model.cp > 1 and self.data.seq_len % self.model.cp != 0:
+            raise ValueError("Sequence length must be divisible by CP degree")
         return self
 
     @model_validator(mode="after")

@@ -2,18 +2,20 @@ import time
 from contextlib import nullcontext
 from datetime import timedelta
 
+from ring_flash_attn import substitute_hf_flash_attn
 from torch.nn import CrossEntropyLoss
 
 # Import environment before any other imports
 # ruff: noqa: I001
 
+from prime_rl.trainer.models.layers.attn import substitute_prime_rl_flash_attn
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
-from torch.distributed.tensor.experimental import context_parallel
 from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_managers
 from prime_rl.trainer.sft.config import SFTTrainerConfig
+from prime_rl.utils.cp import setup_cp_params, shard_for_cp
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
@@ -84,6 +86,11 @@ def train(config: SFTTrainerConfig):
     )
     grad_accum_steps = total_micro_batches // micro_batches_per_step
 
+    if parallel_dims.cp_enabled:
+        assert config.data.seq_len % parallel_dims.cp == 0, "Sequence length must be divisible by CP degree"
+        substitute_hf_flash_attn(parallel_dims.world_mesh["cp"].get_group(), heads_k_stride=1)
+        substitute_prime_rl_flash_attn(parallel_dims.world_mesh["cp"].get_group(), heads_k_stride=1)
+
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
     model = setup_model(config.model, parallel_dims)
@@ -135,6 +142,11 @@ def train(config: SFTTrainerConfig):
     logger.info(
         f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples}, dataset_state={dataloader.state_dict()['dataset_state']})"
     )
+
+    cp_enabled = parallel_dims.cp_enabled
+    cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
+    cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
+    cp_size = parallel_dims.cp
 
     match config.loss_impl:
         case "liger":
@@ -201,6 +213,12 @@ def train(config: SFTTrainerConfig):
             position_ids = micro_batch["position_ids"].to("cuda")
             target_ids = micro_batch["target_ids"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
+
+            if cp_enabled:
+                input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
+                target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
+                loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
+
             assert input_ids.shape == position_ids.shape == target_ids.shape == loss_mask.shape, (
                 f"input_ids.shape: {input_ids.shape}, position_ids.shape: {position_ids.shape}, target_ids.shape: {target_ids.shape}, loss_mask.shape: {loss_mask.shape}"
             )
@@ -209,53 +227,43 @@ def train(config: SFTTrainerConfig):
                 logger.debug("Printing samples of the first micro batch")
                 print_sample(input_ids.flatten().tolist(), loss_mask.flatten().tolist(), tokenizer)
 
-            if config.model.cp > 1:
-                maybe_context_parallel = context_parallel(
-                    parallel_dims.world_mesh["cp"],
-                    buffers=tuple([input_ids, position_ids, target_ids, loss_mask]),
-                    buffer_seq_dims=(1, 1, 1, 1),
-                )
-            else:
-                maybe_context_parallel = nullcontext()
-
-            with maybe_context_parallel:
                 # Forward pass
-                logger.debug("Starting forward pass")
-                with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                    logits = forward(model, input_ids, position_ids)
-                B, L, V = logits.shape
+            logger.debug("Starting forward pass")
+            with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
+                logits = forward(model, input_ids, position_ids)
+            B, L, V = logits.shape
 
-                # Compute loss
-                loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
+            # Compute loss
+            loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
 
-                # Compute average loss over unmasked tokens
-                loss = loss[loss_mask].mean()
+            # Compute average loss over unmasked tokens
+            loss = loss[loss_mask].mean()
 
-                # Accumulate average loss over gradient accumulation steps
+            # Accumulate average loss over gradient accumulation steps
 
-                current_loss = loss.detach() / grad_accum_steps
+            current_loss = loss.detach() / grad_accum_steps
 
-                # only add if the loss is not nan
-                if not torch.isnan(current_loss):
-                    batch_loss += current_loss
-                else:
-                    nan_loss_count += 1
-                    logger.warning("Loss is nan, not taking into account in the batch loss calculation")
+            # only add if the loss is not nan
+            if not torch.isnan(current_loss):
+                batch_loss += current_loss
+            else:
+                nan_loss_count += 1
+                logger.warning("Loss is nan, not taking into account in the batch loss calculation")
 
-                # Delete logits before backward pass to avoid memory spike
-                del logits
+            # Delete logits before backward pass to avoid memory spike
+            del logits
 
-                # Backward pass
-                logger.debug("Starting backward pass")
-                with maybe_record_function("backward"):
-                    (loss / grad_accum_steps).backward()
+            # Backward pass
+            logger.debug("Starting backward pass")
+            with maybe_record_function("backward"):
+                (loss / grad_accum_steps).backward()
 
-                if is_tt_moe_model(model):
-                    max_vio = get_load_balance_stats(model)["max_vio"]
-                    if max_vio is not None:
-                        max_vio = max_vio.mean()
-                        dist.all_reduce(max_vio, op=dist.ReduceOp.MAX)
-                        batch_max_vio += max_vio / grad_accum_steps
+            if is_tt_moe_model(model):
+                max_vio = get_load_balance_stats(model)["max_vio"]
+                if max_vio is not None:
+                    max_vio = max_vio.mean()
+                    dist.all_reduce(max_vio, op=dist.ReduceOp.MAX)
+                    batch_max_vio += max_vio / grad_accum_steps
 
             # Debug log with *local, micro step* stats
             micro_step_message = f"Micro Step {micro_step}/{grad_accum_steps} | Loss: {loss.item():.4f} | Dataloader Step: {dataloader.state_dict()['dataset_state']['dataset']['step']}"
