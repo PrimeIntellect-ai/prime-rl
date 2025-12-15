@@ -190,6 +190,12 @@ class SFTTrainerConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def validate_cp_micro_batch_size(self):
+        if self.model.cp > 1 and self.data.micro_batch_size != 1:
+            raise ValueError("Micro batch size must be 1 when CP is enabled")
+        return self
+
+    @model_validator(mode="after")
     def validate_seq_len(self):
         if self.data.pack_function == "stack":
             if self.data.seq_len % 256 != 0:
