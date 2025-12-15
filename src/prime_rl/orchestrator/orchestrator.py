@@ -133,7 +133,10 @@ async def orchestrate(config: OrchestratorConfig):
     if config.use_token_prompts:
         logger.info("Using token prompts in environment to avoid retokenization discrepancies in multi-turn rollouts")
         env.set_use_token_prompts(config.use_token_prompts)
-        env.set_tokenize_method("vllm")
+        if config.tokenize_method is not None:
+            env.set_tokenize_method(config.tokenize_method)
+        if config.exact_tokenization is not None:
+            env.set_exact_tokenization(config.exact_tokenization)
     dataset = env.get_dataset(seed=config.seed)
     val_dataset = env.get_eval_dataset(seed=config.seed) if config.val else None
 

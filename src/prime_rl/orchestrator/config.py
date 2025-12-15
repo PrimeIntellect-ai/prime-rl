@@ -625,6 +625,29 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = False
 
+    tokenize_method: Annotated[
+        Literal["local", "vllm"] | None,
+        Field(
+            description="Method to use for tokenizing the environment responses. Only applicable if using token prompts. If None, will use vLLM tokenization by default."
+        ),
+    ] = None
+
+    exact_tokenization: Annotated[
+        bool | None,
+        Field(
+            description="Whether to use exact tokenization for token prompts. Exact tokenization is more precise, but also more costly. Only applicable if using token prompts. If None, will use exact tokenization by default."
+        ),
+    ] = None
+
+    @model_validator(mode="after")
+    def auto_setup_token_prompts(self):
+        if self.use_token_prompts:
+            if self.tokenize_method is None:
+                self.tokenize_method = "vllm"
+            if self.exact_tokenization is None:
+                self.exact_tokenization = True
+        return self
+
     @model_validator(mode="after")
     def nccl_max_async_level(self):
         if self.weight_broadcast.type == "nccl":
