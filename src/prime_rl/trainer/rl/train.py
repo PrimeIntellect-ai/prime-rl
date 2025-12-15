@@ -357,7 +357,7 @@ def train(config: RLTrainerConfig):
 
         # Compute step metrics
         num_local_tokens = seq_len * batch_size
-        num_tokens = world.world_size * num_local_tokens
+        num_tokens = parallel_dims.world_mesh["dp"].size() * num_local_tokens
         progress.total_tokens += num_tokens
         progress.total_samples += batch_size
         perf_counter = get_perf_counter(model, seq_len)
