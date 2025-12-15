@@ -1,7 +1,7 @@
 import shutil
 import time
 import warnings
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +20,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from prime_rl.trainer.config import CheckpointConfig, LoRAConfig, WeightCheckpointConfig
 from prime_rl.trainer.lora import has_lora_layers, save_lora_config
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
+from prime_rl.trainer.runs import Progress
 from prime_rl.trainer.weights import (
     gather_weights_on_master,
     get_adapter_state_dict,
@@ -29,13 +30,6 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.tensor_hashing import get_module_signature, get_optimizer_signature
 from prime_rl.utils.utils import get_ckpt_dir, get_step_path, get_weights_dir
-
-
-@dataclass
-class Progress:
-    step: int = 0
-    total_tokens: int = 0
-    total_samples: int = 0
 
 
 class AppState(Stateful):

@@ -4,6 +4,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 from pydantic import BaseModel, Field, model_validator
 
 from prime_rl.trainer.config import HeartbeatConfig
+from prime_rl.transport.config import FileSystemTransportConfig, TransportConfigType
 from prime_rl.utils.config import ClientConfig, LogConfig, ModelConfig, WandbWithExtrasConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
@@ -441,6 +442,8 @@ class OrchestratorConfig(BaseSettings):
         FileSystemWeightBroadcastConfig()
     )
 
+    rollout_transport: Annotated[TransportConfigType, Field(discriminator="type")] = FileSystemTransportConfig()
+
     trajectory_strategy: Annotated[
         Literal["interleaved", "branching"],
         Field(
@@ -453,7 +456,7 @@ class OrchestratorConfig(BaseSettings):
         Field(
             description="Directory to write outputs to. Will be populated with checkpoints, weights, rollouts and logs as subdirectories. Should be set to a persistent directory with enough disk space. This value should be distinct across experiments running on a single node. See the README for more details."
         ),
-    ] = Path("outputs")
+    ] = Path("outputs/run_default")
 
     max_concurrent: Annotated[
         int | None,
@@ -539,7 +542,6 @@ class OrchestratorConfig(BaseSettings):
 
     seed: Annotated[int | None, Field(description="Random seed for the orchestrator.")] = 42
 
-    pad_to_multiple_of: Annotated[int, Field(ge=1, description="Pad the batch to a multiple of this value.")] = 1
     lora_name: Annotated[
         str | None,
         Field(

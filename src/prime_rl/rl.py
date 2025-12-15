@@ -210,12 +210,6 @@ class RLConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_batch_padding(self):
-        if self.trainer.model.cp > 1 and self.orchestrator.pad_to_multiple_of == 1:
-            self.orchestrator.pad_to_multiple_of = self.trainer.model.cp * 2
-        return self
-
-    @model_validator(mode="after")
     def auto_setup_logs(self):
         # Copy log level
         if self.log is not None:
@@ -296,7 +290,6 @@ class RLConfig(BaseSettings):
             # Configure the trainer fake data to match the orchestrator config
             self.trainer.data.fake = FakeDataLoaderConfig(
                 batch_size=self.orchestrator.batch_size,
-                seq_len=self.orchestrator.seq_len,
             )
 
         if self.trainer.bench != self.orchestrator.bench:
@@ -346,7 +339,7 @@ class RLConfig(BaseSettings):
         # If specified, use the same outputs directory for trainer and orchestrator
         if self.output_dir is not None:
             self.trainer.output_dir = self.output_dir
-            self.orchestrator.output_dir = self.output_dir
+            self.orchestrator.output_dir = self.output_dir / "run_default"
 
         validate_shared_output_dir(self.trainer, self.orchestrator)
 

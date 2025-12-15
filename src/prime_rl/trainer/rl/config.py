@@ -13,6 +13,7 @@ from prime_rl.trainer.config import (
     SchedulerConfigType,
     TokenizerConfig,
 )
+from prime_rl.transport.config import FileSystemTransportConfig, TransportConfigType
 from prime_rl.utils.config import LogConfig, WandbConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
@@ -109,6 +110,8 @@ class RLTrainerConfig(BaseSettings):
         FileSystemWeightBroadcastConfig()
     )
 
+    rollout_transport: Annotated[TransportConfigType, Field(discriminator="type")] = FileSystemTransportConfig()
+
     # The logging configuration
     log: LogConfig = LogConfig()
 
@@ -158,6 +161,14 @@ class RLTrainerConfig(BaseSettings):
     heartbeat: Annotated[
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
     ] = None
+
+    max_concurrent_runs: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="The maximum number of concurrent runs to allow. If 1, then only one run will be allowed at a time.",
+        ),
+    ] = 4
 
     @model_validator(mode="after")
     def auto_setup_bench(self):

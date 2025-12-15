@@ -2,7 +2,7 @@ from copy import deepcopy
 
 import verifiers as vf
 
-from prime_rl.orchestrator.types import TrainingExample
+from prime_rl.transport import TrainingExample
 from prime_rl.utils.logger import get_logger
 
 
@@ -21,9 +21,9 @@ def interleave_rollout(state: vf.State) -> list[TrainingExample]:
     first_step = trajectory[0]
     interleaved_rollout = TrainingExample(
         prompt_ids=deepcopy(first_step["tokens"]["prompt_ids"]),
-        prompt_mask=deepcopy(first_step["tokens"]["prompt_mask"]),
+        prompt_mask=[i != 0 for i in first_step["tokens"]["prompt_mask"]],
         completion_ids=deepcopy(first_step["tokens"]["completion_ids"]),
-        completion_mask=deepcopy(first_step["tokens"]["completion_mask"]),
+        completion_mask=[i != 0 for i in first_step["tokens"]["completion_mask"]],
         completion_logprobs=deepcopy(first_step["tokens"]["completion_logprobs"]),
         advantage=None,
     )
@@ -43,16 +43,16 @@ def interleave_rollout(state: vf.State) -> list[TrainingExample]:
 
         # Extend the completion with the new prompt
         prompt_ids = deepcopy(prev_trajectory_and_new_prompt_ids[len(prefix_tokens) :])
-        interleaved_rollout["completion_ids"].extend(prompt_ids)
-        interleaved_rollout["completion_mask"].extend([0] * len(prompt_ids))
-        interleaved_rollout["completion_logprobs"].extend([0.0] * len(prompt_ids))
+        interleaved_rollout.completion_ids.extend(prompt_ids)
+        interleaved_rollout.completion_mask.extend([False] * len(prompt_ids))
+        interleaved_rollout.completion_logprobs.extend([0.0] * len(prompt_ids))
 
         # Extend the completion with the new completion tokens
         completion_ids = deepcopy(tokens["completion_ids"])
         completion_logprobs = deepcopy(tokens["completion_logprobs"])
-        interleaved_rollout["completion_ids"].extend(completion_ids)
-        interleaved_rollout["completion_mask"].extend([1] * len(completion_ids))
-        interleaved_rollout["completion_logprobs"].extend(completion_logprobs)
+        interleaved_rollout.completion_ids.extend(completion_ids)
+        interleaved_rollout.completion_mask.extend([True] * len(completion_ids))
+        interleaved_rollout.completion_logprobs.extend(completion_logprobs)
 
         # New prefix is the current prompt and completion ids concatenated
         prefix_tokens = tokens["prompt_ids"] + tokens["completion_ids"]
@@ -68,9 +68,9 @@ def branch_rollout(state: vf.State) -> list[TrainingExample]:
         tokens = step["tokens"]
         rollout = TrainingExample(
             prompt_ids=deepcopy(tokens["prompt_ids"]),
-            prompt_mask=deepcopy(tokens["prompt_mask"]),
+            prompt_mask=[i != 0 for i in tokens["prompt_mask"]],
             completion_ids=deepcopy(tokens["completion_ids"]),
-            completion_mask=deepcopy(tokens["completion_mask"]),
+            completion_mask=[i != 0 for i in tokens["completion_mask"]],
             completion_logprobs=deepcopy(tokens["completion_logprobs"]),
             advantage=None,
         )

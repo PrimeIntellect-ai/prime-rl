@@ -3,4 +3,6 @@ max_async_level = 5
 
 [data.fake]
 batch_size = 2
+
+[model]
 seq_len = 1024
