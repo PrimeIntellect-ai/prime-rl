@@ -32,7 +32,7 @@ class FileSystemWeightBroadcast(WeightBroadcast):
         self.world = get_world()
         self.runs = get_runs()
         self.logger.debug(
-            f"Filesystem broadcast initialized (save_format={config.save_format}, save_sharded={config.save_sharded}"
+            f"Filesystem broadcast initialized (save_format={config.save_format}, save_sharded={self.save_sharded}"
         )
 
     def broadcast_weights(self, model: nn.Module, step: int, adapter_only: bool = False):
