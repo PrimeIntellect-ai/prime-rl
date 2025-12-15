@@ -621,9 +621,9 @@ class OrchestratorConfig(BaseSettings):
     use_token_prompts: Annotated[
         bool,
         Field(
-            description="Whether the environment should use token prompts for rollouts. Disabling this feature may lead to retokenization discrepancies in multi-turn conversations. For more details read docs/trajectories.md",
+            description="Whether the environment should use token prompts for rollouts. Disabling this feature may lead to retokenization discrepancies in multi-turn conversations.",
         ),
-    ] = False
+    ] = True
 
     tokenize_method: Annotated[
         Literal["local", "vllm"] | None,
