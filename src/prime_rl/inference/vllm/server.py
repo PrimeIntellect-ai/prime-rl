@@ -167,7 +167,7 @@ async def custom_run_server_worker(listen_address, sock, args, client_config=Non
             return request.app.state.openai_serving_chat_completion_with_tokens
 
         @app.post(
-            "/generate",
+            "/v1/chat/completions/tokens",
             dependencies=[Depends(validate_json_request)],
             responses={
                 HTTPStatus.OK.value: {"content": {"text/event-stream": {}}},
@@ -178,7 +178,7 @@ async def custom_run_server_worker(listen_address, sock, args, client_config=Non
         )
         @with_cancellation
         @load_aware_call
-        async def generate(request: ChatCompletionRequestWithTokens, raw_request: Request):
+        async def chat_completions_with_tokens(request: ChatCompletionRequestWithTokens, raw_request: Request):
             handler = chat_with_tokens(raw_request)
             if handler is None:
                 return base(raw_request).create_error_response(
