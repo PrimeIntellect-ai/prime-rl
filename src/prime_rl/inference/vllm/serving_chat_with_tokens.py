@@ -51,6 +51,17 @@ class OpenAIServingChatCompletionWithTokens(OpenAIServingChat):
         Sequence[RequestPrompt],
         list[EngineTokensPrompt],
     ]:
+        # Early exit when tokens are pre-supplied - skip expensive chat template
+        # and message parsing since client already did this work
+        if hasattr(request, "tokens") and request.tokens:
+            prompt_inputs = TextTokensPrompt(prompt="", prompt_token_ids=request.tokens)
+            engine_prompt = EngineTokensPrompt(prompt_token_ids=request.tokens)
+            if request.mm_processor_kwargs is not None:
+                engine_prompt["mm_processor_kwargs"] = request.mm_processor_kwargs
+            if hasattr(request, "cache_salt") and request.cache_salt is not None:
+                engine_prompt["cache_salt"] = request.cache_salt
+            return [], [prompt_inputs], [engine_prompt]
+
         model_config = self.model_config
 
         resolved_content_format = resolve_chat_template_content_format(
