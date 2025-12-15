@@ -635,7 +635,7 @@ class OrchestratorConfig(BaseSettings):
     exact_tokenization: Annotated[
         bool | None,
         Field(
-            description="Whether to use exact tokenization for token prompts. Exact tokenization is more precise, but also more costly. Only applicable if using token prompts. If None, will use exact tokenization by default."
+            description="Whether to use exact tokenization for token prompts. Exact tokenization is more precise, but also more costly. Only applicable if using token prompts. If None, will not use exact tokenization by default."
         ),
     ] = None
 
@@ -645,7 +645,7 @@ class OrchestratorConfig(BaseSettings):
             if self.tokenize_method is None:
                 self.tokenize_method = "vllm"
             if self.exact_tokenization is None:
-                self.exact_tokenization = True
+                self.exact_tokenization = False
         return self
 
     @model_validator(mode="after")
