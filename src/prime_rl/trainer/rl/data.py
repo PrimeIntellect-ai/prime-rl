@@ -47,7 +47,7 @@ class FakeDataLoader:
 
         self.batch_size = config.batch_size
         self.num_micro_batches = self.batch_size // self.dp_world_size
-        self.seq_len = config.seq_len
+        self.seq_len = seq_len
         self.generate_documents = config.generate_documents
         self.batch_counter = 0
 

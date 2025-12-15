@@ -42,7 +42,6 @@ class FakeDataLoaderConfig(BaseConfig):
     """Configures a fake data loader sampling random micro batches for debugging."""
 
     batch_size: Annotated[int, Field(ge=1)] = 2
-    seq_len: Annotated[int, Field(ge=1)] = 128
     generate_documents: Annotated[
         bool, Field(description="Whether to generate documents instead of micro batches.")
     ] = False

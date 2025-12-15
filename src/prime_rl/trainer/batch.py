@@ -1,7 +1,5 @@
 import copy
 
-import torch
-
 from prime_rl.transport.types import MicroBatch, TrainingExample
 
 
