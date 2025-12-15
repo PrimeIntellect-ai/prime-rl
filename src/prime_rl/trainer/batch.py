@@ -1,10 +1,10 @@
 import copy
 
-from prime_rl.transport.types import MicroBatch, TrainingExample
+from prime_rl.transport.types import MicroBatch, TrainingSample
 
 
 def prepare_sample(
-    training_example: TrainingExample,
+    training_example: TrainingSample,
     seq_len: int,
 ) -> MicroBatch:
     """
@@ -90,7 +90,7 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
 
 
 def prepare_batch(
-    rollouts: list[TrainingExample],
+    rollouts: list[TrainingSample],
     temperature: float,
     seq_len: int,
     num_train_workers: int,

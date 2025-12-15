@@ -8,7 +8,7 @@ from prime_rl.transport.filesystem import (
     FileSystemTrainingBatchReceiver,
     FileSystemTrainingBatchSender,
 )
-from prime_rl.transport.types import MicroBatch, TrainingBatch, TrainingExample
+from prime_rl.transport.types import MicroBatch, TrainingBatch, TrainingSample
 
 
 def setup_training_batch_sender(output_dir: Path, transport: TransportConfigType) -> TrainingBatchSender:
@@ -50,7 +50,7 @@ __all__ = [
     "FileSystemMicroBatchReceiver",
     "MicroBatchReceiver",
     "MicroBatchSender",
-    "TrainingExample",
+    "TrainingSample",
     "TrainingBatch",
     "MicroBatch",
     "setup_training_batch_sender",

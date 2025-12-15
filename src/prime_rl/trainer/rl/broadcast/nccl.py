@@ -158,12 +158,12 @@ class NCCLWeightBroadcast(WeightBroadcast):
         self.logger.debug("Starting broadcasting weights to inference engine via NCCL")
         start_time = time.perf_counter()
         if self.world.is_master:
-            self.notify_orchestrator()
+            self._notify_orchestrator()
         self.nccl_broadcast_sender.broadcast_weights(model, step)
         self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
 
-    def notify_orchestrator(self):
-        """Notify the orchestrator that the weights have been broadcast by writing a 'STABLE' file to a shared filesystem."""
+    def _notify_orchestrator(self):
+        """Notify the orchestrator to initiate weight broadcast."""
         if self.world.is_master:
             for idx in self.runs.used_idxs:
                 if not self.runs.ready_to_update[idx]:
@@ -175,7 +175,6 @@ class NCCLWeightBroadcast(WeightBroadcast):
                     )
                     save_dir.mkdir(parents=True, exist_ok=True)
 
-                    # Notify the orchestrator at the end of step to signal that it is safe to load weights from shared filesystem
                     stable_file = save_dir / "STABLE"
                     stable_file.touch()
                 except FileNotFoundError:

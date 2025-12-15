@@ -97,14 +97,7 @@ def test_reward_in_range(rl_process: ProcessResult, test_no_error, output_dir: P
 @pytest.fixture(scope="module")
 def test_no_error_resume(rl_resume_process: ProcessResult, output_dir: Path):
     """Tests that the RL resume process does not fail."""
-    if rl_resume_process.returncode != 0:
-        print("=== Inference Outputs ===")
-        with open(output_dir / "logs" / "inference.stdout", "r") as f:
-            print(*f.readlines()[-100:], sep="\n")
-        print("=== Orchestrator Outputs ===")
-        with open(output_dir / "run_default" / "logs" / "orchestrator.stdout", "r") as f:
-            print(*f.readlines()[-100:], sep="\n")
-    assert rl_resume_process.returncode == 0, f"Process has non-zero return code ({rl_resume_process})"
+    check_no_error(rl_resume_process, output_dir)
 
 
 def test_reward_in_range_resume(rl_resume_process: ProcessResult, test_no_error_resume, output_dir: Path):

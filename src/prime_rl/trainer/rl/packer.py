@@ -8,13 +8,15 @@ from prime_rl.trainer.runs import get_runs
 from prime_rl.transport import (
     MicroBatchSender,
     TrainingBatch,
-    TrainingExample,
+    TrainingSample,
     TransportConfigType,
     setup_micro_batch_sender,
     setup_training_batch_receiver,
 )
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_rollout_dir
+
+TIMEOUT_SECONDS = 10
 
 
 class Packer:
@@ -56,17 +58,19 @@ class Packer:
             if estimated_next_batch_tokens >= threshold:
                 return True
         else:
-            self.logger.warning(f"Not enough tokens to pack. Expected {threshold} tokens, got {tokens}")
             return False
 
     def pack(self):
         training_batches: dict[int, TrainingBatch] = self.get_batch()
-        # TODO: Handle timeout case
+        start_time = time.time()
         while not self.has_enough_tokens(training_batches):
+            if time.time() - start_time > TIMEOUT_SECONDS and training_batches:
+                self.logger.warning("Timeout waiting for enough tokens to pack")
+                break
             time.sleep(1)
             training_batches = self.get_batch()
 
-        train_examples: list[TrainingExample] = []
+        train_examples: list[TrainingSample] = []
         train_idxs = []
         for idx, training_batch in training_batches.items():
             self.runs.progress[idx].step += 1
