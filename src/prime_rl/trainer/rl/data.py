@@ -146,7 +146,10 @@ class DataLoader:
                 start_step=start_step,
             )
 
-        self.receiver: MicroBatchReceiver = setup_micro_batch_receiver(output_dir, self.world.rank, start_step, config)
+        non_dp_world_size = self.world.world_size // dp_world_size
+        dp_rank = self.world.rank // non_dp_world_size
+
+        self.receiver: MicroBatchReceiver = setup_micro_batch_receiver(output_dir, dp_rank, start_step, config)
 
     def wait_for_batch(self) -> None:
         if self.world.is_master:
