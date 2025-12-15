@@ -70,7 +70,7 @@ class FakeDataLoader:
         self.batch_counter += 1
         return micro_batches
 
-    def _get_document_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
+    def _get_sample_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
         total_seq_len = 0
         input_ids = []
         position_ids = []
