@@ -313,7 +313,7 @@ class EvalConfig(BaseConfig):
         Field(
             description="Schedule rollouts individually instead of as groups. Enables live progress updates and per-rollout resume, but incompatible with group-based rubrics.",
         ),
-    ] = True
+    ] = False
 
 
 class OnlineEvalConfig(EvalConfig):
