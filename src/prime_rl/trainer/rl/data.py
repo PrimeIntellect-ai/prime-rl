@@ -58,7 +58,7 @@ class FakeDataLoader:
         if not self.generate_samples:
             get_micro_batch_fn = self._get_micro_batch
         else:
-            get_micro_batch_fn = self._get_document_micro_batch
+            get_micro_batch_fn = self._get_sample_micro_batch
 
         # This is a pretty ugly hack to ensure that all CP ranks in a data parallel group receive the same micro batch.
         micro_batches = []
