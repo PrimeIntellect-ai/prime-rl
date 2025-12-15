@@ -48,14 +48,14 @@ class FakeDataLoader:
         self.batch_size = config.batch_size
         self.num_micro_batches = self.batch_size // self.dp_world_size
         self.seq_len = seq_len
-        self.generate_documents = config.generate_documents
+        self.generate_samples = config.generate_samples
         self.batch_counter = 0
 
     def wait_for_batch(self) -> None:
         return
 
     def get_batch(self) -> list[TensorMicroBatch]:
-        if not self.generate_documents:
+        if not self.generate_samples:
             get_micro_batch_fn = self._get_micro_batch
         else:
             get_micro_batch_fn = self._get_document_micro_batch
