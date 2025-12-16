@@ -8,6 +8,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.rl.config import FakeDataLoaderConfig
 from prime_rl.trainer.rl.packer import Packer
+from prime_rl.trainer.runs import get_runs
 from prime_rl.trainer.world import get_world
 from prime_rl.transport import MicroBatch, MicroBatchReceiver, TransportConfigType, setup_micro_batch_receiver
 
@@ -24,6 +25,7 @@ class TensorMicroBatch(TypedDict):
 
     # Batch level
     temperature: float
+    lora_num_tokens: Int[Tensor, "n_loras"]
 
 
 def micro_batch_to_tensor(micro_batch: MicroBatch) -> TensorMicroBatch:
@@ -35,6 +37,7 @@ def micro_batch_to_tensor(micro_batch: MicroBatch) -> TensorMicroBatch:
         inference_logprobs=torch.tensor(micro_batch.inference_logprobs, dtype=torch.float).unsqueeze(0),
         loss_mask=torch.tensor(micro_batch.loss_mask, dtype=torch.bool).unsqueeze(0),
         temperature=micro_batch.temperature if micro_batch.temperature is not None else 1.0,
+        lora_num_tokens=torch.tensor(micro_batch.lora_num_tokens, dtype=torch.int32),
     )
 
 
@@ -50,6 +53,7 @@ class FakeDataLoader:
         self.seq_len = seq_len
         self.generate_samples = config.generate_samples
         self.batch_counter = 0
+        self.runs = get_runs()
 
     def wait_for_batch(self) -> None:
         return
@@ -103,6 +107,8 @@ class FakeDataLoader:
         }
 
     def _get_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
+        lora_num_tokens = torch.zeros(self.runs.max_runs, dtype=torch.int)
+        lora_num_tokens[0] = self.seq_len
         return {
             "input_ids": torch.randint(
                 0,
@@ -118,6 +124,7 @@ class FakeDataLoader:
             "inference_logprobs": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
             "temperature": 1.0,
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
+            "lora_num_tokens": lora_num_tokens,
         }
 
 

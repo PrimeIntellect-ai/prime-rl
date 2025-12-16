@@ -7,7 +7,10 @@ import tomli
 from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
+    import torch
+
     from prime_rl.orchestrator.config import OrchestratorConfig
+    from prime_rl.trainer.models.layers.lora import MultiLoRALinear
 
 
 @dataclass
@@ -35,6 +38,9 @@ class Runs:
 
         self._deletion_hooks: list[Callable[[int, str], None]] = []
         self._creation_hooks: list[Callable[[int, str], None]] = []
+
+        # Store modules with their FQN prefixes for parameter management
+        self._modules: list[tuple[str, "MultiLoRALinear"]] = []
 
     def get_orchestrator_config(self, run_id: str) -> Optional["OrchestratorConfig"]:
         # Load orchestrator config first to validate it
@@ -123,6 +129,9 @@ class Runs:
                 # Store the parsed config
                 self.config[new_id] = config
 
+                # Reset parameters for the new run
+                self.reset_run_parameters(new_id)
+
                 # Call creation hooks
                 for hook in self._creation_hooks:
                     hook(new_id, new_run)
@@ -156,6 +165,49 @@ class Runs:
                   Called when a new run is added to the system.
         """
         self._creation_hooks.append(hook)
+
+    def register_module(self, prefix: str, module: "MultiLoRALinear") -> None:
+        """Register a MultiLoRALinear module with its FQN prefix.
+
+        This allows Runs to manage parameter access, reset, and state dict slicing
+        for multi-adapter LoRA modules.
+
+        Args:
+            prefix: The module's fully qualified name in the model
+                   (e.g., "model.layers.0.self_attn.q_proj")
+            module: The MultiLoRALinear module to register
+        """
+        self._modules.append((prefix, module))
+
+    def get_named_parameters_for_run(self, idx: int) -> list[tuple[str, "torch.nn.Parameter"]]:
+        """Get named parameters for a specific run index.
+
+        Args:
+            idx: The run index to get parameters for
+
+        Returns:
+            List of (name, parameter) tuples for the specified run index
+        """
+        params = []
+        for prefix, module in self._modules:
+            params.extend(
+                [
+                    (f"{prefix}.lora_A.{idx}", module.lora_A[idx]),
+                    (f"{prefix}.lora_B.{idx}", module.lora_B[idx]),
+                ]
+            )
+        return params
+
+    def reset_run_parameters(self, idx: int) -> None:
+        """Reset parameters for a specific run index.
+
+        Called when a new run is created to initialize fresh adapter weights.
+
+        Args:
+            idx: The run index to reset parameters for
+        """
+        for _, module in self._modules:
+            module.reset_parameters(idx)
 
     def __repr__(self):
         return f"Runs(max={self.max_runs})[{self.idx_2_id.keys()}]"
