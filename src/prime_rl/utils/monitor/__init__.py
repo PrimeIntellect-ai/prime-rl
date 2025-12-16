@@ -2,7 +2,7 @@ from pathlib import Path
 
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.utils.config import PrimeMonitorWithExtrasConfig, WandbWithExtrasConfig
+from prime_rl.utils.config import PrimeMonitorConfig, WandbWithExtrasConfig
 from prime_rl.utils.monitor.base import Monitor, NoOpMonitor
 from prime_rl.utils.monitor.multi import MultiMonitor
 from prime_rl.utils.monitor.prime import PrimeMonitor
@@ -36,7 +36,7 @@ def setup_monitor(
     tokenizer: PreTrainedTokenizer | None = None,
     run_config: BaseSettings | None = None,
     *,
-    prime_config: PrimeMonitorWithExtrasConfig | None = None,
+    prime_config: PrimeMonitorConfig | None = None,
     # Backward compatibility: support old 'config' keyword argument
     config: WandbWithExtrasConfig | None = None,
 ) -> Monitor:

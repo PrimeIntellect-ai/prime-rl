@@ -9,7 +9,7 @@ from prime_rl.utils.config import (
     HeartbeatConfig,
     LogConfig,
     ModelConfig,
-    PrimeMonitorWithExtrasConfig,
+    PrimeMonitorConfig,
     WandbWithExtrasConfig,
 )
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
@@ -512,7 +512,7 @@ class OrchestratorConfig(BaseSettings):
     wandb: WandbWithExtrasConfig | None = None
 
     # The prime monitor configuration
-    prime_monitor: PrimeMonitorWithExtrasConfig | None = None
+    prime_monitor: PrimeMonitorConfig | None = None
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None

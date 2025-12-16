@@ -1,13 +1,15 @@
+import asyncio
 import os
 import time
 from pathlib import Path
+from threading import Thread
 from typing import Any
 
-import requests
+import httpx
 import verifiers as vf
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.utils.config import PrimeMonitorConfig, PrimeMonitorWithExtrasConfig
+from prime_rl.utils.config import PrimeMonitorConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor.base import Monitor
 from prime_rl.utils.pydantic_config import BaseSettings
@@ -18,7 +20,7 @@ class PrimeMonitor(Monitor):
 
     def __init__(
         self,
-        config: PrimeMonitorConfig | PrimeMonitorWithExtrasConfig | None,
+        config: PrimeMonitorConfig | None,
         output_dir: Path | None = None,
         tokenizer: PreTrainedTokenizer | None = None,
         run_config: BaseSettings | None = None,
@@ -39,15 +41,21 @@ class PrimeMonitor(Monitor):
         assert config is not None
         self.logger.info(f"Initializing {self.__class__.__name__} ({config})")
 
-        # Get API key from config or environment
-        api_key = config.api_key or os.getenv("PRIME_INTELLECT_API_KEY")
+        # Get API key from environment variable
+        api_key = os.getenv(config.api_key_var)
         if not api_key:
-            self.logger.warning("API key not found. Set api_key in config or PRIME_INTELLECT_API_KEY environment variable. PrimeMonitor will not be able to upload data.")
+            self.logger.warning(f"API key not found. Set {config.api_key_var} environment variable. PrimeMonitor will not be able to upload data.")
             self.enabled = False
             return
 
         self.api_key = api_key
-        self.api_endpoint = config.api_endpoint
+        self.base_url = config.base_url
+
+        # Set up async HTTP client with background event loop
+        self._loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
+        self._thread = Thread(target=self._run_event_loop, daemon=True)
+        self._thread.start()
+        self._client = httpx.AsyncClient(timeout=30)
 
         # Get run_id from environment variable
         run_id = os.getenv("RUN_ID")
@@ -58,7 +66,7 @@ class PrimeMonitor(Monitor):
         self.run_id = run_id
 
         # Optionally, initialize sample logging attributes
-        if config is not None and isinstance(config, PrimeMonitorWithExtrasConfig) and config.log_extras:
+        if config is not None and config.log_extras:
             if config.log_extras.samples:
                 self.last_log_samples_step = -1
                 self.tokenizer = tokenizer
@@ -87,7 +95,6 @@ class PrimeMonitor(Monitor):
             return
         if (
             not self.config
-            or not isinstance(self.config, PrimeMonitorWithExtrasConfig)
             or not self.config.log_extras
             or not self.config.log_extras.samples
             or step % self.config.log_extras.interval != 0
@@ -167,7 +174,6 @@ class PrimeMonitor(Monitor):
             return
         if (
             not self.config
-            or not isinstance(self.config, PrimeMonitorWithExtrasConfig)
             or not self.config.log_extras
             or not self.config.log_extras.distributions
             or step % self.config.log_extras.interval != 0
@@ -193,10 +199,6 @@ class PrimeMonitor(Monitor):
         self.last_log_distributions_step = step
         self.logger.debug(f"Logged distributions at step {step} to Prime Intellect API in {time.perf_counter() - start_time:.2f}s")
 
-    def log_final_distributions(self) -> None:
-        """Log final distributions (no-op - distributions are logged per-step only)."""
-        pass
-
     def save_final_summary(self, filename: str = "final_summary.json") -> None:
         """Save final summary to Prime Intellect API."""
         if not self.is_master or not self.enabled:
@@ -211,24 +213,34 @@ class PrimeMonitor(Monitor):
             },
         )
 
-    def _make_request(self, endpoint: str, data: dict[str, Any]) -> None:
-        """Make a POST request to the Prime Intellect API."""
-        if not self.enabled:
-            return
+    def _run_event_loop(self) -> None:
+        """Run the async event loop in a background thread."""
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_forever()
 
+    async def _make_request_async(self, endpoint: str, data: dict[str, Any]) -> None:
+        """Make an async POST request to the Prime Intellect API."""
         headers = {
             "x-api-key": self.api_key,
             "Content-Type": "application/json",
         }
         try:
-            # Construct endpoint path (no run_id in path)
-            full_endpoint = f"{self.api_endpoint}/{endpoint}"
-            response = requests.post(
+            full_endpoint = f"{self.base_url}/{endpoint}"
+            response = await self._client.post(
                 full_endpoint,
                 headers=headers,
                 json=data,
-                timeout=30,
             )
             response.raise_for_status()
         except Exception as e:
             self.logger.warning(f"Failed to upload to Prime Intellect API: {e}")
+
+    def _make_request(self, endpoint: str, data: dict[str, Any]) -> None:
+        """Submit a request to the async queue (fire-and-forget)."""
+        if not self.enabled:
+            return
+
+        asyncio.run_coroutine_threadsafe(
+            self._make_request_async(endpoint, data),
+            self._loop,
+        )
