@@ -13,6 +13,7 @@ from torch.distributed.tensor.experimental import context_parallel
 from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
 from prime_rl.trainer.ckpt import setup_ckpt_managers
+from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.trainer.sft.config import SFTTrainerConfig
 from prime_rl.trainer.runs import Progress
 from prime_rl.utils.logger import setup_logger
@@ -120,17 +121,24 @@ def train(config: SFTTrainerConfig):
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
-    if ckpt_manager is not None and config.ckpt and config.ckpt.resume_step:
-        checkpoint_loaded = ckpt_manager.load(
-            config.ckpt.resume_step,
+
+    checkpoint_step = None
+    if config.ckpt and config.ckpt.resume_step is not None:
+        if config.ckpt.resume_step == -1:
+            checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+        else:
+            checkpoint_step = config.ckpt.resume_step
+
+    if checkpoint_step is not None:
+        ckpt_manager.load(
+            checkpoint_step,
             model,
             [optimizer],
             scheduler if not config.ckpt.skip_scheduler else None,
             progress if not config.ckpt.skip_progress else None,
             dataloader=dataloader if not config.ckpt.skip_dataloader else None,
         )
-        if checkpoint_loaded:
-            logger.info(f"Resuming training from checkpoint step {config.ckpt.resume_step}")
+        logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
         # This redundant setup is necessary because loading the optimizer's state has side effects on the scheduler state dict
         if config.ckpt.skip_scheduler:
             scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)

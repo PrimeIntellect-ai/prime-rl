@@ -52,6 +52,7 @@ from prime_rl.utils.utils import (
     get_env_ids_to_install,
     get_step_path,
     install_env,
+    resolve_latest_ckpt_step,
     to_col_format,
 )
 from prime_rl.utils.vf import generate_batch, get_completion_len, get_is_truncated, get_prompt_len, get_seq_len
@@ -175,22 +176,25 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Reset weights to base model if starting from scratch
     progress = Progress()
-    if config.ckpt and ckpt_manager and config.ckpt.resume_step:
-        checkpoint_loaded = ckpt_manager.load(progress, buffer, step=config.ckpt.resume_step)
-        if checkpoint_loaded:
-            logger.info(f"Resuming training from checkpoint step {config.ckpt.resume_step}")
-            scheduler.ckpt_step = progress.step  # Always resume from the latest checkpoint
-            await update_weights(
-                admin_clients,
-                get_step_path(get_broadcast_dir(config.output_dir), scheduler.ckpt_step),
-                lora_name=config.lora_name,
-            )
-            if config.lora_name is not None:
-                scheduler.model_name = config.lora_name
+
+    checkpoint_step = None
+    if config.ckpt and config.ckpt.resume_step is not None:
+        if config.ckpt.resume_step == -1:
+            checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir if ckpt_manager is not None else None)
         else:
-            logger.info("Training from scratch. Resetting weights to base model")
-            if config.lora_name is None:
-                await reload_weights(admin_clients)
+            checkpoint_step = config.ckpt.resume_step
+
+    if checkpoint_step is not None:
+        ckpt_manager.load(progress, buffer, step=checkpoint_step)
+        logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
+        scheduler.ckpt_step = progress.step  # Always resume from the latest checkpoint
+        await update_weights(
+            admin_clients,
+            get_step_path(get_broadcast_dir(config.output_dir), scheduler.ckpt_step),
+            lora_name=config.lora_name,
+        )
+        if config.lora_name is not None:
+            scheduler.model_name = config.lora_name
     else:
         logger.info("Training from scratch. Resetting weights to base model")
         if config.lora_name is None:

@@ -29,15 +29,6 @@ class CheckpointManager:
     def get_ckpt_path(self, step: int) -> Path:
         return get_step_path(self.ckpt_dir, step) / "orchestrator"
 
-    def get_latest_step(self) -> int | None:
-        step_dirs = list(self.ckpt_dir.glob("step_*"))
-        if len(step_dirs) == 0:
-            return None
-        steps = sorted([int(step_dir.name.split("_")[-1]) for step_dir in step_dirs])
-        latest_step = steps[-1]
-        self.logger.info(f"Found latest checkpoint in {self.ckpt_dir}: {latest_step}")
-        return latest_step
-
     def _save_to_path(
         self,
         ckpt_path: Path,
@@ -81,19 +72,12 @@ class CheckpointManager:
 
         self.logger.debug(f"Orchestrator checkpoint loaded in {time.perf_counter() - start_time:.2f} seconds")
 
-    def load(self, progress: Progress, buffer: Buffer, step: int) -> bool:
-        """Loads a checkpoint from a given path. Returns True if checkpoint was loaded, False otherwise."""
-        if step == -1:
-            step = self.get_latest_step()
-            if step is None:
-                self.logger.warning(f"No checkpoints found in {self.ckpt_dir}. Starting from scratch.")
-                return False
-
+    def load(self, progress: Progress, buffer: Buffer, step: int) -> None:
+        """Loads a checkpoint from a given path."""
         ckpt_path = self.get_ckpt_path(step)
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
         self._load_from_path(ckpt_path, progress, buffer)
-        return True
 
     def save(
         self,

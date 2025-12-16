@@ -33,6 +33,20 @@ def get_step_path(path: Path, step: int) -> Path:
     return path / f"step_{step}"
 
 
+def resolve_latest_ckpt_step(ckpt_dir: Path) -> int | None:
+    """Gets the latest checkpoint step from the checkpoint directory. Returns None if no checkpoints are found."""
+    step_dirs = list(ckpt_dir.glob("step_*"))
+    if len(step_dirs) == 0:
+        logger = get_logger()
+        logger.warning(f"No checkpoints found in {ckpt_dir}. Starting from scratch.")
+        return None
+    steps = sorted([int(step_dir.name.split("_")[-1]) for step_dir in step_dirs])
+    latest_step = steps[-1]
+    logger = get_logger()
+    logger.info(f"Found latest checkpoint in {ckpt_dir}: {latest_step}")
+    return latest_step
+
+
 def sync_wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:
     logger = get_logger()
     wait_time = 0

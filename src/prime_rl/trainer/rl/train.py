@@ -44,7 +44,7 @@ from prime_rl.trainer.runs import setup_runs, Progress, get_runs
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
-from prime_rl.utils.utils import clean_exit, to_col_format
+from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step, to_col_format
 
 
 @clean_exit
@@ -120,10 +120,16 @@ def train(config: RLTrainerConfig):
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
-    if config.ckpt and ckpt_manager is not None and config.ckpt.resume_step:
-        checkpoint_loaded = ckpt_manager.load(config.ckpt.resume_step, model, [optimizer], scheduler, progress)
-        if checkpoint_loaded:
-            logger.info(f"Resuming training from checkpoint step {config.ckpt.resume_step}")
+    checkpoint_step = None
+    if config.ckpt and config.ckpt.resume_step is not None and ckpt_manager is not None:
+        if config.ckpt.resume_step == -1:
+            checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+        else:
+            checkpoint_step = config.ckpt.resume_step
+    if checkpoint_step is not None:
+        ckpt_manager.load(checkpoint_step, model, [optimizer], scheduler, progress)
+        logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
+
     logger.info(
         f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
     )
