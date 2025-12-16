@@ -178,6 +178,10 @@ class MultiLoRALinear(nn.Module):
             use_grouped_mm = False
         if rank % 8 != 0 or base_layer.in_features % 8 != 0 or base_layer.out_features % 8 != 0:
             use_grouped_mm = False
+        
+        # TODO: The bwd doesnt work with 
+        # Using grouped mm torch.Size([2035, 2048]) torch.Size([2, 8, 2048]) torch.Size([2, 1024, 8]) torch.Size([2]) tensor([2035, 2035], device='cuda:0', dtype=torch.int32)
+        use_grouped_mm = False
 
         self.base_layer = base_layer
         self.rank = rank
