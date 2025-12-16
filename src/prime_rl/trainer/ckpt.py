@@ -213,6 +213,11 @@ class CheckpointManager:
         # Get all the checkpoint steps to delete
         assert list(self.ckpt_steps) == sorted(self.ckpt_steps)
         ckpt_steps_to_delete = self.ckpt_steps[: -self.config.keep]
+
+        # Filter out checkpoints that are multiples of keep_multiple_of
+        if self.config.keep_multiple_of is not None:
+            ckpt_steps_to_delete = [step for step in ckpt_steps_to_delete if step % self.config.keep_multiple_of != 0]
+
         for ckpt_step in ckpt_steps_to_delete:
             trainer_ckpt_path = self.get_ckpt_path(ckpt_step)
             ckpt_path = trainer_ckpt_path.parent
@@ -220,8 +225,14 @@ class CheckpointManager:
                 self.logger.debug(f"Removing past checkpoint for step {ckpt_step} ({ckpt_path})")
                 shutil.rmtree(ckpt_path)
 
-        # Update checkpoint steps
-        self.ckpt_steps = self.ckpt_steps[-self.config.keep :]
+        # Update checkpoint steps - keep recent ones and multiples
+        kept_steps = self.ckpt_steps[-self.config.keep :]
+        if self.config.keep_multiple_of is not None:
+            kept_steps.extend(
+                [step for step in self.ckpt_steps[: -self.config.keep] if step % self.config.keep_multiple_of == 0]
+            )
+            kept_steps = sorted(set(kept_steps))
+        self.ckpt_steps = kept_steps
 
 
 class WeightCheckpointManager:
@@ -234,6 +245,7 @@ class WeightCheckpointManager:
         lora_config: LoRAConfig | None = None,
         save_async: bool = False,
         keep: int | None = None,
+        keep_multiple_of: int | None = None,
     ):
         self.weights_dir = get_weights_dir(output_dir)
         self.config = config
@@ -242,6 +254,7 @@ class WeightCheckpointManager:
         self.world = get_world()
         self.ckpt_steps: list[int] = []  # Sorted list of steps that have been checkpointed, only used on master rank
         self.keep = keep
+        self.keep_multiple_of = keep_multiple_of
 
     def get_step_path(self, step: int) -> Path:
         """Get the path to write the weight checkpoint for a given step."""
@@ -328,14 +341,23 @@ class WeightCheckpointManager:
         # Get all the checkpoint steps to delete
         assert list(self.ckpt_steps) == sorted(self.ckpt_steps)
         ckpt_steps_to_delete = self.ckpt_steps[: -self.keep]
+
+        # Filter out checkpoints that are multiples of keep_multiple_of
+        if self.keep_multiple_of is not None:
+            ckpt_steps_to_delete = [step for step in ckpt_steps_to_delete if step % self.keep_multiple_of != 0]
+
         for ckpt_step in ckpt_steps_to_delete:
             ckpt_path = self.get_step_path(ckpt_step)
             if ckpt_path.exists():
                 self.logger.debug(f"Removing past checkpoint for step {ckpt_step} ({ckpt_path})")
                 shutil.rmtree(ckpt_path)
 
-        # Update checkpoint steps
-        self.ckpt_steps = self.ckpt_steps[-self.keep :]
+        # Update checkpoint steps - keep recent ones and multiples
+        kept_steps = self.ckpt_steps[-self.keep :]
+        if self.keep_multiple_of is not None:
+            kept_steps.extend([step for step in self.ckpt_steps[: -self.keep] if step % self.keep_multiple_of == 0])
+            kept_steps = sorted(set(kept_steps))
+        self.ckpt_steps = kept_steps
 
 
 def setup_ckpt_managers(
@@ -350,6 +372,7 @@ def setup_ckpt_managers(
             ckpt_config.weights,
             lora_config=lora_config,
             keep=ckpt_config.keep,
+            keep_multiple_of=ckpt_config.keep_multiple_of,
         )
     else:
         weight_ckpt_manager = None

@@ -425,6 +425,14 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = None
 
+    keep_multiple_of: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Always keep checkpoints whose step numbers are multiples of this value, even if they would otherwise be deleted by the keep limit. If None, no special preservation is applied.",
+        ),
+    ] = None
+
     skip_progress: Annotated[
         bool,
         Field(
