@@ -54,9 +54,9 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample]:
         completion_logprobs = deepcopy(tokens["completion_logprobs"])
         interleaved_rollout.completion_ids.extend(completion_ids)
         if has_error:
-            interleaved_rollout.completion_mask.extend([0] * len(tokens["completion_mask"]))
+            interleaved_rollout.completion_mask.extend([False] * len(tokens["completion_mask"]))
         else:
-            interleaved_rollout.completion_mask.extend(deepcopy(tokens["completion_mask"]))
+            interleaved_rollout.completion_mask.extend([bool(i) for i in tokens["completion_mask"]])
         interleaved_rollout.completion_logprobs.extend(completion_logprobs)
 
         # New prefix is the current prompt and completion ids concatenated
