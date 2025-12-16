@@ -28,7 +28,6 @@ from prime_rl.trainer.rl.loss import (
     compute_entropy,
     compute_loss,
 )
-from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
     setup_tokenizer,
@@ -47,6 +46,7 @@ from prime_rl.trainer.utils import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.trainer.runs import setup_runs, Progress, get_runs
+from prime_rl.trainer.models.layers.lora import set_offsets
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
@@ -67,6 +67,7 @@ def train(config: RLTrainerConfig):
 
     setup_runs(config.output_dir, config.max_concurrent_runs)
     runs = get_runs()
+    set_offsets(torch.tensor([0] * config.max_concurrent_runs, dtype=torch.int32, device="cuda"))
     logger.info(f"Starting RL trainer in {world} in {config.output_dir}")
 
     # Print warning if running in benchmark mode
@@ -118,11 +119,17 @@ def train(config: RLTrainerConfig):
     logger.info(f"Initializing optimizer ({config.optim})")
     logger.info(f"Using `{config.loss.ratio_type}` importance ratio ({config.loss})")
 
-    optimizer = setup_optimizer(config.optim, model, parallel_dims.world_mesh["dp_shard_cp"])
+    if config.max_concurrent_runs == 1:
+        optimizer = setup_optimizer(config.optim, model, parallel_dims.world_mesh["dp_shard_cp"])
+    else:
+        from prime_rl.trainer.optim import setup_multi_optimizer
+
+        optimizer = setup_multi_optimizer(config.optim, model, parallel_dims.world_mesh["dp_shard_cp"])
 
     # Set up the learning rate scheduler
-    scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
-    logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
+    # scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
+    # logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
+    scheduler = None
 
     # Set up weight broadcast
     logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
@@ -275,6 +282,10 @@ def train(config: RLTrainerConfig):
 
             # Forward pass
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
+                if config.model.experimental.lora:
+                    lora_num_tokens = micro_batch["lora_num_tokens"].to("cuda")
+                    lora_cu_offsets = lora_num_tokens.cumsum(dim=0, dtype=torch.int32)
+                    set_offsets(lora_cu_offsets)
                 logits = forward(model, input_ids, forward_position_ids).float().contiguous()
 
             if cp_enabled:
@@ -351,8 +362,12 @@ def train(config: RLTrainerConfig):
         optimizer.zero_grad()
 
         # Update learning rate scheduler
-        current_lr = optimizer.param_groups[0]["lr"]
-        scheduler.step()
+        # current_lr = optimizer.param_groups[0]["lr"]
+        # scheduler.step()
+        if hasattr(optimizer, "param_groups"):
+            current_lr = optimizer.param_groups[0]["lr"]
+        else:
+            current_lr = optimizer.optimizers[0].param_groups[0]["lr"]
 
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
