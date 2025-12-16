@@ -215,8 +215,8 @@ class CheckpointManager:
         ckpt_steps_to_delete = self.ckpt_steps[: -self.config.keep]
 
         # Filter out checkpoints that are multiples of keep_multiple_of
-        if self.config.keep_multiple_of is not None:
-            ckpt_steps_to_delete = [step for step in ckpt_steps_to_delete if step % self.config.keep_multiple_of != 0]
+        if self.config.keep_interval is not None:
+            ckpt_steps_to_delete = [step for step in ckpt_steps_to_delete if step % self.config.keep_interval != 0]
 
         for ckpt_step in ckpt_steps_to_delete:
             trainer_ckpt_path = self.get_ckpt_path(ckpt_step)
@@ -227,9 +227,9 @@ class CheckpointManager:
 
         # Update checkpoint steps - keep recent ones and multiples
         kept_steps = self.ckpt_steps[-self.config.keep :]
-        if self.config.keep_multiple_of is not None:
+        if self.config.keep_interval is not None:
             kept_steps.extend(
-                [step for step in self.ckpt_steps[: -self.config.keep] if step % self.config.keep_multiple_of == 0]
+                [step for step in self.ckpt_steps[: -self.config.keep] if step % self.config.keep_interval == 0]
             )
             kept_steps = sorted(set(kept_steps))
         self.ckpt_steps = kept_steps
@@ -372,7 +372,7 @@ def setup_ckpt_managers(
             ckpt_config.weights,
             lora_config=lora_config,
             keep=ckpt_config.keep,
-            keep_multiple_of=ckpt_config.keep_multiple_of,
+            keep_multiple_of=ckpt_config.keep_interval,
         )
     else:
         weight_ckpt_manager = None

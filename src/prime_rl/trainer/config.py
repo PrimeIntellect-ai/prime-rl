@@ -425,7 +425,7 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = None
 
-    keep_multiple_of: Annotated[
+    keep_interval: Annotated[
         int | None,
         Field(
             ge=1,
