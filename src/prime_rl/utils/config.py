@@ -145,23 +145,19 @@ class WandbWithExtrasConfig(WandbConfig):
 class PrimeMonitorConfig(BaseConfig):
     """Configures logging to Prime Intellect API."""
 
-    api_endpoint: Annotated[
+    base_url: Annotated[
         str,
         Field(
-            description="The API endpoint URL for Prime Intellect monitoring.",
+            description="The base URL for Prime Intellect monitoring API.",
         ),
     ] = "https://api.primeintellect.ai/api/internal/rft"
 
-    api_key: Annotated[
-        str | None,
+    api_key_var: Annotated[
+        str,
         Field(
-            description="API key for Prime Intellect API. If None, will read from `PRIME_INTELLECT_API_KEY` environment variable.",
+            description="Name of environment variable containing the API key for Prime Intellect API. Will parse using `os.getenv(config.api_key_var)`.",
         ),
-    ] = None 
-
-
-class PrimeMonitorWithExtrasConfig(PrimeMonitorConfig):
-    """Configures logging to Prime Intellect API with extras."""
+    ] = "PRIME_INTELLECT_API_KEY"
 
     log_extras: Annotated[
         LogExtrasConfig | None,

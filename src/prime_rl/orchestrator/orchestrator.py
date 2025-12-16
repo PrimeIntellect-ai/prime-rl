@@ -477,7 +477,6 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Log final (immutable) samples and distributions to monitor(s)
     monitor.log_final_samples()
-    monitor.log_final_distributions()
     monitor.save_final_summary()
 
     # Write final checkpoint

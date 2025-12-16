@@ -31,10 +31,6 @@ class Monitor(ABC):
     def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:
         pass
 
-    @abstractmethod
-    def log_final_distributions(self) -> None:
-        pass
-
 
 class NoOpMonitor(Monitor):
     """Monitor that does nothing. Used when no monitors are configured."""
@@ -55,8 +51,5 @@ class NoOpMonitor(Monitor):
         pass
 
     def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:
-        pass
-
-    def log_final_distributions(self) -> None:
         pass
 
