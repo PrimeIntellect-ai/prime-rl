@@ -199,9 +199,12 @@ async def orchestrate(config: OrchestratorConfig):
     await set_semaphore(config.max_concurrent or -1)
 
     # Start update policy loop
-    asyncio.create_task(scheduler.update_policy_loop())
+    update_policy_task = asyncio.create_task(scheduler.update_policy_loop())
 
     while True:
+        # Check if update_policy_task has failed and propagate the exception
+        if update_policy_task.done():
+            update_policy_task.result()  # Raises if the task failed
         # Capture ckpt_step once for consistency (it's updated by update_policy_loop concurrently)
         ckpt_step = scheduler.ckpt_step
 
