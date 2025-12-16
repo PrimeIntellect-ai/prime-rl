@@ -29,10 +29,10 @@ class CheckpointManager:
     def get_ckpt_path(self, step: int) -> Path:
         return get_step_path(self.ckpt_dir, step) / "orchestrator"
 
-    def get_latest_step(self) -> int:
+    def get_latest_step(self) -> int | None:
         step_dirs = list(self.ckpt_dir.glob("step_*"))
         if len(step_dirs) == 0:
-            raise ValueError(f"No checkpoints found in {self.ckpt_dir}")
+            return None
         steps = sorted([int(step_dir.name.split("_")[-1]) for step_dir in step_dirs])
         latest_step = steps[-1]
         self.logger.info(f"Found latest checkpoint in {self.ckpt_dir}: {latest_step}")
@@ -85,6 +85,9 @@ class CheckpointManager:
         """Loads a checkpoint from a given path."""
         if step == -1:
             step = self.get_latest_step()
+            if step is None:
+                self.logger.warning(f"No checkpoints found in {self.ckpt_dir}. Starting from scratch.")
+                return
 
         ckpt_path = self.get_ckpt_path(step)
         if not ckpt_path.exists():
