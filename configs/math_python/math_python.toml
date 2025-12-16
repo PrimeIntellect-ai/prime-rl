@@ -20,8 +20,10 @@ id = "math-python"
 
 [trainer] # Default trainer config
 
-[inference.model] # Default inference config
+[inference]
+api_server_count = 4
+
+[inference.model]
 enable_auto_tool_choice = true
 tool_call_parser = "hermes"
-api_server_count = 4
 max_model_len = 4096
