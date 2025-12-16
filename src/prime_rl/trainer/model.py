@@ -22,6 +22,7 @@ from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, M
 from prime_rl.trainer.lora import apply_lora_to_model, strip_lora_from_state_dict
 from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL, PreTrainedModelPrimeRL
 from prime_rl.trainer.parallel_dims import ParallelDims
+from prime_rl.trainer.runs import get_runs
 from prime_rl.trainer.weights import (
     load_state_dict,
     save_state_dict,
@@ -334,6 +335,7 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
         device=torch.device("meta" if config.load_using_meta else "cpu"),
         dtype=DTYPE_MAP[config.optimization_dtype],
     )
+    runs = get_runs()
 
     # Reload the model to CPU if we cannot load from
     if config.load_using_meta and not can_load_dcp_from_hf(model):
@@ -342,7 +344,7 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
 
     # Apply LoRA before FSDP setup
     if config.experimental.lora is not None:
-        apply_lora_to_model(model, config.experimental.lora)
+        apply_lora_to_model(model, config.experimental.lora, n_loras=runs.max_runs)
 
     # the right order is AC -> Compile -> FSDP
     if config.ac is not None:
@@ -355,6 +357,25 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
     if config.load_using_meta and can_load_dcp_from_hf(model):
         load_dcp_from_hf(model, config, parallel_dims)
 
+    from prime_rl.trainer.models.layers.lora import MultiLoRALinear
+
+    print(model)
+    if config.experimental.lora is not None:
+        for n, p in model.named_parameters():
+            if "lora_A" in n or "lora_B" in n:
+                idx = int(n.split(".")[-1])
+                runs.named_parameters[idx].append((n, p))
+        for n, m in model.named_modules():
+            if isinstance(m, MultiLoRALinear):
+                print(f"Found MultiLoRALinear at {n}")
+
+                def make_reset_hook(module):
+                    def reset_lora_idx_hook(idx: int, run_id: str) -> None:
+                        module.reset_parameters(idx)
+
+                    return reset_lora_idx_hook
+
+                runs.register_creation_hook(make_reset_hook(m))
     logger.debug(f"Model signature: {get_module_signature(model, compress=True)}")
     return model
 

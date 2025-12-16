@@ -7,6 +7,8 @@ import tomli
 from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
+    import torch
+
     from prime_rl.orchestrator.config import OrchestratorConfig
 
 
@@ -35,6 +37,10 @@ class Runs:
 
         self._deletion_hooks: list[Callable[[int, str], None]] = []
         self._creation_hooks: list[Callable[[int, str], None]] = []
+
+        self.named_parameters: dict[int, list[tuple[str, torch.nn.Parameter]]] = {}
+        for idx in range(self.max_runs):
+            self.named_parameters[idx] = []
 
     def get_orchestrator_config(self, run_id: str) -> Optional["OrchestratorConfig"]:
         # Load orchestrator config first to validate it

@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 
 from prime_rl.trainer.config import LoRAConfig
-from prime_rl.trainer.models.layers.lora import LoRALinear
+from prime_rl.trainer.models.layers.lora import LoRALinear, MultiLoRALinear
 from prime_rl.utils.logger import get_logger
 
 
@@ -119,7 +119,7 @@ def freeze_all_except_lora_and_specified(model: nn.Module, config: LoRAConfig) -
             param.requires_grad = False
 
 
-def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
+def apply_lora_to_model(model: nn.Module, config: LoRAConfig, n_loras: int = 1) -> None:
     """
     Apply LoRA to target modules in the model and freeze non-LoRA parameters.
 
@@ -157,12 +157,21 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
             logger.warning(f"Module {module_name} is not nn.Linear, skipping")
             continue
 
-        lora_module = LoRALinear(
-            base_layer=base_module,
-            rank=config.rank,
-            alpha=config.alpha,
-            dropout=config.dropout,
-        )
+        if n_loras == 1:
+            lora_module = LoRALinear(
+                base_layer=base_module,
+                rank=config.rank,
+                alpha=config.alpha,
+                dropout=config.dropout,
+            )
+        else:
+            lora_module = MultiLoRALinear(
+                base_layer=base_module,
+                rank=config.rank,
+                n_adapters=n_loras,
+                alpha=config.alpha,
+                dropout=config.dropout,
+            )
 
         _set_module_by_name(model, module_name, lora_module)
 
