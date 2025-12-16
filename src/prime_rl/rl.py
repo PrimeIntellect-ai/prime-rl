@@ -450,6 +450,7 @@ def rl(config: RLConfig):
 
     # Prepare paths to communicate with the trainer
     log_dir = get_log_dir(config.output_dir)
+    orch_log_dir = get_log_dir(config.orchestrator.output_dir)
     rollout_dir = get_rollout_dir(config.orchestrator.output_dir)
     broadcast_dir = get_broadcast_dir(config.orchestrator.output_dir)
 
@@ -461,6 +462,10 @@ def rl(config: RLConfig):
         logger.info(f"Cleaning log dir ({log_dir})")
         shutil.rmtree(log_dir, ignore_errors=True)
         log_dir.mkdir(parents=True, exist_ok=True)
+
+        logger.info(f"Cleaning orchestrator log dir ({orch_log_dir})")
+        shutil.rmtree(orch_log_dir, ignore_errors=True)
+        orch_log_dir.mkdir(parents=True, exist_ok=True)
 
         # Cleaning broadcast dir (so that orchestrator does not pre-maturely update weights)
         if not (
