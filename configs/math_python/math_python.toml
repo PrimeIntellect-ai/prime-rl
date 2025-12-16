@@ -1,6 +1,3 @@
-inference_gpu_ids = [0,1,2,3,4,5]
-trainer_gpu_ids = [6,7]
-
 max_steps = 300
 
 [wandb]
@@ -11,27 +8,20 @@ name = "math-python"
 name = "Qwen/Qwen3-4B-Instruct-2507"
 
 [orchestrator]
-seq_len = 8192
+seq_len = 4096
 batch_size = 512
 rollouts_per_example = 16
 
 [orchestrator.sampling]
 max_tokens = 512
 
-[orchestrator.buffer]
-online_difficulty_filtering = true
-
-[orchestrator.val]
-interval = 1
-num_examples = 128
-
 [[orchestrator.env]]
 id = "math-python"
-args = { dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "default" }
 
 [trainer] # Default trainer config
 
 [inference.model] # Default inference config
 enable_auto_tool_choice = true
 tool_call_parser = "hermes"
-max_model_len = 8192
+api_server_count = 4
+max_model_len = 4096
