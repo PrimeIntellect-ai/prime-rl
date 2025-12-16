@@ -121,8 +121,7 @@ def train(config: SFTTrainerConfig):
     # Optionally, resume training from a checkpoint
     progress = Progress()
     if ckpt_manager is not None and config.ckpt and config.ckpt.resume_step:
-        logger.info(f"Resuming training from checkpoint step {config.ckpt.resume_step}")
-        ckpt_manager.load(
+        checkpoint_loaded = ckpt_manager.load(
             config.ckpt.resume_step,
             model,
             [optimizer],
@@ -130,6 +129,8 @@ def train(config: SFTTrainerConfig):
             progress if not config.ckpt.skip_progress else None,
             dataloader=dataloader if not config.ckpt.skip_dataloader else None,
         )
+        if checkpoint_loaded:
+            logger.info(f"Resuming training from checkpoint step {config.ckpt.resume_step}")
         # This redundant setup is necessary because loading the optimizer's state has side effects on the scheduler state dict
         if config.ckpt.skip_scheduler:
             scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)

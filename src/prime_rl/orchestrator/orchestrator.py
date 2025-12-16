@@ -176,16 +176,21 @@ async def orchestrate(config: OrchestratorConfig):
     # Reset weights to base model if starting from scratch
     progress = Progress()
     if config.ckpt and ckpt_manager and config.ckpt.resume_step:
-        ckpt_manager.load(progress, buffer, step=config.ckpt.resume_step)
-        logger.info(f"Resuming training from checkpoint step {config.ckpt.resume_step}")
-        scheduler.ckpt_step = progress.step  # Always resume from the latest checkpoint
-        await update_weights(
-            admin_clients,
-            get_step_path(get_broadcast_dir(config.output_dir), scheduler.ckpt_step),
-            lora_name=config.lora_name,
-        )
-        if config.lora_name is not None:
-            scheduler.model_name = config.lora_name
+        checkpoint_loaded = ckpt_manager.load(progress, buffer, step=config.ckpt.resume_step)
+        if checkpoint_loaded:
+            logger.info(f"Resuming training from checkpoint step {config.ckpt.resume_step}")
+            scheduler.ckpt_step = progress.step  # Always resume from the latest checkpoint
+            await update_weights(
+                admin_clients,
+                get_step_path(get_broadcast_dir(config.output_dir), scheduler.ckpt_step),
+                lora_name=config.lora_name,
+            )
+            if config.lora_name is not None:
+                scheduler.model_name = config.lora_name
+        else:
+            logger.info("Training from scratch. Resetting weights to base model")
+            if config.lora_name is None:
+                await reload_weights(admin_clients)
     else:
         logger.info("Training from scratch. Resetting weights to base model")
         if config.lora_name is None:

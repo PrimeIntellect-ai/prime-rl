@@ -81,18 +81,19 @@ class CheckpointManager:
 
         self.logger.debug(f"Orchestrator checkpoint loaded in {time.perf_counter() - start_time:.2f} seconds")
 
-    def load(self, progress: Progress, buffer: Buffer, step: int) -> None:
-        """Loads a checkpoint from a given path."""
+    def load(self, progress: Progress, buffer: Buffer, step: int) -> bool:
+        """Loads a checkpoint from a given path. Returns True if checkpoint was loaded, False otherwise."""
         if step == -1:
             step = self.get_latest_step()
             if step is None:
                 self.logger.warning(f"No checkpoints found in {self.ckpt_dir}. Starting from scratch.")
-                return
+                return False
 
         ckpt_path = self.get_ckpt_path(step)
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
         self._load_from_path(ckpt_path, progress, buffer)
+        return True
 
     def save(
         self,

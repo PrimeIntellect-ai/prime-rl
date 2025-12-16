@@ -172,18 +172,19 @@ class CheckpointManager:
         scheduler: LRScheduler | None,
         progress: Progress | None,
         dataloader: StatefulDataLoader | None = None,
-    ) -> None:
-        """Load the trainer checkpoint for a given step (in-place)."""
+    ) -> bool:
+        """Load the trainer checkpoint for a given step (in-place). Returns True if checkpoint was loaded, False otherwise."""
         if step == -1:
             step = self.get_latest_step()
             if step is None:
                 self.logger.warning(f"No checkpoints found in {self.ckpt_dir}. Starting from scratch.")
-                return
+                return False
 
         ckpt_path = self.get_ckpt_path(step)
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
         self.load_from_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
+        return True
         self.logger.debug(
             f"Signatures after loading training checkpoint: model={get_module_signature(model, compress=True)}, optimizers={', '.join(get_optimizer_signature(optimizer, compress=True) for optimizer in optimizers)}"
         )
