@@ -204,6 +204,9 @@ async def orchestrate(config: OrchestratorConfig):
     while True:
         # Check if update_policy_task has failed and propagate the exception
         if update_policy_task.done():
+            # End all other tasks
+            for task in asyncio.all_tasks():
+                task.cancel()
             update_policy_task.result()  # Raises if the task failed
         # Capture ckpt_step once for consistency (it's updated by update_policy_loop concurrently)
         ckpt_step = scheduler.ckpt_step
