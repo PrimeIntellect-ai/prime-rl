@@ -178,9 +178,9 @@ async def orchestrate(config: OrchestratorConfig):
     progress = Progress()
 
     checkpoint_step = None
-    if config.ckpt and config.ckpt.resume_step is not None:
+    if config.ckpt and config.ckpt.resume_step is not None and ckpt_manager is not None:
         if config.ckpt.resume_step == -1:
-            checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir if ckpt_manager is not None else None)
+            checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
         else:
             checkpoint_step = config.ckpt.resume_step
 
