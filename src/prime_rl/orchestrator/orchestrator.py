@@ -132,7 +132,7 @@ async def orchestrate(config: OrchestratorConfig):
     env.set_max_seq_len(config.seq_len)
     if config.trajectory_strategy == "interleaved":
         logger.info("Using token prompts in environment to avoid retokenization discrepancies in multi-turn rollouts")
-        env.interleaved_rollouts = True
+        env.set_interleaved_rollouts(True)
     dataset = env.get_dataset(seed=config.seed)
     val_dataset = env.get_eval_dataset(seed=config.seed) if config.val else None
 
