@@ -450,8 +450,8 @@ def rl(config: RLConfig):
 
     # Prepare paths to communicate with the trainer
     log_dir = get_log_dir(config.output_dir)
-    rollout_dir = get_rollout_dir(config.output_dir)
-    broadcast_dir = get_broadcast_dir(config.output_dir)
+    rollout_dir = get_rollout_dir(config.orchestrator.output_dir)
+    broadcast_dir = get_broadcast_dir(config.orchestrator.output_dir)
 
     # Clean up directories if specified
     if config.clean:
