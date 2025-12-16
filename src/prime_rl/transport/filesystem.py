@@ -8,7 +8,7 @@ from prime_rl.utils.pathing import get_rollout_dir, get_step_path, sync_wait_for
 
 BATCH_FILE_TMP_NAME = "rollouts.bin.tmp"
 BATCH_FILE_NAME = "rollouts.bin"
-LOG_FREQ_SECONDS = 60
+LOG_FREQ_SECONDS = 10
 
 
 class FileSystemTrainingBatchSender(TrainingBatchSender):
