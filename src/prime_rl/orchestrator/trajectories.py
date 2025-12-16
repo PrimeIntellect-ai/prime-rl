@@ -16,8 +16,12 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample]:
     """
     logger = get_logger()
 
-    # Initialize the rollout with prompt and completion from first trajectory step
     trajectory = state["trajectory"]
+    if len(trajectory) == 0:
+        logger.warning(f"No trajectory steps for example {state['example_id']}. Skipping rollout.")
+        return []
+
+    # Initialize the rollout with prompt and completion from first trajectory step
     first_step = trajectory[0]
     interleaved_rollout = TrainingSample(
         prompt_ids=deepcopy(first_step["tokens"]["prompt_ids"]),
@@ -67,7 +71,14 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample]:
 
 def branch_rollout(state: vf.State) -> list[TrainingSample]:
     """Convert vf.State to *multiple* trainable rollouts using branching trajectories strategy."""
+    logger = get_logger()
+
     rollouts = []
+    trajectory = state["trajectory"]
+    if len(trajectory) == 0:
+        logger.warning(f"No trajectory steps for example {state['example_id']}. Skipping rollout.")
+        return rollouts
+
     has_error = state["error"] is not None
     for step in state["trajectory"]:
         assert "tokens" in step
