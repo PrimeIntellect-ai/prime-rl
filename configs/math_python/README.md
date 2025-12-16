@@ -2,16 +2,16 @@
 
 ## Setup
 
-CLone `research-environments`
+CLone `verifiers`
 
 ```bash
-cd ~ && curl -sSL https://raw.githubusercontent.com/PrimeIntellect-ai/research-environments/main/scripts/install.sh | bash && cd -
+cd ~ && curl -sSL https://raw.githubusercontent.com/PrimeIntellect-ai/verifiers/main/scripts/install.sh | bash && cd -
 ```
 
 Install the environment as local packages
 
 ```bash
-uv pip install -e ~/research-environments/environments/math_python
+uv pip install -e ~/verifiers/environments/math_python
 ```
 
 This will automatically install the environment, and a pinned verifiers commit (`71006c`) which includes necessary changes to the PythonEnv.
@@ -30,10 +30,10 @@ uv run --no-sync vf-eval math-python -n 16 -r 1 -c -1 -v -m Qwen/Qwen3-4B-Instru
 
 ## RL
 
-Again, make sure to have installed the environment as local packages from research-environments
+Again, make sure to have installed the environment as local packages from verifiers
 
 ```bash
-uv pip install -e ~/research-environments/environments/math_python
+uv pip install -e ~/verifiers/environments/math_python
 ```
 
 Then, run RL in debug mode (small batch size, limited turns, 2 GPUs, etc.)
