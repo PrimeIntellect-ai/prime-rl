@@ -28,6 +28,7 @@ def single_step_trajectory_state():
                 extras={},
             )
         ],
+        error=None,
     )
     return state
 
@@ -75,6 +76,7 @@ def multi_step_trajectory_state():
                 extras={},
             ),
         ],
+        error=None,
     )
     return state
 
@@ -126,6 +128,7 @@ def multi_step_trajectory_with_tool_calls():
         advantage=None,
         stop_condition=None,
         metrics={"has_error": 0.0, "tool_calls": 1.0},
+        error=None,
     )
     return state
 
