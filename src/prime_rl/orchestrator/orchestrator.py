@@ -420,7 +420,7 @@ async def orchestrate(config: OrchestratorConfig):
             "error/mean": (~results_df.error.isna()).mean(),
             **{
                 f"error/{error}": error_rate
-                for error, error_rate in results_df.dropna().error.value_counts(normalize=True).items()
+                for error, error_rate in results_df.error.dropna().value_counts(normalize=True).items()
             },
             # Env metrics
             **{f"metrics/{metric}": metrics_df[metric].mean() for metric in metrics_df.columns},
