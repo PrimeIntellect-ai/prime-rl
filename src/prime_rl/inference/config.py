@@ -131,6 +131,13 @@ class InferenceConfig(BaseSettings):
         ),
     ] = False
 
+    max_loras: Annotated[
+        int,
+        Field(
+            description="The maximum number of LoRAs to use. Passed to vLLM as `--max-loras`",
+        ),
+    ] = 8
+
     max_lora_rank: Annotated[
         int | None,
         Field(
@@ -144,6 +151,14 @@ class InferenceConfig(BaseSettings):
             description="The GPU memory utilization to use. Passed to vLLM as `--gpu-memory-utilization`",
         ),
     ] = 0.9
+
+    api_server_count: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="The number of API servers to use. Passed to vLLM as `--api-server-count`",
+        ),
+    ] = 1
 
     seed: Annotated[
         int | None,
@@ -183,9 +198,14 @@ class InferenceConfig(BaseSettings):
                     self.max_lora_rank = valid_rank
                     break
             else:
-                raise ValueError(
-                    f"max_lora_rank={original_rank} exceeds vLLM maximum of {VALID_VLLM_LORA_RANKS[-1]}"
-                )
+                raise ValueError(f"max_lora_rank={original_rank} exceeds vLLM maximum of {VALID_VLLM_LORA_RANKS[-1]}")
+        return self
+
+    @model_validator(mode="after")
+    def ensure_api_server_count_is_at_least_dp_size(self):
+        """Ensures that we have at least as many API servers as data parallel size."""
+        if self.api_server_count < self.parallel.dp:
+            self.api_server_count = self.parallel.dp
         return self
 
     def to_vllm(self) -> Namespace:
@@ -205,8 +225,10 @@ class InferenceConfig(BaseSettings):
             "parallel.tp": "tensor_parallel_size",
             "parallel.dp": "data_parallel_size",
             "enable_lora": "enable_lora",
+            "max_loras": "max_loras",
             "max_lora_rank": "max_lora_rank",
             "gpu_memory_utilization": "gpu_memory_utilization",
+            "api_server_count": "api_server_count",
         }
 
         for key in get_all_fields(self):

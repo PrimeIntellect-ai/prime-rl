@@ -130,6 +130,8 @@ class ModelConfig(BaseConfig):
         ),
     ] = "Qwen/Qwen3-0.6B"
 
+    seq_len: Annotated[int, Field(description="The sequence length to use for the model.")] = 2048
+
     attn: Annotated[AttnImplementation, Field(description="The attention implementation to use.")] = "flash_attention_2"
 
     compile: Annotated[
@@ -206,13 +208,6 @@ class ModelConfig(BaseConfig):
         ),
     ] = "hf"
 
-    load_using_meta: Annotated[
-        bool,
-        Field(
-            description="Whether to load the model using meta device then load from HF ckpt.",
-        ),
-    ] = False
-
     optimization_dtype: Annotated[
         Literal["bfloat16", "float32"],
         Field(
@@ -271,10 +266,9 @@ class ModelConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def random_init_only_with_meta(self):
-        """Random initialize is only supported with the custom implementation."""
-        if self.debug.random_init and not self.load_using_meta:
-            raise ValueError("Random initialize is only supported when loading with meta.")
+    def cp_only_with_flash_attn(self):
+        if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3"]:
+            raise ValueError("CP is only supported with flash attention 2 or flash attention 3")
         return self
 
 

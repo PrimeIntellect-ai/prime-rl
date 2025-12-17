@@ -2,7 +2,6 @@ import asyncio
 import functools
 import os
 import subprocess
-import time
 from collections import defaultdict
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,6 +13,21 @@ import wandb
 
 from prime_rl.orchestrator.config import EnvConfig, EvalEnvConfig
 from prime_rl.utils.logger import get_logger
+
+# TODO: Change all imports to use utils.pathing
+# ruff: noqa: F401
+from prime_rl.utils.pathing import (
+    get_broadcast_dir,
+    get_ckpt_dir,
+    get_eval_dir,
+    get_log_dir,
+    get_rollout_dir,
+    get_step_path,
+    get_weights_dir,
+    resolve_latest_ckpt_step,
+    sync_wait_for_path,
+    wait_for_path,
+)
 
 
 def rgetattr(obj: Any, attr_path: str) -> Any:
@@ -131,34 +145,6 @@ def clean_exit(func: Callable) -> Callable:
         return sync_wrapper
 
 
-def sync_wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:
-    logger = get_logger()
-    wait_time = 0
-    logger.debug(f"Waiting for path `{path}`")
-    while True:
-        if path.exists():
-            logger.debug(f"Found path `{path}`")
-            break
-        if wait_time % log_interval == 0 and wait_time > 0:  # Every log_interval seconds
-            logger.debug(f"Waiting for path `{path}` for {wait_time} seconds")
-        time.sleep(interval)
-        wait_time += interval
-
-
-async def wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:
-    logger = get_logger()
-    wait_time = 0
-    logger.debug(f"Waiting for path `{path}`")
-    while True:
-        if path.exists():
-            logger.debug(f"Found path `{path}`")
-            break
-        if wait_time % log_interval == 0 and wait_time > 0:  # Every log_interval seconds
-            logger.debug(f"Waiting for path `{path}` for {wait_time} seconds")
-        await asyncio.sleep(interval)
-        wait_time += interval
-
-
 def to_col_format(list_of_dicts: list[dict[str, Any]]) -> dict[str, list[Any]]:
     """
     Turns a list of dicts to a dict of lists.
@@ -260,34 +246,6 @@ def get_cuda_visible_devices() -> list[int]:
         # Default to all devices if the environment variable is not set
         return list(range(torch.cuda.device_count()))
     return list(sorted([int(device) for device in cuda_visible.split(",")]))
-
-
-def get_log_dir(output_dir: Path) -> Path:
-    return output_dir / "logs"
-
-
-def get_ckpt_dir(output_dir: Path) -> Path:
-    return output_dir / "checkpoints"
-
-
-def get_weights_dir(output_dir: Path) -> Path:
-    return output_dir / "weights"
-
-
-def get_rollout_dir(output_dir: Path) -> Path:
-    return output_dir / "rollouts"
-
-
-def get_eval_dir(output_dir: Path) -> Path:
-    return output_dir / "evals"
-
-
-def get_broadcast_dir(output_dir: Path) -> Path:
-    return output_dir / "broadcasts"
-
-
-def get_step_path(path: Path, step: int) -> Path:
-    return path / f"step_{step}"
 
 
 def get_latest_ckpt_step(weights_dir: Path) -> int | None:
