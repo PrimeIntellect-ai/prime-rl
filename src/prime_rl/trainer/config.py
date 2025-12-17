@@ -114,17 +114,6 @@ class LoRAConfig(BaseConfig):
     ] = []
 
 
-class ExperimentalConfig(BaseConfig):
-    """Experimental modeling features."""
-
-    lora: Annotated[
-        LoRAConfig | None,
-        Field(
-            description="Whether to apply LoRA to the model. If None, will not apply LoRA.",
-        ),
-    ] = None
-
-
 class ModelConfig(BaseConfig):
     """Configures the model for training."""
 
@@ -234,19 +223,19 @@ class ModelConfig(BaseConfig):
         ),
     ] = True
 
+    lora: Annotated[
+        LoRAConfig | None,
+        Field(
+            description="Whether to apply LoRA to the model. If None, will not apply LoRA.",
+        ),
+    ] = None
+
     debug: Annotated[
         DebugModelConfig,
         Field(
             description="Debugging feature around model and distributed training.",
         ),
     ] = DebugModelConfig()
-
-    experimental: Annotated[
-        ExperimentalConfig,
-        Field(
-            description="Experimental modeling features.",
-        ),
-    ] = ExperimentalConfig()
 
     @model_validator(mode="after")
     def _map_model_name_for_moe(self):
