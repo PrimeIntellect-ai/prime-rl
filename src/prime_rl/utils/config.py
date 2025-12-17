@@ -157,7 +157,7 @@ class PrimeMonitorConfig(BaseConfig):
         Field(
             description="Name of environment variable containing the API key for Prime Intellect API. Will parse using `os.getenv(config.api_key_var)`.",
         ),
-    ] = "PRIME_INTELLECT_API_KEY"
+    ] = "PRIME_API_KEY"
 
     log_extras: Annotated[
         LogExtrasConfig | None,
