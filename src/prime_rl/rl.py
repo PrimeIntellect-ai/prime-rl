@@ -9,25 +9,27 @@ import warnings
 from pathlib import Path
 from subprocess import Popen
 from threading import Event, Thread
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 import tomli_w
 from pydantic import Field, model_validator
 
 from prime_rl.inference.config import InferenceConfig
+from prime_rl.inference.config import ModelConfig as InferenceModelConfig
 from prime_rl.inference.config import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.orchestrator.config import CheckpointConfig as OrchestratorCheckpointConfig
 from prime_rl.orchestrator.config import FileSystemWeightBroadcastConfig as OrchestratorFileSystemWeightBroadcastConfig
 from prime_rl.orchestrator.config import NCCLWeightBroadcastConfig as OrchestratorNCCLWeightBroadcastConfig
 from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.trainer.config import CheckpointConfig as TrainerCheckpointConfig
+from prime_rl.trainer.config import ModelConfig
 from prime_rl.trainer.rl.config import FakeDataLoaderConfig
 from prime_rl.trainer.rl.config import FileSystemWeightBroadcastConfig as TrainerFileSystemWeightBroadcastConfig
 from prime_rl.trainer.rl.config import NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig
 from prime_rl.trainer.rl.config import RLTrainerConfig as TrainerConfig
 from prime_rl.utils.config import WandbConfig, WandbWithExtrasConfig
 from prime_rl.utils.logger import setup_logger
-from prime_rl.utils.pydantic_config import BaseSettings, get_temp_toml_file, parse_argv
+from prime_rl.utils.pydantic_config import BaseSettings, get_temp_toml_file, merge_nested_dicts, parse_argv
 from prime_rl.utils.utils import (
     get_broadcast_dir,
     get_free_port,
@@ -43,6 +45,58 @@ from prime_rl.utils.validation import (
     validate_shared_wandb_config,
     validate_shared_weight_broadcast,
 )
+
+
+class ModelDefaults(BaseSettings):
+    """Per-model default configuration. Mirrors RLConfig structure with all fields optional."""
+
+    orchestrator: OrchestratorConfig | None = None
+    trainer: TrainerConfig | None = None
+    inference: InferenceConfig | None = None
+
+
+MODEL_DEFAULTS: dict[str, ModelDefaults] = {
+    "Qwen/Qwen3-4B-Instruct-2507": ModelDefaults.model_construct(
+        orchestrator=OrchestratorConfig.model_construct(trajectory_strategy="interleaved"),
+        inference=InferenceConfig.model_construct(
+            model=InferenceModelConfig.model_construct(enable_auto_tool_choice=True, tool_call_parser="hermes")
+        ),
+    ),
+    "Qwen/Qwen3-4B-Thinking-2507": ModelDefaults.model_construct(
+        orchestrator=OrchestratorConfig.model_construct(trajectory_strategy="branching"),
+        inference=InferenceConfig.model_construct(
+            model=InferenceModelConfig.model_construct(enable_auto_tool_choice=True, tool_call_parser="hermes")
+        ),
+    ),
+    "Qwen/Qwen3-30B-A3B-Instruct-2507": ModelDefaults.model_construct(
+        orchestrator=OrchestratorConfig.model_construct(trajectory_strategy="interleaved"),
+        trainer=TrainerConfig.model_construct(model=ModelConfig.model_construct(impl="custom")),
+        inference=InferenceConfig.model_construct(
+            model=InferenceModelConfig.model_construct(enable_auto_tool_choice=True, tool_call_parser="hermes")
+        ),
+    ),
+    "Qwen/Qwen3-30B-A3B-Thinking-2507": ModelDefaults.model_construct(
+        orchestrator=OrchestratorConfig.model_construct(trajectory_strategy="branching"),
+        trainer=TrainerConfig.model_construct(model=ModelConfig.model_construct(impl="custom")),
+        inference=InferenceConfig.model_construct(
+            model=InferenceModelConfig.model_construct(enable_auto_tool_choice=True, tool_call_parser="hermes")
+        ),
+    ),
+    "Qwen/Qwen3-235B-A22B-Instruct-2507": ModelDefaults.model_construct(
+        orchestrator=OrchestratorConfig.model_construct(trajectory_strategy="interleaved"),
+        trainer=TrainerConfig.model_construct(model=ModelConfig.model_construct(impl="custom")),
+        inference=InferenceConfig.model_construct(
+            model=InferenceModelConfig.model_construct(enable_auto_tool_choice=True, tool_call_parser="hermes")
+        ),
+    ),
+    "Qwen/Qwen3-235B-A22B-Thinking-2507": ModelDefaults.model_construct(
+        orchestrator=OrchestratorConfig.model_construct(trajectory_strategy="branching"),
+        trainer=TrainerConfig.model_construct(model=ModelConfig.model_construct(impl="custom")),
+        inference=InferenceConfig.model_construct(
+            model=InferenceModelConfig.model_construct(enable_auto_tool_choice=True, tool_call_parser="hermes")
+        ),
+    ),
+}
 
 
 class SharedLogConfig(BaseSettings):
@@ -190,6 +244,25 @@ class RLConfig(BaseSettings):
     weight_broadcast: Annotated[
         SharedWeightBroadcastConfig | None, Field(description="The weight broadcast config.")
     ] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def apply_model_defaults(cls, data: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            return data
+        model_name = None
+        if isinstance(data.get("model"), dict):
+            model_name = data["model"].get("name")
+        if model_name is None and isinstance(data.get("trainer"), dict):
+            trainer_model = data["trainer"].get("model")
+            if isinstance(trainer_model, dict):
+                model_name = trainer_model.get("name")
+        if model_name is None:
+            return data
+        defaults = MODEL_DEFAULTS.get(model_name)
+        if defaults is None:
+            return data
+        return merge_nested_dicts(defaults.model_dump(exclude_unset=True), data)
 
     @model_validator(mode="after")
     def auto_setup_dp(self):
