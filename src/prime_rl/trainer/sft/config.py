@@ -204,11 +204,11 @@ class SFTTrainerConfig(BaseSettings):
     @model_validator(mode="after")
     def validate_lora_adapter_saving(self):
         if self.ckpt and self.ckpt.weights and self.ckpt.weights.save_adapter_separately:
-            lora_enabled = self.model and self.model.experimental and self.model.experimental.lora
+            lora_enabled = self.model and self.model.lora
             if not lora_enabled:
                 raise ValueError(
                     "save_adapter_separately=True requires LoRA to be enabled. "
-                    "Set model.experimental.lora or disable save_adapter_separately."
+                    "Set model.lora or disable save_adapter_separately."
                 )
         return self
 

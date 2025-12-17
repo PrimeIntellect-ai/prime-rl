@@ -182,11 +182,11 @@ class RLTrainerConfig(BaseSettings):
     @model_validator(mode="after")
     def validate_lora_adapter_saving(self):
         if self.ckpt and self.ckpt.weights and self.ckpt.weights.save_adapter_separately:
-            lora_enabled = self.model and self.model.experimental and self.model.experimental.lora
+            lora_enabled = self.model and self.model.lora
             if not lora_enabled:
                 raise ValueError(
                     "save_adapter_separately=True requires LoRA to be enabled. "
-                    "Set model.experimental.lora or disable save_adapter_separately."
+                    "Set model.lora or disable save_adapter_separately."
                 )
         return self
 
@@ -204,7 +204,7 @@ class RLTrainerConfig(BaseSettings):
 
     @model_validator(mode="after")
     def validate_lora_broadcast(self):
-        if self.weight_broadcast.adapter_only and not self.model.experimental.lora:
+        if self.weight_broadcast.adapter_only and not self.model.lora:
             raise ValueError("Adapter only weight broadcast requires LoRA to be enabled.")
         if self.weight_broadcast.type == "nccl" and self.weight_broadcast.adapter_only:
             # TODO: Support this

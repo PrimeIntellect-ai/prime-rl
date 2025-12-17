@@ -14,7 +14,7 @@ name = "wiki-search"
 lr = 1e-5
 weight_decay = 0.0
 
-[trainer.model.experimental.lora]
+[trainer.model.lora]
 rank = 8
 alpha = 32
 dropout = 0.0

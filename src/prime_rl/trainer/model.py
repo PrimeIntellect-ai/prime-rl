@@ -326,8 +326,8 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
         model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype])
 
     # Apply LoRA before FSDP setup
-    if config.experimental.lora is not None:
-        apply_lora_to_model(model, config.experimental.lora)
+    if config.lora is not None:
+        apply_lora_to_model(model, config.lora)
 
     # the right order is AC -> Compile -> FSDP
     if config.ac is not None:

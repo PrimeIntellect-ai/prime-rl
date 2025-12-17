@@ -117,12 +117,7 @@ class LoRAConfig(BaseConfig):
 class ExperimentalConfig(BaseConfig):
     """Experimental modeling features."""
 
-    lora: Annotated[
-        LoRAConfig | None,
-        Field(
-            description="Whether to apply LoRA to the model. If None, will not apply LoRA.",
-        ),
-    ] = None
+    pass
 
 
 class ModelConfig(BaseConfig):
@@ -238,6 +233,13 @@ class ModelConfig(BaseConfig):
             description="Whether to use grouped mm for the MoE layers. Require compute capability >= 9.0",
         ),
     ] = True
+
+    lora: Annotated[
+        LoRAConfig | None,
+        Field(
+            description="Whether to apply LoRA to the model. If None, will not apply LoRA.",
+        ),
+    ] = None
 
     debug: Annotated[
         DebugModelConfig,
