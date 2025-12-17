@@ -2397,7 +2397,6 @@ dependencies = [
     { name = "cydifflib" },
     { name = "datasets" },
     { name = "dion" },
-    { name = "flash-attn" },
     { name = "jaxtyping" },
     { name = "liger-kernel" },
     { name = "loguru" },
@@ -2429,6 +2428,11 @@ dependencies = [
     { name = "wandb" },
 ]
 
+[package.optional-dependencies]
+flash-attn = [
+    { name = "flash-attn" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "ipykernel" },
@@ -2446,7 +2450,7 @@ requires-dist = [
     { name = "cydifflib", specifier = ">=1.2.0" },
     { name = "datasets", specifier = ">=4.0.0" },
     { name = "dion", git = "https://github.com/samsja/dion.git?rev=main" },
-    { name = "flash-attn", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.6.8/flash_attn-2.8.3+cu128torch2.9-cp312-cp312-linux_x86_64.whl" },
+    { name = "flash-attn", marker = "extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.6.8/flash_attn-2.8.3+cu128torch2.9-cp312-cp312-linux_x86_64.whl" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "liger-kernel", specifier = ">=0.5.10" },
     { name = "loguru", specifier = ">=0.7.3" },
@@ -2478,6 +2482,7 @@ requires-dist = [
     { name = "vllm", specifier = "==0.12.0" },
     { name = "wandb", specifier = ">=0.20.1" },
 ]
+provides-extras = ["flash-attn"]
 
 [package.metadata.requires-dev]
 dev = [

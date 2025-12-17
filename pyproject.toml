@@ -38,7 +38,6 @@ dependencies = [
     "verifiers>=0.1.8",
     "prime-evals>=0.1.5",
     "prime-sandboxes>=0.2.5",
-    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.6.8/flash_attn-2.8.3+cu128torch2.9-cp312-cp312-linux_x86_64.whl",
     "ring-flash-attn>=0.1.8",
     "prime>=0.5.0",
     "tenacity>=8.2.0",
@@ -52,6 +51,11 @@ inference = "prime_rl.inference.server:main"
 sft = "prime_rl.trainer.sft.train:main"
 eval = "prime_rl.eval.eval:main"
 synthesize = "prime_rl.synthesize.synthesize:main"
+
+[project.optional-dependencies]
+flash-attn = [
+    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.6.8/flash_attn-2.8.3+cu128torch2.9-cp312-cp312-linux_x86_64.whl",
+]
 
 [dependency-groups]
 dev = [

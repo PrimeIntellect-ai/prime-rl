@@ -42,7 +42,7 @@ COPY configs /app/configs
 COPY examples /app/examples
 
 RUN --mount=type=cache,target=/app/.cache/uv \
-    uv sync --locked --no-dev
+    uv sync --all-extras --locked --no-dev
 
 FROM python:3.12-slim
 
