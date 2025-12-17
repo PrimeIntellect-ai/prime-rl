@@ -209,10 +209,17 @@ class InferenceConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def ensure_api_server_count_is_at_least_dp_size(self):
-        """Ensures that we have at least as many API servers as data parallel size."""
+    def auto_setup_api_server_count(self):
+        """
+        Ensures that we have at least as many API servers as data parallel
+        size. Unless LoRA is enabled, in which case only one API server is
+        supported (vLLM limitation).
+        """
         if self.api_server_count < self.parallel.dp:
             self.api_server_count = self.parallel.dp
+
+        if self.enable_lora:
+            self.api_server_count = 1  # LoRA requires only one API server
         return self
 
     def to_vllm(self) -> Namespace:
