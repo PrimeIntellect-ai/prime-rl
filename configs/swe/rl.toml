@@ -1,0 +1,50 @@
+
+max_steps = 200 
+
+[ckpt] # Checkpoint at the end of training
+
+[model]
+# name = "Qwen/Qwen3-4B-Instruct-2507"
+name = "Qwen/Qwen3-14B"
+
+[wandb]
+project = "intellect-4-swe"
+name = "mini-swe-agent-plus"
+
+[trainer.model]
+impl = "liger_kernel"
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.experimental.lora]
+rank = 32
+alpha = 64
+
+[trainer.optim]
+lr = 1e-5
+
+[orchestrator]
+#batch_size = 64
+#rollouts_per_example = 8
+batch_size = 8
+rollouts_per_example = 2
+seq_len = 32768
+
+[orchestrator.sampling]
+max_tokens = 32768
+
+[[orchestrator.env]]
+id = "primeintellect/mini-swe-agent-plus"
+name = "mini-swe-agent-plus"
+
+[orchestrator.log]
+vf_level = "debug"
+
+[inference] # Default inference config
+
+[inference.model]
+enable_auto_tool_choice = true
+tool_call_parser = "hermes"
+rope_scaling = { rope_type = "yarn", factor = 4.0, original_max_position_embeddings = 32768 }
+max_model_len = 131072
