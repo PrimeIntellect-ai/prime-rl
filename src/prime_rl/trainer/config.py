@@ -271,6 +271,12 @@ class ModelConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def cp_only_with_flash_attn(self):
+        if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3"]:
+            raise ValueError("CP is only supported with flash attention 2 or flash attention 3")
+        return self
+
+    @model_validator(mode="after")
     def random_init_only_with_meta(self):
         """Random initialize is only supported with the custom implementation."""
         if self.debug.random_init and not self.load_using_meta:
