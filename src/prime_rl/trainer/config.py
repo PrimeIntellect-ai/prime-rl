@@ -114,12 +114,6 @@ class LoRAConfig(BaseConfig):
     ] = []
 
 
-class ExperimentalConfig(BaseConfig):
-    """Experimental modeling features."""
-
-    pass
-
-
 class ModelConfig(BaseConfig):
     """Configures the model for training."""
 
@@ -242,13 +236,6 @@ class ModelConfig(BaseConfig):
             description="Debugging feature around model and distributed training.",
         ),
     ] = DebugModelConfig()
-
-    experimental: Annotated[
-        ExperimentalConfig,
-        Field(
-            description="Experimental modeling features.",
-        ),
-    ] = ExperimentalConfig()
 
     @model_validator(mode="after")
     def _map_model_name_for_moe(self):
