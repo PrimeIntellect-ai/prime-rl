@@ -1,6 +1,6 @@
 import os
 from argparse import Namespace
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import Field, model_validator
 
@@ -95,6 +95,13 @@ class ModelConfig(BaseConfig):
         str | None,
         Field(
             description="Parser for extracting reasoning content from model outputs. Passed to vLLM as `--reasoning-parser`. Setting this enables reasoning mode.",
+        ),
+    ] = None
+
+    rope_scaling: Annotated[
+        dict[str, Any] | str | None,
+        Field(
+            description='RoPE scaling configuration as a dict. For YaRN, use: {rope_type="yarn", factor=4.0, original_max_position_embeddings=32768} or. Passed to vLLM as `--rope-scaling`.',
         ),
     ] = None
 
@@ -222,6 +229,7 @@ class InferenceConfig(BaseSettings):
             "model.enable_auto_tool_choice": "enable_auto_tool_choice",
             "model.tool_call_parser": "tool_call_parser",
             "model.reasoning_parser": "reasoning_parser",
+            "model.rope_scaling": "rope_scaling",
             "parallel.tp": "tensor_parallel_size",
             "parallel.dp": "data_parallel_size",
             "enable_lora": "enable_lora",
@@ -241,5 +249,10 @@ class InferenceConfig(BaseSettings):
         # Remove reasoning_parser if not set (vLLM doesn't accept None)
         if namespace.reasoning_parser is None:
             delattr(namespace, "reasoning_parser")
+
+        # Remove rope_scaling if not set (vLLM doesn't accept None)
+        if hasattr(namespace, "rope_scaling"):
+            if namespace.rope_scaling is None:
+                delattr(namespace, "rope_scaling")
 
         return namespace
