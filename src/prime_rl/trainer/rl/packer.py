@@ -23,6 +23,7 @@ class Packer:
         self,
         dp_world_size: int,
         seq_len: int,
+        pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
         config: TransportConfigType,
         start_step: int = 0,
@@ -33,6 +34,7 @@ class Packer:
         self.timeout_seconds = timeout_seconds
         self.dp_world_size = dp_world_size
         self.seq_len = seq_len
+        self.pad_to_multiple_of = pad_to_multiple_of
         self.tokenizer = tokenizer
         self.receiver = setup_training_batch_receiver(config)
         shutil.rmtree(get_rollout_dir(self.runs.output_dir), ignore_errors=True)
@@ -87,6 +89,7 @@ class Packer:
             rollouts=train_examples,
             temperature=some_temperature,
             seq_len=self.seq_len,
+            pad_to_multiple_of=self.pad_to_multiple_of,
             num_train_workers=self.dp_world_size,
             # idxs=train_idxs, # Needed for lora later
         )

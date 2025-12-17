@@ -64,11 +64,37 @@ def packed_samples_into_micro_bs(samples: list[MicroBatch], max_seq_len: int) ->
     return micro_batches
 
 
+def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBatch:
+    """
+    Pad a micro batch with the given padding size sample
+    Return the padded micro batch.
+    Args:
+        micro_batch: The micro batch to pad.
+        padding_size: The number of padding tokens to add.
+    Returns:
+        The padded micro batch.
+    """
+
+    padding_size = (pad_to_multiple_of - (len(micro_batch.input_ids) % pad_to_multiple_of)) % pad_to_multiple_of
+
+    if not (pad_to_multiple_of > 1 and padding_size > 0):
+        return micro_batch
+
+    micro_batch.input_ids.extend([1 for _ in range(padding_size)])
+    micro_batch.advantages.extend([0.0 for _ in range(padding_size)])
+    micro_batch.loss_mask.extend([False for _ in range(padding_size)])
+    micro_batch.position_ids.extend(list(range(padding_size)))
+    micro_batch.inference_logprobs.extend([0.0 for _ in range(padding_size)])
+
+    return micro_batch
+
+
 def prepare_batch(
     rollouts: list[TrainingSample],
     temperature: float,
     seq_len: int,
     num_train_workers: int,
+    pad_to_multiple_of: int = 1,
 ) -> list[list[MicroBatch]]:
     """
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
@@ -79,6 +105,8 @@ def prepare_batch(
     all_samples = [prepare_sample(rollout, max_seq_len) for rollout in rollouts]
 
     micro_batches = packed_samples_into_micro_bs(all_samples, max_seq_len)
+    micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]
+
     for micro_batch in micro_batches:
         micro_batch.temperature = temperature
 
