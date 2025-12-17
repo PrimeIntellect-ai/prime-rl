@@ -51,19 +51,19 @@ class PrimeMonitor(Monitor):
         self.api_key = api_key
         self.base_url = config.base_url
 
-        # Set up async HTTP client with background event loop
-        self._loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
-        self._thread = Thread(target=self._run_event_loop, daemon=True)
-        self._thread.start()
-        self._client = httpx.AsyncClient(timeout=30)
-
-        # Get run_id from environment variable
+        # Get run_id from environment variable (check before allocating resources)
         run_id = os.getenv("RUN_ID")
         if not run_id:
             self.logger.warning("RUN_ID environment variable not set. PrimeMonitor will not be able to upload data.")
             self.enabled = False
             return
         self.run_id = run_id
+
+        # Set up async HTTP client with background event loop
+        self._loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
+        self._thread = Thread(target=self._run_event_loop, daemon=True)
+        self._thread.start()
+        self._client = httpx.AsyncClient(timeout=30)
 
         # Optionally, initialize sample logging attributes
         if config is not None and config.log_extras:
