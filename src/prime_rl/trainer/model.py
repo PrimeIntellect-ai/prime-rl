@@ -334,6 +334,11 @@ def setup_model(
     model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype])
     possible_to_load_to_meta = can_reinit_empty_buffers(model)
 
+    if config.debug.random_init and not possible_to_load_to_meta:
+        raise ValueError(
+            "It's not possible to load to meta device and random initialize is enabled. Please disable random initialize or use a different model."
+        )
+
     # 1a. We load to CPU if we cannot reinit empty buffers
     if not possible_to_load_to_meta:
         logger.warning("Cannot load model to meta device only, loading to CPU instead.")
