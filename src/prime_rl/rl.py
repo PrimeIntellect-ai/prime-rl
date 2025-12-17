@@ -12,15 +12,17 @@ from threading import Event, Thread
 from typing import Annotated, Literal
 
 import tomli_w
-from pydantic import Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from prime_rl.inference.config import InferenceConfig
+from prime_rl.inference.config import ModelConfig as InferenceModelConfig
 from prime_rl.inference.config import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.orchestrator.config import CheckpointConfig as OrchestratorCheckpointConfig
 from prime_rl.orchestrator.config import FileSystemWeightBroadcastConfig as OrchestratorFileSystemWeightBroadcastConfig
 from prime_rl.orchestrator.config import NCCLWeightBroadcastConfig as OrchestratorNCCLWeightBroadcastConfig
 from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.trainer.config import CheckpointConfig as TrainerCheckpointConfig
+from prime_rl.trainer.config import ModelConfig
 from prime_rl.trainer.rl.config import FakeDataLoaderConfig
 from prime_rl.trainer.rl.config import FileSystemWeightBroadcastConfig as TrainerFileSystemWeightBroadcastConfig
 from prime_rl.trainer.rl.config import NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig
@@ -43,6 +45,62 @@ from prime_rl.utils.validation import (
     validate_shared_wandb_config,
     validate_shared_weight_broadcast,
 )
+
+
+class ModelDefaults(BaseSettings):
+    """Per-model default configuration. Mirrors RLConfig structure with all fields optional."""
+
+    orchestrator: OrchestratorConfig | None = None
+    trainer: TrainerConfig | None = None
+    inference: InferenceConfig | None = None
+
+
+MODEL_DEFAULTS: dict[str, ModelDefaults] = {
+    "Qwen/Qwen3-4B-Instruct-2507": ModelDefaults(
+        orchestrator=OrchestratorConfig(trajectory_strategy="interleaved"),
+        inference=InferenceConfig(model=InferenceModelConfig(enable_auto_tool_choice=True, tool_call_parser="hermes")),
+    ),
+    "Qwen/Qwen3-4B-Thinking-2507": ModelDefaults(
+        orchestrator=OrchestratorConfig(trajectory_strategy="branching"),
+        inference=InferenceConfig(model=InferenceModelConfig(enable_auto_tool_choice=True, tool_call_parser="hermes")),
+    ),
+    "Qwen/Qwen3-30B-A3B-Instruct-2507": ModelDefaults(
+        orchestrator=OrchestratorConfig(trajectory_strategy="interleaved"),
+        trainer=TrainerConfig(model=ModelConfig(impl="custom")),
+        inference=InferenceConfig(model=InferenceModelConfig(enable_auto_tool_choice=True, tool_call_parser="hermes")),
+    ),
+    "Qwen/Qwen3-30B-A3B-Thinking-2507": ModelDefaults(
+        orchestrator=OrchestratorConfig(trajectory_strategy="branching"),
+        trainer=TrainerConfig(model=ModelConfig(impl="custom")),
+        inference=InferenceConfig(model=InferenceModelConfig(enable_auto_tool_choice=True, tool_call_parser="hermes")),
+    ),
+    "Qwen/Qwen3-235B-A22B-Instruct-2507": ModelDefaults(
+        orchestrator=OrchestratorConfig(trajectory_strategy="interleaved"),
+        trainer=TrainerConfig(model=ModelConfig(impl="custom")),
+        inference=InferenceConfig(model=InferenceModelConfig(enable_auto_tool_choice=True, tool_call_parser="hermes")),
+    ),
+    "Qwen/Qwen3-235B-A22B-Thinking-2507": ModelDefaults(
+        orchestrator=OrchestratorConfig(trajectory_strategy="branching"),
+        trainer=TrainerConfig(model=ModelConfig(impl="custom")),
+        inference=InferenceConfig(model=InferenceModelConfig(enable_auto_tool_choice=True, tool_call_parser="hermes")),
+    ),
+}
+
+
+def apply_defaults_to_model(target: BaseModel, defaults: BaseModel | None) -> None:
+    """Recursively apply defaults to target, only for fields not explicitly set by user."""
+    if defaults is None:
+        return
+    for field_name in defaults.model_fields:
+        default_value = getattr(defaults, field_name, None)
+        if default_value is None:
+            continue
+        if field_name not in target.model_fields_set:
+            setattr(target, field_name, default_value)
+        elif isinstance(default_value, BaseModel):
+            target_value = getattr(target, field_name, None)
+            if target_value is not None:
+                apply_defaults_to_model(target_value, default_value)
 
 
 class SharedLogConfig(BaseSettings):
@@ -190,6 +248,24 @@ class RLConfig(BaseSettings):
     weight_broadcast: Annotated[
         SharedWeightBroadcastConfig | None, Field(description="The weight broadcast config.")
     ] = None
+
+    @model_validator(mode="after")
+    def apply_model_defaults(self):
+        model_name = self.model.name if self.model else self.trainer.model.name
+        defaults = MODEL_DEFAULTS.get(model_name)
+        if defaults is None:
+            return self
+
+        apply_defaults_to_model(self.orchestrator, defaults.orchestrator)
+        apply_defaults_to_model(self.trainer, defaults.trainer)
+
+        if defaults.inference:
+            if self.inference is None:
+                self.inference = defaults.inference.model_copy(deep=True)
+            else:
+                apply_defaults_to_model(self.inference, defaults.inference)
+
+        return self
 
     @model_validator(mode="after")
     def auto_setup_dp(self):
@@ -368,18 +444,18 @@ class RLConfig(BaseSettings):
 
     @model_validator(mode="after")
     def auto_setup_lora(self):
-        if self.trainer.model.lora is not None:
+        if self.trainer.model.experimental.lora is not None:
             if self.trainer.weight_broadcast.type == "nccl":
                 raise ValueError("NCCL weight broadcast does not support LoRA yet.")
             self.trainer.weight_broadcast.adapter_only = True
             if self.orchestrator.lora_name is None:
                 lora_name = (
-                    f"r{self.trainer.model.lora.rank}-a{self.trainer.model.lora.alpha}"
+                    f"r{self.trainer.model.experimental.lora.rank}-a{self.trainer.model.experimental.lora.alpha}"
                 )
                 self.orchestrator.lora_name = lora_name
             if self.inference is not None:
                 self.inference.enable_lora = True
-                self.inference.max_lora_rank = self.trainer.model.lora.rank
+                self.inference.max_lora_rank = self.trainer.model.experimental.lora.rank
             else:
                 warnings.warn(
                     "LoRA is enabled, but inference is not configured. When manually starting the inference server, make sure to set `--enable_lora` and `--max-lora-rank`."
