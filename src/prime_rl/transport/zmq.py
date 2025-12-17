@@ -1,11 +1,10 @@
 from pathlib import Path
 from time import time
-from typing import Optional, Tuple
 
 import zmq
 
 from prime_rl.trainer.runs import get_runs
-from prime_rl.transport import TrainingBatch
+from prime_rl.transport import MicroBatch, MicroBatchReceiver, MicroBatchSender, TrainingBatch
 from prime_rl.transport.base import TrainingBatchReceiver, TrainingBatchSender
 from prime_rl.transport.config import ZMQTransportConfig
 
@@ -160,3 +159,127 @@ class ZMQTrainingBatchReceiver(TrainingBatchReceiver):
         finally:
             self.context.term()
             self.logger.info("ZMQ training batch receiver closed")
+
+
+class ZMQMicroBatchSender(MicroBatchSender):
+    def __init__(self, output_dir: Path, data_world_size: int, current_step: int, transport: ZMQTransportConfig):
+        super().__init__(output_dir, data_world_size)
+        self.context = zmq.Context.instance()
+
+        # Data channel (PUB)
+        self.socket = self.context.socket(zmq.PUB)
+        self.socket.setsockopt(zmq.SNDHWM, transport.hwm)
+        self.socket.bind(f"tcp://{transport.host}:{transport.port + 1}")
+
+        # Ready barrier channel (PULL)
+        self.ready_socket = self.context.socket(zmq.PULL)
+        self.ready_socket.setsockopt(zmq.RCVHWM, transport.hwm)
+        self.ready_socket.bind(f"tcp://{transport.host}:{transport.port + 2}")
+
+        self._ready = False
+
+        self.logger.info(
+            f"ZMQ micro batch sender initialized: endpoint=tcp://{transport.host}:{transport.port + 1} "
+            f"ready_endpoint=tcp://{transport.host}:{transport.port + 2} hwm={transport.hwm}"
+        )
+
+        self.current_step = current_step
+        self._topic_prefix = b"data_rank|"
+
+    def _wait_for_ready(self) -> None:
+        if self._ready:
+            return
+
+        self.logger.warning(
+            f"Waiting for {self.data_world_size} READY messages on port {self.ready_socket.LAST_ENDPOINT.decode(errors='ignore') if hasattr(self.ready_socket, 'LAST_ENDPOINT') else ''}"
+        )
+        ready_ranks: set[int] = set()
+
+        # Block until all ranks have announced readiness (no graceful handling requested)
+        while len(ready_ranks) < self.data_world_size:
+            msg = self.ready_socket.recv()  # blocks
+            try:
+                rank = int(msg.decode("utf-8"))
+            except Exception:
+                continue
+            ready_ranks.add(rank)
+
+        self.logger.warning(f"All {self.data_world_size} ranks READY, starting PUB")
+        self._ready = True
+
+    def send(self, micro_batch_grid: list[list[MicroBatch]]) -> None:
+        assert len(micro_batch_grid) == self.data_world_size, "Number of micro batch lists must match data world size"
+        for micro_batch_list in micro_batch_grid:
+            assert len(micro_batch_list) == len(micro_batch_grid[0]), "All micro batch lists must have the same length"
+
+        # Ensure no slow-joiner drops for step 0 (and generally at startup)
+        self._wait_for_ready()
+
+        self.logger.warning(f"Sending micro batch grid for step {self.current_step}")
+
+        for data_rank in range(self.data_world_size):
+            buffer = self.encoder.encode(micro_batch_grid[data_rank])
+            topic = self._topic_prefix + str(data_rank).encode("utf-8") + b"|"
+            self.socket.send_multipart([topic, buffer])
+
+        self.current_step += 1
+
+    def close(self) -> None:
+        try:
+            self.socket.close(linger=0)
+            self.ready_socket.close(linger=0)
+        finally:
+            self.logger.info("ZMQ micro batch sender closed")
+
+
+class ZMQMicroBatchReceiver(MicroBatchReceiver):
+    def __init__(self, output_dir: Path, data_rank: int, current_step: int, transport: ZMQTransportConfig):
+        super().__init__(output_dir, data_rank)
+        self.context = zmq.Context.instance()
+
+        # Data channel (SUB)
+        self.socket = self.context.socket(zmq.SUB)
+        self.socket.setsockopt(zmq.RCVHWM, transport.hwm)
+        self.socket.connect(f"tcp://{transport.host}:{transport.port + 1}")
+
+        self._topic = b"data_rank|" + str(data_rank).encode("utf-8") + b"|"
+        self.socket.setsockopt(zmq.SUBSCRIBE, self._topic)
+
+        self.poller = zmq.Poller()
+        self.poller.register(self.socket, zmq.POLLIN)
+
+        # Ready barrier channel (PUSH)
+        self.ready_socket = self.context.socket(zmq.PUSH)
+        self.ready_socket.setsockopt(zmq.SNDHWM, transport.hwm)
+        self.ready_socket.connect(f"tcp://{transport.host}:{transport.port + 2}")
+
+        # Announce readiness after connect+subscribe are set
+        self.ready_socket.send(str(data_rank).encode("utf-8"))
+
+        self.logger.info(
+            f"ZMQ micro batch receiver initialized: endpoint=tcp://{transport.host}:{transport.port + 1} "
+            f"ready_endpoint=tcp://{transport.host}:{transport.port + 2} hwm={transport.hwm}"
+        )
+
+        self.current_step = current_step
+
+    def wait(self) -> None:
+        self.logger.warning(f"Waiting for micro batch for step {self.current_step}")
+        self.poller.poll(timeout=None)
+
+    def can_receive(self) -> bool:
+        events = dict(self.poller.poll(timeout=0))
+        return self.socket in events
+
+    def receive(self) -> list[MicroBatch]:
+        _, payload = self.socket.recv_multipart()
+        micro_batches: list[MicroBatch] = self.decoder.decode(payload)
+        self.current_step += 1
+        return micro_batches
+
+    def close(self) -> None:
+        try:
+            self.socket.close(linger=0)
+            self.ready_socket.close(linger=0)
+        finally:
+            self.logger.info("ZMQ micro batch receiver closed")

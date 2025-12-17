@@ -9,7 +9,7 @@ from prime_rl.transport.filesystem import (
     FileSystemTrainingBatchSender,
 )
 from prime_rl.transport.types import MicroBatch, TrainingBatch, TrainingSample
-from prime_rl.transport.zmq import ZMQTrainingBatchReceiver, ZMQTrainingBatchSender
+from prime_rl.transport.zmq import ZMQMicroBatchReceiver, ZMQMicroBatchSender, ZMQTrainingBatchReceiver, ZMQTrainingBatchSender
 
 
 def setup_training_batch_sender(output_dir: Path, transport: TransportConfigType) -> TrainingBatchSender:
@@ -33,8 +33,10 @@ def setup_training_batch_receiver(transport: TransportConfigType) -> TrainingBat
 def setup_micro_batch_sender(
     output_dir: Path, data_world_size: int, current_step: int, transport: TransportConfigType
 ) -> MicroBatchSender:
-    if transport.type == "filesystem" or transport.type == "zmq":
+    if transport.type == "filesystem":
         return FileSystemMicroBatchSender(output_dir, data_world_size, current_step)
+    elif transport.type == "zmq":
+        return ZMQMicroBatchSender(output_dir, data_world_size, current_step, transport)
     else:
         raise ValueError(f"Invalid transport type: {transport.type}")
 
@@ -42,8 +44,10 @@ def setup_micro_batch_sender(
 def setup_micro_batch_receiver(
     output_dir: Path, data_rank: int, current_step: int, transport: TransportConfigType
 ) -> MicroBatchReceiver:
-    if transport.type == "filesystem" or transport.type == "zmq":
+    if transport.type == "filesystem":
         return FileSystemMicroBatchReceiver(output_dir, data_rank, current_step)
+    elif transport.type == "zmq":
+        return ZMQMicroBatchReceiver(output_dir, data_rank, current_step, transport)
     else:
         raise ValueError(f"Invalid transport type: {transport.type}")
 
