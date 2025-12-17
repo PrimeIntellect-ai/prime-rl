@@ -3,6 +3,7 @@ from http import HTTPStatus
 
 from fastapi.responses import JSONResponse, StreamingResponse
 from vllm.entrypoints.chat_utils import load_chat_template
+from vllm.entrypoints.cli.serve import run_api_server_worker_proc
 from vllm.entrypoints.logger import RequestLogger
 from vllm.entrypoints.openai.utils import validate_json_request
 from vllm.entrypoints.openai.protocol import ChatCompletionResponse, ErrorResponse
@@ -110,6 +111,11 @@ async def _chat_with_tokens(request: ChatCompletionRequestWithTokens, raw_reques
 
 
 async def custom_init_app_state(engine_client: EngineClient, state: State, args: Namespace):
+    """
+    Modifies init_app_state:
+    1. Set up the custom OpenAIServingChatWithTokens state.
+    2. Monkey-patch to allow updating lora adapters in-place.
+    """
     # Setup the regular app state first (in-place)
     await init_app_state(engine_client, state, args)
 
@@ -156,12 +162,26 @@ async def custom_init_app_state(engine_client: EngineClient, state: State, args:
     state.openai_serving_models._check_load_lora_adapter_request = do_nothing
 
 
+def custom_run_api_server_worker_proc(listen_address, sock, args, client_config=None, **uvicorn_kwargs) -> None:
+    """
+    Modifies run_api_server_worker_proc:
+    1. Re-import our module to ensure monkey patches are applied in child processes
+    """
+    # NOTE: This hack ensures that monkey patches are applied in child processes
+    # to make our custom routes work in multi-API-server settings.
+    import prime_rl.inference.vllm.server  # noqa: F401
+
+    run_api_server_worker_proc(listen_address, sock, args, client_config, **uvicorn_kwargs)
+
+
 import vllm.entrypoints.openai.api_server
+import vllm.entrypoints.cli.serve
 
 # Also monkey patch run_api_server_worker_proc for multi-api-server mode
 # This is needed because worker processes spawned by run_multi_api_server
 # re-import modules and would otherwise use the original run_server_worker
 vllm.entrypoints.openai.api_server.init_app_state = custom_init_app_state
+vllm.entrypoints.cli.serve.run_api_server_worker_proc = custom_run_api_server_worker_proc
 
 
 # Adapted from vllm/entrypoints/cli/serve.py
