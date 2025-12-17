@@ -265,7 +265,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     logger.debug(f"Loaded weights using HF DCP in {time.perf_counter() - load_dcp_start_time:.2f} seconds")
 
 
-def can_load_dcp_from_hf(model: nn.Module):
+def can_reinit_empty_buffers(model: nn.Module):
     """Whether the model will be loaded correctly by load_dcp_from_hf.
 
     The main issue is with anything that is not in the checkpoint.
@@ -321,24 +321,24 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
     get_logger().info(f"Compiled {len(model.model.layers)} layers (fullgraph={compile_config.fullgraph})")
 
 
-def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
+def setup_model(
+    config: ModelConfig, parallel_dims: ParallelDims, loading_from_checkpoint_later: bool = False
+) -> nn.Module:
     if config.attn == "flash_attention_3" and not is_flash_attn_3_available():
         raise ValueError(
             "Flash attention 3 is only supported if the flash_attn_3 package is installed. Install with `uv pip install 'flash-attn-3 @ git+https://github.com/Dao-AILab/flash-attention.git@main#subdirectory=hopper' --no-build-isolation`"
         )
-
     logger = get_logger()
-    # Get model from specified device
-    model = get_model(
-        config,
-        device=torch.device("meta" if config.load_using_meta else "cpu"),
-        dtype=DTYPE_MAP[config.optimization_dtype],
-    )
 
-    # Reload the model to CPU if we cannot load from
-    if config.load_using_meta and not can_load_dcp_from_hf(model):
-        logger.warning("Cannot load model from meta device. Loading model to CPU instead.")
+    possible_to_load_to_meta = can_reinit_empty_buffers(model)
+
+    # 1a. We load to CPU if we cannot reinit empty buffers
+    if not possible_to_load_to_meta:
+        logger.warning("Cannot load model to meta device only, loading to CPU instead.")
         model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype])
+    # 1b. if we can reinit empty buffers, we load to meta device
+    else:
+        model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype])
 
     # Apply LoRA before FSDP setup
     if config.experimental.lora is not None:
@@ -352,7 +352,21 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
 
     setup_fsdp(model, config, parallel_dims)
 
-    if config.load_using_meta and can_load_dcp_from_hf(model):
+    # 2. If we're loading from checkpoint and we can load to meta device, we initialize an empty model on device and load from checkpoint later in the caller function
+    if loading_from_checkpoint_later and possible_to_load_to_meta:
+        logger.warning(
+            "Skipping loading weights. Initializing an empty model on device, loading from checkpoint later."
+        )
+        model.to_empty(device="cuda")
+        torch.distributed.barrier()
+        if isinstance(model, PreTrainedModelPrimeRL):
+            model.init_buffers_post_meta()
+        else:
+            fix_model_post_empty(model)
+    # 3. We fallback to loading the checkpoint from HF if and only if:
+    # - we cannot load to meta device (we cannot reinitialize some buffers)
+    # - we are not loading from checkpoint
+    else:
         load_dcp_from_hf(model, config, parallel_dims)
 
     logger.debug(f"Model signature: {get_module_signature(model, compress=True)}")
