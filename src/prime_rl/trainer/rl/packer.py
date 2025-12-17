@@ -13,10 +13,9 @@ from prime_rl.transport import (
     setup_micro_batch_sender,
     setup_training_batch_receiver,
 )
+from prime_rl.trainer.rl.config import DEFAULT_PACKER_TIMEOUT_SECONDS
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_rollout_dir
-
-TIMEOUT_SECONDS = 10
 
 
 class Packer:
@@ -27,9 +26,11 @@ class Packer:
         tokenizer: PreTrainedTokenizer,
         config: TransportConfigType,
         start_step: int = 0,
+        timeout_seconds: int = DEFAULT_PACKER_TIMEOUT_SECONDS,
     ):
         self.logger = get_logger()
         self.runs = get_runs()
+        self.timeout_seconds = timeout_seconds
         self.dp_world_size = dp_world_size
         self.seq_len = seq_len
         self.tokenizer = tokenizer
@@ -62,7 +63,7 @@ class Packer:
         training_batches: dict[int, TrainingBatch] = self.get_batch()
         start_time = time.time()
         while not self.has_enough_tokens(training_batches):
-            if time.time() - start_time > TIMEOUT_SECONDS and training_batches:
+            if time.time() - start_time > self.timeout_seconds and training_batches:
                 self.logger.warning("Timeout waiting for enough tokens to pack")
                 break
             time.sleep(1)

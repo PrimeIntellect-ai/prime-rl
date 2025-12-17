@@ -6,7 +6,7 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.trainer.rl.config import FakeDataLoaderConfig
+from prime_rl.trainer.rl.config import DEFAULT_PACKER_TIMEOUT_SECONDS, DataLoaderConfig, FakeDataLoaderConfig
 from prime_rl.trainer.rl.packer import Packer
 from prime_rl.trainer.world import get_world
 from prime_rl.transport import MicroBatch, MicroBatchReceiver, TransportConfigType, setup_micro_batch_receiver
@@ -79,6 +79,7 @@ class DataLoader:
         seq_len: int,
         tokenizer: PreTrainedTokenizer,
         config: TransportConfigType,
+        packer_timeout_seconds: int = DEFAULT_PACKER_TIMEOUT_SECONDS,
     ):
         self.world = get_world()
 
@@ -89,6 +90,7 @@ class DataLoader:
                 tokenizer=tokenizer,
                 config=config,
                 start_step=start_step,
+                timeout_seconds=packer_timeout_seconds,
             )
 
         self.receiver: MicroBatchReceiver = setup_micro_batch_receiver(output_dir, self.world.rank, start_step, config)
