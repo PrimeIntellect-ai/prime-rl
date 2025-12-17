@@ -7,7 +7,7 @@ from pydantic import ValidationError
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.inference.config import InferenceConfig
 from prime_rl.orchestrator.config import OrchestratorConfig
-from prime_rl.rl import MODEL_DEFAULTS, RLConfig
+from prime_rl.rl import RLConfig
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.sft.config import SFTTrainerConfig
 from prime_rl.utils.pydantic_config import parse_argv
