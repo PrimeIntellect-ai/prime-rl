@@ -213,13 +213,6 @@ class ModelConfig(BaseConfig):
         ),
     ] = "hf"
 
-    load_using_meta: Annotated[
-        bool,
-        Field(
-            description="Whether to load the model using meta device then load from HF ckpt.",
-        ),
-    ] = False
-
     optimization_dtype: Annotated[
         Literal["bfloat16", "float32"],
         Field(
@@ -268,13 +261,6 @@ class ModelConfig(BaseConfig):
         if self.trust_remote_code:
             if self.impl != "hf":
                 raise ValueError("Trust remote code is only supported with the HF implementation.")
-        return self
-
-    @model_validator(mode="after")
-    def random_init_only_with_meta(self):
-        """Random initialize is only supported with the custom implementation."""
-        if self.debug.random_init and not self.load_using_meta:
-            raise ValueError("Random initialize is only supported when loading with meta.")
         return self
 
 

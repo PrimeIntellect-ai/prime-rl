@@ -330,15 +330,14 @@ def setup_model(
         )
     logger = get_logger()
 
+    # 1. We load to meta device by default
+    model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype])
     possible_to_load_to_meta = can_reinit_empty_buffers(model)
 
     # 1a. We load to CPU if we cannot reinit empty buffers
     if not possible_to_load_to_meta:
         logger.warning("Cannot load model to meta device only, loading to CPU instead.")
         model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype])
-    # 1b. if we can reinit empty buffers, we load to meta device
-    else:
-        model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype])
 
     # Apply LoRA before FSDP setup
     if config.experimental.lora is not None:
@@ -363,7 +362,7 @@ def setup_model(
             model.init_buffers_post_meta()
         else:
             fix_model_post_empty(model)
-    # 3. We fallback to loading the checkpoint from HF if and only if:
+    # 3. We fallback to loading the checkpoint from HF if either of the following is true:
     # - we cannot load to meta device (we cannot reinitialize some buffers)
     # - we are not loading from checkpoint
     else:
