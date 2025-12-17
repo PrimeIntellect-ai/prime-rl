@@ -21,18 +21,22 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample]:
         logger.warning(f"No trajectory steps for example {state['example_id']}. Skipping rollout.")
         return []
 
+    has_error = state["error"] is not None
+
     # Initialize the rollout with prompt and completion from first trajectory step
     first_step = trajectory[0]
+    if has_error:
+        completion_mask = [False] * len(first_step["tokens"]["completion_mask"])
+    else:
+        completion_mask = [bool(i) for i in first_step["tokens"]["completion_mask"]]
     interleaved_rollout = TrainingSample(
         prompt_ids=deepcopy(first_step["tokens"]["prompt_ids"]),
         prompt_mask=[bool(i) for i in first_step["tokens"]["prompt_mask"]],
         completion_ids=deepcopy(first_step["tokens"]["completion_ids"]),
-        completion_mask=[bool(i) for i in first_step["tokens"]["completion_mask"]],
+        completion_mask=completion_mask,
         completion_logprobs=deepcopy(first_step["tokens"]["completion_logprobs"]),
         advantage=None,
     )
-
-    has_error = state["error"] is not None
 
     # Interleave all other trajectory steps into completion
     prefix_tokens = first_step["tokens"]["prompt_ids"] + first_step["tokens"]["completion_ids"]
