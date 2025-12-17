@@ -6,7 +6,7 @@ from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 
 
-def interleave_rollout(state: vf.State) -> list[TrainingSample]:
+def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
     """
     Convert vf.State to a *single* trainable rollout by interleaving the trajectory.
 
@@ -19,7 +19,7 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample]:
     trajectory = state["trajectory"]
     if len(trajectory) == 0:
         logger.warning(f"No trajectory steps for example {state['example_id']}. Skipping rollout.")
-        return []
+        return None
 
     has_error = state["error"] is not None
 
@@ -73,7 +73,7 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample]:
     return [interleaved_rollout]
 
 
-def branch_rollout(state: vf.State) -> list[TrainingSample]:
+def branch_rollout(state: vf.State) -> list[TrainingSample] | None:
     """Convert vf.State to *multiple* trainable rollouts using branching trajectories strategy."""
     logger = get_logger()
 
@@ -81,7 +81,7 @@ def branch_rollout(state: vf.State) -> list[TrainingSample]:
     trajectory = state["trajectory"]
     if len(trajectory) == 0:
         logger.warning(f"No trajectory steps for example {state['example_id']}. Skipping rollout.")
-        return rollouts
+        return None
 
     has_error = state["error"] is not None
     for step in state["trajectory"]:
