@@ -202,8 +202,11 @@ class RLConfig(BaseSettings):
 
     @model_validator(mode="after")
     def auto_setup_num_train_workers(self):
+        non_data_parallel_size = self.trainer.model.cp * self.trainer.model.tp
+
         if len(self.trainer_gpu_ids) > 1:
-            self.orchestrator.num_train_workers = len(self.trainer_gpu_ids)
+            self.orchestrator.num_train_workers = len(self.trainer_gpu_ids) // non_data_parallel_size
+
         return self
 
     @model_validator(mode="after")
@@ -287,7 +290,6 @@ class RLConfig(BaseSettings):
             # Configure the trainer fake data to match the orchestrator config
             self.trainer.data.fake = FakeDataLoaderConfig(
                 batch_size=self.orchestrator.batch_size,
-                seq_len=self.orchestrator.seq_len,
             )
 
         if self.trainer.bench != self.orchestrator.bench:
@@ -337,7 +339,7 @@ class RLConfig(BaseSettings):
         # If specified, use the same outputs directory for trainer and orchestrator
         if self.output_dir is not None:
             self.trainer.output_dir = self.output_dir
-            self.orchestrator.output_dir = self.output_dir
+            self.orchestrator.output_dir = self.output_dir / "run_default"
 
         validate_shared_output_dir(self.trainer, self.orchestrator)
 
@@ -451,8 +453,9 @@ def rl(config: RLConfig):
 
     # Prepare paths to communicate with the trainer
     log_dir = get_log_dir(config.output_dir)
-    rollout_dir = get_rollout_dir(config.output_dir)
-    broadcast_dir = get_broadcast_dir(config.output_dir)
+    orch_log_dir = get_log_dir(config.orchestrator.output_dir)
+    rollout_dir = get_rollout_dir(config.orchestrator.output_dir)
+    broadcast_dir = get_broadcast_dir(config.orchestrator.output_dir)
 
     # Clean up directories if specified
     if config.clean:
@@ -462,6 +465,10 @@ def rl(config: RLConfig):
         logger.info(f"Cleaning log dir ({log_dir})")
         shutil.rmtree(log_dir, ignore_errors=True)
         log_dir.mkdir(parents=True, exist_ok=True)
+
+        logger.info(f"Cleaning orchestrator log dir ({orch_log_dir})")
+        shutil.rmtree(orch_log_dir, ignore_errors=True)
+        orch_log_dir.mkdir(parents=True, exist_ok=True)
 
         # Cleaning broadcast dir (so that orchestrator does not pre-maturely update weights)
         if not (

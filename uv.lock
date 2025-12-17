@@ -2414,6 +2414,8 @@ dependencies = [
     { name = "pylatexenc" },
     { name = "reverse-text" },
     { name = "rich" },
+    { name = "ring-flash-attn" },
+    { name = "tenacity" },
     { name = "textarena" },
     { name = "tomli" },
     { name = "tomli-w" },
@@ -2462,6 +2464,8 @@ requires-dist = [
     { name = "reverse-text", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "reverse-text", specifier = ">=0.1.4", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "rich", specifier = ">=14.0.0" },
+    { name = "ring-flash-attn", specifier = ">=0.1.8" },
+    { name = "tenacity", specifier = ">=8.2.0" },
     { name = "textarena", specifier = ">=0.6.16" },
     { name = "tomli", specifier = ">=2.2.1" },
     { name = "tomli-w", specifier = ">=1.2.0" },
@@ -3060,6 +3064,15 @@ wheels = [
 ]
 
 [[package]]
+name = "ring-flash-attn"
+version = "0.1.8"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d9/33/97d7ee4f67b782ae120f437d8a43e7b9879d213fd0589094db4dd9ed1e64/ring_flash_attn-0.1.8.tar.gz", hash = "sha256:9075575941e76323b4701fe573c30a2b4ce86854938f67f52cb770c498d21ea0", size = 22104, upload-time = "2025-09-10T11:53:09.113Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c1/02/18ba0727a1c755c528d6a52b363d62c0b7a8e64cf961b3030c046107db4d/ring_flash_attn-0.1.8-py3-none-any.whl", hash = "sha256:296c929516c3b21f7bcdaeca44a99bb541779a7b63979eb0f67837dcb18a2bb9", size = 25437, upload-time = "2025-09-10T11:53:07.565Z" },
+]
+
+[[package]]
 name = "rpds-py"
 version = "0.27.1"
 source = { registry = "https://pypi.org/simple" }
@@ -3319,6 +3332,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/ec/fe/802052aecb21e3797b8f7902564ab6ea0d60ff8ca23952079064155d1ae1/tabulate-0.9.0.tar.gz", hash = "sha256:0095b12bf5966de529c0feb1fa08671671b3368eec77d7ef7ab114be2c068b3c", size = 81090, upload-time = "2022-10-06T17:21:48.54Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/40/44/4a5f08c96eb108af5cb50b41f76142f0afa346dfa99d5296fe7202a11854/tabulate-0.9.0-py3-none-any.whl", hash = "sha256:024ca478df22e9340661486f85298cff5f6dcdba14f3813e8830015b9ed1948f", size = 35252, upload-time = "2022-10-06T17:21:44.262Z" },
+]
+
+[[package]]
+name = "tenacity"
+version = "9.1.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/0a/d4/2b0cd0fe285e14b36db076e78c93766ff1d529d70408bd1d2a5a84f1d929/tenacity-9.1.2.tar.gz", hash = "sha256:1169d376c297e7de388d18b4481760d478b0e99a777cad3a9c86e556f4b697cb", size = 48036, upload-time = "2025-04-02T08:25:09.966Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e5/30/643397144bfbfec6f6ef821f36f33e57d35946c44a2352d3c9f0ae847619/tenacity-9.1.2-py3-none-any.whl", hash = "sha256:f77bf36710d8b73a50b2dd155c97b870017ad21afe6ab300326b0371b3b05138", size = 28248, upload-time = "2025-04-02T08:25:07.678Z" },
 ]
 
 [[package]]

@@ -31,6 +31,22 @@ async def generate_group(
     )
 
 
+async def generate_rollout(
+    client: AsyncOpenAI,
+    env: vf.Environment,
+    model_name: str,
+    example: dict,
+    sampling_args: dict,
+) -> vf.State:
+    """Asynchronously generate and score a single rollout."""
+    semaphore = await get_semaphore()
+    rollout_input = vf.RolloutInput(**example)
+
+    state = await env.run_rollout(semaphore, rollout_input, client, model_name, sampling_args)
+    await env.rubric.score_rollout(state, score_sem=semaphore)
+    return state
+
+
 async def generate_batch(
     clients: list[AsyncOpenAI],
     env: vf.Environment,

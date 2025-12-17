@@ -16,7 +16,6 @@ import vllm.envs as envs
 from fastapi import Request
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.protocol import EngineClient
-from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server
 from vllm.entrypoints.launcher import serve_http
 from vllm.entrypoints.openai.api_server import (
     build_app,
@@ -24,7 +23,6 @@ from vllm.entrypoints.openai.api_server import (
     init_app_state,
     load_log_config,
     maybe_register_tokenizer_info_endpoint,
-    setup_server,
 )
 from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
 from vllm.entrypoints.openai.tool_parsers import ToolParserManager
@@ -141,21 +139,39 @@ async def custom_run_server_worker(listen_address, sock, args, client_config=Non
         sock.close()
 
 
-# Copied from vllm/entrypoints/openai/api_server.py
-# Only difference is that we call `custom_run_server_worker` instead of `run_server_worker`
-async def custom_run_server(args, **uvicorn_kwargs) -> None:
-    """Run a single-worker API server."""
+def custom_run_api_server_worker_proc(listen_address, sock, args, client_config=None, **uvicorn_kwargs) -> None:
+    """Entrypoint for individual API server worker processes."""
+    # Import our module to ensure monkey patches are applied in child processes
+    # This is critical because child processes start fresh and re-import modules
+    import prime_rl.inference.vllm.server  # noqa: F401
 
-    # Add process-specific prefix to stdout and stderr.
-    decorate_logs("APIServer")
+    from vllm.utils import set_process_title, decorate_logs
 
-    listen_address, sock = setup_server(args)
-    await custom_run_server_worker(listen_address, sock, args, **uvicorn_kwargs)
+    # Set process title and add process-specific prefix to stdout and stderr.
+    server_index = client_config.get("client_index", 0) if client_config else 0
+    set_process_title("APIServer", str(server_index))
+    decorate_logs()
+
+    uvloop.run(custom_run_server_worker(listen_address, sock, args, client_config, **uvicorn_kwargs))
+
+
+import vllm.entrypoints.openai.api_server
+import vllm.entrypoints.cli.serve
+
+# Also monkey patch run_api_server_worker_proc for multi-api-server mode
+# This is needed because worker processes spawned by run_multi_api_server
+# re-import modules and would otherwise use the original run_server_worker
+vllm.entrypoints.openai.api_server.run_server_worker = custom_run_server_worker
+vllm.entrypoints.cli.serve.run_api_server_worker_proc = custom_run_api_server_worker_proc
 
 
 # Adapted from vllm/entrypoints/cli/serve.py
-# Only difference is that we call `custom_run_server` instead of `run_server` and we do config translation (i.e. pass populated namespace to `parse_args`)
+# Only difference we do some config translation (i.e. pass populated namespace
+# to `parse_args`) and additional arg validation
 def server(config: InferenceConfig, vllm_args: list[str]):
+    from vllm.entrypoints.openai.api_server import run_server
+    from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server
+
     parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")
     parser = make_arg_parser(parser)
     args = parser.parse_args(args=vllm_args, namespace=config.to_vllm())
@@ -176,4 +192,4 @@ def server(config: InferenceConfig, vllm_args: list[str]):
             run_multi_api_server(args)
         else:
             # Single API server (this process).
-            uvloop.run(custom_run_server(args))
+            uvloop.run(run_server(args))
