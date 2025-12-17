@@ -93,9 +93,22 @@ def train(config: SFTTrainerConfig):
         substitute_hf_flash_attn(parallel_dims.world_mesh["cp"].get_group(), heads_k_stride=1)
         substitute_prime_rl_flash_attn(parallel_dims.world_mesh["cp"].get_group(), heads_k_stride=1)
 
+    # Set up checkpoint manager
+    logger.info(f"Initializing checkpoint managers ({config.ckpt})")
+    ckpt_manager, weight_ckpt_manager = setup_ckpt_managers(
+        config.output_dir, config.ckpt, config.model.experimental.lora
+    )
+
+    checkpoint_step = None
+    if config.ckpt and config.ckpt.resume_step is not None and ckpt_manager is not None:
+        if config.ckpt.resume_step == -1:
+            checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+        else:
+            checkpoint_step = config.ckpt.resume_step
+
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
-    loading_from_ckpt_later = config.ckpt and config.ckpt.resume_step and config.ckpt.resume_step > 0
+    loading_from_ckpt_later = config.ckpt and checkpoint_step is not None
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
@@ -115,12 +128,6 @@ def train(config: SFTTrainerConfig):
     logger.info(f"Setting up {config.scheduler.type} scheduler with {scheduler_steps} steps ({config.scheduler})")
     scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
 
-    # Set up checkpoint manager
-    logger.info(f"Initializing checkpoint managers ({config.ckpt})")
-    ckpt_manager, weight_ckpt_manager = setup_ckpt_managers(
-        config.output_dir, config.ckpt, config.model.experimental.lora
-    )
-
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
     dataset = setup_dataset(tokenizer, config.data, config.model.cp * config.model.tp)
@@ -129,13 +136,6 @@ def train(config: SFTTrainerConfig):
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
-
-    checkpoint_step = None
-    if config.ckpt and config.ckpt.resume_step is not None and ckpt_manager is not None:
-        if config.ckpt.resume_step == -1:
-            checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
-        else:
-            checkpoint_step = config.ckpt.resume_step
 
     if checkpoint_step is not None:
         ckpt_manager.load(
