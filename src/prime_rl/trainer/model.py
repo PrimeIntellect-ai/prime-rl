@@ -351,22 +351,22 @@ def setup_model(
 
     setup_fsdp(model, config, parallel_dims)
 
-    # 2. If we're loading from checkpoint and we can load to meta device, we initialize an empty model on device and load from checkpoint later in the caller function
-    if loading_from_checkpoint_later and possible_to_load_to_meta:
-        logger.warning(
-            "Skipping loading weights. Initializing an empty model on device, loading from checkpoint later."
-        )
-        model.to_empty(device="cuda")
-        torch.distributed.barrier()
-        if isinstance(model, PreTrainedModelPrimeRL):
-            model.init_buffers_post_meta()
+    # 2. if we can load to meta, we either:
+    if possible_to_load_to_meta:
+        # - load from checkpoint later if needed
+        if loading_from_checkpoint_later:
+            logger.warning(
+                "Skipping loading weights. Initializing an empty model on device, loading from checkpoint later."
+            )
+            model.to_empty(device="cuda")
+            torch.distributed.barrier()
+            if isinstance(model, PreTrainedModelPrimeRL):
+                model.init_buffers_post_meta()
+            else:
+                fix_model_post_empty(model)
+        # - or load from HF with dcp
         else:
-            fix_model_post_empty(model)
-    # 3. We fallback to loading the checkpoint from HF if either of the following is true:
-    # - we cannot load to meta device (we cannot reinitialize some buffers)
-    # - we are not loading from checkpoint
-    else:
-        load_dcp_from_hf(model, config, parallel_dims)
+            load_dcp_from_hf(model, config, parallel_dims)
 
     logger.debug(f"Model signature: {get_module_signature(model, compress=True)}")
     return model
