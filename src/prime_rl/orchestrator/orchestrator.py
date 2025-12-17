@@ -340,7 +340,8 @@ async def orchestrate(config: OrchestratorConfig):
                 "reward": [rollout["reward"] for rollout in train_rollouts],
                 "is_truncated": [rollout["is_truncated"] for rollout in train_rollouts],
                 "error": [
-                    rollout["error"].__name__ if rollout["error"] is not None else None for rollout in train_rollouts
+                    type(rollout["error"]).__name__ if rollout["error"] is not None else None
+                    for rollout in train_rollouts
                 ],
                 "completion_len": [get_completion_len(rollout) for rollout in train_rollouts],
                 "prompt_len": [get_prompt_len(rollout) for rollout in train_rollouts],
