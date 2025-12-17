@@ -263,6 +263,12 @@ class ModelConfig(BaseConfig):
                 raise ValueError("Trust remote code is only supported with the HF implementation.")
         return self
 
+    @model_validator(mode="after")
+    def cp_only_with_flash_attn(self):
+        if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3"]:
+            raise ValueError("CP is only supported with flash attention 2 or flash attention 3")
+        return self
+
 
 class TokenizerConfig(BaseConfig):
     """Configuration for the tokenizer."""

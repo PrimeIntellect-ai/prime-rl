@@ -93,16 +93,6 @@ class CheckpointManager:
         """Get the path to write the trainer checkpoint for a given step."""
         return get_step_path(self.ckpt_dir, step) / "trainer"
 
-    def get_latest_step(self) -> int:
-        """Get the latest checkpoint step from the checkpoint directory."""
-        step_dirs = list(self.ckpt_dir.glob("step_*"))
-        if len(step_dirs) == 0:
-            raise ValueError(f"No checkpoints found in {self.ckpt_dir}")
-        steps = sorted([int(step_dir.name.split("_")[-1]) for step_dir in step_dirs])
-        latest_step = steps[-1]
-        self.logger.info(f"Found latest checkpoint in {self.ckpt_dir}: {latest_step}")
-        return latest_step
-
     def save_to_path(
         self,
         path: Path,
@@ -174,9 +164,6 @@ class CheckpointManager:
         dataloader: StatefulDataLoader | None = None,
     ) -> None:
         """Load the trainer checkpoint for a given step (in-place)."""
-        if step == -1:
-            step = self.get_latest_step()
-
         ckpt_path = self.get_ckpt_path(step)
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")

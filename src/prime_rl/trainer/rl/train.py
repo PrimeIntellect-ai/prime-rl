@@ -5,16 +5,22 @@ from datetime import timedelta
 # Import environment before any other imports
 # ruff: noqa: I001
 
+from prime_rl.trainer.models.layers.attn import substitute_prime_rl_flash_attn
 from prime_rl.trainer.rl.broadcast import setup_weight_broadcast
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 import torch.distributed as dist
+import torch.distributed.nn as dist_nn
 from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
 from prime_rl.trainer.ckpt import setup_ckpt_managers
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
+from prime_rl.utils.cp import (
+    get_padding_logit_from_prev_cp_rank,
+    setup_cp_params,
+)
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
     shift_logits,
@@ -44,7 +50,8 @@ from prime_rl.trainer.runs import setup_runs, Progress, get_runs
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
-from prime_rl.utils.utils import clean_exit, to_col_format
+from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step, to_col_format
+from ring_flash_attn import substitute_hf_flash_attn
 
 
 @clean_exit
@@ -84,10 +91,6 @@ def train(config: RLTrainerConfig):
 
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
-    if config.model.cp > 1:
-        raise ValueError(
-            "CP is not supported for RL. No reason it shouldn't, we just didn't test it. If you need it, please open an issue."
-        )
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
@@ -113,6 +116,10 @@ def train(config: RLTrainerConfig):
         config.output_dir, config.weight_broadcast, config.model.experimental.lora
     )
 
+    if parallel_dims.cp_enabled:
+        substitute_hf_flash_attn(parallel_dims.world_mesh["cp"].get_group(), heads_k_stride=1)
+        substitute_prime_rl_flash_attn(parallel_dims.world_mesh["cp"].get_group(), heads_k_stride=1)
+
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint managers ({config.ckpt})")
     ckpt_manager, weight_ckpt_manager = setup_ckpt_managers(
@@ -121,9 +128,16 @@ def train(config: RLTrainerConfig):
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
-    if config.ckpt and ckpt_manager is not None and config.ckpt.resume_step:
-        logger.info(f"Resuming training from checkpoint step {config.ckpt.resume_step}")
-        ckpt_manager.load(config.ckpt.resume_step, model, [optimizer], scheduler, progress)
+    checkpoint_step = None
+    if config.ckpt and config.ckpt.resume_step is not None and ckpt_manager is not None:
+        if config.ckpt.resume_step == -1:
+            checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+        else:
+            checkpoint_step = config.ckpt.resume_step
+    if checkpoint_step is not None:
+        ckpt_manager.load(checkpoint_step, model, [optimizer], scheduler, progress)
+        logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
+
     logger.info(
         f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
     )
@@ -131,13 +145,14 @@ def train(config: RLTrainerConfig):
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
     if config.data.fake:
-        dataloader = FakeDataLoader(config.data.fake, config.model.seq_len)
+        dataloader = FakeDataLoader(config.data.fake, config.model.seq_len, parallel_dims.world_mesh["dp"].size())
     else:
         dataloader = DataLoader(
             config.output_dir,
             progress.step,
             parallel_dims.world_mesh["dp"].size(),
             config.model.seq_len,
+            config.model.cp,
             tokenizer,
             config.rollout_transport,
         )
@@ -237,21 +252,41 @@ def train(config: RLTrainerConfig):
 
         logger.info(f"Starting forward and backward pass ({batch_size=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
+        cp_enabled = parallel_dims.cp_enabled
+        cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
+        cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
+        cp_size = parallel_dims.cp
+
         for micro_step, micro_batch in enumerate(micro_batches):
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
             inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
+
+            if cp_enabled:
+                input_ids, forward_position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
+            else:
+                forward_position_ids = position_ids
+
             temperature = micro_batch["temperature"]
 
             # Forward pass
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                logits = forward(model, input_ids, position_ids).float().contiguous()
+                logits = forward(model, input_ids, forward_position_ids).float().contiguous()
 
-            shifted_logits = shift_logits(logits)
+            if cp_enabled:
+                left_pad_logit = get_padding_logit_from_prev_cp_rank(logits, cp_rank, cp_size, cp_group)
+            else:
+                left_pad_logit = None
+
+            shifted_logits = shift_logits(logits, left_pad_logit=left_pad_logit)
             shifted_logits = shifted_logits / temperature
             trainer_logprobs = selective_log_softmax(shifted_logits, input_ids)
+
+            if cp_enabled:
+                trainer_logprobs = dist_nn.all_gather(trainer_logprobs, group=cp_group)
+                trainer_logprobs = torch.cat(trainer_logprobs, dim=1)
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
@@ -266,6 +301,11 @@ def train(config: RLTrainerConfig):
 
             # Compute entropy
             entropy = compute_entropy(shifted_logits)
+
+            if cp_enabled:
+                entropies = [torch.zeros_like(entropy) for _ in range(cp_size)]
+                dist.all_gather(entropies, entropy, group=cp_group)
+                entropy = torch.cat(entropies, dim=1)
 
             # Delete logits and shifted_logits before backward pass to avoid memory spike
             del logits, shifted_logits
@@ -325,7 +365,7 @@ def train(config: RLTrainerConfig):
 
         # Compute step metrics
         num_local_tokens = seq_len * batch_size
-        num_tokens = world.world_size * num_local_tokens
+        num_tokens = parallel_dims.world_mesh["dp"].size() * num_local_tokens
         progress.total_tokens += num_tokens
         progress.total_samples += batch_size
         perf_counter = get_perf_counter(model, seq_len)
