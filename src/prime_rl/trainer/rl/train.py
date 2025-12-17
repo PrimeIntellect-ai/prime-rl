@@ -95,7 +95,7 @@ def train(config: RLTrainerConfig):
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint managers ({config.ckpt})")
     ckpt_manager, weight_ckpt_manager = setup_ckpt_managers(
-        config.output_dir, config.ckpt, config.model.experimental.lora
+        config.output_dir, config.ckpt, config.model.lora
     )
 
     # get the checkpoint step to load from
