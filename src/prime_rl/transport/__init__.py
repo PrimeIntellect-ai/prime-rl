@@ -9,11 +9,14 @@ from prime_rl.transport.filesystem import (
     FileSystemTrainingBatchSender,
 )
 from prime_rl.transport.types import MicroBatch, TrainingBatch, TrainingSample
+from prime_rl.transport.zmq import ZMQTrainingBatchReceiver, ZMQTrainingBatchSender
 
 
 def setup_training_batch_sender(output_dir: Path, transport: TransportConfigType) -> TrainingBatchSender:
     if transport.type == "filesystem":
         return FileSystemTrainingBatchSender(output_dir)
+    elif transport.type == "zmq":
+        return ZMQTrainingBatchSender(output_dir, transport)
     else:
         raise ValueError(f"Invalid transport type: {transport.type}")
 
@@ -21,6 +24,8 @@ def setup_training_batch_sender(output_dir: Path, transport: TransportConfigType
 def setup_training_batch_receiver(transport: TransportConfigType) -> TrainingBatchReceiver:
     if transport.type == "filesystem":
         return FileSystemTrainingBatchReceiver()
+    elif transport.type == "zmq":
+        return ZMQTrainingBatchReceiver(transport)
     else:
         raise ValueError(f"Invalid transport type: {transport.type}")
 
@@ -28,7 +33,7 @@ def setup_training_batch_receiver(transport: TransportConfigType) -> TrainingBat
 def setup_micro_batch_sender(
     output_dir: Path, data_world_size: int, current_step: int, transport: TransportConfigType
 ) -> MicroBatchSender:
-    if transport.type == "filesystem":
+    if transport.type == "filesystem" or transport.type == "zmq":
         return FileSystemMicroBatchSender(output_dir, data_world_size, current_step)
     else:
         raise ValueError(f"Invalid transport type: {transport.type}")
@@ -37,7 +42,7 @@ def setup_micro_batch_sender(
 def setup_micro_batch_receiver(
     output_dir: Path, data_rank: int, current_step: int, transport: TransportConfigType
 ) -> MicroBatchReceiver:
-    if transport.type == "filesystem":
+    if transport.type == "filesystem" or transport.type == "zmq":
         return FileSystemMicroBatchReceiver(output_dir, data_rank, current_step)
     else:
         raise ValueError(f"Invalid transport type: {transport.type}")

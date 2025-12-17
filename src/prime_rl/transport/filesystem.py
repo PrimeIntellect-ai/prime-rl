@@ -15,7 +15,8 @@ class FileSystemTrainingBatchSender(TrainingBatchSender):
     """Filesystem-based training batch sender that writes batches to disk."""
 
     def __init__(self, output_dir: Path):
-        super().__init__(output_dir)
+        super().__init__()
+        self.output_dir = output_dir
         self.rollout_dir = get_rollout_dir(output_dir)
 
     def send(self, batch: TrainingBatch) -> None:

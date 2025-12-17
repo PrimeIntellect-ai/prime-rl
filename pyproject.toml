@@ -42,6 +42,7 @@ dependencies = [
     "ring-flash-attn>=0.1.8",
     "prime>=0.5.0",
     "tenacity>=8.2.0",
+    "pyzmq>=27.1.0",
 ]
 
 [project.scripts]
