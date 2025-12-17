@@ -81,13 +81,20 @@ class LogConfig(BaseConfig):
     ] = False
 
 
-class WandbExtrasConfig(BaseConfig):
-    """Configures extra logging for W&B tables."""
+class LogExtrasConfig(BaseConfig):
+    """Configures extra logging for monitoring platforms."""
 
     samples: Annotated[
         bool,
         Field(
-            description="Whether to log prompt/response samples to W&B tables.",
+            description="Whether to log prompt/response samples.",
+        ),
+    ] = True
+
+    distributions: Annotated[
+        bool,
+        Field(
+            description="Whether to log distributions (like rewards, advantages, etc.).",
         ),
     ] = True
 
@@ -95,7 +102,7 @@ class WandbExtrasConfig(BaseConfig):
         int,
         Field(
             ge=1,
-            description="Step interval at which to log extras to W&B table.",
+            description="Step interval at which to log extras.",
         ),
     ] = 10
 
@@ -127,4 +134,40 @@ class WandbConfig(BaseConfig):
 class WandbWithExtrasConfig(WandbConfig):
     """Configures logging to Weights and Biases with extras."""
 
-    log_extras: WandbExtrasConfig | None = WandbExtrasConfig()
+    log_extras: Annotated[
+        LogExtrasConfig | None,
+        Field(
+            description="Configuration for logging extras. If None, no extras are logged.",
+        ),
+    ] = LogExtrasConfig()
+
+
+class PrimeMonitorConfig(BaseConfig):
+    """Configures logging to Prime Intellect API."""
+
+    base_url: Annotated[
+        str,
+        Field(
+            description="The base URL for Prime Intellect monitoring API.",
+        ),
+    ] = "https://api.primeintellect.ai/api/internal/rft"
+
+    api_key_var: Annotated[
+        str,
+        Field(
+            description="Name of environment variable containing the API key for Prime Intellect API. Will parse using `os.getenv(config.api_key_var)`.",
+        ),
+    ] = "PRIME_API_KEY"
+
+    log_extras: Annotated[
+        LogExtrasConfig | None,
+        Field(
+            description="Configuration for logging extras. If None, no extras are logged.",
+        ),
+    ] = LogExtrasConfig()
+
+
+class HeartbeatConfig(BaseConfig):
+    """Configures the heartbeat for BetterStack."""
+
+    url: Annotated[str, Field(description="The URL to send the heartbeat to.")]

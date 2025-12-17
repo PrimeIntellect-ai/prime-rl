@@ -3,9 +3,15 @@ from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
 
-from prime_rl.trainer.config import HeartbeatConfig
 from prime_rl.transport.config import FileSystemTransportConfig, TransportConfigType
-from prime_rl.utils.config import ClientConfig, LogConfig, ModelConfig, WandbWithExtrasConfig
+from prime_rl.utils.config import (
+    ClientConfig,
+    HeartbeatConfig,
+    LogConfig,
+    ModelConfig,
+    PrimeMonitorConfig,
+    WandbWithExtrasConfig,
+)
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
@@ -497,6 +503,9 @@ class OrchestratorConfig(BaseSettings):
     # The wandb configuration
     wandb: WandbWithExtrasConfig | None = None
 
+    # The prime monitor configuration
+    prime_monitor: PrimeMonitorConfig | None = None
+
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
 
@@ -641,5 +650,7 @@ class OrchestratorConfig(BaseSettings):
             self.eval = None
             if self.wandb:
                 self.wandb.log_extras = None
+            if self.prime_monitor:
+                self.prime_monitor.log_extras = None
 
         return self
