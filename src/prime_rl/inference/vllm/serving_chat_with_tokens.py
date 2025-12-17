@@ -15,12 +15,13 @@ from vllm.entrypoints.utils import get_max_tokens
 from vllm.logger import init_logger
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import BeamSearchParams, SamplingParams
-from vllm.transformers_utils.tokenizer import MistralTokenizer
-from vllm.transformers_utils.tokenizers import (
+from vllm.tokenizers.mistral import (
+    MistralTokenizer,
     maybe_serialize_tool_calls,
     truncate_tool_call_ids,
     validate_request_params,
 )
+from vllm.v1.sample.logits_processor import validate_logits_processors_parameters
 
 logger = init_logger(__name__)
 
@@ -42,7 +43,6 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
         Copy of OpenAIServingChat.create_chat_completion, adapted to use prompt
         ids directly via ChatCompletionRequestWithTokens.
         """
-        logger.info("Generating with tokens: %s", request.tokens)
         error_check_ret = await self._check_model(request)
         if error_check_ret is not None:
             logger.error("Error with model %s", error_check_ret)
@@ -59,7 +59,7 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
 
             model_name = self.models.model_name(lora_request)
 
-            tokenizer = await self.engine_client.get_tokenizer(lora_request)
+            tokenizer = await self.engine_client.get_tokenizer()
 
             tool_parser = self.tool_parser
 
@@ -90,6 +90,13 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
 
             if not self.use_harmony:
                 # Common case.
+                error_check_ret = self._validate_chat_template(
+                    request_chat_template=request.chat_template,
+                    chat_template_kwargs=request.chat_template_kwargs,
+                    trust_request_chat_template=self.trust_request_chat_template,
+                )
+                if error_check_ret is not None:
+                    return error_check_ret
                 (
                     conversation,
                     request_prompts,
@@ -136,11 +143,17 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
         if raw_request:
             raw_request.state.request_metadata = request_metadata
 
+        # Extract data_parallel_rank from header (router can inject it)
+        data_parallel_rank = self._get_data_parallel_rank(raw_request)
+
         # Schedule the request and get the result generator.
         generators: list[AsyncGenerator[RequestOutput, None]] = []
         try:
             for i, engine_prompt in enumerate(engine_prompts):
-                sampling_params: Union[SamplingParams, BeamSearchParams]
+                prompt_text, _, _ = self._get_prompt_components(request_prompts[i])
+                # If we are creating sub requests for multiple prompts, ensure that they
+                # have unique request ids.
+                sub_request_id = request_id if len(engine_prompts) == 1 else f"{request_id}_{i}"
 
                 if self.default_sampling_params is None:
                     self.default_sampling_params = {}
@@ -152,32 +165,57 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
                     default_sampling_params=self.default_sampling_params,
                 )
 
+                sampling_params: SamplingParams | BeamSearchParams
                 if request.use_beam_search:
                     sampling_params = request.to_beam_search_params(max_tokens, self.default_sampling_params)
                 else:
                     sampling_params = request.to_sampling_params(
-                        max_tokens, self.model_config.logits_processor_pattern, self.default_sampling_params
+                        max_tokens,
+                        self.model_config.logits_processor_pattern,
+                        self.default_sampling_params,
+                    )
+                    validate_logits_processors_parameters(
+                        self.logits_processors,
+                        sampling_params,
                     )
 
-                self._log_inputs(request_id, request_prompts[i], params=sampling_params, lora_request=lora_request)
+                self._log_inputs(
+                    sub_request_id,
+                    request_prompts[i],
+                    params=sampling_params,
+                    lora_request=lora_request,
+                )
 
                 trace_headers = None if raw_request is None else await self._get_trace_headers(raw_request.headers)
 
                 if isinstance(sampling_params, BeamSearchParams):
-                    generator = self.engine_client.beam_search(
+                    generator = self.beam_search(
                         prompt=engine_prompt,
-                        request_id=request_id,
+                        request_id=sub_request_id,
                         params=sampling_params,
                         lora_request=lora_request,
+                        trace_headers=trace_headers,
                     )
                 else:
-                    generator = self.engine_client.generate(
+                    engine_request, tokenization_kwargs = await self._process_inputs(
+                        sub_request_id,
                         engine_prompt,
                         sampling_params,
-                        request_id,
                         lora_request=lora_request,
                         trace_headers=trace_headers,
                         priority=request.priority,
+                    )
+
+                    generator = self.engine_client.generate(
+                        engine_request,
+                        sampling_params,
+                        sub_request_id,
+                        lora_request=lora_request,
+                        trace_headers=trace_headers,
+                        priority=request.priority,
+                        prompt_text=prompt_text,
+                        tokenization_kwargs=tokenization_kwargs,
+                        data_parallel_rank=data_parallel_rank,
                     )
 
                 generators.append(generator)
@@ -198,12 +236,17 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
                 conversation,
                 tokenizer,
                 request_metadata,
-                enable_force_include_usage=self.enable_force_include_usage,
             )
 
         try:
             return await self.chat_completion_full_generator(
-                request, result_generator, request_id, model_name, conversation, tokenizer, request_metadata
+                request,
+                result_generator,
+                request_id,
+                model_name,
+                conversation,
+                tokenizer,
+                request_metadata,
             )
         except ValueError as e:
             # TODO: Use a vllm-specific Validation Error
