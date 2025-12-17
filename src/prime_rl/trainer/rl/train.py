@@ -95,7 +95,7 @@ def train(config: RLTrainerConfig):
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint managers ({config.ckpt})")
     ckpt_manager, weight_ckpt_manager = setup_ckpt_managers(
-        config.output_dir, config.ckpt, config.model.experimental.lora
+        config.output_dir, config.ckpt, config.model.lora
     )
 
     # get the checkpoint step to load from
@@ -127,7 +127,7 @@ def train(config: RLTrainerConfig):
     # Set up weight broadcast
     logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
     weight_broadcast = setup_weight_broadcast(
-        config.output_dir, config.weight_broadcast, config.model.experimental.lora
+        config.output_dir, config.weight_broadcast, config.model.lora
     )
 
     if parallel_dims.cp_enabled:
