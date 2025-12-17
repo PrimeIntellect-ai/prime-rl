@@ -55,7 +55,7 @@ from prime_rl.utils.utils import (
     resolve_latest_ckpt_step,
     to_col_format,
 )
-from prime_rl.utils.vf import generate_batch, get_completion_len, get_is_truncated, get_prompt_len, get_seq_len
+from prime_rl.utils.vf import generate_batch, get_completion_len, get_prompt_len, get_seq_len
 
 
 @clean_exit
@@ -338,11 +338,13 @@ async def orchestrate(config: OrchestratorConfig):
                 "example_id": [rollout["example_id"] for rollout in train_rollouts],
                 "task": [rollout["task"] for rollout in train_rollouts],
                 "reward": [rollout["reward"] for rollout in train_rollouts],
-                "is_truncated": [get_is_truncated(rollout) for rollout in train_rollouts],
+                "is_truncated": [rollout["is_truncated"] for rollout in train_rollouts],
+                "error": [
+                    rollout["error"].__name__ if rollout["error"] is not None else None for rollout in train_rollouts
+                ],
                 "completion_len": [get_completion_len(rollout) for rollout in train_rollouts],
                 "prompt_len": [get_prompt_len(rollout) for rollout in train_rollouts],
                 "seq_len": [get_seq_len(rollout) for rollout in train_rollouts],
-                "has_error": [rollout["error"] is not None for rollout in train_rollouts],
             }
         )
 
@@ -413,7 +415,12 @@ async def orchestrate(config: OrchestratorConfig):
             "batch/solve_none": solve_none,
             "batch/solve_all": solve_all,
             "batch/effective_batch_size": effective_batch_size,
-            "batch/has_error": results_df.has_error.mean(),
+            # Error metrics
+            "error/mean": (~results_df.error.isna()).mean(),
+            **{
+                f"error/{error}": error_rate
+                for error, error_rate in results_df.dropna().error.value_counts(normalize=True).items()
+            },
             # Env metrics
             **{f"metrics/{metric}": metrics_df[metric].mean() for metric in metrics_df.columns},
             # Time metrics
