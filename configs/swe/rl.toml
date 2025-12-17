@@ -1,10 +1,12 @@
-
+inference_gpu_ids = [0,1,2,3,4,5]
+trainer_gpu_ids = [6,7]
 max_steps = 200 
 
 [ckpt] # Checkpoint at the end of training
 
 [model]
 # name = "Qwen/Qwen3-4B-Instruct-2507"
+# name = "arcee-ai/Trinity-Mini"
 name = "Qwen/Qwen3-14B"
 
 [wandb]
@@ -17,12 +19,22 @@ impl = "liger_kernel"
 [trainer.model.ac]
 freq = 1
 
-[trainer.model.experimental.lora]
-rank = 32
-alpha = 64
-
 [trainer.optim]
 lr = 1e-5
+
+[trainer.model.lora]
+rank = 8
+alpha = 32
+dropout = 0.0
+target_modules = [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj"
+]
 
 [orchestrator]
 #batch_size = 64
@@ -30,8 +42,10 @@ lr = 1e-5
 batch_size = 8
 rollouts_per_example = 2
 seq_len = 32768
+# seq_len = 131072
 
 [orchestrator.sampling]
+# max_tokens = 32768
 max_tokens = 32768
 
 [[orchestrator.env]]
@@ -45,6 +59,7 @@ vf_level = "debug"
 
 [inference.model]
 enable_auto_tool_choice = true
+reasoning_parser = "deepseek_r1"
 tool_call_parser = "hermes"
 rope_scaling = { rope_type = "yarn", factor = 4.0, original_max_position_embeddings = 32768 }
 max_model_len = 131072
