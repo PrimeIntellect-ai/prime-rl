@@ -441,18 +441,18 @@ class RLConfig(BaseSettings):
 
     @model_validator(mode="after")
     def auto_setup_lora(self):
-        if self.trainer.model.experimental.lora is not None:
+        if self.trainer.model.lora is not None:
             if self.trainer.weight_broadcast.type == "nccl":
                 raise ValueError("NCCL weight broadcast does not support LoRA yet.")
             self.trainer.weight_broadcast.adapter_only = True
             if self.orchestrator.lora_name is None:
                 lora_name = (
-                    f"r{self.trainer.model.experimental.lora.rank}-a{self.trainer.model.experimental.lora.alpha}"
+                    f"r{self.trainer.model.lora.rank}-a{self.trainer.model.lora.alpha}"
                 )
                 self.orchestrator.lora_name = lora_name
             if self.inference is not None:
                 self.inference.enable_lora = True
-                self.inference.max_lora_rank = self.trainer.model.experimental.lora.rank
+                self.inference.max_lora_rank = self.trainer.model.lora.rank
             else:
                 warnings.warn(
                     "LoRA is enabled, but inference is not configured. When manually starting the inference server, make sure to set `--enable_lora` and `--max-lora-rank`."
