@@ -308,9 +308,10 @@ async def orchestrate(config: OrchestratorConfig):
         train_examples: list[TrainingSample] = []
         for train_rollout, advantage in zip(train_rollouts, advantages):
             train_example = make_train_example(train_rollout)
-            for te in train_example:
-                te.advantage = advantage
-            train_examples.extend(train_example)
+            if train_example is not None:
+                for te in train_example:
+                    te.advantage = advantage
+                train_examples.extend(train_example)
         logger.debug(
             f"Converted {len(train_rollouts)} training rollouts to {len(train_examples)} training examples using {config.trajectory_strategy} strategy"
         )
