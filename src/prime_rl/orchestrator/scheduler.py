@@ -196,10 +196,6 @@ class Scheduler:
 
                 await self.schedule_group_rollout(client)
 
-            self.logger.debug(
-                f"Got {len(batch_rollouts)} rollout(s) in batch. Need {self.config.batch_size - len(batch_rollouts)} more."
-            )
-
         return batch_rollouts
 
     @property
