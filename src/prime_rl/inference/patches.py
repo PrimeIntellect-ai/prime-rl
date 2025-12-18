@@ -81,3 +81,60 @@ def monkey_patch_load_lora_adapter():
             return f"Success: LoRA adapter '{lora_name}' added successfully."
 
     OpenAIServingModels.load_lora_adapter = _patched_load_lora_adapter
+
+
+# Monkeypatch LRUCacheWorkerLoRAManager to allow loading adapter inplace without doing it every request
+def monkey_patch_LRUCacheWorkerLoRAManager():
+    from vllm.lora.worker_manager import LoRARequest, LRUCacheLoRAModelManager, LRUCacheWorkerLoRAManager
+
+    # The dunder is intended. It's a private method that we're patching.
+    def _patched__apply_adapters(self: LRUCacheWorkerLoRAManager, lora_requests: set[LoRARequest]) -> None:
+        loras_map = {lora_request.lora_int_id: lora_request for lora_request in lora_requests if lora_request}
+        if len(loras_map) > self._adapter_manager.lora_slots:
+            raise RuntimeError(
+                f"Number of requested LoRAs ({len(loras_map)}) is greater "
+                "than the number of GPU LoRA slots "
+                f"({self._adapter_manager.lora_slots})."
+            )
+        for lora in loras_map.values():
+            ## START PATCHED CODE
+            self.add_adapter(lora, force_load=False)
+            ## END PATCHED CODE
+
+    def _patched_add_adapter(
+        self: LRUCacheWorkerLoRAManager, lora_request: LoRARequest, force_load: bool = True
+    ) -> bool:
+        # Note that this method is not thread-safe. It may be invoked multiple
+        # times for the same adapter when using multiple API servers.
+        # This is ok because it's currently only called from
+        # the single-threaded core engine loop.
+
+        ## START PATCHED CODE
+        if lora_request.lora_int_id not in self.list_adapters() or force_load:
+            ## END PATCHED CODE
+            # Load the new adapter first to ensure it is actually valid, before
+            # evicting any existing adapters.
+            # This may cause the # of loaded lora adapters to very temporarily
+            # exceed `--max-cpu-loras`.
+            lora = self._load_adapter(lora_request)
+
+            # Loading succeeded, now check if we will exceed cache capacity and
+            # evict if the oldest adapter if so
+            if len(self._adapter_manager) + 1 > self._adapter_manager.capacity:
+                assert isinstance(self._adapter_manager, LRUCacheLoRAModelManager)
+                self._adapter_manager.remove_oldest_adapter()
+            # Then add the new adapter to the cache
+            # self._adapter_manager.remove_adapter(lora.id)
+            ## START PATCHED CODE
+            self._adapter_manager.remove_adapter(lora.id)
+            ## END PATCHED CODE
+            loaded = self._adapter_manager.add_adapter(lora)
+        else:
+            # If the lora is already loaded, just touch it to
+            # update its position in the caches
+            loaded = self._adapter_manager.get_adapter(lora_request.lora_int_id) is not None
+        self._adapter_manager.activate_adapter(lora_request.lora_int_id)
+        return loaded
+
+    LRUCacheWorkerLoRAManager._apply_adapters = _patched__apply_adapters
+    LRUCacheWorkerLoRAManager.add_adapter = _patched_add_adapter
