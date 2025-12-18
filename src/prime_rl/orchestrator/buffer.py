@@ -119,10 +119,16 @@ class Buffer:
         if any(saved_easy_examples) or any(saved_hard_examples) or any(saved_rollout_buffer):
             # Build hash lookup for example buffer (env -> (example_hash -> example_id))
             example_hash_lookup = defaultdict(dict)
+            all_hashes = set()
             for env in self.example_buffer:
                 for example_id, example in self.example_buffer[env].items():
                     example_hash = self.get_example_hash(example)
+                    if example_hash in all_hashes:
+                        self.logger.warning(
+                            f"Duplicate example hash found based on hash_keys={self.config.hash_keys}. Overwriting with latest example. This may cause unexpected behavior when resuming the buffer."
+                        )
                     example_hash_lookup[env][example_hash] = example_id
+                    all_hashes.add(example_hash)
 
             def move_saved_pool(saved_examples: list[dict], target_pool: list[dict]) -> int:
                 """Moves saved examples to the target pool from example buffer based on hash lookup."""
@@ -132,10 +138,11 @@ class Buffer:
                     for env in example_hash_lookup:
                         if example_hash in example_hash_lookup[env]:
                             example_id = example_hash_lookup[env][example_hash]
-                            example = self.example_buffer[env].pop(example_id)
-                            target_pool.append(example)
-                            num_moved += 1
-                            break
+                            example = self.example_buffer[env].pop(example_id, None)
+                            if example is not None:
+                                target_pool.append(example)
+                                num_moved += 1
+                                break
                 return num_moved
 
             if any(saved_easy_examples):
