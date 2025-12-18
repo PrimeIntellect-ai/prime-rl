@@ -77,7 +77,7 @@ class Scheduler:
 
     async def schedule_group_rollout(self, client: AsyncOpenAI | None = None):
         """Asynchronously schedules a group rollout request."""
-        problem = self.buffer.sample_problems(n=1)[0]
+        example = self.buffer.sample_examples(n=1)[0]
         if client is None:
             client = next(self.cycle_clients)
         group_rollout_request = asyncio.create_task(
@@ -85,7 +85,7 @@ class Scheduler:
                 client=client,
                 env=self.env,
                 model_name=self.model_name,
-                example=problem,
+                example=example,
                 rollouts_per_example=self.config.rollouts_per_example,
                 sampling_args=self.sampling_args,
             )

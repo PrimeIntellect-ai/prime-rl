@@ -44,7 +44,7 @@ class Buffer:
         assert "example_id" in self.dataset.column_names, "The dataset must contain a `example_id` column."
         assert "prompt" in self.dataset.column_names, "The dataset must contain a `prompt` column."
         assert "task" in self.dataset.column_names, "The dataset must contain a `task` column."
-        assert len(self.dataset) > 0, "The dataset must contain at least one problem."
+        assert len(self.dataset) > 0, "The dataset must contain at least one example."
         assert isinstance(self.dataset["example_id"][0], int), "The `example_id` column must be of type int."
         assert len(set(self.dataset["example_id"])) == len(self.dataset), "The `example_id` column must be unique."
         assert sorted(set(self.dataset["task"])) == self.env_names, (
@@ -68,7 +68,7 @@ class Buffer:
                 f"Sampling {dataset_type} buffer according to provided environment ratios: {', '.join(f'{k}={100 * v:.1f}%' for k, v in self.env_probs.items())}"
             )
         else:
-            # Count problems per environment for uniform sampling across problems
+            # Count examples per environment to sample according to natural env distribution
             env_counts = [len(self.example_buffer[env_name]) for env_name in self.env_names]
             env_ratio = mean_normalize(env_counts)
             self.env_probs = {env_name: ratio for env_name, ratio in zip(self.env_names, env_ratio)}
@@ -162,14 +162,13 @@ class Buffer:
         convert_pool_to_normal(self.easy_examples, self.config.easy_fraction)
         convert_pool_to_normal(self.hard_examples, self.config.hard_fraction)
 
-    def sample_problems(self, n: int) -> list[dict]:
-        """Samples n problems from the buffer, respecting env ratios."""
+    def sample_examples(self, n: int) -> list[dict]:
+        """Samples n examples from the buffer, respecting env ratios."""
 
         non_empty_envs = [env for env, examples in self.example_buffer.items() if examples]
 
         if not non_empty_envs:
-            self.logger.warning("No environments with problems. Returning no problems.")
-            return []
+            raise ValueError("No environments left with examples.")
 
         non_empty_env_probs = [self.env_probs[env] for env in non_empty_envs]
         sampled_examples = []
@@ -202,7 +201,7 @@ class Buffer:
                 target_pool = self.easy_examples if pool == "easy" else self.hard_examples
                 target_pool[example_id] = example
 
-            self.num_problems_per_pool[env_name][pool] += 1
+            self.num_examples_per_pool[env_name][pool] += 1
             if self.config.online_difficulty_filtering:
                 if avg_reward == 0.0:
                     self.num_rollouts_per_pool[env_name]["hard"] += len(example_rollouts)
@@ -224,7 +223,7 @@ class Buffer:
     def reset_step_metrics(self) -> None:
         """Reset per-step metrics (called after get_metrics)."""
         zero_per_pool = lambda: {p: 0 for p in self.POOLS}
-        self.num_problems_per_pool = {env: zero_per_pool() for env in self.env_names}
+        self.num_examples_per_pool = {env: zero_per_pool() for env in self.env_names}
         self.num_rollouts_per_pool = {env: zero_per_pool() for env in self.env_names}
 
     def get_metrics(self) -> dict[str, float]:
@@ -234,14 +233,14 @@ class Buffer:
 
         for env_name in self.env_names:
             env_suffix = f"/{env_name}"
-            problems = self.num_problems_per_pool[env_name]
+            examples = self.num_examples_per_pool[env_name]
             rollouts = self.num_rollouts_per_pool[env_name]
-            num_problems = sum(problems.values())
+            num_examples = sum(examples.values())
             num_rollouts = sum(rollouts.values())
 
             for pool in ["easy", "hard"]:
-                if num_problems > 0:
-                    metrics[f"buffer/evicted_problems/{pool}{env_suffix}"] = problems[pool] / num_problems
+                if num_examples > 0:
+                    metrics[f"buffer/evicted_examples/{pool}{env_suffix}"] = examples[pool] / num_examples
                 if num_rollouts > 0:
                     metrics[f"buffer/filtered_rollouts/{pool}{env_suffix}"] = rollouts[pool] / num_rollouts
 

@@ -247,13 +247,13 @@ async def orchestrate(config: OrchestratorConfig):
         # Schedule running evals at the specified interval
         if val_buffer and config.val and progress.step % config.val.interval == 0:
             logger.info(f"Running validation for step {progress.step}")
-            val_problems = val_buffer.sample_problems(config.val.num_examples)
+            val_examples = val_buffer.sample_examples(config.val.num_examples)
             val_task = asyncio.create_task(
                 generate_batch(
                     clients=clients,
                     env=env,
                     model_name=config.model.name,
-                    examples=val_problems,
+                    examples=val_examples,
                     rollouts_per_example=config.val.rollouts_per_example,
                     sampling_args=get_sampling_args(config.sampling),
                     pbar_description="Generating rollouts (val)",
