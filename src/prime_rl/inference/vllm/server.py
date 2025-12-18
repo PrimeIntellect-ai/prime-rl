@@ -15,7 +15,10 @@ from vllm.entrypoints.logger import RequestLogger
 from vllm.entrypoints.openai.protocol import ChatCompletionRequest, ChatCompletionResponse, ErrorResponse
 from vllm.entrypoints.utils import load_aware_call, with_cancellation
 
-from prime_rl.inference.patches import monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode
+from prime_rl.inference.patches import (
+    monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode,
+    monkey_patch_load_lora_adapter,
+)
 from prime_rl.inference.vllm.serving_chat_with_tokens import (
     ChatCompletionRequestWithTokens,
     OpenAIServingChatWithTokens,
@@ -23,6 +26,8 @@ from prime_rl.inference.vllm.serving_chat_with_tokens import (
 
 # NOTE: Monkeypatch PrometheusStatLogger to avoid NotImplementedError for LoRA in DP mode
 monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode()
+# NOTE: Monkeypatch LoadLoRAAdapter to allow loading the same adapter multiple times
+monkey_patch_load_lora_adapter()
 
 # ruff: noqa
 import vllm.entrypoints.openai.api_server
@@ -159,13 +164,6 @@ async def custom_init_app_state(engine_client: EngineClient, state: State, args:
         if "generate" in supported_tasks
         else None
     )
-
-    # NOTE: This hack allows us to update lora adapters in-place by skipping the
-    # check for already loaded adapters.
-    async def do_nothing(*args, **kwargs):
-        return None
-
-    state.openai_serving_models._check_load_lora_adapter_request = do_nothing
 
 
 def custom_run_api_server_worker_proc(listen_address, sock, args, client_config=None, **uvicorn_kwargs) -> None:
