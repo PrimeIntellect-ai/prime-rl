@@ -1,0 +1,48 @@
+max_steps = 10000
+# batch_size = 32
+batch_size = 2
+# rollouts_per_example = 8
+rollouts_per_example = 2
+seq_len = 8192
+# max_concurrent = 1024
+max_concurrent = 32
+oversampling_factor = 1.5
+strict_async_level = false
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+
+
+[[env]]
+id = "mini-swe-agent-plus"
+args = { max_turns = 25 }
+name = "mini-swe-agent-plus"
+
+
+[sampling]
+temperature = 1.0
+max_tokens = 8192
+
+# [val]
+# interval = 5
+# num_examples = 64
+# rollouts_per_example = 16
+
+[buffer]
+easy_threshold = 1.0
+online_difficulty_filtering = true
+
+[ckpt]
+interval = 50
+keep = 2
+
+[wandb]
+project = "intellect-4-swe"
+name = "int4-swe-orch"
+
+[wandb.log_extras]
+samples = true
+interval = 1
+
+[log]
+level = "debug"

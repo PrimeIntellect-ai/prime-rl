@@ -1,0 +1,6 @@
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+
+[parallel]
+tp = 8

@@ -1,0 +1,40 @@
+max_steps = 100000
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+impl = "custom"
+attn = "flash_attention_3"
+
+
+[model.ac_offloading]
+max_inflight_activations = 5
+
+[model.ac]
+freq = 1
+
+[model.compile]
+
+[optim]
+type = "muon"
+lr = 1e-6
+weight-decay = 0.01
+
+[loss]
+mask_ratio_high = 5
+mask_ratio_low = 0.5
+sequence_mask_ratio_low = 1e-5
+
+[ckpt.weights]
+save_format = "safetensors"
+save_sharded = true
+
+[ckpt]
+interval = 15
+keep = 5
+
+[wandb]
+project = "intellect-4-swe"
+name = "int4-swe-train"
+
+[log]
+level = "debug"
