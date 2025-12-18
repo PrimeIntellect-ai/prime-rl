@@ -132,10 +132,11 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup buffer
     env_names = [env.name or env.id for env in config.env]
-    buffer_config = config.buffer.model_copy(update={"env_ratios": config.buffer.env_ratios})
-    logger.info(f"Setting up buffer ({buffer_config})")
-    buffer = Buffer(dataset, buffer_config, env_names)
-    val_buffer = Buffer(val_dataset, BufferConfig(), env_names) if val_dataset else None
+    logger.info(f"Setting up buffer ({config.buffer})")
+    buffer = Buffer(dataset, config.buffer, env_names)
+    val_buffer = (
+        Buffer(val_dataset, BufferConfig(env_ratios=config.buffer.env_ratios), env_names) if val_dataset else None
+    )
 
     # Setup scheduler
     scheduler = Scheduler(
