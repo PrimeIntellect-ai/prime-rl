@@ -440,6 +440,12 @@ class BufferConfig(BaseConfig):
     ] = ["prompt"]
 
     @model_validator(mode="after")
+    def validate_thresholds(self):
+        if self.easy_threshold is not None and self.hard_threshold is not None:
+            assert self.easy_threshold > self.hard_threshold, "easy_threshold must be greater than hard_threshold."
+        return self
+
+    @model_validator(mode="after")
     def validate_env_ratios(self):
         if self.env_ratios is not None:
             assert all(ratio > 0 for ratio in self.env_ratios), "All env_ratios must be positive."
