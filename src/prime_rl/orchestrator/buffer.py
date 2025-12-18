@@ -46,9 +46,7 @@ class Buffer:
         assert len(self.dataset) > 0, "The dataset must contain at least one example."
         assert isinstance(self.dataset["example_id"][0], int), "The `example_id` column must be of type int."
         assert len(set(self.dataset["example_id"])) == len(self.dataset), "The `example_id` column must be unique."
-        assert sorted(set(self.dataset["task"])) == self.env_names, (
-            "The `task` column must contain all environment names."
-        )
+        assert set(self.dataset["task"]) == set(self.env_names), "The `task` column must contain all environment names."
 
         # Initialize example buffer (env_name -> (example_id -> example))
         self.example_buffer: dict[str, dict[int, dict]] = defaultdict(dict)
