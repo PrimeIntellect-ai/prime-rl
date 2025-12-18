@@ -127,16 +127,15 @@ async def orchestrate(config: OrchestratorConfig):
     if config.trajectory_strategy == "interleaved":
         logger.info("Using token prompts in environment to avoid retokenization discrepancies in multi-turn rollouts")
         env.set_interleaved_rollouts(True)
-    dataset = env.get_dataset(seed=config.seed)
-    val_dataset = env.get_eval_dataset(seed=config.seed) if config.val else None
 
     # Setup buffer
-    env_names = [env.name or env.id for env in config.env]
     logger.info(f"Setting up buffer ({config.buffer})")
-    buffer = Buffer(dataset, config.buffer, env_names)
-    val_buffer = (
-        Buffer(val_dataset, BufferConfig(env_ratios=config.buffer.env_ratios), env_names) if val_dataset else None
-    )
+    buffer = Buffer(env, config.buffer)
+    if config.val is not None:
+        val_buffer_config = BufferConfig(env_ratios=config.buffer.env_ratios)
+        val_buffer = Buffer(env, val_buffer_config, dataset_type="val")
+    else:
+        val_buffer = None
 
     # Setup scheduler
     scheduler = Scheduler(

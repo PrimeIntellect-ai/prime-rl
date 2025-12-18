@@ -259,6 +259,11 @@ def get_latest_ckpt_step(weights_dir: Path) -> int | None:
     return None
 
 
+def mean(values: list[float] | list[int]) -> float:
+    """Compute the mean of a list of values."""
+    return sum(values) / len(values) if values else 0
+
+
 def mean_normalize(values: list[float] | list[int]) -> list[float]:
     """Mean-Normalize a list of values to 0-1."""
     sum_values = sum(values)
