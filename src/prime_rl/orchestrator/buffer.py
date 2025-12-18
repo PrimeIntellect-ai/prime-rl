@@ -220,7 +220,7 @@ class Buffer:
             if pool != "normal" and example_id in self.example_buffer[env_name]:
                 example = self.example_buffer[env_name].pop(example_id)
                 target_pool = self.easy_examples if pool == "easy" else self.hard_examples
-                target_pool[example_id] = example
+                target_pool.append(example)
 
             self.num_examples_per_pool[env_name][pool] += 1
             if self.config.online_difficulty_filtering:
