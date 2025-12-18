@@ -95,9 +95,7 @@ def train(config: RLTrainerConfig):
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint managers ({config.ckpt})")
-    ckpt_manager, weight_ckpt_manager = setup_ckpt_managers(
-        config.output_dir, config.ckpt, config.model.lora
-    )
+    ckpt_manager, weight_ckpt_manager = setup_ckpt_managers(config.output_dir, config.ckpt, config.model.lora)
 
     # get the checkpoint step to load from
     checkpoint_step = None
@@ -133,9 +131,7 @@ def train(config: RLTrainerConfig):
 
     # Set up weight broadcast
     logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
-    weight_broadcast = setup_weight_broadcast(
-        config.output_dir, config.weight_broadcast, config.model.lora
-    )
+    weight_broadcast = setup_weight_broadcast(config.output_dir, config.weight_broadcast, config.model.lora)
 
     if parallel_dims.cp_enabled:
         substitute_hf_flash_attn(parallel_dims.world_mesh["cp"].get_group(), heads_k_stride=1)
@@ -282,7 +278,7 @@ def train(config: RLTrainerConfig):
 
             # Forward pass
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                if config.model.experimental.lora:
+                if config.model.lora:
                     lora_num_tokens = micro_batch["lora_num_tokens"].to("cuda")
                     lora_cu_offsets = lora_num_tokens.cumsum(dim=0, dtype=torch.int32)
                     set_offsets(lora_cu_offsets)
