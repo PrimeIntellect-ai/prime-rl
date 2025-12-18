@@ -12,6 +12,9 @@ name = "wordle"
 [model]
 name = "PrimeIntellect/Qwen3-1.7B-Wordle-SFT"
 
+[trainer.model]
+seq_len = 8192
+
 [orchestrator]
 seq_len = 8192
 batch_size = 1024
