@@ -175,21 +175,27 @@ class Buffer:
                 self.logger.debug(f"Loaded {len(valid_saved_rollouts)} rollout(s) from checkpoint.")
 
             # Load rollouts, filtering out removed environments and problems
-            def convert_examples_to_normal(examples: list[dict], fraction: float) -> None:
+            def convert_examples_to_normal(examples: list[dict], fraction: float) -> int:
                 """Moves a fraction of examples from the given pool back to normal."""
                 if fraction <= 0.0 or not examples:
-                    return
-                num_to_convert = round(len(examples) * fraction)
-                if num_to_convert <= 0:
-                    return
-                for example in random.sample(examples, num_to_convert):
+                    return 0
+                num_moved = round(len(examples) * fraction)
+                if num_moved <= 0:
+                    return 0
+                for _ in range(num_moved):
+                    example = random.choice(examples)
                     env_name = example["task"]
                     example_id = example["example_id"]
-                    if env_name in self.example_buffer and example_id in self.example_buffer[env_name]:
-                        self.example_buffer[env_name][example_id] = example
+                    examples.remove(example)
+                    self.example_buffer[env_name][example_id] = example
+                return num_moved
 
-            convert_examples_to_normal(self.easy_examples, self.config.easy_fraction)
-            convert_examples_to_normal(self.hard_examples, self.config.hard_fraction)
+            num_easy_examples = len(self.easy_examples)
+            num_moved = convert_examples_to_normal(self.easy_examples, self.config.easy_fraction)
+            self.logger.debug(f"Converted {num_moved}/{num_easy_examples} example(s) back to normal from easy pool.")
+            num_hard_examples = len(self.hard_examples)
+            num_moved = convert_examples_to_normal(self.hard_examples, self.config.hard_fraction)
+            self.logger.debug(f"Converted {num_moved}/{num_hard_examples} example(s) back to normal from hard pool.")
         else:
             self.logger.debug("No easy/ hard examples or rollouts found in checkpoint")
 
