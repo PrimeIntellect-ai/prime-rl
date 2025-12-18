@@ -238,16 +238,16 @@ class Buffer:
                 target_pool = self.easy_examples if pool == "easy" else self.hard_examples
                 target_pool.append(example)
 
-            self.num_examples_per_pool[env_name][pool] += 1
+            self.num_examples_per_step[env_name][pool] += 1
             if self.config.online_difficulty_filtering:
                 if avg_reward == 0.0:
-                    self.num_rollouts_per_pool[env_name]["hard"] += len(example_rollouts)
+                    self.num_rollouts_per_step[env_name]["hard"] += len(example_rollouts)
                     continue
                 elif avg_reward == 1.0:
-                    self.num_rollouts_per_pool[env_name]["easy"] += len(example_rollouts)
+                    self.num_rollouts_per_step[env_name]["easy"] += len(example_rollouts)
                     continue
 
-            self.num_rollouts_per_pool[env_name]["normal"] += len(example_rollouts)
+            self.num_rollouts_per_step[env_name]["normal"] += len(example_rollouts)
             self.rollout_buffer.extend(example_rollouts)
 
     def sample_rollouts(self, n: int) -> list[vf.State]:
@@ -260,25 +260,31 @@ class Buffer:
     def reset_step_metrics(self) -> None:
         """Reset per-step metrics (called after get_metrics)."""
         zero_per_pool = lambda: {p: 0 for p in self.POOLS}
-        self.num_examples_per_pool = {env: zero_per_pool() for env in self.env_names}
-        self.num_rollouts_per_pool = {env: zero_per_pool() for env in self.env_names}
+        # num examples per env per step per pool (env_name -> (pool -> num_examples))
+        self.num_examples_per_step = {env: zero_per_pool() for env in self.env_names}
+        # num rollouts per env per step per pool (env_name -> (pool -> num_rollouts))
+        self.num_rollouts_per_step = {env: zero_per_pool() for env in self.env_names}
 
     def get_metrics(self) -> dict[str, float]:
         """Returns the buffer metrics for the current step."""
 
         metrics = {}
 
-        for env in self.env_names:
-            examples = self.num_examples_per_pool[env]
-            rollouts = self.num_rollouts_per_pool[env]
-            num_examples = sum(examples.values())
-            num_rollouts = sum(rollouts.values())
+        # sum over envs (e.g. log globally)
+        num_examples_per_step_per_pool = {
+            pool: sum(self.num_examples_per_step[env][pool] for env in self.env_names) for pool in self.POOLS
+        }
+        num_rollouts_per_step_per_pool = {
+            pool: sum(self.num_rollouts_per_step[env][pool] for env in self.env_names) for pool in self.POOLS
+        }
+        num_examples_per_step = sum(num_examples_per_step_per_pool.values())
+        num_rollouts_per_step = sum(num_rollouts_per_step_per_pool.values())
 
-            for pool in ["easy", "hard"]:
-                if num_examples > 0:
-                    metrics[f"evicted_examples/{pool}/{env}"] = examples[pool] / num_examples
-                if num_rollouts > 0:
-                    metrics[f"filtered_rollouts/{pool}/{env}"] = rollouts[pool] / num_rollouts
+        for pool in ["easy", "hard"]:
+            if num_examples_per_step_per_pool[pool] > 0:
+                metrics[f"evicted_examples/{pool}"] = num_examples_per_step_per_pool[pool] / num_examples_per_step
+            if num_rollouts_per_step_per_pool[pool] > 0:
+                metrics[f"filtered_rollouts/{pool}"] = num_rollouts_per_step_per_pool[pool] / num_rollouts_per_step
 
         total_normal = sum(len(self.example_buffer[env]) for env in self.env_names)
         pool_counts = [len(self.easy_examples), total_normal, len(self.hard_examples)]
