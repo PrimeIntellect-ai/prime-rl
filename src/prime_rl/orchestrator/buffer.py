@@ -281,9 +281,9 @@ class Buffer:
         num_rollouts_per_step = sum(num_rollouts_per_step_per_pool.values())
 
         for pool in ["easy", "hard"]:
-            if num_examples_per_step_per_pool[pool] > 0:
+            if num_examples_per_step:
                 metrics[f"evicted_examples/{pool}"] = num_examples_per_step_per_pool[pool] / num_examples_per_step
-            if num_rollouts_per_step_per_pool[pool] > 0:
+            if num_rollouts_per_step:
                 metrics[f"filtered_rollouts/{pool}"] = num_rollouts_per_step_per_pool[pool] / num_rollouts_per_step
 
         total_normal = sum(len(self.example_buffer[env]) for env in self.env_names)
