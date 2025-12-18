@@ -135,6 +135,7 @@ class Buffer:
                             example = self.example_buffer[env].pop(example_id)
                             target_pool.append(example)
                             num_moved += 1
+                            break
                 return num_moved
 
             if any(saved_easy_examples):
