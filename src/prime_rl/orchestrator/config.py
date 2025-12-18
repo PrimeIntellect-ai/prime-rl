@@ -431,6 +431,14 @@ class BufferConfig(BaseConfig):
         ),
     ] = False
 
+    hash_keys: Annotated[
+        list[str],
+        Field(
+            min_length=1,
+            description="Keys to use for computing example hashes. Will be used to match examples from buffer checkpoints and determine buffer resume behavior.",
+        ),
+    ] = ["prompt"]
+
     @model_validator(mode="after")
     def validate_env_ratios(self):
         if self.env_ratios is not None:

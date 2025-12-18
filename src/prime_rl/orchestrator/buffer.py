@@ -84,10 +84,9 @@ class Buffer:
 
         self.reset_step_metrics()
 
-    @staticmethod
-    def get_example_hash(example: dict, hash_keys: list[str] = ["task", "prompt"]) -> str:
+    def get_example_hash(self, example: dict) -> str:
         """Returns a hash of the example based on hash keys."""
-        hash_keys = [key for key in hash_keys if key in example]
+        hash_keys = [key for key in self.config.hash_keys if key in example]
         assert hash_keys, "No hashable keys found in example."
         return hashlib.sha256(json.dumps([example[key] for key in hash_keys]).encode()).hexdigest()
 
@@ -124,14 +123,14 @@ class Buffer:
             example_hash_lookup = defaultdict(dict)
             for env in self.example_buffer:
                 for example_id, example in self.example_buffer[env].items():
-                    example_hash = Buffer.get_example_hash(example)
+                    example_hash = self.get_example_hash(example)
                     example_hash_lookup[env][example_hash] = example_id
 
             def move_saved_pool(saved_examples: list[dict], target_pool: list[dict]) -> int:
                 """Moves saved examples to the target pool from example buffer based on hash lookup."""
                 num_moved = 0
                 for example in saved_examples:
-                    example_hash = Buffer.get_example_hash(example)
+                    example_hash = self.get_example_hash(example)
                     for env in example_hash_lookup:
                         if example_hash in example_hash_lookup[env]:
                             example_id = example_hash_lookup[env][example_hash]

@@ -137,7 +137,7 @@ def test_buffer_save_load_with_conversion(dummy_env_group, make_rollouts, tmp_pa
     buffer.update(make_rollouts(dataset.select(range(5)), rewards=[1.0, 1.0, 0.5, 0.5, 0.0]))
     buffer.save(tmp_path / "buffer")
 
-    new_buffer = Buffer(dummy_env_group, BufferConfig(easy_fraction=0.5))
+    new_buffer = Buffer(dummy_env_group, BufferConfig(easy_fraction=0.5, hash_keys=["prompt", "task"]))
     new_buffer.load(tmp_path / "buffer")
 
     # 1 of 2 easy problems converted to normal
