@@ -117,6 +117,9 @@ def monkey_patch_LRUCacheWorkerLoRAManager():
             # This may cause the # of loaded lora adapters to very temporarily
             # exceed `--max-cpu-loras`.
             lora = self._load_adapter(lora_request)
+            ## START PATCHED CODE
+            self._adapter_manager.remove_adapter(lora.id)
+            ## END PATCHED CODE
 
             # Loading succeeded, now check if we will exceed cache capacity and
             # evict if the oldest adapter if so
@@ -124,10 +127,6 @@ def monkey_patch_LRUCacheWorkerLoRAManager():
                 assert isinstance(self._adapter_manager, LRUCacheLoRAModelManager)
                 self._adapter_manager.remove_oldest_adapter()
             # Then add the new adapter to the cache
-            # self._adapter_manager.remove_adapter(lora.id)
-            ## START PATCHED CODE
-            self._adapter_manager.remove_adapter(lora.id)
-            ## END PATCHED CODE
             loaded = self._adapter_manager.add_adapter(lora)
         else:
             # If the lora is already loaded, just touch it to
