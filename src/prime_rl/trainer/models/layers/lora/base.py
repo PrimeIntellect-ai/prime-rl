@@ -1,6 +1,10 @@
-from typing import Any
+from abc import abstractmethod
+from typing import TYPE_CHECKING, Any
 
 from torch import nn
+
+if TYPE_CHECKING:
+    from prime_rl.trainer.runs import Runs
 
 _LORA_PREFIX = "base_layer."
 
@@ -28,6 +32,34 @@ class LoRAModule(nn.Module):
         # load_state_dict pre-hook to allow loading back into
         # checkpoint-wrapped module.
         self.register_load_state_dict_pre_hook(self._pre_load_state_dict_hook)
+
+    @abstractmethod
+    def reset_parameters(self, index: int | None = None) -> None:
+        """Reset LoRA parameters.
+
+        Args:
+            index: If provided, reset only the parameters for that adapter index.
+                   If None, reset all adapter parameters.
+        """
+        ...
+
+    def register_with_runs(self, runs: "Runs", prefix: str) -> None:
+        """Register this module with the Runs system.
+
+        This method should be called after FSDP/compile/AC setup as these
+        transformations may change the underlying parameters while preserving
+        the module.
+
+        The Runs class will use this registration to:
+        - Get named parameters for specific run indices (for optimizer setup)
+        - Reset parameters when new runs are created
+        - Construct sliced state dicts for weight broadcast
+
+        Args:
+            runs: The Runs instance to register with
+            prefix: The module's name/prefix in the model (e.g., "model.layers.0.self_attn.q_proj")
+        """
+        runs.register_module(prefix, self)
 
     def __getattr__(self, name: str) -> Any:
         """Forward missing attributes to wrapped module."""
