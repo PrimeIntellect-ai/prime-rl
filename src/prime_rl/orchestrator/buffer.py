@@ -268,23 +268,23 @@ class Buffer:
 
         metrics = {}
 
-        for env_name in self.env_names:
-            env_suffix = f"/{env_name}"
-            examples = self.num_examples_per_pool[env_name]
-            rollouts = self.num_rollouts_per_pool[env_name]
+        for env in self.env_names:
+            examples = self.num_examples_per_pool[env]
+            rollouts = self.num_rollouts_per_pool[env]
             num_examples = sum(examples.values())
             num_rollouts = sum(rollouts.values())
 
             for pool in ["easy", "hard"]:
                 if num_examples > 0:
-                    metrics[f"buffer/evicted_examples/{pool}{env_suffix}"] = examples[pool] / num_examples
+                    metrics[f"evicted_examples/{pool}/{env}"] = examples[pool] / num_examples
                 if num_rollouts > 0:
-                    metrics[f"buffer/filtered_rollouts/{pool}{env_suffix}"] = rollouts[pool] / num_rollouts
+                    metrics[f"filtered_rollouts/{pool}/{env}"] = rollouts[pool] / num_rollouts
 
         total_normal = sum(len(self.example_buffer[env]) for env in self.env_names)
         pool_counts = [len(self.easy_examples), total_normal, len(self.hard_examples)]
-        for pool, ratio in zip(self.POOLS, mean_normalize(pool_counts)):
-            metrics[f"buffer/pool/{pool}"] = ratio
+        pool_ratios = mean_normalize(pool_counts)
+        for pool, pool_ratio in zip(self.POOLS, pool_ratios):
+            metrics[f"pool/{pool}"] = pool_ratio
 
         self.reset_step_metrics()
 
