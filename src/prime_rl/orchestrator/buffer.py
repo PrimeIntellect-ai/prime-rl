@@ -57,7 +57,7 @@ class Buffer:
             self.example_buffer[example["task"]][example["example_id"]] = example
         assert len(self.example_buffer) == len(self.env_names)
         self.logger.debug(
-            f"Initialized buffer with {format_num(len(self.dataset), precision=1)} example(s) in {len(self.env_names)} environment(s)"
+            f"Initialized {dataset_type} buffer with {format_num(len(self.dataset), precision=0)} example(s) in {len(self.env_names)} environment(s)"
         )
 
         if self.config.env_ratios is not None:
@@ -65,7 +65,7 @@ class Buffer:
             env_ratio = mean_normalize(self.config.env_ratios)
             self.env_probs = {env_name: ratio for env_name, ratio in zip(self.env_names, env_ratio)}
             self.logger.debug(
-                f"Sampling according to provided environment ratios: {', '.join(f'{k}={100 * v:.1f}%' for k, v in self.env_probs.items())}"
+                f"Sampling {dataset_type} buffer according to provided environment ratios: {', '.join(f'{k}={100 * v:.1f}%' for k, v in self.env_probs.items())}"
             )
         else:
             # Count problems per environment for uniform sampling across problems
@@ -73,7 +73,7 @@ class Buffer:
             env_ratio = mean_normalize(env_counts)
             self.env_probs = {env_name: ratio for env_name, ratio in zip(self.env_names, env_ratio)}
             self.logger.debug(
-                f"Sampling according to natural environment distribution: {', '.join(f'{k}={100 * v:.1f}%' for k, v in self.env_probs.items())}"
+                f"Sampling {dataset_type} buffer according to natural environment distribution: {', '.join(f'{k}={100 * v:.1f}%' for k, v in self.env_probs.items())}"
             )
 
         # Initialize buffers for easy/ hard examples (example_id -> example)
