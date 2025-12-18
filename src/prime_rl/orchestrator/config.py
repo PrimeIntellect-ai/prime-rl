@@ -371,13 +371,6 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = False
 
-    buffer_path: Annotated[
-        Path | None,
-        Field(
-            description="The path to load buffer state (metadata and rollouts) from. If None, will start with an empty buffer. The buffer state is saved at <ckpt_dir>/step_<step>/orchestrator/buffer.",
-        ),
-    ] = None
-
 
 class BufferConfig(BaseConfig):
     """Configures the buffer for the orchestrator."""
