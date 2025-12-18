@@ -164,12 +164,8 @@ class Buffer:
 
             if any(saved_rollout_buffer):
                 # Extend rollout buffer, but only include rollouts for which the example still exists in the example buffer
-                valid_envs = set(example_hash_lookup.keys())
-                valid_example_hashes = set()
-                for env in valid_envs:
-                    valid_example_hashes.update(set(example_hash_lookup[env].keys()))
                 valid_saved_rollouts = [
-                    rollout for rollout in saved_rollout_buffer if rollout["example_hash"] in valid_example_hashes
+                    rollout for rollout in saved_rollout_buffer if rollout["task"] in self.env_names
                 ]
                 self.rollout_buffer.extend(valid_saved_rollouts)
                 self.logger.debug(f"Loaded {len(valid_saved_rollouts)} rollout(s) from checkpoint.")
