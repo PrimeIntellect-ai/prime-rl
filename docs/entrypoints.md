@@ -70,68 +70,109 @@ For more details on multi-node deployment options, see the [deployment](deployme
 
 You can eval any [verifiers](https://github.com/willccbb/verifiers) environment against API models, local models and checkpoints from an SFT or RL training using the `eval` entrypoint.
 
-> We recommned using the `vf-eval` entrypoint for evaluating a *single* environment against API models or local models. This is often useful when bulding an environment. However, if you want to evaluate multiple environments in parallel and/ or evaluate a training checkpoint, the PRIME-RL `eval` entrypoint is likely more convenient.
+> We recommned using the `vf-eval` entrypoint for debugging and developing an environment and the PRIME-RL eval entrypoint for production-grade workloads, as it has more advanced features such as multi-environment evaluation, saving results to the Environments Hub, and scales better to custom multi-node inference deployments.
 
-We demonstrate evals by evaluating two common benchmarks [`gpqa`](https://app.primeintellect.ai/dashboard/environments/primeintellect/gpqa) and [`math500`](https://app.primeintellect.ai/dashboard/environments/primeintellect/math500).
+By default, the entrypoint uses the OpenAI API with `gpt-4.1-mini` to provide a smooth out-of-the-box experience without requiring a vLLM server.
 
 To check all available configuration options, run `uv run eval --help`.
 
-### Local Models
-
-To evaluate any HF model, start an inference server with the desired model before running the `eval` command. For example, to evaluate against the `math500` and `aime2025` environments, run the following commands:
-
-```bash
-uv run inference --model.name <model-name>
-```
-
-```bash
-uv run eval \
-  --model.name <model-name> \
-  --environment-ids math500,aime2025
-```
-
-### Checkpoints
-
-To evaluate a SFT or RL checkpoint, start an inference server with the model being the base model that you started training from and specify the directory containing the weight checkpoints with `--weights-dir`. 
-
-```bash
-uv run inference --model.name <model-name>
-```
-
-```bash
-uv run eval \
-  --model.name <model-name> \
-  --environment-ids math500,aime2025 \
-  --weights-dir outputs/weights
-```
-
-By default, this will evaluate the base model and all step checkpoints found in the weights directory. To skip evaling the base model, set `--no-eval-base` and to evaluate only specific steps, set `--steps` as a comma-separated list of integers representing the steps to evaluate. For example,
-
-```bash
-uv run eval \
-  --model.name <model-name> \
-  --environment-ids math500,aime2025 \
-  --weights-dir outputs/weights \
-  --steps 10,20,30,40,50 \
-  --no-eval-base
-```
-
 ### API Models
 
-We will exemplify using API models with the OpenAI API, but the same principles apply to other inference providers.
-
-First, set the API key as an environment variable.
+By default, the entrypoint uses the OpenAI API. First, set the API key as an environment variable:
 
 ```bash
 export OPENAI_API_KEY=...
 ```
 
-Then, start evaluation by setting the base URL, the name of the environment variable containing the API key, and the model identifier that is exposed by the API.
+### Single Environment
+
+```bash
+uv run eval @ configs/debug/eval/single_env.toml
+```
+
+### Multiple Environments
+
+```bash
+uv run eval @ configs/debug/eval/multi_env.toml
+```
+
+### Local Models
+
+To use a different API, or custom inference deployment, override the client and model configuration. For example, for a bare vLLM server, run:
 
 ```bash
 uv run eval \
-  --client.base-url https://api.openai.com/v1 \
-  --client.api-key-var OPENAI_API_KEY \
+  @ configs/debug/eval/local_model.toml \
+  --client.base-url http://localhost:8000/v1 \
+  --model.name <model-name>
+```
+
+### Checkpoints
+
+To evaluate a training checkpoints, start an inference server with the model being the base model that you started training from and specify the directory containing the weight checkpoints with `--weights-dir`. 
+
+```bash
+uv run inference --model.name <model-name>
+```
+
+```bash
+uv run eval \
+  @ configs/debug/eval/single_env.toml \
+  --client.base-url http://localhost:8000/v1 \
   --model.name <model-name> \
-  --environment-ids math500,aime2025
+  --weights-dir outputs/weights
+```
+
+By default, this will evaluate the base model and all step checkpoints found in the weights directory. To skip evaling the base model, set `--no-eval-base` and to evaluate only specific steps, set `--steps` as a comma-separated list of integers representing the steps to evaluate. For example,
+
+## Synthetic Data
+
+You can generate synthetic data in any [verifiers](https://github.com/willccbb/verifiers) environment using the `synthesize` entrypoint. The entrypoint shares configuration with evals (`ModelConfig`, `ClientConfig`, `SamplingConfig`, and `EnvConfig`), making it easy to generate data using the same models and sampling settings as your evaluations.
+
+The synthesize entrypoint supports single-turn, multi-turn, and tool-calling environments, and can generate data across multiple environments in parallel. It automatically parses reasoning content from model responses (configurable via `--reasoning-field`, defaults to `reasoning_content`), and saves data in append mode using the same schema as verifiers, making it straightforward to convert to SFT datasets. The entrypoint is robust to errors during generation, scoring, or saving—failed groups are simply dropped. Environments specified in the format `{env_org}/{env_id}` are automatically installed, similar to the RL entrypoint.
+
+By default, the entrypoint uses the OpenAI API with `gpt-4.1-mini` (also the default for evals) to provide a smooth out-of-the-box experience without requiring a vLLM server. Make sure to set your API key as an environment variable
+
+```bash
+export OPENAI_API_KEY=...
+```
+
+To check all available configuration options, run `uv run synthesize --help`.
+
+### Single-Turn Environments
+
+Generate synthetic data in a single-turn environment (e.g., `gsm8k`):
+
+```bash
+uv run synthesize @ configs/debug/synthesize/single_turn.toml
+```
+
+By default, the entrypoint parses and saves the `reasoning_content` field from raw responses, as returned by vLLM when a reasoning parser is set. This behavior can be configured to handle different APIs:
+
+```bash
+uv run synthesize @ configs/debug/synthesize/single_turn.toml --reasoning-field reasoning
+```
+
+### Multiple Environments
+
+Generate synthetic data across multiple environments (e.g., `gsm8k` and `hendrycks-math`):
+
+```bash
+uv run synthesize @ configs/debug/synthesize/multi_env.toml
+```
+
+### Multi-Turn Environments
+
+Generate synthetic data in a multi-turn environment (e.g., `alphabet-sort`):
+
+```bash
+uv run synthesize @ configs/debug/synthesize/multi_turn.toml
+```
+
+### Multi-Turn Environments with Tool Calls
+
+Generate synthetic data in a multi-turn environment with tool calls (e.g., `wiki-search`):
+
+```bash
+uv run synthesize @ configs/debug/synthesize/multi_turn_tool_call.toml
 ```

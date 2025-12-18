@@ -11,7 +11,7 @@ image:
 orchestrator:
   enabled: true
   autoStart: true
-  command: "uv run orchestrator @ /app/examples/reverse_text/rl/orch.toml --output-dir /data/outputs --client.base-url '[\"'$INFERENCE_URL'\"]' ; sleep infinity"
+  command: "uv run orchestrator @ /app/examples/reverse_text/rl/orch.toml --output-dir /data/outputs --client.base-url $INFERENCE_URL ; sleep infinity"
   resources:
     requests:
       memory: "1Gi"

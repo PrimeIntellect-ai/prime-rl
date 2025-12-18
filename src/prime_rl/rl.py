@@ -66,7 +66,7 @@ class SharedWandbConfig(BaseSettings):
 class SharedCheckpointConfig(BaseSettings):
     """Configures shared checkpoint configs."""
 
-    interval: Annotated[int | None, Field(description="The interval at which to save checkpoints.")] = 50
+    interval: Annotated[int | None, Field(description="The interval at which to save checkpoints.")] = None
 
     resume_step: Annotated[
         int | None, Field(description="The step to resume from. If None, will not resume from a checkpoint.")
@@ -202,8 +202,11 @@ class RLConfig(BaseSettings):
 
     @model_validator(mode="after")
     def auto_setup_num_train_workers(self):
+        non_data_parallel_size = self.trainer.model.cp * self.trainer.model.tp
+
         if len(self.trainer_gpu_ids) > 1:
-            self.orchestrator.num_train_workers = len(self.trainer_gpu_ids)
+            self.orchestrator.num_train_workers = len(self.trainer_gpu_ids) // non_data_parallel_size
+
         return self
 
     @model_validator(mode="after")
@@ -287,7 +290,6 @@ class RLConfig(BaseSettings):
             # Configure the trainer fake data to match the orchestrator config
             self.trainer.data.fake = FakeDataLoaderConfig(
                 batch_size=self.orchestrator.batch_size,
-                seq_len=self.orchestrator.seq_len,
             )
 
         if self.trainer.bench != self.orchestrator.bench:
@@ -337,7 +339,7 @@ class RLConfig(BaseSettings):
         # If specified, use the same outputs directory for trainer and orchestrator
         if self.output_dir is not None:
             self.trainer.output_dir = self.output_dir
-            self.orchestrator.output_dir = self.output_dir
+            self.orchestrator.output_dir = self.output_dir / "run_default"
 
         validate_shared_output_dir(self.trainer, self.orchestrator)
 
@@ -361,6 +363,27 @@ class RLConfig(BaseSettings):
                 self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
 
         validate_shared_weight_broadcast(self.trainer, self.orchestrator, self.inference)
+
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_lora(self):
+        if self.trainer.model.lora is not None:
+            if self.trainer.weight_broadcast.type == "nccl":
+                raise ValueError("NCCL weight broadcast does not support LoRA yet.")
+            self.trainer.weight_broadcast.adapter_only = True
+            if self.orchestrator.lora_name is None:
+                lora_name = (
+                    f"r{self.trainer.model.lora.rank}-a{self.trainer.model.lora.alpha}"
+                )
+                self.orchestrator.lora_name = lora_name
+            if self.inference is not None:
+                self.inference.enable_lora = True
+                self.inference.max_lora_rank = self.trainer.model.lora.rank
+            else:
+                warnings.warn(
+                    "LoRA is enabled, but inference is not configured. When manually starting the inference server, make sure to set `--enable_lora` and `--max-lora-rank`."
+                )
 
         return self
 
@@ -397,7 +420,7 @@ def cleanup_processes(processes: list[Popen]):
         if process.poll() is None:  # Process is still running
             process.terminate()
             try:
-                process.wait(timeout=5)
+                process.wait(timeout=60)  # 60 seconds to terminate gracefully
             except subprocess.TimeoutExpired:
                 process.kill()
 
@@ -428,34 +451,11 @@ def rl(config: RLConfig):
     logger.info("Starting RL run")
     logger.debug(f"RL start command: {' '.join(start_command)}")
 
-    # Install any environments given in user/env-id format
-    env_ids_to_install = set()
-
-    # Collect training environment IDs
-    for env_config in config.orchestrator.env:
-        if "/" in env_config.id:
-            env_ids_to_install.add(env_config.id)
-
-    # Collect evaluation environment IDs
-    if config.orchestrator.eval:
-        for eval_env_config in config.orchestrator.eval.env:
-            if "/" in eval_env_config.id:
-                env_ids_to_install.add(eval_env_config.id)
-
-    # Install each environment
-    for env_id in env_ids_to_install:
-        logger.info(f"Installing environment: {env_id}")
-        install_cmd = ["uv", "run", "--no-sync", "prime", "env", "install", env_id]
-        result = subprocess.run(install_cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            logger.error(f"Failed to install environment {env_id}: {result.stderr}")
-            raise RuntimeError(f"Failed to install environment {env_id}")
-        logger.info(f"Successfully installed environment: {env_id}")
-
     # Prepare paths to communicate with the trainer
     log_dir = get_log_dir(config.output_dir)
-    rollout_dir = get_rollout_dir(config.output_dir)
-    broadcast_dir = get_broadcast_dir(config.output_dir)
+    orch_log_dir = get_log_dir(config.orchestrator.output_dir)
+    rollout_dir = get_rollout_dir(config.orchestrator.output_dir)
+    broadcast_dir = get_broadcast_dir(config.orchestrator.output_dir)
 
     # Clean up directories if specified
     if config.clean:
@@ -465,6 +465,10 @@ def rl(config: RLConfig):
         logger.info(f"Cleaning log dir ({log_dir})")
         shutil.rmtree(log_dir, ignore_errors=True)
         log_dir.mkdir(parents=True, exist_ok=True)
+
+        logger.info(f"Cleaning orchestrator log dir ({orch_log_dir})")
+        shutil.rmtree(orch_log_dir, ignore_errors=True)
+        orch_log_dir.mkdir(parents=True, exist_ok=True)
 
         # Cleaning broadcast dir (so that orchestrator does not pre-maturely update weights)
         if not (

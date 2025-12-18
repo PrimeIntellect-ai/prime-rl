@@ -1,0 +1,37 @@
+inference_gpu_ids = [0]
+trainer_gpu_ids = [1]
+
+max_steps = 25
+
+[ckpt]
+resume_step = 20
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[trainer.optim]
+lr = 1e-4
+
+[trainer.model.lora]
+rank = 8
+
+[trainer.ckpt.weights]
+save_adapter_separately = true
+
+[trainer.weight_broadcast]
+adapter_only = true
+
+[orchestrator]
+batch_size = 128
+rollouts_per_example = 16
+seq_len = 2048
+lora_name = "r8-1e-4"
+
+[orchestrator.sampling]
+max_tokens = 128
+
+[[orchestrator.env]]
+id = "reverse-text"
+
+[inference]
+enable_lora = true

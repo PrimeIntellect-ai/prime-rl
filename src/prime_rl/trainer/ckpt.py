@@ -1,7 +1,7 @@
 import shutil
 import time
 import warnings
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -19,24 +19,17 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.config import CheckpointConfig, LoRAConfig, WeightCheckpointConfig
 from prime_rl.trainer.lora import has_lora_layers, save_lora_config
+from prime_rl.trainer.models import PreTrainedModelPrimeRL
+from prime_rl.trainer.runs import Progress
 from prime_rl.trainer.weights import (
-    convert_tt_to_hf_moe,
     gather_weights_on_master,
     get_adapter_state_dict,
-    has_tt_moe_layers,
     save_state_dict,
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.tensor_hashing import get_module_signature, get_optimizer_signature
 from prime_rl.utils.utils import get_ckpt_dir, get_step_path, get_weights_dir
-
-
-@dataclass
-class Progress:
-    step: int = 0
-    total_tokens: int = 0
-    total_samples: int = 0
 
 
 class AppState(Stateful):
@@ -99,16 +92,6 @@ class CheckpointManager:
     def get_ckpt_path(self, step: int) -> Path:
         """Get the path to write the trainer checkpoint for a given step."""
         return get_step_path(self.ckpt_dir, step) / "trainer"
-
-    def get_latest_step(self) -> int:
-        """Get the latest checkpoint step from the checkpoint directory."""
-        step_dirs = list(self.ckpt_dir.glob("step_*"))
-        if len(step_dirs) == 0:
-            raise ValueError(f"No checkpoints found in {self.ckpt_dir}")
-        steps = sorted([int(step_dir.name.split("_")[-1]) for step_dir in step_dirs])
-        latest_step = steps[-1]
-        self.logger.info(f"Found latest checkpoint in {self.ckpt_dir}: {latest_step}")
-        return latest_step
 
     def save_to_path(
         self,
@@ -181,9 +164,6 @@ class CheckpointManager:
         dataloader: StatefulDataLoader | None = None,
     ) -> None:
         """Load the trainer checkpoint for a given step (in-place)."""
-        if step == -1:
-            step = self.get_latest_step()
-
         ckpt_path = self.get_ckpt_path(step)
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
@@ -313,12 +293,14 @@ class WeightCheckpointManager:
         else:
             lora_state_dict = None
 
-        # Convert TT-MoE layers to HF format if needed
-        if has_tt_moe_layers(state_dict):
-            self.logger.debug("Converting TT-MoE layers to HF format for weight checkpoint")
+        # Convert PrimeRL format to HF format if needed
+        if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
+            self.logger.debug("Converting PrimeRL format to HF format for weight checkpoint")
             start_time = time.perf_counter()
-            convert_tt_to_hf_moe(state_dict)
-            self.logger.debug(f"Converted TT-MoE layers to HF format in {time.perf_counter() - start_time:.2f} seconds")
+            model.convert_to_hf(state_dict)
+            self.logger.debug(
+                f"Converted PrimeRL format to HF format in {time.perf_counter() - start_time:.2f} seconds"
+            )
 
         # Save weight checkpoint on master rank
         if self.world.is_master:

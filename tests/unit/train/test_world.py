@@ -1,5 +1,4 @@
 import os
-import subprocess
 
 import pytest
 
@@ -34,22 +33,6 @@ def test_init_with_valid_env_vars(local_world_size: int, world_size: int):
     assert world.rank == world.local_rank == 0
     assert world.num_nodes == world_size // local_world_size
     assert world == get_world()
-
-
-@pytest.mark.parametrize("local_world_size", [1, 2])
-def test_init_with_torchrun(local_world_size: int):
-    path = "src/prime_rl/trainer/world.py"
-    assert os.path.exists(path)
-    cmd = ["torchrun", f"--nproc_per_node={local_world_size}", path]
-    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    stdout, stderr = process.communicate()
-    if process.returncode != 0:
-        error_msg = (
-            stderr.decode("utf-8").strip()
-            or stdout.decode("utf-8").strip()
-            or f"Process failed with code {process.returncode}"
-        )
-        pytest.fail(f"Process failed: {error_msg}")
 
 
 def test_init_with_invalid_local_world_size():

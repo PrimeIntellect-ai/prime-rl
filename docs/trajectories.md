@@ -22,22 +22,6 @@ We call this the "exact prefix" invariant. For example, at turn 2, the LLM shoul
 - If we add A1', the logprobs from turn 1 might be off because the inference LLM produced A1 but the trainer LLM is computing logprobs for A1'
 - If we add A1, the logprobs from turn 2 might be off because the inference LLM is attending to A1' but the trainer LLM is attending to A1.
 
-While it would seem that this invariant is easy to enforce, there are two surprisingly common violations that can occur:
-- **Retokenization**: Modern tokenizers are not symmetric, and so retokenizing A1 to prepare the prompt at turn 2 may produce A1' != A1
-- **Arbitrary Chat Templates**: The chat template may add or remove tokens across turns
-
-### Retokenization
-
-There are two main reasons why retokenization is a problem:
-- `verifiers` uses an OAI client for collecting a trajectory, which only supports text-in prompts, which implies that at any turn $t>1$, we have to retokenize the assistant messages from turns $1,\dots,t-1$.
-- Modern tokenizers are not symmetric, and so retokenizing the assistant messages from turns $1,\dots,t-1$ may produce different tokens than the original decoded tokens by the LLM.
-
-For example, it may be that the LLM, during decoding, produced the number `11` as two separate tokens, corresponding to `1` and `1`, but when retokenizing `11` becomes a single token. We have violated the exact prefix invariant: It is unclear whether to add `1` and `1` or `11` to the interleaved rollout:
-- If we choose to add `1` and `1`, the logprobs from turn 2 might be off because the attention of the trainer and inference LLM is different.
-- If we choose to add `11`, the logprobs from turn 1 might be off because `11` has a different likelihood than `1` and `1`.
-
-In moderately complex multi-turn environments (e.g. `wordle` or `wiki-search`) we have found that our Icepop-style double-sided masking is able to mitigate such discrepancies, but it is unclear whether it remains robust for large-scale agentic training in environments that are many hundreds of turns long. A simple solution to this problem is given by allowing for token-in requests, but this is neither standard OAI nor vLLM spec, which is why it is not easily supported yet.
-
 ### Arbitrary Chat Templates
 
 There exist chat templates which add, modify, or remove tokens across turns. One good example, is the chat template of the Qwen3-series of models, which strips thinking across user turns.

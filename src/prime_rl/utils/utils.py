@@ -1,16 +1,33 @@
 import asyncio
 import functools
 import os
-import time
+import subprocess
 from collections import defaultdict
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import torch
 import torch.distributed as dist
 import wandb
 
+from prime_rl.orchestrator.config import EnvConfig, EvalEnvConfig
 from prime_rl.utils.logger import get_logger
+
+# TODO: Change all imports to use utils.pathing
+# ruff: noqa: F401
+from prime_rl.utils.pathing import (
+    get_broadcast_dir,
+    get_ckpt_dir,
+    get_eval_dir,
+    get_log_dir,
+    get_rollout_dir,
+    get_step_path,
+    get_weights_dir,
+    resolve_latest_ckpt_step,
+    sync_wait_for_path,
+    wait_for_path,
+)
 
 
 def rgetattr(obj: Any, attr_path: str) -> Any:
@@ -89,60 +106,43 @@ def capitalize(s: str) -> str:
     return s[0].upper() + s[1:]
 
 
-def clean_exit(func):
+def clean_exit(func: Callable) -> Callable:
     """
     A decorator that ensures the a torch.distributed process group is properly
     cleaned up after the decorated function runs or raises an exception.
-
-    Args:
-        func: The function to decorate
-
-    Returns:
-        The decorated function
     """
+    if asyncio.iscoroutinefunction(func):
 
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        try:
-            ret = func(*args, **kwargs)
-            wandb.finish()
-            return ret
-        except Exception as e:
-            wandb.finish(exit_code=1)
-            raise e
-        finally:
-            if dist.is_initialized():
-                dist.destroy_process_group()
+        @functools.wraps(func)
+        async def async_wrapper(*args, **kwargs):
+            try:
+                ret = await func(*args, **kwargs)
+                wandb.finish()
+                return ret
+            except Exception as e:
+                wandb.finish(exit_code=1)
+                raise e
+            finally:
+                if dist.is_initialized():
+                    dist.destroy_process_group()
 
-    return wrapper
+        return async_wrapper
+    else:
 
+        @functools.wraps(func)
+        def sync_wrapper(*args, **kwargs):
+            try:
+                ret = func(*args, **kwargs)
+                wandb.finish()
+                return ret
+            except Exception as e:
+                wandb.finish(exit_code=1)
+                raise e
+            finally:
+                if dist.is_initialized():
+                    dist.destroy_process_group()
 
-def sync_wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:
-    logger = get_logger()
-    wait_time = 0
-    logger.debug(f"Waiting for path `{path}`")
-    while True:
-        if path.exists():
-            logger.debug(f"Found path `{path}`")
-            break
-        if wait_time % log_interval == 0 and wait_time > 0:  # Every log_interval seconds
-            logger.debug(f"Waiting for path `{path}` for {wait_time} seconds")
-        time.sleep(interval)
-        wait_time += interval
-
-
-async def wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:
-    logger = get_logger()
-    wait_time = 0
-    logger.debug(f"Waiting for path `{path}`")
-    while True:
-        if path.exists():
-            logger.debug(f"Found path `{path}`")
-            break
-        if wait_time % log_interval == 0 and wait_time > 0:  # Every log_interval seconds
-            logger.debug(f"Waiting for path `{path}` for {wait_time} seconds")
-        await asyncio.sleep(interval)
-        wait_time += interval
+        return sync_wrapper
 
 
 def to_col_format(list_of_dicts: list[dict[str, Any]]) -> dict[str, list[Any]]:
@@ -248,34 +248,6 @@ def get_cuda_visible_devices() -> list[int]:
     return list(sorted([int(device) for device in cuda_visible.split(",")]))
 
 
-def get_log_dir(output_dir: Path) -> Path:
-    return output_dir / "logs"
-
-
-def get_ckpt_dir(output_dir: Path) -> Path:
-    return output_dir / "checkpoints"
-
-
-def get_weights_dir(output_dir: Path) -> Path:
-    return output_dir / "weights"
-
-
-def get_rollout_dir(output_dir: Path) -> Path:
-    return output_dir / "rollouts"
-
-
-def get_eval_dir(output_dir: Path) -> Path:
-    return output_dir / "evals"
-
-
-def get_broadcast_dir(output_dir: Path) -> Path:
-    return output_dir / "broadcasts"
-
-
-def get_step_path(path: Path, step: int) -> Path:
-    return path / f"step_{step}"
-
-
 def get_latest_ckpt_step(weights_dir: Path) -> int | None:
     step_dirs = list(weights_dir.glob("step_*"))
     if len(step_dirs) == 0:
@@ -291,3 +263,33 @@ def mean_normalize(values: list[float] | list[int]) -> list[float]:
     """Mean-Normalize a list of values to 0-1."""
     sum_values = sum(values)
     return [value / sum_values if sum_values > 0 else 0 for value in values]
+
+
+@contextmanager
+def default_dtype(dtype):
+    prev = torch.get_default_dtype()
+    torch.set_default_dtype(dtype)
+    try:
+        yield
+    finally:
+        torch.set_default_dtype(prev)
+
+
+def install_env(env_id: str) -> None:
+    """Install an environment in subprocess."""
+    logger = get_logger()
+    logger.info(f"Installing environment {env_id}")
+    install_cmd = ["uv", "run", "--no-sync", "prime", "env", "install", env_id]
+    result = subprocess.run(install_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to install environment {env_id} (stdout={result.stdout}, stderr={result.stderr})")
+    logger.info(f"Successfully installed environment {env_id}")
+
+
+def get_env_ids_to_install(env_configs: list[EnvConfig] | list[EvalEnvConfig]) -> set[str]:
+    """Get the list of environment IDs to install."""
+    env_ids_to_install = set()
+    for env_config in env_configs:
+        if "/" in env_config.id:
+            env_ids_to_install.add(env_config.id)
+    return env_ids_to_install

@@ -101,7 +101,7 @@ class ParallelDims:
         ):
             # dp_shard_mod_ep is needed even if it's 1, whose FSDP wrapping
             # helps the MoE layers do mixed precision training
-            if d > 1 or name == "dp_shard_mod_ep" or name == "dp_replicate":
+            if d > 1 or name == "dp_shard_mod_ep":
                 dims.append(d)
                 names.append(name)
 
@@ -119,8 +119,9 @@ class ParallelDims:
         # Mesh for ep
         ep_mesh_dim_names = []
 
-        dp_mesh_dim_names.append("dp_replicate")
-        dp_cp_mesh_dim_names.append("dp_replicate")
+        if self.dp_replicate_enabled:
+            dp_mesh_dim_names.append("dp_replicate")
+            dp_cp_mesh_dim_names.append("dp_replicate")
         # dp_shard_mod_ep is always needed, even if it's 1
         dp_mesh_dim_names.append("dp_shard_mod_ep")
         dp_shard_cp_mesh_dim_names.append("dp_shard_mod_ep")
@@ -149,7 +150,7 @@ class ParallelDims:
             [self.pp, self.dp_replicate, self.dp_shard, self.cp, self.tp],
             ["pp", "dp_replicate", "dp_shard", "cp", "tp"],
         ):
-            if d > 1 or name == "dp_shard" or name == "dp_replicate":
+            if d > 1 or name == "dp_shard":
                 dims.append(d)
                 names.append(name)
 
@@ -165,8 +166,9 @@ class ParallelDims:
         # Mesh for loss all-reduce
         dp_cp_mesh_dim_names = []
 
-        dp_mesh_dim_names.append("dp_replicate")
-        dp_cp_mesh_dim_names.append("dp_replicate")
+        if self.dp_replicate_enabled:
+            dp_mesh_dim_names.append("dp_replicate")
+            dp_cp_mesh_dim_names.append("dp_replicate")
         dp_mesh_dim_names.append("dp_shard")
         dp_shard_cp_mesh_dim_names.append("dp_shard")
         dp_cp_mesh_dim_names.append("dp_shard")
