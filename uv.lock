@@ -2277,7 +2277,7 @@ requires-dist = [
     { name = "openai", specifier = ">=1.106.1" },
     { name = "prime", specifier = ">=0.5.0" },
     { name = "prime-evals", specifier = ">=0.1.5" },
-    { name = "prime-sandboxes", specifier = ">=0.2.5" },
+    { name = "prime-sandboxes", specifier = ">=0.2.6" },
     { name = "pydantic", specifier = ">=1.10.13" },
     { name = "pydantic-settings", specifier = ">=2.10.1" },
     { name = "pylatexenc", specifier = ">=2.10" },
@@ -2310,16 +2310,16 @@ dev = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.2.5"
+version = "0.2.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
     { name = "httpx" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e3/a4/ca20d2c4203db8b2be965537123e573c613184795888b31c6414ae30f8fb/prime_sandboxes-0.2.5.tar.gz", hash = "sha256:e2c7b05dac92d5d8e836d8c981e8848e7332414b2386ec377fd1d5f35df03c76", size = 40636, upload-time = "2025-12-02T03:48:22.027Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/30/a6/cec261a0263b4162b3dd7fdaabb1893b9c219694a487ed5cb18262b449c5/prime_sandboxes-0.2.6.tar.gz", hash = "sha256:e84dba4b634862a8c620e4c9089b0796369d1e2648f64ebff0d9a2de6c2d30d6", size = 43481, upload-time = "2025-12-10T18:32:31.575Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/67/97/dbf0ff75f682950532eb49039b1d967cd8ce930e8a8c5733f6924cbbcb0e/prime_sandboxes-0.2.5-py3-none-any.whl", hash = "sha256:65d50fefd36269865351ddbf0db56ad17d962e943aca13620e570beb0abd4ea0", size = 15712, upload-time = "2025-12-02T03:48:20.702Z" },
+    { url = "https://files.pythonhosted.org/packages/19/56/806df9a2928ddc0daafbce265fa9389a9bc3c67fa08ab992c8c5965e961b/prime_sandboxes-0.2.6-py3-none-any.whl", hash = "sha256:82baef240906c166708ae54fa5c26adc71e9264568490954a45f0c48b7f8d8ce", size = 17527, upload-time = "2025-12-10T18:32:30.651Z" },
 ]
 
 [[package]]

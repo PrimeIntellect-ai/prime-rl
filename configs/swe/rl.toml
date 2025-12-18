@@ -5,9 +5,9 @@ max_steps = 200
 [ckpt] # Checkpoint at the end of training
 
 [model]
-# name = "Qwen/Qwen3-4B-Instruct-2507"
+name = "Qwen/Qwen3-4B-Instruct-2507"
 # name = "arcee-ai/Trinity-Mini"
-name = "Qwen/Qwen3-14B"
+# name = "Qwen/Qwen3-14B"
 
 [wandb]
 project = "intellect-4-swe"
@@ -39,27 +39,33 @@ target_modules = [
 [orchestrator]
 #batch_size = 64
 #rollouts_per_example = 8
-batch_size = 8
+batch_size = 4
 rollouts_per_example = 2
 seq_len = 32768
 # seq_len = 131072
 
 [orchestrator.sampling]
 # max_tokens = 32768
-max_tokens = 32768
+max_tokens = 8192
+# max_tokens = 65536
 
 [[orchestrator.env]]
-id = "primeintellect/mini-swe-agent-plus"
+# id = "primeintellect/mini-swe-agent-plus"
+id = "mini-swe-agent-plus"
 name = "mini-swe-agent-plus"
+args = {max_turns = 50}
 
 [orchestrator.log]
 vf_level = "debug"
 
 [inference] # Default inference config
+# enable_log_requests = true
+#max_log_len = 2000
+# enable_log_outputs = true
 
 [inference.model]
 enable_auto_tool_choice = true
-reasoning_parser = "deepseek_r1"
+# reasoning_parser = "deepseek_r1"
 tool_call_parser = "hermes"
-rope_scaling = { rope_type = "yarn", factor = 4.0, original_max_position_embeddings = 32768 }
-max_model_len = 131072
+# rope_scaling = { rope_type = "yarn", factor = 4.0, original_max_position_embeddings = 32768 }
+# max_model_len = 131072

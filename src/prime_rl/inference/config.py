@@ -174,6 +174,28 @@ class InferenceConfig(BaseSettings):
         ),
     ] = None
 
+    enable_log_requests: Annotated[
+        bool,
+        Field(
+            description="Whether to enable logging of raw requests. Passed to vLLM as `--enable-log-requests`",
+        ),
+    ] = False
+
+    max_log_len: Annotated[
+        int,
+        Field(
+            ge=0,
+            description="Maximum length of logged requests. Passed to vLLM as `--max-log-len`",
+        ),
+    ] = 1000
+
+    enable_log_outputs: Annotated[
+        bool,
+        Field(
+            description="Whether to enable logging of outputs/responses. Passed to vLLM as `--enable-log-outputs`",
+        ),
+    ] = False
+
     weight_broadcast: Annotated[WeightBroadcastConfig, Field(description="The weight broadcast config.")] = (
         WeightBroadcastConfig()
     )
@@ -244,6 +266,9 @@ class InferenceConfig(BaseSettings):
             "max_lora_rank": "max_lora_rank",
             "gpu_memory_utilization": "gpu_memory_utilization",
             "api_server_count": "api_server_count",
+            "enable_log_requests": "enable_log_requests",
+            "max_log_len": "max_log_len",
+            "enable_log_outputs": "enable_log_outputs",
         }
 
         for key in get_all_fields(self):
