@@ -278,7 +278,7 @@ def train(config: RLTrainerConfig):
 
             # Forward pass
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                if config.model.experimental.lora:
+                if config.model.lora:
                     lora_num_tokens = micro_batch["lora_num_tokens"].to("cuda")
                     lora_cu_offsets = lora_num_tokens.cumsum(dim=0, dtype=torch.int32)
                     set_offsets(lora_cu_offsets)
