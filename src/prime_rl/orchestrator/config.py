@@ -437,7 +437,7 @@ class BufferConfig(BaseConfig):
             min_length=1,
             description="Keys to use for computing example hashes. Will be used to match examples from buffer checkpoints and determine buffer resume behavior.",
         ),
-    ] = ["prompt"]
+    ] = ["task", "prompt"]
 
     @model_validator(mode="after")
     def validate_thresholds(self):
