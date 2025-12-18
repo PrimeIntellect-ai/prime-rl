@@ -85,7 +85,7 @@ class Buffer:
         self.reset_step_metrics()
 
     @staticmethod
-    def get_example_hash(example: dict, hash_keys: list[str] = ["prompt"]) -> str:
+    def get_example_hash(example: dict, hash_keys: list[str] = ["task", "prompt"]) -> str:
         """Returns a hash of the example based on hash keys."""
         hash_keys = [key for key in hash_keys if key in example]
         assert hash_keys, "No hashable keys found in example."
@@ -143,14 +143,24 @@ class Buffer:
             if any(saved_easy_examples):
                 num_moved = move_saved_pool(saved_easy_examples, self.easy_examples)
                 self.logger.debug(
-                    f"Moved {num_moved}/{len(saved_easy_examples)} examples to easy pool from checkpoint."
+                    f"Loaded {num_moved}/{len(saved_easy_examples)} example(s) to easy pool from checkpoint."
                 )
+                if num_moved != len(saved_easy_examples):
+                    num_not_moved = len(saved_easy_examples) - num_moved
+                    self.logger.warning(
+                        f"Could not move {num_not_moved} example(s) from checkpoint to easy pool. This usually means you resumed with an env mix that does not contain all previous examples."
+                    )
 
             if any(saved_hard_examples):
                 num_moved = move_saved_pool(saved_hard_examples, self.hard_examples)
                 self.logger.debug(
-                    f"Moved {num_moved}/{len(saved_hard_examples)} examples to hard pool from checkpoint."
+                    f"Moved {num_moved}/{len(saved_hard_examples)} example(s) to hard pool from checkpoint."
                 )
+                if num_moved != len(saved_hard_examples):
+                    num_not_moved = len(saved_hard_examples) - num_moved
+                    self.logger.warning(
+                        f"Could not move {num_not_moved} example(s) from checkpoint to hard pool. This usually means you resumed with an env mix that does not contain all previous examples."
+                    )
 
             if any(saved_rollout_buffer):
                 # Extend rollout buffer, but only include rollouts for which the example still exists in the example buffer
@@ -162,7 +172,7 @@ class Buffer:
                     rollout for rollout in saved_rollout_buffer if rollout["example_hash"] in valid_example_hashes
                 ]
                 self.rollout_buffer.extend(valid_saved_rollouts)
-                self.logger.debug(f"Extended rollout buffer with {len(valid_saved_rollouts)} rollouts from checkpoint.")
+                self.logger.debug(f"Loaded {len(valid_saved_rollouts)} rollout(s) from checkpoint.")
 
             # Load rollouts, filtering out removed environments and problems
             def convert_examples_to_normal(examples: list[dict], fraction: float) -> None:
