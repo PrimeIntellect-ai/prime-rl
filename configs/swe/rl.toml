@@ -13,8 +13,8 @@ name = "Qwen/Qwen3-4B-Instruct-2507"
 project = "intellect-4-swe"
 name = "mini-swe-agent-plus"
 
-[trainer.model]
-impl = "liger_kernel"
+# [trainer.model]
+# impl = "liger_kernel"
 
 [trainer.model.ac]
 freq = 1
@@ -22,19 +22,19 @@ freq = 1
 [trainer.optim]
 lr = 1e-5
 
-[trainer.model.lora]
-rank = 8
-alpha = 32
-dropout = 0.0
-target_modules = [
-    "q_proj",
-    "k_proj",
-    "v_proj",
-    "o_proj",
-    "gate_proj",
-    "up_proj",
-    "down_proj"
-]
+# [trainer.model.lora]
+# rank = 8
+# alpha = 32
+# dropout = 0.0
+# target_modules = [
+#     "q_proj",
+#     "k_proj",
+#     "v_proj",
+#     "o_proj",
+#     "gate_proj",
+#     "up_proj",
+#     "down_proj"
+# ]
 
 [orchestrator]
 #batch_size = 64
