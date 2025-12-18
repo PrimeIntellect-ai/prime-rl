@@ -218,22 +218,32 @@ class PrimeMonitor(Monitor):
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
 
-    async def _make_request_async(self, endpoint: str, data: dict[str, Any]) -> None:
-        """Make an async POST request to the Prime Intellect API."""
+    async def _make_request_async(self, endpoint: str, data: dict[str, Any], max_retries: int = 3) -> None:
+        """Make an async POST request to the Prime Intellect API with retries."""
         headers = {
             "x-api-key": self.api_key,
             "Content-Type": "application/json",
         }
-        try:
-            full_endpoint = f"{self.base_url}/{endpoint}"
-            response = await self._client.post(
-                full_endpoint,
-                headers=headers,
-                json=data,
-            )
-            response.raise_for_status()
-        except Exception as e:
-            self.logger.warning(f"Failed to upload to Prime Intellect API: {e}")
+        full_endpoint = f"{self.base_url}/{endpoint}"
+        
+        for attempt in range(max_retries):
+            try:
+                response = await self._client.post(
+                    full_endpoint,
+                    headers=headers,
+                    json=data,
+                )
+                response.raise_for_status()
+                return  # Success
+            except Exception as e:
+                is_last_attempt = attempt == max_retries - 1
+                if is_last_attempt:
+                    self.logger.warning(f"Failed to upload to Prime Intellect API ({endpoint}) after {max_retries} attempts: {type(e).__name__}: {e}")
+                else:
+                    # Exponential backoff: 1s, 2s, 4s...
+                    delay = 2 ** attempt
+                    self.logger.debug(f"Retrying {endpoint} upload in {delay}s (attempt {attempt + 1}/{max_retries}): {type(e).__name__}: {e}")
+                    await asyncio.sleep(delay)
 
     def _make_request(self, endpoint: str, data: dict[str, Any]) -> None:
         """Submit a request to the async queue (fire-and-forget)."""
