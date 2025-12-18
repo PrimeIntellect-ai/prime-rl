@@ -438,6 +438,13 @@ class BufferConfig(BaseConfig):
         ),
     ] = False
 
+    @model_validator(mode="after")
+    def validate_env_ratios(self):
+        if self.env_ratios is not None:
+            assert all(ratio > 0 for ratio in self.env_ratios), "All env_ratios must be positive."
+        return self
+
+
 class AdvantageConfig(BaseConfig):
     length_weighted_mean: bool = False
 
@@ -459,6 +466,7 @@ class NCCLWeightBroadcastConfig(BaseModel):
 
 
 WeightBroadcastConfigType: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig
+
 
 class OrchestratorConfig(BaseSettings):
     """Configures the orchestrator for RL training."""
@@ -622,6 +630,12 @@ class OrchestratorConfig(BaseSettings):
     def validate_batch_size(self):
         if self.batch_size % self.rollouts_per_example != 0:
             raise ValueError("Batch size must be divisible by the number of samples per problem")
+        return self
+
+    @model_validator(mode="after")
+    def validate_env_ratios(self):
+        if self.buffer.env_ratios is not None:
+            assert len(self.buffer.env_ratios) == len(self.env), "env_ratios length must match number of environments"
         return self
 
     @model_validator(mode="after")
