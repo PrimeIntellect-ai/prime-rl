@@ -1,4 +1,5 @@
 max_steps = 300
+seq_len = 4096
 
 [wandb]
 project = "math-python-debug"
@@ -8,7 +9,6 @@ name = "math-python"
 name = "Qwen/Qwen3-4B-Instruct-2507"
 
 [orchestrator]
-seq_len = 4096
 batch_size = 512
 rollouts_per_example = 16
 

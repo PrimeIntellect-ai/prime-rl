@@ -2,12 +2,10 @@ inference_gpu_ids = [0,1,2,3,4,5]
 trainer_gpu_ids = [6,7]
 
 max_steps = 200
+seq_len = 4096
 
 [model]
 name = "Qwen/Qwen3-4B-Instruct-2507"
-
-[trainer.model]
-seq_len = 4096
 
 [wandb]
 project = "wiki-search"
@@ -34,7 +32,6 @@ target_modules = [
 [orchestrator]
 batch_size = 512
 rollouts_per_example = 16
-seq_len = 4096
 oversampling_factor = 2.0
 lora_name = "qwen3-4b-wiki-search"
 

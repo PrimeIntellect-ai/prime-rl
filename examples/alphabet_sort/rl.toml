@@ -1,5 +1,6 @@
 
-max_steps = 200 
+max_steps = 200
+seq_len = 2048
 
 [ckpt] # Checkpoint at the end of training
 
@@ -26,7 +27,6 @@ lr = 1e-5
 [orchestrator]
 batch_size = 512
 rollouts_per_example = 8
-seq_len = 2048
 
 [orchestrator.sampling]
 max_tokens = 768

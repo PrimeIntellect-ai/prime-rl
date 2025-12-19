@@ -1,4 +1,5 @@
 max_steps = 100
+seq_len = 2048
 
 [wandb]
 project = "alphabet-sort-debug"
@@ -11,7 +12,6 @@ name = "Qwen/Qwen3-4B-Instruct-2507"
 [orchestrator]
 batch_size = 512
 rollouts_per_example = 16
-seq_len = 2048
 
 [orchestrator.sampling]
 max_tokens = 512

@@ -1,4 +1,5 @@
 max_steps = 20
+seq_len = 2048
 
 [model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
@@ -6,7 +7,6 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 [orchestrator]
 batch_size = 128
 rollouts_per_example = 16
-seq_len = 2048
 
 [orchestrator.sampling]
 max_tokens = 128
