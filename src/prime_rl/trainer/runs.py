@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
 import tomli
+import torch.distributed as dist
 import torch.distributed.distributed_c10d as c10d
 
 from prime_rl.trainer.world import get_world
@@ -153,9 +154,9 @@ class Runs:
     def sync_runs(self) -> None:
         if self.world.is_master:
             self.store.set("runs", pickle.dumps(self.id_2_idx))
-            torch.distributed.barrier()
+            dist.barrier()
         else:
-            torch.distributed.barrier()
+            dist.barrier()
             new_id_2_idx: dict[str, int] = pickle.loads(self.store.get("runs"))
             new_runs = new_id_2_idx.keys() - self.id_2_idx.keys()
             deleted_runs = self.id_2_idx.keys() - new_id_2_idx.keys()
