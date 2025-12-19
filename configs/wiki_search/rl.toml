@@ -33,6 +33,7 @@ batch_size = 512
 rollouts_per_example = 16
 seq_len = 4096
 oversampling_factor = 2.0
+lora_name = "qwen3-4b-wiki-search"
 
 [orchestrator.sampling]
 max_tokens = 512
