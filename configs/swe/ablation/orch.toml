@@ -15,7 +15,7 @@ name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
 
 [[env]]
 id = "mini-swe-agent-plus"
-args = { max_turns = 25 }
+args = { max_turns = 10 }
 name = "mini-swe-agent-plus"
 
 

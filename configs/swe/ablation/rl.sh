@@ -83,7 +83,7 @@ source .venv/bin/activate
 uv sync --all-extras
 
 # Install mini-swe-agent-plus environment
-uv pip install -e ~/git/research-environments/environments/mini-swe-agent-plus
+uv pip install -e $HOME/git/research-environments/environments/mini-swe-agent-plus
 
 # Run RL
 srun bash -c '
