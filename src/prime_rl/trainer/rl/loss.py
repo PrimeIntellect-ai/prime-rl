@@ -49,6 +49,7 @@ def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
 def compute_loss(
     trainer_logprobs: Any,  # list of Float[Tensor, "seq_i"] with potentially different seq_i lengths
     inference_logprobs: Any,  # list of Float[Tensor, "seq_i"] with potentially different seq_i lengths
+    reference_logprobs: Any,  # list of Float[Tensor, "seq_i"] with potentially different seq_i lengths
     advantages: Any,  # list of Float[Tensor, "seq_i"] with potentially different seq_i lengths
     loss_mask: Any,  # list of Bool[Tensor, "seq_i"] with potentially different seq_i lengths
     loss_config: LossConfig,
@@ -60,6 +61,7 @@ def compute_loss(
     Args:
         trainer_logprobs: Log probabilities tensor for packed sequences
         inference_logprobs: Old log probabilities tensor for packed sequences
+        reference_logprobs: Reference log probabilities tensor for packed sequences
         advantages: Advantages tensor for packed sequences
         loss_mask: Loss mask tensor for packed sequences
         loss_config: Loss configuration object
@@ -82,10 +84,11 @@ def compute_loss(
     total_geo_masked_high = []
     total_geo_seq_ratio = []
 
-    for trainer_logprobs, inference_logprobs, advantages, loss_mask in zip(
-        trainer_logprobs, inference_logprobs, advantages, loss_mask
+    for trainer_logprobs, inference_logprobs, reference_logprobs, advantages, loss_mask in zip(
+        trainer_logprobs, inference_logprobs, reference_logprobs, advantages, loss_mask
     ):
         log_importance_ratio = trainer_logprobs - inference_logprobs
+        ref_kl = trainer_logprobs - reference_logprobs
 
         # Trainer-inference mismatch KL per token
         token_importance_ratio = torch.exp(log_importance_ratio)
@@ -112,6 +115,7 @@ def compute_loss(
 
         importance_ratio = seq_importance_ratio if loss_config.ratio_type == "sequence" else token_importance_ratio
 
+        advantages = loss_config.adv_tau * advantages + loss_config.ref_tau * ref_kl.detach()
         coeff = importance_ratio * (advantages - loss_config.kl_tau * log_importance_ratio)
         loss = -(coeff.detach() * trainer_logprobs)[keep_mask].sum()
 

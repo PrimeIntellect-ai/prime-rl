@@ -20,8 +20,8 @@ class TensorMicroBatch(TypedDict):
     position_ids: Int[Tensor, "batch seq"]
     advantages: Float[Tensor, "batch seq"]
     inference_logprobs: Float[Tensor, "batch seq"]
+    reference_logprobs: Float[Tensor, "batch seq"]
     loss_mask: Bool[Tensor, "batch seq"]
-    teacher_logprobs: Float[Tensor, "batch seq"] | None  
 
     # Batch level
     temperature: float
@@ -29,17 +29,13 @@ class TensorMicroBatch(TypedDict):
 
 def micro_batch_to_tensor(micro_batch: MicroBatch) -> TensorMicroBatch:
     """Convert a MicroBatch (msgspec struct with lists) to a TensorMicroBatch (dict with tensors)."""
-    teacher_logprobs = None
-    if micro_batch.teacher_logprobs is not None:
-        teacher_logprobs = torch.tensor(micro_batch.teacher_logprobs, dtype=torch.float).unsqueeze(0)
-    
     return TensorMicroBatch(
         input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),
         position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
         advantages=torch.tensor(micro_batch.advantages, dtype=torch.float).unsqueeze(0),
         inference_logprobs=torch.tensor(micro_batch.inference_logprobs, dtype=torch.float).unsqueeze(0),
+        reference_logprobs=torch.tensor(micro_batch.reference_logprobs, dtype=torch.float).unsqueeze(0),
         loss_mask=torch.tensor(micro_batch.loss_mask, dtype=torch.bool).unsqueeze(0),
-        teacher_logprobs=teacher_logprobs,
         temperature=micro_batch.temperature if micro_batch.temperature is not None else 1.0,
     )
 
@@ -104,7 +100,7 @@ class FakeDataLoader:
             "position_ids": position_ids.unsqueeze(0),
             "advantages": advantages.unsqueeze(0),
             "inference_logprobs": inference_logprobs.unsqueeze(0),
-            "teacher_logprobs": None,  
+            "reference_logprobs": torch.zeros(input_ids.shape[0]).unsqueeze(0),
             "temperature": 1.0,
             "loss_mask": loss_mask.unsqueeze(0),
         }
@@ -123,7 +119,7 @@ class FakeDataLoader:
             "position_ids": torch.cat([torch.arange(self.seq_len)]).unsqueeze(0),
             "advantages": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
             "inference_logprobs": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
-            "teacher_logprobs": None, 
+            "reference_logprobs": torch.zeros(self.seq_len).unsqueeze(0),
             "temperature": 1.0,
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
         }

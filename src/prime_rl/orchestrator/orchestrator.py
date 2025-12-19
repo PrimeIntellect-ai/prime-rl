@@ -349,21 +349,20 @@ async def orchestrate(config: OrchestratorConfig):
             f"Converted {len(train_rollouts)} training rollouts to {len(train_examples)} training examples using {config.trajectory_strategy} strategy"
         )
 
-        # Compute teacher logprobs if teacher is configured
-        teacher_logprobs_time = 0
+        # Compute reference logprobs if teacher is configured
+        reference_logprobs_time = 0
         if teacher_clients is not None and teacher_model_name is not None:
-            logger.info(f"Computing teacher logprobs for {len(train_examples)} training examples")
-            teacher_logprobs_start_time = time.perf_counter()
-            teacher_logprobs_list = await compute_teacher_logprobs_for_batch(
+            logger.info(f"Computing reference logprobs for {len(train_examples)} training examples")
+            reference_logprobs_start_time = time.perf_counter()
+            reference_logprobs_list = await compute_teacher_logprobs_for_batch(
                 clients=teacher_clients,
                 model_name=teacher_model_name,
                 samples=train_examples,
             )
-            # Assign teacher logprobs to each training example
-            for train_example, teacher_logprobs in zip(train_examples, teacher_logprobs_list):
-                train_example.teacher_logprobs = teacher_logprobs
-            teacher_logprobs_time = time.perf_counter() - teacher_logprobs_start_time
-            logger.debug(f"Computed teacher logprobs in {teacher_logprobs_time:.2f}s")
+            for train_example, reference_logprobs in zip(train_examples, reference_logprobs_list):
+                train_example.reference_logprobs = reference_logprobs
+            reference_logprobs_time = time.perf_counter() - reference_logprobs_start_time
+            logger.debug(f"Computed reference logprobs in {reference_logprobs_time:.2f}s")
 
         training_batch = TrainingBatch(
             examples=train_examples,
@@ -483,7 +482,7 @@ async def orchestrate(config: OrchestratorConfig):
             # Time metrics
             "time/step": step_time,
             "time/generate_completions": generate_completions_time,
-            "time/teacher_logprobs": teacher_logprobs_time,
+            "time/reference_logprobs": reference_logprobs_time,
             "time/save_ckpt": save_ckpt_time,
             # Scheduler metrics
             **scheduler.get_metrics(),

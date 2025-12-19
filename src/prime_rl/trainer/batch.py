@@ -18,7 +18,7 @@ def prepare_sample(
     advantages = [training_example.advantage] * len(input_ids)
     position_ids = list(range(len(input_ids)))
     
-    teacher_logprobs = training_example.teacher_logprobs
+    reference_logprobs = training_example.reference_logprobs
 
     if len(input_ids) > seq_len:
         input_ids = input_ids[:seq_len]
@@ -26,23 +26,18 @@ def prepare_sample(
         inference_logprobs = inference_logprobs[:seq_len]
         position_ids = position_ids[:seq_len]
         advantages = advantages[:seq_len]
-        if teacher_logprobs is not None:
-            teacher_logprobs = teacher_logprobs[:seq_len]
+        reference_logprobs = reference_logprobs[:seq_len]
 
-    assert len(input_ids) == len(advantages) == len(loss_mask) == len(position_ids) == len(inference_logprobs), (
-        f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, inference_logprobs: {len(inference_logprobs)}"
+    assert len(input_ids) == len(advantages) == len(loss_mask) == len(position_ids) == len(inference_logprobs) == len(reference_logprobs), (
+        f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, inference_logprobs: {len(inference_logprobs)}, reference_logprobs: {len(reference_logprobs)}"
     )
-    if teacher_logprobs is not None:
-        assert len(teacher_logprobs) == len(input_ids), (
-            f"teacher_logprobs: {len(teacher_logprobs)}, input_ids: {len(input_ids)}"
-        )
     return MicroBatch(
         input_ids=input_ids,
         advantages=advantages,
         loss_mask=loss_mask,
         position_ids=position_ids,
         inference_logprobs=inference_logprobs,
-        teacher_logprobs=teacher_logprobs,
+        reference_logprobs=reference_logprobs,
     )
 
 
@@ -65,12 +60,8 @@ def packed_samples_into_micro_bs(samples: list[MicroBatch], max_seq_len: int) ->
                 bin_content.loss_mask.extend(sample.loss_mask)
                 bin_content.advantages.extend(sample.advantages)
                 bin_content.inference_logprobs.extend(sample.inference_logprobs)
+                bin_content.reference_logprobs.extend(sample.reference_logprobs)
                 bin_content.position_ids.extend(sample.position_ids)
-                # Handle teacher_logprobs if present
-                if sample.teacher_logprobs is not None:
-                    if bin_content.teacher_logprobs is None:
-                        bin_content.teacher_logprobs = []
-                    bin_content.teacher_logprobs.extend(sample.teacher_logprobs)
                 break
         else:
             micro_batches.append(sample)
@@ -99,8 +90,7 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     micro_batch.loss_mask.extend([False for _ in range(padding_size)])
     micro_batch.position_ids.extend(list(range(padding_size)))
     micro_batch.inference_logprobs.extend([0.0 for _ in range(padding_size)])
-    if micro_batch.teacher_logprobs is not None:
-        micro_batch.teacher_logprobs.extend([0.0 for _ in range(padding_size)])
+    micro_batch.reference_logprobs.extend([0.0 for _ in range(padding_size)])
 
     return micro_batch
 
