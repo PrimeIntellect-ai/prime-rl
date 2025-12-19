@@ -10,3 +10,4 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`orchestrator.buffer.env_ratios`**: Added environment ratio configuration for buffer sampling (#1450, 2025-12-18)
 - **`orchestrator.ckpt.buffer_path`**: Deprecated (#1450, 2025-12-18)
 - **`orchestrator.buffer.easy_fraction`** and **`orchestrator.buffer.hard_fraction`**: Easy and hard fraction now defines the fraction of easy and hard problems to convert to normal when resuming, whereas previously it was the ratio of easy/ hard samples to sample per step (#1450, 2025-12-18)
+- **`seq_len`**: Added root-level `seq_len` config that sets both `trainer.model.seq_len` and `orchestrator.seq_len`. Added validation that `trainer.model.seq_len >= orchestrator.seq_len` (2025-12-18)
