@@ -67,7 +67,9 @@ def train(config: RLTrainerConfig):
 
     setup_runs(config.output_dir, config.max_concurrent_runs)
     runs = get_runs()
-    set_offsets(torch.tensor([0] * config.max_concurrent_runs, dtype=torch.int32, device="cuda"))
+    set_offsets(
+        torch.tensor([0] * config.max_concurrent_runs, dtype=torch.int32, device=torch.device("cuda", world.local_rank))
+    )
     logger.info(f"Starting RL trainer in {world} in {config.output_dir}")
 
     # Print warning if running in benchmark mode
