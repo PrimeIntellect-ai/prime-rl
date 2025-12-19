@@ -82,6 +82,44 @@ class Runs:
 
         return config
 
+    def _delete_run(self, deleted_run: str, deleted_idx: int) -> None:
+        # Call deletion hooks
+        for hook in self._deletion_hooks:
+            hook(deleted_idx, deleted_run)
+
+        del self.progress[deleted_idx]
+        if deleted_idx in self.config:
+            del self.config[deleted_idx]
+        self.ready_to_update[deleted_idx] = False
+
+        # Process mappings
+        self.unused_idxs.add(deleted_idx)
+        del self.idx_2_id[deleted_idx]
+        del self.id_2_idx[deleted_run]
+
+    def _create_run(self, new_run: str, new_id: int, config: "OrchestratorConfig") -> None:
+        self.id_2_idx[new_run] = new_id
+        self.unused_idxs.remove(new_id)
+        self.idx_2_id[new_id] = new_run
+
+        # Get progress
+        self.progress[new_id] = Progress()
+
+        prev_ckpt_steps = [
+            int(i.stem.split("_")[-1]) for i in (self.get_run_dir(new_id) / "checkpoints").glob("step_*")
+        ]
+        self.progress[new_id].step = max(prev_ckpt_steps) if prev_ckpt_steps else 0
+
+        # Store the parsed config
+        self.config[new_id] = config
+
+        # Reset parameters for the new run
+        self.reset_run_parameters(new_id)
+
+        # Call creation hooks
+        for hook in self._creation_hooks:
+            hook(new_id, new_run)
+
     def check_for_changes(self) -> None:
         run_ids = {run_path.stem for run_path in self.output_dir.glob("run_*")}
         deleted_runs = self.id_2_idx.keys() - run_ids
@@ -89,20 +127,7 @@ class Runs:
 
         for deleted_run in deleted_runs:
             deleted_idx = self.id_2_idx[deleted_run]
-
-            # Call deletion hooks
-            for hook in self._deletion_hooks:
-                hook(deleted_idx, deleted_run)
-
-            del self.progress[deleted_idx]
-            if deleted_idx in self.config:
-                del self.config[deleted_idx]
-            self.ready_to_update[deleted_idx] = False
-
-            # Process mappings
-            self.unused_idxs.add(deleted_idx)
-            del self.idx_2_id[deleted_idx]
-            del self.id_2_idx[deleted_run]
+            self._delete_run(deleted_run, deleted_idx)
 
         for new_run in new_runs:
             try:
@@ -114,27 +139,7 @@ class Runs:
                     continue
 
                 # Now that config is valid, proceed with run setup
-                self.id_2_idx[new_run] = new_id
-                self.unused_idxs.remove(new_id)
-                self.idx_2_id[new_id] = new_run
-
-                # Get progress
-                self.progress[new_id] = Progress()
-
-                prev_ckpt_steps = [
-                    int(i.stem.split("_")[-1]) for i in (self.get_run_dir(new_id) / "checkpoints").glob("step_*")
-                ]
-                self.progress[new_id].step = max(prev_ckpt_steps) if prev_ckpt_steps else 0
-
-                # Store the parsed config
-                self.config[new_id] = config
-
-                # Reset parameters for the new run
-                self.reset_run_parameters(new_id)
-
-                # Call creation hooks
-                for hook in self._creation_hooks:
-                    hook(new_id, new_run)
+                self._create_run(new_run, new_id, config)
             except StopIteration:
                 continue
 
