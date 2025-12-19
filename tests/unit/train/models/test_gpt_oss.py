@@ -23,8 +23,10 @@ def get_model_pairs():
         rope_theta=10000.0,
         attention_bias=False,
         mlp_bias=False,
+        num_local_experts=8,
+        num_experts_per_tok=2
     )
-    hf_config._attn_implementation = "sdpa"
+    hf_config._attn_implementation = "eager"
     with torch.device("cuda"), default_dtype(torch.float32):
         hf_model = HFGptOssForCausalLM._from_config(hf_config)
         prime_model = PrimeRLGptOssForCausalLM._from_config(hf_config)
@@ -109,7 +111,7 @@ def test_gpt():
     assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=2), f"Max grad diff: {grad_diff.abs().max()}"
 
     with torch.device("cuda"), default_dtype(torch.float32):
-        hf_from_prime_model = HFLlamaForCausalLM._from_config(hf_model.config)
+        hf_from_prime_model = HFGptOssForCausalLM._from_config(hf_model.config)
         converted_state_dict = prime_model.convert_to_hf(prime_model.state_dict())
         hf_from_prime_model.load_state_dict(converted_state_dict)
 
