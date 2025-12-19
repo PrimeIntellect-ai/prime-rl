@@ -79,7 +79,7 @@ jobs:
                   enable-cache: true
                   cache-dependency-glob: "uv.lock"
             - name: Install dependencies
-              run: uv sync --all-extras --locked
+              run: uv sync --locked
             - name: Run experiment
               env:
                   USERNAME_CI: CI_RUNNER

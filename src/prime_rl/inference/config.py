@@ -145,16 +145,6 @@ class InferenceConfig(BaseSettings):
         ),
     ] = 8
 
-    # TODO: The default value is very high because our areal impl for lora isn't ideal
-    # We add a lora with the same name instead of changing weights inplace
-    # Because we dont cancel requests that are past max_async, these requests could be using a LoRA that gets unloaded which will crash the inference server
-    max_cpu_loras: Annotated[
-        int,
-        Field(
-            description="The maximum number of LoRAs to use on CPU. Passed to vLLM as `--max-cpu-loras`",
-        ),
-    ] = 100
-
     max_lora_rank: Annotated[
         int | None,
         Field(
@@ -178,11 +168,11 @@ class InferenceConfig(BaseSettings):
     ] = 1
 
     seed: Annotated[
-        int,
+        int | None,
         Field(
-            description="Seed the inference components. Passed to vLLM as `--seed`",
+            description="Seed the inference components. If None, no seeding is used. Passed to vLLM as `--seed`",
         ),
-    ] = 0
+    ] = None
 
     weight_broadcast: Annotated[WeightBroadcastConfig, Field(description="The weight broadcast config.")] = (
         WeightBroadcastConfig()
@@ -251,7 +241,6 @@ class InferenceConfig(BaseSettings):
             "parallel.dp": "data_parallel_size",
             "enable_lora": "enable_lora",
             "max_loras": "max_loras",
-            "max_cpu_loras": "max_cpu_loras",
             "max_lora_rank": "max_lora_rank",
             "gpu_memory_utilization": "gpu_memory_utilization",
             "api_server_count": "api_server_count",
