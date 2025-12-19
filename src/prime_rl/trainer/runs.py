@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
 import tomli
+import torch
 import torch.distributed as dist
 import torch.distributed.distributed_c10d as c10d
 
@@ -11,8 +12,6 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
-    import torch
-
     from prime_rl.orchestrator.config import OrchestratorConfig
     from prime_rl.trainer.models.layers.lora import MultiLoRALinear
 
@@ -40,12 +39,13 @@ class Runs:
         self.config: dict[int, "OrchestratorConfig"] = {}
         self.ready_to_update = [False] * max_runs
 
-        self._deletion_hooks: list[Callable[[int, str], None]] = []
         self._creation_hooks: list[Callable[[int, str], None]] = []
 
         # We use the store to keep other ranks in sync with master
         self.store = c10d._get_default_store()
         self.world = get_world()
+        # Track id_2_idx state at last sync_runs to calculate diffs
+        self._last_synced_id_2_idx: dict[str, int] = {}
 
         # Store modules with their FQN prefixes for parameter management
         self._modules: list[tuple[str, "MultiLoRALinear"]] = []
@@ -90,11 +90,8 @@ class Runs:
 
         return config
 
-    def _delete_run(self, deleted_run: str, deleted_idx: int) -> None:
-        # Call deletion hooks
-        for hook in self._deletion_hooks:
-            hook(deleted_idx, deleted_run)
-
+    def _delete_run_data(self, deleted_run: str, deleted_idx: int) -> None:
+        """Update data structures for a deleted run"""
         del self.progress[deleted_idx]
         if deleted_idx in self.config:
             del self.config[deleted_idx]
@@ -105,7 +102,8 @@ class Runs:
         del self.idx_2_id[deleted_idx]
         del self.id_2_idx[deleted_run]
 
-    def _create_run(self, new_run: str, new_id: int, config: "OrchestratorConfig") -> None:
+    def _create_run_data(self, new_run: str, new_id: int, config: "OrchestratorConfig") -> None:
+        """Update data structures for a new run (no hooks or param reset)."""
         self.id_2_idx[new_run] = new_id
         self.unused_idxs.remove(new_id)
         self.idx_2_id[new_id] = new_run
@@ -121,21 +119,25 @@ class Runs:
         # Store the parsed config
         self.config[new_id] = config
 
-        # Reset parameters for the new run
+    def _create_run_hooks(self, new_id: int, new_run: str) -> None:
+        """Reset parameters and call creation hooks for a run."""
         self.reset_run_parameters(new_id)
-
-        # Call creation hooks
         for hook in self._creation_hooks:
             hook(new_id, new_run)
 
     def check_for_changes(self) -> None:
+        """Detect run changes and update data structures. Must be followed by sync_runs().
+
+        Only updates mappings and data structures. Hooks and parameter resets
+        are deferred to sync_runs() so all ranks execute them together.
+        """
         run_ids = {run_path.stem for run_path in self.output_dir.glob("run_*")}
         deleted_runs = self.id_2_idx.keys() - run_ids
         new_runs = run_ids - self.id_2_idx.keys()
 
         for deleted_run in deleted_runs:
             deleted_idx = self.id_2_idx[deleted_run]
-            self._delete_run(deleted_run, deleted_idx)
+            self._delete_run_data(deleted_run, deleted_idx)
 
         for new_run in new_runs:
             try:
@@ -146,29 +148,51 @@ class Runs:
                 if config is None:
                     continue
 
-                # Now that config is valid, proceed with run setup
-                self._create_run(new_run, new_id, config)
+                self._create_run_data(new_run, new_id, config)
             except StopIteration:
                 continue
 
     def sync_runs(self) -> None:
+        """Sync run state across ranks and execute hooks.
+
+        Master calculates what changed since last sync using _last_synced_id_2_idx.
+        This matches what non-master ranks will calculate as new/deleted runs.
+        All ranks then execute hooks and parameter resets together.
+        """
+        print(f"Syncing runs on rank {self.world.rank}", flush=True)
+
         if self.world.is_master:
             self.store.set("runs", pickle.dumps(self.id_2_idx))
-            dist.barrier()
+        dist.barrier()
+
+        if self.world.is_master:
+            # Calculate changes since last sync (this is what other ranks will see)
+            new_runs = self.id_2_idx.keys() - self._last_synced_id_2_idx.keys()
+            deleted_runs = self._last_synced_id_2_idx.keys() - self.id_2_idx.keys()
         else:
-            dist.barrier()
             new_id_2_idx: dict[str, int] = pickle.loads(self.store.get("runs"))
             new_runs = new_id_2_idx.keys() - self.id_2_idx.keys()
             deleted_runs = self.id_2_idx.keys() - new_id_2_idx.keys()
 
+            # Other ranks catch up with master's data state
             for deleted_run in deleted_runs:
                 deleted_idx = self.id_2_idx[deleted_run]
-                self._delete_run(deleted_run, deleted_idx)
+                self._delete_run_data(deleted_run, deleted_idx)
 
             for new_run in new_runs:
                 new_id = new_id_2_idx[new_run]
                 config = {}  # The other ranks dont need them for now
-                self._create_run(new_run, new_id, config)
+                self._create_run_data(new_run, new_id, config)  # type: ignore[arg-type]
+
+        for new_run in new_runs:
+            new_id = self.id_2_idx[new_run]
+            self._create_run_hooks(new_id, new_run)
+
+        # Update last synced state for master
+        if self.world.is_master:
+            self._last_synced_id_2_idx = self.id_2_idx.copy()
+
+        print(f"Synced runs on rank {self.world.rank}", flush=True)
 
     @property
     def used_idxs(self):
@@ -179,15 +203,6 @@ class Runs:
 
     def get_run_dir(self, idx: int) -> Path:
         return self.output_dir / self.idx_2_id[idx]
-
-    def register_deletion_hook(self, hook: Callable[[int, str], None]) -> None:
-        """Register a hook to be called when a run is deleted.
-
-        Args:
-            hook: A callable that takes (idx: int, run_id: str) as arguments.
-                  Called when a run is deleted from the system.
-        """
-        self._deletion_hooks.append(hook)
 
     def register_creation_hook(self, hook: Callable[[int, str], None]) -> None:
         """Register a hook to be called when a new run is created.
