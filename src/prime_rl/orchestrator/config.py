@@ -481,6 +481,20 @@ class NCCLWeightBroadcastConfig(BaseModel):
 WeightBroadcastConfigType: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig
 
 
+class TeacherConfig(BaseConfig):
+    """Configures the teacher model for computing teacher logprobs."""
+
+    client: Annotated[
+        ClientConfig,
+        Field(description="The OAI client configuration for the teacher model."),
+    ] = ClientConfig()
+
+    model: Annotated[
+        ModelConfig,
+        Field(description="The model configuration for the teacher model."),
+    ] = ModelConfig()
+
+
 class OrchestratorConfig(BaseSettings):
     """Configures the orchestrator for RL training."""
 
@@ -489,6 +503,12 @@ class OrchestratorConfig(BaseSettings):
 
     # The model configuration
     model: ModelConfig = ModelConfig()
+
+    # The teacher model configuration (optional)
+    teacher: Annotated[
+        TeacherConfig | None,
+        Field(description="The teacher model configuration for computing teacher logprobs. If None, no teacher logprobs will be computed."),
+    ] = None
 
     # The sampling configuration
     sampling: SamplingConfig = SamplingConfig()

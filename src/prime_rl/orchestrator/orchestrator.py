@@ -7,6 +7,10 @@ import tomli_w
 from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
+from prime_rl.orchestrator.teacher import (
+    compute_teacher_logprobs_for_batch,
+    validate_tokenizer_compatibility,
+)
 from prime_rl.orchestrator.trajectories import branch_rollout, interleave_rollout
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
 
@@ -99,9 +103,26 @@ async def orchestrate(config: OrchestratorConfig):
     admin_clients = setup_admin_clients(config.client)
     evals_client = setup_evals_client()
 
+    # Setup teacher client if configured
+    teacher_clients = None
+    if config.teacher is not None:
+        logger.info(
+            f"Initializing teacher OpenAI client (base_url={', '.join(config.teacher.client.base_url)}, "
+            f"model={config.teacher.model.name})"
+        )
+        teacher_clients = setup_clients(config.teacher.client)
+
     # Load tokenizer
     logger.info(f"Initializing tokenizer for {config.model.name}")
     tokenizer = AutoTokenizer.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
+
+    # If teacher is configured, validate tokenizer compatibility
+    if config.teacher is not None:
+        logger.info(f"Validating tokenizer compatibility with teacher model {config.teacher.model.name}")
+        teacher_tokenizer = AutoTokenizer.from_pretrained(
+            config.teacher.model.name, trust_remote_code=config.teacher.model.trust_remote_code
+        )
+        validate_tokenizer_compatibility(tokenizer, teacher_tokenizer)
 
     # Setup monitor
     logger.info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
@@ -320,6 +341,24 @@ async def orchestrate(config: OrchestratorConfig):
             f"Converted {len(train_rollouts)} training rollouts to {len(train_examples)} training examples using {config.trajectory_strategy} strategy"
         )
 
+        # Compute teacher logprobs if teacher is configured
+        teacher_logprobs_time = 0
+        if teacher_clients is not None and config.teacher is not None:
+            logger.info(f"Computing teacher logprobs for {len(train_examples)} training examples")
+            teacher_logprobs_start_time = time.perf_counter()
+            teacher_logprobs_list = await compute_teacher_logprobs_for_batch(
+                clients=teacher_clients,
+                model_name=config.teacher.model.name,
+                tokenizer=tokenizer,
+                samples=train_examples,
+                pbar_description="Computing teacher logprobs",
+            )
+            # Assign teacher logprobs to each training example
+            for train_example, teacher_logprobs in zip(train_examples, teacher_logprobs_list):
+                train_example.teacher_logprobs = teacher_logprobs
+            teacher_logprobs_time = time.perf_counter() - teacher_logprobs_start_time
+            logger.debug(f"Computed teacher logprobs in {teacher_logprobs_time:.2f}s")
+
         training_batch = TrainingBatch(
             examples=train_examples,
             temperature=config.sampling.temperature,
@@ -438,6 +477,7 @@ async def orchestrate(config: OrchestratorConfig):
             # Time metrics
             "time/step": step_time,
             "time/generate_completions": generate_completions_time,
+            "time/teacher_logprobs": teacher_logprobs_time,
             "time/save_ckpt": save_ckpt_time,
             # Scheduler metrics
             **scheduler.get_metrics(),
