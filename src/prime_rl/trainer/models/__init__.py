@@ -5,8 +5,8 @@ from collections import OrderedDict
 from transformers import AutoConfig
 from transformers.models.auto.auto_factory import _BaseAutoModelClass, _LazyAutoMapping, auto_class_update
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
-from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.gpt_oss.configuration_gpt_oss import GptOssConfig
+from transformers.models.llama.configuration_llama import LlamaConfig
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig, Glm4MoeForCausalLM

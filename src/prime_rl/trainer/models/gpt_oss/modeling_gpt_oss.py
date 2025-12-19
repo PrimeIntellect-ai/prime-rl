@@ -74,32 +74,32 @@ class GptOssDecoderLayer(GradientCheckpointingLayer):
         self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
         self.post_attention_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
 
-        @deprecate_kwarg("past_key_value", new_name="past_key_values", version="4.58")
-        def forward(
-            self,
-            hidden_states: torch.Tensor,
-            position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
-            cu_seqlens: Optional[torch.LongTensor] = None,
-            max_seqlen: Optional[int] = None,
-        ) -> torch.Tensor:
-            residual = hidden_states
-            hidden_states = self.input_layernorm(hidden_states)
+    @deprecate_kwarg("past_key_value", new_name="past_key_values", version="4.58")
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
+        cu_seqlens: Optional[torch.LongTensor] = None,
+        max_seqlen: Optional[int] = None,
+    ) -> torch.Tensor:
+        residual = hidden_states
+        hidden_states = self.input_layernorm(hidden_states)
 
-            # Self Attention
-            hidden_states, _ = self.self_attn(
-                hidden_states=hidden_states,
-                position_embeddings=position_embeddings,
-                cu_seqlens=cu_seqlens,
-                max_seqlen=max_seqlen,
-            )
-            hidden_states = residual + hidden_states
+        # Self Attention
+        hidden_states, _ = self.self_attn(
+            hidden_states=hidden_states,
+            position_embeddings=position_embeddings,
+            cu_seqlens=cu_seqlens,
+            max_seqlen=max_seqlen,
+        )
+        hidden_states = residual + hidden_states
 
-            # Fully Connected
-            residual = hidden_states
-            hidden_states = self.post_attention_layernorm(hidden_states)
-            hidden_states = self.mlp(hidden_states)
-            hidden_states = residual + hidden_states
-            return hidden_states
+        # Fully Connected
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        hidden_states = residual + hidden_states
+        return hidden_states
 
 @auto_docstring
 class GptOssPreTrainedModel(PreTrainedModelPrimeRL):
@@ -177,7 +177,7 @@ class GptOssModel(GptOssPreTrainedModel):
         self.post_init()
 
     @auto_docstring
-    def froward(
+    def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
