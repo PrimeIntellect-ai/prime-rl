@@ -65,11 +65,6 @@ def train(config: RLTrainerConfig):
     )
     logger.info(f"Starting RL trainer in {world}")
 
-    setup_runs(config.output_dir, config.max_concurrent_runs)
-    runs = get_runs()
-    set_offsets(
-        torch.tensor([0] * config.max_concurrent_runs, dtype=torch.int32, device=torch.device("cuda", world.local_rank))
-    )
     logger.info(f"Starting RL trainer in {world} in {config.output_dir}")
 
     # Print warning if running in benchmark mode
@@ -92,6 +87,12 @@ def train(config: RLTrainerConfig):
     )
     torch.set_float32_matmul_precision("high")
 
+    # Setup runs and offsets
+    setup_runs(config.output_dir, config.max_concurrent_runs)
+    runs = get_runs()
+    set_offsets(
+        torch.tensor([0] * config.max_concurrent_runs, dtype=torch.int32, device=torch.device("cuda", world.local_rank))
+    )
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
 
