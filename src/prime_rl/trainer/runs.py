@@ -1,9 +1,12 @@
+import pickle
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
 import tomli
+import torch.distributed.distributed_c10d as c10d
 
+from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -38,6 +41,10 @@ class Runs:
 
         self._deletion_hooks: list[Callable[[int, str], None]] = []
         self._creation_hooks: list[Callable[[int, str], None]] = []
+
+        # We use the store to keep other ranks in sync with master
+        self.store = c10d._get_default_store()
+        self.world = get_world()
 
         # Store modules with their FQN prefixes for parameter management
         self._modules: list[tuple[str, "MultiLoRALinear"]] = []
@@ -142,6 +149,25 @@ class Runs:
                 self._create_run(new_run, new_id, config)
             except StopIteration:
                 continue
+
+    def sync_runs(self) -> None:
+        if self.world.is_master:
+            self.store.set("runs", pickle.dumps(self.id_2_idx))
+            torch.distributed.barrier()
+        else:
+            torch.distributed.barrier()
+            new_id_2_idx: dict[str, int] = pickle.loads(self.store.get("runs"))
+            new_runs = new_id_2_idx.keys() - self.id_2_idx.keys()
+            deleted_runs = self.id_2_idx.keys() - new_id_2_idx.keys()
+
+            for deleted_run in deleted_runs:
+                deleted_idx = self.id_2_idx[deleted_run]
+                self._delete_run(deleted_run, deleted_idx)
+
+            for new_run in new_runs:
+                new_id = new_id_2_idx[new_run]
+                config = {}  # The other ranks dont need them for now
+                self._create_run(new_run, new_id, config)
 
     @property
     def used_idxs(self):
