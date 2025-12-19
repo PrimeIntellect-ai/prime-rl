@@ -36,7 +36,7 @@ We use non-default settings to balance the difficulty: 3 fixed turns (instead of
 Start the inference server:
 ```bash
 # In the `Inference` pane
-uv run inference --model.name Qwen/Qwen3-4B-Instruct-2507
+uv run inference --enable-lora --model.name Qwen/Qwen3-4B-Instruct-2507
 ```
 
 Evaluate the base model:
@@ -88,7 +88,7 @@ The correct alphabetical order by last name should be: Akman, Cakir, Durgun. The
 
 ## RL
 
-We train with LoRA (rank 32, alpha 64) for 100 steps. By default, LoRA weights are merged into the base model at each checkpoint.
+We train with LoRA (rank 32, alpha 64) for 100 steps.
 
 ![RL](rl/wandb.png)
 *Check out the logs on [W&B](https://wandb.ai/primeintellect/alphabet-sort-4b-lora/workspace?nw=nwuserandrewpi).*
@@ -112,7 +112,7 @@ We have uploaded the final model as [`PrimeIntellect/Qwen3-4B-Instruct-AlphabetS
 Let's see how our final RL checkpoint performs on the eval set.
 ```bash
 # In the `Inference` pane
-uv run inference --model.name PrimeIntellect/Qwen3-4B-Instruct-AlphabetSort-RL
+uv run inference --enable-lora --model.name PrimeIntellect/Qwen3-4B-Instruct-AlphabetSort-RL
 ```
 
 ```bash

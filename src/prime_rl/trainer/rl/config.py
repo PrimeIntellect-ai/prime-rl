@@ -237,6 +237,8 @@ class RLTrainerConfig(BaseSettings):
 
     @model_validator(mode="after")
     def validate_lora_broadcast(self):
+        if self.model.lora is not None:
+            self.weight_broadcast.adapter_only = True
         if self.weight_broadcast.adapter_only and not self.model.lora:
             raise ValueError("Adapter only weight broadcast requires LoRA to be enabled.")
         if self.weight_broadcast.type == "nccl" and self.weight_broadcast.adapter_only:
