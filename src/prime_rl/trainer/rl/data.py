@@ -162,9 +162,8 @@ class DataLoader:
     def wait_for_batch(self) -> None:
         if self.world.is_master:
             self.packer.pack()
-        else:
-            self.runs.check_for_changes()
         self.receiver.wait()
+        self.runs.sync_runs()
 
     def get_batch(self) -> list[TensorMicroBatch]:
         micro_batches = self.receiver.receive()
