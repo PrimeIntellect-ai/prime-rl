@@ -18,10 +18,7 @@ def prepare_sample(
     advantages = [training_example.advantage] * len(input_ids)
     position_ids = list(range(len(input_ids)))
     
-    # Prepare teacher_logprobs if available
-    teacher_logprobs = None
-    if training_example.teacher_logprobs is not None:
-        teacher_logprobs = [0.0] * len(training_example.prompt_ids) + training_example.teacher_logprobs
+    teacher_logprobs = training_example.teacher_logprobs
 
     if len(input_ids) > seq_len:
         input_ids = input_ids[:seq_len]

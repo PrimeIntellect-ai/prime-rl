@@ -481,17 +481,17 @@ class NCCLWeightBroadcastConfig(BaseModel):
 WeightBroadcastConfigType: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig
 
 
-class TeacherConfig(BaseConfig):
-    """Configures the teacher model for computing teacher logprobs."""
+class ReferenceModelConfig(BaseConfig):
+    """Configures the reference model for computing reference logprobs when using a separate model."""
 
     client: Annotated[
         ClientConfig,
-        Field(description="The OAI client configuration for the teacher model."),
+        Field(description="The OAI client configuration for the reference model."),
     ] = ClientConfig()
 
     model: Annotated[
         ModelConfig,
-        Field(description="The model configuration for the teacher model."),
+        Field(description="The model configuration for the reference model."),
     ] = ModelConfig()
 
 
@@ -504,11 +504,16 @@ class OrchestratorConfig(BaseSettings):
     # The model configuration
     model: ModelConfig = ModelConfig()
 
-    # The teacher model configuration (optional)
-    teacher: Annotated[
-        TeacherConfig | None,
-        Field(description="The teacher model configuration for computing teacher logprobs. If None, no teacher logprobs will be computed."),
-    ] = None
+    # The reference model configuration (optional)
+    reference_model: Annotated[
+        bool | ReferenceModelConfig,
+        Field(
+            description="The reference model configuration for computing reference logprobs. "
+            "If True, uses the initial frozen model (same as training model but frozen). "
+            "If a ReferenceModelConfig, uses that specific model configuration. "
+            "If False, no reference model will be used."
+        ),
+    ] = False
 
     # The sampling configuration
     sampling: SamplingConfig = SamplingConfig()

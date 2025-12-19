@@ -105,19 +105,27 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup teacher client if configured
     teacher_clients = None
+    teacher_model_name = None
     if config.teacher is not None:
-        logger.info(
-            f"Initializing teacher OpenAI client (base_url={', '.join(config.teacher.client.base_url)}, "
-            f"model={config.teacher.model.name})"
-        )
-        teacher_clients = setup_clients(config.teacher.client)
+        if config.teacher.use_reference_model:
+            logger.info("Using reference model for teacher logprobs")
+            teacher_clients = clients
+            teacher_model_name = config.model.name
+        else:
+            # Use a separate teacher model
+            logger.info(
+                f"Initializing teacher OpenAI client (base_url={', '.join(config.teacher.client.base_url)}, "
+                f"model={config.teacher.model.name})"
+            )
+            teacher_clients = setup_clients(config.teacher.client)
+            teacher_model_name = config.teacher.model.name
 
     # Load tokenizer
     logger.info(f"Initializing tokenizer for {config.model.name}")
     tokenizer = AutoTokenizer.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
 
-    # If teacher is configured, validate tokenizer compatibility
-    if config.teacher is not None:
+    # If teacher is configured with separate model, validate tokenizer compatibility
+    if config.teacher is not None and not config.teacher.use_reference_model:
         logger.info(f"Validating tokenizer compatibility with teacher model {config.teacher.model.name}")
         teacher_tokenizer = AutoTokenizer.from_pretrained(
             config.teacher.model.name, trust_remote_code=config.teacher.model.trust_remote_code
@@ -343,15 +351,13 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Compute teacher logprobs if teacher is configured
         teacher_logprobs_time = 0
-        if teacher_clients is not None and config.teacher is not None:
+        if teacher_clients is not None and teacher_model_name is not None:
             logger.info(f"Computing teacher logprobs for {len(train_examples)} training examples")
             teacher_logprobs_start_time = time.perf_counter()
             teacher_logprobs_list = await compute_teacher_logprobs_for_batch(
                 clients=teacher_clients,
-                model_name=config.teacher.model.name,
-                tokenizer=tokenizer,
+                model_name=teacher_model_name,
                 samples=train_examples,
-                pbar_description="Computing teacher logprobs",
             )
             # Assign teacher logprobs to each training example
             for train_example, teacher_logprobs in zip(train_examples, teacher_logprobs_list):
