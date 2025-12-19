@@ -95,8 +95,7 @@ def compute_loss(
         geo_seq_ratio = torch.exp(_safe_mean(log_importance_ratio, loss_mask))
         token_mismatch_kl = token_importance_ratio - log_importance_ratio - 1
 
-        seq_log_importance_ratio = log_importance_ratio[loss_mask].sum().detach()
-        seq_log_importance_ratio = torch.clamp(trainer_logprobs - trainer_logprobs.detach() + seq_log_importance_ratio, max=10.0)
+        seq_log_importance_ratio = torch.clamp(log_importance_ratio[loss_mask].sum().detach(), max=10.0)
         seq_importance_ratio = torch.clamp(torch.exp(seq_log_importance_ratio), max=loss_config.sequence_clip_high)
 
         seq_min_ratio = torch.where(loss_mask, token_importance_ratio, torch.inf).min()
