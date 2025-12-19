@@ -40,7 +40,6 @@ from prime_rl.utils.validation import (
     validate_shared_max_steps,
     validate_shared_model_name,
     validate_shared_output_dir,
-    validate_shared_seq_len,
     validate_shared_wandb_config,
     validate_shared_weight_broadcast,
 )
@@ -360,7 +359,11 @@ class RLConfig(BaseSettings):
             self.trainer.model.seq_len = self.seq_len
             self.orchestrator.seq_len = self.seq_len
 
-        validate_shared_seq_len(self.trainer, self.orchestrator)
+        if self.trainer.model.seq_len < self.orchestrator.seq_len:
+            raise ValueError(
+                f"Trainer model seq_len ({self.trainer.model.seq_len}) must be >= orchestrator seq_len ({self.orchestrator.seq_len}). "
+                f"The trainer needs to be able to handle sequences at least as long as those produced by the orchestrator."
+            )
 
         return self
 

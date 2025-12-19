@@ -104,14 +104,3 @@ def validate_shared_weight_broadcast(
         raise ValueError(
             f"Trainer weight broadcast type ({trainer.weight_broadcast.type}) and orchestrator weight broadcast type ({orchestrator.weight_broadcast.type}) are not the same. Please specify the same weight broadcast type for both."
         )
-
-
-def validate_shared_seq_len(
-    trainer: RLTrainerConfig,
-    orchestrator: OrchestratorConfig,
-) -> None:
-    if trainer.model.seq_len < orchestrator.seq_len:
-        raise ValueError(
-            f"Trainer model seq_len ({trainer.model.seq_len}) must be >= orchestrator seq_len ({orchestrator.seq_len}). "
-            f"The trainer needs to be able to handle sequences at least as long as those produced by the orchestrator."
-        )
