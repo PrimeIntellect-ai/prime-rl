@@ -29,7 +29,7 @@ orchestrator:
   # Auto-start configuration (set to false to use sleep infinity for debugging)
   autoStart: false
   # Example command - use $INFERENCE_URL directly (comma-separated list of all inference server URLs)
-  command: ""  # e.g., 'uv run orchestrator @ /app/examples/reverse_text/rl/orch.toml --output-dir /data/outputs --client.base-url $INFERENCE_URL'
+  command: ""  # e.g., 'uv run orchestrator @ /app/examples/reverse_text/rl/orch.toml --output-dir /data/outputs/run_default --client.base-url $INFERENCE_URL'
   # $INFERENCE_URL is auto-set to: 'http://<release>-inference-0...:8000/v1,http://<release>-inference-1...:8000/v1,...'
 
   resources:
