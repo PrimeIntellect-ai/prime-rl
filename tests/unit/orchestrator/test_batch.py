@@ -13,7 +13,7 @@ def make_training_example():
             completion_ids=[3, 4],
             completion_mask=[True, True],
             completion_logprobs=[-0.1, -0.2],
-            reference_logprobs=[0.0, 0.0],
+            reference_logprobs=[0.0, 0.0, 0.0, 0.0],
             advantage=1.0,
         )
 
