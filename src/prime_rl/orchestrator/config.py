@@ -371,13 +371,6 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = False
 
-    buffer_path: Annotated[
-        Path | None,
-        Field(
-            description="The path to load buffer state (metadata and rollouts) from. If None, will start with an empty buffer. The buffer state is saved at <ckpt_dir>/step_<step>/orchestrator/buffer.",
-        ),
-    ] = None
-
 
 class BufferConfig(BaseConfig):
     """Configures the buffer for the orchestrator."""
@@ -389,23 +382,15 @@ class BufferConfig(BaseConfig):
         ),
     ] = None
 
-    easy_fraction: Annotated[
-        float,
+    env_ratios: Annotated[
+        list[float] | None,
         Field(
-            ge=0,
-            le=1,
-            description="Fraction of the batch that should consist of easy samples.",
+            description=(
+                "Ratios for sampling from each environment. "
+                "If None, samples uniformly across all available problems (not environments)."
+            ),
         ),
-    ] = 0.0
-
-    hard_fraction: Annotated[
-        float,
-        Field(
-            ge=0,
-            le=1,
-            description="Fraction of the batch that should consist of hard samples.",
-        ),
-    ] = 0.0
+    ] = None
 
     easy_threshold: Annotated[
         float | None,
@@ -421,12 +406,50 @@ class BufferConfig(BaseConfig):
         ),
     ] = None
 
+    easy_fraction: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            description="Fraction of easy problems to convert to normal when resuming or starting training. Only problems with difficulty 'normal' are sampled.",
+        ),
+    ] = 0.0
+
+    hard_fraction: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            description="Fraction of hard problems to convert to normal when resuming or starting training. Only problems with difficulty 'normal' are sampled.",
+        ),
+    ] = 0.0
+
     online_difficulty_filtering: Annotated[
         bool,
         Field(
-            description="Whether to filter rollouts based on their average reward. If True, rollouts with average reward == 0.0 will be marked as hard and rollouts with average reward == 1.0 will be marked as easy.",
+            description="Whether to filter rollouts based on difficulty. If True, rollouts with average reward 0.0 or 1.0 are not added to the buffer.",
         ),
     ] = False
+
+    hash_keys: Annotated[
+        list[str],
+        Field(
+            min_length=1,
+            description="Keys to use for computing example hashes. Will be used to match examples from buffer checkpoints and determine buffer resume behavior.",
+        ),
+    ] = ["task", "prompt"]
+
+    @model_validator(mode="after")
+    def validate_thresholds(self):
+        if self.easy_threshold is not None and self.hard_threshold is not None:
+            assert self.easy_threshold > self.hard_threshold, "easy_threshold must be greater than hard_threshold."
+        return self
+
+    @model_validator(mode="after")
+    def validate_env_ratios(self):
+        if self.env_ratios is not None:
+            assert all(ratio > 0 for ratio in self.env_ratios), "All env_ratios must be positive."
+        return self
 
 
 class AdvantageConfig(BaseConfig):
@@ -452,18 +475,6 @@ class NCCLWeightBroadcastConfig(BaseModel):
 WeightBroadcastConfigType: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig
 
 
-class EnvMixConfig(BaseModel):
-    """Configures the mixing of environments."""
-
-    strategy: Literal["interleave", "concatenate"] = "interleave"
-    probabilities: Annotated[list[float] | None, Field(description="Probabilities to use for each environment.")] = None
-    stopping_strategy: Annotated[
-        Literal["first_exhausted", "all_exhausted"],
-        Field(description="Stopping strategy to use for interleaving environment datasets."),
-    ] = "all_exhausted"
-    seed: Annotated[int | None, Field(description="Random seed to use for the environment mixing.")] = None
-
-
 class OrchestratorConfig(BaseSettings):
     """Configures the orchestrator for RL training."""
 
@@ -475,9 +486,6 @@ class OrchestratorConfig(BaseSettings):
 
     # The sampling configuration
     sampling: SamplingConfig = SamplingConfig()
-
-    # The environment mixing configuration
-    env_mix: EnvMixConfig = EnvMixConfig()
 
     # The environment configuration
     env: list[EnvConfig] = [EnvConfig()]
@@ -629,6 +637,12 @@ class OrchestratorConfig(BaseSettings):
     def validate_batch_size(self):
         if self.batch_size % self.rollouts_per_example != 0:
             raise ValueError("Batch size must be divisible by the number of samples per problem")
+        return self
+
+    @model_validator(mode="after")
+    def validate_env_ratios(self):
+        if self.buffer.env_ratios is not None:
+            assert len(self.buffer.env_ratios) == len(self.env), "env_ratios length must match number of environments"
         return self
 
     @model_validator(mode="after")

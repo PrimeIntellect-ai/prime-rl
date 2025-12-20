@@ -122,24 +122,20 @@ async def orchestrate(config: OrchestratorConfig):
         envs=[vf.load_environment(env.id, **env.args) for env in config.env],
         env_names=[env.name or env.id for env in config.env],
         map_kwargs=dict(writer_batch_size=1),  # Set defensively to not error on map operations on large datasets
-        env_mix_strategy=config.env_mix.strategy,
-        env_mix_kwargs=dict(
-            probabilities=config.env_mix.probabilities,
-            stopping_strategy=config.env_mix.stopping_strategy,
-            seed=config.env_mix.seed,
-        ),
     )
     env.set_max_seq_len(config.seq_len)
     if config.trajectory_strategy == "interleaved":
         logger.info("Using token prompts in environment to avoid retokenization discrepancies in multi-turn rollouts")
         env.set_interleaved_rollouts(True)
-    dataset = env.get_dataset(seed=config.seed)
-    val_dataset = env.get_eval_dataset(seed=config.seed) if config.val else None
 
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
-    buffer = Buffer(dataset, config.buffer)
-    val_buffer = Buffer(val_dataset, BufferConfig()) if val_dataset else None
+    buffer = Buffer(env, config.buffer)
+    if config.val is not None:
+        val_buffer_config = BufferConfig(env_ratios=config.buffer.env_ratios)
+        val_buffer = Buffer(env, val_buffer_config, dataset_type="val")
+    else:
+        val_buffer = None
 
     # Setup scheduler
     scheduler = Scheduler(
@@ -187,7 +183,7 @@ async def orchestrate(config: OrchestratorConfig):
         else:
             checkpoint_step = config.ckpt.resume_step
 
-    if checkpoint_step is not None:
+    if checkpoint_step is not None and ckpt_manager is not None:
         ckpt_manager.load(progress, buffer, step=checkpoint_step)
         logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
         scheduler.ckpt_step = progress.step  # Always resume from the latest checkpoint
@@ -251,13 +247,13 @@ async def orchestrate(config: OrchestratorConfig):
         # Schedule running evals at the specified interval
         if val_buffer and config.val and progress.step % config.val.interval == 0:
             logger.info(f"Running validation for step {progress.step}")
-            val_problems = val_buffer.sample_problems(config.val.num_examples)
+            val_examples = val_buffer.sample_examples(config.val.num_examples)
             val_task = asyncio.create_task(
                 generate_batch(
                     clients=clients,
                     env=env,
                     model_name=config.model.name,
-                    examples=val_problems,
+                    examples=val_examples,
                     rollouts_per_example=config.val.rollouts_per_example,
                     sampling_args=get_sampling_args(config.sampling),
                     pbar_description="Generating rollouts (val)",
@@ -381,11 +377,6 @@ async def orchestrate(config: OrchestratorConfig):
         solve_none = results_df.groupby("example_id").apply(lambda x: x.reward.sum() == 0, include_groups=False).mean()
         effective_batch_size = 1 - solve_none - solve_all
 
-        # Compute per-env reuslts
-        num_envs_in_batch = results_df.task.nunique()
-        per_env_reward = results_df.groupby("task").reward.mean().to_dict() if num_envs_in_batch > 1 else None
-        per_env_count = results_df.task.value_counts().to_dict() if num_envs_in_batch > 1 else None
-
         step_time = time.perf_counter() - step_start_time
         to_log = {
             # Progress metrics
@@ -442,8 +433,8 @@ async def orchestrate(config: OrchestratorConfig):
             per_env_reward = results_df.groupby("task").reward.mean().to_dict()
             to_log.update({f"reward/{env}": reward for env, reward in per_env_reward.items()})
 
-            per_env_count = results_df.task.value_counts().to_dict()
-            to_log.update({f"batch/{env}": count for env, count in per_env_count.items()})
+            per_env_ratio = results_df.task.value_counts(normalize=True).to_dict()
+            to_log.update({f"batch/{env}": ratio for env, ratio in per_env_ratio.items()})
 
         # Optionally, add val metrics
         if val_results_df is not None:
@@ -453,8 +444,8 @@ async def orchestrate(config: OrchestratorConfig):
                 per_env_reward = val_results_df.groupby("task").reward.mean().to_dict()
                 to_log.update({f"val_reward/{env}": reward for env, reward in per_env_reward.items()})
 
-                per_env_count = val_results_df.task.value_counts().to_dict()
-                to_log.update({f"val_batch/{env}": count for env, count in per_env_count.items()})
+                per_env_ratio = val_results_df.task.value_counts(normalize=True).to_dict()
+                to_log.update({f"val_batch/{env}": ratio for env, ratio in per_env_ratio.items()})
 
         # Log metrics to W&B
         monitor.log(to_log)
