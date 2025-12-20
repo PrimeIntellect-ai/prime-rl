@@ -48,14 +48,3 @@ class EventLoopLagMonitor:
 
     def reset(self):
         self.lags = []
-
-
-_EVENT_LOOP_LAG_MONITOR: EventLoopLagMonitor | None = None
-
-
-def get_event_loop_lag_monitor(interval: float = 1.0, max_lag: float = 1.0) -> EventLoopLagMonitor:
-    global _EVENT_LOOP_LAG_MONITOR
-    if _EVENT_LOOP_LAG_MONITOR is None:
-        _EVENT_LOOP_LAG_MONITOR = EventLoopLagMonitor(interval, max_lag)
-
-    return _EVENT_LOOP_LAG_MONITOR
