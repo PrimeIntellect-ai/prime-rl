@@ -65,10 +65,6 @@ class GptOssDecoderLayer(GradientCheckpointingLayer):
             intermediate_size=config.intermediate_size,
             gate_act=config.hidden_act,
             bias=config.mlp_bias,
-            num_local_experts=config.num_local_experts,
-            num_experts_per_tok=config.num_experts_per_tok,
-            router_aux_loss_coef=config.router_aux_loss_coef,
-            output_router_logits=config.output_router_logits
         )
         self.mlp = MLP(mlp_config)
         self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
