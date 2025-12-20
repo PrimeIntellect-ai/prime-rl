@@ -7,10 +7,7 @@ import tomli_w
 from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
-from prime_rl.orchestrator.teacher import (
-    compute_teacher_logprobs_for_batch,
-    validate_tokenizer_compatibility,
-)
+from prime_rl.orchestrator.utils import compute_reference_logprobs, validate_tokenizer_compatibility
 from prime_rl.orchestrator.trajectories import branch_rollout, interleave_rollout
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
 
@@ -350,12 +347,12 @@ async def orchestrate(config: OrchestratorConfig):
             f"Converted {len(train_rollouts)} training rollouts to {len(train_examples)} training examples using {config.trajectory_strategy} strategy"
         )
 
-        # Compute reference logprobs if teacher is configured
+        # Compute reference logprobs if reference model is configured
         reference_logprobs_time = 0
         if reference_clients is not None and reference_model_name is not None:
             logger.info(f"Computing reference logprobs for {len(train_examples)} training examples")
             reference_logprobs_start_time = time.perf_counter()
-            reference_logprobs_list = await compute_teacher_logprobs_for_batch(
+            reference_logprobs_list = await compute_reference_logprobs(
                 clients=reference_clients,
                 model_name=reference_model_name,
                 samples=train_examples,

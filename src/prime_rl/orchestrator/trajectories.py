@@ -70,7 +70,7 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
         # New prefix is the current prompt and completion ids concatenated
         prefix_tokens = tokens["prompt_ids"] + tokens["completion_ids"]
 
-    # Initialize reference_logprobs to zeros (will be overwritten if teacher is configured)
+    # Initialize reference_logprobs to zeros (will be overwritten if reference model is configured)
     seq_len = len(interleaved_rollout.prompt_ids) + len(interleaved_rollout.completion_ids)
     interleaved_rollout.reference_logprobs = [0.0] * seq_len
 
