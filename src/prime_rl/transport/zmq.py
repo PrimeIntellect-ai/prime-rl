@@ -4,9 +4,9 @@ from time import time
 import zmq
 
 from prime_rl.trainer.runs import get_runs
-from prime_rl.transport import MicroBatch, MicroBatchReceiver, MicroBatchSender, TrainingBatch
-from prime_rl.transport.base import TrainingBatchReceiver, TrainingBatchSender
+from prime_rl.transport.base import MicroBatchReceiver, MicroBatchSender, TrainingBatchReceiver, TrainingBatchSender
 from prime_rl.transport.config import ZMQTransportConfig
+from prime_rl.transport.types import MicroBatch, TrainingBatch
 
 LOG_FREQ_SECONDS = 10
 
