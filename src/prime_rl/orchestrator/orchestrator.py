@@ -497,6 +497,8 @@ async def orchestrate(config: OrchestratorConfig):
     # Close training batch sender
     training_batch_sender.close()
 
+    event_loop_lag_monitor.reset()
+
     logger.success("Orchestrator finished.")
 
     # Optionally, print benchmark table
