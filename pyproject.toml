@@ -5,42 +5,42 @@ description = ""
 readme = "README.md"
 requires-python = "~=3.12.0"
 dependencies = [
-  "beartype>=0.21.0",
-  "cydifflib>=1.2.0",
-  "datasets>=4.0.0",
-  "jaxtyping>=0.3.2",
-  "liger-kernel>=0.5.10",
-  "loguru>=0.7.3",
-  "numpy>=2.2.6",
-  "openai>=1.106.1",
-  "pydantic>=1.10.13",
-  "pydantic-settings>=2.10.1",
-  "pylatexenc>=2.10",
-  "tomli>=2.2.1",
-  "torch>=2.9.0",
-  "transformers>=4.56.0",
-  "uvloop>=0.21.0",
-  "vllm==0.13.0",
-  "wandb>=0.20.1",
-  "lovely-tensors>=0.1.18",
-  "rich>=14.0.0",
-  "tomli-w>=1.2.0",
-  "textarena>=0.6.16",
-  "nltk>=3.9.1",
-  "math-verify>=0.8.0",
-  "torchdata>=0.11.0",
-  "accelerate>=1.10.1",
-  "blobfile>=3.0.0",
-  "reverse-text>=0.1.4",
-  "torchtitan",
-  "dion",
-  "reverse-text",
-  "verifiers>=0.1.8",
-  "prime-evals>=0.1.5",
-  "prime-sandboxes>=0.2.5",
-  "ring-flash-attn>=0.1.8",
-  "prime>=0.5.0",
-  "tenacity>=8.2.0",
+    "beartype>=0.21.0",
+    "cydifflib>=1.2.0",
+    "datasets>=4.0.0",
+    "jaxtyping>=0.3.2",
+    "liger-kernel>=0.5.10",
+    "loguru>=0.7.3",
+    "numpy>=2.2.6",
+    "openai>=1.106.1",
+    "pydantic>=1.10.13",
+    "pydantic-settings>=2.10.1",
+    "pylatexenc>=2.10",
+    "tomli>=2.2.1",
+    "torch>=2.9.0",
+    "transformers>=4.56.0",
+    "uvloop>=0.21.0",
+    "vllm==0.13.0",
+    "wandb>=0.20.1",
+    "lovely-tensors>=0.1.18",
+    "rich>=14.0.0",
+    "tomli-w>=1.2.0",
+    "textarena>=0.6.16",
+    "nltk>=3.9.1",
+    "math-verify>=0.8.0",
+    "torchdata>=0.11.0",
+    "accelerate>=1.10.1",
+    "blobfile>=3.0.0",
+    "reverse-text>=0.1.4",
+    "torchtitan",
+    "dion",
+    "reverse-text",
+    "verifiers>=0.1.8",
+    "prime-evals>=0.1.5",
+    "prime-sandboxes>=0.2.5",
+    "ring-flash-attn>=0.1.8",
+    "prime>=0.5.0",
+    "tenacity>=8.2.0",
 ]
 
 [project.scripts]
@@ -54,16 +54,16 @@ synthesize = "prime_rl.synthesize.synthesize:main"
 
 [project.optional-dependencies]
 flash-attn = [
-  "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.6.8/flash_attn-2.8.3+cu128torch2.9-cp312-cp312-linux_x86_64.whl",
+    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.6.8/flash_attn-2.8.3+cu128torch2.9-cp312-cp312-linux_x86_64.whl",
 ]
 
 [dependency-groups]
 dev = [
-  "ipykernel>=6.29.5",
-  "ipywidgets>=8.1.7",
-  "pre-commit>=4.2.0",
-  "pytest>=8.4.1",
-  "ruff>=0.12.1",
+    "ipykernel>=6.29.5",
+    "ipywidgets>=8.1.7",
+    "pre-commit>=4.2.0",
+    "pytest>=8.4.1",
+    "ruff>=0.12.1",
 ]
 
 
@@ -95,10 +95,7 @@ explicit = true
 
 [tool.ruff.lint]
 select = ["F", "I"]
-ignore = [
-  "F722",
-  "F821",
-] # Need to ignore for jaxtyping (https://docs.kidger.site/jaxtyping/faq/)
+ignore = ["F722", "F821"] # Need to ignore for jaxtyping (https://docs.kidger.site/jaxtyping/faq/)
 
 [tool.ruff]
 line-length = 120
@@ -106,8 +103,8 @@ line-length = 120
 [tool.pytest.ini_options]
 addopts = "--strict-markers"
 markers = [
-  "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-  "gpu: marks tests as gpu (deselect with '-m \"not gpu\"')",
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "gpu: marks tests as gpu (deselect with '-m \"not gpu\"')",
 ]
 
 [build-system]
