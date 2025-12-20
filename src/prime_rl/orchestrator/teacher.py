@@ -12,7 +12,6 @@ from prime_rl.orchestrator.utils import get_semaphore
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 
-
 _DUMMY_MESSAGES = [{"role": "user", "content": ""}]
 
 _BASE_TEACHER_SAMPLING_ARGS = {
