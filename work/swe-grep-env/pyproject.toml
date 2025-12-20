@@ -1,0 +1,25 @@
+[project]
+name = "swe-grep-env"
+description = "Your environment description here"
+tags = ["placeholder-tag", "train", "eval"]
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "chatan>=0.2.1",
+    "verifiers>=0.1.8.post2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = [
+  "swe_grep_env.py", 
+  "src", 
+  "pyproject.toml"
+] 
+
+[tool.verifiers.eval]
+num_examples = 5
+rollouts_per_example = 3
