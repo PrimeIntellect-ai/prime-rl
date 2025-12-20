@@ -17,7 +17,7 @@ def prepare_sample(
     inference_logprobs = [0.0] * len(training_example.prompt_ids) + training_example.completion_logprobs
     advantages = [training_example.advantage] * len(input_ids)
     position_ids = list(range(len(input_ids)))
-    
+
     reference_logprobs = training_example.reference_logprobs
 
     if len(input_ids) > seq_len:
@@ -28,7 +28,14 @@ def prepare_sample(
         advantages = advantages[:seq_len]
         reference_logprobs = reference_logprobs[:seq_len]
 
-    assert len(input_ids) == len(advantages) == len(loss_mask) == len(position_ids) == len(inference_logprobs) == len(reference_logprobs), (
+    assert (
+        len(input_ids)
+        == len(advantages)
+        == len(loss_mask)
+        == len(position_ids)
+        == len(inference_logprobs)
+        == len(reference_logprobs)
+    ), (
         f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, inference_logprobs: {len(inference_logprobs)}, reference_logprobs: {len(reference_logprobs)}"
     )
     return MicroBatch(

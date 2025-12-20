@@ -21,6 +21,7 @@ _BASE_TEACHER_SAMPLING_ARGS = {
     "top_p": 1.0,
 }
 
+
 async def compute_teacher_logprobs_for_sample(
     client: AsyncOpenAI,
     model_name: str,
@@ -66,17 +67,13 @@ def validate_tokenizer_compatibility(
 
     if main_tokenizer.vocab_size != teacher_tokenizer.vocab_size:
         raise ValueError(
-            f"Tokenizer vocab size mismatch: main={main_tokenizer.vocab_size}, "
-            f"teacher={teacher_tokenizer.vocab_size}"
+            f"Tokenizer vocab size mismatch: main={main_tokenizer.vocab_size}, teacher={teacher_tokenizer.vocab_size}"
         )
 
     for attr in ("bos_token_id", "eos_token_id", "pad_token_id"):
         main_val = getattr(main_tokenizer, attr)
         teacher_val = getattr(teacher_tokenizer, attr)
         if main_val != teacher_val:
-            raise ValueError(
-                f"Special token mismatch for {attr}: "
-                f"main={main_val}, teacher={teacher_val}"
-            )
+            raise ValueError(f"Special token mismatch for {attr}: main={main_val}, teacher={teacher_val}")
 
     logger.info(f"Tokenizer compatibility validated: vocab_size={main_tokenizer.vocab_size}")

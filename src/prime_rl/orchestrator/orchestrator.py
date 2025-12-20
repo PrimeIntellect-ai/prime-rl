@@ -103,34 +103,35 @@ async def orchestrate(config: OrchestratorConfig):
     admin_clients = setup_admin_clients(config.client)
     evals_client = setup_evals_client()
 
-    # Setup teacher client if configured
-    teacher_clients = None
-    teacher_model_name = None
-    if config.teacher is not None:
-        if config.teacher.use_reference_model:
-            logger.info("Using reference model for teacher logprobs")
-            teacher_clients = clients
-            teacher_model_name = config.model.name
+    # Setup reference model client if configured
+    reference_clients = None
+    reference_model_name = None
+    if config.reference_model:
+        if config.reference_model is True:
+            # Use same model as reference
+            logger.info("Using inference model as reference model")
+            reference_clients = clients
+            reference_model_name = config.model.name
         else:
-            # Use a separate teacher model
+            # Use a separate reference model
             logger.info(
-                f"Initializing teacher OpenAI client (base_url={', '.join(config.teacher.client.base_url)}, "
-                f"model={config.teacher.model.name})"
+                f"Initializing reference OpenAI client (base_url={', '.join(config.reference_model.client.base_url)}, "
+                f"model={config.reference_model.model.name})"
             )
-            teacher_clients = setup_clients(config.teacher.client)
-            teacher_model_name = config.teacher.model.name
+            reference_clients = setup_clients(config.reference_model.client)
+            reference_model_name = config.reference_model.model.name
 
     # Load tokenizer
     logger.info(f"Initializing tokenizer for {config.model.name}")
     tokenizer = AutoTokenizer.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
 
-    # If teacher is configured with separate model, validate tokenizer compatibility
-    if config.teacher is not None and not config.teacher.use_reference_model:
-        logger.info(f"Validating tokenizer compatibility with teacher model {config.teacher.model.name}")
-        teacher_tokenizer = AutoTokenizer.from_pretrained(
-            config.teacher.model.name, trust_remote_code=config.teacher.model.trust_remote_code
+    # If reference model is configured with separate model, validate tokenizer compatibility
+    if config.reference_model and config.reference_model is not True:
+        logger.info(f"Validating tokenizer compatibility with reference model {config.reference_model.model.name}")
+        reference_tokenizer = AutoTokenizer.from_pretrained(
+            config.reference_model.model.name, trust_remote_code=config.reference_model.model.trust_remote_code
         )
-        validate_tokenizer_compatibility(tokenizer, teacher_tokenizer)
+        validate_tokenizer_compatibility(tokenizer, reference_tokenizer)
 
     # Setup monitor
     logger.info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
@@ -351,12 +352,12 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Compute reference logprobs if teacher is configured
         reference_logprobs_time = 0
-        if teacher_clients is not None and teacher_model_name is not None:
+        if reference_clients is not None and reference_model_name is not None:
             logger.info(f"Computing reference logprobs for {len(train_examples)} training examples")
             reference_logprobs_start_time = time.perf_counter()
             reference_logprobs_list = await compute_teacher_logprobs_for_batch(
-                clients=teacher_clients,
-                model_name=teacher_model_name,
+                clients=reference_clients,
+                model_name=reference_model_name,
                 samples=train_examples,
             )
             for train_example, reference_logprobs in zip(train_examples, reference_logprobs_list):
