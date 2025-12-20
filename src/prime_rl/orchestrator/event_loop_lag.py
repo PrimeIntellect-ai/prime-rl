@@ -13,9 +13,9 @@ class EventLoopLagMonitor:
         self,
         interval: float = 1.0,
         max_window_size: int = 10000,
-        warn_med_lag_threshold: float = 1.0,
-        warn_p90_lag_threshold: float = 2.0,
-        warn_max_lag_threshold: float = 10.0,
+        warn_med_lag_threshold: float = 0.5,
+        warn_p90_lag_threshold: float = 1.0,
+        warn_max_lag_threshold: float = 5.0,
     ):
         assert (
             interval > 0
