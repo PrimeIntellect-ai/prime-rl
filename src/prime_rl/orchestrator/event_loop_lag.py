@@ -12,8 +12,8 @@ class EventLoopLagMonitor:
     def __init__(
         self,
         interval: float = 1.0,
-        max_window_size: int = 1000,
-        warn_median_lag_threshold: float = 1.0,
+        max_window_size: int = 10000,
+        warn_med_lag_threshold: float = 1.0,
         warn_p90_lag_threshold: float = 2.0,
         warn_max_lag_threshold: float = 10.0,
     ):
@@ -21,14 +21,14 @@ class EventLoopLagMonitor:
             interval > 0
             and max_window_size > 0
             and warn_max_lag_threshold > 0
-            and warn_median_lag_threshold > 0
+            and warn_med_lag_threshold > 0
             and warn_p90_lag_threshold > 0
         )
         self.interval = interval
-        self.warn_max_lag_threshold = warn_max_lag_threshold
-        self.warn_median_lag_threshold = warn_median_lag_threshold
-        self.warn_p90_lag_threshold = warn_p90_lag_threshold
         self.max_window_size = max_window_size
+        self.warn_max_lag_threshold = warn_max_lag_threshold
+        self.warn_med_lag_threshold = warn_med_lag_threshold
+        self.warn_p90_lag_threshold = warn_p90_lag_threshold
         self.logger = get_logger()
         self.lags = []
 
@@ -54,7 +54,7 @@ class EventLoopLagMonitor:
 
     def get_metrics(self) -> dict[str, float]:
         """Compute metrics for the event loop lag over the last window_size measurements."""
-        window_size = min(self.max_window_size, len(self.lags))
+        window_size = int(min(self.max_window_size, len(self.lags)))
         last_lags = np.array(self.lags[-window_size:])
         mean_lag = float(np.mean(last_lags))
         med_lag = float(np.median(last_lags))
@@ -62,7 +62,7 @@ class EventLoopLagMonitor:
         min_lag = float(np.min(last_lags))
         max_lag = float(np.max(last_lags))
         if (
-            med_lag > self.warn_median_lag_threshold
+            med_lag > self.warn_med_lag_threshold
             or p90_lag > self.warn_p90_lag_threshold
             or max_lag > self.warn_max_lag_threshold
         ):
