@@ -14,7 +14,7 @@ LOG_FREQ_SECONDS = 10
 class ZMQTrainingBatchSender(TrainingBatchSender):
     """
     One PUSH socket; each message is multipart: [sender_id, payload]
-    sender_id = run_dir.stem
+    sender_id = output_dir.stem
     """
 
     def __init__(self, output_dir: Path, transport: ZMQTransportConfig):
@@ -25,14 +25,13 @@ class ZMQTrainingBatchSender(TrainingBatchSender):
 
         self.socket.setsockopt(zmq.SNDHWM, transport.hwm)
 
-        # Single shared endpoint; receiver should bind, senders connect.
         self.socket.connect(f"tcp://{transport.host}:{transport.port}")
 
         self.sender_id = output_dir.stem
         self.sender_id_bytes = self.sender_id.encode("utf-8")
 
         self.logger.info(
-            f"ZMQ training batch sender initialized: id={self.sender_id} "
+            f"ZMQ training batch sender initialized: output_dir={output_dir} "
             f"endpoint=tcp://{transport.host}:{transport.port} hwm={transport.hwm}"
         )
 
@@ -111,12 +110,10 @@ class ZMQTrainingBatchReceiver(TrainingBatchReceiver):
                 self.logger.error(f"Error decoding rollouts for sender_id={sender_id!r}: {e}")
                 continue
 
-            # Buffer by step; if duplicates arrive, keep the first (or overwrite—either is fine).
             step = int(batch.step)
             per_idx = self._pending.setdefault(idx, {})
-            assert step not in per_idx, f"Step {step} already in pending for idx {idx}"
-            if step not in per_idx:
-                per_idx[step] = batch
+            assert step not in per_idx, f"Step {step} already in pending for idx, this should not happen: {per_idx}"
+            per_idx[step] = batch
 
     def receive(self) -> list[TrainingBatch]:
         """Return at most one (oldest) pending batch per run idx; buffer newer ones for later calls."""
@@ -148,7 +145,7 @@ class ZMQTrainingBatchReceiver(TrainingBatchReceiver):
                 self._pending.pop(idx, None)
 
             batch.run_idx = idx
-            self.logger.warning(f"Received batch {batch.step} from {idx}")
+            self.logger.debug(f"Received batch {batch.step} from {self.runs.idx_2_id[idx]}")
             batches.append(batch)
 
         return batches
@@ -163,6 +160,7 @@ class ZMQTrainingBatchReceiver(TrainingBatchReceiver):
 
 class ZMQMicroBatchSender(MicroBatchSender):
     def __init__(self, output_dir: Path, data_world_size: int, current_step: int, transport: ZMQTransportConfig):
+        """ZMQ micro batch sender that sends micro batches to the trainers through ZMQ transport."""
         super().__init__(output_dir, data_world_size)
         self.context = zmq.Context.instance()
 
@@ -171,7 +169,7 @@ class ZMQMicroBatchSender(MicroBatchSender):
         self.socket.setsockopt(zmq.SNDHWM, transport.hwm)
         self.socket.bind(f"tcp://{transport.host}:{transport.port + 1}")
 
-        # Ready barrier channel (PULL)
+        # ready barrier socket, to avoid slow joiners dropping for step 0 (and generally at startup)
         self.ready_socket = self.context.socket(zmq.PULL)
         self.ready_socket.setsockopt(zmq.RCVHWM, transport.hwm)
         self.ready_socket.bind(f"tcp://{transport.host}:{transport.port + 2}")
@@ -190,7 +188,7 @@ class ZMQMicroBatchSender(MicroBatchSender):
         if self._ready:
             return
 
-        self.logger.warning(
+        self.logger.debug(
             f"Waiting for {self.data_world_size} READY messages on port {self.ready_socket.LAST_ENDPOINT.decode(errors='ignore') if hasattr(self.ready_socket, 'LAST_ENDPOINT') else ''}"
         )
         ready_ranks: set[int] = set()
@@ -208,6 +206,7 @@ class ZMQMicroBatchSender(MicroBatchSender):
         self._ready = True
 
     def send(self, micro_batch_grid: list[list[MicroBatch]]) -> None:
+        """Send grid of micro batches to the trainers."""
         assert len(micro_batch_grid) == self.data_world_size, "Number of micro batch lists must match data world size"
         for micro_batch_list in micro_batch_grid:
             assert len(micro_batch_list) == len(micro_batch_grid[0]), "All micro batch lists must have the same length"
@@ -234,10 +233,10 @@ class ZMQMicroBatchSender(MicroBatchSender):
 
 class ZMQMicroBatchReceiver(MicroBatchReceiver):
     def __init__(self, output_dir: Path, data_rank: int, current_step: int, transport: ZMQTransportConfig):
+        """ZMQ micro batch receiver that receives micro batches from the through ZMQ transport."""
         super().__init__(output_dir, data_rank)
         self.context = zmq.Context.instance()
 
-        # Data channel (SUB)
         self.socket = self.context.socket(zmq.SUB)
         self.socket.setsockopt(zmq.RCVHWM, transport.hwm)
         self.socket.connect(f"tcp://{transport.host}:{transport.port + 1}")
@@ -248,7 +247,7 @@ class ZMQMicroBatchReceiver(MicroBatchReceiver):
         self.poller = zmq.Poller()
         self.poller.register(self.socket, zmq.POLLIN)
 
-        # Ready barrier channel (PUSH)
+        # ready barrier socket, to avoid slow joiners dropping for step 0 (and generally at startup)
         self.ready_socket = self.context.socket(zmq.PUSH)
         self.ready_socket.setsockopt(zmq.SNDHWM, transport.hwm)
         self.ready_socket.connect(f"tcp://{transport.host}:{transport.port + 2}")
@@ -264,7 +263,7 @@ class ZMQMicroBatchReceiver(MicroBatchReceiver):
         self.current_step = current_step
 
     def wait(self) -> None:
-        self.logger.warning(f"Waiting for micro batch for step {self.current_step}")
+        self.logger.debug(f"Waiting for micro batch for step {self.current_step}")
         self.poller.poll(timeout=None)
 
     def can_receive(self) -> bool:
@@ -272,6 +271,7 @@ class ZMQMicroBatchReceiver(MicroBatchReceiver):
         return self.socket in events
 
     def receive(self) -> list[MicroBatch]:
+        """Receive a micro batch from the trainer."""
         _, payload = self.socket.recv_multipart()
         micro_batches: list[MicroBatch] = self.decoder.decode(payload)
         self.current_step += 1
