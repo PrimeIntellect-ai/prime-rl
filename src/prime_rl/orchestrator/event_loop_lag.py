@@ -1,27 +1,41 @@
 import asyncio
 from time import perf_counter
 
+import numpy as np
+
 from prime_rl.utils.logger import get_logger
 
 
 class EventLoopLagMonitor:
     """A class to monitor how busy the main event loop is."""
 
-    def __init__(self, interval: float = 1.0, warn_lag_threshold: float = 1.0, max_window_size: int = 1000):
-        assert interval > 0 and warn_lag_threshold > 0 and max_window_size > 0
+    def __init__(
+        self,
+        interval: float = 1.0,
+        max_window_size: int = 1000,
+        warn_median_lag_threshold: float = 1.0,
+        warn_p90_lag_threshold: float = 2.0,
+        warn_max_lag_threshold: float = 10.0,
+    ):
+        assert (
+            interval > 0
+            and max_window_size > 0
+            and warn_max_lag_threshold > 0
+            and warn_median_lag_threshold > 0
+            and warn_p90_lag_threshold > 0
+        )
         self.interval = interval
-        self.warn_lag_threshold = warn_lag_threshold
+        self.warn_max_lag_threshold = warn_max_lag_threshold
+        self.warn_median_lag_threshold = warn_median_lag_threshold
+        self.warn_p90_lag_threshold = warn_p90_lag_threshold
         self.max_window_size = max_window_size
         self.logger = get_logger()
         self.lags = []
 
-    async def measure_lag(self, interval: float | None = None):
+    async def measure_lag(self):
         """Measures event loop lag by asynchronously sleeping for interval seconds"""
-        if interval is None:
-            interval = self.interval
-        assert interval > 0
-        next_time = perf_counter() + interval
-        await asyncio.sleep(interval)
+        next_time = perf_counter() + self.interval
+        await asyncio.sleep(self.interval)
         now = perf_counter()
         lag = now - next_time
         return lag
@@ -34,28 +48,47 @@ class EventLoopLagMonitor:
             if len(self.lags) > self.max_window_size:
                 self.lags.pop(0)
 
-    def get_avg_lag(self, window_size: int | None = None) -> float:
-        """Get the average event loop lag over the last window_size measurements."""
-        if window_size is None:
-            window_size = self.max_window_size
-        assert window_size > 0
-        avg_lag = sum(self.lags[-window_size:]) / min(window_size, len(self.lags))
-        if avg_lag > self.warn_lag_threshold:
-            self.logger.warning(
-                f"Detected busy event loop. Measured {avg_lag:.1f}s event loop lag over the last {window_size} measurement(s)"
-            )
-        return avg_lag
-
     def reset(self):
+        """Reset the list of measured lags."""
         self.lags = []
+
+    def get_metrics(self) -> dict[str, float]:
+        """Compute metrics for the event loop lag over the last window_size measurements."""
+        window_size = min(self.max_window_size, len(self.lags))
+        last_lags = np.array(self.lags[-window_size:])
+        mean_lag = float(np.mean(last_lags))
+        med_lag = float(np.median(last_lags))
+        p90_lag = float(np.percentile(last_lags, 90))
+        min_lag = float(np.min(last_lags))
+        max_lag = float(np.max(last_lags))
+        if (
+            med_lag > self.warn_median_lag_threshold
+            or p90_lag > self.warn_p90_lag_threshold
+            or max_lag > self.warn_max_lag_threshold
+        ):
+            self.logger.warning(
+                f"Detected busy event loop. Measured {mean_lag:.1f}s (min={min_lag:.1f}s, med={med_lag:.1f}s, p90={p90_lag:.1f}s, max={max_lag:.1f}s) event loop lag over the last {len(last_lags)} measurement(s)"
+            )
+        else:
+            self.logger.debug(
+                f"Event loop is running smoothly. Measured {mean_lag:.1f}s (min={min_lag:.1f}s, med={med_lag:.1f}s, p90={p90_lag:.1f}s, max={max_lag:.1f}s) event loop lag over the last {len(last_lags)} measurement(s)"
+            )
+
+        return {
+            "event_loop_lag/min": min_lag,
+            "event_loop_lag/mean": mean_lag,
+            "event_loop_lag/med": med_lag,
+            "event_loop_lag/p90": p90_lag,
+            "event_loop_lag/max": max_lag,
+        }
 
 
 _EVENT_LOOP_LAG_MONITOR: EventLoopLagMonitor | None = None
 
 
-def get_event_loop_lag_monitor(interval: float = 1.0, max_lag: float = 1.0) -> EventLoopLagMonitor:
+def get_event_loop_lag_monitor() -> EventLoopLagMonitor:
     global _EVENT_LOOP_LAG_MONITOR
     if _EVENT_LOOP_LAG_MONITOR is None:
-        _EVENT_LOOP_LAG_MONITOR = EventLoopLagMonitor(interval, max_lag)
+        _EVENT_LOOP_LAG_MONITOR = EventLoopLagMonitor()
 
     return _EVENT_LOOP_LAG_MONITOR
