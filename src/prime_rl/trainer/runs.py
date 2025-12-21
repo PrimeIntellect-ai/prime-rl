@@ -226,7 +226,7 @@ class Runs:
         """
         self._modules.append((prefix, module))
 
-    def get_named_parameters_for_run(self, idx: int) -> list[tuple[str, "torch.nn.Parameter"]]:
+    def get_named_parameters_for_run(self, idx: int) -> list[tuple[str, torch.nn.Parameter]]:
         """Get named parameters for a specific run index.
 
         Args:
@@ -237,13 +237,20 @@ class Runs:
         """
         params = []
         for prefix, module in self._modules:
-            params.extend(
-                [
-                    (f"{prefix}.lora_A.{idx}", module.lora_A[idx]),
-                    (f"{prefix}.lora_B.{idx}", module.lora_B[idx]),
-                ]
-            )
+            for name, param in module.named_parameters_for_adapter(idx):
+                params.append((f"{prefix}.{name}.weight", param))
         return params
+
+    def get_state_dict_for_run(self, idx: int) -> dict[str, torch.Tensor]:
+        """Get state dict for a specific run index.
+
+        Args:
+            idx: The run index to get state dict for
+
+        Returns:
+            State dict for the specified run index
+        """
+        return {name: param.detach() for name, param in self.get_named_parameters_for_run(idx)}
 
     def reset_run_parameters(self, idx: int) -> None:
         """Reset parameters for a specific run index.

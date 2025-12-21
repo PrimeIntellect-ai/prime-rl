@@ -122,6 +122,20 @@ class MultiLoRALinear(LoRAModule):
             nn.init.kaiming_uniform_(self.lora_A[index], a=math.sqrt(5))
             nn.init.zeros_(self.lora_B[index])
 
+    def named_parameters_for_adapter(self, idx: int) -> list[tuple[str, nn.Parameter]]:
+        """Get named parameters for a specific adapter index.
+
+        Args:
+            idx: The adapter index to get parameters for
+
+        Returns:
+            List of (name, parameter) tuples for the specified adapter
+        """
+        return [
+            ("lora_A", self.lora_A[idx]),
+            ("lora_B", self.lora_B[idx]),
+        ]
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         x: [..., in_features]
