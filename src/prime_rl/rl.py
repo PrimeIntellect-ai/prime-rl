@@ -373,9 +373,7 @@ class RLConfig(BaseSettings):
                 raise ValueError("NCCL weight broadcast does not support LoRA yet.")
             self.trainer.weight_broadcast.adapter_only = True
             if self.orchestrator.lora_name is None:
-                lora_name = (
-                    f"r{self.trainer.model.lora.rank}-a{self.trainer.model.lora.alpha}"
-                )
+                lora_name = f"r{self.trainer.model.lora.rank}-a{self.trainer.model.lora.alpha}"
                 self.orchestrator.lora_name = lora_name
             if self.inference is not None:
                 self.inference.enable_lora = True
@@ -504,7 +502,12 @@ def rl(config: RLConfig):
             with open(log_dir / "inference.stdout", "w") as log_file:
                 inference_process = Popen(
                     inference_cmd,
-                    env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, config.inference_gpu_ids))},
+                    env={
+                        **os.environ,
+                        "CUDA_VISIBLE_DEVICES": ",".join(map(str, config.inference_gpu_ids)),
+                        "VLLM_ENABLE_V1_MULTIPROCESSING": "0",  # Fix: Disable v1 multiprocessing to avoid CUDA fork issues
+                        "VLLM_WORKER_MULTIPROC_METHOD": "spawn",  # Use spawn instead of fork for CUDA compatibility
+                    },
                     stdout=log_file,
                     stderr=log_file,
                 )
