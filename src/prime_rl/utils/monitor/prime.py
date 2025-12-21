@@ -213,6 +213,29 @@ class PrimeMonitor(Monitor):
             },
         )
 
+    def close(self) -> None:
+        """Close the HTTP client and stop the background event loop."""
+        if not hasattr(self, "_client"):
+            return
+
+        # Close the async client within the event loop
+        async def _close_client() -> None:
+            await self._client.aclose()
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(_close_client(), self._loop)
+            future.result(timeout=5.0)  # Wait up to 5 seconds for client to close
+        except Exception as e:
+            self.logger.debug(f"Error closing HTTP client: {e}")
+
+        # Stop the event loop and wait for thread to finish
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join(timeout=5.0)
+
+    def __del__(self) -> None:
+        """Destructor to ensure cleanup."""
+        self.close()
+
     def _run_event_loop(self) -> None:
         """Run the async event loop in a background thread."""
         asyncio.set_event_loop(self._loop)

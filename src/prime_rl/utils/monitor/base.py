@@ -31,6 +31,10 @@ class Monitor(ABC):
     def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:
         pass
 
+    def close(self) -> None:
+        """Close any resources held by the monitor. Override in subclasses that need cleanup."""
+        pass
+
 
 class NoOpMonitor(Monitor):
     """Monitor that does nothing. Used when no monitors are configured."""

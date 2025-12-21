@@ -53,3 +53,10 @@ class MultiMonitor(Monitor):
                 monitor.log_distributions(distributions=distributions, step=step)
             except Exception as e:
                 self.logger.warning(f"Failed to log distributions to {monitor.__class__.__name__}: {e}")
+
+    def close(self) -> None:
+        for monitor in self.monitors:
+            try:
+                monitor.close()
+            except Exception as e:
+                self.logger.warning(f"Failed to close {monitor.__class__.__name__}: {e}")
