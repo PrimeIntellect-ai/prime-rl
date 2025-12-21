@@ -55,9 +55,9 @@ class FileSystemWeightBroadcast(WeightBroadcast):
                         value = value.full_tensor()
                     if self.world.is_master:
                         state_dict[key] = value.to("cpu", non_blocking=False)
-        else:
-            if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
-                model.convert_to_hf(state_dict)
+            else:
+                if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
+                    model.convert_to_hf(state_dict)
 
             # TODO: Broadcast ready to update in sync, then we dont need to gather on not ready
             if self.world.is_master and self.runs.ready_to_update[idx]:
