@@ -2,7 +2,8 @@ import pytest
 import torch
 from torch import nn
 
-from prime_rl.trainer.models.layers.lora import _LORA_PREFIX, LoRALinear
+from prime_rl.trainer.models.layers.lora import LoRALinear
+from prime_rl.trainer.models.layers.lora.base import _LORA_PREFIX
 
 
 @pytest.fixture
