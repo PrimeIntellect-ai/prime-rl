@@ -43,13 +43,11 @@ class FileSystemWeightBroadcast(WeightBroadcast):
         if not adapter_only:
             state_dict = gather_weights_on_master(model, is_master=self.world.is_master)
 
-        # For adapter-only, Runs creates state dict directly for each run
-        # All ranks must participate in DTensor gathering, but only master saves
         for idx in self.runs.used_idxs:
             if adapter_only:
+                # For adapter-only, Runs creates state dict directly for each run
+                # All ranks must participate in DTensor gathering, but only master saves
                 state_dict = self.runs.get_state_dict_for_run(idx)
-
-                # All ranks must participate in full_tensor() for DTensor gathering
                 for key, value in state_dict.items():
                     if isinstance(value, DTensor):
                         value = value.full_tensor()
