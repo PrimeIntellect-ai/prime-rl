@@ -1,0 +1,29 @@
+inference_gpu_ids = [0]
+trainer_gpu_ids = [1]
+max_steps = 500
+
+
+[model]
+name = "Qwen/Qwen3-VL-4B-Instruct"
+
+[wandb]
+project = "multimodal"
+name = "multimodal"
+
+
+[trainer]
+
+[orchestrator]
+batch_size = 512
+rollouts_per_example = 16
+seq_len = 4096
+oversampling_factor = 1.0
+
+
+[orchestrator.buffer]
+online_difficulty_filtering = true
+
+[[orchestrator.env]]
+id = "multimodal"
+
+[inference]  # Enable vLLM inference server with default config

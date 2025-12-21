@@ -34,15 +34,21 @@ def prepare_sample(
         loss_mask=loss_mask,
         position_ids=position_ids,
         inference_logprobs=inference_logprobs,
+        pixel_values=training_example.pixel_values,  # NEW: Pass through pixel_values
     )
 
 
 def packed_samples_into_micro_bs(samples: list[MicroBatch], max_seq_len: int) -> list[MicroBatch]:
     """
-    Pack samples into micro_batch efficiently.
+    Pack samples into micro_batch efficiently, but keep vision samples separate.
     We follow the First Fit Decreasing algorithm to pack the samples into bins and minimize potential padding while never truncating.
     """
-    sorted_samples = sorted(samples, key=lambda x: len(x.input_ids), reverse=True)
+    # NEW: Separate vision samples from text-only samples
+    vision_samples = [s for s in samples if s.pixel_values is not None]
+    text_samples = [s for s in samples if s.pixel_values is None]
+
+    # Pack only text samples (existing First Fit Decreasing algorithm)
+    sorted_samples = sorted(text_samples, key=lambda x: len(x.input_ids), reverse=True)
 
     ## we create bins
     micro_batches: list[MicroBatch] = []
@@ -60,6 +66,9 @@ def packed_samples_into_micro_bs(samples: list[MicroBatch], max_seq_len: int) ->
                 break
         else:
             micro_batches.append(sample)
+
+    # NEW: Add vision samples without packing (keep them separate)
+    micro_batches.extend(vision_samples)
 
     return micro_batches
 

@@ -20,7 +20,6 @@ monkey_patch_chat_completion_logprobs()
 import pandas as pd
 import verifiers as vf
 from loguru import logger
-from transformers import AutoTokenizer
 
 from prime_rl.eval.utils import run_evals
 from prime_rl.orchestrator.buffer import Buffer
@@ -95,9 +94,20 @@ async def orchestrate(config: OrchestratorConfig):
     admin_clients = setup_admin_clients(config.client)
     evals_client = setup_evals_client()
 
-    # Load tokenizer
-    logger.info(f"Initializing tokenizer for {config.model.name}")
-    tokenizer = AutoTokenizer.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
+    # Load tokenizer/processor
+    logger.info(f"Initializing tokenizer/processor for {config.model.name}")
+    # NEW: Import and use the updated setup_tokenizer function that can return a processor
+    from prime_rl.trainer.config import ModelConfig as TrainerModelConfig
+    from prime_rl.trainer.config import TokenizerConfig as TrainerTokenizerConfig
+    from prime_rl.trainer.model import setup_tokenizer as setup_tokenizer_or_processor
+
+    # Create configs for loading tokenizer/processor
+    tokenizer_config = TrainerTokenizerConfig(name=config.model.name, trust_remote_code=config.model.trust_remote_code)
+    model_config_for_processor = TrainerModelConfig(
+        name=config.model.name,
+        trust_remote_code=config.model.trust_remote_code,
+    )
+    tokenizer = setup_tokenizer_or_processor(tokenizer_config, model_config_for_processor)
 
     # Setup monitor
     logger.info(f"Initializing monitor ({config.wandb})")
@@ -306,7 +316,7 @@ async def orchestrate(config: OrchestratorConfig):
         make_train_example = interleave_rollout if config.trajectory_strategy == "interleaved" else branch_rollout
         train_examples: list[TrainingSample] = []
         for train_rollout, advantage in zip(train_rollouts, advantages):
-            train_example = make_train_example(train_rollout)
+            train_example = make_train_example(train_rollout, processor=tokenizer)  # NEW: Pass processor/tokenizer
             if train_example is not None:
                 for te in train_example:
                     te.advantage = advantage

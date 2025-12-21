@@ -14,7 +14,14 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoi
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, PretrainedConfig
+from transformers import (
+    AutoConfig,
+    AutoModelForCausalLM,
+    AutoModelForVision2Seq,
+    AutoProcessor,
+    AutoTokenizer,
+    PretrainedConfig,
+)
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
@@ -47,11 +54,27 @@ def is_tt_moe_model(model: nn.Module) -> bool:
     return hasattr(model.config, "num_experts") or hasattr(model.config, "n_routed_experts")
 
 
+def get_language_model_parent(model: nn.Module) -> nn.Module:
+    """Get the language model parent module, handling both vision and text-only models.
+
+    Returns:
+        For Qwen3-VL: model.language_model
+        For text-only: model.model
+    """
+    if hasattr(model, "language_model"):
+        return model.language_model
+    elif hasattr(model, "model"):
+        return model.model
+    else:
+        raise ValueError("Could not find language model parent in model structure")
+
+
 def get_load_balance_stats(
     model: nn.Module, reset_stats: bool = True, try_to_avoid_padding_experts: bool = True
 ) -> dict[str, Tensor | None]:
     per_layer_max_vio = []
-    for transformer_block in model.model.layers:
+    language_model_parent = get_language_model_parent(model)
+    for transformer_block in language_model_parent.layers:
         # This is necessary for models that have mixed dense layers
         if not hasattr(transformer_block.mlp, "tokens_per_expert"):
             continue
@@ -70,6 +93,15 @@ def get_load_balance_stats(
     return {"max_vio": torch.tensor(per_layer_max_vio, device=torch.device("cuda"))}
 
 
+def is_vision_model(model_name: str, trust_remote_code: bool = False) -> bool:
+    """Check if model requires vision processing (has AutoProcessor)."""
+    try:
+        AutoProcessor.from_pretrained(model_name, trust_remote_code=trust_remote_code)
+        return True
+    except Exception:
+        return False
+
+
 def get_model(
     config: ModelConfig, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.bfloat16
 ) -> nn.Module:
@@ -77,6 +109,10 @@ def get_model(
     logger.info(
         f"Loading model config (name={config.name}, attn={config.attn}, trust_remote_code={config.trust_remote_code})"
     )
+
+    # NEW: Detect if this is a vision model
+    is_vision = is_vision_model(config.name, config.trust_remote_code)
+
     model_config = cast(
         PretrainedConfig,
         AutoConfig.from_pretrained(
@@ -95,13 +131,22 @@ def get_model(
         model_config.num_hidden_layers = num_hidden_layers
 
     with device:
-        match config.impl:
-            case "hf":
-                model_cls = AutoModelForCausalLM
-            case "liger_kernel":
-                model_cls = AutoLigerKernelForCausalLM
-            case "custom":
-                model_cls = AutoModelForCausalLMPrimeRL
+        # NEW: Use AutoModelForVision2Seq for vision models
+        if is_vision:
+            logger.info(f"Detected vision model: {config.name}")
+            if config.impl != "hf":
+                raise ValueError("Vision models only supported with 'hf' implementation")
+            model_cls = AutoModelForVision2Seq
+        else:
+            # Existing logic for text-only models
+            logger.info(f"Loading text-only model: {config.name}")
+            match config.impl:
+                case "hf":
+                    model_cls = AutoModelForCausalLM
+                case "liger_kernel":
+                    model_cls = AutoLigerKernelForCausalLM
+                case "custom":
+                    model_cls = AutoModelForCausalLMPrimeRL
 
         load_model_start_time = time.perf_counter()
         if device == torch.device("meta"):
@@ -117,19 +162,33 @@ def get_model(
             )
         logger.debug(f"Loaded model {config.name} in {time.perf_counter() - load_model_start_time:.2f} seconds")
 
-    assert model.lm_head.weight.dtype == dtype, (
-        f"LM head dtype wasnt loaded correctly {model.lm_head.weight.dtype} != {dtype}"
-    )
+    # NEW: Skip lm_head check for vision models (they have different structure)
+    if not is_vision:
+        assert model.lm_head.weight.dtype == dtype, (
+            f"LM head dtype wasnt loaded correctly {model.lm_head.weight.dtype} != {dtype}"
+        )
     return model
 
 
-def setup_tokenizer(config: TokenizerConfig) -> PreTrainedTokenizer:
-    tokenizer = AutoTokenizer.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
-    if config.chat_template is not None:
-        tokenizer.chat_template = config.chat_template
-    tokenizer.pad_token_id = tokenizer.eos_token_id
-
-    return tokenizer
+def setup_tokenizer(config: TokenizerConfig, model_config: ModelConfig | None = None) -> PreTrainedTokenizer:
+    """Setup tokenizer or processor based on model type."""
+    # NEW: Check if this is a vision model that needs a processor
+    if model_config and is_vision_model(model_config.name, model_config.trust_remote_code):
+        processor = AutoProcessor.from_pretrained(
+            config.name or model_config.name,
+            trust_remote_code=config.trust_remote_code or model_config.trust_remote_code,
+        )
+        if config.chat_template is not None:
+            processor.tokenizer.chat_template = config.chat_template
+        processor.tokenizer.pad_token_id = processor.tokenizer.eos_token_id
+        return processor  # Return processor (has .tokenizer attribute for compatibility)
+    else:
+        # Existing tokenizer logic
+        tokenizer = AutoTokenizer.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
+        if config.chat_template is not None:
+            tokenizer.chat_template = config.chat_template
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+        return tokenizer
 
 
 def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
@@ -142,7 +201,23 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
     offload_policy: OffloadPolicy = CPUOffloadPolicy(pin_memory=True) if config.fsdp_cpu_offload else OffloadPolicy()
 
-    for transformer_block in model.model.layers:
+    # NEW: Wrap vision encoder if present (Qwen3-VL has 'visual' attribute)
+    if hasattr(model, "visual"):
+        get_logger().info("Wrapping vision encoder with FSDP")
+        fully_shard(
+            model.visual,
+            mesh=hsdp_mesh,
+            mp_policy=mp_policy,
+            offload_policy=offload_policy,
+            reshard_after_forward=config.reshard_after_forward,
+        )
+
+    # NEW: Get language model parent (handles both vision and text-only models)
+    # Qwen3-VL uses: model.language_model.layers, model.language_model.embed_tokens, model.language_model.norm
+    # Text-only uses: model.model.layers, model.model.embed_tokens, model.model.norm
+    language_model_parent = get_language_model_parent(model)
+
+    for transformer_block in language_model_parent.layers:
         fully_shard(
             transformer_block,
             mesh=hsdp_mesh,
@@ -153,20 +228,25 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
     if hasattr(model, "config") and not model.config.tie_word_embeddings:
         # This optimization breaks weight tying
-        fully_shard(
-            model.model.embed_tokens,
-            mesh=hsdp_mesh,
-            mp_policy=mp_policy,
-            offload_policy=offload_policy,
-            reshard_after_forward=config.reshard_after_forward,
-        )
-        fully_shard(
-            [model.lm_head, model.model.norm],
-            mesh=hsdp_mesh,
-            mp_policy=mp_policy,
-            offload_policy=offload_policy,
-            reshard_after_forward=False,
-        )
+        # Wrap embed_tokens if it exists in the language model parent
+        if hasattr(language_model_parent, "embed_tokens"):
+            fully_shard(
+                language_model_parent.embed_tokens,
+                mesh=hsdp_mesh,
+                mp_policy=mp_policy,
+                offload_policy=offload_policy,
+                reshard_after_forward=config.reshard_after_forward,
+            )
+
+        # Wrap lm_head and norm together (if they exist)
+        if hasattr(model, "lm_head") and hasattr(language_model_parent, "norm"):
+            fully_shard(
+                [model.lm_head, language_model_parent.norm],
+                mesh=hsdp_mesh,
+                mp_policy=mp_policy,
+                offload_policy=offload_policy,
+                reshard_after_forward=False,
+            )
     else:
         get_logger().warning("Model is tied word embeddings, so not doing the last layer not resharding optimization")
 
@@ -282,8 +362,20 @@ def can_reinit_empty_buffers(model: nn.Module):
     buffer_names = [
         name for name in buffer_names if not (name.startswith("model.layers.") and name.endswith("mlp.expert_bias"))
     ]
-    # HF standard transformer model
+
+    # NEW: Vision model buffers (Qwen3-VL) - filter out model.visual.* buffers
+    buffer_names = [name for name in buffer_names if not name.startswith("model.visual.")]
+
+    # HF standard transformer model (text-only)
     if len(buffer_names) == 1 and buffer_names[0] == "model.rotary_emb.inv_freq":
+        return True
+
+    # NEW: Vision models (Qwen3-VL)
+    if len(buffer_names) == 1 and buffer_names[0] == "model.language_model.rotary_emb.inv_freq":
+        return True
+
+    # NEW: Vision models might have no buffers or different buffers
+    if len(buffer_names) == 0:
         return True
 
     get_logger().warning(f"Model cannot be loaded using meta device because of buffers: {buffer_names}")
@@ -292,9 +384,10 @@ def can_reinit_empty_buffers(model: nn.Module):
 
 def fix_model_post_empty(model: nn.Module):
     buffer_names = [name for name, _ in model.named_buffers()]
-    # HF standard transformer model
-    if "model.rotary_emb.inv_freq" in buffer_names:
-        rotary_emb = model.model.rotary_emb
+    # Check for rotary_emb buffer in both text-only and vision model structures
+    if "model.rotary_emb.inv_freq" in buffer_names or "model.language_model.rotary_emb.inv_freq" in buffer_names:
+        language_model_parent = get_language_model_parent(model)
+        rotary_emb = language_model_parent.rotary_emb
         inv_freq, rotary_emb.attention_scaling = rotary_emb.rope_init_fn(rotary_emb.config, rotary_emb.inv_freq.device)
         rotary_emb.inv_freq.copy_(inv_freq)
 
@@ -306,19 +399,21 @@ def reshard_module(model: nn.Module):
 
 
 def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
-    for layer_id, (layer_name, transformer_block) in enumerate(model.model.layers.named_children()):
+    language_model_parent = get_language_model_parent(model)
+    for layer_id, (layer_name, transformer_block) in enumerate(language_model_parent.layers.named_children()):
         if layer_id % ac_config.freq == 0:
             transformer_block = checkpoint_wrapper(transformer_block, preserve_rng_state=False)
-        model.model.layers.register_module(layer_name, transformer_block)
+        language_model_parent.layers.register_module(layer_name, transformer_block)
     get_logger().info(f"Applied activation checkpointing (freq={ac_config.freq})")
 
 
 def apply_compile(model: nn.Module, compile_config: CompileConfig):
     torch._dynamo.config.capture_scalar_outputs = True
-    for layer_id in range(len(model.model.layers)):
+    language_model_parent = get_language_model_parent(model)
+    for layer_id in range(len(language_model_parent.layers)):
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
-        model.model.layers[layer_id].compile(fullgraph=compile_config.fullgraph)
-    get_logger().info(f"Compiled {len(model.model.layers)} layers (fullgraph={compile_config.fullgraph})")
+        language_model_parent.layers[layer_id].compile(fullgraph=compile_config.fullgraph)
+    get_logger().info(f"Compiled {len(language_model_parent.layers)} layers (fullgraph={compile_config.fullgraph})")
 
 
 def setup_model(
@@ -379,6 +474,15 @@ def setup_model(
 
 @jaxtyped(typechecker=typechecker)
 def forward(
-    model: nn.Module, input_ids: Int[Tensor, "batch seq"], position_ids: Int[Tensor, "batch seq"]
+    model: nn.Module,
+    input_ids: Int[Tensor, "batch seq"],
+    position_ids: Int[Tensor, "batch seq"],
+    pixel_values: Float[Tensor, "batch num_images channels height width"] | None = None,  # NEW
 ) -> Float[Tensor, "batch seq vocab"]:
-    return model(input_ids=input_ids, position_ids=position_ids).logits
+    """Forward pass supporting both text-only and vision models."""
+    if pixel_values is not None:
+        # Vision model forward pass
+        return model(input_ids=input_ids, position_ids=position_ids, pixel_values=pixel_values).logits
+    else:
+        # Text-only model forward pass
+        return model(input_ids=input_ids, position_ids=position_ids).logits

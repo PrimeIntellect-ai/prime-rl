@@ -25,9 +25,19 @@ class TensorMicroBatch(TypedDict):
     # Batch level
     temperature: float
 
+    # Vision inputs (optional)
+    pixel_values: Float[Tensor, "batch num_images channels height width"] | None
+
 
 def micro_batch_to_tensor(micro_batch: MicroBatch) -> TensorMicroBatch:
     """Convert a MicroBatch (msgspec struct with lists) to a TensorMicroBatch (dict with tensors)."""
+    # NEW: Convert pixel_values if present
+    pixel_values_tensor = None
+    if micro_batch.pixel_values is not None:
+        # pixel_values format: [num_images, [channels, height, width]]
+        # Convert to tensor with shape [num_images, channels, height, width]
+        pixel_values_tensor = torch.tensor(micro_batch.pixel_values, dtype=torch.float)
+
     return TensorMicroBatch(
         input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),
         position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
@@ -35,6 +45,7 @@ def micro_batch_to_tensor(micro_batch: MicroBatch) -> TensorMicroBatch:
         inference_logprobs=torch.tensor(micro_batch.inference_logprobs, dtype=torch.float).unsqueeze(0),
         loss_mask=torch.tensor(micro_batch.loss_mask, dtype=torch.bool).unsqueeze(0),
         temperature=micro_batch.temperature if micro_batch.temperature is not None else 1.0,
+        pixel_values=pixel_values_tensor,  # NEW: Add pixel_values
     )
 
 
