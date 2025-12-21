@@ -1,4 +1,4 @@
-![Alt text](../images/parallel_reward.png)
+![Alt text](images/parallel_reward.png)
 
 This parallel reward + correctness reward stuff aint workin out boss
 
