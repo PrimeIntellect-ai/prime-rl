@@ -382,10 +382,6 @@ async def orchestrate(config: OrchestratorConfig):
         solve_none = results_df.groupby("example_id").apply(lambda x: x.reward.sum() == 0, include_groups=False).mean()
         effective_batch_size = 1 - solve_none - solve_all
 
-        # Compute per-env results
-        num_envs_in_batch = results_df.task.nunique()
-        per_env_reward = results_df.groupby("task").reward.mean().to_dict() if num_envs_in_batch > 1 else None
-
         step_time = time.perf_counter() - step_start_time
         to_log = {
             # Progress metrics
