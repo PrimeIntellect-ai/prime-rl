@@ -37,17 +37,19 @@ def prepare_sample(
     )
 
 
-def packed_samples_into_micro_bs(samples: list[MicroBatch], max_seq_len: int) -> list[MicroBatch]:
+def packed_samples_into_micro_bs(
+    samples: list[tuple[int, MicroBatch]], max_seq_len: int, num_loras: int
+) -> list[MicroBatch]:
     """
     Pack samples into micro_batch efficiently.
     We follow the First Fit Decreasing algorithm to pack the samples into bins and minimize potential padding while never truncating.
     """
-    sorted_samples = sorted(samples, key=lambda x: len(x.input_ids), reverse=True)
+    samples.sort(key=lambda x: (x[0], -len(x[1].input_ids)))
 
     ## we create bins
     micro_batches: list[MicroBatch] = []
 
-    for sample in sorted_samples:
+    for idx, sample in samples:
         # Try to find a bin that can fit this sequence
         for bin_content in micro_batches:
             # Check if sequence fits in this bin
@@ -57,11 +59,39 @@ def packed_samples_into_micro_bs(samples: list[MicroBatch], max_seq_len: int) ->
                 bin_content.advantages.extend(sample.advantages)
                 bin_content.inference_logprobs.extend(sample.inference_logprobs)
                 bin_content.position_ids.extend(sample.position_ids)
+                bin_content.lora_num_tokens[idx] += len(sample.input_ids)
                 break
         else:
+            sample.lora_num_tokens = [0] * num_loras
+            sample.lora_num_tokens[idx] = len(sample.input_ids)
             micro_batches.append(sample)
 
     return micro_batches
+
+
+def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBatch:
+    """
+    Pad a micro batch with the given padding size sample
+    Return the padded micro batch.
+    Args:
+        micro_batch: The micro batch to pad.
+        padding_size: The number of padding tokens to add.
+    Returns:
+        The padded micro batch.
+    """
+
+    padding_size = (pad_to_multiple_of - (len(micro_batch.input_ids) % pad_to_multiple_of)) % pad_to_multiple_of
+
+    if not (pad_to_multiple_of > 1 and padding_size > 0):
+        return micro_batch
+
+    micro_batch.input_ids.extend([1 for _ in range(padding_size)])
+    micro_batch.advantages.extend([0.0 for _ in range(padding_size)])
+    micro_batch.loss_mask.extend([False for _ in range(padding_size)])
+    micro_batch.position_ids.extend(list(range(padding_size)))
+    micro_batch.inference_logprobs.extend([0.0 for _ in range(padding_size)])
+
+    return micro_batch
 
 
 def prepare_batch(
@@ -69,6 +99,9 @@ def prepare_batch(
     temperature: float,
     seq_len: int,
     num_train_workers: int,
+    idxs: list[int],
+    num_loras: int,
+    pad_to_multiple_of: int = 1,
 ) -> list[list[MicroBatch]]:
     """
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
@@ -76,9 +109,11 @@ def prepare_batch(
     """
     max_seq_len = seq_len
 
-    all_samples = [prepare_sample(rollout, max_seq_len) for rollout in rollouts]
+    all_samples = [(idx, prepare_sample(rollout, max_seq_len)) for idx, rollout in zip(idxs, rollouts)]
 
-    micro_batches = packed_samples_into_micro_bs(all_samples, max_seq_len)
+    micro_batches = packed_samples_into_micro_bs(all_samples, max_seq_len, num_loras)
+    micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]
+
     for micro_batch in micro_batches:
         micro_batch.temperature = temperature
 

@@ -5,7 +5,8 @@ import torch
 import torch.nn as nn
 
 from prime_rl.trainer.config import LoRAConfig
-from prime_rl.trainer.models.layers.lora import LoRALinear
+from prime_rl.trainer.models.layers.lora import LoRALinear, MultiLoRALinear
+from prime_rl.trainer.runs import get_runs
 from prime_rl.utils.logger import get_logger
 
 
@@ -131,6 +132,7 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
         config: LoRA configuration
     """
     logger = get_logger()
+    n_loras = get_runs().max_runs
 
     from torch.distributed.fsdp import FSDPModule
 
@@ -157,12 +159,22 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
             logger.warning(f"Module {module_name} is not nn.Linear, skipping")
             continue
 
-        lora_module = LoRALinear(
-            base_layer=base_module,
-            rank=config.rank,
-            alpha=config.alpha,
-            dropout=config.dropout,
-        )
+        if n_loras == 1:
+            lora_module = LoRALinear(
+                base_layer=base_module,
+                rank=config.rank,
+                alpha=config.alpha,
+                dropout=config.dropout,
+            )
+        else:
+            lora_module = MultiLoRALinear(
+                base_layer=base_module,
+                rank=config.rank,
+                n_adapters=n_loras,
+                alpha=config.alpha,
+                dropout=config.dropout,
+            )
+            lora_module.register_with_runs(get_runs(), module_name)
 
         _set_module_by_name(model, module_name, lora_module)
 

@@ -24,7 +24,7 @@ class FileSystemWeightUpdateWorker(Worker):
         """Update weights from a specified path in shared filesystem containing a HF-compatible checkpoint."""
         # Get vLLM model runner and model
         model_runner = self.model_runner
-        model = model_runner.model
+        model = model_runner.model.runnable
         assert isinstance(model, Module)
 
         # Get vLLM model loader

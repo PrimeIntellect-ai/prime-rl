@@ -1,4 +1,5 @@
 from pathlib import Path
+from time import time
 
 from prime_rl.trainer.runs import get_runs
 from prime_rl.transport.base import MicroBatchReceiver, MicroBatchSender, TrainingBatchReceiver, TrainingBatchSender
@@ -7,6 +8,7 @@ from prime_rl.utils.pathing import get_rollout_dir, get_step_path, sync_wait_for
 
 BATCH_FILE_TMP_NAME = "rollouts.bin.tmp"
 BATCH_FILE_NAME = "rollouts.bin"
+LOG_FREQ_SECONDS = 10
 
 
 class FileSystemTrainingBatchSender(TrainingBatchSender):
@@ -34,6 +36,8 @@ class FileSystemTrainingBatchReceiver(TrainingBatchReceiver):
     def __init__(self) -> None:
         super().__init__()
         self.runs = get_runs()
+        self._last_logged_paths: list[Path] | None = None
+        self._last_logged_time = time()
 
     def _get_batch_path(self, idx: int) -> Path:
         """Get the batch file path for a specific run at its current step."""
@@ -52,7 +56,15 @@ class FileSystemTrainingBatchReceiver(TrainingBatchReceiver):
     def receive(self) -> list[TrainingBatch]:
         """Read and return all available batches from all runs."""
         batches: list[TrainingBatch] = []
-        self.logger.debug(f"Looking for batches in {[self._get_batch_path(idx) for idx in self.runs.used_idxs]}")
+        current_paths = [self._get_batch_path(idx) for idx in self.runs.used_idxs]
+        if current_paths != self._last_logged_paths or time() - self._last_logged_time > LOG_FREQ_SECONDS:
+            if len(current_paths) == 0:
+                self.logger.debug(
+                    "Did you set the output dir of the orchestrator to a run_* subdirectory of the trainer output dir?"
+                )
+            self.logger.debug(f"Looking for batches in {current_paths}")
+            self._last_logged_paths = current_paths
+            self._last_logged_time = time()
         for idx in list(self.runs.used_idxs):
             if self.runs.ready_to_update[idx]:
                 continue

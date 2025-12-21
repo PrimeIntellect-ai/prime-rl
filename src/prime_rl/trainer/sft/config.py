@@ -178,8 +178,20 @@ class SFTTrainerConfig(BaseSettings):
 
     @model_validator(mode="after")
     def validate_pack_function(self):
-        if self.model.cp > 1 and self.data.pack_function != "stack":
-            raise ValueError("Packing function must be 'stack' when CP is enabled")
+        if self.model.cp > 1 and self.data.pack_function != "cat":
+            raise ValueError("Packing function must be 'cat' when CP is enabled")
+        return self
+
+    @model_validator(mode="after")
+    def validate_cp_seq_len(self):
+        if self.model.cp > 1 and self.data.seq_len % self.model.cp != 0:
+            raise ValueError("Sequence length must be divisible by CP degree")
+        return self
+
+    @model_validator(mode="after")
+    def validate_cp_micro_batch_size(self):
+        if self.model.cp > 1 and self.data.micro_batch_size != 1:
+            raise ValueError("Micro batch size must be 1 when CP is enabled")
         return self
 
     @model_validator(mode="after")
@@ -203,11 +215,11 @@ class SFTTrainerConfig(BaseSettings):
     @model_validator(mode="after")
     def validate_lora_adapter_saving(self):
         if self.ckpt and self.ckpt.weights and self.ckpt.weights.save_adapter_separately:
-            lora_enabled = self.model and self.model.experimental and self.model.experimental.lora
+            lora_enabled = self.model and self.model.lora
             if not lora_enabled:
                 raise ValueError(
                     "save_adapter_separately=True requires LoRA to be enabled. "
-                    "Set model.experimental.lora or disable save_adapter_separately."
+                    "Set model.lora or disable save_adapter_separately."
                 )
         return self
 
