@@ -17,6 +17,7 @@ max_tokens = 512
 
 [[orchestrator.env]]
 id = "math-python"
+args = {sandbox_timeout_minutes = 10, sandbox_memory_gb = 1, sandbox_disk_size_gb = 1, pip_install_packages = "numpy sympy"}
 
 [trainer] # Default trainer config
 
