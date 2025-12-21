@@ -5,7 +5,7 @@ import time
 import tomli_w
 
 from prime_rl.orchestrator.advantage import compute_advantages
-from prime_rl.orchestrator.event_loop_lag import get_event_loop_lag_monitor
+from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.trajectories import branch_rollout, interleave_rollout
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
@@ -69,7 +69,7 @@ async def orchestrate(config: OrchestratorConfig):
     vf.setup_logging(level=config.log.vf_level.upper())
     logger.info("Starting orchestrator")
 
-    event_loop_lag_monitor = get_event_loop_lag_monitor()
+    event_loop_lag_monitor = EventLoopLagMonitor()
     asyncio.create_task(event_loop_lag_monitor.run())
 
     # Print warning if running in benchmark mode

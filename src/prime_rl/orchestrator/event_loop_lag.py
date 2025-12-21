@@ -81,14 +81,3 @@ class EventLoopLagMonitor:
             "event_loop_lag/p90": p90_lag,
             "event_loop_lag/max": max_lag,
         }
-
-
-_EVENT_LOOP_LAG_MONITOR: EventLoopLagMonitor | None = None
-
-
-def get_event_loop_lag_monitor() -> EventLoopLagMonitor:
-    global _EVENT_LOOP_LAG_MONITOR
-    if _EVENT_LOOP_LAG_MONITOR is None:
-        _EVENT_LOOP_LAG_MONITOR = EventLoopLagMonitor()
-
-    return _EVENT_LOOP_LAG_MONITOR
