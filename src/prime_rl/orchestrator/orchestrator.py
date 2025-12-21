@@ -385,7 +385,6 @@ async def orchestrate(config: OrchestratorConfig):
         # Compute per-env results
         num_envs_in_batch = results_df.task.nunique()
         per_env_reward = results_df.groupby("task").reward.mean().to_dict() if num_envs_in_batch > 1 else None
-        per_env_count = results_df.task.value_counts().to_dict() if num_envs_in_batch > 1 else None
 
         step_time = time.perf_counter() - step_start_time
         to_log = {
