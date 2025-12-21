@@ -70,7 +70,7 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info("Starting orchestrator")
 
     event_loop_lag_monitor = EventLoopLagMonitor()
-    asyncio.create_task(event_loop_lag_monitor.run())
+    event_loop_lag_monitor_task = asyncio.create_task(event_loop_lag_monitor.run())
 
     # Print warning if running in benchmark mode
     if config.bench:
@@ -467,6 +467,8 @@ async def orchestrate(config: OrchestratorConfig):
         progress.step += 1
         is_first_step = False
 
+        event_loop_lag_monitor.reset()
+
         # Send heartbeat if configured
         if heart is not None:
             heart.beat()
@@ -497,7 +499,8 @@ async def orchestrate(config: OrchestratorConfig):
     # Close training batch sender
     training_batch_sender.close()
 
-    event_loop_lag_monitor.reset()
+    # Cancel event loop lag monitor task
+    event_loop_lag_monitor_task.cancel()
 
     logger.success("Orchestrator finished.")
 
