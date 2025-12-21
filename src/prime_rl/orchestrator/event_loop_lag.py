@@ -55,6 +55,8 @@ class EventLoopLagMonitor:
     def get_metrics(self) -> dict[str, float]:
         """Compute metrics for the event loop lag over the last window_size measurements."""
         window_size = int(min(self.max_window_size, len(self.lags)))
+        if window_size <= 0:
+            return {}
         last_lags = np.array(self.lags[-window_size:])
         mean_lag = float(np.mean(last_lags))
         med_lag = float(np.median(last_lags))
