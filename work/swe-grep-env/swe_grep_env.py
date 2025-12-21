@@ -223,8 +223,9 @@ Respond either 'yes' or 'no' only.
 
 async def correct_answer_reward_func(judge, prompt, completion, answer, state, **kwargs):
     judge_response = await judge(prompt, completion, answer, state)
-    return 1.0 if "yes" in judge_response.lower() else 0.0
-
+    is_correct = "yes" in judge_response.lower()
+    state["_is_correct"] = is_correct  # Store for the group function
+    return 1.0 if is_correct else 0.0
 
 def parallel_tool_calls_reward_func(completion, state, **kwargs):
     """Reward for making parallel tool calls per turn."""
@@ -244,7 +245,30 @@ def parallel_tool_calls_reward_func(completion, state, **kwargs):
         return 0.0
     
     avg_calls = sum(tool_calls_per_turn) / len(tool_calls_per_turn)
-    return min(avg_calls / 6.0, 1.0)
+    return min(avg_calls / 8.0, 1.0)
+
+# group reward func
+# takes list of states
+# returns list of floats
+#
+# compute reward from correctness and write to state
+# reference that in second group level 
+
+
+async def efficiency_bonus_for_correct(states: list, **kwargs) -> list[float]:
+    """Among correct rollouts, bonus for fewest turns."""
+    rewards = [0.0] * len(states)
+    
+    correct_indices = [i for i, s in enumerate(states) if s.get("_is_correct", False)]
+    turn_counts = [len(s.get("trajectory", [])) for s in states]
+    
+    if correct_indices:
+        min_turns = min(turn_counts[i] for i in correct_indices)
+        for i in correct_indices:
+            if turn_counts[i] == min_turns:
+                rewards[i] = 1.0
+    
+    return rewards
 
 SYSTEM_PROMPT = """You are a helpful assistant that can answer questions and help with tasks.
 You have access to a set of tools to help you answer questions and help with tasks.
@@ -260,8 +284,8 @@ def load_environment(
 ) -> vf.Environment:
     dataset = convert_dataset()
     rubric = vf.JudgeRubric(judge_prompt=JUDGE_PROMPT)
-    rubric.add_reward_func(correct_answer_reward_func, weight=1.0)
-    rubric.add_reward_func(parallel_tool_calls_reward_func, weight=0.5)
+    rubric.add_reward_func(correct_answer_reward_func, weight=0.0)
+    rubric.add_reward_func(parallel_tool_calls_reward_func, weight=1.0)
     
     return SweGrepEnv(
         dataset=dataset,
