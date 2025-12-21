@@ -12,6 +12,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     completion_logprobs: list[float]
     advantage: float | None = None
     pixel_values: list[list[float]] | None = None  # NEW: [num_patches, hidden_dim] - Qwen3-VL patch embeddings
+    image_grid_thw: list[list[int]] | None = None  # NEW: [num_images, 3] - Grid dimensions [temporal, height, width]
 
 
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
@@ -34,3 +35,4 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     position_ids: list[int]
     temperature: float | None = None
     pixel_values: list[list[float]] | None = None  # NEW: [num_patches, hidden_dim] - Qwen3-VL patch embeddings
+    image_grid_thw: list[list[int]] | None = None  # NEW: [num_images, 3] - Grid dimensions [temporal, height, width]

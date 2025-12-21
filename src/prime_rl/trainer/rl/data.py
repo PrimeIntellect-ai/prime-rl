@@ -27,6 +27,7 @@ class TensorMicroBatch(TypedDict):
 
     # Vision inputs (optional) - Qwen3-VL patch embeddings
     pixel_values: Float[Tensor, "num_patches hidden_dim"] | None
+    image_grid_thw: Int[Tensor, "num_images 3"] | None  # Grid dimensions [temporal, height, width]
 
 
 def micro_batch_to_tensor(micro_batch: MicroBatch) -> TensorMicroBatch:
@@ -37,6 +38,12 @@ def micro_batch_to_tensor(micro_batch: MicroBatch) -> TensorMicroBatch:
         # pixel_values format: [num_patches, hidden_dim] - Qwen3-VL patch embeddings
         pixel_values_tensor = torch.tensor(micro_batch.pixel_values, dtype=torch.float)
 
+    # NEW: Convert image_grid_thw if present
+    image_grid_thw_tensor = None
+    if micro_batch.image_grid_thw is not None:
+        # image_grid_thw format: [num_images, 3] - Grid dimensions [temporal, height, width]
+        image_grid_thw_tensor = torch.tensor(micro_batch.image_grid_thw, dtype=torch.long)
+
     return TensorMicroBatch(
         input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),
         position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
@@ -45,6 +52,7 @@ def micro_batch_to_tensor(micro_batch: MicroBatch) -> TensorMicroBatch:
         loss_mask=torch.tensor(micro_batch.loss_mask, dtype=torch.bool).unsqueeze(0),
         temperature=micro_batch.temperature if micro_batch.temperature is not None else 1.0,
         pixel_values=pixel_values_tensor,  # NEW: Add pixel_values
+        image_grid_thw=image_grid_thw_tensor,  # NEW: Add image_grid_thw
     )
 
 

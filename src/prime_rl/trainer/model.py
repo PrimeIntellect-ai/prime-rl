@@ -478,11 +478,17 @@ def forward(
     input_ids: Int[Tensor, "batch seq"],
     position_ids: Int[Tensor, "batch seq"],
     pixel_values: Float[Tensor, "num_patches hidden_dim"] | None = None,  # NEW: Qwen3-VL patch embeddings
+    image_grid_thw: Int[Tensor, "num_images 3"] | None = None,  # NEW: Grid dimensions [temporal, height, width]
 ) -> Float[Tensor, "batch seq vocab"]:
     """Forward pass supporting both text-only and vision models."""
     if pixel_values is not None:
         # Vision model forward pass
-        return model(input_ids=input_ids, position_ids=position_ids, pixel_values=pixel_values).logits
+        return model(
+            input_ids=input_ids,
+            position_ids=position_ids,
+            pixel_values=pixel_values,
+            image_grid_thw=image_grid_thw,
+        ).logits
     else:
         # Text-only model forward pass
         return model(input_ids=input_ids, position_ids=position_ids).logits

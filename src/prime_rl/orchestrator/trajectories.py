@@ -55,6 +55,7 @@ def interleave_rollout(state: vf.State, processor=None) -> list[TrainingSample] 
 
     # NEW: Extract and preprocess images from the original prompt
     pixel_values = None
+    image_grid_thw = None
     if processor is not None and hasattr(processor, "image_processor"):
         # Extract images from the input prompt (stored in state["input"])
         input_prompt = state.get("input", {}).get("prompt", [])
@@ -68,6 +69,13 @@ def interleave_rollout(state: vf.State, processor=None) -> list[TrainingSample] 
                 tensor_shape = processed["pixel_values"].shape
                 logger.info(f"Image processor output shape: {tensor_shape}")
                 pixel_values = processed["pixel_values"].cpu().numpy().tolist()
+
+                # Extract image_grid_thw metadata
+                if "image_grid_thw" in processed:
+                    grid_shape = processed["image_grid_thw"].shape
+                    logger.info(f"Image grid_thw shape: {grid_shape}")
+                    image_grid_thw = processed["image_grid_thw"].cpu().numpy().tolist()
+
                 logger.debug(f"Preprocessed {len(images)} images for example {state['example_id']}")
             except Exception as e:
                 logger.warning(f"Failed to preprocess images for example {state['example_id']}: {e}")
@@ -88,6 +96,7 @@ def interleave_rollout(state: vf.State, processor=None) -> list[TrainingSample] 
         completion_logprobs=deepcopy(first_step["tokens"]["completion_logprobs"]),
         advantage=None,
         pixel_values=pixel_values,  # NEW: Attach preprocessed images
+        image_grid_thw=image_grid_thw,  # NEW: Attach grid metadata
     )
 
     # Interleave all other trajectory steps into completion
@@ -137,6 +146,7 @@ def branch_rollout(state: vf.State, processor=None) -> list[TrainingSample] | No
 
     # NEW: Extract and preprocess images from the original prompt
     pixel_values = None
+    image_grid_thw = None
     if processor is not None and hasattr(processor, "image_processor"):
         # Extract images from the input prompt (stored in state["input"])
         input_prompt = state.get("input", {}).get("prompt", [])
@@ -150,6 +160,13 @@ def branch_rollout(state: vf.State, processor=None) -> list[TrainingSample] | No
                 tensor_shape = processed["pixel_values"].shape
                 logger.info(f"Image processor output shape: {tensor_shape}")
                 pixel_values = processed["pixel_values"].cpu().numpy().tolist()
+
+                # Extract image_grid_thw metadata
+                if "image_grid_thw" in processed:
+                    grid_shape = processed["image_grid_thw"].shape
+                    logger.info(f"Image grid_thw shape: {grid_shape}")
+                    image_grid_thw = processed["image_grid_thw"].cpu().numpy().tolist()
+
                 logger.debug(f"Preprocessed {len(images)} images for example {state['example_id']}")
             except Exception as e:
                 logger.warning(f"Failed to preprocess images for example {state['example_id']}: {e}")
@@ -170,6 +187,7 @@ def branch_rollout(state: vf.State, processor=None) -> list[TrainingSample] | No
             completion_logprobs=deepcopy(tokens["completion_logprobs"]),
             advantage=None,
             pixel_values=pixel_values,  # NEW: Attach preprocessed images
+            image_grid_thw=image_grid_thw,  # NEW: Attach grid metadata
         )
         rollouts.append(rollout)
     return rollouts

@@ -269,14 +269,23 @@ def train(config: RLTrainerConfig):
 
             temperature = micro_batch["temperature"]
 
-            # NEW: Extract pixel_values from micro_batch if present
+            # NEW: Extract pixel_values and image_grid_thw from micro_batch if present
             pixel_values = micro_batch.get("pixel_values")
+            image_grid_thw = micro_batch.get("image_grid_thw")
             if pixel_values is not None:
                 pixel_values = pixel_values.to("cuda")
+            if image_grid_thw is not None:
+                image_grid_thw = image_grid_thw.to("cuda")
 
             # Forward pass
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                logits = forward(model, input_ids, forward_position_ids, pixel_values=pixel_values).float().contiguous()
+                logits = (
+                    forward(
+                        model, input_ids, forward_position_ids, pixel_values=pixel_values, image_grid_thw=image_grid_thw
+                    )
+                    .float()
+                    .contiguous()
+                )
 
             if cp_enabled:
                 left_pad_logit = get_padding_logit_from_prev_cp_rank(logits, cp_rank, cp_size, cp_group)

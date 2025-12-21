@@ -35,6 +35,7 @@ def prepare_sample(
         position_ids=position_ids,
         inference_logprobs=inference_logprobs,
         pixel_values=training_example.pixel_values,  # NEW: Pass through pixel_values
+        image_grid_thw=training_example.image_grid_thw,  # NEW: Pass through image_grid_thw
     )
 
 
