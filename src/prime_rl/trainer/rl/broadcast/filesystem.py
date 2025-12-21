@@ -42,8 +42,13 @@ class FileSystemWeightBroadcast(WeightBroadcast):
 
         if not adapter_only:
             state_dict = gather_weights_on_master(model, is_master=self.world.is_master)
+            if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
+                model.convert_to_hf(state_dict)
 
         for idx in self.runs.used_idxs:
+            if not self.runs.ready_to_update[idx]:
+                continue
+
             if adapter_only:
                 # For adapter-only, Runs creates state dict directly for each run
                 # All ranks must participate in DTensor gathering, but only master saves
@@ -53,12 +58,9 @@ class FileSystemWeightBroadcast(WeightBroadcast):
                         value = value.full_tensor()
                     if self.world.is_master:
                         state_dict[key] = value.to("cpu", non_blocking=False)
-            else:
-                if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
-                    model.convert_to_hf(state_dict)
 
             # TODO: Broadcast ready to update in sync, then we dont need to gather on not ready
-            if self.world.is_master and self.runs.ready_to_update[idx]:
+            if self.world.is_master:
                 try:
                     save_dir = get_step_path(
                         get_broadcast_dir(self.runs.get_run_dir(idx)), self.runs.progress[idx].step

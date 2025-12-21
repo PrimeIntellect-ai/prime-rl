@@ -162,7 +162,11 @@ class Runs:
         print(f"Syncing runs on rank {self.world.rank}", flush=True)
 
         if self.world.is_master:
-            self.store.set("runs", pickle.dumps(self.id_2_idx))
+            sync_data = {
+                "id_2_idx": self.id_2_idx,
+                "ready_to_update": self.ready_to_update,
+            }
+            self.store.set("runs", pickle.dumps(sync_data))
         dist.barrier()
 
         if self.world.is_master:
@@ -170,7 +174,10 @@ class Runs:
             new_runs = self.id_2_idx.keys() - self._last_synced_id_2_idx.keys()
             deleted_runs = self._last_synced_id_2_idx.keys() - self.id_2_idx.keys()
         else:
-            new_id_2_idx: dict[str, int] = pickle.loads(self.store.get("runs"))
+            sync_data: dict = pickle.loads(self.store.get("runs"))
+            new_id_2_idx: dict[str, int] = sync_data["id_2_idx"]
+            self.ready_to_update = sync_data["ready_to_update"]
+
             new_runs = new_id_2_idx.keys() - self.id_2_idx.keys()
             deleted_runs = self.id_2_idx.keys() - new_id_2_idx.keys()
 
