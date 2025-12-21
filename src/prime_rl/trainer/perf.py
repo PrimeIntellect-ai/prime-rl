@@ -81,56 +81,66 @@ class PerfCounter:
     @staticmethod
     def get_active_mm_params(config: PretrainedConfig) -> float:
         """Get number of active parameters per token involved in matmuls"""
-        vocab_size = config.vocab_size
-        hidden_size = config.hidden_size
-        intermediate_size = config.intermediate_size
-        head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
-        num_attention_heads = config.num_attention_heads
-        num_hidden_layers = config.num_hidden_layers
+        # For vision-language models like Qwen3VL, text model config is nested under text_config
+        text_config = getattr(config, "text_config", config)
+
+        vocab_size = text_config.vocab_size
+        hidden_size = text_config.hidden_size
+        intermediate_size = text_config.intermediate_size
+        head_dim = getattr(text_config, "head_dim", text_config.hidden_size // text_config.num_attention_heads)
+        num_attention_heads = text_config.num_attention_heads
+        num_hidden_layers = text_config.num_hidden_layers
 
         ## Attention
-        if hasattr(config, "q_lora_rank") and hasattr(config, "kv_lora_rank"):
+        if hasattr(text_config, "q_lora_rank") and hasattr(text_config, "kv_lora_rank"):
             # MLA
             q_params = num_hidden_layers * (
-                hidden_size * config.q_lora_rank + config.q_lora_rank * num_attention_heads * config.qk_head_dim
+                hidden_size * text_config.q_lora_rank
+                + text_config.q_lora_rank * num_attention_heads * text_config.qk_head_dim
             )
             kv_params = num_hidden_layers * (
-                hidden_size * (config.kv_lora_rank + config.qk_rope_head_dim)
-                + config.kv_lora_rank * num_attention_heads * (config.qk_nope_head_dim + config.v_head_dim)
+                hidden_size * (text_config.kv_lora_rank + text_config.qk_rope_head_dim)
+                + text_config.kv_lora_rank
+                * num_attention_heads
+                * (text_config.qk_nope_head_dim + text_config.v_head_dim)
             )
-            o_params = num_hidden_layers * (num_attention_heads * config.v_head_dim * hidden_size)
+            o_params = num_hidden_layers * (num_attention_heads * text_config.v_head_dim * hidden_size)
         else:
             # GQA
-            num_key_value_heads = config.num_key_value_heads
+            num_key_value_heads = text_config.num_key_value_heads
             q_params = num_hidden_layers * hidden_size * num_attention_heads * head_dim
             kv_params = 2 * num_hidden_layers * hidden_size * num_key_value_heads * head_dim
             o_params = num_hidden_layers * hidden_size * num_attention_heads * head_dim
 
         ## MLP
-        if hasattr(config, "first_k_dense_replace"):
-            num_dense_layers = config.first_k_dense_replace
-            num_sparse_layers = config.num_hidden_layers - num_dense_layers
-        elif hasattr(config, "num_experts_per_tok"):
+        if hasattr(text_config, "first_k_dense_replace"):
+            num_dense_layers = text_config.first_k_dense_replace
+            num_sparse_layers = text_config.num_hidden_layers - num_dense_layers
+        elif hasattr(text_config, "num_experts_per_tok"):
             num_dense_layers = 0
-            num_sparse_layers = config.num_hidden_layers
+            num_sparse_layers = text_config.num_hidden_layers
         else:
-            num_dense_layers = config.num_hidden_layers
+            num_dense_layers = text_config.num_hidden_layers
             num_sparse_layers = 0
 
         dense_mlp_params = num_dense_layers * 3 * intermediate_size * hidden_size
         sparse_mlp_params = 0
-        if hasattr(config, "num_shared_experts"):  # Shared experts
+        if hasattr(text_config, "num_shared_experts"):  # Shared experts
             sparse_mlp_params += (
-                num_sparse_layers * config.num_shared_experts * 3 * config.moe_intermediate_size * hidden_size
+                num_sparse_layers * text_config.num_shared_experts * 3 * text_config.moe_intermediate_size * hidden_size
             )
-        if hasattr(config, "num_experts_per_tok"):  # Routed experts
+        if hasattr(text_config, "num_experts_per_tok"):  # Routed experts
             sparse_mlp_params += (
-                num_sparse_layers * config.num_experts_per_tok * 3 * config.moe_intermediate_size * hidden_size
+                num_sparse_layers
+                * text_config.num_experts_per_tok
+                * 3
+                * text_config.moe_intermediate_size
+                * hidden_size
             )
-        if hasattr(config, "n_routed_experts"):  # DeepSeek Router
-            sparse_mlp_params += num_sparse_layers * config.n_routed_experts * hidden_size
-        elif hasattr(config, "num_experts"):  # Qwen Router
-            sparse_mlp_params += num_sparse_layers * config.num_experts * hidden_size
+        if hasattr(text_config, "n_routed_experts"):  # DeepSeek Router
+            sparse_mlp_params += num_sparse_layers * text_config.n_routed_experts * hidden_size
+        elif hasattr(text_config, "num_experts"):  # Qwen Router
+            sparse_mlp_params += num_sparse_layers * text_config.num_experts * hidden_size
         else:
             sparse_mlp_params = 0
 
@@ -140,10 +150,13 @@ class PerfCounter:
         return q_params + kv_params + o_params + dense_mlp_params + sparse_mlp_params + lm_head_params
 
     def _get_num_flop_per_token(self, model_config: PretrainedConfig, seq_len: int) -> int:
+        # For vision-language models like Qwen3VL, text model config is nested under text_config
+        text_config = getattr(model_config, "text_config", model_config)
+
         l, h, q, t = (  # noqa: E741
-            model_config.num_hidden_layers,
-            model_config.num_attention_heads,
-            model_config.hidden_size // model_config.num_attention_heads,
+            text_config.num_hidden_layers,
+            text_config.num_attention_heads,
+            text_config.hidden_size // text_config.num_attention_heads,
             seq_len,
         )
         # Reasoning behind the factor of 12 for the self-attention part of the formula:
