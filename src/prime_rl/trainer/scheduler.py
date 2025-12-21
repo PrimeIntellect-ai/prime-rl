@@ -2,6 +2,8 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import ConstantLR, CosineAnnealingLR, LinearLR, LRScheduler, SequentialLR
 
 from prime_rl.trainer.config import SchedulerConfigType
+from prime_rl.trainer.runs import get_runs
+from prime_rl.utils.logger import get_logger
 
 
 def setup_constant_scheduler(optimizer: Optimizer) -> LRScheduler:
@@ -103,3 +105,68 @@ def setup_scheduler(
             )
         case _:
             raise ValueError(f"Invalid scheduler type: {scheduler_config.type}")
+
+
+class MultiScheduler:
+    """Manages multiple schedulers, one per run.
+
+    Each run has its own independent scheduler that is created when
+    the run's optimizer is created via the optimizer creation hook.
+    """
+
+    def __init__(
+        self,
+        scheduler_config: SchedulerConfigType,
+        max_steps: int | None,
+        lr: float,
+    ):
+        self.scheduler_config = scheduler_config
+        self.max_steps = max_steps
+        self.lr = lr
+        self.runs = get_runs()
+        self.logger = get_logger()
+
+        self.schedulers: list[LRScheduler | None] = [None] * self.runs.max_runs
+
+    def scheduler_creation_hook(self, optimizer: Optimizer, idx: int) -> None:
+        """Create a scheduler for a newly created optimizer.
+
+        This should be called after an optimizer is created for a run.
+        """
+        self.schedulers[idx] = setup_scheduler(
+            optimizer,
+            self.scheduler_config,
+            self.max_steps,
+            self.lr,
+        )
+
+    def step(self) -> None:
+        """Step all active schedulers."""
+        for idx in self.runs.used_idxs:
+            if self.schedulers[idx] is not None:
+                self.schedulers[idx].step()
+
+    def get_last_lr(self, idx: int) -> list[float]:
+        """Get the last learning rate for a specific run."""
+        if self.schedulers[idx] is not None:
+            return self.schedulers[idx].get_last_lr()
+        return []
+
+    def state_dict(self) -> dict:
+        return {
+            "schedulers": [scheduler.state_dict() if scheduler is not None else None for scheduler in self.schedulers],
+        }
+
+    def load_state_dict(self, state_dict: dict) -> None:
+        for idx, scheduler_state in enumerate(state_dict["schedulers"]):
+            if scheduler_state is not None and self.schedulers[idx] is not None:
+                self.schedulers[idx].load_state_dict(scheduler_state)
+
+
+def setup_multi_scheduler(
+    scheduler_config: SchedulerConfigType,
+    max_steps: int | None,
+    lr: float,
+) -> MultiScheduler:
+    """Create a MultiScheduler for managing per-run schedulers."""
+    return MultiScheduler(scheduler_config, max_steps, lr)

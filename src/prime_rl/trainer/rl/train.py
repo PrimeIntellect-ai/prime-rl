@@ -15,6 +15,7 @@ from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
 from prime_rl.trainer.ckpt import setup_ckpt_managers
 from prime_rl.trainer.optim import setup_optimizer
+from prime_rl.trainer.scheduler import setup_scheduler, setup_multi_scheduler
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.cp import (
@@ -122,15 +123,18 @@ def train(config: RLTrainerConfig):
 
     if config.max_concurrent_runs == 1:
         optimizer = setup_optimizer(config.optim, model, parallel_dims.world_mesh["dp_shard_cp"])
+        # Set up the learning rate scheduler
+        scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
     else:
         from prime_rl.trainer.optim import setup_multi_optimizer
 
         optimizer = setup_multi_optimizer(config.optim, model, parallel_dims.world_mesh["dp_shard_cp"])
+        # Set up the multi-scheduler for per-run learning rate scheduling
+        scheduler = setup_multi_scheduler(config.scheduler, config.max_steps, config.optim.lr)
+        # Register callback so schedulers are created when optimizers are created
+        optimizer.register_post_creation_callback(scheduler.scheduler_creation_hook)
 
-    # Set up the learning rate scheduler
-    # scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
-    # logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
-    scheduler = None
+    logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
 
     # Set up weight broadcast
     logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
@@ -361,8 +365,7 @@ def train(config: RLTrainerConfig):
         optimizer.zero_grad()
 
         # Update learning rate scheduler
-        # current_lr = optimizer.param_groups[0]["lr"]
-        # scheduler.step()
+        scheduler.step()
         if hasattr(optimizer, "param_groups"):
             current_lr = optimizer.param_groups[0]["lr"]
         else:
