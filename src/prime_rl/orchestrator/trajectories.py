@@ -65,7 +65,8 @@ def interleave_rollout(state: vf.State, processor=None) -> list[TrainingSample] 
                 # Preprocess images using the processor's image_processor
                 processed = processor.image_processor(images, return_tensors="pt")
                 # Convert to nested list format for msgspec serialization
-                # Shape: [num_images, channels, height, width]
+                tensor_shape = processed["pixel_values"].shape
+                logger.info(f"Image processor output shape: {tensor_shape}")
                 pixel_values = processed["pixel_values"].cpu().numpy().tolist()
                 logger.debug(f"Preprocessed {len(images)} images for example {state['example_id']}")
             except Exception as e:
@@ -146,7 +147,8 @@ def branch_rollout(state: vf.State, processor=None) -> list[TrainingSample] | No
                 # Preprocess images using the processor's image_processor
                 processed = processor.image_processor(images, return_tensors="pt")
                 # Convert to nested list format for msgspec serialization
-                # Shape: [num_images, channels, height, width]
+                tensor_shape = processed["pixel_values"].shape
+                logger.info(f"Image processor output shape: {tensor_shape}")
                 pixel_values = processed["pixel_values"].cpu().numpy().tolist()
                 logger.debug(f"Preprocessed {len(images)} images for example {state['example_id']}")
             except Exception as e:

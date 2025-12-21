@@ -477,7 +477,7 @@ def forward(
     model: nn.Module,
     input_ids: Int[Tensor, "batch seq"],
     position_ids: Int[Tensor, "batch seq"],
-    pixel_values: Float[Tensor, "batch num_images channels height width"] | None = None,  # NEW
+    pixel_values: Float[Tensor, "num_patches hidden_dim"] | None = None,  # NEW: Qwen3-VL patch embeddings
 ) -> Float[Tensor, "batch seq vocab"]:
     """Forward pass supporting both text-only and vision models."""
     if pixel_values is not None:

@@ -25,8 +25,8 @@ class TensorMicroBatch(TypedDict):
     # Batch level
     temperature: float
 
-    # Vision inputs (optional)
-    pixel_values: Float[Tensor, "batch num_images channels height width"] | None
+    # Vision inputs (optional) - Qwen3-VL patch embeddings
+    pixel_values: Float[Tensor, "num_patches hidden_dim"] | None
 
 
 def micro_batch_to_tensor(micro_batch: MicroBatch) -> TensorMicroBatch:
@@ -34,8 +34,7 @@ def micro_batch_to_tensor(micro_batch: MicroBatch) -> TensorMicroBatch:
     # NEW: Convert pixel_values if present
     pixel_values_tensor = None
     if micro_batch.pixel_values is not None:
-        # pixel_values format: [num_images, [channels, height, width]]
-        # Convert to tensor with shape [num_images, channels, height, width]
+        # pixel_values format: [num_patches, hidden_dim] - Qwen3-VL patch embeddings
         pixel_values_tensor = torch.tensor(micro_batch.pixel_values, dtype=torch.float)
 
     return TensorMicroBatch(

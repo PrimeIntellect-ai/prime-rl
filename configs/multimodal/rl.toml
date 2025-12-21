@@ -14,8 +14,10 @@ name = "multimodal"
 [trainer]
 
 [orchestrator]
-batch_size = 512
-rollouts_per_example = 16
+#batch_size = 512
+batch_size = 4
+#rollouts_per_example = 16
+rollouts_per_example = 2
 seq_len = 4096
 oversampling_factor = 1.0
 
