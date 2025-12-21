@@ -95,7 +95,6 @@ class Runs:
         del self.progress[deleted_idx]
         if deleted_idx in self.config:
             del self.config[deleted_idx]
-        self.ready_to_update[deleted_idx] = False
 
         # Process mappings
         self.unused_idxs.add(deleted_idx)
@@ -159,7 +158,6 @@ class Runs:
         This matches what non-master ranks will calculate as new/deleted runs.
         All ranks then execute hooks and parameter resets together.
         """
-        print(f"Syncing runs on rank {self.world.rank}", flush=True)
 
         if self.world.is_master:
             sync_data = {
@@ -198,8 +196,6 @@ class Runs:
         # Update last synced state for master
         if self.world.is_master:
             self._last_synced_id_2_idx = self.id_2_idx.copy()
-
-        print(f"Synced runs on rank {self.world.rank}", flush=True)
 
     @property
     def used_idxs(self):

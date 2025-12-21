@@ -48,6 +48,7 @@ class FileSystemWeightBroadcast(WeightBroadcast):
         for idx in self.runs.used_idxs:
             if not self.runs.ready_to_update[idx]:
                 continue
+            self.logger.debug(f"Broadcasting weights for run {idx} (ready_to_update={self.runs.ready_to_update[idx]})")
 
             if adapter_only:
                 # For adapter-only, Runs creates state dict directly for each run
