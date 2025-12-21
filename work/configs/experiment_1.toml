@@ -9,6 +9,9 @@ name = "Qwen/Qwen3-4B-Instruct-2507"
 [trainer.model]
 seq_len = 4096
 
+[trainer.model.ac]
+freq = 1
+
 [wandb]
 project = "swe-grep-env"
 name = "swe-grep-env"
@@ -19,7 +22,7 @@ weight_decay = 0.0
 
 
 [orchestrator]
-batch_size = 256
+batch_size = 64
 rollouts_per_example = 8
 seq_len = 4096
 oversampling_factor = 2.0
