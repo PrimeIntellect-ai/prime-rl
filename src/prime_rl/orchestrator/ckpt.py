@@ -6,7 +6,6 @@ import torch
 
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.config import CheckpointConfig
-from prime_rl.utils.disk import format_bytes_binary, format_percent, get_disk_usage
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import get_ckpt_dir, get_step_path
 
@@ -26,15 +25,6 @@ class CheckpointManager:
         self.config = config
         self.ckpt_dir = get_ckpt_dir(output_dir)
         self.logger = get_logger()
-        self.ckpt_dir.mkdir(parents=True, exist_ok=True)
-        usage = get_disk_usage(self.ckpt_dir)
-        free_ratio = usage.free_bytes / usage.total_bytes if usage.total_bytes else 0.0
-        self.logger.info(
-            "Checkpoint disk space: "
-            f"path={self.ckpt_dir} "
-            f"free={format_bytes_binary(usage.free_bytes)} ({format_percent(free_ratio)}) "
-            f"total={format_bytes_binary(usage.total_bytes)}"
-        )
 
     def get_ckpt_path(self, step: int) -> Path:
         return get_step_path(self.ckpt_dir, step) / "orchestrator"
@@ -98,14 +88,6 @@ class CheckpointManager:
         """Saves the full checkpoint state for a specified step."""
         ckpt_path = self.get_ckpt_path(step)
         ckpt_path.mkdir(parents=True, exist_ok=True)
-        usage = get_disk_usage(self.ckpt_dir)
-        free_ratio = usage.free_bytes / usage.total_bytes if usage.total_bytes else 0.0
-        self.logger.info(
-            "Checkpoint disk space (pre-save): "
-            f"path={self.ckpt_dir} "
-            f"free={format_bytes_binary(usage.free_bytes)} ({format_percent(free_ratio)}) "
-            f"total={format_bytes_binary(usage.total_bytes)}"
-        )
         self._save_to_path(ckpt_path, step, progress, buffer)
 
 
