@@ -34,7 +34,7 @@ class ZMQTrainingBatchSender(TrainingBatchSender):
 
     def send(self, batch: TrainingBatch) -> None:
         payload = self.encoder.encode(batch)
-        self.logger.warning(f"Sending batch {batch.step} to {self.sender_id}")
+        self.logger.debug(f"Sending batch {batch.step} to {self.sender_id}")
         self.socket.send_multipart([self.sender_id, payload], copy=False)
 
     def close(self) -> None:
