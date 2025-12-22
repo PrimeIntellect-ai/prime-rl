@@ -21,7 +21,7 @@ max_tokens = 2048
 [[orchestrator.env]]
 id = "primeintellect/math-env"
 name = "hendrycks-math"
-args = { dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "default" }
+args = { dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "default", math_verify_max_workers = 128, math_verify_timeout = 60 }
 
 [orchestrator.buffer]
 easy_threshold = 1.0
