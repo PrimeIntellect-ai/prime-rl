@@ -348,6 +348,9 @@ async def orchestrate(config: OrchestratorConfig):
                 "completion_len": [get_completion_len(rollout) for rollout in train_rollouts],
                 "prompt_len": [get_prompt_len(rollout) for rollout in train_rollouts],
                 "seq_len": [get_seq_len(rollout) for rollout in train_rollouts],
+                "num_turns": [len(rollout["trajectory"]) for rollout in train_rollouts],
+                "generation_ms": [rollout["timing"]["generation_ms"] for rollout in train_rollouts],
+                "scoring_ms": [rollout["timing"]["scoring_ms"] for rollout in train_rollouts],
             }
         )
 
@@ -405,6 +408,17 @@ async def orchestrate(config: OrchestratorConfig):
             "is_truncated/mean": results_df.groupby("example_id").is_truncated.mean().mean(),
             "is_truncated/max": results_df.groupby("example_id").is_truncated.mean().max(),
             "is_truncated/min": results_df.groupby("example_id").is_truncated.mean().min(),
+            # Turn metrics
+            "num_turns/mean": results_df.groupby("example_id").num_turns.mean().mean(),
+            "num_turns/max": results_df.groupby("example_id").num_turns.mean().max(),
+            "num_turns/min": results_df.groupby("example_id").num_turns.mean().min(),
+            # Verifier timing metrics
+            "generation_ms/mean": results_df.groupby("example_id").generation_ms.mean().mean(),
+            "generation_ms/max": results_df.groupby("example_id").generation_ms.mean().max(),
+            "generation_ms/min": results_df.groupby("example_id").generation_ms.mean().min(),
+            "scoring_ms/mean": results_df.groupby("example_id").scoring_ms.mean().mean(),
+            "scoring_ms/max": results_df.groupby("example_id").scoring_ms.mean().max(),
+            "scoring_ms/min": results_df.groupby("example_id").scoring_ms.mean().min(),
             # Performance metrics
             "perf/throughput": throughput,
             # Train reward
