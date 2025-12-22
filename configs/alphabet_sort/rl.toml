@@ -1,7 +1,10 @@
-inference_gpu_ids = [0]
-trainer_gpu_ids = [1]
-
 max_steps = 100
+seq_len = 2048
+
+[wandb]
+project = "alphabet-sort-debug"
+name = "alphabet-sort"
+
 
 [model]
 name = "Qwen/Qwen3-4B-Instruct-2507"
@@ -9,13 +12,15 @@ name = "Qwen/Qwen3-4B-Instruct-2507"
 [orchestrator]
 batch_size = 512
 rollouts_per_example = 16
-seq_len = 2048
 
 [orchestrator.sampling]
 max_tokens = 512
 
 [[orchestrator.env]]
-id = "alphabet-sort"
+id = "primeintellect/alphabet-sort"
+name = "alphabet-sort"
 args = { min_turns = 2, max_turns = 2 }
 
 [trainer]
+
+[inference]

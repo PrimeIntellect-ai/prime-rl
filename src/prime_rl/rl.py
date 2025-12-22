@@ -173,6 +173,13 @@ class RLConfig(BaseSettings):
         ),
     ] = None
 
+    seq_len: Annotated[
+        int | None,
+        Field(
+            description="The sequence length to use. If set, will configure both trainer.model.seq_len and orchestrator.seq_len to this value. If None, each can be set independently."
+        ),
+    ] = None
+
     max_async_level: Annotated[
         int | None,
         Field(
@@ -202,8 +209,11 @@ class RLConfig(BaseSettings):
 
     @model_validator(mode="after")
     def auto_setup_num_train_workers(self):
+        non_data_parallel_size = self.trainer.model.cp * self.trainer.model.tp
+
         if len(self.trainer_gpu_ids) > 1:
-            self.orchestrator.num_train_workers = len(self.trainer_gpu_ids)
+            self.orchestrator.num_train_workers = len(self.trainer_gpu_ids) // non_data_parallel_size
+
         return self
 
     @model_validator(mode="after")
@@ -287,7 +297,6 @@ class RLConfig(BaseSettings):
             # Configure the trainer fake data to match the orchestrator config
             self.trainer.data.fake = FakeDataLoaderConfig(
                 batch_size=self.orchestrator.batch_size,
-                seq_len=self.orchestrator.seq_len,
             )
 
         if self.trainer.bench != self.orchestrator.bench:
@@ -337,9 +346,24 @@ class RLConfig(BaseSettings):
         # If specified, use the same outputs directory for trainer and orchestrator
         if self.output_dir is not None:
             self.trainer.output_dir = self.output_dir
-            self.orchestrator.output_dir = self.output_dir
+            self.orchestrator.output_dir = self.output_dir / "run_default"
 
         validate_shared_output_dir(self.trainer, self.orchestrator)
+
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_seq_len(self):
+        # If specified, use the same seq_len for trainer and orchestrator
+        if self.seq_len is not None:
+            self.trainer.model.seq_len = self.seq_len
+            self.orchestrator.seq_len = self.seq_len
+
+        if self.trainer.model.seq_len < self.orchestrator.seq_len:
+            raise ValueError(
+                f"Trainer model seq_len ({self.trainer.model.seq_len}) must be >= orchestrator seq_len ({self.orchestrator.seq_len}). "
+                f"The trainer needs to be able to handle sequences at least as long as those produced by the orchestrator."
+            )
 
         return self
 
@@ -366,18 +390,16 @@ class RLConfig(BaseSettings):
 
     @model_validator(mode="after")
     def auto_setup_lora(self):
-        if self.trainer.model.experimental.lora is not None:
+        if self.trainer.model.lora is not None:
             if self.trainer.weight_broadcast.type == "nccl":
                 raise ValueError("NCCL weight broadcast does not support LoRA yet.")
             self.trainer.weight_broadcast.adapter_only = True
             if self.orchestrator.lora_name is None:
-                lora_name = (
-                    f"r{self.trainer.model.experimental.lora.rank}-a{self.trainer.model.experimental.lora.alpha}"
-                )
+                lora_name = f"r{self.trainer.model.lora.rank}-a{self.trainer.model.lora.alpha}"
                 self.orchestrator.lora_name = lora_name
             if self.inference is not None:
                 self.inference.enable_lora = True
-                self.inference.max_lora_rank = self.trainer.model.experimental.lora.rank
+                self.inference.max_lora_rank = self.trainer.model.lora.rank
             else:
                 warnings.warn(
                     "LoRA is enabled, but inference is not configured. When manually starting the inference server, make sure to set `--enable_lora` and `--max-lora-rank`."
@@ -451,8 +473,9 @@ def rl(config: RLConfig):
 
     # Prepare paths to communicate with the trainer
     log_dir = get_log_dir(config.output_dir)
-    rollout_dir = get_rollout_dir(config.output_dir)
-    broadcast_dir = get_broadcast_dir(config.output_dir)
+    orch_log_dir = get_log_dir(config.orchestrator.output_dir)
+    rollout_dir = get_rollout_dir(config.orchestrator.output_dir)
+    broadcast_dir = get_broadcast_dir(config.orchestrator.output_dir)
 
     # Clean up directories if specified
     if config.clean:
@@ -462,6 +485,10 @@ def rl(config: RLConfig):
         logger.info(f"Cleaning log dir ({log_dir})")
         shutil.rmtree(log_dir, ignore_errors=True)
         log_dir.mkdir(parents=True, exist_ok=True)
+
+        logger.info(f"Cleaning orchestrator log dir ({orch_log_dir})")
+        shutil.rmtree(orch_log_dir, ignore_errors=True)
+        orch_log_dir.mkdir(parents=True, exist_ok=True)
 
         # Cleaning broadcast dir (so that orchestrator does not pre-maturely update weights)
         if not (

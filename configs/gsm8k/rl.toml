@@ -2,6 +2,7 @@ inference_gpu_ids = [0]
 trainer_gpu_ids = [1]
 
 max_steps = 100
+seq_len = 2048
 
 [wandb]
 project = "gsm8k-debug"
@@ -13,7 +14,6 @@ name = "PrimeIntellect/Qwen3-0.6B"
 [orchestrator]
 batch_size = 512
 rollouts_per_example = 16
-seq_len = 2048
 
 [orchestrator.sampling]
 max_tokens = 2048

@@ -28,6 +28,7 @@ def single_step_trajectory_state():
                 extras={},
             )
         ],
+        error=None,
     )
     return state
 
@@ -75,6 +76,7 @@ def multi_step_trajectory_state():
                 extras={},
             ),
         ],
+        error=None,
     )
     return state
 
@@ -126,6 +128,7 @@ def multi_step_trajectory_with_tool_calls():
         advantage=None,
         stop_condition=None,
         metrics={"has_error": 0.0, "tool_calls": 1.0},
+        error=None,
     )
     return state
 
@@ -135,11 +138,11 @@ def test_branching_rollout_single_step_trajectory(single_step_trajectory_state):
 
     assert len(rollouts) == 1
     rollout = rollouts[0]
-    assert rollout["prompt_ids"] == [1, 2]
-    assert rollout["prompt_mask"] == [0, 0]
-    assert rollout["completion_ids"] == [3, 4]
-    assert rollout["completion_mask"] == [1, 1]
-    assert rollout["completion_logprobs"] == [-0.1, -0.2]
+    assert rollout.prompt_ids == [1, 2]
+    assert rollout.prompt_mask == [False, False]
+    assert rollout.completion_ids == [3, 4]
+    assert rollout.completion_mask == [True, True]
+    assert rollout.completion_logprobs == [-0.1, -0.2]
 
 
 def test_branching_rollout_multi_step_trajectory(multi_step_trajectory_state):
@@ -148,19 +151,19 @@ def test_branching_rollout_multi_step_trajectory(multi_step_trajectory_state):
 
     # first step
     rollout = rollouts[0]
-    assert rollout["prompt_ids"] == [1, 2]
-    assert rollout["prompt_mask"] == [0, 0]
-    assert rollout["completion_ids"] == [3, 4]
-    assert rollout["completion_mask"] == [1, 1]
-    assert rollout["completion_logprobs"] == [-0.1, -0.2]
+    assert rollout.prompt_ids == [1, 2]
+    assert rollout.prompt_mask == [False, False]
+    assert rollout.completion_ids == [3, 4]
+    assert rollout.completion_mask == [True, True]
+    assert rollout.completion_logprobs == [-0.1, -0.2]
 
     # second step
     rollout = rollouts[1]
-    assert rollout["prompt_ids"] == [1, 2, 3, 4, 5, 6]
-    assert rollout["prompt_mask"] == [0, 0, 0, 0, 0, 0]
-    assert rollout["completion_ids"] == [7, 8]
-    assert rollout["completion_mask"] == [1, 1]
-    assert rollout["completion_logprobs"] == [-0.3, -0.4]
+    assert rollout.prompt_ids == [1, 2, 3, 4, 5, 6]
+    assert rollout.prompt_mask == [False, False, False, False, False, False]
+    assert rollout.completion_ids == [7, 8]
+    assert rollout.completion_mask == [True, True]
+    assert rollout.completion_logprobs == [-0.3, -0.4]
 
 
 def test_branching_rollout_multi_step_trajectory_with_tool_calls(multi_step_trajectory_with_tool_calls):
@@ -169,19 +172,19 @@ def test_branching_rollout_multi_step_trajectory_with_tool_calls(multi_step_traj
 
     # first step
     rollout = rollouts[0]
-    assert rollout["prompt_ids"] == [1, 2]
-    assert rollout["prompt_mask"] == [0, 0]
-    assert rollout["completion_ids"] == [3, 4]
-    assert rollout["completion_mask"] == [1, 1]
-    assert rollout["completion_logprobs"] == [-0.1, -0.2]
+    assert rollout.prompt_ids == [1, 2]
+    assert rollout.prompt_mask == [False, False]
+    assert rollout.completion_ids == [3, 4]
+    assert rollout.completion_mask == [True, True]
+    assert rollout.completion_logprobs == [-0.1, -0.2]
 
     # second step
     rollout = rollouts[1]
-    assert rollout["prompt_ids"] == [1, 2, 3, 4, 5, 6]
-    assert rollout["prompt_mask"] == [0, 0, 0, 0, 0, 0]
-    assert rollout["completion_ids"] == [7, 8]
-    assert rollout["completion_mask"] == [1, 1]
-    assert rollout["completion_logprobs"] == [-0.3, -0.4]
+    assert rollout.prompt_ids == [1, 2, 3, 4, 5, 6]
+    assert rollout.prompt_mask == [False, False, False, False, False, False]
+    assert rollout.completion_ids == [7, 8]
+    assert rollout.completion_mask == [True, True]
+    assert rollout.completion_logprobs == [-0.3, -0.4]
 
 
 def test_interleave_rollout_single_step_trajectory(single_step_trajectory_state):
@@ -189,11 +192,11 @@ def test_interleave_rollout_single_step_trajectory(single_step_trajectory_state)
     assert len(rollouts) == 1
     rollout = rollouts[0]
 
-    assert rollout["prompt_ids"] == [1, 2]
-    assert rollout["prompt_mask"] == [0, 0]
-    assert rollout["completion_ids"] == [3, 4]
-    assert rollout["completion_mask"] == [1, 1]
-    assert rollout["completion_logprobs"] == [-0.1, -0.2]
+    assert rollout.prompt_ids == [1, 2]
+    assert rollout.prompt_mask == [False, False]
+    assert rollout.completion_ids == [3, 4]
+    assert rollout.completion_mask == [True, True]
+    assert rollout.completion_logprobs == [-0.1, -0.2]
 
 
 def test_interleave_rollout_multi_step_trajectory(multi_step_trajectory_state):
@@ -201,11 +204,11 @@ def test_interleave_rollout_multi_step_trajectory(multi_step_trajectory_state):
     assert len(rollouts) == 1
     rollout = rollouts[0]
 
-    assert rollout["prompt_ids"] == [1, 2]
-    assert rollout["prompt_mask"] == [0, 0]
-    assert rollout["completion_ids"] == [3, 4, 5, 6, 7, 8]
-    assert rollout["completion_mask"] == [1, 1, 0, 0, 1, 1]
-    assert rollout["completion_logprobs"] == [-0.1, -0.2, 0, 0, -0.3, -0.4]
+    assert rollout.prompt_ids == [1, 2]
+    assert rollout.prompt_mask == [False, False]
+    assert rollout.completion_ids == [3, 4, 5, 6, 7, 8]
+    assert rollout.completion_mask == [True, True, False, False, True, True]
+    assert rollout.completion_logprobs == [-0.1, -0.2, 0, 0, -0.3, -0.4]
 
 
 def test_interleave_rollout_multi_step_trajectory_with_tool_calls(multi_step_trajectory_with_tool_calls):
@@ -213,8 +216,8 @@ def test_interleave_rollout_multi_step_trajectory_with_tool_calls(multi_step_tra
     assert len(rollouts) == 1
     rollout = rollouts[0]
 
-    assert rollout["prompt_ids"] == [1, 2]
-    assert rollout["prompt_mask"] == [0, 0]
-    assert rollout["completion_ids"] == [3, 4, 5, 6, 7, 8]
-    assert rollout["completion_mask"] == [1, 1, 0, 0, 1, 1]
-    assert rollout["completion_logprobs"] == [-0.1, -0.2, 0, 0, -0.3, -0.4]
+    assert rollout.prompt_ids == [1, 2]
+    assert rollout.prompt_mask == [False, False]
+    assert rollout.completion_ids == [3, 4, 5, 6, 7, 8]
+    assert rollout.completion_mask == [True, True, False, False, True, True]
+    assert rollout.completion_logprobs == [-0.1, -0.2, 0, 0, -0.3, -0.4]

@@ -42,7 +42,7 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
     """
 
     def _setup_admin_client(base_url: str) -> httpx.AsyncClient:
-        headers = client_config.headers
+        headers = client_config.headers.copy()  # avoid mutating config
         api_key = os.getenv(client_config.api_key_var, "EMPTY")
         if api_key and api_key != "EMPTY":
             headers["Authorization"] = f"Bearer {api_key}"

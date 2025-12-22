@@ -1,22 +1,82 @@
 import asyncio
+import json
+import re
 import time
+from copy import deepcopy
+from itertools import cycle
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
+import verifiers as vf
 from huggingface_hub import whoami
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, BadRequestError
 from prime_evals import AsyncEvalsClient
+from tenacity import RetryCallState, retry, stop_after_attempt, wait_exponential
+from tqdm.asyncio import tqdm
 from verifiers import load_environment
+from verifiers.envs.environment import get_results_path
 from verifiers.utils.eval_utils import get_hf_hub_dataset_name, make_dataset, sanitize_metadata, save_to_disk
 
 from prime_rl.eval.config import OfflineEvalConfig
-from prime_rl.orchestrator.config import EvalConfig, EvalSamplingConfig, EvalSaveConfig, ModelConfig
+from prime_rl.orchestrator.config import EvalConfig, EvalSamplingConfig, EvalSaveConfig, ModelConfig, RetryConfig
+from prime_rl.synthesize.utils import merge_reasoning_content, save_result
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor import get_monitor
 from prime_rl.utils.utils import capitalize, get_eval_dir, get_step_path
-from prime_rl.utils.vf import generate_batch, get_completion_len, get_is_truncated, to_serializable_state
+from prime_rl.utils.vf import (
+    generate_group,
+    generate_rollout,
+    get_completion_len,
+    get_is_truncated,
+    to_serializable_state,
+)
+
+WRITE_LOCK = asyncio.Lock()
+
+
+def read_existing_rollout_ids(results_file: Path) -> set[tuple[int, int]]:
+    """Read existing (example_id, rollout_idx) pairs from results file for resume."""
+    rollout_ids: set[tuple[int, int]] = set()
+    with open(results_file, "r") as f:
+        for line in f:
+            result = json.loads(line)
+            rollout_ids.add((result["example_id"], result["rollout_idx"]))
+    return rollout_ids
+
+
+def read_existing_results(results_file: Path) -> pd.DataFrame:
+    results = []
+    with open(results_file, "r") as f:
+        for line in f:
+            result = json.loads(line)
+            results.append(
+                {
+                    "example_id": result["example_id"],
+                    "reward": result["reward"],
+                    "completion_len": result["completion_len"],
+                    "is_truncated": result["is_truncated"],
+                }
+            )
+
+    return pd.DataFrame(results)
+
+
+def read_completed_example_ids(results_file: Path, rollouts_per_example: int) -> set[int]:
+    """Read example_ids that have complete groups (all rollouts_per_example completed) for group-based resume."""
+    example_id_counts: dict[int, int] = {}
+    with open(results_file, "r") as f:
+        for line in f:
+            result = json.loads(line)
+            example_id = result["example_id"]
+            example_id_counts[example_id] = example_id_counts.get(example_id, 0) + 1
+
+    # Return example_ids that have exactly rollouts_per_example results
+    completed_example_ids = {
+        example_id for example_id, count in example_id_counts.items() if count == rollouts_per_example
+    }
+    return completed_example_ids
 
 
 def compute_pass_at_k(rewards: list[int]) -> dict[str, float]:
@@ -69,6 +129,211 @@ def prepare_sampling_args(sampling_config: EvalSamplingConfig) -> dict[str, Any]
     return sampling_args
 
 
+# TODO: Move to verifiers to avoid code drift
+def make_result(state: vf.State, reasoning_field: str, rollout_idx: int) -> dict:
+    """Translates a finished rollout state to a synthetic dataset row."""
+    completion = merge_reasoning_content(state["completion"], state["trajectory"], reasoning_field)
+    result_dict = {
+        "example_id": state["example_id"],
+        "rollout_idx": rollout_idx,
+        "prompt": state["prompt"],
+        "completion": completion,
+        "task": state["task"],
+        "reward": state["reward"],
+        "generation_ms": state["timing"]["generation_ms"],
+        "scoring_ms": state["timing"]["scoring_ms"],
+        "total_ms": state["timing"]["total_ms"],
+        "info": state.get("info", {}),
+        "answer": state.get("answer", ""),
+        "completion_len": get_completion_len(state),
+        "is_truncated": get_is_truncated(state),
+    }
+    for metric_name, metric_value in state["metrics"].items():
+        result_dict[metric_name] = metric_value
+
+    result_dict["oai_tools"] = json.dumps(state["oai_tools"])
+
+    return result_dict
+
+
+async def make_and_save_result(state: vf.State, save_file: Path, reasoning_field: str, rollout_idx: int):
+    """Translates and saves a finished rollout state to a synthetic dataset row."""
+    result_dict = await asyncio.to_thread(make_result, state, reasoning_field, rollout_idx)
+    await save_result(result_dict, save_file)
+
+
+def log_retry_attempt(retry_state: RetryCallState) -> None:
+    """Log retry attempts at WARNING level using the global logger."""
+    logger = get_logger()
+    exception = retry_state.outcome.exception()
+    wait_time = retry_state.next_action.sleep
+    logger.warning(
+        f"Retrying {retry_state.fn.__name__} in {wait_time:.1f} seconds as it raised {exception.__class__.__name__}: {exception}"
+    )
+
+
+def parse_and_calculate_max_tokens(error_message: str) -> int | None:
+    """
+    Example error message:
+    "This endpoint's maximum context length is 131072 tokens. However, you requested
+    about 131419 tokens (347 of text input, 131072 in the output)."
+    """
+    context_match = re.search(r"maximum context length is (\d+) tokens", error_message)
+    prompt_match = re.search(r"(\d+) of text input", error_message)
+
+    if context_match and prompt_match:
+        context_length = int(context_match.group(1))
+        prompt_tokens = int(prompt_match.group(1))
+        max_tokens = context_length - prompt_tokens
+        if max_tokens < 1:
+            return None
+        return max_tokens
+    return None
+
+
+async def generate_and_save_rollout(
+    client: AsyncOpenAI,
+    env: vf.Environment,
+    model_name: str,
+    example: dict,
+    rollout_idx: int,
+    sampling_args: dict,
+    save_file: Path | None,
+    reasoning_field: str,
+    retry_config: RetryConfig,
+    pbar: tqdm,
+    rewards_accumulator: list,
+    rewards_lock: asyncio.Lock,
+) -> vf.State:
+    """Generate and optionally save a single rollout, updating progress bar per-rollout."""
+    logger = get_logger()
+    _sampling_args = deepcopy(sampling_args)
+
+    @retry(
+        stop=stop_after_attempt(retry_config.max_attempts),
+        wait=wait_exponential(
+            multiplier=retry_config.wait_multiplier, min=retry_config.wait_min, max=retry_config.wait_max
+        ),
+        before_sleep=log_retry_attempt,
+        reraise=retry_config.reraise,
+    )
+    async def _generate_rollout(
+        client: AsyncOpenAI,
+        env: vf.Environment,
+        model_name: str,
+        example: dict,
+        sampling_args: dict,
+    ) -> vf.State:
+        """Asynchronously generate and score a single rollout."""
+        logger = get_logger()
+        try:
+            return await generate_rollout(client, env, model_name, example, sampling_args)
+        except BadRequestError as e:
+            # Check if this is a context length error and retry with adjusted max_tokens
+            error_message = str(e)
+            new_max_tokens = parse_and_calculate_max_tokens(error_message)
+
+            if new_max_tokens is not None:
+                logger.warning(f"Context length error: reducing max_tokens to {new_max_tokens}.")
+                sampling_args["max_tokens"] = new_max_tokens
+                return await generate_rollout(client, env, model_name, example, sampling_args)
+            raise
+
+    try:
+        state = await _generate_rollout(client, env, model_name, example, _sampling_args)
+
+        # Save with rollout_idx if streaming saves enabled
+        if save_file is not None:
+            result_dict = await asyncio.to_thread(make_result, state, reasoning_field, rollout_idx)
+            await save_result(result_dict, save_file)
+
+        # Update running average immediately
+        async with rewards_lock:
+            rewards_accumulator.append(state["reward"])
+            avg_reward = sum(rewards_accumulator) / len(rewards_accumulator)
+            pbar.set_postfix({"Avg Reward": f"{avg_reward:.4f}"})
+            pbar.update(1)
+
+        return state
+    except Exception as e:
+        logger.exception(
+            f"Error evaluating rollout (example_id={example.get('example_id')}, rollout_idx={rollout_idx}): {repr(e)}"
+        )
+        raise
+
+
+async def generate_and_save_group(
+    client: AsyncOpenAI,
+    env: vf.Environment,
+    model_name: str,
+    example: dict,
+    rollouts_per_example: int,
+    sampling_args: dict,
+    save_file: Path | None,
+    reasoning_field: str,
+    retry_config: RetryConfig,
+    pbar: tqdm,
+    rewards_accumulator: list,
+    rewards_lock: asyncio.Lock,
+) -> list[vf.State]:
+    """Generate a group of rollouts, save results, and update progress (group-level)."""
+    logger = get_logger()
+    _sampling_args = deepcopy(sampling_args)
+
+    @retry(
+        stop=stop_after_attempt(retry_config.max_attempts),
+        wait=wait_exponential(
+            multiplier=retry_config.wait_multiplier, min=retry_config.wait_min, max=retry_config.wait_max
+        ),
+        before_sleep=log_retry_attempt,
+        reraise=retry_config.reraise,
+    )
+    async def _generate_group(
+        client: AsyncOpenAI,
+        env: vf.Environment,
+        model_name: str,
+        example: dict,
+        rollouts_per_example: int,
+        sampling_args: dict,
+    ) -> list[vf.State]:
+        """Asynchronously generate and score a group of rollouts."""
+        logger = get_logger()
+        try:
+            return await generate_group(client, env, model_name, example, rollouts_per_example, sampling_args)
+        except BadRequestError as e:
+            error_message = str(e)
+            new_max_tokens = parse_and_calculate_max_tokens(error_message)
+
+            if new_max_tokens is not None:
+                logger.warning(f"Context length error: reducing max_tokens to {new_max_tokens}.")
+                sampling_args["max_tokens"] = new_max_tokens
+                return await generate_group(client, env, model_name, example, rollouts_per_example, sampling_args)
+            raise
+
+    try:
+        states = await _generate_group(client, env, model_name, example, rollouts_per_example, _sampling_args)
+        if save_file is not None:
+            await asyncio.gather(
+                *[
+                    make_and_save_result(state, save_file, reasoning_field, rollout_idx)
+                    for rollout_idx, state in enumerate(states)
+                ]
+            )
+
+        # Update running average after group completes
+        async with rewards_lock:
+            for state in states:
+                rewards_accumulator.append(state["reward"])
+            avg_reward = sum(rewards_accumulator) / len(rewards_accumulator)
+            pbar.set_postfix({"Avg Reward": f"{avg_reward:.4f}"})
+            pbar.update(rollouts_per_example)
+
+        return states
+    except Exception as e:
+        logger.exception(f"Error evaluating group (example_id={example.get('example_id')}): {repr(e)}")
+        raise
+
+
 async def run_eval(
     clients: list[AsyncOpenAI],
     env_id: str,
@@ -76,13 +341,17 @@ async def run_eval(
     env_args: dict,
     num_examples: int,
     rollouts_per_example: int,
+    reasoning_field: str,
     output_dir: Path,
     ckpt_step: int,
     model_config: ModelConfig,
     sampling_config: EvalSamplingConfig,
     save_config: EvalSaveConfig,
+    retry_config: RetryConfig,
     evals_client: AsyncEvalsClient,
+    per_rollout: bool = False,
     step: int | None = None,
+    resume_path: Path | None = None,
 ) -> None:
     # Get the logger
     logger = get_logger()
@@ -95,29 +364,143 @@ async def run_eval(
     dataset = env.get_eval_dataset(n=num_examples)
     sampling_args = prepare_sampling_args(sampling_config)
 
-    logger.info(
-        f"Evaluating {env_name_or_id} ({num_examples=}, {rollouts_per_example=}) {'with default args' if env_args == {} else f'with args {env_args}'}"
-    )
-    # Run async generation and scoring
-    states = await generate_batch(
-        clients=clients,
-        env=env,
-        model_name=model_config.name,
-        examples=dataset.to_list(),
-        rollouts_per_example=rollouts_per_example,
-        sampling_args=sampling_args,
-        pbar_description=f"Evaluating {env_name_or_id}",
-    )
-    # Parse vLLM responses
+    # Determine streaming save path
+    if save_config.stream:
+        if resume_path is not None:
+            # resume_path points to a directory containing results.jsonl
+            path_to_save = resume_path / "results.jsonl"
+        else:
+            base_path = get_results_path(env_name_or_id, model_config.name, base_path=output_dir)
+            path_to_save = base_path / "results.jsonl"
+        path_to_save.parent.mkdir(parents=True, exist_ok=True)
+
+    # Create shared structure for tracking rewards
+    rewards_accumulator: list = []
+    rewards_lock = asyncio.Lock()
+    examples = dataset.to_list()
+
+    if per_rollout:
+        # Per-rollout scheduling: enables live progress updates and per-rollout resume
+        all_rollouts: list[tuple[dict, int]] = [
+            (example, rollout_idx) for example in examples for rollout_idx in range(rollouts_per_example)
+        ]
+
+        # Filter out already-completed rollouts on resume
+        if resume_path is not None:
+            existing_rollout_ids = read_existing_rollout_ids(path_to_save)
+            original_count = len(all_rollouts)
+            all_rollouts = [
+                (ex, ridx) for ex, ridx in all_rollouts if (ex["example_id"], ridx) not in existing_rollout_ids
+            ]
+            skipped_count = original_count - len(all_rollouts)
+            logger.info(
+                f"Resuming from {path_to_save}: skipping {skipped_count} already-completed rollouts, "
+                f"{len(all_rollouts)} remaining"
+            )
+            # Populate rewards_accumulator with existing rewards
+            existing_results_df = read_existing_results(path_to_save)
+            rewards_accumulator.extend(existing_results_df.reward.tolist())
+
+        total_rollouts = len(all_rollouts)
+        logger.info(
+            f"Evaluating {env_name_or_id} ({num_examples=}, {rollouts_per_example=}) "
+            f"{'with default args' if env_args == {} else f'with args {env_args}'} and extra_body {sampling_args['extra_body']}\n"
+            f"{'Saving results to ' + str(path_to_save) if save_config.stream else 'Results will be saved at end of evaluation'}"
+        )
+
+        pbar = tqdm(total=total_rollouts, desc="Evaluating")
+        if rewards_accumulator:
+            avg_reward = sum(rewards_accumulator) / len(rewards_accumulator)
+            pbar.set_postfix({"Avg Reward": f"{avg_reward:.4f}"})
+
+        all_states = await asyncio.gather(
+            *[
+                generate_and_save_rollout(
+                    client,
+                    env,
+                    model_config.name,
+                    example,
+                    rollout_idx,
+                    sampling_args,
+                    path_to_save if save_config.stream else None,
+                    reasoning_field,
+                    retry_config,
+                    pbar,
+                    rewards_accumulator,
+                    rewards_lock,
+                )
+                for client, (example, rollout_idx) in zip(cycle(clients), all_rollouts)
+            ]
+        )
+    else:
+        # Group-based scheduling: preserves group-based rubric scoring
+        # Filter out completed example_ids on resume
+        if resume_path is not None and path_to_save is not None and path_to_save.exists():
+            completed_example_ids = read_completed_example_ids(path_to_save, rollouts_per_example)
+            original_count = len(examples)
+            examples = [ex for ex in examples if ex["example_id"] not in completed_example_ids]
+            skipped_count = original_count - len(examples)
+            logger.info(
+                f"Resuming from {path_to_save}: skipping {skipped_count} already-completed example_ids "
+                f"({len(completed_example_ids)} complete groups), {len(examples)} remaining"
+            )
+            # Populate rewards_accumulator with existing rewards for metrics
+            existing_results_df = read_existing_results(path_to_save)
+            rewards_accumulator.extend(existing_results_df.reward.tolist())
+
+        total_rollouts = len(examples) * rollouts_per_example
+        logger.info(
+            f"Evaluating {env_name_or_id} ({num_examples=}, {rollouts_per_example=}) "
+            f"{'with default args' if env_args == {} else f'with args {env_args}'} and extra_body {sampling_args['extra_body']}\n"
+            f"{'Saving results to ' + str(path_to_save) if save_config.stream else 'Results will be saved at end of evaluation'}"
+        )
+
+        pbar = tqdm(total=total_rollouts, desc="Evaluating")
+        if rewards_accumulator:
+            avg_reward = sum(rewards_accumulator) / len(rewards_accumulator)
+            pbar.set_postfix({"Avg Reward": f"{avg_reward:.4f}"})
+
+        group_states_list = await asyncio.gather(
+            *[
+                generate_and_save_group(
+                    client,
+                    env,
+                    model_config.name,
+                    example,
+                    rollouts_per_example,
+                    sampling_args,
+                    path_to_save if save_config.stream else None,
+                    reasoning_field,
+                    retry_config,
+                    pbar,
+                    rewards_accumulator,
+                    rewards_lock,
+                )
+                for client, example in zip(cycle(clients), examples)
+            ]
+        )
+        all_states = [state for group in group_states_list for state in group]
+
     k = rollouts_per_example
-    results_df = pd.DataFrame(
+    new_results_df = pd.DataFrame(
         {
-            "example_id": [state["example_id"] for state in states],
-            "reward": [state["reward"] for state in states],
-            "completion_len": [get_completion_len(state) for state in states],
-            "is_truncated": [get_is_truncated(state) for state in states],
+            "example_id": [state["example_id"] for state in all_states],
+            "reward": [state["reward"] for state in all_states],
+            "completion_len": [get_completion_len(state) for state in all_states],
+            "is_truncated": [get_is_truncated(state) for state in all_states],
         }
     )
+
+    # If resuming, combine with existing results for accurate metrics
+    if resume_path is not None:
+        existing_results_df = read_existing_results(path_to_save)
+        results_df = pd.concat([existing_results_df, new_results_df], ignore_index=True)
+        logger.info(
+            f"Combined existing ({len(existing_results_df)}) and new ({len(new_results_df)}) results for metrics"
+        )
+    else:
+        results_df = new_results_df
+
     unique_rewards = results_df.reward.unique()
     could_be_binary = set(unique_rewards).issubset({0.0, 1.0})
     if could_be_binary:
@@ -159,7 +542,7 @@ async def run_eval(
     # Save results
     if save_config.disk is not None or save_config.hf is not None or save_config.env_hub:
         outputs = env._prepare_rollout_results(
-            all_states=[to_serializable_state(state) for state in states],  # type: ignore
+            all_states=[to_serializable_state(state) for state in all_states],  # type: ignore
             model=model_config.name,
             client=clients[0],  # We use the first client
             state_columns=None,
@@ -214,7 +597,9 @@ async def run_eval(
             # Finalize evaluation
             await evals_client.finalize_evaluation(eval_id, metrics=eval_metrics)
 
-            logger.info(f"Pushed eval results for {env_id} to Environment Hub (eval_id: {eval_id})")
+            logger.info(
+                f"Pushed eval results for {env_id} to Environments Hub (https://app.primeintellect.ai/dashboard/evaluations/{eval_id})"
+            )
 
 
 async def run_evals(
@@ -223,9 +608,11 @@ async def run_evals(
     model_config: ModelConfig,
     sampling_config: EvalSamplingConfig,
     evals_client: AsyncEvalsClient,
+    reasoning_field: str,
     output_dir: Path,
     ckpt_step: int,
     step: int | None = None,
+    resume_path: Path | None = None,
 ):
     await asyncio.gather(
         *[
@@ -235,14 +622,18 @@ async def run_evals(
                 env_name=env.name,
                 env_args=env.args,
                 num_examples=env.num_examples or eval_config.num_examples,
+                reasoning_field=reasoning_field,
                 rollouts_per_example=env.rollouts_per_example or eval_config.rollouts_per_example,
                 output_dir=output_dir,
                 model_config=model_config,
                 sampling_config=sampling_config,
                 save_config=eval_config.save,
+                retry_config=eval_config.retry,
                 evals_client=evals_client,
+                per_rollout=eval_config.per_rollout,
                 ckpt_step=ckpt_step,
                 step=step,
+                resume_path=resume_path,
             )
             for env in eval_config.env
         ]

@@ -3,8 +3,15 @@ from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
 
-from prime_rl.trainer.config import HeartbeatConfig
-from prime_rl.utils.config import ClientConfig, LogConfig, ModelConfig, WandbWithExtrasConfig
+from prime_rl.transport.config import FileSystemTransportConfig, TransportConfigType
+from prime_rl.utils.config import (
+    ClientConfig,
+    HeartbeatConfig,
+    LogConfig,
+    ModelConfig,
+    PrimeMonitorConfig,
+    WandbWithExtrasConfig,
+)
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
@@ -187,6 +194,55 @@ class EvalSaveConfig(BaseConfig):
             description="Whether to push eval results to Prime Environment Hub. Automatically pushes all evaluated environments. Requires PRIME_API_KEY and authorization for the environments."
         ),
     ] = False
+    stream: Annotated[
+        bool,
+        Field(
+            description="Whether to save results incrementally as rollouts complete.",
+        ),
+    ] = False
+
+
+class RetryConfig(BaseConfig):
+    """Configures retry behavior for rollout generation."""
+
+    max_attempts: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Maximum number of retry attempts.",
+        ),
+    ] = 10
+
+    wait_multiplier: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="Multiplier for exponential backoff wait time.",
+        ),
+    ] = 1.0
+
+    wait_min: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="Minimum wait time in seconds between retries.",
+        ),
+    ] = 1.0
+
+    wait_max: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="Maximum wait time in seconds between retries.",
+        ),
+    ] = 60.0
+
+    reraise: Annotated[
+        bool,
+        Field(
+            description="Whether to reraise the exception after all retries are exhausted.",
+        ),
+    ] = True
 
 
 class EnvConfig(BaseConfig):
@@ -245,10 +301,26 @@ class EvalConfig(BaseConfig):
         default_factory=EvalSaveConfig,
         description="Configures how to save the eval results.",
     )
+    retry: RetryConfig = Field(
+        default_factory=RetryConfig,
+        description="Configures retry behavior for rollout generation.",
+    )
     num_examples: Annotated[int, Field(description="Number of examples to evaluate per environment.")] = -1
     rollouts_per_example: Annotated[
         int, Field(ge=1, description="Number of samples to generate per example for each environment.")
     ] = 1
+    reasoning_field: Annotated[
+        str,
+        Field(
+            description="The field in the raw model response that contains the reasoning content. Defaults to 'reasoning_content', which is the default for vLLM when serving a model with a reasoning parser. Other APIs (e.g. DeepSeek, GLM, etc.) may use different field names.",
+        ),
+    ] = "reasoning_content"
+    per_rollout: Annotated[
+        bool,
+        Field(
+            description="Schedule rollouts individually instead of as groups. Enables live progress updates and per-rollout resume, but incompatible with group-based rubrics.",
+        ),
+    ] = False
 
 
 class OnlineEvalConfig(EvalConfig):
@@ -305,13 +377,6 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = False
 
-    buffer_path: Annotated[
-        Path | None,
-        Field(
-            description="The path to load buffer state (metadata and rollouts) from. If None, will start with an empty buffer. The buffer state is saved at <ckpt_dir>/step_<step>/orchestrator/buffer.",
-        ),
-    ] = None
-
 
 class BufferConfig(BaseConfig):
     """Configures the buffer for the orchestrator."""
@@ -323,23 +388,15 @@ class BufferConfig(BaseConfig):
         ),
     ] = None
 
-    easy_fraction: Annotated[
-        float,
+    env_ratios: Annotated[
+        list[float] | None,
         Field(
-            ge=0,
-            le=1,
-            description="Fraction of the batch that should consist of easy samples.",
+            description=(
+                "Ratios for sampling from each environment. "
+                "If None, samples uniformly across all available problems (not environments)."
+            ),
         ),
-    ] = 0.0
-
-    hard_fraction: Annotated[
-        float,
-        Field(
-            ge=0,
-            le=1,
-            description="Fraction of the batch that should consist of hard samples.",
-        ),
-    ] = 0.0
+    ] = None
 
     easy_threshold: Annotated[
         float | None,
@@ -355,12 +412,50 @@ class BufferConfig(BaseConfig):
         ),
     ] = None
 
+    easy_fraction: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            description="Fraction of easy problems to convert to normal when resuming or starting training. Only problems with difficulty 'normal' are sampled.",
+        ),
+    ] = 0.0
+
+    hard_fraction: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            description="Fraction of hard problems to convert to normal when resuming or starting training. Only problems with difficulty 'normal' are sampled.",
+        ),
+    ] = 0.0
+
     online_difficulty_filtering: Annotated[
         bool,
         Field(
-            description="Whether to filter rollouts based on their average reward. If True, rollouts with average reward == 0.0 will be marked as hard and rollouts with average reward == 1.0 will be marked as easy.",
+            description="Whether to filter rollouts based on difficulty. If True, rollouts with average reward 0.0 or 1.0 are not added to the buffer.",
         ),
     ] = False
+
+    hash_keys: Annotated[
+        list[str],
+        Field(
+            min_length=1,
+            description="Keys to use for computing example hashes. Will be used to match examples from buffer checkpoints and determine buffer resume behavior.",
+        ),
+    ] = ["task", "prompt"]
+
+    @model_validator(mode="after")
+    def validate_thresholds(self):
+        if self.easy_threshold is not None and self.hard_threshold is not None:
+            assert self.easy_threshold > self.hard_threshold, "easy_threshold must be greater than hard_threshold."
+        return self
+
+    @model_validator(mode="after")
+    def validate_env_ratios(self):
+        if self.env_ratios is not None:
+            assert all(ratio > 0 for ratio in self.env_ratios), "All env_ratios must be positive."
+        return self
 
 
 class AdvantageConfig(BaseConfig):
@@ -386,18 +481,6 @@ class NCCLWeightBroadcastConfig(BaseModel):
 WeightBroadcastConfigType: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig
 
 
-class EnvMixConfig(BaseModel):
-    """Configures the mixing of environments."""
-
-    strategy: Literal["interleave", "concatenate"] = "interleave"
-    probabilities: Annotated[list[float] | None, Field(description="Probabilities to use for each environment.")] = None
-    stopping_strategy: Annotated[
-        Literal["first_exhausted", "all_exhausted"],
-        Field(description="Stopping strategy to use for interleaving environment datasets."),
-    ] = "all_exhausted"
-    seed: Annotated[int | None, Field(description="Random seed to use for the environment mixing.")] = None
-
-
 class OrchestratorConfig(BaseSettings):
     """Configures the orchestrator for RL training."""
 
@@ -409,9 +492,6 @@ class OrchestratorConfig(BaseSettings):
 
     # The sampling configuration
     sampling: SamplingConfig = SamplingConfig()
-
-    # The environment mixing configuration
-    env_mix: EnvMixConfig = EnvMixConfig()
 
     # The environment configuration
     env: list[EnvConfig] = [EnvConfig()]
@@ -431,6 +511,9 @@ class OrchestratorConfig(BaseSettings):
     # The wandb configuration
     wandb: WandbWithExtrasConfig | None = None
 
+    # The prime monitor configuration
+    prime_monitor: PrimeMonitorConfig | None = None
+
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
 
@@ -440,6 +523,8 @@ class OrchestratorConfig(BaseSettings):
     weight_broadcast: Annotated[WeightBroadcastConfigType, Field(discriminator="type")] = (
         FileSystemWeightBroadcastConfig()
     )
+
+    rollout_transport: Annotated[TransportConfigType, Field(discriminator="type")] = FileSystemTransportConfig()
 
     trajectory_strategy: Annotated[
         Literal["interleaved", "branching"],
@@ -453,7 +538,7 @@ class OrchestratorConfig(BaseSettings):
         Field(
             description="Directory to write outputs to. Will be populated with checkpoints, weights, rollouts and logs as subdirectories. Should be set to a persistent directory with enough disk space. This value should be distinct across experiments running on a single node. See the README for more details."
         ),
-    ] = Path("outputs")
+    ] = Path("outputs/run_default")
 
     max_concurrent: Annotated[
         int | None,
@@ -564,6 +649,12 @@ class OrchestratorConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def validate_env_ratios(self):
+        if self.buffer.env_ratios is not None:
+            assert len(self.buffer.env_ratios) == len(self.env), "env_ratios length must match number of environments"
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench:
             self.max_steps = 4  # Run for 1 warmup step + 3 evaluation steps
@@ -573,5 +664,7 @@ class OrchestratorConfig(BaseSettings):
             self.eval = None
             if self.wandb:
                 self.wandb.log_extras = None
+            if self.prime_monitor:
+                self.prime_monitor.log_extras = None
 
         return self

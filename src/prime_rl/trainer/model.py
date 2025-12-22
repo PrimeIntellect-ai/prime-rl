@@ -19,7 +19,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
 from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, ModelConfig, TokenizerConfig
-from prime_rl.trainer.lora import apply_lora_to_model
+from prime_rl.trainer.lora import apply_lora_to_model, strip_lora_from_state_dict
 from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL, PreTrainedModelPrimeRL
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.weights import (
@@ -179,7 +179,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     )
 
 
-def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
+def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
     model.to_empty(device="cuda")
     torch.distributed.barrier()
 
@@ -237,20 +237,35 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
 
     logger.info(f"Loading weights using HF DCP from {snapshot_path}")
     load_dcp_start_time = time.perf_counter()
+    state_dict = model.state_dict()
+    state_dict = strip_lora_from_state_dict(state_dict)
+    if model.config.tie_word_embeddings:
+        del state_dict["lm_head.weight"]
     dcp_load(
-        model.state_dict(),
+        state_dict,
         storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),
-        # Note: This allow is needed by weight tying but could cause silent issues
-        # planner=DefaultLoadPlanner(allow_partial_load=True),
     )
     if isinstance(model, PreTrainedModelPrimeRL):
         model.init_buffers_post_meta()
     else:
         fix_model_post_empty(model)
+    lora_modules = [m for m in model.modules() if hasattr(m, "_init_lora_parameters")]
+    if lora_modules:
+        generator: torch.Generator | None = None
+        if parallel_dims.dp_replicate_enabled:
+            # Synchronize LoRA initialization across dp_replicate ranks by broadcasting a seed
+            dp_replicate_mesh = parallel_dims.world_mesh["dp_replicate"]
+            seed_tensor = torch.empty(1, dtype=torch.long, device="cuda")
+            if dp_replicate_mesh.get_local_rank() == 0:
+                seed_tensor.random_()
+            torch.distributed.broadcast(seed_tensor, src=0, group=dp_replicate_mesh.get_group())
+            generator = torch.Generator(device="cuda").manual_seed(seed_tensor.item())
+        for module in lora_modules:
+            module._init_lora_parameters(generator)
     logger.debug(f"Loaded weights using HF DCP in {time.perf_counter() - load_dcp_start_time:.2f} seconds")
 
 
-def can_load_dcp_from_hf(model: nn.Module):
+def can_reinit_empty_buffers(model: nn.Module):
     """Whether the model will be loaded correctly by load_dcp_from_hf.
 
     The main issue is with anything that is not in the checkpoint.
@@ -306,28 +321,32 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
     get_logger().info(f"Compiled {len(model.model.layers)} layers (fullgraph={compile_config.fullgraph})")
 
 
-def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
+def setup_model(
+    config: ModelConfig, parallel_dims: ParallelDims, loading_from_checkpoint_later: bool = False
+) -> nn.Module:
     if config.attn == "flash_attention_3" and not is_flash_attn_3_available():
         raise ValueError(
             "Flash attention 3 is only supported if the flash_attn_3 package is installed. Install with `uv pip install 'flash-attn-3 @ git+https://github.com/Dao-AILab/flash-attention.git@main#subdirectory=hopper' --no-build-isolation`"
         )
-
     logger = get_logger()
-    # Get model from specified device
-    model = get_model(
-        config,
-        device=torch.device("meta" if config.load_using_meta else "cpu"),
-        dtype=DTYPE_MAP[config.optimization_dtype],
-    )
 
-    # Reload the model to CPU if we cannot load from
-    if config.load_using_meta and not can_load_dcp_from_hf(model):
-        logger.warning("Cannot load model from meta device. Loading model to CPU instead.")
+    # 1. We load to meta device by default
+    model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype])
+    possible_to_load_to_meta = can_reinit_empty_buffers(model)
+
+    if config.debug.random_init and not possible_to_load_to_meta:
+        raise ValueError(
+            "It's not possible to load to meta device and random initialize is enabled. Please disable random initialize or use a different model."
+        )
+
+    # 1a. We load to CPU if we cannot reinit empty buffers
+    if not possible_to_load_to_meta:
+        logger.warning("Cannot load model to meta device only, loading to CPU instead.")
         model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype])
 
     # Apply LoRA before FSDP setup
-    if config.experimental.lora is not None:
-        apply_lora_to_model(model, config.experimental.lora)
+    if config.lora is not None:
+        apply_lora_to_model(model, config.lora)
 
     # the right order is AC -> Compile -> FSDP
     if config.ac is not None:
@@ -337,8 +356,22 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
 
     setup_fsdp(model, config, parallel_dims)
 
-    if config.load_using_meta and can_load_dcp_from_hf(model):
-        load_dcp_from_hf(model, config)
+    # 2. if we can load to meta, we either:
+    if possible_to_load_to_meta:
+        # - load from checkpoint later if needed
+        if loading_from_checkpoint_later:
+            logger.warning(
+                "Skipping loading weights. Initializing an empty model on device, loading from checkpoint later."
+            )
+            model.to_empty(device="cuda")
+            torch.distributed.barrier()
+            if isinstance(model, PreTrainedModelPrimeRL):
+                model.init_buffers_post_meta()
+            else:
+                fix_model_post_empty(model)
+        # - or load from HF with dcp
+        else:
+            load_dcp_from_hf(model, config, parallel_dims)
 
     logger.debug(f"Model signature: {get_module_signature(model, compress=True)}")
     return model

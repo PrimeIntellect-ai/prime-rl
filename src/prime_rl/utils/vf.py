@@ -1,6 +1,6 @@
 import asyncio
 from itertools import cycle
-from typing import cast
+from typing import Any, cast
 
 import verifiers as vf
 from openai import AsyncOpenAI
@@ -29,6 +29,22 @@ async def generate_group(
         gen_sem=semaphore,
         score_sem=semaphore,
     )
+
+
+async def generate_rollout(
+    client: AsyncOpenAI,
+    env: vf.Environment,
+    model_name: str,
+    example: dict,
+    sampling_args: dict,
+) -> vf.State:
+    """Asynchronously generate and score a single rollout."""
+    semaphore = await get_semaphore()
+    rollout_input = vf.RolloutInput(**example)
+
+    state = await env.run_rollout(semaphore, rollout_input, client, model_name, sampling_args)
+    await env.rubric.score_rollout(state, score_sem=semaphore)
+    return state
 
 
 async def generate_batch(
@@ -63,6 +79,8 @@ async def generate_batch(
 
 def get_prompt_len(state: vf.State) -> int:
     """Compute the number of prompt tokens from vf.State. Defined as the number of prompt IDs from the first trajectory step. If raw tokens are not available, falls back to checking the usage of the first response."""
+    if not state["trajectory"]:
+        return 0
     first_step = state["trajectory"][0]
     if first_step["tokens"] is not None:
         return len(first_step["tokens"]["prompt_ids"])
@@ -72,6 +90,8 @@ def get_prompt_len(state: vf.State) -> int:
 
 def get_seq_len(state: vf.State) -> int:
     """Compute the number of tokens from vf.State. Defined as the sum of prompt and completion tokens from the last trajectory step. If raw tokens are not available, falls back to checking the usage of the last response."""
+    if not state["trajectory"]:
+        return 0
     last_step = state["trajectory"][-1]
     if last_step["tokens"] is not None:
         return len(last_step["tokens"]["prompt_ids"]) + len(last_step["tokens"]["completion_ids"])
@@ -86,6 +106,8 @@ def get_completion_len(state: vf.State) -> int:
 
 def get_is_truncated(state: vf.State) -> bool:
     """Check if the rollout is truncated. If raw tokens are not available, falls back to checking the finish reason of the last response."""
+    if not state["trajectory"]:
+        return False
     last_step = state["trajectory"][-1]
     if last_step["tokens"] is not None:
         return last_step["tokens"]["is_truncated"]
@@ -112,14 +134,35 @@ def from_serializable_trajectory_step(step: dict) -> vf.TrajectoryStep:
 def to_serializable_state(state: vf.State) -> dict:
     """Returns a serializable copy of vf.State."""
     serializable_state = cast(dict, state.copy())
+
+    # Flatten input fields to top level for serialization
+    # This is necessary because the dict object cannot forward access to input fields anymore, e.g. state["prompt"] will automatically forward to state["input"]["prompt"] in vf.State but not in dict. We solve this by populating the inputs into the top-level explicitly
+    if "input" in state:
+        input_dict = serializable_state.pop("input")
+        for field in vf.State.INPUT_FIELDS:
+            if field in input_dict:
+                serializable_state[field] = input_dict[field]
+
     if "trajectory" in state:
         serializable_state["trajectory"] = [to_serializable_trajectory_step(step) for step in state["trajectory"]]
+
     return serializable_state
 
 
-def from_serializable_state(state: dict) -> vf.State:
+def from_serializable_state(serializable_state: dict) -> vf.State:
     """Inverse of to_serializable_state."""
-    deserialized_state = vf.State(**state)
+    # Extract input fields from top level and reconstruct input dict
+    input_dict: dict[str, Any] = {}
+    for field in vf.State.INPUT_FIELDS:
+        if field in serializable_state:
+            input_dict[field] = serializable_state.pop(field)
+
+    if input_dict:
+        serializable_state["input"] = input_dict
+
+    state = vf.State(**serializable_state)
+
     if "trajectory" in state:
-        deserialized_state["trajectory"] = [from_serializable_trajectory_step(step) for step in state["trajectory"]]
-    return deserialized_state
+        state["trajectory"] = [from_serializable_trajectory_step(step) for step in state["trajectory"]]
+
+    return state

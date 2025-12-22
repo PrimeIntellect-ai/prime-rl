@@ -17,7 +17,7 @@ def check_no_error(process: ProcessResult, output_dir: Path) -> None:
             print(*f.readlines()[-100:], sep="\n")
         print("=== Orchestrator Outputs ===")
         with open(output_dir / "logs" / "orchestrator.stdout", "r") as f:
-            print(*f.readlines()[-100:], sep="\n")
+            print(*f.readlines()[-1000:], sep="\n")
     assert process.returncode == 0, f"Process has non-zero return code ({process})"
 
 

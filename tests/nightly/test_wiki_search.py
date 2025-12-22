@@ -28,7 +28,7 @@ def rl_process(
         "run",
         "rl",
         "@",
-        "configs/ci/nightly/wiki_search.toml",
+        "examples/wiki_search/rl.toml",
         "--wandb.project",
         wandb_project,
         "--wandb.name",
