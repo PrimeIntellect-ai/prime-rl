@@ -2478,7 +2478,7 @@ requires-dist = [
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
     { name = "transformers", specifier = ">=4.56.0" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=5605493" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=e4d8bf0" },
     { name = "vllm", specifier = "==0.12.0" },
     { name = "wandb", specifier = ">=0.20.1" },
 ]
@@ -3013,10 +3013,11 @@ name = "reverse-text"
 version = "0.1.4"
 source = { registry = "https://hub.primeintellect.ai/primeintellect/simple/" }
 dependencies = [
+    { name = "datasets" },
     { name = "verifiers" },
 ]
 wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/reverse-text/@7b177065/reverse_text-0.1.4-py2.py3-none-any.whl", hash = "sha256:56c2996dfaa85048469a24f78e3e007ffbbf8ce64710ad3dccc5ca2f27e648bf" },
+    { url = "https://hub.primeintellect.ai/primeintellect/reverse-text/@f5644269/reverse_text-0.1.4-py2.py3-none-any.whl", hash = "sha256:0adc3abcb6ceba3fa82709258c732e95c90400bc899230dce47a2e0f31a74aec" },
 ]
 
 [[package]]
@@ -3813,10 +3814,11 @@ wheels = [
 [[package]]
 name = "verifiers"
 version = "0.1.8.post2"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=5605493#560549388f62c6e2f4c5c1a33c4d023fbfbb84a8" }
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=e4d8bf0#e4d8bf0a2aef4d02f9499302b4faec0d8f5c4cfc" }
 dependencies = [
     { name = "datasets" },
     { name = "jinja2" },
+    { name = "math-verify" },
     { name = "nest-asyncio" },
     { name = "openai" },
     { name = "openai-agents" },
