@@ -99,11 +99,9 @@ class ZMQTrainingBatchReceiver(TrainingBatchReceiver):
                 self.logger.error(f"Error decoding rollouts for sender_id={sender_id!r}: {e}")
                 continue
 
-            self.logger.debug(f"Received batch from {sender_id}")
-
             per_id_batches = self._pending.setdefault(sender_id, {})
             assert batch.step not in per_id_batches, (
-                f"Step {batch.step} already in pending for {sender_id!r}, this should not happen: {per_id_batches}"
+                f"Step {batch.step} already in pending for {sender_id!r}, this should not happen: {per_id_batches.keys()}"
             )
             per_id_batches[batch.step] = batch
 
