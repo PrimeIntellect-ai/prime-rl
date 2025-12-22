@@ -156,7 +156,7 @@ async def compute_reference_logprobs(
                     "max_tokens": 1,
                     "temperature": 1.0,
                     "top_p": 1.0,
-                    "extra_body": {"skip_special_tokens": False},
+                    "skip_special_tokens": False,
                 },
                 cast_to=ChatCompletion,
             )

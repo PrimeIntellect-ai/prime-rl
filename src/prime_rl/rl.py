@@ -432,12 +432,42 @@ class RLConfig(BaseSettings):
     @model_validator(mode="after")
     def auto_setup_score_rollouts(self):
         if self.trainer.loss.adv_tau == 0:
-            self.orchestrator.buffer.score_rollouts = False
+            buffer = self.orchestrator.buffer
+            if buffer.online_difficulty_filtering:
+                raise ValueError(
+                    "online_difficulty_filtering cannot be enabled when adv_tau = 0 "
+                    "(score_rollouts will be automatically set to False, rewards are always 0, "
+                    "so filtering would discard all rollouts)."
+                )
+            if buffer.easy_threshold is not None:
+                raise ValueError(
+                    "easy_threshold cannot be set when adv_tau = 0 "
+                    "(score_rollouts will be automatically set to False, rewards are always 0, "
+                    "so no examples would ever be marked as easy)."
+                )
+            if buffer.hard_threshold is not None:
+                raise ValueError(
+                    "hard_threshold cannot be set when adv_tau = 0 "
+                    "(score_rollouts will be automatically set to False, rewards are always 0, "
+                    "so all examples would be marked as hard)."
+                )
+            buffer.score_rollouts = False
         elif not self.orchestrator.buffer.score_rollouts:
             raise ValueError(
                 "score_rollouts cannot be False when adv_tau > 0. "
                 "Either set adv_tau = 0 to disable scoring, or remove the score_rollouts setting."
             )
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_reference_model(self):
+        if self.trainer.loss.ref_tau > 0:
+            if not self.orchestrator.reference_model:
+                raise ValueError(
+                    "reference_model must be configured when ref_tau > 0. "
+                    "Either set ref_tau = 0 to disable reference logprobs, or configure reference_model "
+                    "(set to True to use the training model as reference, or provide a ReferenceModelConfig)."
+                )
         return self
 
 
