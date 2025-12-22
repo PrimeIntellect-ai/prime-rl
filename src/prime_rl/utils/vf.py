@@ -79,6 +79,8 @@ async def generate_batch(
 
 def get_prompt_len(state: vf.State) -> int:
     """Compute the number of prompt tokens from vf.State. Defined as the number of prompt IDs from the first trajectory step. If raw tokens are not available, falls back to checking the usage of the first response."""
+    if not state["trajectory"]:
+        return 0
     first_step = state["trajectory"][0]
     if first_step["tokens"] is not None:
         return len(first_step["tokens"]["prompt_ids"])
@@ -88,6 +90,8 @@ def get_prompt_len(state: vf.State) -> int:
 
 def get_seq_len(state: vf.State) -> int:
     """Compute the number of tokens from vf.State. Defined as the sum of prompt and completion tokens from the last trajectory step. If raw tokens are not available, falls back to checking the usage of the last response."""
+    if not state["trajectory"]:
+        return 0
     last_step = state["trajectory"][-1]
     if last_step["tokens"] is not None:
         return len(last_step["tokens"]["prompt_ids"]) + len(last_step["tokens"]["completion_ids"])
@@ -102,6 +106,8 @@ def get_completion_len(state: vf.State) -> int:
 
 def get_is_truncated(state: vf.State) -> bool:
     """Check if the rollout is truncated. If raw tokens are not available, falls back to checking the finish reason of the last response."""
+    if not state["trajectory"]:
+        return False
     last_step = state["trajectory"][-1]
     if last_step["tokens"] is not None:
         return last_step["tokens"]["is_truncated"]
