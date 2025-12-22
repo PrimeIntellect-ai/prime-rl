@@ -4,7 +4,8 @@ import torch
 from torch import nn
 from transformers import PretrainedConfig
 
-from prime_rl.trainer.lora import LoRALinear, has_lora_layers
+from prime_rl.trainer.lora import has_lora_layers
+from prime_rl.trainer.models.layers.lora import LoRAModule
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
@@ -123,9 +124,7 @@ class PerfCounter:
         # Some MoE models (e.g. DeepSeek) use moe_intermediate_size, others (e.g. Granite) just use intermediate_size
         moe_intermediate_size = getattr(config, "moe_intermediate_size", intermediate_size)
         if hasattr(config, "num_shared_experts"):  # Shared experts
-            sparse_mlp_params += (
-                num_sparse_layers * config.num_shared_experts * 3 * moe_intermediate_size * hidden_size
-            )
+            sparse_mlp_params += num_sparse_layers * config.num_shared_experts * 3 * moe_intermediate_size * hidden_size
         if hasattr(config, "num_experts_per_tok"):  # Routed experts
             sparse_mlp_params += (
                 num_sparse_layers * config.num_experts_per_tok * 3 * moe_intermediate_size * hidden_size
@@ -181,7 +180,7 @@ class PerfCounter:
         if exclude_embedding:
             if hasattr(model.lm_head, "weight"):
                 num_params -= model.lm_head.weight.numel()
-            elif hasattr(model.lm_head, "base_layer"):  # LoRALinear
+            elif hasattr(model.lm_head, "base_layer"):  # LoRAModule
                 num_params -= model.lm_head.base_layer.weight.numel()
         return num_params
 
@@ -194,11 +193,11 @@ class PerfCounter:
         return trainable_params
 
     def _count_lora_adapter_params(self) -> int:
-        """Count LoRA adapter parameters (sum of lora_A and lora_B across all LoRALinear modules)."""
+        """Count LoRA adapter parameters (sum of lora_A and lora_B across all LoRAModules)."""
         params = 0
         for module in self.model.modules():
-            if isinstance(module, LoRALinear):
-                params += module.lora_A.numel() + module.lora_B.numel()
+            if isinstance(module, LoRAModule):
+                params += module.lora_A[0].numel() + module.lora_B[0].numel()
         return params
 
     def _count_fully_trainable_params_excluding_lora(self) -> int:
