@@ -2,11 +2,11 @@ import asyncio
 from itertools import cycle
 from typing import Any, cast
 
+import verifiers as vf
 from openai import AsyncOpenAI
 from openai.types.chat.chat_completion import ChatCompletion
 from tqdm import tqdm
 
-import verifiers as vf
 from prime_rl.orchestrator.utils import get_semaphore
 
 

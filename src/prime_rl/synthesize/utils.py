@@ -5,15 +5,15 @@ from pathlib import Path
 from typing import Any
 
 import aiofiles
+import verifiers as vf
 from openai import AsyncOpenAI
 from tqdm.asyncio import tqdm
+from verifiers import load_environment
 from verifiers.envs.environment import get_results_path
 
-import verifiers as vf
 from prime_rl.orchestrator.config import ClientConfig, EvalSamplingConfig, ModelConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.vf import generate_group
-from verifiers import load_environment
 
 WRITE_LOCK = asyncio.Lock()
 

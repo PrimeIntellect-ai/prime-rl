@@ -1,7 +1,10 @@
 import asyncio
 
 import verifiers as vf
-from prime_rl.orchestrator.utils import set_semaphore
+
+from prime_rl.orchestrator.utils import (
+    set_semaphore,
+)
 from prime_rl.synthesize.config import SynthesizeConfig
 from prime_rl.synthesize.utils import generate_synthetic_data
 from prime_rl.utils.client import (

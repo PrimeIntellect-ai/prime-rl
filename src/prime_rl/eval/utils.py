@@ -9,28 +9,18 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import verifiers as vf
 from huggingface_hub import whoami
 from openai import AsyncOpenAI, BadRequestError
 from prime_evals import AsyncEvalsClient
 from tenacity import RetryCallState, retry, stop_after_attempt, wait_exponential
 from tqdm.asyncio import tqdm
+from verifiers import load_environment
 from verifiers.envs.environment import get_results_path
-from verifiers.utils.eval_utils import (
-    get_hf_hub_dataset_name,
-    make_dataset,
-    sanitize_metadata,
-    save_to_disk,
-)
+from verifiers.utils.eval_utils import get_hf_hub_dataset_name, make_dataset, sanitize_metadata, save_to_disk
 
-import verifiers as vf
 from prime_rl.eval.config import OfflineEvalConfig
-from prime_rl.orchestrator.config import (
-    EvalConfig,
-    EvalSamplingConfig,
-    EvalSaveConfig,
-    ModelConfig,
-    RetryConfig,
-)
+from prime_rl.orchestrator.config import EvalConfig, EvalSamplingConfig, EvalSaveConfig, ModelConfig, RetryConfig
 from prime_rl.synthesize.utils import merge_reasoning_content, save_result
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor import get_monitor
@@ -42,7 +32,6 @@ from prime_rl.utils.vf import (
     get_is_truncated,
     to_serializable_state,
 )
-from verifiers import load_environment
 
 WRITE_LOCK = asyncio.Lock()
 
