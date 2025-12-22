@@ -2,9 +2,9 @@ import random
 from unittest.mock import MagicMock
 
 import pytest
-import verifiers as vf
 from datasets import Dataset
 
+import verifiers as vf
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.config import BufferConfig
 

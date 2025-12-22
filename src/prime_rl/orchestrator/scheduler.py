@@ -3,13 +3,12 @@ import time
 from itertools import cycle
 from typing import NamedTuple
 
-import verifiers as vf
 from httpx import AsyncClient
 from openai import AsyncOpenAI
 from tqdm import tqdm
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
-from verifiers import Environment
 
+import verifiers as vf
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.orchestrator.utils import get_sampling_args
@@ -22,6 +21,7 @@ from prime_rl.utils.utils import (
     wait_for_path,
 )
 from prime_rl.utils.vf import generate_group
+from verifiers import Environment
 
 
 class InflightRolloutInfo(NamedTuple):

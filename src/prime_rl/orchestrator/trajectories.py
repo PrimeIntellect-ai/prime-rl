@@ -1,7 +1,6 @@
 from copy import deepcopy
 
 import verifiers as vf
-
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 

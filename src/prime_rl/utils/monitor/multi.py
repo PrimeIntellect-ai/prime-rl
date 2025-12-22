@@ -1,7 +1,6 @@
 from typing import Any
 
 import verifiers as vf
-
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor.base import Monitor
 
