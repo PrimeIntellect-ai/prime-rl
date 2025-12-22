@@ -24,7 +24,7 @@ temperature = 0.6
 max_tokens = 16384
 
 [[orchestrator.env]]
-id = "single-turn-math"
+id = "math-env"
 args = { dataset_name = "nvidia/AceReason-Math", dataset_subset = "default", question_key = "problem" }
 
 [orchestrator.eval]
