@@ -62,7 +62,7 @@ class FileSystemTrainingBatchReceiver(TrainingBatchReceiver):
                 self.logger.debug(
                     "Did you set the output dir of the orchestrator to a run_* subdirectory of the trainer output dir?"
                 )
-            self.logger.debug(f"Looking for batches in {', '.join(current_paths)}")
+            self.logger.debug(f"Looking for batches in {current_paths}")
             self._last_logged_paths = current_paths
             self._last_logged_time = time()
         for idx in list(self.runs.used_idxs):
