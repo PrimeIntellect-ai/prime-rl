@@ -88,7 +88,7 @@ def compute_loss(
         trainer_logprobs, inference_logprobs, reference_logprobs, advantages, loss_mask
     ):
         log_importance_ratio = trainer_logprobs - inference_logprobs
-        ref_kl = trainer_logprobs - reference_logprobs
+        ref_kl = reference_logprobs - trainer_logprobs
 
         # Trainer-inference mismatch KL per token
         token_importance_ratio = torch.exp(log_importance_ratio)
