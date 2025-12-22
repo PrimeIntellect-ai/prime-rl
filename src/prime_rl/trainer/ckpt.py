@@ -27,6 +27,7 @@ from prime_rl.trainer.weights import (
     save_state_dict,
 )
 from prime_rl.trainer.world import get_world
+from prime_rl.utils.disk import format_bytes_binary, format_percent, get_disk_usage
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.tensor_hashing import get_module_signature, get_optimizer_signature
 from prime_rl.utils.utils import get_ckpt_dir, get_step_path, get_weights_dir
@@ -88,6 +89,16 @@ class CheckpointManager:
         self.logger = get_logger()
         self.world = get_world()
         self.ckpt_steps: list[int] = []  # Sorted list of steps that have been checkpointed, only used on master rank
+        self.ckpt_dir.mkdir(parents=True, exist_ok=True)
+        if self.world.is_master:
+            usage = get_disk_usage(self.ckpt_dir)
+            free_ratio = usage.free_bytes / usage.total_bytes if usage.total_bytes else 0.0
+            self.logger.info(
+                "Checkpoint disk space: "
+                f"path={self.ckpt_dir} "
+                f"free={format_bytes_binary(usage.free_bytes)} ({format_percent(free_ratio)}) "
+                f"total={format_bytes_binary(usage.total_bytes)}"
+            )
 
     def get_ckpt_path(self, step: int) -> Path:
         """Get the path to write the trainer checkpoint for a given step."""
@@ -184,6 +195,15 @@ class CheckpointManager:
         """Save the full checkpoint state for a specified step."""
         ckpt_path = self.get_ckpt_path(step)
         ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.world.is_master:
+            usage = get_disk_usage(self.ckpt_dir)
+            free_ratio = usage.free_bytes / usage.total_bytes if usage.total_bytes else 0.0
+            self.logger.info(
+                "Checkpoint disk space (pre-save): "
+                f"path={self.ckpt_dir} "
+                f"free={format_bytes_binary(usage.free_bytes)} ({format_percent(free_ratio)}) "
+                f"total={format_bytes_binary(usage.total_bytes)}"
+            )
         self.logger.debug(
             f"Signatures before saving training checkpoint: model={get_module_signature(model, compress=True)}, optimizers={', '.join(get_optimizer_signature(optimizer, compress=True) for optimizer in optimizers)}"
         )
