@@ -47,7 +47,7 @@ import torch.distributed as dist
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 
 
-def _get_ckpt_disk_metrics(*, output_dir, step: int, enabled: bool) -> dict[str, float | int]:
+def get_ckpt_disk_metrics(*, output_dir, step: int, enabled: bool) -> dict[str, float | int]:
     if not enabled:
         return {}
     ckpt_dir = get_ckpt_dir(output_dir)
@@ -168,7 +168,7 @@ def train(config: SFTTrainerConfig):
     logger.info(
         f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples}, dataset_state={dataloader.state_dict()['dataset_state']})"
     )
-    monitor.log(_get_ckpt_disk_metrics(output_dir=config.output_dir, step=progress.step, enabled=world.is_master))
+    monitor.log(get_ckpt_disk_metrics(output_dir=config.output_dir, step=progress.step, enabled=world.is_master))
 
     cp_enabled = parallel_dims.cp_enabled
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
@@ -204,7 +204,7 @@ def train(config: SFTTrainerConfig):
         ):
             # Save full checkpoint
             logger.info(f"Saving checkpoint at step {progress.step}")
-            monitor.log(_get_ckpt_disk_metrics(output_dir=config.output_dir, step=progress.step, enabled=world.is_master))
+            monitor.log(get_ckpt_disk_metrics(output_dir=config.output_dir, step=progress.step, enabled=world.is_master))
             save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
@@ -422,7 +422,7 @@ def train(config: SFTTrainerConfig):
     # Write final checkpoint
     if ckpt_manager is not None:
         logger.info("Writing final checkpoint")
-        monitor.log(_get_ckpt_disk_metrics(output_dir=config.output_dir, step=progress.step, enabled=world.is_master))
+        monitor.log(get_ckpt_disk_metrics(output_dir=config.output_dir, step=progress.step, enabled=world.is_master))
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
         ckpt_manager.maybe_clean()
 

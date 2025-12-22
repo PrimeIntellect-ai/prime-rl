@@ -56,7 +56,7 @@ from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step, to_col_fo
 from ring_flash_attn import substitute_hf_flash_attn
 
 
-def _get_ckpt_disk_metrics(*, output_dir, step: int, enabled: bool) -> dict[str, float | int]:
+def get_ckpt_disk_metrics(*, output_dir, step: int, enabled: bool) -> dict[str, float | int]:
     if not enabled:
         return {}
     ckpt_dir = get_ckpt_dir(output_dir)
@@ -161,7 +161,7 @@ def train(config: RLTrainerConfig):
     logger.info(
         f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
     )
-    monitor.log(_get_ckpt_disk_metrics(output_dir=config.output_dir, step=progress.step, enabled=world.is_master))
+    monitor.log(get_ckpt_disk_metrics(output_dir=config.output_dir, step=progress.step, enabled=world.is_master))
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
@@ -218,7 +218,7 @@ def train(config: RLTrainerConfig):
         ):
             # Save full checkpoint
             logger.info(f"Saving checkpoint at step {progress.step}")
-            monitor.log(_get_ckpt_disk_metrics(output_dir=config.output_dir, step=progress.step, enabled=world.is_master))
+            monitor.log(get_ckpt_disk_metrics(output_dir=config.output_dir, step=progress.step, enabled=world.is_master))
             save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
@@ -455,7 +455,7 @@ def train(config: RLTrainerConfig):
     # Write final checkpoint
     if ckpt_manager is not None:
         logger.info("Writing final checkpoint")
-        monitor.log(_get_ckpt_disk_metrics(output_dir=config.output_dir, step=progress.step, enabled=world.is_master))
+        monitor.log(get_ckpt_disk_metrics(output_dir=config.output_dir, step=progress.step, enabled=world.is_master))
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
         ckpt_manager.maybe_clean()
 
