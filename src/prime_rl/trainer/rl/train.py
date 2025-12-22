@@ -56,22 +56,20 @@ from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step, to_col_fo
 from ring_flash_attn import substitute_hf_flash_attn
 
 
-def _log_ckpt_disk_metrics(monitor, *, output_dir, step: int, enabled: bool) -> None:
+def _get_ckpt_disk_metrics(*, output_dir, step: int, enabled: bool) -> dict[str, float | int]:
     if not enabled:
-        return
+        return {}
     ckpt_dir = get_ckpt_dir(output_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     usage = shutil.disk_usage(str(ckpt_dir))
     total = float(usage.total) if usage.total else 0.0
-    monitor.log(
-        {
-            "system/ckpt_disk_free_gib": usage.free / 1024**3,
-            "system/ckpt_disk_used_gib": usage.used / 1024**3,
-            "system/ckpt_disk_total_gib": usage.total / 1024**3,
-            "system/ckpt_disk_free_ratio": (usage.free / total) if total else 0.0,
-            "step": step,
-        }
-    )
+    return {
+        "system/ckpt_disk_free_gib": usage.free / 1024**3,
+        "system/ckpt_disk_used_gib": usage.used / 1024**3,
+        "system/ckpt_disk_total_gib": usage.total / 1024**3,
+        "system/ckpt_disk_free_ratio": (usage.free / total) if total else 0.0,
+        "step": step,
+    }
 
 
 @clean_exit
@@ -163,7 +161,7 @@ def train(config: RLTrainerConfig):
     logger.info(
         f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
     )
-    _log_ckpt_disk_metrics(monitor, output_dir=config.output_dir, step=progress.step, enabled=world.is_master)
+    monitor.log(_get_ckpt_disk_metrics(output_dir=config.output_dir, step=progress.step, enabled=world.is_master))
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
@@ -220,7 +218,7 @@ def train(config: RLTrainerConfig):
         ):
             # Save full checkpoint
             logger.info(f"Saving checkpoint at step {progress.step}")
-            _log_ckpt_disk_metrics(monitor, output_dir=config.output_dir, step=progress.step, enabled=world.is_master)
+            monitor.log(_get_ckpt_disk_metrics(output_dir=config.output_dir, step=progress.step, enabled=world.is_master))
             save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
@@ -457,7 +455,7 @@ def train(config: RLTrainerConfig):
     # Write final checkpoint
     if ckpt_manager is not None:
         logger.info("Writing final checkpoint")
-        _log_ckpt_disk_metrics(monitor, output_dir=config.output_dir, step=progress.step, enabled=world.is_master)
+        monitor.log(_get_ckpt_disk_metrics(output_dir=config.output_dir, step=progress.step, enabled=world.is_master))
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
         ckpt_manager.maybe_clean()
 

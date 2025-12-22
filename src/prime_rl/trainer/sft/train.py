@@ -47,22 +47,20 @@ import torch.distributed as dist
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 
 
-def _log_ckpt_disk_metrics(monitor, *, output_dir, step: int, enabled: bool) -> None:
+def _get_ckpt_disk_metrics(*, output_dir, step: int, enabled: bool) -> dict[str, float | int]:
     if not enabled:
-        return
+        return {}
     ckpt_dir = get_ckpt_dir(output_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     usage = shutil.disk_usage(str(ckpt_dir))
     total = float(usage.total) if usage.total else 0.0
-    monitor.log(
-        {
-            "system/ckpt_disk_free_gib": usage.free / 1024**3,
-            "system/ckpt_disk_used_gib": usage.used / 1024**3,
-            "system/ckpt_disk_total_gib": usage.total / 1024**3,
-            "system/ckpt_disk_free_ratio": (usage.free / total) if total else 0.0,
-            "step": step,
-        }
-    )
+    return {
+        "system/ckpt_disk_free_gib": usage.free / 1024**3,
+        "system/ckpt_disk_used_gib": usage.used / 1024**3,
+        "system/ckpt_disk_total_gib": usage.total / 1024**3,
+        "system/ckpt_disk_free_ratio": (usage.free / total) if total else 0.0,
+        "step": step,
+    }
 
 
 @clean_exit
@@ -170,7 +168,7 @@ def train(config: SFTTrainerConfig):
     logger.info(
         f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples}, dataset_state={dataloader.state_dict()['dataset_state']})"
     )
-    _log_ckpt_disk_metrics(monitor, output_dir=config.output_dir, step=progress.step, enabled=world.is_master)
+    monitor.log(_get_ckpt_disk_metrics(output_dir=config.output_dir, step=progress.step, enabled=world.is_master))
 
     cp_enabled = parallel_dims.cp_enabled
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
@@ -206,7 +204,7 @@ def train(config: SFTTrainerConfig):
         ):
             # Save full checkpoint
             logger.info(f"Saving checkpoint at step {progress.step}")
-            _log_ckpt_disk_metrics(monitor, output_dir=config.output_dir, step=progress.step, enabled=world.is_master)
+            monitor.log(_get_ckpt_disk_metrics(output_dir=config.output_dir, step=progress.step, enabled=world.is_master))
             save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
@@ -424,7 +422,7 @@ def train(config: SFTTrainerConfig):
     # Write final checkpoint
     if ckpt_manager is not None:
         logger.info("Writing final checkpoint")
-        _log_ckpt_disk_metrics(monitor, output_dir=config.output_dir, step=progress.step, enabled=world.is_master)
+        monitor.log(_get_ckpt_disk_metrics(output_dir=config.output_dir, step=progress.step, enabled=world.is_master))
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
         ckpt_manager.maybe_clean()
 
