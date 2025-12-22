@@ -2,21 +2,32 @@ import asyncio
 import random
 import time
 
-import pandas as pd
 import tomli_w
+
+from prime_rl.orchestrator.advantage import compute_advantages
+from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
+from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
+from prime_rl.orchestrator.trajectories import branch_rollout, interleave_rollout
+from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
+
+# This monkey patch is necessary to avoid Pydantic validating fields using typing.Iterable (e.g. in multimodal or tool call messages) lazily which leads to tokenization errors, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1249
+monkey_patch_oai_iterable_types()
+
+
+# This monkey patch is necessary to avoid heavy CPU overhead from constructing the OAI ChatCompletion Pydantic model with logprobs, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1189
+monkey_patch_chat_completion_logprobs()
+
+# Import environment before any other imports
+import pandas as pd
+import verifiers as vf
 from loguru import logger
 from transformers import AutoTokenizer
 
-import verifiers as vf
 from prime_rl.eval.utils import run_evals
-from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.orchestrator.config import BufferConfig, OrchestratorConfig
-from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
-from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.scheduler import Scheduler
-from prime_rl.orchestrator.trajectories import branch_rollout, interleave_rollout
 from prime_rl.orchestrator.utils import (
     compute_reference_logprobs,
     get_sampling_args,
@@ -24,7 +35,6 @@ from prime_rl.orchestrator.utils import (
     set_semaphore,
     validate_tokenizer_compatibility,
 )
-from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
 from prime_rl.utils.client import (
     check_has_model,
     check_health,
@@ -49,13 +59,6 @@ from prime_rl.utils.utils import (
     to_col_format,
 )
 from prime_rl.utils.vf import generate_batch, get_completion_len, get_prompt_len, get_seq_len
-
-# This monkey patch is necessary to avoid Pydantic validating fields using typing.Iterable (e.g. in multimodal or tool call messages) lazily which leads to tokenization errors, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1249
-monkey_patch_oai_iterable_types()
-
-
-# This monkey patch is necessary to avoid heavy CPU overhead from constructing the OAI ChatCompletion Pydantic model with logprobs, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1189
-monkey_patch_chat_completion_logprobs()
 
 
 @clean_exit
