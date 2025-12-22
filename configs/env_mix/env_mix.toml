@@ -1,0 +1,48 @@
+max_steps = 300
+seq_len = 8192
+
+[wandb]
+project = "intellect-4-debug"
+name = "intellect-4"
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[orchestrator]
+batch_size = 512
+rollouts_per_example = 16
+
+[[orchestrator.env]]
+id = "math-env"
+name = "math"
+args = { min_avg_reward = 0.1, rubric_max_workers = 128 }
+
+[[orchestrator.env]]
+id = "code-env"
+name = "code"
+args = { min_avg_reward = 0.1 }
+
+[[orchestrator.env]]
+id = "science-env"
+name = "science"
+args = { min_avg_reward = 0.1, pool_size = 128, rubric_max_workers = 128 }
+
+[[orchestrator.env]]
+id = "logic-env"
+name = "logic"
+args = { min_avg_reward = 0.1 }
+
+[[orchestrator.env]]
+id = "math-env"
+name = "math-python"
+args = { min_avg_reward = 0.1, sandbox_client_max_workers = 128, sandbox_timeout_minutes = 10, sandbox_memory_gb = 1, sandbox_disk_size_gb = 1, pip_install_packages = "numpy sympy", python_tool = true, rubric_max_workers = 128 }
+
+[trainer]
+
+[inference]
+api_server_count = 4
+
+[inference.model]
+enable_auto_tool_choice = true
+tool_call_parser = "hermes"
+max_model_len = 8192
