@@ -84,8 +84,7 @@ class ZMQTrainingBatchReceiver(TrainingBatchReceiver):
     def _drain_into_pending(self) -> None:
         """Drain all currently available ZMQ messages into the per-idx pending buffer (non-blocking)."""
         while True:
-            events = dict(self.poller.poll(timeout=0))
-            if self.socket not in events:
+            if not self.can_receive():
                 break
 
             try:
@@ -100,7 +99,7 @@ class ZMQTrainingBatchReceiver(TrainingBatchReceiver):
                 self.logger.error(f"Error decoding rollouts for sender_id={sender_id!r}: {e}")
                 continue
 
-            self.logger.info(f"Received batch from {sender_id}")
+            self.logger.debug(f"Received batch from {sender_id}")
 
             per_id_batches = self._pending.setdefault(sender_id, {})
             assert batch.step not in per_id_batches, (
