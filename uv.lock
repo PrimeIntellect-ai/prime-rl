@@ -2476,7 +2476,7 @@ requires-dist = [
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
     { name = "transformers", specifier = ">=4.56.0" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=e4d8bf0" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=cdbc417" },
     { name = "vllm", specifier = "==0.12.0" },
     { name = "wandb", specifier = ">=0.20.1" },
 ]
@@ -2493,16 +2493,17 @@ dev = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.2.5"
+version = "0.2.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
     { name = "httpx" },
     { name = "pydantic" },
+    { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e3/a4/ca20d2c4203db8b2be965537123e573c613184795888b31c6414ae30f8fb/prime_sandboxes-0.2.5.tar.gz", hash = "sha256:e2c7b05dac92d5d8e836d8c981e8848e7332414b2386ec377fd1d5f35df03c76", size = 40636, upload-time = "2025-12-02T03:48:22.027Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/08/b6/5acc211831acd3670f2d8d02bb8f75c2ff47999958393b1005bf250821d8/prime_sandboxes-0.2.7.tar.gz", hash = "sha256:1bd6f70a5be14ac1366ee96d0c3bb2a80521fdeeee7bca8453a95140bcac0e25", size = 45095, upload-time = "2025-12-19T11:53:10.539Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/67/97/dbf0ff75f682950532eb49039b1d967cd8ce930e8a8c5733f6924cbbcb0e/prime_sandboxes-0.2.5-py3-none-any.whl", hash = "sha256:65d50fefd36269865351ddbf0db56ad17d962e943aca13620e570beb0abd4ea0", size = 15712, upload-time = "2025-12-02T03:48:20.702Z" },
+    { url = "https://files.pythonhosted.org/packages/f0/11/bf9f7732a0ed6ef9665cbd5d6ff4f074ee0032e2ba0e4574ee8a65a97efa/prime_sandboxes-0.2.7-py3-none-any.whl", hash = "sha256:ac32e0d78d9655378548b627f9cdffd68d8116c36f596297ad7224d920f219b2", size = 18310, upload-time = "2025-12-19T11:53:09.627Z" },
 ]
 
 [[package]]
@@ -3812,7 +3813,7 @@ wheels = [
 [[package]]
 name = "verifiers"
 version = "0.1.8.post2"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=e4d8bf0#e4d8bf0a2aef4d02f9499302b4faec0d8f5c4cfc" }
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=cdbc417#cdbc417ad23e66642fa846c5579f9c5002d1bc10" }
 dependencies = [
     { name = "datasets" },
     { name = "jinja2" },
