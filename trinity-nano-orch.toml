@@ -1,0 +1,44 @@
+inference_gpu_ids = [0]
+trainer_gpu_ids = [1]
+
+max_steps = 5000
+
+[model]
+name = "arcee-ai/trinity-nano-preview"
+
+[ckpt]
+interval = 100
+
+[wandb]
+project = "primerl-debug"
+name = "nano-acereason-math"
+
+[orchestrator]
+batch_size = 512
+seq_len = 1024
+rollouts_per_example = 16
+
+[orchestrator.sampling]
+temperature = 0.6
+max_tokens = 256
+
+[[orchestrator.env]]
+id = "acereason-math"
+
+[trainer.tokenizer]
+name = "arcee-ai/trinity-nano-preview"
+trust_remote_code = true
+
+[trainer.optim]
+type = "sgd"
+
+[trainer.model]
+attn = "sdpa"
+impl = "custom"
+load_using_meta = true
+
+[inference.model]
+trust_remote_code = true
+max_model_len = 2048
+
+[trainer.model.ac]

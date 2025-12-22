@@ -1,3 +1,5 @@
+from vllm.utils.system_utils import decorate_logs
+from vllm.utils.argparse_utils import FlexibleArgumentParser
 from argparse import Namespace
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -9,7 +11,6 @@ import vllm.entrypoints.openai.api_server
 import uvloop
 import vllm.envs as envs
 from fastapi import Request
-from vllm.config import LogprobsMode
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server
@@ -25,7 +26,6 @@ from vllm.entrypoints.openai.api_server import (
 from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
 from vllm.entrypoints.openai.tool_parsers import ToolParserManager
 from vllm.logger import init_logger
-from vllm.utils import FlexibleArgumentParser, decorate_logs
 
 from prime_rl.inference.config import InferenceConfig
 
@@ -49,7 +49,7 @@ async def custom_build_async_engine_client(
     # Ensures everything is shutdown and cleaned up on error/exit
     engine_args = AsyncEngineArgs.from_cli_args(args)
     engine_args.worker_extension_cls = args.worker_extension_cls
-    engine_args.logprobs_mode = LogprobsMode.PROCESSED_LOGPROBS
+    engine_args.logprobs_mode = "processed_logprobs"
 
     async with build_async_engine_client_from_engine_args(
         engine_args, disable_frontend_multiprocessing=args.disable_frontend_multiprocessing, client_config=client_config
@@ -103,8 +103,7 @@ async def custom_run_server_worker(listen_address, sock, args, client_config=Non
             )
             return {"status": "ok"}
 
-        vllm_config = await engine_client.get_vllm_config()
-        await init_app_state(engine_client, vllm_config, app.state, args)
+        await init_app_state(engine_client, app.state, args)
 
         # This hack allows us to update lora adapters in-place by skipping the check for already loaded adapters.
         async def do_nothing(*args, **kwargs):
