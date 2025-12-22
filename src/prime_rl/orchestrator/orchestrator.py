@@ -99,6 +99,17 @@ async def orchestrate(config: OrchestratorConfig):
     admin_clients = setup_admin_clients(config.client)
     evals_client = setup_evals_client()
 
+    # Setup teacher client for distillation (if enabled)
+    teacher_clients = None
+    teacher_model_name = None
+    if config.distillation and config.distillation.enabled:
+        logger.info(
+            f"Distillation enabled. Initializing teacher client "
+            f"(base_url={', '.join(config.distillation.client.base_url)}, model={config.distillation.model.name})"
+        )
+        teacher_clients = setup_clients(config.distillation.client)
+        teacher_model_name = config.distillation.model.name
+
     # Load tokenizer
     logger.info(f"Initializing tokenizer for {config.model.name}")
     tokenizer = AutoTokenizer.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
@@ -146,6 +157,8 @@ async def orchestrate(config: OrchestratorConfig):
     scheduler = Scheduler(
         clients=clients,
         admin_clients=admin_clients,
+        teacher_clients=teacher_clients,
+        teacher_model_name=teacher_model_name,
         env=env,
         buffer=buffer,
         tokenizer=tokenizer,
@@ -262,6 +275,8 @@ async def orchestrate(config: OrchestratorConfig):
                     rollouts_per_example=config.val.rollouts_per_example,
                     sampling_args=get_sampling_args(config.sampling),
                     pbar_description="Generating rollouts (val)",
+                    teacher_clients=teacher_clients,
+                    teacher_model_name=teacher_model_name,
                 )
             )
         else:

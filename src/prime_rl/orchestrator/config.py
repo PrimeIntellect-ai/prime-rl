@@ -462,6 +462,35 @@ class AdvantageConfig(BaseConfig):
     length_weighted_mean: bool = False
 
 
+class DistillationConfig(BaseConfig):
+    """Configures on-policy distillation from a teacher/reference model.
+
+    When enabled, the teacher client is passed to verifiers during rollout generation,
+    and verifiers computes KL divergence between student and teacher logprobs as the reward.
+    """
+
+    enabled: Annotated[
+        bool,
+        Field(
+            description="Whether to enable distillation. Set to false to temporarily disable without removing config.",
+        ),
+    ] = True
+
+    client: Annotated[
+        ClientConfig,
+        Field(
+            description="Client configuration for connecting to the teacher/reference model server.",
+        ),
+    ] = ClientConfig()
+
+    model: Annotated[
+        ModelConfig,
+        Field(
+            description="Model configuration for the teacher/reference model.",
+        ),
+    ] = ModelConfig()
+
+
 class FileSystemWeightBroadcastConfig(BaseModel):
     """Configures the filesystem weight broadcast."""
 
@@ -519,6 +548,16 @@ class OrchestratorConfig(BaseSettings):
 
     # The validation configuration
     val: ValConfig | None = None
+
+    # The distillation configuration (for on-policy distillation from teacher model)
+    distillation: Annotated[
+        DistillationConfig | None,
+        Field(
+            description="Configuration for on-policy distillation from a teacher/reference model. "
+            "When enabled, passes teacher client to verifiers which computes KL divergence as reward. "
+            "If None, distillation is disabled.",
+        ),
+    ] = None
 
     weight_broadcast: Annotated[WeightBroadcastConfigType, Field(discriminator="type")] = (
         FileSystemWeightBroadcastConfig()
