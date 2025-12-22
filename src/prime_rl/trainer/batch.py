@@ -45,6 +45,7 @@ def prepare_sample(
         position_ids=position_ids,
         inference_logprobs=inference_logprobs,
         reference_logprobs=reference_logprobs,
+        temperature=1.0, 
     )
 
 

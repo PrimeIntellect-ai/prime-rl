@@ -36,7 +36,7 @@ def micro_batch_to_tensor(micro_batch: MicroBatch) -> TensorMicroBatch:
         inference_logprobs=torch.tensor(micro_batch.inference_logprobs, dtype=torch.float).unsqueeze(0),
         reference_logprobs=torch.tensor(micro_batch.reference_logprobs, dtype=torch.float).unsqueeze(0),
         loss_mask=torch.tensor(micro_batch.loss_mask, dtype=torch.bool).unsqueeze(0),
-        temperature=micro_batch.temperature if micro_batch.temperature is not None else 1.0,
+        temperature=micro_batch.temperature,
     )
 
 
