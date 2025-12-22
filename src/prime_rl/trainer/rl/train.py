@@ -416,8 +416,7 @@ def train(config: RLTrainerConfig):
             "time/forward_backward": forward_backward_time,
             "step": progress.step,
         }
-        if world.is_master:
-            time_metrics.update(get_ckpt_disk_metrics(config.output_dir))
+        time_metrics.update(get_ckpt_disk_metrics(config.output_dir))
         monitor.log(time_metrics)
 
         progress.step += 1
