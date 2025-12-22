@@ -43,11 +43,7 @@ class MultiOptimizer:
 
     def step(self):
         for idx in self.runs.used_idxs:
-            print(f"Stepping optimizer for run {idx}")
             self.optimizers[idx].step()
-
-            # except Exception as e:
-            #    self.logger.error(f"Error stepping optimizer for run {idx}: {e}")
 
     def zero_grad(self):
         for idx in self.runs.used_idxs:
