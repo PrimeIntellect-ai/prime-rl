@@ -28,12 +28,14 @@ def test_gspo_loss():
     # Create list of tensors as expected by compute_loss (simulating split sequences)
     trainer_logprobs = [torch.randn(40, dtype=torch.float32).cuda(), torch.randn(60, dtype=torch.float32).cuda()]
     inference_logprobs = [torch.randn(40, dtype=torch.float32).cuda(), torch.randn(60, dtype=torch.float32).cuda()]
+    reference_logprobs = [torch.randn(40, dtype=torch.float32).cuda(), torch.randn(60, dtype=torch.float32).cuda()]
     advantages = [torch.randn(40).cuda(), torch.randn(60).cuda()]
     loss_mask = [torch.ones(40, dtype=torch.bool).cuda(), torch.ones(60, dtype=torch.bool).cuda()]
 
     loss, _ = compute_loss(
         trainer_logprobs,
         inference_logprobs,
+        reference_logprobs,
         advantages,
         loss_mask=loss_mask,
         loss_config=LossConfig(ratio_type="sequence", token_mask_high=10.0),
