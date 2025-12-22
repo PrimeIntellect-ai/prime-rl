@@ -33,7 +33,7 @@ trust_remote_code = true
 type = "sgd"
 
 [trainer.model]
-attn = "sdpa"
+attn = "flex_attention"
 impl = "custom"
 load_using_meta = true
 

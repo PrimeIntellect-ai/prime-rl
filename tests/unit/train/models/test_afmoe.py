@@ -96,14 +96,18 @@ def test_afmoe_attn_only() -> None:
 def test_afmoe_mlp_only() -> None:
     hf_model, prime_model = get_model_pairs()
 
-    # AfmoeAttention.forward() returns a single tensor (not a tuple)
-    def identity_attn(hidden_states: torch.Tensor, *args, **kwargs) -> torch.Tensor:
+    # HF AfmoeAttention.forward() returns a single tensor
+    def identity_attn_hf(hidden_states: torch.Tensor, *args, **kwargs) -> torch.Tensor:
         return hidden_states
 
+    # PrimeRL attention returns a tuple (output, attn_weights)
+    def identity_attn_prime(hidden_states: torch.Tensor, *args, **kwargs) -> tuple[torch.Tensor, None]:
+        return hidden_states, None
+
     for layer in hf_model.model.layers:
-        layer.self_attn.forward = identity_attn
+        layer.self_attn.forward = identity_attn_hf
     for layer in prime_model.model.layers:
-        layer.self_attn.forward = identity_attn
+        layer.self_attn.forward = identity_attn_prime
 
     with torch.device("cuda"), default_dtype(torch.float32):
         input_ids = torch.randint(0, hf_model.config.vocab_size, (1, 100))
