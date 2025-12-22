@@ -1,4 +1,5 @@
 max_steps = 300
+seq_len = 4096
 
 [wandb]
 project = "math-python-debug"
@@ -8,7 +9,6 @@ name = "math-python"
 name = "Qwen/Qwen3-4B-Instruct-2507"
 
 [orchestrator]
-seq_len = 4096
 batch_size = 512
 rollouts_per_example = 16
 
@@ -17,6 +17,7 @@ max_tokens = 512
 
 [[orchestrator.env]]
 id = "math-python"
+args = { sandbox_client_max_workers = 128, sandbox_timeout_minutes = 10, sandbox_memory_gb = 1, sandbox_disk_size_gb = 1, pip_install_packages = "numpy sympy" }
 
 [trainer] # Default trainer config
 

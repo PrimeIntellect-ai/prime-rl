@@ -2,6 +2,7 @@ inference_gpu_ids = [0]
 trainer_gpu_ids = [1]
 
 max_steps = 20
+seq_len = 2048
 
 [ckpt]
 
@@ -14,7 +15,6 @@ lr = 3e-6
 [orchestrator]
 batch_size = 128
 rollouts_per_example = 16
-seq_len = 2048
 
 [orchestrator.sampling]
 max_tokens = 128

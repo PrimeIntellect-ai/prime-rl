@@ -216,11 +216,11 @@ def train(config: RLTrainerConfig):
         if config.max_steps is not None and progress.step >= config.max_steps:
             break
 
-        logger.info(f"Starting training step {progress.step}")
+        logger.debug(f"Starting training step {progress.step}")
         step_start_time = time.perf_counter()
 
         # Wait for the batch to be available
-        logger.info("Waiting for training batch to arrive")
+        logger.debug("Waiting for training batch to arrive")
         wait_for_batch_start_time = time.perf_counter()
         dataloader.wait_for_batch()
         wait_for_batch_time = time.perf_counter() - wait_for_batch_start_time
@@ -248,7 +248,7 @@ def train(config: RLTrainerConfig):
             loss_scale = batch_size
         loss_scale = max(loss_scale, 1)
 
-        logger.info(f"Starting forward and backward pass ({batch_size=})")
+        logger.debug(f"Starting forward and backward pass ({batch_size=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
         cp_enabled = parallel_dims.cp_enabled
         cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0

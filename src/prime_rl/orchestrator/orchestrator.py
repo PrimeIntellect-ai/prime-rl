@@ -5,6 +5,7 @@ import time
 import tomli_w
 
 from prime_rl.orchestrator.advantage import compute_advantages
+from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.trajectories import branch_rollout, interleave_rollout
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
@@ -68,6 +69,9 @@ async def orchestrate(config: OrchestratorConfig):
     vf.setup_logging(level=config.log.vf_level.upper())
     logger.info("Starting orchestrator")
 
+    event_loop_lag_monitor = EventLoopLagMonitor()
+    event_loop_lag_monitor_task = asyncio.create_task(event_loop_lag_monitor.run())
+
     # Print warning if running in benchmark mode
     if config.bench:
         logger.warning(f"Running in benchmark mode (max_steps={config.max_steps})")
@@ -100,9 +104,10 @@ async def orchestrate(config: OrchestratorConfig):
     tokenizer = AutoTokenizer.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
 
     # Setup monitor
-    logger.info(f"Initializing monitor ({config.wandb})")
+    logger.info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
     monitor = setup_monitor(
-        config.wandb,
+        wandb_config=config.wandb,
+        prime_config=config.prime_monitor,
         output_dir=config.output_dir,
         tokenizer=tokenizer,
         run_config=config,
@@ -343,6 +348,9 @@ async def orchestrate(config: OrchestratorConfig):
                 "completion_len": [get_completion_len(rollout) for rollout in train_rollouts],
                 "prompt_len": [get_prompt_len(rollout) for rollout in train_rollouts],
                 "seq_len": [get_seq_len(rollout) for rollout in train_rollouts],
+                "num_turns": [len(rollout["trajectory"]) for rollout in train_rollouts],
+                "generation_ms": [rollout["timing"]["generation_ms"] for rollout in train_rollouts],
+                "scoring_ms": [rollout["timing"]["scoring_ms"] for rollout in train_rollouts],
             }
         )
 
@@ -400,6 +408,17 @@ async def orchestrate(config: OrchestratorConfig):
             "is_truncated/mean": results_df.groupby("example_id").is_truncated.mean().mean(),
             "is_truncated/max": results_df.groupby("example_id").is_truncated.mean().max(),
             "is_truncated/min": results_df.groupby("example_id").is_truncated.mean().min(),
+            # Turn metrics
+            "num_turns/mean": results_df.groupby("example_id").num_turns.mean().mean(),
+            "num_turns/max": results_df.groupby("example_id").num_turns.mean().max(),
+            "num_turns/min": results_df.groupby("example_id").num_turns.mean().min(),
+            # Verifier timing metrics
+            "generation_ms/mean": results_df.groupby("example_id").generation_ms.mean().mean(),
+            "generation_ms/max": results_df.groupby("example_id").generation_ms.mean().max(),
+            "generation_ms/min": results_df.groupby("example_id").generation_ms.mean().min(),
+            "scoring_ms/mean": results_df.groupby("example_id").scoring_ms.mean().mean(),
+            "scoring_ms/max": results_df.groupby("example_id").scoring_ms.mean().max(),
+            "scoring_ms/min": results_df.groupby("example_id").scoring_ms.mean().min(),
             # Performance metrics
             "perf/throughput": throughput,
             # Train reward
@@ -424,6 +443,8 @@ async def orchestrate(config: OrchestratorConfig):
             **scheduler.get_metrics(),
             # Buffer metrics
             **buffer.get_metrics(),
+            # Event loop lag metrics
+            **event_loop_lag_monitor.get_metrics(),
             # W&B axis
             "step": progress.step,
         }
@@ -447,12 +468,21 @@ async def orchestrate(config: OrchestratorConfig):
                 per_env_ratio = val_results_df.task.value_counts(normalize=True).to_dict()
                 to_log.update({f"val_batch/{env}": ratio for env, ratio in per_env_ratio.items()})
 
-        # Log metrics to W&B
+        # Log metrics to monitor(s)
         monitor.log(to_log)
 
-        # Log samples to W&B table if enabled
+        # Log samples to monitor(s) if enabled
         subset_train_rollouts = random.sample(train_rollouts, min(8, len(train_rollouts)))
         monitor.log_samples(subset_train_rollouts, step=progress.step)
+
+        # Log distributions (rewards, advantages) if enabled
+        monitor.log_distributions(
+            distributions={
+                "rewards": rewards,
+                "advantages": advantages,
+            },
+            step=progress.step,
+        )
 
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} |{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.groupby('example_id').seq_len.mean().mean():.1f} tokens/sample | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
         logger.success(step_message)
@@ -460,6 +490,8 @@ async def orchestrate(config: OrchestratorConfig):
         # Increment step
         progress.step += 1
         is_first_step = False
+
+        event_loop_lag_monitor.reset()
 
         # Send heartbeat if configured
         if heart is not None:
@@ -479,7 +511,7 @@ async def orchestrate(config: OrchestratorConfig):
             step=progress.step,
         )
 
-    # Log final (immutable) samples to W&B table
+    # Log final (immutable) samples and distributions to monitor(s)
     monitor.log_final_samples()
     monitor.save_final_summary()
 
@@ -490,6 +522,9 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Close training batch sender
     training_batch_sender.close()
+
+    # Cancel event loop lag monitor task
+    event_loop_lag_monitor_task.cancel()
 
     logger.success("Orchestrator finished.")
 

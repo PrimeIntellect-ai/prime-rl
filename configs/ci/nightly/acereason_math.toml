@@ -7,16 +7,13 @@ inference_gpu_ids = [0,1,2,3]
 trainer_gpu_ids = [4,5,6,7]
 
 max_steps = 300
+seq_len = 8192
 
 [model]
 name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
 
-[trainer.model]
-seq_len = 8192
-
 [orchestrator]
 batch_size = 1024
-seq_len = 8192
 rollouts_per_example = 8
 
 [orchestrator.sampling]
