@@ -429,6 +429,17 @@ class RLConfig(BaseSettings):
                 raise ValueError("NCCL weight broadcast requires at least 2 GPUs to build the broadcast process group.")
         return self
 
+    @model_validator(mode="after")
+    def auto_setup_score_rollouts(self):
+        if self.trainer.loss.adv_tau == 0:
+            self.orchestrator.buffer.score_rollouts = False
+        elif not self.orchestrator.buffer.score_rollouts:
+            raise ValueError(
+                "score_rollouts cannot be False when adv_tau > 0. "
+                "Either set adv_tau = 0 to disable scoring, or remove the score_rollouts setting."
+            )
+        return self
+
 
 def cleanup_threads(threads: list[Thread]):
     for thread in threads:

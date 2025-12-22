@@ -445,6 +445,17 @@ class BufferConfig(BaseConfig):
         ),
     ] = ["task", "prompt"]
 
+    score_rollouts: Annotated[
+        bool,
+        Field(
+            description=(
+                "Whether to score rollouts using the environment's rubric. "
+                "If False, rewards are always set to 0, online_difficulty_filtering is disabled, "
+                "and easy/hard thresholds are not used."
+            ),
+        ),
+    ] = True
+
     @model_validator(mode="after")
     def validate_thresholds(self):
         if self.easy_threshold is not None and self.hard_threshold is not None:
@@ -455,6 +466,26 @@ class BufferConfig(BaseConfig):
     def validate_env_ratios(self):
         if self.env_ratios is not None:
             assert all(ratio > 0 for ratio in self.env_ratios), "All env_ratios must be positive."
+        return self
+
+    @model_validator(mode="after")
+    def validate_score_rollouts(self):
+        if not self.score_rollouts:
+            if self.online_difficulty_filtering:
+                raise ValueError(
+                    "online_difficulty_filtering cannot be enabled when score_rollouts is False "
+                    "(rewards are always 0, so filtering would discard all rollouts)."
+                )
+            if self.easy_threshold is not None:
+                raise ValueError(
+                    "easy_threshold cannot be set when score_rollouts is False "
+                    "(rewards are always 0, so no examples would ever be marked as easy)."
+                )
+            if self.hard_threshold is not None:
+                raise ValueError(
+                    "hard_threshold cannot be set when score_rollouts is False "
+                    "(rewards are always 0, so all examples would be marked as hard)."
+                )
         return self
 
 
