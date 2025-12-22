@@ -1,3 +1,6 @@
+trainer_gpu_ids = [0,1,2,3]
+inference_gpu_ids = [4,5,6,7]
+
 max_steps = 300
 seq_len = 8192
 
@@ -40,7 +43,7 @@ args = { min_avg_reward = 0.1, sandbox_client_max_workers = 128, sandbox_timeout
 [trainer]
 
 [inference]
-api_server_count = 4
+api_server_count = 8
 
 [inference.model]
 enable_auto_tool_choice = true
