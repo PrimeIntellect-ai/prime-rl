@@ -10,12 +10,14 @@ pytestmark = [pytest.mark.gpu]
 def test_grpo_loss():
     trainer_logprobs = [torch.randn(50, dtype=torch.float32).cuda(), torch.randn(30, dtype=torch.float32).cuda()]
     inference_logprobs = [torch.randn(50, dtype=torch.float32).cuda(), torch.randn(30, dtype=torch.float32).cuda()]
+    reference_logprobs = [torch.randn(50, dtype=torch.float32).cuda(), torch.randn(30, dtype=torch.float32).cuda()]
     advantages = [torch.randn(50).cuda(), torch.randn(30).cuda()]
     loss_mask = [torch.ones(50, dtype=torch.bool).cuda(), torch.ones(30, dtype=torch.bool).cuda()]
 
     loss, _ = compute_loss(
         trainer_logprobs,
         inference_logprobs,
+        reference_logprobs,
         advantages,
         loss_mask=loss_mask,
         loss_config=LossConfig(ratio_type="token", token_mask_high=10.0),
