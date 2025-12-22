@@ -5,8 +5,8 @@ max_steps = 300
 seq_len = 8192
 
 [wandb]
-project = "intellect-4-debug"
-name = "intellect-4"
+project = "env-mix-debug"
+name = "env-mix"
 
 [model]
 name = "Qwen/Qwen3-4B-Instruct-2507"
