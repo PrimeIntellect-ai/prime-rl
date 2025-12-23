@@ -1,6 +1,6 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 from openai import AsyncOpenAI
@@ -61,58 +61,32 @@ class ThreadedAsyncOpenAIClient:
     def _get_thread_client(self) -> AsyncOpenAI:
         return get_or_create_thread_attr(self._tls_key, self._create_client)
 
-    async def _run_in_thread(self, coro_fn) -> Any:
-        def run():
-            loop = get_or_create_thread_loop()
-            client = self._get_thread_client()
-            return loop.run_until_complete(coro_fn(client))
+    def __getattr__(self, name: str) -> Callable[..., Any]:
+        """Dynamically proxy attribute access to dispatch method calls to the thread pool."""
+        outer = self
 
-        return await asyncio.get_event_loop().run_in_executor(self.executor, run)
+        class _ChainedMethodPatch:
+            """Walk the path to the method and call it in the thread pool."""
 
-    @property
-    def chat(self) -> "_Chat":
-        return _Chat(self)
+            def __init__(self, path: tuple[str, ...]):
+                self.path = path
 
-    @property
-    def completions(self) -> "_Completions":
-        return _Completions(self)
+            def __getattr__(self, attr_name: str) -> "_ChainedMethodPatch":
+                return _ChainedMethodPatch(self.path + (attr_name,))
 
-    @property
-    def models(self) -> "_Models":
-        return _Models(self)
+            async def __call__(self, *args, **kwargs):
+                def run_in_thread():
+                    loop = get_or_create_thread_loop()
+                    client = outer._get_thread_client()
+                    method = client
+                    for attr in self.path:
+                        method = getattr(method, attr)
+                    return loop.run_until_complete(method(*args, **kwargs))
+
+                loop = asyncio.get_event_loop()
+                return await loop.run_in_executor(outer.executor, run_in_thread)
+
+        return _ChainedMethodPatch((name,))
 
     def teardown(self, wait: bool = True) -> None:
         self.executor.shutdown(wait=wait)
-
-
-class _Chat:
-    def __init__(self, parent: ThreadedAsyncOpenAIClient):
-        self._parent = parent
-
-    @property
-    def completions(self) -> "_ChatCompletions":
-        return _ChatCompletions(self._parent)
-
-
-class _ChatCompletions:
-    def __init__(self, parent: ThreadedAsyncOpenAIClient):
-        self._parent = parent
-
-    async def create(self, **kwargs) -> Any:
-        return await self._parent._run_in_thread(lambda c: c.chat.completions.create(**kwargs))
-
-
-class _Completions:
-    def __init__(self, parent: ThreadedAsyncOpenAIClient):
-        self._parent = parent
-
-    async def create(self, **kwargs) -> Any:
-        return await self._parent._run_in_thread(lambda c: c.completions.create(**kwargs))
-
-
-class _Models:
-    def __init__(self, parent: ThreadedAsyncOpenAIClient):
-        self._parent = parent
-
-    async def list(self) -> Any:
-        return await self._parent._run_in_thread(lambda c: c.models.list())
