@@ -1,5 +1,4 @@
 from abc import abstractmethod
-from collections import OrderedDict
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -125,50 +124,3 @@ class MultiLoRAModule(nn.Module):
             new_key = new_prefix + key[len(old_prefix) :]
             state_dict[new_key] = state_dict[key]
             del state_dict[key]
-
-    def state_dict(
-        self,
-        *args,
-        destination: dict[str, Any] | None = None,
-        prefix: str = "",
-        keep_vars: bool = False,
-        index: int | None = None,
-    ):
-        """If index is not provided, do the standard state_dict.
-        If index is provided, save only the parameters for the given index.
-        This means skipping the base_layer and slicing into nn.ParameterList.
-        """
-        if index is None:
-            return super().state_dict(*args, destination=destination, prefix=prefix, keep_vars=keep_vars)
-
-        if destination is None:
-            destination = OrderedDict()
-            destination._metadata = OrderedDict()
-
-        local_metadata = dict(version=self._version)
-        if hasattr(destination, "_metadata"):
-            destination._metadata[prefix[:-1]] = local_metadata
-
-        for hook in self._state_dict_pre_hooks.values():
-            hook(self, prefix, keep_vars)
-        self._save_to_state_dict(destination, prefix, keep_vars)
-        for name, module in self._modules.items():
-            if name == "base_layer":
-                continue
-            if isinstance(module, nn.ParameterList):
-                destination[prefix + name] = module[index] if keep_vars else module[index].detach()
-            elif module is not None:
-                module.state_dict(
-                    destination=destination,
-                    prefix=prefix + name + ".",
-                    keep_vars=keep_vars,
-                )
-        for hook in self._state_dict_hooks.values():
-            hook_result = hook(self, destination, prefix, local_metadata)
-            if not getattr(hook, "_from_public_api", False):
-                if hook_result is not None:
-                    destination = hook_result
-            else:
-                if hook_result is not None:
-                    raise RuntimeError("state_dict post-hook must return None")
-        return destination
