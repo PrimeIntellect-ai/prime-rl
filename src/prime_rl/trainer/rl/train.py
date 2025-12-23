@@ -126,7 +126,7 @@ def train(config: RLTrainerConfig):
     )
     if config.max_concurrent_runs == 1:
         # Set up the learning rate scheduler
-        scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
+        scheduler = setup_scheduler(optimizer.optimizers[0], config.scheduler, config.max_steps, config.optim.lr)
     else:
         # Set up the multi-scheduler for per-run learning rate scheduling
         scheduler = setup_multi_scheduler(config.scheduler, config.max_steps, config.optim.lr)
