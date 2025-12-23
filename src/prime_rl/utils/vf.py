@@ -104,6 +104,23 @@ def get_completion_len(state: vf.State) -> int:
     return get_seq_len(state) - get_prompt_len(state)
 
 
+def get_training_tokens(state: vf.State, strategy: str = "interleaved") -> int:
+    """Compute the number of training tokens based on trajectory strategy.
+    
+    For interleaved: returns get_seq_len() (single concatenated sequence)
+    For branching: returns sum of all trajectory steps (each step is a separate training sample)
+    """
+    if not state["trajectory"]:
+        return 0
+    if strategy == "interleaved":
+        return get_seq_len(state)
+    return sum(
+        len(step["tokens"]["prompt_ids"]) + len(step["tokens"]["completion_ids"])
+        for step in state["trajectory"]
+        if step["tokens"] is not None
+    )
+
+
 def get_is_truncated(state: vf.State) -> bool:
     """Check if the rollout is truncated. If raw tokens are not available, falls back to checking the finish reason of the last response."""
     if not state["trajectory"]:

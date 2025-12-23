@@ -547,7 +547,13 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = None
 
-    batch_size: Annotated[int, Field(ge=1, description="Number of samples to train on per step.")] = 128
+    tokens_per_step: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Number of tokens to generate per training step. Rollouts will be collected until at least this many tokens are generated.",
+        ),
+    ] = 262144 
 
     oversampling_factor: Annotated[
         float,
@@ -642,11 +648,6 @@ class OrchestratorConfig(BaseSettings):
                 raise ValueError("max_async_level must be 1 for NCCL broadcast")
         return self
 
-    @model_validator(mode="after")
-    def validate_batch_size(self):
-        if self.batch_size % self.rollouts_per_example != 0:
-            raise ValueError("Batch size must be divisible by the number of samples per problem")
-        return self
 
     @model_validator(mode="after")
     def validate_env_ratios(self):
