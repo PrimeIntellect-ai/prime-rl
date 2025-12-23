@@ -114,7 +114,7 @@ def compute_loss(
 
         importance_ratio = seq_importance_ratio if loss_config.ratio_type == "sequence" else token_importance_ratio
 
-        advantages = loss_config.adv_tau * advantages + loss_config.ref_tau * teacher_kl.detach()
+        advantages = loss_config.adv_tau * advantages + loss_config.teacher_tau * teacher_kl.detach()
         coeff = importance_ratio * (advantages - loss_config.kl_tau * log_importance_ratio)
         loss = -(coeff.detach() * trainer_logprobs)[keep_mask].sum()
 
