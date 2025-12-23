@@ -142,9 +142,8 @@ class MultiScheduler:
 
     def step(self) -> None:
         """Step all active schedulers."""
-        for idx in self.runs.used_idxs:
-            if self.schedulers[idx] is not None:
-                self.schedulers[idx].step()
+        for idx in self.runs.ready_to_update_idxs:
+            self.schedulers[idx].step()
 
     def get_last_lr(self, idx: int) -> list[float]:
         """Get the last learning rate for a specific run."""
