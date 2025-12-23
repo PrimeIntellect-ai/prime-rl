@@ -83,6 +83,7 @@ def compute_loss(
     total_geo_masked_low = []
     total_geo_masked_high = []
     total_geo_seq_ratio = []
+    total_teacher_kl = []
 
     for trainer_logprobs, inference_logprobs, teacher_logprobs, advantages, loss_mask in zip(
         trainer_logprobs, inference_logprobs, teacher_logprobs, advantages, loss_mask
@@ -135,6 +136,7 @@ def compute_loss(
         total_geo_masked_low.append(geo_mask_low.float())
         total_geo_masked_high.append(geo_mask_high.float())
         total_geo_seq_ratio.append(geo_seq_ratio)
+        total_teacher_kl.append(_safe_mean(teacher_kl, loss_mask))
 
     # Apply loss scaling
     scaled_loss = total_loss / loss_scale
@@ -151,4 +153,5 @@ def compute_loss(
         "geo_masked_low": torch.stack(total_geo_masked_low),
         "geo_masked_high": torch.stack(total_geo_masked_high),
         "geo_seq_ratio": torch.stack(total_geo_seq_ratio),
+        "teacher_kl": torch.stack(total_teacher_kl),
     }

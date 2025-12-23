@@ -14,10 +14,13 @@ def prepare_sample(
     # Prepare input_ids, loss_mask, position_ids, inference_logprobs, and advantages
     input_ids = training_example.prompt_ids + training_example.completion_ids
     loss_mask = training_example.prompt_mask + training_example.completion_mask
+    # Inference logprobs only cover completion tokens, so prepend zeros for prompt tokens
     inference_logprobs = [0.0] * len(training_example.prompt_ids) + training_example.completion_logprobs
     advantages = [training_example.advantage] * len(input_ids)
     position_ids = list(range(len(input_ids)))
 
+    # Teacher logprobs already cover the full sequence (prompt + completion),
+    # computed via prefill in the orchestrator when a teacher model is configured
     teacher_logprobs = training_example.teacher_logprobs
 
     if len(input_ids) > seq_len:
