@@ -38,7 +38,7 @@ def _get_compiled_flex_attention():
 
             # Use reduce-overhead mode for better handling of variable shapes
             # and dynamic=True to avoid recompilation on shape changes
-            _COMPILED_FLEX_ATTENTION = torch.compile(flex_attention, mode="reduce-overhead", dynamic=True)
+            _COMPILED_FLEX_ATTENTION = torch.compile(flex_attention, mode="default", dynamic=True)
         except ImportError:
             _COMPILED_FLEX_ATTENTION = None
     return _COMPILED_FLEX_ATTENTION
