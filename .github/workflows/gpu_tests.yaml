@@ -64,7 +64,7 @@ jobs:
       matrix:
         include:
           - test: base
-            pytest_args: "tests/integration -m gpu --ignore=tests/integration/test_rl_lora.py --ignore=tests/integration/test_rl_multi_run.py"
+            pytest_args: "tests/integration -m gpu --ignore=tests/integration/test_rl_lora.py --ignore=tests/integration/test_rl_multi_run_lora.py"
           - test: rl_lora
             pytest_args: "tests/integration/test_rl_lora.py -m gpu"
           - test: rl_multi_run
