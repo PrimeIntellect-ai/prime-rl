@@ -72,6 +72,9 @@ class MultiOptimizer:
         if idx is None:
             for idx in self.runs.ready_to_update_idxs:
                 return self.optimizers[idx].param_groups[0]["lr"]
+            else:
+                self.logger.warning("No runs are ready to update. Returning 0.0 for current learning rate.")
+                return 0.0
         else:
             return self.optimizers[idx].param_groups[0]["lr"]
 
