@@ -90,6 +90,9 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     micro_batch.loss_mask.extend([False for _ in range(padding_size)])
     micro_batch.position_ids.extend(list(range(padding_size)))
     micro_batch.inference_logprobs.extend([0.0 for _ in range(padding_size)])
+    micro_batch.lora_num_tokens[-1] += (
+        padding_size  # We send padding to the last lora so that tokens have ascending lora idx
+    )
 
     return micro_batch
 
