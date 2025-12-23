@@ -39,7 +39,6 @@ from prime_rl.utils.client import (
     init_nccl_broadcast,
     reload_weights,
     setup_admin_clients,
-    setup_clients,
     setup_evals_client,
     setup_threaded_clients,
     teardown_clients,
@@ -97,10 +96,7 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info(
         f"Initializing OpenAI client (base_url={', '.join(config.client.base_url)}, api_key_var={config.client.api_key_var}, headers={config.client.headers}, threaded={config.client.threaded})"
     )
-    if config.client.threaded:
-        clients = setup_threaded_clients(config.client, config.client.max_workers_per_client)
-    else:
-        clients = setup_clients(config.client)
+    clients = setup_threaded_clients(config.client, config.client.max_workers_per_client)
     admin_clients = setup_admin_clients(config.client)
     evals_client = setup_evals_client()
 

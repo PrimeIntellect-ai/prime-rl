@@ -20,10 +20,8 @@ class ThreadedAsyncOpenAIClient:
         self,
         base_url: str,
         api_key: str,
-        max_workers: int = 64,
+        max_workers: int,
         timeout: int = 1200,
-        max_connections: int = 8192,
-        max_keepalive_connections: int = 8192,
         max_retries: int = 10,
         headers: dict[str, str] | None = None,
     ):
@@ -34,8 +32,6 @@ class ThreadedAsyncOpenAIClient:
         self._base_url = base_url
         self._api_key = api_key
         self._timeout = timeout
-        self._max_connections = max_connections
-        self._max_keepalive_connections = max_keepalive_connections
         self._max_retries = max_retries
         self._headers = headers or {}
         self._tls_key = f"oai_client_{id(self)}"
@@ -46,11 +42,7 @@ class ThreadedAsyncOpenAIClient:
 
     def _create_client(self) -> AsyncOpenAI:
         timeout = httpx.Timeout(self._timeout)
-        limits = httpx.Limits(
-            max_connections=self._max_connections,
-            max_keepalive_connections=self._max_keepalive_connections,
-        )
-        http_client = httpx.AsyncClient(limits=limits, timeout=timeout, headers=self._headers)
+        http_client = httpx.AsyncClient(timeout=timeout, headers=self._headers)
         return AsyncOpenAI(
             base_url=self._base_url,
             api_key=self._api_key,

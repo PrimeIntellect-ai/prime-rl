@@ -12,6 +12,7 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.threaded_client import ThreadedAsyncOpenAIClient
 
 
+# TODO: consider deprecating in synthesize and eval endpoints too
 def setup_clients(client_config: ClientConfig) -> list[AsyncOpenAI]:
     def _setup_client(base_url: str) -> AsyncOpenAI:
         # We use a longer request timeout than default, but if more than 20min, we probably need faster inference deployment
@@ -34,7 +35,7 @@ def setup_clients(client_config: ClientConfig) -> list[AsyncOpenAI]:
 
 def setup_threaded_clients(
     client_config: ClientConfig,
-    max_workers_per_client: int = 64,
+    max_workers_per_client: int,
 ) -> list[ThreadedAsyncOpenAIClient]:
     """Create threaded OpenAI clients - one per base_url.
 

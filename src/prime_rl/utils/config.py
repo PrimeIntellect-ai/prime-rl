@@ -52,19 +52,16 @@ class ClientConfig(BaseConfig):
         ),
     ] = {}
 
-    threaded: Annotated[
-        bool,
-        Field(
-            description="Use threaded clients to offload API calls from the main event loop. Recommended for high-throughput scenarios.",
-        ),
-    ] = True
+
+class ThreadedClientConfig(BaseConfig):
+    """Configures the threaded OpenAI client."""
 
     max_workers_per_client: Annotated[
-        int,
+        int | None,
         Field(
-            description="Number of worker threads per client (only used when threaded=True).",
+            description="Number of worker threads per client. If None, will be auto-configured based on max_concurrent and number of clients ceil(max_concurrent / num_clients).",
         ),
-    ] = 64
+    ] = None
 
 
 class LogConfig(BaseConfig):

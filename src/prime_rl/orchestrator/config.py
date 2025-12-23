@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
@@ -667,4 +668,12 @@ class OrchestratorConfig(BaseSettings):
             if self.prime_monitor:
                 self.prime_monitor.log_extras = None
 
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_max_workers_per_client(self):
+        if self.client.max_workers_per_client is None:
+            num_clients = len(self.client.base_url)
+            if self.max_concurrent is None:
+                self.client.max_workers_per_client = math.ceil(self.max_concurrent / num_clients)
         return self
