@@ -71,7 +71,7 @@ def setup_multi_optimizer(
 
 
 def setup_optimizer(config: OptimizerConfigType, model: nn.Module, device_mesh: DeviceMesh) -> Optimizer:
-    return _setup_optimizer(config, model.named_parameters(), device_mesh)
+    return _setup_optimizer(config, list(model.named_parameters()), device_mesh)
 
 
 def _setup_optimizer(
