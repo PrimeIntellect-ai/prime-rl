@@ -146,7 +146,7 @@ def train(config: RLTrainerConfig):
     # Optionally, resume training from a checkpoint
     progress = Progress()
     if checkpoint_step is not None:
-        ckpt_manager.load(checkpoint_step, model, [optimizer], scheduler, progress)
+        ckpt_manager.load(checkpoint_step, model, [optimizer.optimizers[0]], scheduler, progress)
         logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
 
     logger.info(
@@ -209,7 +209,7 @@ def train(config: RLTrainerConfig):
             # Save full checkpoint
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
-            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+            ckpt_manager.save(progress.step, model, [optimizer.optimizers[0]], scheduler, progress)
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
 
             # Maybe clean up old checkpoints
@@ -446,7 +446,7 @@ def train(config: RLTrainerConfig):
     # Write final checkpoint
     if ckpt_manager is not None:
         logger.info("Writing final checkpoint")
-        ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+        ckpt_manager.save(progress.step, model, [optimizer.optimizers[0]], scheduler, progress)
         ckpt_manager.maybe_clean()
 
     # Write final checkpoint

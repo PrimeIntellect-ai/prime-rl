@@ -53,21 +53,6 @@ class MultiOptimizer:
         for idx in self.runs.ready_to_update_idxs:
             self.optimizers[idx].zero_grad()
 
-    def state_dict(self):
-        if self.model is not None:
-            return self.optimizers[0].state_dict()
-        else:
-            return {
-                "optimizers": [optimizer.state_dict() for optimizer in self.optimizers],
-            }
-
-    def load_state_dict(self, state_dict: dict):
-        if self.model is not None:
-            self.optimizers[0].load_state_dict(state_dict)
-        else:
-            for optimizer, optimizer_state in zip(self.optimizers, state_dict["optimizers"]):
-                optimizer.load_state_dict(optimizer_state)
-
     def get_current_lr(self, idx: int | None = None) -> float:
         if idx is None:
             for idx in self.runs.ready_to_update_idxs:
