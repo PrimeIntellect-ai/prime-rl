@@ -670,9 +670,14 @@ class OrchestratorConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_max_concurrent(self):
+        if self.max_concurrent is None:
+            self.max_concurrent = self.batch_size * self.oversampling_factor
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_max_workers_per_client(self):
         if self.client.max_workers_per_client is None:
             num_clients = len(self.client.base_url)
-            if self.max_concurrent is not None:
-                self.client.max_workers_per_client = self.max_concurrent // (num_clients * self.client.max_connections)
+            self.client.max_workers_per_client = self.max_concurrent // (num_clients * self.client.max_connections)
         return self
