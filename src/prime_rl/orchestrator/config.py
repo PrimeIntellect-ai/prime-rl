@@ -674,6 +674,6 @@ class OrchestratorConfig(BaseSettings):
     def auto_setup_max_workers_per_client(self):
         if self.client.max_workers_per_client is None:
             num_clients = len(self.client.base_url)
-            if self.max_concurrent is None:
+            if self.max_concurrent is not None:
                 self.client.max_workers_per_client = math.ceil(self.max_concurrent / num_clients)
         return self
