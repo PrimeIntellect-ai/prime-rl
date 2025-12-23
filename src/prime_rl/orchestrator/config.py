@@ -11,6 +11,7 @@ from prime_rl.utils.config import (
     LogConfig,
     ModelConfig,
     PrimeMonitorConfig,
+    ThreadedClientConfig,
     WandbWithExtrasConfig,
 )
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
@@ -488,6 +489,9 @@ class OrchestratorConfig(BaseSettings):
     # The OAI client configuration
     client: ClientConfig = ClientConfig()
 
+    # The threaded client configuration
+    threaded_client: ThreadedClientConfig = ThreadedClientConfig()
+
     # The model configuration
     model: ModelConfig = ModelConfig()
 
@@ -672,8 +676,8 @@ class OrchestratorConfig(BaseSettings):
 
     @model_validator(mode="after")
     def auto_setup_max_workers_per_client(self):
-        if self.client.max_workers_per_client is None:
+        if self.threaded_client.max_workers_per_client is None:
             num_clients = len(self.client.base_url)
             if self.max_concurrent is not None:
-                self.client.max_workers_per_client = math.ceil(self.max_concurrent / num_clients)
+                self.threaded_client.max_workers_per_client = math.ceil(self.max_concurrent / num_clients)
         return self
