@@ -460,13 +460,12 @@ class RLConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_reference_model(self):
+    def auto_setup_teacher_model(self):
         if self.trainer.loss.ref_tau > 0:
-            if not self.orchestrator.reference_model:
+            if not self.orchestrator.teacher_model:
                 raise ValueError(
-                    "reference_model must be configured when ref_tau > 0. "
-                    "Either set ref_tau = 0 to disable reference logprobs, or configure reference_model "
-                    "(set to True to use the training model as reference, or provide a ReferenceModelConfig)."
+                    "teacher_model must be configured when ref_tau > 0. "
+                    "Either set ref_tau = 0 to disable teacher logprobs, or configure teacher_model."
                 )
         return self
 

@@ -29,7 +29,7 @@ from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.orchestrator.config import BufferConfig, OrchestratorConfig
 from prime_rl.orchestrator.scheduler import Scheduler
 from prime_rl.orchestrator.utils import (
-    compute_reference_logprobs,
+    compute_teacher_logprobs,
     get_sampling_args,
     print_benchmark,
     set_semaphore,
@@ -101,35 +101,28 @@ async def orchestrate(config: OrchestratorConfig):
     admin_clients = setup_admin_clients(config.client)
     evals_client = setup_evals_client()
 
-    # Setup reference model client if configured
-    reference_clients = None
-    reference_model_name = None
-    if config.reference_model:
-        if config.reference_model is True:
-            # Use same model as reference
-            logger.info("Using inference model as reference model")
-            reference_clients = clients
-            reference_model_name = config.model.name
-        else:
-            # Use a separate reference model
-            logger.info(
-                f"Initializing reference OpenAI client (base_url={', '.join(config.reference_model.client.base_url)}, "
-                f"model={config.reference_model.model.name})"
-            )
-            reference_clients = setup_clients(config.reference_model.client)
-            reference_model_name = config.reference_model.model.name
+    # Setup teacher model client if configured
+    teacher_clients = None
+    teacher_model_name = None
+    if config.teacher_model:
+        logger.info(
+            f"Initializing teacher OpenAI client (base_url={', '.join(config.teacher_model.client.base_url)}, "
+            f"model={config.teacher_model.model.name})"
+        )
+        teacher_clients = setup_clients(config.teacher_model.client)
+        teacher_model_name = config.teacher_model.model.name
 
     # Load tokenizer
     logger.info(f"Initializing tokenizer for {config.model.name}")
     tokenizer = AutoTokenizer.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
 
-    # If reference model is configured with separate model, validate tokenizer compatibility
-    if config.reference_model and config.reference_model is not True:
-        logger.info(f"Validating tokenizer compatibility with reference model {config.reference_model.model.name}")
-        reference_tokenizer = AutoTokenizer.from_pretrained(
-            config.reference_model.model.name, trust_remote_code=config.reference_model.model.trust_remote_code
+    # If teacher model is configured, validate tokenizer compatibility
+    if config.teacher_model:
+        logger.info(f"Validating tokenizer compatibility with teacher model {config.teacher_model.model.name}")
+        teacher_tokenizer = AutoTokenizer.from_pretrained(
+            config.teacher_model.model.name, trust_remote_code=config.teacher_model.model.trust_remote_code
         )
-        validate_tokenizer_compatibility(tokenizer, reference_tokenizer)
+        validate_tokenizer_compatibility(tokenizer, teacher_tokenizer)
 
     # Setup monitor
     logger.info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
@@ -351,20 +344,20 @@ async def orchestrate(config: OrchestratorConfig):
             f"Converted {len(train_rollouts)} training rollouts to {len(train_examples)} training examples using {config.trajectory_strategy} strategy"
         )
 
-        # Compute reference logprobs if reference model is configured
-        reference_logprobs_time = 0
-        if reference_clients is not None and reference_model_name is not None:
-            logger.info(f"Computing reference logprobs for {len(train_examples)} training examples")
-            reference_logprobs_start_time = time.perf_counter()
-            reference_logprobs_list = await compute_reference_logprobs(
-                clients=reference_clients,
-                model_name=reference_model_name,
+        # Compute teacher logprobs if teacher model is configured
+        teacher_logprobs_time = 0
+        if teacher_clients is not None and teacher_model_name is not None:
+            logger.info(f"Computing teacher logprobs for {len(train_examples)} training examples")
+            teacher_logprobs_start_time = time.perf_counter()
+            teacher_logprobs_list = await compute_teacher_logprobs(
+                clients=teacher_clients,
+                model_name=teacher_model_name,
                 samples=train_examples,
             )
-            for train_example, reference_logprobs in zip(train_examples, reference_logprobs_list):
-                train_example.reference_logprobs = reference_logprobs
-            reference_logprobs_time = time.perf_counter() - reference_logprobs_start_time
-            logger.debug(f"Computed reference logprobs in {reference_logprobs_time:.2f}s")
+            for train_example, teacher_logprobs in zip(train_examples, teacher_logprobs_list):
+                train_example.teacher_logprobs = teacher_logprobs
+            teacher_logprobs_time = time.perf_counter() - teacher_logprobs_start_time
+            logger.debug(f"Computed teacher logprobs in {teacher_logprobs_time:.2f}s")
 
         training_batch = TrainingBatch(
             examples=train_examples,
@@ -484,7 +477,7 @@ async def orchestrate(config: OrchestratorConfig):
             # Time metrics
             "time/step": step_time,
             "time/generate_completions": generate_completions_time,
-            "time/reference_logprobs": reference_logprobs_time,
+            "time/teacher_logprobs": teacher_logprobs_time,
             "time/save_ckpt": save_ckpt_time,
             # Scheduler metrics
             **scheduler.get_metrics(),

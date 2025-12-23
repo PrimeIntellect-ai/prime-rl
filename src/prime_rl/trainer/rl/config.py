@@ -51,7 +51,7 @@ class LossConfig(BaseConfig):
     ] = 100.0
 
     adv_tau: Annotated[float, Field(ge=0, description="The tau for advantages.")] = 1.0
-    ref_tau: Annotated[float, Field(ge=0, description="The tau for reference logprobs.")] = 0.0
+    teacher_tau: Annotated[float, Field(ge=0, description="The tau for teacher logprobs.")] = 0.0
     kl_tau: Annotated[float, Field(ge=0, description="The tau for KL divergence.")] = 0.0
 
     @model_validator(mode="after")
