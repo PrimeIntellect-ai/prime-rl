@@ -1,4 +1,3 @@
-import math
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
@@ -675,5 +674,5 @@ class OrchestratorConfig(BaseSettings):
         if self.client.max_workers_per_client is None:
             num_clients = len(self.client.base_url)
             if self.max_concurrent is not None:
-                self.client.max_workers_per_client = math.ceil(self.max_concurrent / num_clients)
+                self.client.max_workers_per_client = self.max_concurrent // (num_clients * self.client.max_connections)
         return self

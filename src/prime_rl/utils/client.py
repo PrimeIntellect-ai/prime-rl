@@ -47,6 +47,7 @@ def setup_threaded_clients(
             api_key=api_key,
             max_workers=client_config.max_workers_per_client,
             timeout=client_config.timeout,
+            max_connections=client_config.max_connections,
             headers=client_config.headers,
         )
         for base_url in client_config.base_url

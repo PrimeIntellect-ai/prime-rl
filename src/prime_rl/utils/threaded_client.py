@@ -23,6 +23,7 @@ class ThreadedAsyncOpenAIClient:
         max_workers: int,
         timeout: int = 1200,
         max_retries: int = 10,
+        max_connections: int = 100,
         headers: dict[str, str] | None = None,
     ):
         self.executor = ThreadPoolExecutor(
@@ -33,12 +34,14 @@ class ThreadedAsyncOpenAIClient:
         self.api_key = api_key
         self.timeout = timeout
         self.max_retries = max_retries
+        self.max_connections = max_connections
         self.headers = headers or {}
         self.tls_key = f"oai_client_{id(self)}"
 
     def _create_client(self) -> AsyncOpenAI:
         timeout = httpx.Timeout(self.timeout)
-        http_client = httpx.AsyncClient(timeout=timeout, headers=self.headers)
+        limits = httpx.Limits(max_connections=self.max_connections)
+        http_client = httpx.AsyncClient(timeout=timeout, limits=limits, headers=self.headers)
         return AsyncOpenAI(
             base_url=self.base_url,
             api_key=self.api_key,
