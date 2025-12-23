@@ -6,7 +6,6 @@ from pydantic import BaseModel, Field, model_validator
 
 from prime_rl.transport.config import FileSystemTransportConfig, TransportConfigType
 from prime_rl.utils.config import (
-    ClientConfig,
     HeartbeatConfig,
     LogConfig,
     ModelConfig,
@@ -486,11 +485,8 @@ WeightBroadcastConfigType: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWei
 class OrchestratorConfig(BaseSettings):
     """Configures the orchestrator for RL training."""
 
-    # The OAI client configuration
-    client: ClientConfig = ClientConfig()
-
-    # The threaded client configuration
-    threaded_client: ThreadedClientConfig = ThreadedClientConfig()
+    # The threaded OpenAI client configuration
+    client: ThreadedClientConfig = ThreadedClientConfig()
 
     # The model configuration
     model: ModelConfig = ModelConfig()
@@ -676,8 +672,8 @@ class OrchestratorConfig(BaseSettings):
 
     @model_validator(mode="after")
     def auto_setup_max_workers_per_client(self):
-        if self.threaded_client.max_workers_per_client is None:
+        if self.client.max_workers_per_client is None:
             num_clients = len(self.client.base_url)
             if self.max_concurrent is not None:
-                self.threaded_client.max_workers_per_client = math.ceil(self.max_concurrent / num_clients)
+                self.client.max_workers_per_client = math.ceil(self.max_concurrent / num_clients)
         return self

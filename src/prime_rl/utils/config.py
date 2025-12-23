@@ -53,7 +53,7 @@ class ClientConfig(BaseConfig):
     ] = {}
 
 
-class ThreadedClientConfig(BaseConfig):
+class ThreadedClientConfig(ClientConfig):
     """Configures the threaded OpenAI client."""
 
     max_workers_per_client: Annotated[

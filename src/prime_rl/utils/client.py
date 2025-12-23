@@ -7,7 +7,7 @@ from httpx import AsyncClient
 from openai import AsyncOpenAI, NotFoundError
 from prime_evals import AsyncEvalsClient
 
-from prime_rl.utils.config import ClientConfig
+from prime_rl.utils.config import ClientConfig, ThreadedClientConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.threaded_client import ThreadedAsyncOpenAIClient
 
@@ -34,8 +34,7 @@ def setup_clients(client_config: ClientConfig) -> list[AsyncOpenAI]:
 
 
 def setup_threaded_clients(
-    client_config: ClientConfig,
-    max_workers_per_client: int,
+    client_config: ThreadedClientConfig,
 ) -> list[ThreadedAsyncOpenAIClient]:
     """Create threaded OpenAI clients - one per base_url.
 
@@ -46,7 +45,7 @@ def setup_threaded_clients(
         ThreadedAsyncOpenAIClient(
             base_url=base_url,
             api_key=api_key,
-            max_workers=max_workers_per_client,
+            max_workers=client_config.max_workers_per_client,
             timeout=client_config.timeout,
             headers=client_config.headers,
         )

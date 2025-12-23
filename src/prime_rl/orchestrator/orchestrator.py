@@ -94,9 +94,9 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup client
     logger.info(
-        f"Initializing OpenAI client (base_url={', '.join(config.client.base_url)}, api_key_var={config.client.api_key_var}, headers={config.client.headers}, max_workers_per_client={config.threaded_client.max_workers_per_client})"
+        f"Initializing OpenAI client (base_url={', '.join(config.client.base_url)}, api_key_var={config.client.api_key_var}, headers={config.client.headers}, max_workers_per_client={config.client.max_workers_per_client})"
     )
-    clients = setup_threaded_clients(config.client, config.threaded_client.max_workers_per_client)
+    clients = setup_threaded_clients(config.client)
     admin_clients = setup_admin_clients(config.client)
     evals_client = setup_evals_client()
 
