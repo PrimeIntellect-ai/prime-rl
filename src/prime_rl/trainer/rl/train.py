@@ -369,8 +369,6 @@ def train(config: RLTrainerConfig):
         current_lr = optimizer.get_current_lr()
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
-        # TODO: Broadcast weight checkpoint via shardcast
-
         # Optionally, dump memory snapshot
         if memory_profiler is not None:
             memory_profiler.step()
