@@ -52,13 +52,23 @@ jobs:
         run: uv run pytest tests/unit -m gpu
 
   integration-tests:
-    name: Integration tests
+    name: Integration tests (${{ matrix.test }})
     runs-on: vm
     container:
       image: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
       options: --gpus all
     timeout-minutes: 60
     if: github.event_name == 'push' || github.event.pull_request.draft == false
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - test: base
+            pytest_args: "tests/integration -m gpu --ignore=tests/integration/test_rl_lora.py --ignore=tests/integration/test_rl_multi_run.py"
+          - test: rl_lora
+            pytest_args: "tests/integration/test_rl_lora.py -m gpu"
+          - test: rl_multi_run
+            pytest_args: "tests/integration/test_rl_multi_run_lora.py -m gpu"
     steps:
       - name: Install Git
         run: |
@@ -89,6 +99,4 @@ jobs:
           GITHUB_REF_NAME: ${{ github.ref_name }}
           GITHUB_HEAD_REF: ${{ github.head_ref }}
           PYTEST_OUTPUT_DIR: /tmp/outputs
-        run: |
-          uv run pytest tests/integration -m gpu --ignore=tests/integration/test_rl_lora.py
-          uv run pytest tests/integration/test_rl_lora.py -m gpu
+        run: uv run pytest ${{ matrix.pytest_args }}
