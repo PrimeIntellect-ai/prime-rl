@@ -19,11 +19,12 @@ def set_offsets(offsets: torch.Tensor, reset_reference: bool = False) -> None:
 
 class MultiLoRAModule(nn.Module):
     """
-    Base class for LoRA modules with shared functionality for state dict hooks
-    and attribute forwarding to the base layer.
+    Base class for Multi run LoRA modules.
     """
 
     base_layer: nn.Module
+    lora_A: nn.ParameterList
+    lora_B: nn.ParameterList
 
     def __init__(self, base_layer: nn.Module) -> None:
         super().__init__()
@@ -33,12 +34,9 @@ class MultiLoRAModule(nn.Module):
         for param in self.base_layer.parameters():
             param.requires_grad = False
 
-        # Register state dict hooks for LoRA compatibility
-        # state_dict post hook to remove prefix to allow loading into a
-        # non-checkpoint wrapped module.
+        # state_dict post hook to remove prefix (to save base_layer parameters)
         self._register_state_dict_hook(self._post_state_dict_hook)
-        # load_state_dict pre-hook to allow loading back into
-        # checkpoint-wrapped module.
+        # load_state_dict pre-hook to add back prefix (to load base_layer parameters)
         self.register_load_state_dict_pre_hook(self._pre_load_state_dict_hook)
 
     @abstractmethod
@@ -48,6 +46,18 @@ class MultiLoRAModule(nn.Module):
         Args:
             index: If provided, reset only the parameters for that adapter index.
                    If None, reset all adapter parameters.
+        """
+        ...
+
+    @abstractmethod
+    def named_parameters_for_adapter(self, idx: int) -> list[tuple[str, nn.Parameter]]:
+        """Get named parameters for a specific adapter index.
+
+        Args:
+            idx: The adapter index to get parameters for
+
+        Returns:
+            List of (name, parameter) tuples for the specified adapter
         """
         ...
 
