@@ -61,6 +61,7 @@ class Packer:
             return False
 
     def pack(self):
+        assert all(not i for i in self.runs.ready_to_update), "No runs should be ready to update at start of pack."
         training_batches: dict[int, TrainingBatch] = self.get_batch()
         start_time = time.time()
         while not self.has_enough_tokens(training_batches):
