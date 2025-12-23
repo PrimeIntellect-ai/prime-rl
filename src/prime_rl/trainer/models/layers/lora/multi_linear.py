@@ -3,7 +3,7 @@ import math
 import torch
 from torch import nn
 
-from .base import MultiLoRAModule
+from prime_rl.trainer.models.layers.lora.base import MultiLoRAModule
 
 OFFSETS: torch.Tensor | None = None
 

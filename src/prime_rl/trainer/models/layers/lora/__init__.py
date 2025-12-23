@@ -1,8 +1,5 @@
-from prime_rl.trainer.models.layers.lora.base import MultiLoRAModule
-from prime_rl.trainer.models.layers.lora.multi_linear import (
-    MultiLoRALinear,
-    set_offsets,
-)
+from prime_rl.trainer.models.layers.lora.base import MultiLoRAModule, set_offsets
+from prime_rl.trainer.models.layers.lora.multi_linear import MultiLoRALinear
 
 __all__ = [
     "MultiLoRAModule",

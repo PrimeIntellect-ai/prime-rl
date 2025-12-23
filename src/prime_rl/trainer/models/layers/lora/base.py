@@ -2,12 +2,20 @@ from abc import abstractmethod
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Any
 
+import torch
 from torch import nn
 
 if TYPE_CHECKING:
     from prime_rl.trainer.runs import Runs
 
 _LORA_PREFIX = "base_layer."
+
+
+def set_offsets(offsets: torch.Tensor, reset_reference: bool = False) -> None:
+    """Set offsets for all LoRA modules."""
+    from prime_rl.trainer.models.layers.lora.multi_linear import set_offsets as set_offsets_multi_linear
+
+    set_offsets_multi_linear(offsets, reset_reference)
 
 
 class MultiLoRAModule(nn.Module):
