@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 _LORA_PREFIX = "base_layer."
 
 
-class LoRAModule(nn.Module):
+class MultiLoRAModule(nn.Module):
     """
     Base class for LoRA modules with shared functionality for state dict hooks
     and attribute forwarding to the base layer.

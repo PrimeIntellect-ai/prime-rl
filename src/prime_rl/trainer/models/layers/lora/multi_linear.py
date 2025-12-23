@@ -3,7 +3,7 @@ import math
 import torch
 from torch import nn
 
-from .base import LoRAModule
+from .base import MultiLoRAModule
 
 OFFSETS: torch.Tensor | None = None
 
@@ -45,7 +45,7 @@ def _run_lora_for_loop(
     return torch.cat(lora_out_splits, dim=0)
 
 
-class MultiLoRALinear(LoRAModule):
+class MultiLoRALinear(MultiLoRAModule):
     """
     Linear + multi-LoRA with grouped GEMM.
     """

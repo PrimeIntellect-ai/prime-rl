@@ -5,7 +5,7 @@ from torch import nn
 from transformers import PretrainedConfig
 
 from prime_rl.trainer.lora import has_lora_layers
-from prime_rl.trainer.models.layers.lora import LoRAModule
+from prime_rl.trainer.models.layers.lora import MultiLoRAModule
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
@@ -180,7 +180,7 @@ class PerfCounter:
         if exclude_embedding:
             if hasattr(model.lm_head, "weight"):
                 num_params -= model.lm_head.weight.numel()
-            elif hasattr(model.lm_head, "base_layer"):  # LoRAModule
+            elif hasattr(model.lm_head, "base_layer"):  # MultiLoRAModule
                 num_params -= model.lm_head.base_layer.weight.numel()
         return num_params
 
@@ -193,10 +193,10 @@ class PerfCounter:
         return trainable_params
 
     def _count_lora_adapter_params(self) -> int:
-        """Count LoRA adapter parameters (sum of lora_A and lora_B across all LoRAModules)."""
+        """Count LoRA adapter parameters (sum of lora_A and lora_B across all MultiLoRAModules)."""
         params = 0
         for module in self.model.modules():
-            if isinstance(module, LoRAModule):
+            if isinstance(module, MultiLoRAModule):
                 params += module.lora_A[0].numel() + module.lora_B[0].numel()
         return params
 

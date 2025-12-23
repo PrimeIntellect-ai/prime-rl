@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 
 from prime_rl.trainer.config import LoRAConfig
-from prime_rl.trainer.models.layers.lora import LoRAModule, MultiLoRALinear
+from prime_rl.trainer.models.layers.lora import MultiLoRALinear, MultiLoRAModule
 from prime_rl.trainer.runs import get_runs
 from prime_rl.utils.logger import get_logger
 
@@ -178,7 +178,7 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
     lora_adapter_params = 0
     lora_adapted_params = 0
     for name, module in model.named_modules():
-        if isinstance(module, LoRAModule):
+        if isinstance(module, MultiLoRAModule):
             lora_adapter_params += module.lora_A[0].numel() + module.lora_B[0].numel()
             lora_adapted_params += module.base_layer.weight.numel()
 
@@ -193,7 +193,7 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
 def has_lora_layers(model: nn.Module) -> bool:
     """Check if model has LoRA layers."""
     for module in model.modules():
-        if isinstance(module, LoRAModule):
+        if isinstance(module, MultiLoRAModule):
             return True
     return False
 
@@ -234,7 +234,7 @@ def save_lora_config(config: LoRAConfig, model: nn.Module, save_path) -> None:
     modules_to_save = set()
 
     for name, module in model.named_modules():
-        if isinstance(module, LoRAModule):
+        if isinstance(module, MultiLoRAModule):
             module_suffix = name.split(".")[-1]
             target_modules.add(module_suffix)
 
