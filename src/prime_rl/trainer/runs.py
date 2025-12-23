@@ -201,6 +201,10 @@ class Runs:
     def used_idxs(self):
         return self.idx_2_id.keys()
 
+    @property
+    def ready_to_update_idxs(self):
+        return [idx for idx, ready in enumerate(self.ready_to_update) if ready]
+
     def run_dirs(self) -> list[Path]:
         return [self.output_dir / run_id for run_id in self.id_2_idx.keys()]
 

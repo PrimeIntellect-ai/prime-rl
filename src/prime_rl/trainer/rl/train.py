@@ -14,7 +14,7 @@ import torch.distributed.nn as dist_nn
 from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
 from prime_rl.trainer.ckpt import setup_ckpt_managers
-from prime_rl.trainer.optim import setup_optimizer
+from prime_rl.trainer.optim import setup_multi_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler, setup_multi_scheduler
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
@@ -121,14 +121,13 @@ def train(config: RLTrainerConfig):
     logger.info(f"Initializing optimizer ({config.optim})")
     logger.info(f"Using `{config.loss.ratio_type}` importance ratio ({config.loss})")
 
+    optimizer = setup_multi_optimizer(
+        config.optim, parallel_dims.world_mesh["dp_shard_cp"], None if config.model.lora else model
+    )
     if config.max_concurrent_runs == 1:
-        optimizer = setup_optimizer(config.optim, model, parallel_dims.world_mesh["dp_shard_cp"])
         # Set up the learning rate scheduler
         scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
     else:
-        from prime_rl.trainer.optim import setup_multi_optimizer
-
-        optimizer = setup_multi_optimizer(config.optim, model, parallel_dims.world_mesh["dp_shard_cp"])
         # Set up the multi-scheduler for per-run learning rate scheduling
         scheduler = setup_multi_scheduler(config.scheduler, config.max_steps, config.optim.lr)
         # Register callback so schedulers are created when optimizers are created
@@ -366,11 +365,8 @@ def train(config: RLTrainerConfig):
 
         # Update learning rate scheduler
         scheduler.step()
-        if hasattr(optimizer, "param_groups"):
-            current_lr = optimizer.param_groups[0]["lr"]
-        else:
-            current_lr = optimizer.optimizers[0].param_groups[0]["lr"]
 
+        current_lr = optimizer.get_current_lr()
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         # TODO: Broadcast weight checkpoint via shardcast
