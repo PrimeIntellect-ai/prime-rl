@@ -672,7 +672,7 @@ class OrchestratorConfig(BaseSettings):
     @model_validator(mode="after")
     def auto_setup_max_concurrent(self):
         if self.max_concurrent is None:
-            self.max_concurrent = self.batch_size * self.oversampling_factor
+            self.max_concurrent = int(self.batch_size * self.oversampling_factor)
         return self
 
     @model_validator(mode="after")
