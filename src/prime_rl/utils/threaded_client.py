@@ -29,29 +29,25 @@ class ThreadedAsyncOpenAIClient:
             max_workers=max_workers,
             thread_name_prefix="oai-client",
         )
-        self._base_url = base_url
-        self._api_key = api_key
-        self._timeout = timeout
-        self._max_retries = max_retries
-        self._headers = headers or {}
-        self._tls_key = f"oai_client_{id(self)}"
-
-    @property
-    def base_url(self) -> str:
-        return self._base_url
+        self.base_url = base_url
+        self.api_key = api_key
+        self.timeout = timeout
+        self.max_retries = max_retries
+        self.headers = headers or {}
+        self.tls_key = f"oai_client_{id(self)}"
 
     def _create_client(self) -> AsyncOpenAI:
-        timeout = httpx.Timeout(self._timeout)
-        http_client = httpx.AsyncClient(timeout=timeout, headers=self._headers)
+        timeout = httpx.Timeout(self.timeout)
+        http_client = httpx.AsyncClient(timeout=timeout, headers=self.headers)
         return AsyncOpenAI(
-            base_url=self._base_url,
-            api_key=self._api_key,
-            max_retries=self._max_retries,
+            base_url=self.base_url,
+            api_key=self.api_key,
+            max_retries=self.max_retries,
             http_client=http_client,
         )
 
     def _get_thread_client(self) -> AsyncOpenAI:
-        return get_or_create_thread_attr(self._tls_key, self._create_client)
+        return get_or_create_thread_attr(self.tls_key, self._create_client)
 
     def __getattr__(self, name: str) -> Callable[..., Any]:
         """Dynamically proxy attribute access to dispatch method calls to the thread pool."""
