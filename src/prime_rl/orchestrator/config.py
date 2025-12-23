@@ -6,7 +6,6 @@ from pydantic import BaseModel, Field, model_validator
 
 from prime_rl.transport.config import FileSystemTransportConfig, TransportConfigType
 from prime_rl.utils.config import (
-    ClientConfig,  # noqa
     HeartbeatConfig,
     LogConfig,
     ModelConfig,
