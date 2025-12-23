@@ -59,8 +59,16 @@ class FileSystemWeightBroadcast(WeightBroadcast):
                     )
                     save_dir.mkdir(parents=True, exist_ok=True)
 
+                    sliced_state_dict = {
+                        k.replace(f"{idx}.weight", "weight"): v
+                        for k, v in state_dict.items()
+                        if k.endswith(f"{idx}.weight")
+                    }
+
                     # Save weights to shared filesystem
-                    save_state_dict(state_dict, save_dir, self.save_format, self.save_sharded, adapter=adapter_only)
+                    save_state_dict(
+                        sliced_state_dict, save_dir, self.save_format, self.save_sharded, adapter=adapter_only
+                    )
                     if adapter_only:
                         save_lora_config(self.lora_config, model, save_dir)
 

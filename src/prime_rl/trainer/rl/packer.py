@@ -90,7 +90,8 @@ class Packer:
             seq_len=self.seq_len,
             pad_to_multiple_of=self.pad_to_multiple_of,
             num_train_workers=self.dp_world_size,
-            # idxs=train_idxs, # Needed for lora later
+            idxs=train_idxs,
+            num_loras=self.runs.max_runs,
         )
 
         self.sender.send(micro_batch_grid)
