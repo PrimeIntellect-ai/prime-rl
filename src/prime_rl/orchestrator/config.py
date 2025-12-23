@@ -635,6 +635,14 @@ class OrchestratorConfig(BaseSettings):
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
     ] = None
 
+    env_workers: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Number of worker processes for environment rollouts. Each worker has its own event loop.",
+        ),
+    ] = 8
+
     @model_validator(mode="after")
     def nccl_max_async_level(self):
         if self.weight_broadcast.type == "nccl":

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 import verifiers as vf
+from datasets import Dataset
 
 from prime_rl.orchestrator.config import BufferConfig
 from prime_rl.utils.logger import get_logger
@@ -20,24 +21,20 @@ class Buffer:
     POOLS = ["easy", "normal", "hard"]
 
     def __init__(
-        self, env_group: vf.EnvGroup, buffer_config: BufferConfig, dataset_type: Literal["train", "val"] = "train"
+        self,
+        dataset: Dataset,
+        env_names: list[str],
+        buffer_config: BufferConfig,
+        dataset_type: Literal["train", "val"] = "train",
     ):
-        self.env_group = env_group
+        self.dataset = dataset
+        self.env_names = env_names
         self.config = buffer_config
         self.dataset_type = dataset_type
         self.logger = get_logger()
 
         if self.config.seed is not None:
             random.seed(self.config.seed)
-
-        if self.dataset_type == "train":
-            self.dataset = env_group.get_dataset(seed=self.config.seed)
-        elif self.dataset_type == "val":
-            self.dataset = env_group.get_eval_dataset(seed=self.config.seed)
-        else:
-            raise ValueError(f"Invalid dataset type: {self.dataset_type}")
-
-        self.env_names = env_group.env_names
 
         # Basic assertions
         assert "example_id" in self.dataset.column_names, "The dataset must contain a `example_id` column."

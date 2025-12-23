@@ -1,5 +1,7 @@
 import asyncio
+import os
 import time
+from concurrent.futures import ProcessPoolExecutor
 from itertools import cycle
 from typing import NamedTuple
 
@@ -8,10 +10,10 @@ from httpx import AsyncClient
 from openai import AsyncOpenAI
 from tqdm import tqdm
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
-from verifiers import Environment
 
 from prime_rl.orchestrator.buffer import Buffer
-from prime_rl.orchestrator.config import OrchestratorConfig
+from prime_rl.orchestrator.config import EnvConfig, OrchestratorConfig
+from prime_rl.orchestrator.process_env import RolloutRequest, get_process_pool, run_group_in_process
 from prime_rl.orchestrator.utils import get_sampling_args
 from prime_rl.utils.client import update_weights
 from prime_rl.utils.logger import get_logger
@@ -21,14 +23,13 @@ from prime_rl.utils.utils import (
     get_step_path,
     wait_for_path,
 )
-from prime_rl.utils.vf import generate_group
 
 
 class InflightRolloutInfo(NamedTuple):
     """Metadata for an in-flight group rollout request."""
 
     off_policy_steps: int
-    client: AsyncOpenAI
+    base_url: str | None
 
 
 class Scheduler:
@@ -43,7 +44,8 @@ class Scheduler:
         self,
         clients: list[AsyncOpenAI],
         admin_clients: list[AsyncClient],
-        env: Environment,
+        env_configs: list[EnvConfig],
+        env_names: list[str],
         buffer: Buffer,
         tokenizer: PreTrainedTokenizerFast,
         config: OrchestratorConfig,
@@ -56,7 +58,6 @@ class Scheduler:
         self.logger = get_logger()
         self.clients = clients
         self.admin_clients = admin_clients
-        self.env = env
         self.buffer = buffer
         self.tokenizer = tokenizer
         self.config = config
@@ -69,7 +70,6 @@ class Scheduler:
         self.strict_async_level = strict_async_level
         self.lora_name = lora_name
         self.inflight_group_rollouts: dict[asyncio.Task, InflightRolloutInfo] = {}
-        self.cycle_clients = cycle(self.clients)
         self.step, self.ckpt_step = 0, 0
         self.checkpoint_ready = asyncio.Event()
         self.checkpoint_ready.set()  # Initially ready
@@ -77,23 +77,44 @@ class Scheduler:
         self.sampling_args = get_sampling_args(config.sampling)
         self.model_name = self.config.model.name
 
-    async def schedule_group_rollout(self, client: AsyncOpenAI | None = None):
-        """Asynchronously schedules a group rollout request."""
+        # Environment config for subprocess recreation
+        self.env_configs = {(env_cfg.name or env_cfg.id): env_cfg for env_cfg in env_configs}
+        self.env_names = env_names
+
+        # Process pool for environment workers
+        self.process_pool: ProcessPoolExecutor = get_process_pool(max_workers=config.env_workers)
+
+        # Round-robin base URLs and API key for subprocess clients
+        self.base_urls = config.client.base_url
+        self.cycle_base_urls = cycle(self.base_urls)
+        self.api_key = os.environ.get(config.client.api_key_var, "")
+
+    async def schedule_group_rollout(self, base_url: str | None = None):
+        """Asynchronously schedules a group rollout request to run in a subprocess."""
         example = self.buffer.sample_examples(n=1)[0]
-        if client is None:
-            client = next(self.cycle_clients)
-        group_rollout_request = asyncio.create_task(
-            generate_group(
-                client=client,
-                env=self.env,
-                model_name=self.model_name,
-                example=example,
-                rollouts_per_example=self.config.rollouts_per_example,
-                sampling_args=self.sampling_args,
-            )
+        if base_url is None:
+            base_url = next(self.cycle_base_urls)
+
+        # Get env config for this task
+        task = example["task"]
+        env_cfg = self.env_configs[task]
+
+        request = RolloutRequest(
+            env_id=env_cfg.id,
+            env_args=env_cfg.args,
+            model_name=self.model_name,
+            example=example,
+            rollouts_per_example=self.config.rollouts_per_example,
+            sampling_args=self.sampling_args,
+            base_url=base_url,
+            api_key=self.api_key,
+            max_seq_len=self.seq_len,
+            interleaved_rollouts=self.config.trajectory_strategy == "interleaved",
         )
+
+        group_rollout_request = asyncio.create_task(run_group_in_process(request, self.process_pool))
         await asyncio.sleep(0)
-        self.inflight_group_rollouts[group_rollout_request] = InflightRolloutInfo(0, client)
+        self.inflight_group_rollouts[group_rollout_request] = InflightRolloutInfo(0, base_url)
 
     async def update_policy_loop(self):
         """Continuously checks for new policy checkpoints."""
@@ -138,22 +159,22 @@ class Scheduler:
             tasks_to_remove = []
             tasks_to_update = []
 
-            for task, (off_policy_steps, client) in self.inflight_group_rollouts.items():
+            for task, (off_policy_steps, base_url) in self.inflight_group_rollouts.items():
                 if off_policy_steps > self.max_off_policy_steps and task.cancel():
-                    tasks_to_remove.append((task, client))
+                    tasks_to_remove.append((task, base_url))
                 else:
-                    tasks_to_update.append((task, off_policy_steps + 1, client))
+                    tasks_to_update.append((task, off_policy_steps + 1, base_url))
 
             # Remove cancelled tasks
-            for task, client in tasks_to_remove:
+            for task, base_url in tasks_to_remove:
                 if self.inflight_group_rollouts.pop(task, None):
-                    await self.schedule_group_rollout(client)
+                    await self.schedule_group_rollout(base_url)
 
             # Update retention steps for remaining tasks
-            for task, off_policy_steps, client in tasks_to_update:
+            for task, off_policy_steps, base_url in tasks_to_update:
                 if self.inflight_group_rollouts.get(task, None):
                     self.inflight_group_rollouts[task] = InflightRolloutInfo(
-                        off_policy_steps=off_policy_steps, client=client
+                        off_policy_steps=off_policy_steps, base_url=base_url
                     )
 
             if len(tasks_to_remove) > 0:
@@ -190,7 +211,7 @@ class Scheduler:
                 popped_info = self.inflight_group_rollouts.pop(finished_group_rollout, None)
                 if popped_info is None:
                     continue
-                _, client = popped_info
+                _, base_url = popped_info
 
                 group_states: list[vf.State] = finished_group_rollout.result()
 
@@ -200,7 +221,7 @@ class Scheduler:
                 batch_rollouts.extend(accepted_rollouts)
                 pbar.update(len(accepted_rollouts))
 
-                await self.schedule_group_rollout(client)
+                await self.schedule_group_rollout(base_url)
 
         return batch_rollouts
 
