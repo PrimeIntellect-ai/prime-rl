@@ -114,9 +114,10 @@ class PrimeMonitor(Monitor):
         samples = []
         for rollout in rollouts:
             # Extract prompt and completion separately from the last trajectory step
-            last_step = rollout["trajectory"][-1]
-            if not last_step:
+            trajectory = rollout["trajectory"]
+            if not trajectory:
                 continue
+            last_step = trajectory[-1]
             prompt_messages = last_step["prompt"]
             completion_messages = last_step["completion"]
 
