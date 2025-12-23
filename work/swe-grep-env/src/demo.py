@@ -1,9 +1,22 @@
 import os
 import asyncio
 import random
+import httpx
+import anthropic
 import subprocess
 from pathlib import Path
 from chatan import async_generator, async_dataset
+from anthropic import AsyncAnthropic
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+
+client = AsyncAnthropic(
+	api_key=os.getenv("ANTHROPIC_API_KEY"), 
+    max_retries=3, 
+    timeout=httpx.Timeout(60.0, connect=10.0), 
+    http_client=httpx.AsyncClient(
+        limits=httpx.Limits(max_connections=200, max_keepalive_connections=100)
+    )
+)
 
 def setup_repo():
     repo = Path("./vscode")
@@ -21,6 +34,24 @@ def get_file(repo_path: Path) -> str:
 async def make_dataset(n: int = 100):
     setup_repo()
     gen = async_generator("anthropic", os.getenv("ANTHROPIC_API_KEY"), model="claude-haiku-4-5-20251001")
+    gen._generator.client = client
+
+    original = gen._generator.generate
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception_type((
+            anthropic.APITimeoutError, 
+            anthropic.APIConnectionError,
+            anthropic.RateLimitError
+        )),
+    )
+
+    async def with_retry(prompt, **kw):
+        return await original(prompt, **kw)
+
+    gen._generator.generate = with_retry
     
     ds = async_dataset({
         "file": lambda ctx: get_file(Path("./vscode")),
@@ -30,13 +61,13 @@ async def make_dataset(n: int = 100):
     
     return await ds.generate(
         progress=True,
-        max_concurrent_rows=100
+        max_concurrent_rows=400
     )
 
 async def main():
-    df = await make_dataset(n=1000)
+    df = await make_dataset(n=20000)
     print(df)
-    df.to_parquet("grep_dataset.parquet")
+    df.to_parquet("grep_dataset_20k.parquet")
 
 if __name__ == "__main__":
     asyncio.run(main())

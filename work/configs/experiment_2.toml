@@ -1,31 +1,29 @@
-inference_gpu_ids = [0,1]
-trainer_gpu_ids = [2,3,4,5,6,7]
+inference_gpu_ids = [0,1,2,3,4,5]
+trainer_gpu_ids = [6,7]
 
 max_steps = 200
 
 [model]
 name = "Qwen/Qwen3-4B-Instruct-2507"
 
-#[trainer.model]
-#seq_len = 4096
-
-#[trainer.model.ac]
-#freq = 1
-
 [wandb]
 project = "swe-grep-env"
 name = "swe-grep-env"
 
 [trainer.optim]
-lr = 1e-5
+lr = 5e-6
 weight_decay = 0.0
+
+[trainer.model]
+seq_len = 16000
+
+[trainer.model.ac]
+freq = 1
 
 
 [orchestrator]
-#batch_size = 64
-batch_size = 256
+batch_size = 128
 rollouts_per_example = 8
-#seq_len = 4096
 seq_len = 16000
 oversampling_factor = 2.0
 
@@ -35,8 +33,13 @@ max_tokens = 2048
 [[orchestrator.env]]
 id = "swe-grep-env"
 
+[orchestrator.val]
+interval = 5
+num_examples = 128
+
 [inference]
 gpu_memory_utilization = 0.8
+
 
 [inference.model]
 enable_auto_tool_choice = true
