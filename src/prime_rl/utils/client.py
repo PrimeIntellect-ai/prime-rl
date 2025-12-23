@@ -9,6 +9,7 @@ from prime_evals import AsyncEvalsClient
 
 from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.threaded_client import ThreadedAsyncOpenAIClient
 
 
 def setup_clients(client_config: ClientConfig) -> list[AsyncOpenAI]:
@@ -29,6 +30,34 @@ def setup_clients(client_config: ClientConfig) -> list[AsyncOpenAI]:
         )
 
     return [_setup_client(base_url) for base_url in client_config.base_url]
+
+
+def setup_threaded_clients(
+    client_config: ClientConfig,
+    max_workers_per_client: int = 64,
+) -> list[ThreadedAsyncOpenAIClient]:
+    """Create threaded OpenAI clients - one per base_url.
+
+    Each client dispatches API calls to a thread pool, avoiding event loop flooding.
+    """
+    api_key = os.getenv(client_config.api_key_var, "EMPTY")
+    return [
+        ThreadedAsyncOpenAIClient(
+            base_url=base_url,
+            api_key=api_key,
+            max_workers=max_workers_per_client,
+            timeout=client_config.timeout,
+            headers=client_config.headers,
+        )
+        for base_url in client_config.base_url
+    ]
+
+
+def teardown_clients(clients: list[ThreadedAsyncOpenAIClient | AsyncOpenAI]) -> None:
+    """Shutdown threaded clients (no-op for regular AsyncOpenAI)."""
+    for client in clients:
+        if hasattr(client, "teardown"):
+            client.teardown(wait=False)
 
 
 def setup_evals_client() -> AsyncEvalsClient:

@@ -52,6 +52,20 @@ class ClientConfig(BaseConfig):
         ),
     ] = {}
 
+    threaded: Annotated[
+        bool,
+        Field(
+            description="Use threaded clients to offload API calls from the main event loop. Recommended for high-throughput scenarios.",
+        ),
+    ] = True
+
+    max_workers_per_client: Annotated[
+        int,
+        Field(
+            description="Number of worker threads per client (only used when threaded=True).",
+        ),
+    ] = 64
+
 
 class LogConfig(BaseConfig):
     """Configures the logger."""
