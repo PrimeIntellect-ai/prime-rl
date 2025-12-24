@@ -40,7 +40,10 @@ class ThreadedAsyncOpenAIClient:
 
     def _create_client(self) -> AsyncOpenAI:
         timeout = httpx.Timeout(self.timeout)
-        limits = httpx.Limits(max_connections=self.max_connections)
+        limits = httpx.Limits(
+            max_connections=self.max_connections,
+            max_keepalive_connections=self.max_connections,
+        )
         http_client = httpx.AsyncClient(timeout=timeout, limits=limits, headers=self.headers)
         return AsyncOpenAI(
             base_url=self.base_url,

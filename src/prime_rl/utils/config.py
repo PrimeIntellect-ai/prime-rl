@@ -59,7 +59,7 @@ class ThreadedClientConfig(ClientConfig):
     max_workers_per_client: Annotated[
         int | None,
         Field(
-            description="Number of worker threads per client. If None, will be auto-configured based on max_workers_per_client = max_concurrent // (num_clients * max_connections).",
+            description="Number of worker threads per client. If None, will be auto-configured based on max_workers_per_client = max(1, max_concurrent // (num_clients * max_connections)).",
         ),
     ] = None
 

@@ -10,7 +10,9 @@ from tests.utils import check_no_error, check_number_goes_up_or_down, check_numb
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
 
-TIMEOUT = 600  # 10 minutes
+# RL integration includes launching inference + orchestrator + trainer and may spend additional time
+# on finalization (e.g. syncing W&B artifacts). Keep this comfortably above typical runtime to reduce CI flakiness.
+TIMEOUT = 900  # 15 minutes
 
 
 @pytest.fixture(scope="module")
