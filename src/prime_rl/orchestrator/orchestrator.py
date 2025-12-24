@@ -27,12 +27,12 @@ from prime_rl.eval.utils import run_evals
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.orchestrator.config import BufferConfig, OrchestratorConfig
-from prime_rl.orchestrator.scheduler import Scheduler
 from prime_rl.orchestrator.utils import (
     get_sampling_args,
     print_benchmark,
     set_semaphore,
 )
+from prime_rl.orchestrator.worker_scheduler import WorkerScheduler
 from prime_rl.utils.client import (
     check_has_model,
     check_health,
@@ -145,13 +145,12 @@ async def orchestrate(config: OrchestratorConfig):
     else:
         val_buffer = None
 
-    # Setup scheduler
-    scheduler = Scheduler(
-        clients=clients,
+    # Setup scheduler (uses subprocess workers for env execution)
+    scheduler = WorkerScheduler(
         admin_clients=admin_clients,
-        env=env,
+        client_config=config.client,
+        env_configs=config.env,
         buffer=buffer,
-        tokenizer=tokenizer,
         config=config,
         oversampling_factor=config.oversampling_factor,
         max_async_level=config.max_async_level,
@@ -159,6 +158,7 @@ async def orchestrate(config: OrchestratorConfig):
         strict_async_level=config.strict_async_level,
         lora_name=config.lora_name,
     )
+    await scheduler.start()
 
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")
@@ -525,6 +525,9 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Close training batch sender
     training_batch_sender.close()
+
+    # Stop env workers
+    await scheduler.stop()
 
     # Cancel event loop lag monitor task
     event_loop_lag_monitor_task.cancel()
