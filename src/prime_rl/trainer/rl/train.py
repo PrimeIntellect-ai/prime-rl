@@ -284,15 +284,20 @@ def train(config: RLTrainerConfig):
                 input_ids, forward_position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
             else:
                 forward_position_ids = position_ids
+            if config.model.lora:
+                lora_num_tokens = micro_batch["lora_num_tokens"].to("cuda")
+                lora_cu_offsets = lora_num_tokens.cumsum(dim=0, dtype=torch.int32)
+                if cp_enabled:
+                    chunk_size = input_ids.shape[1]  # We pad to multiple of cp so this should be fine
+                    logger.debug(f"[Rank {world.rank}] {cp_rank=} {cp_size=} {cp_group=} {chunk_size=}")
+                    # Shift down by seq idx and clip to edges of chunk
+                    lora_cu_offsets = torch.clip(lora_cu_offsets - chunk_size * cp_rank, min=0, max=chunk_size)
+                set_offsets(lora_cu_offsets)
 
             temperature = micro_batch["temperature"]
 
             # Forward pass
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                if config.model.lora:
-                    lora_num_tokens = micro_batch["lora_num_tokens"].to("cuda")
-                    lora_cu_offsets = lora_num_tokens.cumsum(dim=0, dtype=torch.int32)
-                    set_offsets(lora_cu_offsets)
                 logits = forward(model, input_ids, forward_position_ids).float().contiguous()
 
             if cp_enabled:

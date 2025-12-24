@@ -146,7 +146,7 @@ class MultiLoRALinear(MultiLoRAModule):
         ori_shape = x.shape
         new_shape = ori_shape[:-1] + (self.out_features,)
         x = x.view(-1, x.shape[-1])
-        assert offsets[-1] == x.shape[0]
+        assert offsets[-1] == x.shape[0], f"offsets: {offsets}, x.shape: {x.shape}"
 
         base_out = self.base_layer(x)
         lora_x = self.lora_dropout(x)
