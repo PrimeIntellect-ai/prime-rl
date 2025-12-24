@@ -35,6 +35,7 @@ class RolloutResponse:
     id: str
     results: list[dict]  # Simplified state dicts
     error: str | None = None
+    lag_metrics: dict | None = None  # Event loop lag metrics from worker
 
 
 def extract_result(state: vf.State) -> dict:
@@ -108,10 +109,17 @@ async def worker_loop(
     env: vf.Environment,
     clients: list[AsyncOpenAI],
     max_concurrent: int,
+    env_id: str,
 ):
     """Main async loop for processing requests."""
+    from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
+
     client_cycle = cycle(clients)
     semaphore = asyncio.Semaphore(max_concurrent) if max_concurrent > 0 else asyncio.Semaphore(10000)
+
+    # Start event loop lag monitor for this worker
+    lag_monitor = EventLoopLagMonitor(interval=0.1)  # More frequent sampling for workers
+    lag_monitor_task = asyncio.create_task(lag_monitor.run())
 
     # Track in-flight tasks
     pending_tasks: dict[asyncio.Task, str] = {}
@@ -129,31 +137,35 @@ async def worker_loop(
             pass
         return True
 
-    while True:
-        # Check for new requests
-        if not check_for_requests():
-            break
+    try:
+        while True:
+            # Check for new requests
+            if not check_for_requests():
+                break
 
-        if not pending_tasks:
-            # No pending tasks, wait a bit for new requests
-            await asyncio.sleep(0.01)
-            continue
+            if not pending_tasks:
+                # No pending tasks, wait a bit for new requests
+                await asyncio.sleep(0.01)
+                continue
 
-        # Wait for at least one task to complete
-        done, _ = await asyncio.wait(pending_tasks.keys(), timeout=0.1, return_when=asyncio.FIRST_COMPLETED)
+            # Wait for at least one task to complete
+            done, _ = await asyncio.wait(pending_tasks.keys(), timeout=0.1, return_when=asyncio.FIRST_COMPLETED)
 
-        for task in done:
-            pending_tasks.pop(task)
-            try:
-                response = task.result()
-                response_queue.put(response)
-            except Exception as e:
-                # Should not happen since process_request catches exceptions
-                response_queue.put(RolloutResponse(id="unknown", results=[], error=str(e)))
-
-    # Cleanup: cancel remaining tasks
-    for task in pending_tasks:
-        task.cancel()
+            for task in done:
+                pending_tasks.pop(task)
+                try:
+                    response = task.result()
+                    # Attach lag metrics to response
+                    response.lag_metrics = lag_monitor.get_metrics()
+                    response_queue.put(response)
+                except Exception as e:
+                    # Should not happen since process_request catches exceptions
+                    response_queue.put(RolloutResponse(id="unknown", results=[], error=str(e)))
+    finally:
+        # Cleanup
+        lag_monitor_task.cancel()
+        for task in pending_tasks:
+            task.cancel()
 
 
 def worker_main(
@@ -178,7 +190,7 @@ def worker_main(
     clients = setup_clients(client_config)
 
     # Run async loop
-    asyncio.run(worker_loop(request_queue, response_queue, env, clients, max_concurrent))
+    asyncio.run(worker_loop(request_queue, response_queue, env, clients, max_concurrent, env_id))
 
 
 class EnvWorker:
@@ -208,6 +220,9 @@ class EnvWorker:
 
         # Track pending requests for response matching
         self.pending_futures: dict[str, asyncio.Future] = {}
+
+        # Track latest lag metrics from this worker
+        self.latest_lag_metrics: dict = {}
 
     def start(self):
         """Start the worker process."""
@@ -267,6 +282,9 @@ class EnvWorker:
             try:
                 while not self.response_queue.empty():
                     response: RolloutResponse = self.response_queue.get_nowait()
+                    # Store latest lag metrics from worker
+                    if response.lag_metrics:
+                        self.latest_lag_metrics = response.lag_metrics
                     if response.id in self.pending_futures:
                         future = self.pending_futures.pop(response.id)
                         if response.error:

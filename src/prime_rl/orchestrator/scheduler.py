@@ -307,7 +307,7 @@ class Scheduler:
         return self.step - self.ckpt_step
 
     def get_metrics(self) -> dict[str, float]:
-        return {
+        metrics = {
             "time/wait_for_ckpt": self.wait_for_ckpt_time,
             "time/update_weights": self.update_weights_time,
             "batch/async_level": self.async_level,
@@ -315,3 +315,12 @@ class Scheduler:
             "batch/off_policy_level/mean": self.mean_off_policy_level,
             "batch/off_policy_level/min": self.min_off_policy_level,
         }
+
+        # Add per-env worker lag metrics
+        for env_name, worker in self.workers.items():
+            if worker.latest_lag_metrics:
+                for metric_name, value in worker.latest_lag_metrics.items():
+                    # e.g. "worker_lag/env_name/max"
+                    metrics[f"worker_lag/{env_name}/{metric_name.split('/')[-1]}"] = value
+
+        return metrics
