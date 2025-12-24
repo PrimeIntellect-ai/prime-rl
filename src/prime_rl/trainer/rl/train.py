@@ -127,7 +127,8 @@ def train(config: RLTrainerConfig):
     if config.max_concurrent_runs == 1:
         # Set up the learning rate scheduler
         while optimizer.optimizers[0] is None:
-            runs.check_for_changes()
+            if world.is_master:
+                runs.check_for_changes()
             runs.sync_runs()
             logger.info(f"Waiting for optimizer to be created {runs.id_2_idx=}")
             time.sleep(1)
