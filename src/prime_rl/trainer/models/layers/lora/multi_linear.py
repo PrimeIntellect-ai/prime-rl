@@ -8,7 +8,7 @@ from prime_rl.trainer.models.layers.lora.base import MultiLoRAModule
 OFFSETS: torch.Tensor | None = None
 
 
-def set_offsets(offsets: torch.Tensor, reset_reference: bool = False) -> None:
+def set_multilora_offsets(offsets: torch.Tensor, reset_reference: bool = False) -> None:
     global OFFSETS
     if OFFSETS is None or reset_reference:
         OFFSETS = offsets

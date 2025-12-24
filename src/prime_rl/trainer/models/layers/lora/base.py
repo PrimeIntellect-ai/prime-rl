@@ -10,11 +10,11 @@ if TYPE_CHECKING:
 _LORA_PREFIX = "base_layer."
 
 
-def set_offsets(offsets: torch.Tensor, reset_reference: bool = False) -> None:
+def set_multilora_offsets(offsets: torch.Tensor, reset_reference: bool = False) -> None:
     """Set offsets for all LoRA modules."""
-    from prime_rl.trainer.models.layers.lora.multi_linear import set_offsets as set_offsets_multi_linear
+    from prime_rl.trainer.models.layers.lora.multi_linear import set_multilora_offsets as set_multilora_offsets_linear
 
-    set_offsets_multi_linear(offsets, reset_reference)
+    set_multilora_offsets_linear(offsets, reset_reference)
 
 
 class MultiLoRAModule(nn.Module):

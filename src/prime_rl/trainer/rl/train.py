@@ -47,7 +47,7 @@ from prime_rl.trainer.utils import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.trainer.runs import setup_runs, Progress, get_runs
-from prime_rl.trainer.models.layers.lora import set_offsets
+from prime_rl.trainer.models.layers.lora import set_multilora_offsets
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
@@ -91,7 +91,7 @@ def train(config: RLTrainerConfig):
     # Setup runs and offsets
     setup_runs(config.output_dir, config.max_concurrent_runs)
     runs = get_runs()
-    set_offsets(
+    set_multilora_offsets(
         torch.tensor([0] * config.max_concurrent_runs, dtype=torch.int32, device=torch.device("cuda", world.local_rank))
     )
     # Initialize parallel dimensions
@@ -293,7 +293,7 @@ def train(config: RLTrainerConfig):
                     logger.debug(f"[Rank {world.rank}] {cp_rank=} {cp_size=} {cp_group=} {chunk_size=}")
                     # Shift down by seq idx and clip to edges of chunk
                     lora_cu_offsets = torch.clip(lora_cu_offsets - chunk_size * cp_rank, min=0, max=chunk_size)
-                set_offsets(lora_cu_offsets)
+                set_multilora_offsets(lora_cu_offsets)
 
             temperature = micro_batch["temperature"]
 
