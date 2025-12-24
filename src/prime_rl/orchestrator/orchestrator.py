@@ -135,10 +135,12 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
-    buffer = Buffer(env, config.buffer)
+    train_dataset = env.get_dataset(seed=config.buffer.seed)
+    buffer = Buffer(train_dataset, env.env_names, config.buffer)
     if config.val is not None:
         val_buffer_config = BufferConfig(env_ratios=config.buffer.env_ratios)
-        val_buffer = Buffer(env, val_buffer_config, dataset_type="val")
+        val_dataset = env.get_eval_dataset(seed=config.buffer.seed)
+        val_buffer = Buffer(val_dataset, env.env_names, val_buffer_config)
     else:
         val_buffer = None
 
