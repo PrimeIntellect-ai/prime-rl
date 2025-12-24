@@ -199,7 +199,7 @@ class Runs:
 
     @property
     def used_idxs(self):
-        return self.idx_2_id.keys()
+        return sorted(self.idx_2_id.keys())
 
     @property
     def ready_to_update_idxs(self):
