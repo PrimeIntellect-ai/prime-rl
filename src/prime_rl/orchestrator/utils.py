@@ -36,7 +36,6 @@ def get_sampling_args(sampling_config: SamplingConfig) -> dict:
     sampling_args["extra_body"] = {
         **sampling_config.extra_body,
         "return_token_ids": True,  # Always return token IDs
-        "prompt_logprobs": True,  # Always return prompt logprobs
         "top_k": -1,
         "min_p": 0.0,
     }
