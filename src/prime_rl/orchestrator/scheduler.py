@@ -19,7 +19,7 @@ from prime_rl.utils.utils import (
     get_broadcast_dir,
     get_latest_ckpt_step,
     get_step_path,
-    sync_wait_for_path,
+    wait_for_path,
 )
 from prime_rl.utils.vf import generate_group
 
@@ -71,13 +71,15 @@ class Scheduler:
         self.inflight_group_rollouts: dict[asyncio.Task, InflightRolloutInfo] = {}
         self.cycle_clients = cycle(self.clients)
         self.step, self.ckpt_step = 0, 0
+        self.checkpoint_ready = asyncio.Event()
+        self.checkpoint_ready.set()  # Initially ready
         self.update_weights_time, self.wait_for_ckpt_time = 0, 0
         self.sampling_args = get_sampling_args(config.sampling)
         self.model_name = self.config.model.name
 
     async def schedule_group_rollout(self, client: AsyncOpenAI | None = None):
         """Asynchronously schedules a group rollout request."""
-        problem = self.buffer.sample_problems(n=1)[0]
+        example = self.buffer.sample_examples(n=1)[0]
         if client is None:
             client = next(self.cycle_clients)
         group_rollout_request = asyncio.create_task(
@@ -85,7 +87,7 @@ class Scheduler:
                 client=client,
                 env=self.env,
                 model_name=self.model_name,
-                example=problem,
+                example=example,
                 rollouts_per_example=self.config.rollouts_per_example,
                 sampling_args=self.sampling_args,
             )
@@ -111,8 +113,9 @@ class Scheduler:
                 self.logger.info(
                     f"Hit async barrier because we are >{self.max_async_level} step(s) async. Waiting for checkpoint {next_ckpt_step}"
                 )
+                self.checkpoint_ready.clear()
                 wait_for_ckpt_start_time = time.perf_counter()
-                sync_wait_for_path(get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
+                await wait_for_path(get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
                 self.wait_for_ckpt_time = time.perf_counter() - wait_for_ckpt_start_time
                 self.logger.debug(f"Waited for checkpoint {next_ckpt_step} for {self.wait_for_ckpt_time:.2f}s")
             self.logger.debug(
@@ -129,6 +132,7 @@ class Scheduler:
             self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
             if self.lora_name is not None:
                 self.model_name = self.lora_name
+            self.checkpoint_ready.set()
 
             # Cancel old rollout requests
             tasks_to_remove = []
@@ -173,6 +177,8 @@ class Scheduler:
                 self.inflight_group_rollouts, return_when=asyncio.FIRST_COMPLETED
             )
 
+            await self.checkpoint_ready.wait()
+
             for finished_group_rollout in finished_group_rollouts:
                 if len(batch_rollouts) >= self.config.batch_size:
                     batch_rollouts = batch_rollouts[: self.config.batch_size]
@@ -195,10 +201,6 @@ class Scheduler:
                 pbar.update(len(accepted_rollouts))
 
                 await self.schedule_group_rollout(client)
-
-            self.logger.debug(
-                f"Got {len(batch_rollouts)} rollout(s) in batch. Need {self.config.batch_size - len(batch_rollouts)} more."
-            )
 
         return batch_rollouts
 

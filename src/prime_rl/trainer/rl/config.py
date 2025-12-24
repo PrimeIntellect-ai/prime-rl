@@ -7,14 +7,13 @@ from prime_rl.trainer.config import (
     AdamWConfig,
     CheckpointConfig,
     ConstantSchedulerConfig,
-    HeartbeatConfig,
     ModelConfig,
     OptimizerConfigType,
     SchedulerConfigType,
     TokenizerConfig,
 )
 from prime_rl.transport.config import FileSystemTransportConfig, TransportConfigType
-from prime_rl.utils.config import LogConfig, WandbConfig
+from prime_rl.utils.config import HeartbeatConfig, LogConfig, WandbConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
@@ -23,19 +22,40 @@ class LossConfig(BaseConfig):
 
     ratio_type: Annotated[Literal["token", "sequence"], Field(description="Type of importance ratio to use.")] = "token"
 
-    mask_ratio_high: Annotated[float, Field(ge=0)] = 8.0
-    mask_ratio_low: Annotated[float, Field(ge=0)] = 0.125
-    sequence_mask_ratio_low: Annotated[
+    token_mask_high: Annotated[
+        float, 
+        Field(ge=0, description="The high threshold for token importance ratio to mask.")] = 8.0 
+    token_mask_low: Annotated[
+        float, 
+        Field(ge=0, description="The low threshold for token importance ratio to mask.")] = 0.125
+    sequence_clip_high: Annotated[float, Field(ge=0, description="The high threshold for sequence importance ratio to clip.")] = 10.0
+    geo_mask_high: Annotated[float, Field(ge=0, description="The high threshold for geo importance ratio to mask.")] = 10.0
+    geo_mask_low: Annotated[float, Field(ge=0, description="The low threshold for geo importance ratio to mask.")] = 0.1
+    kl_tau: Annotated[float, Field(ge=0, description="The tau for KL divergence.")] = 0.0
+    sequence_mask_low: Annotated[
         float,
-        Field(
-            ge=0,
-            description=(
-                "If set, masks entire sequences when any generated token has an importance ratio below this value."
-            ),
-        ),
+        Field(ge=0, description="If set, masks entire sequences when any generated token has an importance ratio below this value."),
     ] = 0.0
-    kl_tau: Annotated[float, Field(ge=0)] = 0.0
-    kl_mask_type: Annotated[Literal["masked", "unmasked", "all"], Field(description="Type of KL mask to use.")] = "all"
+    sequence_mask_high: Annotated[
+        float,
+        Field(ge=0, description="If set, masks entire sequences when any generated token has an importance ratio above this value."),
+    ] = 100.0
+
+    @model_validator(mode="after")
+    def validate_mask_bounds(self):
+        if self.token_mask_low >= self.token_mask_high:
+            raise ValueError(
+                f"token_mask_low ({self.token_mask_low}) must be less than token_mask_high ({self.token_mask_high})"
+            )
+        if self.geo_mask_low >= self.geo_mask_high:
+            raise ValueError(
+                f"geo_mask_low ({self.geo_mask_low}) must be less than geo_mask_high ({self.geo_mask_high})"
+            )
+        if self.sequence_mask_low >= self.sequence_mask_high:
+            raise ValueError(
+                f"sequence_mask_low ({self.sequence_mask_low}) must be less than sequence_mask_high ({self.sequence_mask_high})"
+            )
+        return self
 
 
 class FakeDataLoaderConfig(BaseConfig):
@@ -137,7 +157,7 @@ class RLTrainerConfig(BaseSettings):
         int,
         Field(
             ge=0,
-            description="Maximum number of steps that inference can be ahead of training. Determines how 'off-policy' the inference engines can be. Higher values yield better throughput through async execution, but may yield lower powerofrmance. If 0, will be fully synchronous.",
+            description="Maximum number of steps that inference can be ahead of training. Determines how 'off-policy' the inference engines can be. Higher values yield better throughput through async execution, but may yield lower performance. If 0, will be fully synchronous.",
         ),
     ] = 1
 

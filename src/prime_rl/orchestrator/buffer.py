@@ -1,14 +1,16 @@
+import hashlib
+import json
 import random
-import shutil
-from collections import Counter, defaultdict
+from collections import defaultdict
+from functools import partial
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 import verifiers as vf
-from datasets import Dataset, load_from_disk
 
 from prime_rl.orchestrator.config import BufferConfig
-from prime_rl.utils.utils import mean_normalize
+from prime_rl.utils.logger import get_logger
+from prime_rl.utils.utils import format_num, mean, mean_normalize
 from prime_rl.utils.vf import from_serializable_state, to_serializable_state
 
 
@@ -17,160 +19,280 @@ class Buffer:
 
     POOLS = ["easy", "normal", "hard"]
 
-    def __init__(self, dataset: Dataset, buffer_config: BufferConfig):
+    def __init__(
+        self, env_group: vf.EnvGroup, buffer_config: BufferConfig, dataset_type: Literal["train", "val"] = "train"
+    ):
+        self.env_group = env_group
         self.config = buffer_config
+        self.dataset_type = dataset_type
+        self.logger = get_logger()
+
         if self.config.seed is not None:
             random.seed(self.config.seed)
 
-        # Initialize buffer state
-        assert "example_id" in dataset.column_names, "The dataset must contain a `example_id` column."
-        assert isinstance(dataset["example_id"][0], int), "The `example_id` column must be of type int."
-        assert len(set(dataset["example_id"])) == len(dataset), "The `example_id` column must be unique."
-        self.dataset = dataset
-        self.problem_ids = dataset["example_id"]
-        self.problem_buffer = {pid: dict(problem) for pid, problem in zip(self.problem_ids, dataset)}
-        self.rollout_buffer: list[vf.State] = []
-        self.metadata = {pid: {"difficulty": "normal"} for pid in self.problem_ids}
+        if self.dataset_type == "train":
+            self.dataset = env_group.get_dataset(seed=self.config.seed)
+        elif self.dataset_type == "val":
+            self.dataset = env_group.get_eval_dataset(seed=self.config.seed)
+        else:
+            raise ValueError(f"Invalid dataset type: {self.dataset_type}")
 
-        # The number of problems/rollouts sampled from each pool at the current step (will reset with every call to get_metrics)
-        self.num_sampled_problems_per_pool = defaultdict(int)  # Will reset every step
-        self.num_sampled_rollouts_per_pool = defaultdict(int)  # Will reset every step
-        self.num_filtered_rollouts_per_difficulty = defaultdict(int)  # Will reset every step
-        self.num_rollouts = 0  # Will reset every step
+        self.env_names = env_group.env_names
+
+        # Basic assertions
+        assert "example_id" in self.dataset.column_names, "The dataset must contain a `example_id` column."
+        assert "prompt" in self.dataset.column_names, "The dataset must contain a `prompt` column."
+        assert "task" in self.dataset.column_names, "The dataset must contain a `task` column."
+        assert len(self.dataset) > 0, "The dataset must contain at least one example."
+        assert isinstance(self.dataset["example_id"][0], int), "The `example_id` column must be of type int."
+        assert len(set(self.dataset["example_id"])) == len(self.dataset), "The `example_id` column must be unique."
+        assert set(self.dataset["task"]) == set(self.env_names), "The `task` column must contain all environment names."
+
+        # Initialize example buffer (env_name -> (example_id -> example))
+        self.example_buffer: dict[str, dict[int, dict]] = defaultdict(dict)
+        for example in map(partial(cast, dict), self.dataset):
+            self.example_buffer[example["task"]][example["example_id"]] = example
+        assert len(self.example_buffer) == len(self.env_names)
+        self.logger.debug(
+            f"Initialized {dataset_type} buffer with {format_num(len(self.dataset), precision=0)} example(s) in {len(self.env_names)} environment(s)"
+        )
+
+        if self.config.env_ratios is not None:
+            # Convert ratios to probabilities
+            env_ratio = mean_normalize(self.config.env_ratios)
+            self.env_probs = {env_name: ratio for env_name, ratio in zip(self.env_names, env_ratio)}
+            self.logger.debug(
+                f"Sampling {dataset_type} buffer according to provided environment ratios ({', '.join(f'{k}={v:.2f}' for k, v in self.env_probs.items())})"
+            )
+        else:
+            # Count examples per environment to sample according to natural env distribution
+            env_counts = [len(self.example_buffer[env_name]) for env_name in self.env_names]
+            env_ratio = mean_normalize(env_counts)
+            self.env_probs = {env_name: ratio for env_name, ratio in zip(self.env_names, env_ratio)}
+            self.logger.debug(
+                f"Sampling {dataset_type} buffer according to natural environment distribution ({', '.join(f'{k}={v:.2f}' for k, v in self.env_probs.items())})"
+            )
+
+        # Initialize buffers for easy/ hard examples
+        self.easy_examples: list[dict] = []
+        self.hard_examples: list[dict] = []
+
+        # Initialize rollout buffer (flat list of rollouts)
+        self.rollout_buffer: list[vf.State] = []
+
+        self.reset_step_metrics()
+
+    def get_example_hash(self, example: dict) -> str:
+        """Returns a hash of the example based on hash keys."""
+        hash_keys = [key for key in self.config.hash_keys if key in example]
+        assert hash_keys, "No hashable keys found in example."
+        return hashlib.sha256(json.dumps([example[key] for key in hash_keys]).encode()).hexdigest()
 
     def save(self, path: Path) -> None:
-        """Saves metadata and rollouts as separate HF datasets."""
+        """Saves pool assignments and rollout buffer."""
         path.mkdir(parents=True, exist_ok=True)
 
-        metadata_path = path / "metadata"
-        metadata_data = [{"problem_id": pid, **self.metadata[pid]} for pid in self.problem_ids]
-        Dataset.from_list(metadata_data).save_to_disk(metadata_path)
+        def write_jsonl(lst: list[dict], path: Path) -> None:
+            with open(path, "w") as f:
+                for item in lst:
+                    f.write(json.dumps(item) + "\n")
 
-        rollouts_path = path / "rollouts"
-        if self.rollout_buffer:
-            serializable_rollouts = [to_serializable_state(rollout) for rollout in self.rollout_buffer]
-            Dataset.from_list(list(map(dict, serializable_rollouts))).save_to_disk(rollouts_path)
-        elif rollouts_path.exists():
-            shutil.rmtree(rollouts_path)
+        write_jsonl(self.easy_examples, path / "easy_examples.jsonl")
+        write_jsonl(self.hard_examples, path / "hard_examples.jsonl")
+
+        serializable_rollouts = [to_serializable_state(rollout) for rollout in self.rollout_buffer]
+        write_jsonl(serializable_rollouts, path / "rollout_buffer.jsonl")
 
     def load(self, path: Path) -> None:
-        """Loads metadata and rollouts from separate HF datasets. Uses the existing dataset stored in the buffer."""
-        # Load metadata
-        metadata_path = path / "metadata"
-        if not metadata_path.exists():
-            raise ValueError(f"Metadata dataset not found at {metadata_path}")
-        metadata_dataset = cast(Dataset, load_from_disk(metadata_path))
-        problem_ids = metadata_dataset["problem_id"]
-        metadata_dataset = metadata_dataset.remove_columns("problem_id")
-        self.metadata = {
-            problem_id: {"difficulty": "normal", **cast(dict, metadata)}
-            for problem_id, metadata in zip(problem_ids, metadata_dataset)
-        }
+        """Loads pool assignments and rollouts."""
 
-        # Load rollouts
-        rollouts_path = path / "rollouts"
-        if rollouts_path.exists():
-            rollouts_dataset = load_from_disk(rollouts_path)
-            self.rollout_buffer = [from_serializable_state(cast(dict, row)) for row in rollouts_dataset]
+        def read_jsonl(path: Path) -> list[dict]:
+            with open(path, "r") as f:
+                return [json.loads(line) for line in f]
 
-    def sample_problems(self, n: int) -> list[dict]:
-        """Samples `n` problems from the dataset using difficulty pools."""
-        n_easy = int(n * self.config.easy_fraction)
-        n_hard = int(n * self.config.hard_fraction)
-        n_normal = n - n_easy - n_hard
+        saved_easy_examples = read_jsonl(path / "easy_examples.jsonl")
+        saved_hard_examples = read_jsonl(path / "hard_examples.jsonl")
+        saved_rollout_buffer = [
+            from_serializable_state(rollout) for rollout in read_jsonl(path / "rollout_buffer.jsonl")
+        ]
 
-        by_difficulty = defaultdict(list)
-        for problem_id, metadata in self.metadata.items():
-            by_difficulty[metadata["difficulty"]].append(problem_id)
+        if any(saved_easy_examples) or any(saved_hard_examples) or any(saved_rollout_buffer):
+            # Build hash lookup for example buffer (env -> (example_hash -> example_id))
+            example_hash_lookup = defaultdict(dict)
+            all_hashes = set()
+            for env in self.example_buffer:
+                for example_id, example in self.example_buffer[env].items():
+                    example_hash = self.get_example_hash(example)
+                    if example_hash in all_hashes:
+                        self.logger.warning(
+                            f"Duplicate example hash found based on hash_keys={self.config.hash_keys}. Overwriting with latest example. This may cause unexpected behavior when resuming the buffer."
+                        )
+                    example_hash_lookup[env][example_hash] = example_id
+                    all_hashes.add(example_hash)
 
-        def sample_pool(pool_ids: list[int], target: int, pool_name: str) -> tuple[list[int], int]:
-            sampled_count = min(target, len(pool_ids))
-            sampled_ids = random.sample(pool_ids, sampled_count) if sampled_count > 0 else []
-            self.num_sampled_problems_per_pool[pool_name] += sampled_count
-            return sampled_ids, target - sampled_count
+            def move_saved_pool(saved_examples: list[dict], target_pool: list[dict]) -> int:
+                """Moves saved examples to the target pool from example buffer based on hash lookup."""
+                num_moved = 0
+                for example in saved_examples:
+                    example_hash = self.get_example_hash(example)
+                    for env in example_hash_lookup:
+                        if example_hash in example_hash_lookup[env]:
+                            example_id = example_hash_lookup[env][example_hash]
+                            example = self.example_buffer[env].pop(example_id, None)
+                            if example is not None:
+                                target_pool.append(example)
+                                num_moved += 1
+                                break
+                return num_moved
 
-        sampled_easy, easy_deficit = sample_pool(by_difficulty["easy"], n_easy, "easy")
-        sampled_hard, hard_deficit = sample_pool(by_difficulty["hard"], n_hard, "hard")
-        sampled_normal, _ = sample_pool(by_difficulty["normal"], n_normal + easy_deficit + hard_deficit, "normal")
+            if any(saved_easy_examples):
+                num_moved = move_saved_pool(saved_easy_examples, self.easy_examples)
+                self.logger.debug(
+                    f"Loaded {num_moved}/{len(saved_easy_examples)} example(s) to easy pool from checkpoint."
+                )
+                if num_moved != len(saved_easy_examples):
+                    num_not_moved = len(saved_easy_examples) - num_moved
+                    self.logger.warning(
+                        f"Could not move {num_not_moved} example(s) from checkpoint to easy pool. This usually means you resumed with an env mix that does not contain all previous examples."
+                    )
 
-        sampled_ids = sampled_easy + sampled_normal + sampled_hard
-        return [self.problem_buffer[pid] for pid in sampled_ids]
+            if any(saved_hard_examples):
+                num_moved = move_saved_pool(saved_hard_examples, self.hard_examples)
+                self.logger.debug(
+                    f"Moved {num_moved}/{len(saved_hard_examples)} example(s) to hard pool from checkpoint."
+                )
+                if num_moved != len(saved_hard_examples):
+                    num_not_moved = len(saved_hard_examples) - num_moved
+                    self.logger.warning(
+                        f"Could not move {num_not_moved} example(s) from checkpoint to hard pool. This usually means you resumed with an env mix that does not contain all previous examples."
+                    )
+
+            if any(saved_rollout_buffer):
+                # Extend rollout buffer, but only include rollouts for which the example still exists in the example buffer
+                valid_saved_rollouts = [
+                    rollout for rollout in saved_rollout_buffer if rollout["task"] in self.env_names
+                ]
+                self.rollout_buffer.extend(valid_saved_rollouts)
+                self.logger.debug(f"Loaded {len(valid_saved_rollouts)} rollout(s) from checkpoint.")
+
+            # Load rollouts, filtering out removed environments and problems
+            def convert_examples_to_normal(examples: list[dict], fraction: float) -> int:
+                """Moves a fraction of examples from the given pool back to normal."""
+                if fraction <= 0.0 or not examples:
+                    return 0
+                num_moved = round(len(examples) * fraction)
+                if num_moved <= 0:
+                    return 0
+                for _ in range(num_moved):
+                    example = random.choice(examples)
+                    env_name = example["task"]
+                    example_id = example["example_id"]
+                    examples.remove(example)
+                    self.example_buffer[env_name][example_id] = example
+                return num_moved
+
+            num_easy_examples = len(self.easy_examples)
+            num_moved = convert_examples_to_normal(self.easy_examples, self.config.easy_fraction)
+            self.logger.debug(f"Converted {num_moved}/{num_easy_examples} example(s) back to normal from easy pool.")
+            num_hard_examples = len(self.hard_examples)
+            num_moved = convert_examples_to_normal(self.hard_examples, self.config.hard_fraction)
+            self.logger.debug(f"Converted {num_moved}/{num_hard_examples} example(s) back to normal from hard pool.")
+        else:
+            self.logger.debug("No easy/ hard examples or rollouts found in checkpoint")
+
+    def sample_examples(self, n: int) -> list[dict]:
+        """Samples n examples from the buffer, respecting env ratios."""
+
+        non_empty_envs = [env for env, examples in self.example_buffer.items() if examples]
+
+        if not non_empty_envs:
+            raise ValueError("No environments left with examples.")
+
+        non_empty_env_probs = [self.env_probs[env] for env in non_empty_envs]
+        sampled_examples = []
+        for sampled_env in random.choices(non_empty_envs, weights=non_empty_env_probs, k=n):
+            sampled_example = random.choice(list(self.example_buffer[sampled_env].values()))
+            sampled_examples.append(sampled_example)
+
+        return sampled_examples
 
     def update(self, rollouts: list[vf.State]):
         """Updates the buffer state with completed rollouts."""
+
         rollouts_by_example = defaultdict(list)
         for rollout in rollouts:
-            problem_id = rollout["example_id"]
-            rollouts_by_example[problem_id].append(rollout)
+            rollouts_by_example[rollout["example_id"]].append(rollout)
 
-        for problem_id, example_rollouts in rollouts_by_example.items():
-            avg_reward = sum(rollout["reward"] for rollout in example_rollouts) / len(example_rollouts)
+        for example_id, example_rollouts in rollouts_by_example.items():
+            avg_reward = mean([r["reward"] for r in example_rollouts])
+            env_name = example_rollouts[0]["task"]
+
             if self.config.easy_threshold is not None and avg_reward >= self.config.easy_threshold:
-                new_difficulty = "easy"
+                pool = "easy"
             elif self.config.hard_threshold is not None and avg_reward <= self.config.hard_threshold:
-                new_difficulty = "hard"
+                pool = "hard"
             else:
-                new_difficulty = "normal"
+                pool = "normal"
 
-            self.metadata[problem_id]["difficulty"] = new_difficulty
-            self.num_sampled_rollouts_per_pool[new_difficulty] += 1
+            if pool != "normal" and example_id in self.example_buffer[env_name]:
+                example = self.example_buffer[env_name].pop(example_id)
+                target_pool = self.easy_examples if pool == "easy" else self.hard_examples
+                target_pool.append(example)
 
-            self.num_rollouts += len(example_rollouts)
+            self.num_examples_per_step[env_name][pool] += 1
             if self.config.online_difficulty_filtering:
                 if avg_reward == 0.0:
-                    self.num_filtered_rollouts_per_difficulty["hard"] += len(example_rollouts)
+                    self.num_rollouts_per_step[env_name]["hard"] += len(example_rollouts)
                     continue
                 elif avg_reward == 1.0:
-                    self.num_filtered_rollouts_per_difficulty["easy"] += len(example_rollouts)
+                    self.num_rollouts_per_step[env_name]["easy"] += len(example_rollouts)
                     continue
+
+            self.num_rollouts_per_step[env_name]["normal"] += len(example_rollouts)
             self.rollout_buffer.extend(example_rollouts)
 
     def sample_rollouts(self, n: int) -> list[vf.State]:
-        """Samples the latest `n` rollouts from the buffer."""
+        """Samples the latest n rollouts from the buffer."""
         n = min(n, len(self.rollout_buffer))
-        sampled = self.rollout_buffer[-n:]
+        sampled_rollouts = self.rollout_buffer[-n:]
         self.rollout_buffer = self.rollout_buffer[:-n]
-        return sampled
+        return sampled_rollouts
+
+    def reset_step_metrics(self) -> None:
+        """Reset per-step metrics (called after get_metrics)."""
+        zero_per_pool = lambda: {p: 0 for p in self.POOLS}
+        # num examples per env per step per pool (env_name -> (pool -> num_examples))
+        self.num_examples_per_step = {env: zero_per_pool() for env in self.env_names}
+        # num rollouts per env per step per pool (env_name -> (pool -> num_rollouts))
+        self.num_rollouts_per_step = {env: zero_per_pool() for env in self.env_names}
 
     def get_metrics(self) -> dict[str, float]:
+        """Returns the buffer metrics for the current step."""
+
         metrics = {}
 
-        # Add ratio of problems sampled from each pool this step
-        problem_pool_counts = [self.num_sampled_problems_per_pool.get(pool, 0.0) for pool in self.POOLS]
-        problem_pool_ratio = mean_normalize(problem_pool_counts)
-        prefix = "buffer/sampled_problems"
-        metrics.update({f"{prefix}/{pool}": value for pool, value in zip(self.POOLS, problem_pool_ratio)})
+        # sum over envs (e.g. log globally)
+        num_examples_per_step_per_pool = {
+            pool: sum(self.num_examples_per_step[env][pool] for env in self.env_names) for pool in self.POOLS
+        }
+        num_rollouts_per_step_per_pool = {
+            pool: sum(self.num_rollouts_per_step[env][pool] for env in self.env_names) for pool in self.POOLS
+        }
+        num_examples_per_step = sum(num_examples_per_step_per_pool.values())
+        num_rollouts_per_step = sum(num_rollouts_per_step_per_pool.values())
 
-        # Add ratio of rollouts sampled from each pool this step
-        rollout_pool_counts = [self.num_sampled_rollouts_per_pool.get(pool, 0.0) for pool in self.POOLS]
-        rollout_pool_ratio = mean_normalize(rollout_pool_counts)
-        prefix = "buffer/sampled_rollouts"
-        metrics.update({f"{prefix}/{pool}": value for pool, value in zip(self.POOLS, rollout_pool_ratio)})
+        for pool in ["easy", "hard"]:
+            if num_examples_per_step:
+                metrics[f"evicted_examples/{pool}"] = num_examples_per_step_per_pool[pool] / num_examples_per_step
+            if num_rollouts_per_step:
+                metrics[f"filtered_rollouts/{pool}"] = num_rollouts_per_step_per_pool[pool] / num_rollouts_per_step
 
-        # Add ratio of rollouts filtered out this step
-        easy_filtered_ratio = (
-            self.num_filtered_rollouts_per_difficulty["easy"] / self.num_rollouts if self.num_rollouts > 0 else 0.0
-        )
-        hard_filtered_ratio = (
-            self.num_filtered_rollouts_per_difficulty["hard"] / self.num_rollouts if self.num_rollouts > 0 else 0.0
-        )
-        prefix = "buffer/filtered_rollouts"
-        metrics.update(
-            {
-                f"{prefix}/easy": easy_filtered_ratio,
-                f"{prefix}/hard": hard_filtered_ratio,
-            }
-        )
+        total_normal = sum(len(self.example_buffer[env]) for env in self.env_names)
+        pool_counts = [len(self.easy_examples), total_normal, len(self.hard_examples)]
+        pool_ratios = mean_normalize(pool_counts)
+        for pool, pool_ratio in zip(self.POOLS, pool_ratios):
+            metrics[f"pool/{pool}"] = pool_ratio
 
-        # Add overall ratio of problems over pools
-        pool_counter = Counter(m.get("difficulty", "normal") for m in self.metadata.values())
-        pool_counts = [pool_counter.get(pool, 0.0) for pool in self.POOLS]
-        pool_ratio = mean_normalize(pool_counts)
-        metrics.update({f"buffer/pool/{pool}": value for pool, value in zip(self.POOLS, pool_ratio)})
+        self.reset_step_metrics()
 
-        # Reset per-step metrics
-        self.num_sampled_problems_per_pool = defaultdict(int)
-        self.num_sampled_rollouts_per_pool = defaultdict(int)
-        self.num_filtered_rollouts_per_difficulty = defaultdict(int)
-        self.num_rollouts = 0
         return metrics

@@ -7,13 +7,13 @@ inference_gpu_ids = [0,1,2,3]
 trainer_gpu_ids = [4,5,6,7]
 
 max_steps = 300
+seq_len = 8192
 
 [model]
 name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
 
 [orchestrator]
 batch_size = 1024
-seq_len = 8192
 rollouts_per_example = 8
 
 [orchestrator.sampling]
@@ -21,9 +21,9 @@ temperature = 0.6
 max_tokens = 8192
 
 [[orchestrator.env]]
-id = "primeintellect/single-turn-math"
+id = "primeintellect/math-env"
 name = "acereason-math"
-args = { dataset_name = "nvidia/AceReason-Math", dataset_subset = "default", question_key = "problem" }
+args = { dataset_name = "nvidia/AceReason-Math", dataset_subset = "default", question_key = "problem", math_verify_max_workers = 128, math_verify_timeout = 60 }
 
 [trainer]
 

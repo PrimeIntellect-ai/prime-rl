@@ -173,6 +173,13 @@ class RLConfig(BaseSettings):
         ),
     ] = None
 
+    seq_len: Annotated[
+        int | None,
+        Field(
+            description="The sequence length to use. If set, will configure both trainer.model.seq_len and orchestrator.seq_len to this value. If None, each can be set independently."
+        ),
+    ] = None
+
     max_async_level: Annotated[
         int | None,
         Field(
@@ -346,6 +353,21 @@ class RLConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_seq_len(self):
+        # If specified, use the same seq_len for trainer and orchestrator
+        if self.seq_len is not None:
+            self.trainer.model.seq_len = self.seq_len
+            self.orchestrator.seq_len = self.seq_len
+
+        if self.trainer.model.seq_len < self.orchestrator.seq_len:
+            raise ValueError(
+                f"Trainer model seq_len ({self.trainer.model.seq_len}) must be >= orchestrator seq_len ({self.orchestrator.seq_len}). "
+                f"The trainer needs to be able to handle sequences at least as long as those produced by the orchestrator."
+            )
+
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_weight_broadcast(self):
         if self.weight_broadcast is not None:
             if self.weight_broadcast.type == "nccl":
@@ -373,9 +395,7 @@ class RLConfig(BaseSettings):
                 raise ValueError("NCCL weight broadcast does not support LoRA yet.")
             self.trainer.weight_broadcast.adapter_only = True
             if self.orchestrator.lora_name is None:
-                lora_name = (
-                    f"r{self.trainer.model.lora.rank}-a{self.trainer.model.lora.alpha}"
-                )
+                lora_name = f"r{self.trainer.model.lora.rank}-a{self.trainer.model.lora.alpha}"
                 self.orchestrator.lora_name = lora_name
             if self.inference is not None:
                 self.inference.enable_lora = True

@@ -9,13 +9,13 @@ In this example, we demonstrate how to train `Qwen3-0.6B` to answer math problem
 Install the environment:
 
 ```bash
-prime env install primeintellect/single-turn-math
+prime env install primeintellect/math-env
 ```
 
 Verify installation:
 
 ```bash
-uv run python -c "import single_turn_math"
+uv run python -c "import math_env"
 ```
 
 Start the tmux session:
@@ -37,7 +37,7 @@ Evaluate the base model:
 
 ```bash
 # In the `Trainer` pane
-uv run vf-eval single-turn-math \
+uv run vf-eval math-env \
   -a '{"dataset_name": "openai/gsm8k", "dataset_subset": "main"}' \
   -m PrimeIntellect/Qwen3-0.6B \
   -b http://localhost:8000/v1 \
@@ -74,7 +74,7 @@ uv run inference --model.name <user>/Qwen3-0.6B-GSM8K-RL
 
 ```bash
 # In the `Trainer` pane
-uv run vf-eval single-turn-math \
+uv run vf-eval math-env \
   -a '{"dataset_name": "openai/gsm8k", "dataset_subset": "main"}' \
   -m <user>/Qwen3-0.6B-GSM8K-RL \
   -b http://localhost:8000/v1 \

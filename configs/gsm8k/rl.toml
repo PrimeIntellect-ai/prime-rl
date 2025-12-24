@@ -2,6 +2,7 @@ inference_gpu_ids = [0]
 trainer_gpu_ids = [1]
 
 max_steps = 100
+seq_len = 2048
 
 [wandb]
 project = "gsm8k-debug"
@@ -13,14 +14,14 @@ name = "PrimeIntellect/Qwen3-0.6B"
 [orchestrator]
 batch_size = 512
 rollouts_per_example = 16
-seq_len = 2048
 
 [orchestrator.sampling]
 max_tokens = 2048
 
 [[orchestrator.env]]
-id = "primeintellect/single-turn-math"
-args = { dataset_name = "openai/gsm8k", dataset_subset = "main" }
+id = "primeintellect/math-env"
+name = "gsm8k"
+args = { dataset_name = "openai/gsm8k", dataset_subset = "main", math_verify_max_workers = 128, math_verify_timeout = 60 }
 
 [trainer] # Default trainer config
 

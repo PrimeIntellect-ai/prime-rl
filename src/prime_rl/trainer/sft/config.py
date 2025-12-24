@@ -7,13 +7,12 @@ from prime_rl.trainer.config import (
     AdamWConfig,
     CheckpointConfig,
     ConstantSchedulerConfig,
-    HeartbeatConfig,
     ModelConfig,
     OptimizerConfigType,
     SchedulerConfigType,
     TokenizerConfig,
 )
-from prime_rl.utils.config import LogConfig, WandbConfig
+from prime_rl.utils.config import HeartbeatConfig, LogConfig, WandbConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 

@@ -2,6 +2,7 @@ inference_gpu_ids = [0,1,2,3]
 trainer_gpu_ids = [4,5,6,7]
 
 max_steps = 300
+seq_len = 2048
 
 [model]
 name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
@@ -9,15 +10,14 @@ name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 [orchestrator]
 batch_size = 1024
 rollouts_per_example = 16
-seq_len = 2048
 
 [orchestrator.sampling]
 max_tokens = 2048
 
 [[orchestrator.env]]
-id = "primeintellect/single-turn-math"
+id = "primeintellect/math-env"
 name = "hendrycks-math"
-args = { dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "default" }
+args = { dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "default", math_verify_max_workers = 128, math_verify_timeout = 60 }
 
 [orchestrator.buffer]
 easy_fraction = 0.0
