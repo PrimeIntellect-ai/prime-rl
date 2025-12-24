@@ -14,7 +14,7 @@ import torch.distributed.nn as dist_nn
 from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
 from prime_rl.trainer.ckpt import setup_ckpt_managers
-from prime_rl.trainer.optim import setup_multi_optimizer
+from prime_rl.trainer.optim import setup_optimizer, setup_multi_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler, setup_multi_scheduler
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
@@ -121,19 +121,18 @@ def train(config: RLTrainerConfig):
     logger.info(f"Initializing optimizer ({config.optim})")
     logger.info(f"Using `{config.loss.ratio_type}` importance ratio ({config.loss})")
 
-    optimizer = setup_multi_optimizer(
-        config.optim, parallel_dims.world_mesh["dp_shard_cp"], None if config.model.lora else model
-    )
     if config.max_concurrent_runs == 1:
-        # Set up the learning rate scheduler
-        while optimizer.optimizers[0] is None:
-            if world.is_master:
-                runs.check_for_changes()
-            runs.sync_runs()
-            logger.info(f"Waiting for optimizer to be created {runs.id_2_idx=}")
-            time.sleep(1)
-        scheduler = setup_scheduler(optimizer.optimizers[0], config.scheduler, config.max_steps, config.optim.lr)
+        if config.model.lora:
+            optimizer = setup_optimizer(
+                config.optim, runs.get_named_parameters_for_run(0), parallel_dims.world_mesh["dp_shard_cp"]
+            )
+        else:
+            optimizer = setup_optimizer(
+                config.optim, list(model.named_parameters()), parallel_dims.world_mesh["dp_shard_cp"]
+            )
+        scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
     else:
+        optimizer = setup_multi_optimizer(config.optim, parallel_dims.world_mesh["dp_shard_cp"])
         # Set up the multi-scheduler for per-run learning rate scheduling
         scheduler = setup_multi_scheduler(config.scheduler, config.max_steps, config.optim.lr)
         # Register callback so schedulers are created when optimizers are created
@@ -152,7 +151,7 @@ def train(config: RLTrainerConfig):
     # Optionally, resume training from a checkpoint
     progress = Progress()
     if checkpoint_step is not None:
-        ckpt_manager.load(checkpoint_step, model, [optimizer.optimizers[0]], scheduler, progress)
+        ckpt_manager.load(checkpoint_step, model, [optimizer], scheduler, progress)
         logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
 
     logger.info(
@@ -215,7 +214,7 @@ def train(config: RLTrainerConfig):
             # Save full checkpoint
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
-            ckpt_manager.save(progress.step, model, [optimizer.optimizers[0]], scheduler, progress)
+            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
 
             # Maybe clean up old checkpoints
@@ -377,7 +376,10 @@ def train(config: RLTrainerConfig):
         # Update learning rate scheduler
         scheduler.step()
 
-        current_lr = optimizer.get_current_lr()
+        if config.max_concurrent_runs == 1:
+            current_lr = optimizer.param_groups[0]["lr"]
+        else:
+            current_lr = optimizer.get_current_lr()
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         # Optionally, dump memory snapshot
@@ -457,7 +459,7 @@ def train(config: RLTrainerConfig):
     # Write final checkpoint
     if ckpt_manager is not None:
         logger.info("Writing final checkpoint")
-        ckpt_manager.save(progress.step, model, [optimizer.optimizers[0]], scheduler, progress)
+        ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
         ckpt_manager.maybe_clean()
 
     # Write final checkpoint
