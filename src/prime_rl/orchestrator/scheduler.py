@@ -1,5 +1,5 @@
 """
-Worker-based scheduler that runs environments in subprocesses.
+Scheduler that runs environments in subprocesses.
 
 Isolates event loop lag from environment execution.
 """
@@ -34,10 +34,15 @@ class InflightRolloutInfo(NamedTuple):
     request_id: str
 
 
-class WorkerScheduler:
-    """Scheduler that uses subprocess workers for environment execution.
+class Scheduler:
+    """Asynchronously schedules group rollout requests using subprocess workers.
 
-    This isolates event loop lag caused by environments from the main orchestrator.
+    Runs environment execution in separate processes to isolate event loop lag
+    from the main orchestrator process.
+
+    References:
+    - AReal: https://arxiv.org/abs/2505.24298v1
+    - PipelineRL: https://arxiv.org/abs/2509.19128v1
     """
 
     def __init__(
@@ -150,7 +155,7 @@ class WorkerScheduler:
             await asyncio.sleep(1)
 
     async def update_policy(self):
-        """Updates the policy to the latest available checkpoint."""
+        """Updates the policy to the latest available checkpoint. Aborts rollout requests that are older than the max retention steps."""
         latest_ckpt_step = get_latest_ckpt_step(get_broadcast_dir(self.config.output_dir)) or 0
         async_away_ckpt_step = max(self.step - self.max_async_level, 0)
         next_ckpt_step = (

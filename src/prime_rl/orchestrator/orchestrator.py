@@ -27,12 +27,12 @@ from prime_rl.eval.utils import run_evals
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.orchestrator.config import BufferConfig, OrchestratorConfig
+from prime_rl.orchestrator.scheduler import Scheduler
 from prime_rl.orchestrator.utils import (
     get_sampling_args,
     print_benchmark,
     set_semaphore,
 )
-from prime_rl.orchestrator.worker_scheduler import WorkerScheduler
 from prime_rl.utils.client import (
     check_has_model,
     check_health,
@@ -146,7 +146,7 @@ async def orchestrate(config: OrchestratorConfig):
         val_buffer = None
 
     # Setup scheduler (uses subprocess workers for env execution)
-    scheduler = WorkerScheduler(
+    scheduler = Scheduler(
         admin_clients=admin_clients,
         client_config=config.client,
         env_configs=config.env,
