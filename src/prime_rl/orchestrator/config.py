@@ -547,6 +547,14 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = None
 
+    workers_per_env: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Number of worker subprocesses to spawn per environment. Multiple workers enable isolation of event loop lag - if one worker slows down, others continue at full speed. Uses least-pending routing to distribute load.",
+        ),
+    ] = 1
+
     batch_size: Annotated[int, Field(ge=1, description="Number of samples to train on per step.")] = 128
 
     oversampling_factor: Annotated[
