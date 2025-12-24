@@ -244,7 +244,7 @@ class SweGrepEnv(vf.SandboxEnv):
 
 
 def convert_dataset(train_ratio=0.9):
-    df = pd.read_parquet("/home/ubuntu/prime-rl/work/swe-grep-env/data/grep_dataset_20k_clean.parquet")
+    df = pd.read_parquet("/root/prime-rl/work/swe-grep-env/data/grep_dataset_20k_clean.parquet")
     dataset = Dataset.from_pandas(df)
     dataset = dataset.rename_columns({"user_query": "question", "ground_truth": "answer"}).remove_columns(["file"])
     

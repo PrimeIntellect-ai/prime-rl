@@ -358,13 +358,13 @@ class MetricCard(Static):
 
 
 class GPUCard(Static):
-    """A card showing GPU utilization with line graph."""
+    """A card showing GPU utilization with ASCII line graph."""
     
     DEFAULT_CSS = """
     GPUCard {
         width: 1fr;
         height: auto;
-        min-height: 8;
+        min-height: 9;
         padding: 0 1;
         border: solid $primary-darken-2;
         background: $surface;
@@ -379,19 +379,18 @@ class GPUCard(Static):
     }
     
     GPUCard .gpu-graph {
-        color: $primary-lighten-2;
-        height: 4;
+        height: 5;
     }
     """
     
-    # Unicode line drawing characters for smoother lines
-    GRAPH_CHARS = " ▁▂▃▄▅▆▇█"
+    # Characters for drawing (bottom to top)
+    CHARS = " ▁▂▃▄▅▆▇█"
     
     def __init__(self, label: str, gpu_ids: list[int], id: Optional[str] = None):
         super().__init__(id=id)
         self.label = label
         self.gpu_ids = gpu_ids
-        self.history: Deque[float] = deque(maxlen=120)
+        self.history: Deque[float] = deque(maxlen=200)
     
     def compose(self) -> ComposeResult:
         ids_str = ",".join(str(i) for i in self.gpu_ids)
@@ -399,20 +398,19 @@ class GPUCard(Static):
         yield Static("", classes="gpu-graph", id="graph")
         yield Label("-- | --", classes="gpu-stats", id="stats")
     
-    def _render_line_graph(self, width: int, height: int = 4) -> str:
-        """Render utilization history as ASCII line graph with Y-axis labels."""
+    def _render_graph(self, width: int, height: int = 5) -> str:
+        """Render as ASCII area chart."""
         if width < 10:
             width = 60
         
-        # Reserve space for Y-axis labels (e.g., "100%│")
-        label_width = 5
-        graph_width = width - label_width
+        # Reserve space for Y-axis
+        graph_width = width - 6
         
-        if not self.history or graph_width < 1:
+        if not self.history:
             lines = []
-            for row in range(height - 1, -1, -1):
-                pct = int(((row + 1) / height) * 100)
-                lines.append(f"{pct:3d}%│")
+            for i in range(height):
+                pct = 100 - (i * 100 // height)
+                lines.append(f"{pct:3d}% │")
             return "\n".join(lines)
         
         # Resample history to fit width
@@ -420,41 +418,40 @@ class GPUCard(Static):
         if len(data) > graph_width:
             step = len(data) / graph_width
             data = [data[int(i * step)] for i in range(graph_width)]
-        elif len(data) < graph_width:
-            data = [0.0] * (graph_width - len(data)) + data
         
-        # Build the graph lines (top to bottom)
+        # Build graph rows (top to bottom: 100% -> 0%)
         lines = []
-        for row in range(height - 1, -1, -1):
-            # Y-axis label
-            pct = int(((row + 1) / height) * 100)
-            line = f"{pct:3d}%│"
+        for row in range(height):
+            # Calculate threshold for this row
+            row_min = 100 - ((row + 1) * 100 / height)  # e.g., row 0: 80-100, row 1: 60-80
+            row_max = 100 - (row * 100 / height)
+            pct_label = int(row_max)
             
-            threshold_low = (row / height) * 100
-            threshold_high = ((row + 1) / height) * 100
-            
+            line = f"{pct_label:3d}% │"
             for val in data:
-                if val >= threshold_high:
+                if val >= row_max:
                     line += "█"
-                elif val > threshold_low:
-                    frac = (val - threshold_low) / (threshold_high - threshold_low)
-                    char_idx = int(frac * (len(self.GRAPH_CHARS) - 1))
-                    line += self.GRAPH_CHARS[char_idx]
+                elif val > row_min:
+                    # Partial fill
+                    frac = (val - row_min) / (row_max - row_min)
+                    char_idx = int(frac * (len(self.CHARS) - 1))
+                    line += self.CHARS[char_idx]
                 else:
                     line += " "
+            
+            # Pad if data is shorter than width
+            line += " " * (graph_width - len(data))
             lines.append(line)
         
         return "\n".join(lines)
     
     def update_stats(self, gpu_stats: list[GPUStats]):
         """Update with new GPU stats."""
-        # Filter to our GPUs
         our_stats = [s for s in gpu_stats if s.index in self.gpu_ids]
         
         if not our_stats:
             return
         
-        # Average utilization across our GPUs
         avg_util = sum(s.utilization for s in our_stats) / len(our_stats)
         total_mem_used = sum(s.memory_used for s in our_stats)
         total_mem_total = sum(s.memory_total for s in our_stats)
@@ -464,9 +461,8 @@ class GPUCard(Static):
         
         try:
             graph = self.query_one("#graph", Static)
-            # Get available width (approximate)
-            width = self.size.width - 4 if self.size.width > 10 else 60
-            graph.update(self._render_line_graph(width, height=4))
+            width = max(self.size.width - 4, 40)
+            graph.update(self._render_graph(width, height=5))
             
             stats_label = self.query_one("#stats", Label)
             stats_label.update(
@@ -494,61 +490,61 @@ class ThroughputGraph(Static):
     }
     
     ThroughputGraph .graph-display {
-        color: $success;
-        height: 2;
+        height: 3;
     }
     """
     
-    GRAPH_CHARS = " ▁▂▃▄▅▆▇█"
+    CHARS = " ▁▂▃▄▅▆▇█"
     
     def __init__(self, label: str, unit: str = "", id: Optional[str] = None):
         super().__init__(id=id)
         self.label = label
         self.unit = unit
-        self.history: Deque[float] = deque(maxlen=120)
+        self.history: Deque[float] = deque(maxlen=200)
     
     def compose(self) -> ComposeResult:
         yield Label(f"{self.label}: --{self.unit}", classes="graph-label", id="label")
         yield Static("", classes="graph-display", id="graph")
     
-    def _render_line_graph(self, width: int, height: int = 2) -> str:
-        """Render history as ASCII line graph."""
-        if not self.history or width < 1:
+    def _render_graph(self, width: int, height: int = 3) -> str:
+        """Render as simple ASCII sparkline-style graph."""
+        if not self.history or width < 5:
             return "\n" * height
         
         data = list(self.history)
         
-        # Normalize to 0-100 range based on min/max in history
-        min_val = min(data) if data else 0
-        max_val = max(data) if data else 100
+        # Auto-scale based on data range
+        min_val = min(data)
+        max_val = max(data)
         if max_val == min_val:
             max_val = min_val + 1
         
-        normalized = [(v - min_val) / (max_val - min_val) * 100 for v in data]
-        
         # Resample to fit width
-        if len(normalized) > width:
-            step = len(normalized) / width
-            normalized = [normalized[int(i * step)] for i in range(width)]
-        elif len(normalized) < width:
-            normalized = [0.0] * (width - len(normalized)) + normalized
+        if len(data) > width:
+            step = len(data) / width
+            data = [data[int(i * step)] for i in range(width)]
         
-        # Build graph lines
+        # Normalize to 0-1
+        normalized = [(v - min_val) / (max_val - min_val) for v in data]
+        
+        # Build rows
         lines = []
-        for row in range(height - 1, -1, -1):
-            line = ""
-            threshold_low = (row / height) * 100
-            threshold_high = ((row + 1) / height) * 100
+        for row in range(height):
+            row_min = 1.0 - ((row + 1) / height)
+            row_max = 1.0 - (row / height)
             
+            line = ""
             for val in normalized:
-                if val >= threshold_high:
+                if val >= row_max:
                     line += "█"
-                elif val > threshold_low:
-                    frac = (val - threshold_low) / (threshold_high - threshold_low)
-                    char_idx = int(frac * (len(self.GRAPH_CHARS) - 1))
-                    line += self.GRAPH_CHARS[char_idx]
+                elif val > row_min:
+                    frac = (val - row_min) / (row_max - row_min)
+                    char_idx = int(frac * (len(self.CHARS) - 1))
+                    line += self.CHARS[char_idx]
                 else:
                     line += " "
+            
+            line += " " * (width - len(data))
             lines.append(line)
         
         return "\n".join(lines)
@@ -558,7 +554,6 @@ class ThroughputGraph(Static):
         self.history.append(value)
         
         try:
-            # Update label with current value
             label = self.query_one("#label", Label)
             if value >= 1000000:
                 label.update(f"{self.label}: {value/1000000:.2f}M{self.unit}")
@@ -567,10 +562,9 @@ class ThroughputGraph(Static):
             else:
                 label.update(f"{self.label}: {value:.2f}{self.unit}")
             
-            # Update graph
             graph = self.query_one("#graph", Static)
-            width = self.size.width - 4 if self.size.width > 10 else 40
-            graph.update(self._render_line_graph(width, height=2))
+            width = max(self.size.width - 4, 30)
+            graph.update(self._render_graph(width, height=3))
         except Exception:
             pass
 
@@ -748,7 +742,7 @@ class LogsPanel(Static):
     LogsPanel {
         width: 100%;
         height: 1fr;
-        min-height: 20;
+        min-height: 15;
     }
     
     LogsPanel TabbedContent {
@@ -762,28 +756,26 @@ class LogsPanel(Static):
     
     LogsPanel RichLog {
         height: 100%;
-        min-height: 15;
+        min-height: 12;
         background: $surface;
         border: solid $primary-darken-3;
-        scrollbar-gutter: stable;
     }
     """
     
     def compose(self) -> ComposeResult:
         with TabbedContent():
             with TabPane("Orchestrator", id="tab-orch"):
-                yield RichLog(id="log-orch", wrap=True, highlight=True, markup=True, auto_scroll=True)
+                yield RichLog(id="log-orch", wrap=True, highlight=True, markup=True, auto_scroll=True, max_lines=500)
             with TabPane("Trainer", id="tab-trainer"):
-                yield RichLog(id="log-trainer", wrap=True, highlight=True, markup=True, auto_scroll=True)
+                yield RichLog(id="log-trainer", wrap=True, highlight=True, markup=True, auto_scroll=True, max_lines=500)
             with TabPane("Inference", id="tab-inference"):
-                yield RichLog(id="log-inference", wrap=True, highlight=True, markup=True, auto_scroll=True)
+                yield RichLog(id="log-inference", wrap=True, highlight=True, markup=True, auto_scroll=True, max_lines=500)
     
     def add_log_line(self, component: str, line: str):
         """Add a log line to the appropriate log view."""
         log_id = f"log-{component}"
         try:
             log = self.query_one(f"#{log_id}", RichLog)
-            # Color based on log level
             styled_line = self._style_log_line(line)
             log.write(styled_line)
         except Exception:
@@ -809,14 +801,16 @@ class LogsPanel(Static):
     
     def load_initial_logs(self, component: str, lines: list[str]):
         """Load initial log lines for a component."""
+        import sys
         log_id = f"log-{component}"
         try:
             log = self.query_one(f"#{log_id}", RichLog)
+            print(f"[PrimeMonitor] load_initial_logs: writing {len(lines[-100:])} lines to {log_id}", file=sys.stderr)
             for line in lines[-100:]:  # Last 100 lines
                 styled_line = self._style_log_line(line)
                 log.write(styled_line)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[PrimeMonitor] load_initial_logs ERROR: {e}", file=sys.stderr)
 
 
 # ============================================================================
@@ -902,6 +896,13 @@ class PrimeMonitor(App):
             "inference": find_log(inference_paths),
         }
         
+        # Debug: Print discovered log paths to stderr
+        import sys
+        print(f"[PrimeMonitor] Log paths discovered:", file=sys.stderr)
+        for k, v in self.log_paths.items():
+            exists = v.exists() if v else False
+            print(f"  {k}: {v} (exists={exists})", file=sys.stderr)
+        
         # Initialize log tailers
         self.log_tailers = {}
         for component, path in self.log_paths.items():
@@ -959,22 +960,42 @@ class PrimeMonitor(App):
     
     def on_mount(self):
         """Initialize on mount."""
-        # Load initial logs and show which files we're watching
-        logs_panel = self.query_one("#logs", LogsPanel)
-        for component, tailer in self.log_tailers.items():
-            path = self.log_paths.get(component)
-            if path:
-                exists = path.exists()
-                status = "found" if exists else "waiting"
-                logs_panel.add_log_line(component, f"[{status}] Watching: {path}")
-                if exists:
-                    logs_panel.load_initial_logs(component, tailer.get_all_lines())
+        import sys
+        print(f"[PrimeMonitor] on_mount called", file=sys.stderr)
+        
+        # Use call_after_refresh to ensure widgets are ready
+        self.call_after_refresh(self._load_initial_logs)
         
         # Start refresh timer
         self.set_interval(self.config.refresh_interval, self.refresh_data)
+    
+    def _load_initial_logs(self):
+        """Load initial logs after widgets are ready."""
+        import sys
+        print(f"[PrimeMonitor] _load_initial_logs called", file=sys.stderr)
         
-        # Initial refresh
-        self.refresh_data()
+        try:
+            logs_panel = self.query_one("#logs", LogsPanel)
+            
+            for component, tailer in self.log_tailers.items():
+                path = self.log_paths.get(component)
+                if path:
+                    exists = path.exists()
+                    status = "✓ found" if exists else "⏳ waiting"
+                    logs_panel.add_log_line(component, f"[{status}] {path}")
+                    
+                    if exists:
+                        initial_lines = tailer.get_all_lines()
+                        print(f"[PrimeMonitor] {component}: {len(initial_lines)} lines", file=sys.stderr)
+                        logs_panel.load_initial_logs(component, initial_lines)
+                else:
+                    logs_panel.add_log_line(component, "[no log path configured]")
+            
+            # Initial data refresh
+            self.refresh_data()
+            
+        except Exception as e:
+            print(f"[PrimeMonitor] _load_initial_logs ERROR: {e}", file=sys.stderr)
     
     def refresh_data(self):
         """Refresh all data."""
@@ -1098,6 +1119,13 @@ def main():
         trainer_gpu_ids=[int(x) for x in args.trainer_gpus.split(",")],
         inference_gpu_ids=[int(x) for x in args.inference_gpus.split(",")],
     )
+    
+    # Debug output
+    import sys
+    print(f"[PrimeMonitor] Config:", file=sys.stderr)
+    print(f"  output_dir: {config.output_dir}", file=sys.stderr)
+    print(f"  trainer_gpus: {config.trainer_gpu_ids}", file=sys.stderr)
+    print(f"  inference_gpus: {config.inference_gpu_ids}", file=sys.stderr)
     
     app = PrimeMonitor(config)
     app.run()
