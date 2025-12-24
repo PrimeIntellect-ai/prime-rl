@@ -205,6 +205,7 @@ class EnvWorker:
         seq_len: int,
         interleaved_rollouts: bool,
         max_concurrent: int,
+        worker_name: str | None = None,
     ):
         self.env_id = env_id
         self.env_args = env_args
@@ -213,6 +214,7 @@ class EnvWorker:
         self.seq_len = seq_len
         self.interleaved_rollouts = interleaved_rollouts
         self.max_concurrent = max_concurrent
+        self.worker_name = worker_name or env_id
 
         self.request_queue: Queue = Queue()
         self.response_queue: Queue = Queue()
@@ -298,3 +300,8 @@ class EnvWorker:
     def update_model_name(self, model_name: str):
         """Update the model name for future requests."""
         self.model_name = model_name
+
+    @property
+    def pending_count(self) -> int:
+        """Number of pending requests for this worker."""
+        return len(self.pending_futures)

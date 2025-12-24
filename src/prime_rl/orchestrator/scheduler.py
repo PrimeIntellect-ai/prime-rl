@@ -74,24 +74,29 @@ class Scheduler:
         self.sampling_args = get_sampling_args(config.sampling)
         self.model_name = self.config.model.name
 
-        # Create workers - one per env
-        self.workers: dict[str, EnvWorker] = {}
+        # Create workers - multiple per env
+        self.workers_per_env = config.workers_per_env or 1
+        self.workers: dict[str, list[EnvWorker]] = {}
         self.env_names: list[str] = []
         for env_config in env_configs:
             env_name = env_config.name or env_config.id
             self.env_names.append(env_name)
-            self.workers[env_name] = EnvWorker(
-                env_id=env_config.id,
-                env_args=env_config.args,
-                client_config=client_config,
-                model_name=self.model_name,
-                seq_len=config.seq_len,
-                interleaved_rollouts=config.trajectory_strategy == "interleaved",
-                max_concurrent=config.max_concurrent or -1,
-            )
+            self.workers[env_name] = []
+            for worker_idx in range(self.workers_per_env):
+                worker = EnvWorker(
+                    env_id=env_config.id,
+                    env_args=env_config.args,
+                    client_config=client_config,
+                    model_name=self.model_name,
+                    seq_len=config.seq_len,
+                    interleaved_rollouts=config.trajectory_strategy == "interleaved",
+                    max_concurrent=config.max_concurrent or -1,
+                    worker_name=f"{env_name}_{worker_idx}",
+                )
+                self.workers[env_name].append(worker)
 
-        # Round-robin through workers/envs
-        self._worker_idx = 0
+        # Round-robin through envs, least-pending within env
+        self._env_idx = 0
 
         # Track in-flight requests: future -> info
         self.inflight_group_rollouts: dict[asyncio.Future, InflightRolloutInfo] = {}
@@ -106,25 +111,31 @@ class Scheduler:
 
     async def start(self):
         """Start all workers and response collectors."""
-        self.logger.info(f"Starting {len(self.workers)} env worker(s)")
-        for worker in self.workers.values():
-            worker.start()
-            # Start response collector for each worker
-            task = asyncio.create_task(worker.collect_responses())
-            self._response_collectors.append(task)
+        total_workers = sum(len(workers) for workers in self.workers.values())
+        self.logger.info(f"Starting {total_workers} env worker(s) ({self.workers_per_env} per env)")
+        for workers in self.workers.values():
+            for worker in workers:
+                worker.start()
+                # Start response collector for each worker
+                task = asyncio.create_task(worker.collect_responses())
+                self._response_collectors.append(task)
 
     async def stop(self):
         """Stop all workers and collectors."""
         for task in self._response_collectors:
             task.cancel()
-        for worker in self.workers.values():
-            worker.stop()
+        for workers in self.workers.values():
+            for worker in workers:
+                worker.stop()
 
     def _get_next_worker(self) -> EnvWorker:
-        """Round-robin through workers."""
-        env_name = self.env_names[self._worker_idx % len(self.env_names)]
-        self._worker_idx += 1
-        return self.workers[env_name]
+        """Round-robin through envs, least-pending within each env."""
+        env_name = self.env_names[self._env_idx % len(self.env_names)]
+        self._env_idx += 1
+
+        # Select worker with fewest pending requests (least-pending routing)
+        workers = self.workers[env_name]
+        return min(workers, key=lambda w: w.pending_count)
 
     async def schedule_group_rollout(self, worker: EnvWorker | None = None):
         """Asynchronously schedules a group rollout request."""
@@ -191,8 +202,9 @@ class Scheduler:
                 self.model_name = self.lora_name
 
             # Update model name on all workers
-            for worker in self.workers.values():
-                worker.update_model_name(self.model_name)
+            for workers in self.workers.values():
+                for worker in workers:
+                    worker.update_model_name(self.model_name)
 
             self.checkpoint_ready.set()
 
@@ -316,11 +328,15 @@ class Scheduler:
             "batch/off_policy_level/min": self.min_off_policy_level,
         }
 
-        # Add per-env worker lag metrics
-        for env_name, worker in self.workers.items():
-            if worker.latest_lag_metrics:
-                for metric_name, value in worker.latest_lag_metrics.items():
-                    # e.g. "worker_lag/env_name/max"
-                    metrics[f"worker_lag/{env_name}/{metric_name.split('/')[-1]}"] = value
+        # Add per-worker lag metrics and pending counts
+        for env_name, workers in self.workers.items():
+            for worker in workers:
+                worker_key = worker.worker_name
+                # Track pending count per worker (useful for debugging load balancing)
+                metrics[f"worker/{worker_key}/pending"] = worker.pending_count
+                if worker.latest_lag_metrics:
+                    for metric_name, value in worker.latest_lag_metrics.items():
+                        # e.g. "worker_lag/env_0/max"
+                        metrics[f"worker_lag/{worker_key}/{metric_name.split('/')[-1]}"] = value
 
         return metrics
