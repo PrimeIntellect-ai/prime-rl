@@ -139,7 +139,8 @@ async def orchestrate(config: OrchestratorConfig):
     buffer = Buffer(train_dataset, env.env_names, config.buffer)
     if config.val is not None:
         val_buffer_config = BufferConfig(env_ratios=config.buffer.env_ratios)
-        val_dataset = env.get_eval_dataset(seed=config.buffer.seed)
+        # Preserve historical behavior: validation dataset seeding follows val buffer config (defaults to None).
+        val_dataset = env.get_eval_dataset(seed=val_buffer_config.seed)
         val_buffer = Buffer(val_dataset, env.env_names, val_buffer_config)
     else:
         val_buffer = None
