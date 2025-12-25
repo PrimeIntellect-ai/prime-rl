@@ -153,6 +153,7 @@ def train(config: RLTrainerConfig):
             config.model.cp,
             tokenizer,
             config.rollout_transport,
+            packer_timeout_seconds=config.data.packer_timeout_seconds,
         )
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")

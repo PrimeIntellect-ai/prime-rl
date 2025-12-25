@@ -67,10 +67,23 @@ class FakeDataLoaderConfig(BaseConfig):
     ] = False
 
 
+DEFAULT_PACKER_TIMEOUT_SECONDS = 10
+
+
 class DataLoaderConfig(BaseConfig):
     """Configures the data loader used for training."""
 
     fake: Annotated[FakeDataLoaderConfig | None, Field(description="Whether to use a fake data loader.")] = None
+
+    packer_timeout_seconds: Annotated[
+        int,
+        Field(
+            ge=1,
+            description=(
+                "Timeout in seconds for the packer to wait for enough rollout tokens from the orchestrator. "
+            ),
+        ),
+    ] = DEFAULT_PACKER_TIMEOUT_SECONDS
 
 
 class BaseWeightBroadcastConfig(BaseModel):
