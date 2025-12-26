@@ -5,7 +5,6 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from httpx import AsyncClient, Timeout
-
 from prime_rl.orchestrator.config import VllmMetricsConfig
 from prime_rl.utils.logger import get_logger
 
