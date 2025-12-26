@@ -12,6 +12,8 @@ from prime_rl.orchestrator.utils import get_semaphore
 
 async def generate_group(
     client: AsyncOpenAI,
+    teacher_client: AsyncOpenAI | None,
+    teacher_model_name: str | None,
     env: vf.Environment,
     model_name: str,
     example: dict,
@@ -21,6 +23,13 @@ async def generate_group(
     """Asynchronously generate and score rollouts for a single group."""
     semaphore = await get_semaphore()
     group_inputs = [vf.RolloutInput(**example) for _ in range(rollouts_per_example)]
+
+    # Build kwargs for env.run_group - pass teacher client if distillation is enabled
+    run_group_kwargs: dict[str, Any] = {}
+    if teacher_client is not None:
+        run_group_kwargs["teacher_client"] = teacher_client
+        run_group_kwargs["teacher_model"] = teacher_model_name
+
     return await env.run_group(
         group_inputs=group_inputs,
         client=client,
@@ -28,6 +37,7 @@ async def generate_group(
         gen_sampling_args=sampling_args,
         gen_sem=semaphore,
         score_sem=semaphore,
+        **run_group_kwargs,
     )
 
 
@@ -55,15 +65,30 @@ async def generate_batch(
     rollouts_per_example: int,
     sampling_args: dict,
     pbar_description: str = "Generating rollouts",
+    teacher_clients: list[AsyncOpenAI] | None = None,
+    teacher_model_name: str | None = None,
 ) -> list[vf.State]:
     """Asynchronously generate and score rollouts for a list of groups (batch)."""
 
     total_rollouts = len(examples) * rollouts_per_example
     pbar = tqdm(total=total_rollouts, desc=pbar_description)
 
+    # Create cycle iterator for teacher clients if available
+    cycle_teacher_clients = cycle(teacher_clients) if teacher_clients else None
+
     async def generate_group_with_progress(client, example):
         """Generate rollouts for one problem and update progress."""
-        result = await generate_group(client, env, model_name, example, rollouts_per_example, sampling_args)
+        teacher_client = next(cycle_teacher_clients) if cycle_teacher_clients else None
+        result = await generate_group(
+            client=client,
+            teacher_client=teacher_client,
+            teacher_model_name=teacher_model_name,
+            env=env,
+            model_name=model_name,
+            example=example,
+            rollouts_per_example=rollouts_per_example,
+            sampling_args=sampling_args,
+        )
         pbar.update(rollouts_per_example)
         return result
 

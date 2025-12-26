@@ -43,6 +43,8 @@ class Scheduler:
         self,
         clients: list[AsyncOpenAI],
         admin_clients: list[AsyncClient],
+        teacher_clients: list[AsyncOpenAI] | None,
+        teacher_model_name: str | None,
         env: Environment,
         buffer: Buffer,
         tokenizer: PreTrainedTokenizerFast,
@@ -56,6 +58,8 @@ class Scheduler:
         self.logger = get_logger()
         self.clients = clients
         self.admin_clients = admin_clients
+        self.teacher_clients = teacher_clients
+        self.teacher_model_name = teacher_model_name
         self.env = env
         self.buffer = buffer
         self.tokenizer = tokenizer
@@ -70,6 +74,8 @@ class Scheduler:
         self.lora_name = lora_name
         self.inflight_group_rollouts: dict[asyncio.Task, InflightRolloutInfo] = {}
         self.cycle_clients = cycle(self.clients)
+        # Cycle through teacher clients if available (for load balancing across multiple teacher servers)
+        self.cycle_teacher_clients = cycle(self.teacher_clients) if self.teacher_clients else None
         self.step, self.ckpt_step = 0, 0
         self.checkpoint_ready = asyncio.Event()
         self.checkpoint_ready.set()  # Initially ready
@@ -82,9 +88,17 @@ class Scheduler:
         example = self.buffer.sample_examples(n=1)[0]
         if client is None:
             client = next(self.cycle_clients)
+
+        # Get teacher client if distillation is enabled (round-robin for load balancing)
+        teacher_client = None
+        if self.cycle_teacher_clients is not None:
+            teacher_client = next(self.cycle_teacher_clients)
+
         group_rollout_request = asyncio.create_task(
             generate_group(
                 client=client,
+                teacher_client=teacher_client,
+                teacher_model_name=self.teacher_model_name,
                 env=self.env,
                 model_name=self.model_name,
                 example=example,
