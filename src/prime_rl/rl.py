@@ -594,7 +594,7 @@ def rl(config: RLConfig):
             "run",
             "env",
             "PYTHONUNBUFFERED=1",
-            'PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"',
+            "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True",
             "torchrun",
             f"--rdzv-endpoint=localhost:{get_free_port()}",
             f"--rdzv-id={uuid.uuid4().hex}",
