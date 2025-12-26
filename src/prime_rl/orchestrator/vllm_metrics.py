@@ -10,7 +10,6 @@ from httpx import AsyncClient, Timeout
 from prime_rl.orchestrator.config import VllmMetricsConfig
 from prime_rl.utils.logger import get_logger
 
-
 _METRIC_LINE_RE = re.compile(
     r"^(?P<name>[a-zA-Z_:][a-zA-Z0-9_:]*)"
     r"(?:\{(?P<labels>[^}]*)\})?\s+"
