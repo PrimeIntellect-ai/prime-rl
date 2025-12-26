@@ -21,7 +21,7 @@ from prime_rl.utils.utils import (
     get_step_path,
     wait_for_path,
 )
-from prime_rl.utils.vf import generate_group
+from prime_rl.utils.vf import generate_group, get_training_tokens
 
 
 class InflightRolloutInfo(NamedTuple):
@@ -60,10 +60,9 @@ class Scheduler:
         self.buffer = buffer
         self.tokenizer = tokenizer
         self.config = config
-        self.batch_size = config.batch_size
-        self.rollouts_per_example = config.rollouts_per_example
-        self.seq_len = config.seq_len
-        self.problems_per_batch = int(oversampling_factor * self.batch_size // self.rollouts_per_example)
+        # Estimate problems_per_batch: tokens_per_step / seq_len gives approximate rollouts needed
+        estimated_rollouts = config.tokens_per_step // config.seq_len
+        self.problems_per_batch = int(oversampling_factor * max(estimated_rollouts // config.rollouts_per_example, 1))
         self.max_async_level = max_async_level
         self.max_off_policy_steps = max_off_policy_steps
         self.strict_async_level = strict_async_level
@@ -75,7 +74,7 @@ class Scheduler:
         self.checkpoint_ready.set()  # Initially ready
         self.update_weights_time, self.wait_for_ckpt_time = 0, 0
         self.sampling_args = get_sampling_args(config.sampling)
-        self.model_name = self.config.model.name
+        self.model_name = config.model.name
 
     async def schedule_group_rollout(self, client: AsyncOpenAI | None = None):
         """Asynchronously schedules a group rollout request."""
@@ -171,8 +170,11 @@ class Scheduler:
             await self.schedule_group_rollout()  # Schedule requests in round-robin fashion
 
         batch_rollouts: list[vf.State] = []
-        pbar = tqdm(total=self.config.batch_size, desc="Generating rollouts (train)")
-        while len(batch_rollouts) < self.config.batch_size:
+        batch_tokens = 0
+        
+        pbar = tqdm(total=self.config.tokens_per_step, desc="Generating rollouts (train)", unit="tokens")
+        
+        while batch_tokens < self.config.tokens_per_step:
             finished_group_rollouts, _ = await asyncio.wait(
                 self.inflight_group_rollouts, return_when=asyncio.FIRST_COMPLETED
             )
@@ -180,8 +182,7 @@ class Scheduler:
             await self.checkpoint_ready.wait()
 
             for finished_group_rollout in finished_group_rollouts:
-                if len(batch_rollouts) >= self.config.batch_size:
-                    batch_rollouts = batch_rollouts[: self.config.batch_size]
+                if batch_tokens >= self.config.tokens_per_step:
                     break
 
                 # Safely pop the task info. If it returns None, the task was removed externally.
@@ -195,13 +196,17 @@ class Scheduler:
                 group_states: list[vf.State] = finished_group_rollout.result()
 
                 self.buffer.update(group_states)
+                
                 accepted_rollouts = self.buffer.sample_rollouts(n=self.config.rollouts_per_example)
+                rollout_tokens = sum(get_training_tokens(r, self.config.trajectory_strategy) for r in accepted_rollouts)
+                batch_tokens += rollout_tokens
+                pbar.update(rollout_tokens)
 
                 batch_rollouts.extend(accepted_rollouts)
-                pbar.update(len(accepted_rollouts))
 
                 await self.schedule_group_rollout(client)
 
+        pbar.close()
         return batch_rollouts
 
     @property

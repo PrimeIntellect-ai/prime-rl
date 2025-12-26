@@ -16,3 +16,4 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`trainer.loss.sequence_clip_high`**: Added sequence-level importance ratio clipping threshold (2025-12-19)
 - **`trainer.loss.geo_mask_high`** and **`trainer.loss.geo_mask_low`**: Added geometric importance ratio masking thresholds (2025-12-19)
 - **`{orchestrator,trainer}.transport.zmq`**: Added ZMQ transport for training batches and micro batches (#1446, 2025-12-22)
+- **`orchestrator.tokens_per_step`**: Replaced `batch_size` with `tokens_per_step`. This field specifies the number of tokens to generate per training step (default: 262144). Rollouts are now collected until at least this many tokens are generated, rather than specifying a fixed batch size (2025-12-23)

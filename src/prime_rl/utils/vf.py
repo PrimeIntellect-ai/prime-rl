@@ -88,20 +88,37 @@ def get_prompt_len(state: vf.State) -> int:
     return getattr(first_step_response.usage, "prompt_tokens", 0)
 
 
+def get_step_tokens(step: vf.TrajectoryStep) -> int:
+    """Compute the number of tokens from a trajectory step. If raw tokens are not available, falls back to checking the usage of the response."""
+    if step["tokens"] is not None:
+        return len(step["tokens"]["prompt_ids"]) + len(step["tokens"]["completion_ids"])
+    step_response = cast(ChatCompletion, step["response"])
+    return getattr(step_response.usage, "total_tokens", 0)
+
+
 def get_seq_len(state: vf.State) -> int:
     """Compute the number of tokens from vf.State. Defined as the sum of prompt and completion tokens from the last trajectory step. If raw tokens are not available, falls back to checking the usage of the last response."""
     if not state["trajectory"]:
         return 0
-    last_step = state["trajectory"][-1]
-    if last_step["tokens"] is not None:
-        return len(last_step["tokens"]["prompt_ids"]) + len(last_step["tokens"]["completion_ids"])
-    last_step_response = cast(ChatCompletion, last_step["response"])
-    return getattr(last_step_response.usage, "total_tokens", 0)
+    return get_step_tokens(state["trajectory"][-1])
 
 
 def get_completion_len(state: vf.State) -> int:
     """Compute the number of completion tokens from vf.State. Defined as the difference between the total number of tokens and the number of prompt tokens."""
     return get_seq_len(state) - get_prompt_len(state)
+
+
+def get_training_tokens(state: vf.State, strategy: str = "interleaved") -> int:
+    """Compute the number of training tokens based on trajectory strategy.
+    
+    For interleaved: returns get_seq_len() (single concatenated sequence)
+    For branching: returns sum of all trajectory steps (each step is a separate training sample)
+    """
+    if not state["trajectory"]:
+        return 0
+    if strategy == "interleaved":
+        return get_seq_len(state)
+    return sum(get_step_tokens(step) for step in state["trajectory"])
 
 
 def get_is_truncated(state: vf.State) -> bool:
