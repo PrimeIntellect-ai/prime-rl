@@ -381,11 +381,6 @@ class CheckpointConfig(BaseConfig):
 class VllmMetricsConfig(BaseConfig):
     """Configures polling vLLM `/metrics` and logging to the monitor(s)."""
 
-    enabled: Annotated[
-        bool,
-        Field(description="Whether to poll `/metrics` from each inference endpoint."),
-    ] = True
-
     interval_seconds: Annotated[
         float,
         Field(ge=0.1, description="Minimum time between polls."),

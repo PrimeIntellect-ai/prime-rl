@@ -125,9 +125,6 @@ class VllmMetricsCollector:
         self._collector_id = uuid4().hex[:8]
 
     async def maybe_collect(self, *, step: int) -> dict[str, Any]:
-        if not self.config.enabled:
-            return {}
-
         now = time.monotonic()
         if self._last_poll_t and (now - self._last_poll_t) < self.config.interval_seconds:
             return {}
