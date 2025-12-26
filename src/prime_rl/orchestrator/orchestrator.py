@@ -33,6 +33,7 @@ from prime_rl.orchestrator.utils import (
     print_benchmark,
     set_semaphore,
 )
+from prime_rl.orchestrator.vllm_metrics import VllmMetricsCollector
 from prime_rl.utils.client import (
     check_has_model,
     check_health,
@@ -111,6 +112,12 @@ async def orchestrate(config: OrchestratorConfig):
         output_dir=config.output_dir,
         tokenizer=tokenizer,
         run_config=config,
+    )
+
+    vllm_metrics_collector = (
+        VllmMetricsCollector(admin_clients=admin_clients, config=config.vllm_metrics)
+        if config.vllm_metrics is not None
+        else None
     )
 
     # Setup heartbeat (only on rank 0, orchestrator is single process)
@@ -448,6 +455,9 @@ async def orchestrate(config: OrchestratorConfig):
             # W&B axis
             "step": progress.step,
         }
+
+        if vllm_metrics_collector is not None:
+            to_log.update(await vllm_metrics_collector.maybe_collect(step=progress.step))
 
         # If more than one env, add per-env metrics
         if results_df.task.nunique() > 1:
