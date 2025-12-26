@@ -114,11 +114,7 @@ async def orchestrate(config: OrchestratorConfig):
         run_config=config,
     )
 
-    vllm_metrics_collector = (
-        VllmMetricsCollector(admin_clients=admin_clients, config=config.vllm_metrics)
-        if config.vllm_metrics is not None
-        else None
-    )
+    vllm_metrics_collector = VllmMetricsCollector(admin_clients=admin_clients) if config.vllm_metrics else None
 
     # Setup heartbeat (only on rank 0, orchestrator is single process)
     heart = None

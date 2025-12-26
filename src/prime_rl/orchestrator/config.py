@@ -378,35 +378,6 @@ class CheckpointConfig(BaseConfig):
     ] = False
 
 
-class VllmMetricsConfig(BaseConfig):
-    """Configures polling vLLM `/metrics` and logging to the monitor(s)."""
-
-    interval_seconds: Annotated[
-        float,
-        Field(ge=0.1, description="Minimum time between polls."),
-    ] = 10.0
-
-    timeout_seconds: Annotated[
-        float,
-        Field(ge=0.1, description="HTTP timeout for `/metrics` requests."),
-    ] = 2.0
-
-    log_all_vllm_metrics: Annotated[
-        bool,
-        Field(
-            description=(
-                "If true, logs many vLLM metrics (prefixed `vllm:`/`vllm_`) in addition to a small curated set. "
-                "Can create a lot of W&B keys."
-            )
-        ),
-    ] = True
-
-    max_metrics_per_endpoint: Annotated[
-        int,
-        Field(ge=1, description="Cap on the number of extra vLLM metric names to log per endpoint."),
-    ] = 250
-
-
 class BufferConfig(BaseConfig):
     """Configures the buffer for the orchestrator."""
 
@@ -546,7 +517,10 @@ class OrchestratorConfig(BaseSettings):
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
 
-    vllm_metrics: VllmMetricsConfig | None = None
+    vllm_metrics: Annotated[
+        bool,
+        Field(description="If true, poll inference endpoints' `/metrics` and log Prometheus metrics to the monitor(s)."),
+    ] = False
 
     # The validation configuration
     val: ValConfig | None = None

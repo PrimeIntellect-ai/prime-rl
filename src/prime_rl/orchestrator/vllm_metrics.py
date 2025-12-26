@@ -7,26 +7,26 @@ from uuid import uuid4
 
 from httpx import AsyncClient, Timeout
 
-from prime_rl.orchestrator.config import VllmMetricsConfig
 from prime_rl.utils.logger import get_logger
 
+POLL_INTERVAL_SECONDS = 10.0
+TIMEOUT_SECONDS = 2.0
+MAX_METRICS_PER_ENDPOINT = 500
+
 _METRIC_LINE_RE = re.compile(
-    r"^(?P<name>[a-zA-Z_:][a-zA-Z0-9_:]*)"
-    r"(?:\{(?P<labels>[^}]*)\})?\s+"
-    r"(?P<value>[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)"
-    r"(?:\s+(?P<ts>\d+))?\s*$"
+    r"^(?P<name>[a-zA-Z_:][a-zA-Z0-9_:]*)" r"(?:\{[^}]*\})?\s+" r"(?P<value>[-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?\d+)?)"
 )
 
 
-def parse_prometheus_text(text: str) -> dict[str, list[tuple[dict[str, str], float]]]:
-    """Parse Prometheus exposition format (text) into a dict of metric -> samples.
+def parse_prometheus_text_sums(text: str) -> tuple[dict[str, float], dict[str, int]]:
+    """Parse Prometheus text and aggregate by metric name.
 
-    Notes:
-    - Ignores comments and HELP/TYPE lines.
-    - Preserves labels as dict[str, str].
-    - Drops timestamps (if present).
+    We ignore labels and just compute:
+    - sum(metric[name, labels]) per metric name
+    - series count per metric name
     """
-    out: dict[str, list[tuple[dict[str, str], float]]] = {}
+    sums: dict[str, float] = {}
+    series_counts: dict[str, int] = {}
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
@@ -34,54 +34,12 @@ def parse_prometheus_text(text: str) -> dict[str, list[tuple[dict[str, str], flo
         m = _METRIC_LINE_RE.match(line)
         if not m:
             continue
-
         name = m.group("name")
         value = float(m.group("value"))
-        labels_raw = m.group("labels")
-        labels: dict[str, str] = {}
-        if labels_raw:
-            # Very small parser: split on commas not inside quotes (prometheus uses quoted label values).
-            parts: list[str] = []
-            buf = []
-            in_quotes = False
-            esc = False
-            for ch in labels_raw:
-                if esc:
-                    buf.append(ch)
-                    esc = False
-                    continue
-                if ch == "\\":
-                    buf.append(ch)
-                    esc = True
-                    continue
-                if ch == '"':
-                    buf.append(ch)
-                    in_quotes = not in_quotes
-                    continue
-                if ch == "," and not in_quotes:
-                    parts.append("".join(buf).strip())
-                    buf = []
-                    continue
-                buf.append(ch)
-            if buf:
-                parts.append("".join(buf).strip())
+        sums[name] = sums.get(name, 0.0) + value
+        series_counts[name] = series_counts.get(name, 0) + 1
 
-            for part in parts:
-                if not part:
-                    continue
-                if "=" not in part:
-                    continue
-                k, v = part.split("=", 1)
-                k = k.strip()
-                v = v.strip()
-                if len(v) >= 2 and v[0] == '"' and v[-1] == '"':
-                    # Keep it simple: unescape common sequences
-                    v = v[1:-1]
-                    v = v.replace(r"\\", "\\").replace(r"\n", "\n").replace(r"\"", '"')
-                labels[k] = v
-
-        out.setdefault(name, []).append((labels, value))
-    return out
+    return sums, series_counts
 
 
 def _sanitize_wandb_key(s: str) -> str:
@@ -103,19 +61,18 @@ def _endpoint_id_from_base_url(base_url: str, index: int) -> str:
     return f"endpoint_{index}"
 
 
-def _metric_sum(metrics: dict[str, list[tuple[dict[str, str], float]]], name: str) -> float | None:
-    samples = metrics.get(name)
-    if not samples:
+def _get(sums: dict[str, float], name: str) -> float | None:
+    v = sums.get(name)
+    if v is None:
         return None
-    return float(sum(v for _, v in samples))
+    return float(v)
 
 
 class VllmMetricsCollector:
     """Poll vLLM `/metrics` from each inference endpoint and return metrics for logging."""
 
-    def __init__(self, admin_clients: list[AsyncClient], config: VllmMetricsConfig):
+    def __init__(self, admin_clients: list[AsyncClient]):
         self.admin_clients = admin_clients
-        self.config = config
         self.logger = get_logger()
 
         self._last_poll_t = 0.0
@@ -128,7 +85,7 @@ class VllmMetricsCollector:
 
     async def maybe_collect(self, *, step: int) -> dict[str, Any]:
         now = time.monotonic()
-        if self._last_poll_t and (now - self._last_poll_t) < self.config.interval_seconds:
+        if self._last_poll_t and (now - self._last_poll_t) < POLL_INTERVAL_SECONDS:
             return {}
 
         self._last_poll_t = now
@@ -136,7 +93,7 @@ class VllmMetricsCollector:
         async def _fetch_one(i: int, client: AsyncClient) -> tuple[str, str | None]:
             endpoint_id = _endpoint_id_from_base_url(str(client.base_url), i)
             try:
-                resp = await client.get("/metrics", timeout=Timeout(self.config.timeout_seconds))
+                resp = await client.get("/metrics", timeout=Timeout(TIMEOUT_SECONDS))
                 resp.raise_for_status()
                 return endpoint_id, resp.text
             except Exception as e:
@@ -153,18 +110,16 @@ class VllmMetricsCollector:
                 continue
             out[f"{prefix}/up"] = 1
 
-            metrics = parse_prometheus_text(text)
+            sums, series_counts = parse_prometheus_text_sums(text)
 
             # --- handful of special metrics (derived from counters) ---
             prompt_total = (
-                _metric_sum(metrics, "vllm:prompt_tokens_total")
-                or _metric_sum(metrics, "vllm_prompt_tokens_total")
-                or _metric_sum(metrics, "prompt_tokens_total")
+                _get(sums, "vllm:prompt_tokens_total") or _get(sums, "vllm_prompt_tokens_total") or _get(sums, "prompt_tokens_total")
             )
             gen_total = (
-                _metric_sum(metrics, "vllm:generated_tokens_total")
-                or _metric_sum(metrics, "vllm_generated_tokens_total")
-                or _metric_sum(metrics, "generated_tokens_total")
+                _get(sums, "vllm:generated_tokens_total")
+                or _get(sums, "vllm_generated_tokens_total")
+                or _get(sums, "generated_tokens_total")
             )
 
             if prompt_total is not None and gen_total is not None:
@@ -178,14 +133,14 @@ class VllmMetricsCollector:
                 self._last_token_counters[endpoint_id] = (now, prompt_total, gen_total)
 
             prefix_hits_total = (
-                _metric_sum(metrics, "vllm:prefix_cache_hits_total")
-                or _metric_sum(metrics, "vllm_prefix_cache_hits_total")
-                or _metric_sum(metrics, "prefix_cache_hits_total")
+                _get(sums, "vllm:prefix_cache_hits_total")
+                or _get(sums, "vllm_prefix_cache_hits_total")
+                or _get(sums, "prefix_cache_hits_total")
             )
             prefix_misses_total = (
-                _metric_sum(metrics, "vllm:prefix_cache_misses_total")
-                or _metric_sum(metrics, "vllm_prefix_cache_misses_total")
-                or _metric_sum(metrics, "prefix_cache_misses_total")
+                _get(sums, "vllm:prefix_cache_misses_total")
+                or _get(sums, "vllm_prefix_cache_misses_total")
+                or _get(sums, "prefix_cache_misses_total")
             )
             if prefix_hits_total is not None:
                 out[f"{prefix}/prefix_cache_hits_total"] = prefix_hits_total
@@ -213,24 +168,22 @@ class VllmMetricsCollector:
                 "vllm_kv_cache_usage_percent",
             ]
             for name in kv_candidates:
-                kv_val = _metric_sum(metrics, name)
+                kv_val = _get(sums, name)
                 if kv_val is not None:
                     out[f"{prefix}/kv_cache_utilization_percent"] = kv_val
                     break
 
-            # --- bulk log Prometheus metrics (no special heuristics) ---
-            if self.config.log_all_vllm_metrics:
-                emitted = 0
-                for name, samples in metrics.items():
-                    # Keep it simple: log the metric "as a scalar" by summing across label series.
-                    out[f"{prefix}/prom/{_sanitize_wandb_key(name)}"] = float(sum(v for _, v in samples))
-                    out[f"{prefix}/prom/{_sanitize_wandb_key(name)}__series"] = len(samples)
-                    emitted += 1
-                    if emitted >= self.config.max_metrics_per_endpoint:
-                        out[f"{prefix}/prom/_truncated"] = 1
-                        out[f"{prefix}/prom/_max_metrics_per_endpoint"] = self.config.max_metrics_per_endpoint
-                        out[f"{prefix}/prom/_collector_id"] = self._collector_id
-                        break
+            # --- bulk log Prometheus metrics (sum across label series) ---
+            emitted = 0
+            for name, value_sum in sums.items():
+                out[f"{prefix}/prom/{_sanitize_wandb_key(name)}"] = float(value_sum)
+                out[f"{prefix}/prom/{_sanitize_wandb_key(name)}__series"] = int(series_counts.get(name, 0))
+                emitted += 1
+                if emitted >= MAX_METRICS_PER_ENDPOINT:
+                    out[f"{prefix}/prom/_truncated"] = 1
+                    out[f"{prefix}/prom/_max_metrics_per_endpoint"] = MAX_METRICS_PER_ENDPOINT
+                    out[f"{prefix}/prom/_collector_id"] = self._collector_id
+                    break
 
             # Always include collector metadata for debugging (cheap).
             out[f"{prefix}/collector_id"] = self._collector_id
