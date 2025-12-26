@@ -11,7 +11,8 @@ from tqdm.asyncio import tqdm
 from verifiers import load_environment
 from verifiers.envs.environment import get_results_path
 
-from prime_rl.orchestrator.config import ClientConfig, EvalSamplingConfig, ModelConfig
+from prime_rl.orchestrator.config import EvalSamplingConfig, ModelConfig
+from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.vf import generate_group
 

@@ -53,6 +53,24 @@ class ClientConfig(BaseConfig):
     ] = {}
 
 
+class ThreadedClientConfig(ClientConfig):
+    """Configures the threaded OpenAI client."""
+
+    max_workers_per_client: Annotated[
+        int | None,
+        Field(
+            description="Number of worker threads per client. If None, will be auto-configured based on max_workers_per_client = max(1, max_concurrent // (num_clients * max_connections)).",
+        ),
+    ] = None
+
+    max_connections: Annotated[
+        int,
+        Field(
+            description="Maximum number of connections per httpx client. Each worker thread maintains its own client with this connection limit.",
+        ),
+    ] = 128
+
+
 class LogConfig(BaseConfig):
     """Configures the logger."""
 

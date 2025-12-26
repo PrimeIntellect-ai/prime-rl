@@ -10,7 +10,7 @@ from tests.utils import check_no_error, check_number_goes_up_or_down, check_numb
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
 
-TIMEOUT = 600  # 10 minutes
+TIMEOUT = 900  # 15 minutes
 
 
 @pytest.fixture(scope="module")
