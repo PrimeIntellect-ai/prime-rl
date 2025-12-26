@@ -121,6 +121,8 @@ class VllmMetricsCollector:
         self._last_poll_t = 0.0
         self._last_token_counters: dict[str, tuple[float, float, float]] = {}
         # endpoint_id -> (t, prompt_total, gen_total)
+        self._last_prefix_cache_counters: dict[str, tuple[float, float, float]] = {}
+        # endpoint_id -> (t, hits_total, misses_total)
 
         self._collector_id = uuid4().hex[:8]
 
@@ -153,7 +155,7 @@ class VllmMetricsCollector:
 
             metrics = parse_prometheus_text(text)
 
-            # --- tokens/sec (derived from counters) ---
+            # --- handful of special metrics (derived from counters) ---
             prompt_total = (
                 _metric_sum(metrics, "vllm:prompt_tokens_total")
                 or _metric_sum(metrics, "vllm_prompt_tokens_total")
@@ -175,50 +177,59 @@ class VllmMetricsCollector:
                     out[f"{prefix}/tokens_per_sec"] = (prompt_total - prev_prompt + gen_total - prev_gen) / dt
                 self._last_token_counters[endpoint_id] = (now, prompt_total, gen_total)
 
-            # --- kv-cache utilization (best-effort; metric names vary by vLLM version) ---
+            prefix_hits_total = (
+                _metric_sum(metrics, "vllm:prefix_cache_hits_total")
+                or _metric_sum(metrics, "vllm_prefix_cache_hits_total")
+                or _metric_sum(metrics, "prefix_cache_hits_total")
+            )
+            prefix_misses_total = (
+                _metric_sum(metrics, "vllm:prefix_cache_misses_total")
+                or _metric_sum(metrics, "vllm_prefix_cache_misses_total")
+                or _metric_sum(metrics, "prefix_cache_misses_total")
+            )
+            if prefix_hits_total is not None:
+                out[f"{prefix}/prefix_cache_hits_total"] = prefix_hits_total
+            if prefix_misses_total is not None:
+                out[f"{prefix}/prefix_cache_misses_total"] = prefix_misses_total
+            if prefix_hits_total is not None and prefix_misses_total is not None:
+                prev = self._last_prefix_cache_counters.get(endpoint_id)
+                if prev is not None:
+                    prev_t, prev_hits, prev_misses = prev
+                    dt = max(1e-6, now - prev_t)
+                    hits_d = prefix_hits_total - prev_hits
+                    misses_d = prefix_misses_total - prev_misses
+                    out[f"{prefix}/prefix_cache_hits_per_sec"] = hits_d / dt
+                    out[f"{prefix}/prefix_cache_misses_per_sec"] = misses_d / dt
+                    denom = hits_d + misses_d
+                    if denom > 0:
+                        out[f"{prefix}/prefix_cache_hit_ratio"] = hits_d / denom
+                self._last_prefix_cache_counters[endpoint_id] = (now, prefix_hits_total, prefix_misses_total)
+
+            # Stable key for kv-cache utilization (keep best-effort name mapping).
             kv_candidates = [
                 "vllm:gpu_kv_cache_usage_percent",
                 "vllm:kv_cache_usage_percent",
-                "vllm:gpu_cache_usage_percent",
-                "vllm:gpu_cache_usage_perc",
                 "vllm_gpu_kv_cache_usage_percent",
                 "vllm_kv_cache_usage_percent",
-                "vllm_gpu_cache_usage_percent",
             ]
-            kv_val = None
             for name in kv_candidates:
                 kv_val = _metric_sum(metrics, name)
                 if kv_val is not None:
+                    out[f"{prefix}/kv_cache_utilization_percent"] = kv_val
                     break
-            if kv_val is not None:
-                out[f"{prefix}/kv_cache_utilization_percent"] = kv_val
 
-            # --- request queue / load signals (commonly present) ---
-            common_gauges = [
-                "vllm:num_requests_running",
-                "vllm:num_requests_waiting",
-                "vllm:gpu_cache_usage_percent",
-                "vllm:cpu_cache_usage_percent",
-            ]
-            for name in common_gauges:
-                v = _metric_sum(metrics, name)
-                if v is not None:
-                    out[f"{prefix}/metrics/{_sanitize_wandb_key(name)}"] = v
-
-            # --- optionally log as many vLLM metrics as possible ---
+            # --- bulk log Prometheus metrics (no special heuristics) ---
             if self.config.log_all_vllm_metrics:
                 emitted = 0
                 for name, samples in metrics.items():
-                    if not (name.startswith("vllm:") or name.startswith("vllm_")):
-                        continue
-                    # Aggregate across labelsets by summing, but expose the number of series too.
-                    out[f"{prefix}/metrics/{_sanitize_wandb_key(name)}"] = float(sum(v for _, v in samples))
-                    out[f"{prefix}/metrics/{_sanitize_wandb_key(name)}__series"] = len(samples)
+                    # Keep it simple: log the metric "as a scalar" by summing across label series.
+                    out[f"{prefix}/prom/{_sanitize_wandb_key(name)}"] = float(sum(v for _, v in samples))
+                    out[f"{prefix}/prom/{_sanitize_wandb_key(name)}__series"] = len(samples)
                     emitted += 1
                     if emitted >= self.config.max_metrics_per_endpoint:
-                        out[f"{prefix}/metrics/_truncated"] = 1
-                        out[f"{prefix}/metrics/_max_metrics_per_endpoint"] = self.config.max_metrics_per_endpoint
-                        out[f"{prefix}/metrics/_collector_id"] = self._collector_id
+                        out[f"{prefix}/prom/_truncated"] = 1
+                        out[f"{prefix}/prom/_max_metrics_per_endpoint"] = self.config.max_metrics_per_endpoint
+                        out[f"{prefix}/prom/_collector_id"] = self._collector_id
                         break
 
             # Always include collector metadata for debugging (cheap).

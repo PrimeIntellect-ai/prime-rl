@@ -399,7 +399,7 @@ class VllmMetricsConfig(BaseConfig):
                 "Can create a lot of W&B keys."
             )
         ),
-    ] = False
+    ] = True
 
     max_metrics_per_endpoint: Annotated[
         int,
