@@ -8,7 +8,7 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`orchestrator.env_mix`**: Deprecated in favor of `orchestrator.buffer.env_ratios` (#1450, 2025-12-18)
 - **`orchestrator.buffer.hash_keys`**: Added hash keys configuration for buffer checkpointing (#1450, 2025-12-18)
 - **`orchestrator.buffer.env_ratios`**: Added environment ratio configuration for buffer sampling (#1450, 2025-12-18)
-- **`orchestrator.buffer.score_rollouts`**: Added configuration to control whether rollouts are scored using the environment's rubric. If False, rewards are always set to 0, online_difficulty_filtering is disabled, and easy/hard thresholds are not used (default: True)
+- **`orchestrator.buffer.skip_verification`**: Added configuration to skip verification of rollouts using the environment's rubric. If True, rewards are always set to 0, online_difficulty_filtering is disabled, and easy/hard thresholds are not used (default: False)
 - **`orchestrator.ckpt.buffer_path`**: Deprecated (#1450, 2025-12-18)
 - **`orchestrator.buffer.easy_fraction`** and **`orchestrator.buffer.hard_fraction`**: Easy and hard fraction now defines the fraction of easy and hard problems to convert to normal when resuming, whereas previously it was the ratio of easy/ hard samples to sample per step (#1450, 2025-12-18)
 - **`orchestrator.teacher_model`**: Added teacher model configuration for computing teacher logprobs (e.g. for distillation). Supports `TeacherModelConfig` (custom model) or `None` (disabled). Renamed from `reference_model` (2025-12-20)

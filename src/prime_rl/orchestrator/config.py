@@ -445,16 +445,16 @@ class BufferConfig(BaseConfig):
         ),
     ] = ["task", "prompt"]
 
-    score_rollouts: Annotated[
+    skip_verification: Annotated[
         bool,
         Field(
             description=(
-                "Whether to score rollouts using the environment's rubric. "
-                "If False, rewards are always set to 0, online_difficulty_filtering is disabled, "
+                "Whether to skip verification of rollouts using the environment's rubric. "
+                "If True, rewards are always set to 0, online_difficulty_filtering is disabled, "
                 "and easy/hard thresholds are not used."
             ),
         ),
-    ] = True
+    ] = False
 
     @model_validator(mode="after")
     def validate_thresholds(self):
@@ -469,21 +469,21 @@ class BufferConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_score_rollouts(self):
-        if not self.score_rollouts:
+    def validate_skip_verification(self):
+        if self.skip_verification:
             if self.online_difficulty_filtering:
                 raise ValueError(
-                    "online_difficulty_filtering cannot be enabled when score_rollouts is False "
+                    "online_difficulty_filtering cannot be enabled when skip_verification is True "
                     "(rewards are always 0, so filtering would discard all rollouts)."
                 )
             if self.easy_threshold is not None:
                 raise ValueError(
-                    "easy_threshold cannot be set when score_rollouts is False "
+                    "easy_threshold cannot be set when skip_verification is True "
                     "(rewards are always 0, so no examples would ever be marked as easy)."
                 )
             if self.hard_threshold is not None:
                 raise ValueError(
-                    "hard_threshold cannot be set when score_rollouts is False "
+                    "hard_threshold cannot be set when skip_verification is True "
                     "(rewards are always 0, so all examples would be marked as hard)."
                 )
         return self

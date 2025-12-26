@@ -153,8 +153,8 @@ async def orchestrate(config: OrchestratorConfig):
     if config.trajectory_strategy == "interleaved":
         logger.info("Using token prompts in environment to avoid retokenization discrepancies in multi-turn rollouts")
         env.set_interleaved_rollouts(True)
-    if not config.buffer.score_rollouts:
-        logger.info("Disabling rollout scoring (rewards will be set to 0)")
+    if config.buffer.skip_verification:
+        logger.info("Skipping verification (rewards will be set to 0)")
         env.set_score_rollouts(False)
 
     # Setup buffer
