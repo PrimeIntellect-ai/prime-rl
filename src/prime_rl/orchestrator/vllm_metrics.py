@@ -4,8 +4,7 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
-import httpx
-from httpx import AsyncClient
+from httpx import AsyncClient, Timeout
 
 from prime_rl.orchestrator.config import VllmMetricsConfig
 from prime_rl.utils.logger import get_logger
@@ -138,7 +137,7 @@ class VllmMetricsCollector:
         async def _fetch_one(i: int, client: AsyncClient) -> tuple[str, str | None]:
             endpoint_id = _endpoint_id_from_base_url(str(client.base_url), i)
             try:
-                resp = await client.get("/metrics", timeout=httpx.Timeout(self.config.timeout_seconds))
+                resp = await client.get("/metrics", timeout=Timeout(self.config.timeout_seconds))
                 resp.raise_for_status()
                 return endpoint_id, resp.text
             except Exception as e:
