@@ -1,3 +1,4 @@
+import asyncio
 import re
 import time
 from typing import Any
@@ -234,7 +235,5 @@ class VllmMetricsCollector:
 
 async def asyncio_gather_safe(awaitables: list[Any]) -> list[Any]:
     """Gather awaitables (no return_exceptions)."""
-    import asyncio
-
     return await asyncio.gather(*awaitables, return_exceptions=False)
 
