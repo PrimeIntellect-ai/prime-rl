@@ -35,6 +35,7 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
         completion_ids=deepcopy(first_step["tokens"]["completion_ids"]),
         completion_mask=completion_mask,
         completion_logprobs=deepcopy(first_step["tokens"]["completion_logprobs"]),
+        teacher_logprobs=[],  # Placeholder, set correctly after interleaving
         advantage=None,
     )
 
@@ -70,6 +71,10 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
         # New prefix is the current prompt and completion ids concatenated
         prefix_tokens = tokens["prompt_ids"] + tokens["completion_ids"]
 
+    # Initialize teacher_logprobs to zeros (will be overwritten if teacher model is configured)
+    seq_len = len(interleaved_rollout.prompt_ids) + len(interleaved_rollout.completion_ids)
+    interleaved_rollout.teacher_logprobs = [0.0] * seq_len
+
     return [interleaved_rollout]
 
 
@@ -91,6 +96,7 @@ def branch_rollout(state: vf.State) -> list[TrainingSample] | None:
             completion_mask = [False] * len(tokens["completion_mask"])
         else:
             completion_mask = [bool(i) for i in tokens["completion_mask"]]
+        seq_len = len(tokens["prompt_ids"]) + len(tokens["completion_ids"])
         rollout = TrainingSample(
             prompt_ids=deepcopy(tokens["prompt_ids"]),
             prompt_mask=[bool(i) for i in tokens["prompt_mask"]],
@@ -98,6 +104,7 @@ def branch_rollout(state: vf.State) -> list[TrainingSample] | None:
             completion_mask=completion_mask,
             completion_logprobs=deepcopy(tokens["completion_logprobs"]),
             advantage=None,
+            teacher_logprobs=[0.0] * seq_len,
         )
         rollouts.append(rollout)
     return rollouts

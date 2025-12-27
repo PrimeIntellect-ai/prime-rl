@@ -428,6 +428,46 @@ class RLConfig(BaseSettings):
                 raise ValueError("NCCL weight broadcast requires at least 2 GPUs to build the broadcast process group.")
         return self
 
+    @model_validator(mode="after")
+    def auto_setup_skip_verification(self):
+        if self.trainer.loss.adv_tau == 0:
+            buffer = self.orchestrator.buffer
+            if buffer.online_difficulty_filtering:
+                raise ValueError(
+                    "online_difficulty_filtering cannot be enabled when adv_tau = 0 "
+                    "(skip_verification will be automatically set to True, rewards are always 0, "
+                    "so filtering would discard all rollouts)."
+                )
+            if buffer.easy_threshold is not None:
+                raise ValueError(
+                    "easy_threshold cannot be set when adv_tau = 0 "
+                    "(skip_verification will be automatically set to True, rewards are always 0, "
+                    "so no examples would ever be marked as easy)."
+                )
+            if buffer.hard_threshold is not None:
+                raise ValueError(
+                    "hard_threshold cannot be set when adv_tau = 0 "
+                    "(skip_verification will be automatically set to True, rewards are always 0, "
+                    "so all examples would be marked as hard)."
+                )
+            buffer.skip_verification = True
+        elif self.orchestrator.buffer.skip_verification:
+            raise ValueError(
+                "skip_verification cannot be True when adv_tau > 0. "
+                "Either set adv_tau = 0 to skip verification, or remove the skip_verification setting."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_teacher_model(self):
+        if self.trainer.loss.teacher_tau > 0:
+            if not self.orchestrator.teacher_model:
+                raise ValueError(
+                    "teacher_model must be configured when teacher_tau > 0. "
+                    "Either set teacher_tau = 0 to disable teacher logprobs, or configure teacher_model."
+                )
+        return self
+
 
 def cleanup_threads(threads: list[Thread]):
     for thread in threads:

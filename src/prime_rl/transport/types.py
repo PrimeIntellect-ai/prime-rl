@@ -10,6 +10,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     completion_ids: list[int]
     completion_mask: list[bool]
     completion_logprobs: list[float]
+    teacher_logprobs: list[float]
     advantage: float | None = None
 
 
@@ -30,5 +31,6 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     loss_mask: list[bool]
     advantages: list[float]
     inference_logprobs: list[float]
+    teacher_logprobs: list[float]
     position_ids: list[int]
-    temperature: float | None = None
+    temperature: float

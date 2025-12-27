@@ -1,13 +1,19 @@
+import asyncio
+from itertools import cycle
 from typing import Any, AsyncContextManager
 
 import pandas as pd
+from openai import AsyncOpenAI
 from openai.types.chat.chat_completion import ChatCompletion, Choice
 from openai.types.completion_usage import CompletionUsage
 from rich.console import Console
 from rich.table import Table
+from transformers import PreTrainedTokenizerFast
 from verifiers.utils.async_utils import maybe_semaphore
 
 from prime_rl.orchestrator.config import SamplingConfig
+from prime_rl.transport import TrainingSample
+from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import (
     format_num,
     format_time,
@@ -129,3 +135,48 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
 
     # Display table
     console.print(table)
+
+
+async def compute_teacher_logprobs(
+    clients: list[AsyncOpenAI],
+    model_name: str,
+    samples: list[TrainingSample],
+) -> list[list[float]]:
+    """Compute teacher model logprobs for a batch of training samples via prefill."""
+
+    async def _compute_single(client: AsyncOpenAI, sample: TrainingSample) -> list[float]:
+        async with await get_semaphore():
+            response = await client.post(
+                "/chat/completions/tokens",
+                body={
+                    "model": model_name,
+                    "messages": [{"role": "user", "content": ""}],
+                    "tokens": sample.prompt_ids + sample.completion_ids,
+                    "max_tokens": 1,
+                    "temperature": 1.0,
+                    "top_p": 1.0,
+                    "skip_special_tokens": False,
+                    "prompt_logprobs": True,
+                },
+                cast_to=ChatCompletion,
+            )
+        return [0.0 if lp is None else next(iter(lp.values())) for lp in response.prompt_logprobs]
+
+    return await asyncio.gather(*[_compute_single(client, sample) for client, sample in zip(cycle(clients), samples)])
+
+
+def validate_tokenizer_compatibility(
+    main_tokenizer: PreTrainedTokenizerFast,
+    teacher_tokenizer: PreTrainedTokenizerFast,
+) -> None:
+    """Validate that the main and teacher tokenizers are compatible."""
+    if main_tokenizer.vocab_size != teacher_tokenizer.vocab_size:
+        raise ValueError(
+            f"Tokenizer vocab size mismatch: main={main_tokenizer.vocab_size}, teacher={teacher_tokenizer.vocab_size}"
+        )
+    for attr in ("bos_token_id", "eos_token_id", "pad_token_id"):
+        if getattr(main_tokenizer, attr) != getattr(teacher_tokenizer, attr):
+            raise ValueError(
+                f"Special token mismatch for {attr}: main={getattr(main_tokenizer, attr)}, teacher={getattr(teacher_tokenizer, attr)}"
+            )
+    get_logger().info(f"Tokenizer compatibility validated: vocab_size={main_tokenizer.vocab_size}")
