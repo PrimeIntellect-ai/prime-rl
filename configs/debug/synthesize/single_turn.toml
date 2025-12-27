@@ -3,5 +3,5 @@ num_examples = 16
 rollouts_per_example = 4
 
 [[env]]
-id = "primeintellect/single-turn-math"
+id = "primeintellect/math-env"
 args = { dataset_name = "openai/gsm8k", dataset_subset = "main" }

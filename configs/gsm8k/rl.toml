@@ -19,8 +19,9 @@ rollouts_per_example = 16
 max_tokens = 2048
 
 [[orchestrator.env]]
-id = "primeintellect/single-turn-math"
-args = { dataset_name = "openai/gsm8k", dataset_subset = "main" }
+id = "primeintellect/math-env"
+name = "gsm8k"
+args = { dataset_name = "openai/gsm8k", dataset_subset = "main", math_verify_max_workers = 128, math_verify_timeout = 60 }
 
 [trainer] # Default trainer config
 

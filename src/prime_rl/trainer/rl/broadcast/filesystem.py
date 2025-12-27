@@ -35,10 +35,11 @@ class FileSystemWeightBroadcast(WeightBroadcast):
             f"Filesystem broadcast initialized (save_format={config.save_format}, save_sharded={self.save_sharded})"
         )
 
-    def broadcast_weights(self, model: nn.Module, step: int, adapter_only: bool = False):
+    def broadcast_weights(self, model: nn.Module, step: int) -> None:
         """Broadcast weights by saving a HF-compatible checkpoint to shared filesystem and notifies the orchestrator."""
         self.logger.debug("Starting broadcasting weights to inference engine via shared filesystem")
         start_time = time.perf_counter()
+        adapter_only = self.lora_config is not None
         if adapter_only:
             state_dict = get_adapter_state_dict(model, is_master=self.world.is_master)
         else:

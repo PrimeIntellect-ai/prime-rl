@@ -196,11 +196,11 @@ class ModelConfig(BaseConfig):
     ] = 1
 
     impl: Annotated[
-        Literal["hf", "liger_kernel", "custom"],
+        Literal["hf", "liger_kernel", "custom", "auto"],
         Field(
-            description="Whether to use Liger Kernel.",
+            description="Model implementation to use. 'auto' (default) selects 'custom' if supported by the model, otherwise 'hf'.",
         ),
-    ] = "hf"
+    ] = "auto"
 
     optimization_dtype: Annotated[
         Literal["bfloat16", "float32"],
@@ -248,14 +248,21 @@ class ModelConfig(BaseConfig):
     def trust_remote_code_only_with_hf(self):
         """Trust remote code only if the model is from HF."""
         if self.trust_remote_code:
-            if self.impl != "hf":
-                raise ValueError("Trust remote code is only supported with the HF implementation.")
+            if self.impl not in ("hf", "auto"):
+                raise ValueError("Trust remote code is only supported with the HF implementation or auto mode.")
         return self
 
     @model_validator(mode="after")
     def cp_only_with_flash_attn(self):
         if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3"]:
             raise ValueError("CP is only supported with flash attention 2 or flash attention 3")
+        return self
+
+    @model_validator(mode="after")
+    def ac_offloading_requires_ac(self):
+        """Automatically enable activation checkpointing when activation offloading is enabled."""
+        if self.ac_offloading is not None and self.ac is None:
+            self.ac = ActivationCheckpointConfig()
         return self
 
 

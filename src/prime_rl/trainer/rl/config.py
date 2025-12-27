@@ -76,7 +76,7 @@ class DataLoaderConfig(BaseConfig):
 class BaseWeightBroadcastConfig(BaseModel):
     """Configures the base weight broadcast."""
 
-    adapter_only: Annotated[bool, Field(description="Whether to save LoRA adapters only for weight broadcast.")] = False
+    pass
 
 
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
@@ -237,9 +237,7 @@ class RLTrainerConfig(BaseSettings):
 
     @model_validator(mode="after")
     def validate_lora_broadcast(self):
-        if self.weight_broadcast.adapter_only and not self.model.lora:
-            raise ValueError("Adapter only weight broadcast requires LoRA to be enabled.")
-        if self.weight_broadcast.type == "nccl" and self.weight_broadcast.adapter_only:
+        if self.model.lora is not None and self.weight_broadcast.type == "nccl":
             # TODO: Support this
             raise ValueError("NCCL weight broadcast does not support LoRA yet.")
         return self

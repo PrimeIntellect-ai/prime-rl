@@ -79,7 +79,7 @@ Start the inference server:
 
 ```bash
 # In the `Inference` pane
-uv run inference --model.name Qwen/Qwen3-4B-Instruct-2507 --model.enable_auto_tool_choice --model.tool_call_parser hermes
+uv run inference --enable-lora --model.name Qwen/Qwen3-4B-Instruct-2507 --model.enable_auto_tool_choice --model.tool_call_parser hermes
 ```
 
 Evaluate the base model:
@@ -122,7 +122,7 @@ Evaluate your trained model:
 
 ```bash
 # In the `Inference` pane
-uv run inference --model.name <user>/Qwen3-4B-Instruct-WikiSearch-RL --inference.model.enable_auto_tool_choice true --inference.model.tool_call_parser hermes
+uv run inference --enable-lora --model.name <user>/Qwen3-4B-Instruct-WikiSearch-RL --inference.model.enable_auto_tool_choice true --inference.model.tool_call_parser hermes
 ```
 
 ```bash

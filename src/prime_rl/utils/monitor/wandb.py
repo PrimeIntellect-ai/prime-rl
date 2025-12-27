@@ -101,7 +101,11 @@ class WandbMonitor(Monitor):
         start_time = time.perf_counter()
 
         for rollout in rollouts:
-            tokens = rollout["trajectory"][-1]["tokens"]
+            trajectory = rollout["trajectory"]
+            if not trajectory:
+                continue
+            last_step = trajectory[-1]
+            tokens = last_step["tokens"]
             full_ids = tokens["prompt_ids"] + tokens["completion_ids"]
             messages_text = self.tokenizer.decode(full_ids)
             sample = {
