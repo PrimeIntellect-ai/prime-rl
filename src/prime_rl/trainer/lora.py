@@ -1,13 +1,16 @@
 import re
-from typing import Dict, List
+from typing import Dict, List, Union
 
 import torch
 import torch.nn as nn
 
 from prime_rl.trainer.config import LoRAConfig
-from prime_rl.trainer.models.layers.lora import MultiLoRALinear, MultiLoRAModule
+from prime_rl.trainer.models.layers.lora import LoRALinear, MultiLoRALinear, MultiLoRAModule
 from prime_rl.trainer.runs import get_runs
 from prime_rl.utils.logger import get_logger
+
+# Type alias for any LoRA module
+LoRAModule = Union[LoRALinear, MultiLoRAModule]
 
 
 def strip_lora_from_state_dict(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
@@ -127,12 +130,17 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
     WARNING: This function modifies requires_grad on parameters. If using FSDP2,
     this MUST be called BEFORE setup_fsdp() to avoid dtensor/sharding issues.
 
+    Uses LoRALinear (single adapter) when max_concurrent_runs=1, otherwise uses
+    MultiLoRALinear (multi-adapter) for concurrent run support.
+
     Args:
         model: The model to apply LoRA to
         config: LoRA configuration
     """
     logger = get_logger()
-    n_loras = get_runs().max_runs
+    runs = get_runs()
+    n_loras = runs.max_runs
+    use_single_adapter = n_loras == 1
 
     from torch.distributed.fsdp import FSDPModule
 
@@ -143,6 +151,7 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
         raise RuntimeError("Cannot apply LoRA to FSDP-wrapped model. Apply LoRA before setup_fsdp().")
 
     logger.debug(f"Applying LoRA to model: {model} for {config.target_modules}")
+    logger.debug(f"Using {'single-adapter LoRALinear' if use_single_adapter else 'multi-adapter MultiLoRALinear'}")
     target_modules = _find_target_modules(model, config.target_modules)
     logger.debug(
         f"Found {len(target_modules)} target modules for LoRA: {target_modules[:10]} ... {target_modules[-10:]}"
@@ -159,14 +168,24 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
             logger.warning(f"Module {module_name} is not nn.Linear, skipping")
             continue
 
-        lora_module = MultiLoRALinear(
-            base_layer=base_module,
-            rank=config.rank,
-            n_adapters=n_loras,
-            alpha=config.alpha,
-            dropout=config.dropout,
-        )
-        lora_module.register_with_runs(get_runs(), module_name)
+        if use_single_adapter:
+            # Use simple single-adapter LoRA for max_concurrent_runs=1
+            lora_module: LoRAModule = LoRALinear(
+                base_layer=base_module,
+                rank=config.rank,
+                alpha=config.alpha,
+                dropout=config.dropout,
+            )
+        else:
+            # Use multi-adapter LoRA for concurrent runs
+            lora_module = MultiLoRALinear(
+                base_layer=base_module,
+                rank=config.rank,
+                n_adapters=n_loras,
+                alpha=config.alpha,
+                dropout=config.dropout,
+            )
+            lora_module.register_with_runs(runs, module_name)
 
         _set_module_by_name(model, module_name, lora_module)
 
@@ -178,7 +197,10 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
     lora_adapter_params = 0
     lora_adapted_params = 0
     for name, module in model.named_modules():
-        if isinstance(module, MultiLoRAModule):
+        if isinstance(module, LoRALinear):
+            lora_adapter_params += module.lora_A.numel() + module.lora_B.numel()
+            lora_adapted_params += module.base_layer.weight.numel()
+        elif isinstance(module, MultiLoRAModule):
             lora_adapter_params += module.lora_A[0].numel() + module.lora_B[0].numel()
             lora_adapted_params += module.base_layer.weight.numel()
 
@@ -191,9 +213,9 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
 
 
 def has_lora_layers(model: nn.Module) -> bool:
-    """Check if model has LoRA layers."""
+    """Check if model has LoRA layers (either single or multi-adapter)."""
     for module in model.modules():
-        if isinstance(module, MultiLoRAModule):
+        if isinstance(module, (LoRALinear, MultiLoRAModule)):
             return True
     return False
 
@@ -234,7 +256,7 @@ def save_lora_config(config: LoRAConfig, model: nn.Module, save_path) -> None:
     modules_to_save = set()
 
     for name, module in model.named_modules():
-        if isinstance(module, MultiLoRAModule):
+        if isinstance(module, (LoRALinear, MultiLoRAModule)):
             module_suffix = name.split(".")[-1]
             target_modules.add(module_suffix)
 

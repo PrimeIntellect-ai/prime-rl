@@ -91,9 +91,11 @@ def train(config: RLTrainerConfig):
     # Setup runs and offsets
     setup_runs(config.output_dir, config.max_concurrent_runs)
     runs = get_runs()
-    set_multilora_offsets(
-        torch.tensor([0] * config.max_concurrent_runs, dtype=torch.int32, device=torch.device("cuda", world.local_rank))
-    )
+    # Only set multilora offsets for multi-adapter case (max_concurrent_runs > 1)
+    if config.max_concurrent_runs > 1:
+        set_multilora_offsets(
+            torch.tensor([0] * config.max_concurrent_runs, dtype=torch.int32, device=torch.device("cuda", world.local_rank))
+        )
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
 
@@ -122,14 +124,10 @@ def train(config: RLTrainerConfig):
     logger.info(f"Using `{config.loss.ratio_type}` importance ratio ({config.loss})")
 
     if config.max_concurrent_runs == 1:
-        if config.model.lora:
-            optimizer = setup_optimizer(
-                config.optim, runs.get_named_parameters_for_run(0), parallel_dims.world_mesh["dp_shard_cp"]
-            )
-        else:
-            optimizer = setup_optimizer(
-                config.optim, list(model.named_parameters()), parallel_dims.world_mesh["dp_shard_cp"]
-            )
+        # For single adapter (LoRALinear), use all trainable model parameters directly
+        optimizer = setup_optimizer(
+            config.optim, list(model.named_parameters()), parallel_dims.world_mesh["dp_shard_cp"]
+        )
         scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
     else:
         optimizer = setup_multi_optimizer(config.optim, parallel_dims.world_mesh["dp_shard_cp"])
@@ -284,7 +282,8 @@ def train(config: RLTrainerConfig):
                 input_ids, forward_position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
             else:
                 forward_position_ids = position_ids
-            if config.model.lora:
+            # Only set multilora offsets for multi-adapter case (max_concurrent_runs > 1)
+            if config.model.lora and config.max_concurrent_runs > 1:
                 lora_num_tokens = micro_batch["lora_num_tokens"].to("cuda")
                 lora_cu_offsets = lora_num_tokens.cumsum(dim=0, dtype=torch.int32)
                 if cp_enabled:
