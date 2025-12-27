@@ -349,7 +349,7 @@ class OnlineEvalConfig(EvalConfig):
                 "online eval that would otherwise run immediately at the resumed checkpoint step."
             ),
         ),
-    ] = False
+    ] = True
 
 
 class CheckpointConfig(BaseConfig):
