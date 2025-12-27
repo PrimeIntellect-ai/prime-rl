@@ -393,7 +393,6 @@ class RLConfig(BaseSettings):
         if self.trainer.model.lora is not None:
             if self.trainer.weight_broadcast.type == "nccl":
                 raise ValueError("NCCL weight broadcast does not support LoRA yet.")
-            self.trainer.weight_broadcast.adapter_only = True
             if self.orchestrator.lora_name is None:
                 lora_name = f"r{self.trainer.model.lora.rank}-a{self.trainer.model.lora.alpha}"
                 self.orchestrator.lora_name = lora_name
