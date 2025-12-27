@@ -13,8 +13,14 @@ from prime_rl.trainer.rl.config import LossConfig
 def selective_log_softmax(
     logits: Float[Tensor, "batch seq vocab"], index: Int[Tensor, "batch seq"]
 ) -> Float[Tensor, "batch seq"]:
-    logprobs = logits.log_softmax(dim=-1)
-    return torch.gather(logprobs, dim=-1, index=index.unsqueeze(-1)).squeeze(-1)
+    # Memory-efficient selective log-softmax:
+    # log p(x=i) = logits_i - logsumexp(logits)
+    #
+    # This avoids materializing a full (batch, seq, vocab) log_softmax tensor, which can be a large
+    # transient allocation and a major VRAM spike in RL (especially at long seq / large vocab).
+    lse = torch.logsumexp(logits, dim=-1, dtype=torch.float32)  # (batch, seq)
+    selected = torch.gather(logits, dim=-1, index=index.unsqueeze(-1)).squeeze(-1).to(torch.float32)
+    return selected - lse
 
 
 @jaxtyped(typechecker=typechecker)

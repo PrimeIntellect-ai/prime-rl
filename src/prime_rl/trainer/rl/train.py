@@ -23,7 +23,6 @@ from prime_rl.utils.cp import (
 )
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
-    shift_logits,
     selective_log_softmax,
     compute_entropy,
     compute_loss,
@@ -271,16 +270,28 @@ def train(config: RLTrainerConfig):
 
             # Forward pass
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                logits = forward(model, input_ids, forward_position_ids).float().contiguous()
+                logits = forward(model, input_ids, forward_position_ids).contiguous()
 
             if cp_enabled:
                 left_pad_logit = get_padding_logit_from_prev_cp_rank(logits, cp_rank, cp_size, cp_group)
             else:
                 left_pad_logit = None
 
-            shifted_logits = shift_logits(logits, left_pad_logit=left_pad_logit)
-            shifted_logits = shifted_logits / temperature
-            trainer_logprobs = selective_log_softmax(shifted_logits, input_ids)
+            # Compute logprobs without materializing shifted logits (B,S,V) or log_softmax(B,S,V).
+            # For position t, we want logits at t-1 predicting token at t.
+            # The first token uses left_pad_logit (CP boundary) or a dummy 0-logit.
+            if left_pad_logit is None:
+                first_logprob = torch.zeros(
+                    input_ids.shape[0], 1, device=logits.device, dtype=torch.float32
+                )  # (batch, 1)
+            else:
+                first_logprob = selective_log_softmax(left_pad_logit / temperature, input_ids[:, :1])  # (batch, 1)
+
+            next_logprobs = selective_log_softmax(
+                logits[:, :-1, :] / temperature,
+                input_ids[:, 1:],
+            )  # (batch, seq-1)
+            trainer_logprobs = torch.cat([first_logprob, next_logprobs], dim=1)  # (batch, seq)
 
             if cp_enabled:
                 trainer_logprobs = dist_nn.all_gather(trainer_logprobs, group=cp_group)
@@ -298,15 +309,23 @@ def train(config: RLTrainerConfig):
             )
 
             # Compute entropy
-            entropy = compute_entropy(shifted_logits)
+            if left_pad_logit is None:
+                first_entropy = compute_entropy(
+                    torch.zeros(input_ids.shape[0], 1, logits.shape[-1], device=logits.device, dtype=logits.dtype)
+                )  # (batch, 1)
+            else:
+                first_entropy = compute_entropy(left_pad_logit / temperature)  # (batch, 1)
+
+            next_entropy = compute_entropy(logits[:, :-1, :] / temperature)  # (batch, seq-1)
+            entropy = torch.cat([first_entropy, next_entropy], dim=1)  # (batch, seq)
 
             if cp_enabled:
                 entropies = [torch.zeros_like(entropy) for _ in range(cp_size)]
                 dist.all_gather(entropies, entropy, group=cp_group)
                 entropy = torch.cat(entropies, dim=1)
 
-            # Delete logits and shifted_logits before backward pass to avoid memory spike
-            del logits, shifted_logits
+            # Delete logits before backward pass to avoid memory spike
+            del logits
 
             # Backward pass
             with maybe_record_function("backward"):
