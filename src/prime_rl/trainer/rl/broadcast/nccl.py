@@ -19,6 +19,27 @@ from prime_rl.trainer.weights import get_max_layer_num
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import get_broadcast_dir, get_step_path
 
+NCCL_READY_FILENAME = "NCCL_READY"
+
+
+def _wait_for_path_with_timeout(path: Path, timeout_s: int, interval_s: float = 1.0) -> None:
+    """Wait for a path to exist, with timeout.
+
+    We prefer waiting here (before entering NCCL collectives) to avoid NCCL op timeouts
+    when inference workers haven't started participating yet.
+    """
+    logger = get_logger()
+    start = time.monotonic()
+    logged_at = 0
+    while not path.exists():
+        waited = int(time.monotonic() - start)
+        if waited >= timeout_s:
+            raise TimeoutError(f"Timed out waiting for `{path}` after {timeout_s}s")
+        if waited >= logged_at + 10 and waited > 0:
+            logger.debug(f"Waiting for `{path}` ({waited}s elapsed)")
+            logged_at = waited
+        time.sleep(interval_s)
+
 
 def broadcast_integer(integer: int, communicator: PyNcclCommunicator) -> None:
     """Broadcast an integer to a process group using NCCL communicator."""
@@ -146,6 +167,7 @@ class NCCLWeightBroadcast(WeightBroadcast):
         self.logger = get_logger()
         self.world = get_world()
         self.runs = get_runs()
+        self.timeout_s = config.timeout
         self.nccl_broadcast_sender = NCCLWeightBroadcastSender(
             config.host, config.port, 0, config.inference_world_size + 1, device, config.timeout
         )
@@ -155,10 +177,23 @@ class NCCLWeightBroadcast(WeightBroadcast):
         """Broadcast the state dict of a model into the inference pool using NCCL and notifies the orchestrator."""
         if adapter_only:
             raise NotImplementedError("NCCL weight broadcast does not support adapter only yet")
+
+        # Only broadcast when at least one run has requested an update.
+        # (Otherwise we'd enter NCCL collectives without receivers.)
+        active_run_idxs = [idx for idx in self.runs.used_idxs if self.runs.ready_to_update[idx]]
+        if len(active_run_idxs) == 0:
+            return
+
         self.logger.debug("Starting broadcasting weights to inference engine via NCCL")
         start_time = time.perf_counter()
         if self.world.is_master:
             self._notify_orchestrator()
+            # Handshake: wait for orchestrator to signal inference is about to enter
+            # the receive path for this step.
+            for idx in active_run_idxs:
+                step_dir = get_step_path(get_broadcast_dir(self.runs.get_run_dir(idx)), self.runs.progress[idx].step)
+                ready_file = step_dir / NCCL_READY_FILENAME
+                _wait_for_path_with_timeout(ready_file, timeout_s=self.timeout_s)
         self.nccl_broadcast_sender.broadcast_weights(model, step)
         self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
 
