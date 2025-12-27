@@ -24,6 +24,11 @@ from loguru import logger
 from transformers import AutoTokenizer
 
 from prime_rl.eval.utils import run_evals
+from prime_rl.eval.state import (
+    infer_last_completed_online_eval_ckpt_step_from_disk,
+    read_last_completed_online_eval_ckpt_step,
+    write_last_completed_online_eval_ckpt_step,
+)
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.orchestrator.config import BufferConfig, OrchestratorConfig
@@ -208,6 +213,13 @@ async def orchestrate(config: OrchestratorConfig):
     max_steps = config.max_steps or int(1e9)
     logger.info(f"Starting orchestrator loop (max_steps={max_steps or 'infinite'})")
     last_eval_step = -1
+    if config.eval:
+        persisted_last = read_last_completed_online_eval_ckpt_step(config.output_dir)
+        inferred_last = (
+            infer_last_completed_online_eval_ckpt_step_from_disk(config.output_dir) if persisted_last is None else None
+        )
+        last_eval_step = persisted_last if persisted_last is not None else (inferred_last if inferred_last is not None else -1)
+        logger.info(f"Initialized online eval resume state (last_completed_ckpt_step={last_eval_step})")
     is_first_step = True
     await set_semaphore(config.max_concurrent or -1)
 
@@ -268,6 +280,7 @@ async def orchestrate(config: OrchestratorConfig):
             val_task = asyncio.create_task(asyncio.sleep(0))  # Dummy task
 
         # Schedule running evals at the specified interval
+        scheduled_eval_ckpt_step: int | None = None
         if (
             config.eval
             and ckpt_step % config.eval.interval == 0
@@ -275,6 +288,7 @@ async def orchestrate(config: OrchestratorConfig):
             and ((ckpt_step == 0 and config.eval.eval_base_model) or ckpt_step > 0)
         ):
             last_eval_step = ckpt_step
+            scheduled_eval_ckpt_step = ckpt_step
             logger.info(f"Running evals for checkpoint step {ckpt_step}")
             eval_task = asyncio.create_task(
                 run_evals(
@@ -333,6 +347,9 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Await eval results
         await eval_task
+        if scheduled_eval_ckpt_step is not None:
+            # Record completion after eval finishes successfully so restarts don't re-run it.
+            write_last_completed_online_eval_ckpt_step(config.output_dir, scheduled_eval_ckpt_step)
 
         # Gather metrics in dataframes
         results_df = pd.DataFrame(
@@ -510,6 +527,7 @@ async def orchestrate(config: OrchestratorConfig):
             ckpt_step=scheduler.ckpt_step,
             step=progress.step,
         )
+        write_last_completed_online_eval_ckpt_step(config.output_dir, scheduler.ckpt_step)
 
     # Log final (immutable) samples and distributions to monitor(s)
     monitor.log_final_samples()
