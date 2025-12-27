@@ -377,8 +377,12 @@ def train(config: SFTTrainerConfig):
             "time/forward_backward": forward_backward_time,
             "step": progress.step,
         }
-        time_metrics.update(get_ckpt_disk_metrics(config.output_dir))
         monitor.log(time_metrics)
+
+        # Log disk metrics
+        disk_metrics = get_ckpt_disk_metrics(config.output_dir)
+        disk_metrics["step"] = progress.step
+        monitor.log(disk_metrics)
 
         if is_tt_moe_model(model):
             max_vio_log_metrics = {
