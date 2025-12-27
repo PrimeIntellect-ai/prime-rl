@@ -14,6 +14,7 @@ from prime_rl.trainer.runs import get_runs
 from prime_rl.trainer.utils import maybe_clean
 from prime_rl.trainer.weights import (
     gather_weights_on_master,
+    get_adapter_state_dict,
     save_state_dict,
 )
 from prime_rl.trainer.world import get_world
@@ -40,18 +41,24 @@ class FileSystemWeightBroadcast(WeightBroadcast):
         self.logger.debug("Starting broadcasting weights to inference engine via shared filesystem")
         start_time = time.perf_counter()
 
+        use_single_adapter = self.runs.max_runs == 1
+
         if not adapter_only:
             state_dict = gather_weights_on_master(model, is_master=self.world.is_master)
             if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
                 model.convert_to_hf(state_dict)
+        elif adapter_only and use_single_adapter:
+            # For single adapter (max_concurrent_runs=1), use shared adapter state dict
+            # This matches the original behavior where all runs get the same weights
+            state_dict = get_adapter_state_dict(model, is_master=self.world.is_master)
 
         for idx in self.runs.used_idxs:
             if not self.runs.ready_to_update[idx]:
                 continue
             self.logger.debug(f"Broadcasting weights for run {idx} (ready_to_update={self.runs.ready_to_update[idx]})")
 
-            if adapter_only:
-                # For adapter-only, Runs creates state dict directly for each run
+            if adapter_only and not use_single_adapter:
+                # For multi-adapter (max_concurrent_runs>1), Runs creates state dict for each run
                 # All ranks must participate in DTensor gathering, but only master saves
                 state_dict = self.runs.get_state_dict_for_run(idx)
                 for key, value in state_dict.items():
