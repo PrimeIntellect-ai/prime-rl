@@ -191,6 +191,11 @@ class RLTrainerConfig(BaseSettings):
         ),
     ] = 4
 
+    logprob_chunk_size: Annotated[
+        int,
+        Field(description="Chunk size for computing log probabilities from logits."),
+    ] = -1
+
     @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench:

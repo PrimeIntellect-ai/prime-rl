@@ -18,6 +18,22 @@ def selective_log_softmax(
 
 
 @jaxtyped(typechecker=typechecker)
+def chunked_selective_log_softmax(
+    logits: Float[Tensor, "batch seq vocab"],
+    index: Int[Tensor, "batch seq"],
+    chunk_size: int = -1,
+) -> Float[Tensor, "batch seq"]:
+
+    if chunk_size <= 0:
+        return selective_log_softmax(logits, index)
+    
+    logprobs_chunks = [
+        selective_log_softmax(logits_chunk, index_chunk)
+        for logits_chunk, index_chunk in zip(logits.split(chunk_size, dim=1), index.split(chunk_size, dim=1))
+    ]
+    return torch.cat(logprobs_chunks, dim=1)
+
+@jaxtyped(typechecker=typechecker)
 @torch.compile(dynamic=True)
 def compute_entropy(shifted_logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq"]:
     with torch.no_grad():
