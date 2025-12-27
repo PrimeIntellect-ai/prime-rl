@@ -61,6 +61,7 @@ class Packer:
             return False
 
     def pack(self):
+        assert all(not i for i in self.runs.ready_to_update), "No runs should be ready to update at start of pack."
         training_batches: dict[int, TrainingBatch] = self.get_batch()
         start_time = time.time()
         while not self.has_enough_tokens(training_batches):
@@ -90,7 +91,8 @@ class Packer:
             seq_len=self.seq_len,
             pad_to_multiple_of=self.pad_to_multiple_of,
             num_train_workers=self.dp_world_size,
-            # idxs=train_idxs, # Needed for lora later
+            idxs=train_idxs,
+            num_loras=self.runs.max_runs,
         )
 
         self.sender.send(micro_batch_grid)

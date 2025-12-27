@@ -1,8 +1,11 @@
 from pathlib import Path
 
 import tomli_w
+import torch.distributed as dist
 
 from prime_rl.trainer.runs import Runs
+
+dist.init_process_group(backend="gloo")
 
 
 def create_run_with_config(

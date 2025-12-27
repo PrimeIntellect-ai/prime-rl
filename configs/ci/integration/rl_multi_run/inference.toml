@@ -1,0 +1,10 @@
+# Inference config for multi-run RL integration test
+enable_lora = true
+max_lora_rank = 8
+max_loras = 4
+gpu_memory_utilization = 0.7
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+max_model_len = 2048
+
