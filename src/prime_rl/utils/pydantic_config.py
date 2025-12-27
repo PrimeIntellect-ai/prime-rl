@@ -2,7 +2,7 @@ import sys
 import uuid
 import warnings
 from pathlib import Path
-from typing import Annotated, ClassVar, Type, TypeVar
+from typing import Annotated, Any, ClassVar, Type, TypeVar
 
 import tomli
 import tomli_w
@@ -281,3 +281,23 @@ def get_temp_toml_file() -> Path:
     root_path = Path(".pydantic_config")
     root_path.mkdir(exist_ok=True)
     return root_path / f"temp_{temp_uuid}.toml"
+
+
+def merge_nested_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """
+    Recursively merge two nested dicts. Values from override take precedence.
+
+    For nested dicts, merges recursively. For all other values, override replaces base.
+
+    Example:
+        base = {"a": {"x": 1, "y": 2}, "b": 3}
+        override = {"a": {"x": 10}, "c": 4}
+        merge_nested_dicts(base, override) -> {"a": {"x": 10, "y": 2}, "b": 3, "c": 4}
+    """
+    result = base.copy()
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = merge_nested_dicts(result[key], value)
+        else:
+            result[key] = value
+    return result
