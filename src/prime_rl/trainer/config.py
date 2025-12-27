@@ -258,6 +258,13 @@ class ModelConfig(BaseConfig):
             raise ValueError("CP is only supported with flash attention 2 or flash attention 3")
         return self
 
+    @model_validator(mode="after")
+    def ac_offloading_requires_ac(self):
+        """Automatically enable activation checkpointing when activation offloading is enabled."""
+        if self.ac_offloading is not None and self.ac is None:
+            self.ac = ActivationCheckpointConfig()
+        return self
+
 
 class TokenizerConfig(BaseConfig):
     """Configuration for the tokenizer."""
