@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 
 from prime_rl.transport.config import FileSystemTransportConfig, TransportConfigType
 from prime_rl.utils.config import (
@@ -341,9 +341,10 @@ class OnlineEvalConfig(EvalConfig):
         ),
     ] = True
 
-    skip_eval_on_restart: Annotated[
+    skip_eval_on_resume: Annotated[
         bool,
         Field(
+            validation_alias=AliasChoices("skip_eval_on_resume", "skip_eval_on_restart"),
             description=(
                 "If True and resuming the orchestrator from a checkpoint, skip the (potentially redundant) "
                 "online eval that would otherwise run immediately at the resumed checkpoint step."

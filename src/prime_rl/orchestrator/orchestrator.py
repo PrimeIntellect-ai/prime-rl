@@ -210,9 +210,9 @@ async def orchestrate(config: OrchestratorConfig):
     max_steps = config.max_steps or int(1e9)
     logger.info(f"Starting orchestrator loop (max_steps={max_steps or 'infinite'})")
     last_eval_step = -1
-    if resumed_from_checkpoint and config.eval and config.eval.skip_eval_on_restart:
+    if resumed_from_checkpoint and config.eval and config.eval.skip_eval_on_resume:
         last_eval_step = scheduler.ckpt_step
-        logger.info(f"Skipping online eval on restart (ckpt_step={scheduler.ckpt_step})")
+        logger.info(f"Skipping online eval on resume (ckpt_step={scheduler.ckpt_step})")
     is_first_step = True
     await set_semaphore(config.max_concurrent or -1)
 
