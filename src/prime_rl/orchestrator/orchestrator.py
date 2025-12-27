@@ -135,20 +135,22 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
-    buffer = Buffer(env, config.buffer)
+    train_dataset = env.get_dataset(seed=config.buffer.seed)
+    buffer = Buffer(train_dataset, env.env_names, config.buffer)
     if config.val is not None:
         val_buffer_config = BufferConfig(env_ratios=config.buffer.env_ratios)
-        val_buffer = Buffer(env, val_buffer_config, dataset_type="val")
+        # Preserve historical behavior: validation dataset seeding follows val buffer config (defaults to None).
+        val_dataset = env.get_eval_dataset(seed=val_buffer_config.seed)
+        val_buffer = Buffer(val_dataset, env.env_names, val_buffer_config)
     else:
         val_buffer = None
 
-    # Setup scheduler
+    # Setup scheduler (uses subprocess workers for env execution)
     scheduler = Scheduler(
-        clients=clients,
         admin_clients=admin_clients,
-        env=env,
+        client_config=config.client,
+        env_configs=config.env,
         buffer=buffer,
-        tokenizer=tokenizer,
         config=config,
         oversampling_factor=config.oversampling_factor,
         max_async_level=config.max_async_level,
@@ -156,6 +158,7 @@ async def orchestrate(config: OrchestratorConfig):
         strict_async_level=config.strict_async_level,
         lora_name=config.lora_name,
     )
+    await scheduler.start()
 
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")
@@ -522,6 +525,9 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Close training batch sender
     training_batch_sender.close()
+
+    # Stop env workers
+    await scheduler.stop()
 
     # Cancel event loop lag monitor task
     event_loop_lag_monitor_task.cancel()
