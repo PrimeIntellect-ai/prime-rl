@@ -23,6 +23,8 @@ from prime_rl.utils.utils import (
 )
 from prime_rl.utils.vf import generate_group
 
+NCCL_READY_FILENAME = "NCCL_READY"
+
 
 class InflightRolloutInfo(NamedTuple):
     """Metadata for an in-flight group rollout request."""
@@ -121,6 +123,16 @@ class Scheduler:
             self.logger.debug(
                 f"Got new policy with step {next_ckpt_step}. Updating weights and cancelling old rollout requests."
             )
+
+            # NCCL handshake: signal the trainer that inference is about to enter the
+            # collective receive path for this step (via /update_weights).
+            #
+            # This avoids the trainer entering NCCL collectives before inference workers
+            # have started participating, which can otherwise trigger NCCL timeouts.
+            if self.config.weight_broadcast.type == "nccl":
+                step_dir = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
+                step_dir.mkdir(parents=True, exist_ok=True)
+                (step_dir / NCCL_READY_FILENAME).touch(exist_ok=True)
 
             update_weights_start_time = time.perf_counter()
             await update_weights(
