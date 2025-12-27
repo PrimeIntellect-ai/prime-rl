@@ -270,7 +270,9 @@ def train(config: RLTrainerConfig):
 
             # Forward pass
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                logits = forward(model, input_ids, forward_position_ids).contiguous()
+                # Keep fp32 logits for numerical stability in logsumexp / exp paths downstream.
+                # The important VRAM win is to avoid *additional* (B,S,V) allocations (shifted logits, full log_softmax).
+                logits = forward(model, input_ids, forward_position_ids).float().contiguous()
 
             if cp_enabled:
                 left_pad_logit = get_padding_logit_from_prev_cp_rank(logits, cp_rank, cp_size, cp_group)
