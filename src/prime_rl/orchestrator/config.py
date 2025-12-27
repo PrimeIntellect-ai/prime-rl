@@ -341,6 +341,16 @@ class OnlineEvalConfig(EvalConfig):
         ),
     ] = True
 
+    skip_eval_on_restart: Annotated[
+        bool,
+        Field(
+            description=(
+                "If True and resuming the orchestrator from a checkpoint, skip the (potentially redundant) "
+                "online eval that would otherwise run immediately at the resumed checkpoint step."
+            ),
+        ),
+    ] = False
+
 
 class CheckpointConfig(BaseConfig):
     """Configures checkpointing the orchestrator."""
