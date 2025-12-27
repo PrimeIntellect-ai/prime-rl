@@ -23,12 +23,12 @@ import verifiers as vf
 from loguru import logger
 from transformers import AutoTokenizer
 
-from prime_rl.eval.utils import run_evals
 from prime_rl.eval.state import (
     infer_last_completed_online_eval_ckpt_step_from_disk,
     read_last_completed_online_eval_ckpt_step,
     write_last_completed_online_eval_ckpt_step,
 )
+from prime_rl.eval.utils import run_evals
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.orchestrator.config import BufferConfig, OrchestratorConfig
