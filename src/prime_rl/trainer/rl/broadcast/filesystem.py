@@ -1,3 +1,4 @@
+import shutil
 import time
 from pathlib import Path
 from typing import Literal
@@ -46,9 +47,7 @@ class FileSystemWeightBroadcast(WeightBroadcast):
             if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
                 model.convert_to_hf(state_dict)
 
-        for idx in self.runs.used_idxs:
-            if not self.runs.ready_to_update[idx]:
-                continue
+        for idx in self.runs.ready_to_update_idxs:
             self.logger.debug(f"Broadcasting weights for run {idx} (ready_to_update={self.runs.ready_to_update[idx]})")
 
             if adapter_only:
@@ -74,6 +73,12 @@ class FileSystemWeightBroadcast(WeightBroadcast):
                         save_lora_config(self.lora_config, model, save_dir)
 
                     self._notify_orchestrator(save_dir)
+
+                    # If the run is deleted, remove the run directory
+                    # This is avoid the creation of zombie runs when the directory is deleted while we are broadcasting which recreates the directory
+                    if self.runs.get_orchestrator_config(self.runs.idx_2_id[idx]) is None:
+                        shutil.rmtree(self.runs.get_run_dir(idx))
+
                 except FileNotFoundError:
                     self.logger.warning(f"Run {idx} is deleted, skipping")
                 except Exception as e:
