@@ -94,12 +94,12 @@ runs.run_dirs()  # List of all run directory paths
 
 ## Component Integration
 
-### MultiOptimizer
+### MultiLoRAOptimizer
 
-The `MultiOptimizer` creates and manages per-run optimizers. It registers a creation hook that is called when new runs are discovered:
+The `MultiLoRAOptimizer` creates and manages per-run optimizers. It registers a creation hook that is called when new runs are discovered:
 
 ```python
-class MultiOptimizer:
+class MultiLoRAOptimizer:
     def __init__(self, config, device_mesh, model=None):
         self.runs = get_runs()
         self.optimizers: list[Optimizer | None] = [None] * self.runs.max_runs
@@ -118,12 +118,12 @@ class MultiOptimizer:
             self.optimizers[idx].step()
 ```
 
-### MultiScheduler
+### MultiLoRAScheduler
 
-Similar to `MultiOptimizer`, the `MultiScheduler` manages per-run learning rate schedulers:
+Similar to `MultiLoRAOptimizer`, the `MultiLoRAScheduler` manages per-run learning rate schedulers:
 
 ```python
-class MultiScheduler:
+class MultiLoRAScheduler:
     def __init__(self, scheduler_config, max_steps, lr):
         self.runs = get_runs()
         self.schedulers: list[LRScheduler | None] = [None] * self.runs.max_runs

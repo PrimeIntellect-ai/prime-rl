@@ -8,7 +8,7 @@ from prime_rl.trainer.runs import get_runs
 from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
-    from prime_rl.trainer.optim import MultiOptimizer
+    from prime_rl.trainer.optim import MultiLoRAOptimizer
 
 
 def setup_constant_scheduler(optimizer: Optimizer) -> LRScheduler:
@@ -112,7 +112,7 @@ def setup_scheduler(
             raise ValueError(f"Invalid scheduler type: {scheduler_config.type}")
 
 
-class MultiScheduler:
+class MultiLoRAScheduler:
     """Manages multiple schedulers, one per run.
 
     Each run has its own independent scheduler that is created when
@@ -168,13 +168,13 @@ class MultiScheduler:
 
 
 def setup_multi_scheduler(
-    optimizer: "MultiOptimizer",
+    optimizer: "MultiLoRAOptimizer",
     scheduler_config: SchedulerConfigType,
     max_steps: int | None,
     lr: float,
-) -> MultiScheduler:
-    """Create a MultiScheduler for managing per-run schedulers."""
-    scheduler = MultiScheduler(scheduler_config, max_steps, lr)
+) -> MultiLoRAScheduler:
+    """Create a MultiLoRAScheduler for managing per-run schedulers."""
+    scheduler = MultiLoRAScheduler(scheduler_config, max_steps, lr)
     # Register callback so schedulers are created when optimizers are created
     optimizer.register_post_creation_callback(scheduler.scheduler_creation_hook)
     return scheduler

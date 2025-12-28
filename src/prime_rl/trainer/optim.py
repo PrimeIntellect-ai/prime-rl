@@ -88,7 +88,7 @@ def _create_optimizer(
             return optimizer
 
 
-class MultiOptimizer:
+class MultiLoRAOptimizer:
     def __init__(self, config: OptimizerConfigType, device_mesh: DeviceMesh):
         self.config = config
         self.device_mesh = device_mesh
@@ -138,5 +138,5 @@ class MultiOptimizer:
             return self.optimizers[idx].param_groups[0]["lr"]
 
 
-def setup_multi_optimizer(config: OptimizerConfigType, device_mesh: DeviceMesh) -> MultiOptimizer:
-    return MultiOptimizer(config, device_mesh)
+def setup_multi_optimizer(config: OptimizerConfigType, device_mesh: DeviceMesh) -> MultiLoRAOptimizer:
+    return MultiLoRAOptimizer(config, device_mesh)
