@@ -1,9 +1,14 @@
+from typing import TYPE_CHECKING
+
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import ConstantLR, CosineAnnealingLR, LinearLR, LRScheduler, SequentialLR
 
 from prime_rl.trainer.config import SchedulerConfigType
 from prime_rl.trainer.runs import get_runs
 from prime_rl.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from prime_rl.trainer.optim import MultiOptimizer
 
 
 def setup_constant_scheduler(optimizer: Optimizer) -> LRScheduler:
@@ -163,9 +168,13 @@ class MultiScheduler:
 
 
 def setup_multi_scheduler(
+    optimizer: "MultiOptimizer",
     scheduler_config: SchedulerConfigType,
     max_steps: int | None,
     lr: float,
 ) -> MultiScheduler:
     """Create a MultiScheduler for managing per-run schedulers."""
-    return MultiScheduler(scheduler_config, max_steps, lr)
+    scheduler = MultiScheduler(scheduler_config, max_steps, lr)
+    # Register callback so schedulers are created when optimizers are created
+    optimizer.register_post_creation_callback(scheduler.scheduler_creation_hook)
+    return scheduler

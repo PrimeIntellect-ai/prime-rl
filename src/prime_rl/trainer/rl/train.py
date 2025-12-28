@@ -132,10 +132,7 @@ def train(config: RLTrainerConfig):
         scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
     else:
         optimizer = setup_multi_optimizer(config.optim, parallel_dims.world_mesh["dp_shard_cp"])
-        # Set up the multi-scheduler for per-run learning rate scheduling
         scheduler = setup_multi_scheduler(config.scheduler, config.max_steps, config.optim.lr)
-        # Register callback so schedulers are created when optimizers are created
-        optimizer.register_post_creation_callback(scheduler.scheduler_creation_hook)
 
     logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
 
