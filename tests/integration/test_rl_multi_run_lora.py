@@ -165,7 +165,6 @@ def multi_run_result(
     run_dir = output_dir / f"run_{killed_name}"
     while run_dir.exists():
         shutil.rmtree(run_dir)
-        time.sleep(10)  # In case the trainer was broadcasting
 
     # Wait for remaining orchestrators to complete
     remaining_names = [n for n in ORCHESTRATOR_NAMES if n != killed_name]
