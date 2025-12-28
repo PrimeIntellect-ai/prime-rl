@@ -56,7 +56,7 @@ class WandbMonitor(Monitor):
         if config is not None and isinstance(config, WandbWithExtrasConfig) and config.log_extras:
             if config.log_extras.samples:
                 self.last_log_samples_step = -1
-                self.samples_cols = ["step", "example_id", "messages", "input_ids", "reward"]
+                self.samples_cols = ["step", "task", "example_id", "messages", "input_ids", "reward"]
                 self.samples_table = wandb.Table(
                     columns=self.samples_cols,
                     log_mode="INCREMENTAL",
@@ -110,6 +110,7 @@ class WandbMonitor(Monitor):
             messages_text = self.tokenizer.decode(full_ids)
             sample = {
                 "step": step,
+                "task": rollout.get("task"),
                 "example_id": rollout["example_id"],
                 "messages": messages_text,
                 "input_ids": str(full_ids),
