@@ -40,8 +40,10 @@ def setup_optimizer(
                     return False
                 return True
 
-            muon_params = [p for n, p in named_params if p.requires_grad and muon_enabled(n, p)]
-            adamw_params = [p for n, p in named_params if p.requires_grad and not muon_enabled(n, p)]
+            # Convert to list to allow multiple iterations (in case named_params is a generator)
+            named_params_list = list(named_params)
+            muon_params = [p for n, p in named_params_list if p.requires_grad and muon_enabled(n, p)]
+            adamw_params = [p for n, p in named_params_list if p.requires_grad and not muon_enabled(n, p)]
 
             optimizer = Muon(
                 [
