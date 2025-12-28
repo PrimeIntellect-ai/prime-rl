@@ -211,10 +211,9 @@ class Scheduler:
                 else:
                     futures_to_update.append((future, info.off_policy_steps + 1, info.worker, info.request_id))
 
-            # Remove cancelled and reschedule
+            # Remove cancelled futures (don't reschedule immediately - let generate_batch refill naturally)
             for future, worker in futures_to_remove:
                 self.inflight_group_rollouts.pop(future, None)
-                await self.schedule_group_rollout(worker)
 
             # Update off-policy steps for remaining
             for future, off_policy_steps, worker, request_id in futures_to_update:
@@ -226,7 +225,7 @@ class Scheduler:
                     )
 
             if len(futures_to_remove) > 0:
-                self.logger.warning(f"Cancelled and re-scheduled {len(futures_to_remove)} old rollout requests.")
+                self.logger.warning(f"Cancelled {len(futures_to_remove)} old rollout requests (will refill naturally).")
 
             self.ckpt_step = next_ckpt_step
 
