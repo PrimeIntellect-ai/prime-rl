@@ -95,9 +95,6 @@ class Scheduler:
                 )
                 self.workers[env_name].append(worker)
 
-        # Round-robin through envs, least-pending within env
-        self._env_idx = 0
-
         # Track in-flight requests: future -> info
         self.inflight_group_rollouts: dict[asyncio.Future, InflightRolloutInfo] = {}
 
@@ -128,20 +125,14 @@ class Scheduler:
             for worker in workers:
                 worker.stop()
 
-    def _get_next_worker(self) -> EnvWorker:
-        """Round-robin through envs, least-pending within each env."""
-        env_name = self.env_names[self._env_idx % len(self.env_names)]
-        self._env_idx += 1
-
-        # Select worker with fewest pending requests (least-pending routing)
-        workers = self.workers[env_name]
-        return min(workers, key=lambda w: w.pending_count)
-
-    async def schedule_group_rollout(self, worker: EnvWorker | None = None):
+    async def schedule_group_rollout(self):
         """Asynchronously schedules a group rollout request."""
         example = self.buffer.sample_examples(n=1)[0]
-        if worker is None:
-            worker = self._get_next_worker()
+
+        # Route to worker for this example's environment
+        task = example["task"]
+        workers = self.workers[task]
+        worker = min(workers, key=lambda w: w.pending_count)
 
         future = await worker.submit_request(
             example=example,
@@ -268,12 +259,9 @@ class Scheduler:
                     batch_rollouts = batch_rollouts[: self.config.batch_size]
                     break
 
-                # Safely pop the future info
-                popped_info = self.inflight_group_rollouts.pop(finished_future, None)
-                if popped_info is None:
+                # Safely pop the future from tracking
+                if self.inflight_group_rollouts.pop(finished_future, None) is None:
                     continue
-
-                worker = popped_info.worker
 
                 try:
                     group_results: list[dict] = finished_future.result()
@@ -290,7 +278,7 @@ class Scheduler:
                 except Exception as e:
                     self.logger.warning(f"Rollout failed: {e}")
 
-                await self.schedule_group_rollout(worker)
+                await self.schedule_group_rollout()
 
         pbar.close()
         return batch_rollouts
