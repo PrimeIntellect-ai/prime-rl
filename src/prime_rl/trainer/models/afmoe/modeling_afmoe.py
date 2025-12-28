@@ -36,9 +36,21 @@ from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 
 try:
-    from .afmoe_attn import AFMOE_ATTN_IMPL2CLASS, AfmoeAttentionConfig, create_afmoe_block_masks
+    from .afmoe_attn import (
+        AFMOE_ATTN_IMPL2CLASS,
+        AfmoeAttentionConfig,
+        create_afmoe_block_masks,
+        create_afmoe_block_masks_with_documents,
+        create_document_mask_for_sdpa,
+    )
 except ImportError:
-    from afmoe_attn import AFMOE_ATTN_IMPL2CLASS, AfmoeAttentionConfig, create_afmoe_block_masks
+    from afmoe_attn import (
+        AFMOE_ATTN_IMPL2CLASS,
+        AfmoeAttentionConfig,
+        create_afmoe_block_masks,
+        create_afmoe_block_masks_with_documents,
+        create_document_mask_for_sdpa,
+    )
 
 try:
     from .configuration_afmoe import AfmoeConfig
@@ -316,13 +328,11 @@ class AfmoeModel(AfmoePreTrainedModel):
         use_flex_attention = self.config._attn_implementation == "flex_attention"
 
         # Create attention masks based on implementation
+        # Both paths handle document masking internally for packed sequences
         if use_flex_attention:
-            # Use BlockMask for flex_attention (more efficient)
-            batch_size = inputs_embeds.shape[0]
-            seq_len = inputs_embeds.shape[1]
-            block_mask_mapping = create_afmoe_block_masks(
-                batch_size=batch_size,
-                seq_len=seq_len,
+            # Use BlockMask for flex_attention (handles document boundaries internally)
+            block_mask_mapping = create_afmoe_block_masks_with_documents(
+                position_ids=position_ids,
                 sliding_window=self.config.sliding_window,
                 device=inputs_embeds.device,
             )
@@ -343,6 +353,16 @@ class AfmoeModel(AfmoePreTrainedModel):
                     "full_attention": create_causal_mask(**mask_kwargs),
                     "sliding_attention": create_sliding_window_causal_mask(**mask_kwargs),
                 }
+                # Apply document mask to prevent cross-document attention in packed sequences
+                document_mask = create_document_mask_for_sdpa(
+                    position_ids, inputs_embeds.dtype, inputs_embeds.device
+                )
+                if document_mask is not None:
+                    for key in causal_mask_mapping:
+                        if causal_mask_mapping[key] is not None:
+                            causal_mask_mapping[key] = causal_mask_mapping[key] + document_mask
+                        else:
+                            causal_mask_mapping[key] = document_mask
 
         hidden_states = inputs_embeds
 

@@ -150,6 +150,126 @@ def create_afmoe_block_masks(
     }
 
 
+# =============================================================================
+# Document Masking for Packed Sequences
+# =============================================================================
+
+def _get_document_ids(position_ids: torch.Tensor) -> tuple[torch.Tensor, bool]:
+    """Compute document IDs from position_ids for packed sequence handling.
+    
+    Document boundaries are detected where position_ids resets to 0.
+    
+    Args:
+        position_ids: Position IDs tensor of shape (batch, seq_len)
+        
+    Returns:
+        Tuple of (doc_ids, has_packing) where:
+        - doc_ids: Tensor of shape (batch, seq_len) with document IDs (1-indexed)
+        - has_packing: True if any batch element has multiple documents
+    """
+    doc_starts = position_ids == 0  # (batch, seq_len)
+    num_docs = doc_starts.sum(dim=1)  # (batch,)
+    has_packing = not (num_docs == 1).all()
+    doc_ids = doc_starts.int().cumsum(dim=1) if has_packing else None
+    return doc_ids, has_packing
+
+
+def create_document_mask_for_sdpa(
+    position_ids: torch.Tensor,
+    dtype: torch.dtype,
+    device: torch.device,
+) -> torch.Tensor | None:
+    """Create a dense document mask for SDPA attention.
+    
+    Args:
+        position_ids: Position IDs tensor of shape (batch, seq_len)
+        dtype: Data type for the mask (should match attention dtype)
+        device: Device for the mask
+        
+    Returns:
+        Document mask of shape (batch, 1, seq_len, seq_len) or None if no packing
+    """
+    doc_ids, has_packing = _get_document_ids(position_ids)
+    if not has_packing:
+        return None
+    
+    # Create mask: 0 for same document, -inf for different documents
+    # Shape: (batch, seq_len, 1) vs (batch, 1, seq_len) -> (batch, seq_len, seq_len)
+    same_document = doc_ids.unsqueeze(2) == doc_ids.unsqueeze(1)
+    document_mask = torch.where(
+        same_document,
+        torch.zeros(1, dtype=dtype, device=device),
+        torch.finfo(dtype).min,
+    )
+    return document_mask.unsqueeze(1)  # (batch, 1, seq_len, seq_len)
+
+
+def create_afmoe_block_masks_with_documents(
+    position_ids: torch.Tensor,
+    sliding_window: int,
+    device: torch.device,
+) -> dict[str, "BlockMask"]:
+    """Create BlockMasks with document boundary awareness for packed sequences.
+
+    This creates masks that prevent cross-document attention, which is critical
+    for correct RoPE computation in packed sequences.
+
+    Args:
+        position_ids: Position IDs tensor of shape (batch, seq_len). Document
+            boundaries are detected where position_ids == 0.
+        sliding_window: Sliding window size for local attention
+        device: Device for mask placement
+
+    Returns:
+        Dictionary with "full_attention" and "sliding_attention" BlockMasks
+    """
+    from torch.nn.attention.flex_attention import create_block_mask
+    
+    batch_size, seq_len = position_ids.shape
+    doc_ids, has_packing = _get_document_ids(position_ids)
+    
+    # If no packing detected, use cached masks (more efficient)
+    if not has_packing:
+        device_str = str(device)
+        return {
+            "full_attention": _create_block_mask_cached("causal", 1, None, seq_len, None, device_str),
+            "sliding_attention": _create_block_mask_cached(
+                "sliding_window", 1, None, seq_len, sliding_window, device_str
+            ),
+        }
+    
+    # Create mask modifiers that capture document IDs
+    def make_document_causal_mask(doc_ids_tensor: torch.Tensor):
+        def mask_mod(b: torch.Tensor, h: torch.Tensor, q_idx: torch.Tensor, kv_idx: torch.Tensor) -> torch.Tensor:
+            causal = q_idx >= kv_idx
+            same_doc = doc_ids_tensor[b, q_idx] == doc_ids_tensor[b, kv_idx]
+            return causal & same_doc
+        return mask_mod
+    
+    def make_document_sliding_mask(doc_ids_tensor: torch.Tensor, window: int):
+        def mask_mod(b: torch.Tensor, h: torch.Tensor, q_idx: torch.Tensor, kv_idx: torch.Tensor) -> torch.Tensor:
+            causal = q_idx >= kv_idx
+            in_window = q_idx - kv_idx <= window
+            same_doc = doc_ids_tensor[b, q_idx] == doc_ids_tensor[b, kv_idx]
+            return causal & in_window & same_doc
+        return mask_mod
+    
+    # Create BlockMasks with document awareness
+    full_mask = create_block_mask(
+        make_document_causal_mask(doc_ids),
+        batch_size, None, seq_len, seq_len, device=device
+    )
+    sliding_mask = create_block_mask(
+        make_document_sliding_mask(doc_ids, sliding_window),
+        batch_size, None, seq_len, seq_len, device=device
+    )
+    
+    return {
+        "full_attention": full_mask,
+        "sliding_attention": sliding_mask,
+    }
+
+
 @dataclass
 class AfmoeAttentionConfig:
     """Configuration for AFMoE attention layers.
