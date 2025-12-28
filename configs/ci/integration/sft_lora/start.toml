@@ -1,0 +1,17 @@
+max_steps = 10
+
+[ckpt]
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B"
+
+[model.lora]
+rank = 8
+
+[ckpt.weights]
+save_adapter_separately = true
+
+[data]
+name = "PrimeIntellect/Reverse-Text-SFT"
+batch_size = 4
+seq_len = 1024
