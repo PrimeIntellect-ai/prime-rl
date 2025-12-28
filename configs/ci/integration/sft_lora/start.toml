@@ -11,6 +11,9 @@ rank = 8
 [ckpt.weights]
 save_adapter_separately = true
 
+[optim]
+lr = 1e-4
+
 [data]
 name = "PrimeIntellect/Reverse-Text-SFT"
 batch_size = 4
