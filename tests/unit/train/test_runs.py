@@ -1,11 +1,19 @@
 from pathlib import Path
+from typing import Generator
 
+import pytest
 import tomli_w
 import torch.distributed as dist
 
 from prime_rl.trainer.runs import Runs
 
-dist.init_process_group(backend="gloo")
+
+@pytest.fixture(autouse=True, scope="module")
+def init_process_group() -> Generator[None, None, None]:
+    """Initialize and destroy GLOO process group for each test."""
+    dist.init_process_group(backend="gloo", init_method="tcp://localhost:12355", rank=0, world_size=1)
+    yield
+    dist.destroy_process_group()
 
 
 def create_run_with_config(
