@@ -181,7 +181,7 @@ async def orchestrate(config: OrchestratorConfig):
     # Reset weights to base model if starting from scratch
     progress = Progress()
 
-    resumed_from_checkpoint = False
+    resumed_ckpt_step: int | None = None
     checkpoint_step = None
     if config.ckpt and config.ckpt.resume_step is not None and ckpt_manager is not None:
         if config.ckpt.resume_step == -1:
@@ -192,8 +192,8 @@ async def orchestrate(config: OrchestratorConfig):
     if checkpoint_step is not None and ckpt_manager is not None:
         ckpt_manager.load(progress, buffer, step=checkpoint_step)
         logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
-        resumed_from_checkpoint = True
         scheduler.ckpt_step = progress.step  # Always resume from the latest checkpoint
+        resumed_ckpt_step = scheduler.ckpt_step
         await update_weights(
             admin_clients,
             get_step_path(get_broadcast_dir(config.output_dir), scheduler.ckpt_step),
@@ -210,9 +210,9 @@ async def orchestrate(config: OrchestratorConfig):
     max_steps = config.max_steps or int(1e9)
     logger.info(f"Starting orchestrator loop (max_steps={max_steps or 'infinite'})")
     last_eval_step = -1
-    if resumed_from_checkpoint and config.eval and config.eval.skip_eval_on_resume:
-        last_eval_step = scheduler.ckpt_step
-        logger.info(f"Skipping online eval on resume (ckpt_step={scheduler.ckpt_step})")
+    if resumed_ckpt_step is not None and config.eval and config.eval.skip_eval_on_resume:
+        last_eval_step = resumed_ckpt_step
+        logger.info(f"Skipping online eval on resume (ckpt_step={resumed_ckpt_step})")
     is_first_step = True
     await set_semaphore(config.max_concurrent or -1)
 

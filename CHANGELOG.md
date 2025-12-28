@@ -17,3 +17,4 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`trainer.loss.geo_mask_high`** and **`trainer.loss.geo_mask_low`**: Added geometric importance ratio masking thresholds (2025-12-19)
 - **`{orchestrator,trainer}.transport.zmq`**: Added ZMQ transport for training batches and micro batches (#1446, 2025-12-22)
 - **`model.impl`**: Changed default from `hf` to `auto`. With `auto`, the implementation automatically selects `custom` if supported for the model, otherwise falls back to `hf` (#1488, 2025-12-27)
+- **`orchestrator.eval.skip_eval_on_resume`**: Added flag (default `True`) to skip the first potentially redundant online eval immediately after resuming from a checkpoint (#1491, 2025-12-27)
