@@ -123,6 +123,13 @@ def train(config: RLTrainerConfig):
 
     if config.max_concurrent_runs == 1:
         if config.model.lora:
+            # Wait for run 0 to be created in the runs system
+            while 0 not in runs.idx_2_id:
+                if world.is_master:
+                    runs.check_for_changes()
+                runs.sync_runs()
+                logger.info(f"Waiting for run 0 to be created {runs.id_2_idx=}")
+                time.sleep(1)
             optimizer = setup_optimizer(
                 config.optim, runs.get_named_parameters_for_run(0), parallel_dims.world_mesh["dp_shard_cp"]
             )
