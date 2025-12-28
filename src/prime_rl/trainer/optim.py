@@ -1,3 +1,4 @@
+import time
 from typing import Callable
 
 from dion import Muon
@@ -7,10 +8,34 @@ from torch.optim import SGD, AdamW, Optimizer
 
 from prime_rl.trainer.config import OptimizerConfigType
 from prime_rl.trainer.runs import get_runs
+from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
 
 def setup_optimizer(
+    config: OptimizerConfigType,
+    named_params: list[tuple[str, nn.Parameter]],
+    device_mesh: DeviceMesh,
+    lora: bool = False,
+) -> Optimizer:
+    if lora:
+        # Wait for run 0 to be created in the runs system
+        # Otherwise, the creation will reset the parameters
+        runs = get_runs()
+        world = get_world()
+        logger = get_logger()
+        while 0 not in runs.idx_2_id:
+            if world.is_master:
+                runs.check_for_changes()
+            runs.sync_runs()
+            logger.info(f"Waiting for run 0 to be created {runs.id_2_idx=}")
+            time.sleep(1)
+        named_params = runs.get_named_parameters_for_run(0)
+
+    return _create_optimizer(config, named_params, device_mesh)
+
+
+def _create_optimizer(
     config: OptimizerConfigType, named_params: list[tuple[str, nn.Parameter]], device_mesh: DeviceMesh
 ) -> Optimizer:
     match config.type:
@@ -88,7 +113,7 @@ class MultiOptimizer:
     def optimizer_creation_hook(self, idx: int, run_id: str) -> None:
         # Get named parameters for this run from the Runs system
         named_params = self.runs.get_named_parameters_for_run(idx)
-        self.optimizers[idx] = setup_optimizer(self.config, named_params, self.device_mesh)
+        self.optimizers[idx] = _create_optimizer(self.config, named_params, self.device_mesh)
 
         # Call post-creation callbacks (e.g., for scheduler creation)
         for callback in self._post_creation_callbacks:
