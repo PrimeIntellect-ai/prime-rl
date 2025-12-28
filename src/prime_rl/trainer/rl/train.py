@@ -41,6 +41,7 @@ from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     MemoryProfiler,
     Tensors,
+    get_ckpt_disk_metrics,
     setup_torch_distributed,
     print_benchmark,
     get_response_lengths,
@@ -197,9 +198,7 @@ def train(config: RLTrainerConfig):
         last_async_level_steps = config.max_steps and progress.step >= config.max_steps - config.max_async_level
         if progress.step > 0 and (not last_async_level_steps or config.weight_broadcast.type == "filesystem"):
             broadcast_weights_start_time = time.perf_counter()
-            weight_broadcast.broadcast_weights(
-                model, step=progress.step, adapter_only=config.weight_broadcast.adapter_only
-            )
+            weight_broadcast.broadcast_weights(model, step=progress.step)
             broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
             # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
             ckpt_interval = config.ckpt and config.ckpt.interval
@@ -447,6 +446,11 @@ def train(config: RLTrainerConfig):
             "step": progress.step,
         }
         monitor.log(time_metrics)
+
+        # Log disk metrics
+        disk_metrics = get_ckpt_disk_metrics(config.output_dir)
+        disk_metrics["step"] = progress.step
+        monitor.log(disk_metrics)
 
         progress.step += 1
         is_first_step = False

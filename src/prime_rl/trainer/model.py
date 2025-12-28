@@ -20,7 +20,7 @@ from transformers.utils.import_utils import is_flash_attn_3_available
 
 from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, ModelConfig, TokenizerConfig
 from prime_rl.trainer.lora import apply_lora_to_model, strip_lora_from_state_dict
-from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL, PreTrainedModelPrimeRL
+from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL, PreTrainedModelPrimeRL, supports_custom_impl
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.weights import (
     load_state_dict,
@@ -94,8 +94,17 @@ def get_model(
         )
         model_config.num_hidden_layers = num_hidden_layers
 
+    # Determine the implementation to use
+    if config.impl == "auto":
+        impl_to_use = "custom" if supports_custom_impl(model_config) else "hf"
+        logger.info(
+            f"Auto-selected implementation: {impl_to_use} (custom implementation {'supported' if supports_custom_impl(model_config) else 'not supported'})"
+        )
+    else:
+        impl_to_use = config.impl
+
     with device:
-        match config.impl:
+        match impl_to_use:
             case "hf":
                 model_cls = AutoModelForCausalLM
             case "liger_kernel":

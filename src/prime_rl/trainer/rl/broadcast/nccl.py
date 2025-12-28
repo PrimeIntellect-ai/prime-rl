@@ -151,10 +151,8 @@ class NCCLWeightBroadcast(WeightBroadcast):
         )
 
     @torch.no_grad()
-    def broadcast_weights(self, model: nn.Module, step: int, adapter_only: bool = False) -> None:
+    def broadcast_weights(self, model: nn.Module, step: int) -> None:
         """Broadcast the state dict of a model into the inference pool using NCCL and notifies the orchestrator."""
-        if adapter_only:
-            raise NotImplementedError("NCCL weight broadcast does not support adapter only yet")
         self.logger.debug("Starting broadcasting weights to inference engine via NCCL")
         start_time = time.perf_counter()
         if self.world.is_master:

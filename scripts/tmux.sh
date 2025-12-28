@@ -69,20 +69,14 @@ else
   tmux select-pane -t "$SESSION_NAME:RL.2" -T "Inference"
 
   # Logs: Orchestrator
-  tmux send-keys -t "$SESSION_NAME:RL.1" 'while true; do
-echo "Waiting for orchestrator log file..."
-while [ ! -f '"$OUTPUT_DIR"'/logs/orchestrator.stdout ]; do sleep 1; done
-echo "Following orchestrator.stdout..."
-tail -F '"$OUTPUT_DIR"'/logs/orchestrator.stdout
-done' C-m
+  tmux send-keys -t "$SESSION_NAME:RL.1" \
+    "echo \"Following orchestrator.stdout (tail -F; waits for rotate/create)...\"; tail -F \"${OUTPUT_DIR}/logs/orchestrator.stdout\" 2>/dev/null" \
+    C-m
 
   # Logs: Inference
-  tmux send-keys -t "$SESSION_NAME:RL.2" 'while true; do
-echo "Waiting for inference log file..."
-while [ ! -f '"$OUTPUT_DIR"'/logs/inference.stdout ]; do sleep 1; done
-echo "Following inference.stdout..."
-tail -F '"$OUTPUT_DIR"'/logs/inference.stdout
-done' C-m
+  tmux send-keys -t "$SESSION_NAME:RL.2" \
+    "echo \"Following inference.stdout (tail -F; waits for rotate/create)...\"; tail -F \"${OUTPUT_DIR}/logs/inference.stdout\" 2>/dev/null" \
+    C-m
 
   # Window 2: Monitor
   tmux new-window -t "$SESSION_NAME" -n "Monitor"

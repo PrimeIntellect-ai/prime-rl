@@ -60,6 +60,7 @@ class ZMQTrainingBatchReceiver(TrainingBatchReceiver):
         self.runs = get_runs()
         self._last_logged_time = time()
         self._last_logged_ids: list[str] | None = None
+        self._waiting_since: float | None = None
 
         self.context = zmq.Context.instance()
         self.socket: zmq.Socket = self.context.socket(zmq.PULL)
@@ -108,17 +109,38 @@ class ZMQTrainingBatchReceiver(TrainingBatchReceiver):
     def receive(self) -> list[TrainingBatch]:
         """Return at most one (oldest) pending batch per run idx; buffer newer ones for later calls."""
         batches: list[TrainingBatch] = []
+        now = time()
+
+        # Bring any available messages into the pending buffer (non-blocking)
+        self._drain_into_pending()
+
+        # Track how long we've been waiting for any runnable batch.
+        runnable_available = False
+        for idx in self.runs.used_idxs:
+            if self.runs.ready_to_update[idx]:
+                continue
+            run_id = self.runs.idx_2_id[idx].encode("utf-8")
+            if self._pending.get(run_id):
+                runnable_available = True
+                break
+
+        if runnable_available:
+            self._waiting_since = None
+        else:
+            self._waiting_since = self._waiting_since or now
+
         current_ids = [self.runs.idx_2_id[idx] for idx in self.runs.used_idxs]
-        if current_ids != self._last_logged_ids or time() - self._last_logged_time > LOG_FREQ_SECONDS:
+        if current_ids != self._last_logged_ids or now - self._last_logged_time > LOG_FREQ_SECONDS:
             if len(current_ids) == 0:
                 self.logger.debug(
                     "Did you set the output dir of the orchestrator to a run_* subdirectory of the trainer output dir?"
                 )
-            self.logger.debug(f"Listening for batches from runs {current_ids}")
+            waiting_suffix = ""
+            if self._waiting_since is not None:
+                waiting_suffix = f" (waiting {now - self._waiting_since:.1f}s)"
+            self.logger.debug(f"Listening for batches from runs {current_ids}{waiting_suffix}")
             self._last_logged_ids = current_ids
-            self._last_logged_time = time()
-
-        self._drain_into_pending()
+            self._last_logged_time = now
 
         for idx in list(self.runs.used_idxs):
             run_id = self.runs.idx_2_id[idx].encode("utf-8")

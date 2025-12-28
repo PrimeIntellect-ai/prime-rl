@@ -19,9 +19,6 @@ rank = 8
 [trainer.ckpt.weights]
 save_adapter_separately = true
 
-[trainer.weight_broadcast]
-adapter_only = true
-
 [orchestrator]
 batch_size = 128
 rollouts_per_example = 16
