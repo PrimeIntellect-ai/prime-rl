@@ -30,7 +30,8 @@ def prepare_sample(
         inference_logprobs = inference_logprobs[:seq_len]
         position_ids = position_ids[:seq_len]
         advantages = advantages[:seq_len]
-        teacher_logprobs = teacher_logprobs[:seq_len]
+        if teacher_logprobs is not None:
+            teacher_logprobs = teacher_logprobs[:seq_len]
 
     assert (
         len(input_ids)
@@ -38,10 +39,11 @@ def prepare_sample(
         == len(loss_mask)
         == len(position_ids)
         == len(inference_logprobs)
-        == len(teacher_logprobs)
     ), (
-        f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, inference_logprobs: {len(inference_logprobs)}, teacher_logprobs: {len(teacher_logprobs)}"
+        f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, inference_logprobs: {len(inference_logprobs)}"
     )
+    if teacher_logprobs is not None:
+        assert len(teacher_logprobs) == len(input_ids), f"teacher_logprobs: {len(teacher_logprobs)}"
     return MicroBatch(
         input_ids=input_ids,
         advantages=advantages,
@@ -74,7 +76,10 @@ def packed_samples_into_micro_bs(
                 bin_content.loss_mask.extend(sample.loss_mask)
                 bin_content.advantages.extend(sample.advantages)
                 bin_content.inference_logprobs.extend(sample.inference_logprobs)
-                bin_content.teacher_logprobs.extend(sample.teacher_logprobs)
+                if sample.teacher_logprobs is not None:
+                    if bin_content.teacher_logprobs is None:
+                        bin_content.teacher_logprobs = []
+                    bin_content.teacher_logprobs.extend(sample.teacher_logprobs)
                 bin_content.position_ids.extend(sample.position_ids)
                 bin_content.lora_num_tokens[idx] += len(sample.input_ids)
                 break
@@ -107,7 +112,8 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     micro_batch.loss_mask.extend([False] * padding_size)
     micro_batch.position_ids.extend(list(range(padding_size)))
     micro_batch.inference_logprobs.extend([0.0] * padding_size)
-    micro_batch.teacher_logprobs.extend([0.0] * padding_size)
+    if micro_batch.teacher_logprobs is not None:
+        micro_batch.teacher_logprobs.extend([0.0] * padding_size)
     micro_batch.lora_num_tokens[-1] += (
         padding_size  # We send padding to the last lora so that tokens have ascending lora idx
     )

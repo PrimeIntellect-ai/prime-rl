@@ -469,12 +469,24 @@ class BufferConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_skip_verification(self):
-        """When scoring is disabled, auto-disable features that depend on rewards."""
+    def validate_skip_verification(self):
+        """Validate that skip_verification is not used with reward-dependent features."""
         if self.skip_verification:
-            self.online_difficulty_filtering = False
-            self.easy_threshold = None
-            self.hard_threshold = None
+            if self.online_difficulty_filtering:
+                raise ValueError(
+                    "skip_verification cannot be True when online_difficulty_filtering is True. "
+                    "These features depend on rewards which are disabled when skip_verification=True."
+                )
+            if self.easy_threshold is not None:
+                raise ValueError(
+                    "skip_verification cannot be True when easy_threshold is set. "
+                    "Easy threshold depends on rewards which are disabled when skip_verification=True."
+                )
+            if self.hard_threshold is not None:
+                raise ValueError(
+                    "skip_verification cannot be True when hard_threshold is set. "
+                    "Hard threshold depends on rewards which are disabled when skip_verification=True."
+                )
         return self
 
 
