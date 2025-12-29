@@ -337,7 +337,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Compute teacher logprobs if teacher model is configured
         teacher_logprobs_time = 0
-        if teacher_clients is not None and teacher_model_name is not None:
+        if config.teacher_model is not None:
             logger.info(f"Computing teacher logprobs for {len(train_examples)} training examples")
             teacher_logprobs_start_time = time.perf_counter()
             teacher_logprobs_list = await compute_teacher_logprobs(

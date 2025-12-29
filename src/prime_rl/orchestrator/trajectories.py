@@ -93,7 +93,6 @@ def branch_rollout(state: vf.State) -> list[TrainingSample] | None:
             completion_mask = [False] * len(tokens["completion_mask"])
         else:
             completion_mask = [bool(i) for i in tokens["completion_mask"]]
-        seq_len = len(tokens["prompt_ids"]) + len(tokens["completion_ids"])
         rollout = TrainingSample(
             prompt_ids=deepcopy(tokens["prompt_ids"]),
             prompt_mask=[bool(i) for i in tokens["prompt_mask"]],
