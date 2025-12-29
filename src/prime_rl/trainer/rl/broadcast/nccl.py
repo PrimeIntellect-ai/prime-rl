@@ -175,18 +175,15 @@ class NCCLWeightBroadcast(WeightBroadcast):
     @torch.no_grad()
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
         """Broadcast the state dict of a model into the inference pool using NCCL and notifies the orchestrator."""
-        if self.lora_config is not None:
-            raise NotImplementedError("NCCL weight broadcast does not support LoRA yet")
-
-        # Only broadcast when at least one run has requested an update.
-        # (Otherwise we'd enter NCCL collectives without receivers.)
-        requested_run_idxs = [idx for idx in self.runs.used_idxs if self.runs.ready_to_update[idx]]
-        if len(requested_run_idxs) == 0:
-            return
-
         self.logger.debug("Starting broadcasting weights to inference engine via NCCL")
         start_time = time.perf_counter()
         if self.world.is_master:
+            # Only broadcast when at least one run has requested an update.
+            # (Otherwise we'd enter NCCL collectives without receivers.)
+            requested_run_idxs = [idx for idx in self.runs.used_idxs if self.runs.ready_to_update[idx]]
+            if len(requested_run_idxs) == 0:
+                return
+
             notified_run_idxs = self._notify_orchestrator(requested_run_idxs)
             if len(notified_run_idxs) == 0:
                 # If we couldn't notify any run, the orchestrator will not trigger inference
@@ -208,9 +205,6 @@ class NCCLWeightBroadcast(WeightBroadcast):
         Returns the subset of requested runs that were successfully notified
         (i.e., we managed to write the STABLE marker for that run's step dir).
         """
-        if not self.world.is_master:
-            return []
-
         notified: list[int] = []
         for idx in requested_run_idxs:
             try:

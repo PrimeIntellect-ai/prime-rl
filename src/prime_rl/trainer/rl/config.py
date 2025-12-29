@@ -23,22 +23,32 @@ class LossConfig(BaseConfig):
     ratio_type: Annotated[Literal["token", "sequence"], Field(description="Type of importance ratio to use.")] = "token"
 
     token_mask_high: Annotated[
-        float, 
-        Field(ge=0, description="The high threshold for token importance ratio to mask.")] = 8.0 
+        float, Field(ge=0, description="The high threshold for token importance ratio to mask.")
+    ] = 8.0
     token_mask_low: Annotated[
-        float, 
-        Field(ge=0, description="The low threshold for token importance ratio to mask.")] = 0.125
-    sequence_clip_high: Annotated[float, Field(ge=0, description="The high threshold for sequence importance ratio to clip.")] = 10.0
-    geo_mask_high: Annotated[float, Field(ge=0, description="The high threshold for geo importance ratio to mask.")] = 10.0
+        float, Field(ge=0, description="The low threshold for token importance ratio to mask.")
+    ] = 0.125
+    sequence_clip_high: Annotated[
+        float, Field(ge=0, description="The high threshold for sequence importance ratio to clip.")
+    ] = 10.0
+    geo_mask_high: Annotated[float, Field(ge=0, description="The high threshold for geo importance ratio to mask.")] = (
+        10.0
+    )
     geo_mask_low: Annotated[float, Field(ge=0, description="The low threshold for geo importance ratio to mask.")] = 0.1
     kl_tau: Annotated[float, Field(ge=0, description="The tau for KL divergence.")] = 0.0
     sequence_mask_low: Annotated[
         float,
-        Field(ge=0, description="If set, masks entire sequences when any generated token has an importance ratio below this value."),
+        Field(
+            ge=0,
+            description="If set, masks entire sequences when any generated token has an importance ratio below this value.",
+        ),
     ] = 0.0
     sequence_mask_high: Annotated[
         float,
-        Field(ge=0, description="If set, masks entire sequences when any generated token has an importance ratio above this value."),
+        Field(
+            ge=0,
+            description="If set, masks entire sequences when any generated token has an importance ratio above this value.",
+        ),
     ] = 100.0
 
     @model_validator(mode="after")
@@ -188,7 +198,7 @@ class RLTrainerConfig(BaseSettings):
             ge=1,
             description="The maximum number of concurrent runs to allow. If 1, then only one run will be allowed at a time.",
         ),
-    ] = 4
+    ] = 1
 
     @model_validator(mode="after")
     def auto_setup_bench(self):
