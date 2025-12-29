@@ -74,6 +74,12 @@ class Scheduler:
         self.sampling_args = get_sampling_args(config.sampling)
         self.model_name = self.config.model.name
 
+        # Build example lookup dicts per env (example_id -> example)
+        self.example_lookups: dict[str, dict[int, dict]] = {}
+        for env_config in env_configs:
+            env_name = env_config.name or env_config.id
+            self.example_lookups[env_name] = buffer.example_buffer[env_name].copy()
+
         # Create workers - multiple per env
         self.workers_per_env = config.workers_per_env or 1
         self.workers: dict[str, list[EnvWorker]] = {}
@@ -91,6 +97,8 @@ class Scheduler:
                     seq_len=config.seq_len,
                     interleaved_rollouts=config.trajectory_strategy == "interleaved",
                     max_concurrent=config.max_concurrent or -1,
+                    example_lookup=self.example_lookups[env_name],
+                    sampling_args=self.sampling_args,
                     worker_name=f"{env_name}_{worker_idx}",
                 )
                 self.workers[env_name].append(worker)
@@ -135,10 +143,8 @@ class Scheduler:
         worker = min(workers, key=lambda w: w.pending_count)
 
         future = await worker.submit_request(
-            example=example,
+            example_id=example["example_id"],
             rollouts_per_example=self.config.rollouts_per_example,
-            sampling_args=self.sampling_args,
-            model_name=self.model_name,
         )
 
         # Extract request_id from the future's pending tracking
@@ -214,7 +220,7 @@ class Scheduler:
             # Remove cancelled and reschedule
             for future, worker in futures_to_remove:
                 self.inflight_group_rollouts.pop(future, None)
-                await self.schedule_group_rollout(worker)
+                await self.schedule_group_rollout()
 
             # Update off-policy steps for remaining
             for future, off_policy_steps, worker, request_id in futures_to_update:

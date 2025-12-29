@@ -5,7 +5,6 @@ Runs environment rollouts in a separate process to isolate event loop lag.
 """
 
 import asyncio
-import uuid
 from dataclasses import dataclass
 from itertools import cycle
 from multiprocessing import Process, Queue
@@ -21,11 +20,8 @@ from prime_rl.utils.config import ClientConfig
 class RolloutRequest:
     """Request to generate rollouts for an example."""
 
-    id: str
-    example: dict
+    id: int  # example_id
     rollouts_per_example: int
-    sampling_args: dict
-    model_name: str
 
 
 @dataclass
@@ -81,26 +77,30 @@ async def process_request(
     clients: list[AsyncOpenAI],
     client_cycle: cycle,
     semaphore: asyncio.Semaphore,
+    example_lookup: dict[int, dict],
+    model_name: str,
+    sampling_args: dict,
 ) -> RolloutResponse:
     """Process a single rollout request."""
     try:
         client = next(client_cycle)
-        group_inputs = [vf.RolloutInput(**request.example) for _ in range(request.rollouts_per_example)]
+        example = example_lookup[request.id]
+        group_inputs = [vf.RolloutInput(**example) for _ in range(request.rollouts_per_example)]
 
         states = await env.run_group(
             group_inputs=group_inputs,
             client=client,
-            model=request.model_name,
-            gen_sampling_args=request.sampling_args,
+            model=model_name,
+            gen_sampling_args=sampling_args,
             gen_sem=semaphore,
             score_sem=semaphore,
         )
 
         results = [extract_result(state) for state in states]
-        return RolloutResponse(id=request.id, results=results)
+        return RolloutResponse(id=str(request.id), results=results)
 
     except Exception as e:
-        return RolloutResponse(id=request.id, results=[], error=f"{type(e).__name__}: {e}")
+        return RolloutResponse(id=str(request.id), results=[], error=f"{type(e).__name__}: {e}")
 
 
 async def worker_loop(
@@ -110,6 +110,9 @@ async def worker_loop(
     clients: list[AsyncOpenAI],
     max_concurrent: int,
     env_id: str,
+    example_lookup: dict[int, dict],
+    model_name: str,
+    sampling_args: dict,
 ):
     """Main async loop for processing requests."""
     from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
@@ -122,7 +125,7 @@ async def worker_loop(
     lag_monitor_task = asyncio.create_task(lag_monitor.run())
 
     # Track in-flight tasks
-    pending_tasks: dict[asyncio.Task, str] = {}
+    pending_tasks: dict[asyncio.Task, int] = {}
 
     def check_for_requests():
         """Non-blocking check for new requests."""
@@ -131,7 +134,11 @@ async def worker_loop(
                 request = request_queue.get_nowait()
                 if request is None:  # Shutdown signal
                     return False
-                task = asyncio.create_task(process_request(request, env, clients, client_cycle, semaphore))
+                task = asyncio.create_task(
+                    process_request(
+                        request, env, clients, client_cycle, semaphore, example_lookup, model_name, sampling_args
+                    )
+                )
                 pending_tasks[task] = request.id
         except Exception:
             pass
@@ -160,7 +167,7 @@ async def worker_loop(
                     response_queue.put(response)
                 except Exception as e:
                     # Should not happen since process_request catches exceptions
-                    response_queue.put(RolloutResponse(id="unknown", results=[], error=str(e)))
+                    response_queue.put(RolloutResponse(id="0", results=[], error=str(e)))
     finally:
         # Cleanup
         lag_monitor_task.cancel()
@@ -178,6 +185,8 @@ def worker_main(
     seq_len: int,
     interleaved_rollouts: bool,
     max_concurrent: int,
+    example_lookup: dict[int, dict],
+    sampling_args: dict,
 ):
     """Main entry point for worker process."""
     # Load environment
@@ -190,7 +199,19 @@ def worker_main(
     clients = setup_clients(client_config)
 
     # Run async loop
-    asyncio.run(worker_loop(request_queue, response_queue, env, clients, max_concurrent, env_id))
+    asyncio.run(
+        worker_loop(
+            request_queue,
+            response_queue,
+            env,
+            clients,
+            max_concurrent,
+            env_id,
+            example_lookup,
+            model_name,
+            sampling_args,
+        )
+    )
 
 
 class EnvWorker:
@@ -205,6 +226,8 @@ class EnvWorker:
         seq_len: int,
         interleaved_rollouts: bool,
         max_concurrent: int,
+        example_lookup: dict[int, dict],
+        sampling_args: dict,
         worker_name: str | None = None,
     ):
         self.env_id = env_id
@@ -214,6 +237,8 @@ class EnvWorker:
         self.seq_len = seq_len
         self.interleaved_rollouts = interleaved_rollouts
         self.max_concurrent = max_concurrent
+        self.example_lookup = example_lookup
+        self.sampling_args = sampling_args
         self.worker_name = worker_name or env_id
 
         self.request_queue: Queue = Queue()
@@ -240,6 +265,8 @@ class EnvWorker:
                 self.seq_len,
                 self.interleaved_rollouts,
                 self.max_concurrent,
+                self.example_lookup,
+                self.sampling_args,
             ),
             daemon=True,
         )
@@ -255,24 +282,18 @@ class EnvWorker:
 
     async def submit_request(
         self,
-        example: dict,
+        example_id: int,
         rollouts_per_example: int,
-        sampling_args: dict,
-        model_name: str | None = None,
     ) -> asyncio.Future:
         """Submit a rollout request and return a future for the response."""
-        request_id = str(uuid.uuid4())
         request = RolloutRequest(
-            id=request_id,
-            example=example,
+            id=example_id,
             rollouts_per_example=rollouts_per_example,
-            sampling_args=sampling_args,
-            model_name=model_name or self.model_name,
         )
 
         loop = asyncio.get_event_loop()
         future = loop.create_future()
-        self.pending_futures[request_id] = future
+        self.pending_futures[str(example_id)] = future
 
         self.request_queue.put(request)
         return future
