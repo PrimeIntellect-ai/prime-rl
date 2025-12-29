@@ -6,6 +6,7 @@ from prime_rl.transport.types import MicroBatch, TrainingSample
 def prepare_sample(
     training_example: TrainingSample,
     seq_len: int,
+    temperature: float,
 ) -> MicroBatch:
     """
     Prepare a problem for sequence packing training.
@@ -48,7 +49,7 @@ def prepare_sample(
         position_ids=position_ids,
         inference_logprobs=inference_logprobs,
         teacher_logprobs=teacher_logprobs,
-        temperature=1.0, 
+        temperature=temperature,
     )
 
 
@@ -101,12 +102,12 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     if not (pad_to_multiple_of > 1 and padding_size > 0):
         return micro_batch
 
-    micro_batch.input_ids.extend([1 for _ in range(padding_size)])
-    micro_batch.advantages.extend([0.0 for _ in range(padding_size)])
-    micro_batch.loss_mask.extend([False for _ in range(padding_size)])
+    micro_batch.input_ids.extend([1] * padding_size)
+    micro_batch.advantages.extend([0.0] * padding_size)
+    micro_batch.loss_mask.extend([False] * padding_size)
     micro_batch.position_ids.extend(list(range(padding_size)))
-    micro_batch.inference_logprobs.extend([0.0 for _ in range(padding_size)])
-    micro_batch.teacher_logprobs.extend([0.0 for _ in range(padding_size)])
+    micro_batch.inference_logprobs.extend([0.0] * padding_size)
+    micro_batch.teacher_logprobs.extend([0.0] * padding_size)
     micro_batch.lora_num_tokens[-1] += (
         padding_size  # We send padding to the last lora so that tokens have ascending lora idx
     )
@@ -129,13 +130,10 @@ def prepare_batch(
     """
     max_seq_len = seq_len
 
-    all_samples = [(idx, prepare_sample(rollout, max_seq_len)) for idx, rollout in zip(idxs, rollouts)]
+    all_samples = [(idx, prepare_sample(rollout, max_seq_len, temperature)) for idx, rollout in zip(idxs, rollouts)]
 
     micro_batches = packed_samples_into_micro_bs(all_samples, max_seq_len, num_loras)
     micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]
-
-    for micro_batch in micro_batches:
-        micro_batch.temperature = temperature
 
     num_padding_batch = -len(micro_batches) % num_train_workers
 

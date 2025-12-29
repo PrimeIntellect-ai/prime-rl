@@ -8,7 +8,6 @@ from openai.types.chat.chat_completion import ChatCompletion, Choice
 from openai.types.completion_usage import CompletionUsage
 from rich.console import Console
 from rich.table import Table
-from transformers import PreTrainedTokenizerFast
 from verifiers.utils.async_utils import maybe_semaphore
 
 from prime_rl.orchestrator.config import SamplingConfig

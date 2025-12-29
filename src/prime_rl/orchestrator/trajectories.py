@@ -35,7 +35,7 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
         completion_ids=deepcopy(first_step["tokens"]["completion_ids"]),
         completion_mask=completion_mask,
         completion_logprobs=deepcopy(first_step["tokens"]["completion_logprobs"]),
-        teacher_logprobs=[],  # Placeholder, set correctly after interleaving
+        teacher_logprobs=[],  # Populated at the end after full sequence length is known
         advantage=None,
     )
 

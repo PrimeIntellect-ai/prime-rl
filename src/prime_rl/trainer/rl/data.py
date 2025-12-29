@@ -29,19 +29,6 @@ class TensorMicroBatch(TypedDict):
     lora_num_tokens: Int[Tensor, "n_loras"]
 
 
-def micro_batch_to_tensor(micro_batch: MicroBatch) -> TensorMicroBatch:
-    """Convert a MicroBatch (msgspec struct with lists) to a TensorMicroBatch (dict with tensors)."""
-    return TensorMicroBatch(
-        input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),
-        position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
-        advantages=torch.tensor(micro_batch.advantages, dtype=torch.float).unsqueeze(0),
-        inference_logprobs=torch.tensor(micro_batch.inference_logprobs, dtype=torch.float).unsqueeze(0),
-        teacher_logprobs=torch.tensor(micro_batch.teacher_logprobs, dtype=torch.float).unsqueeze(0),
-        loss_mask=torch.tensor(micro_batch.loss_mask, dtype=torch.bool).unsqueeze(0),
-        temperature=micro_batch.temperature,
-    )
-
-
 class FakeDataLoader:
     def __init__(self, config: FakeDataLoaderConfig, seq_len: int, dp_world_size: int):
         self.world = get_world()
@@ -185,7 +172,8 @@ class DataLoader:
             position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
             advantages=torch.tensor(micro_batch.advantages, dtype=torch.float).unsqueeze(0),
             inference_logprobs=torch.tensor(micro_batch.inference_logprobs, dtype=torch.float).unsqueeze(0),
+            teacher_logprobs=torch.tensor(micro_batch.teacher_logprobs, dtype=torch.float).unsqueeze(0),
             loss_mask=torch.tensor(micro_batch.loss_mask, dtype=torch.bool).unsqueeze(0),
-            temperature=micro_batch.temperature if micro_batch.temperature is not None else 1.0,
+            temperature=micro_batch.temperature,
             lora_num_tokens=torch.tensor(micro_batch.lora_num_tokens, dtype=torch.int32),
         )
