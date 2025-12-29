@@ -437,15 +437,6 @@ class RLConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_skip_verification(self):
-        """When scoring is disabled, auto-disable features that depend on rewards."""
-        if self.orchestrator.buffer.skip_verification:
-            self.orchestrator.buffer.online_difficulty_filtering = False
-            self.orchestrator.buffer.easy_threshold = None
-            self.orchestrator.buffer.hard_threshold = None
-        return self
-
-    @model_validator(mode="after")
     def auto_setup_teacher_inference(self):
         """Auto-configure teacher inference server and orchestrator teacher_model client."""
         if self.teacher_gpu_ids is None:

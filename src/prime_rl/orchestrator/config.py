@@ -469,23 +469,12 @@ class BufferConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_skip_verification(self):
+    def auto_setup_skip_verification(self):
+        """When scoring is disabled, auto-disable features that depend on rewards."""
         if self.skip_verification:
-            if self.online_difficulty_filtering:
-                raise ValueError(
-                    "online_difficulty_filtering cannot be enabled when skip_verification is True "
-                    "(rewards are always 0, so filtering would discard all rollouts)."
-                )
-            if self.easy_threshold is not None:
-                raise ValueError(
-                    "easy_threshold cannot be set when skip_verification is True "
-                    "(rewards are always 0, so no examples would ever be marked as easy)."
-                )
-            if self.hard_threshold is not None:
-                raise ValueError(
-                    "hard_threshold cannot be set when skip_verification is True "
-                    "(rewards are always 0, so all examples would be marked as hard)."
-                )
+            self.online_difficulty_filtering = False
+            self.easy_threshold = None
+            self.hard_threshold = None
         return self
 
 
