@@ -157,14 +157,10 @@ async def worker_loop(
 
             for task in done:
                 pending_tasks.pop(task)
-                try:
-                    response = task.result()
-                    # Attach lag metrics to response
-                    response.lag_metrics = lag_monitor.get_metrics()
-                    response_queue.put(response)
-                except Exception as e:
-                    # Should not happen since process_request catches exceptions
-                    response_queue.put(RolloutResponse(id="0", results=[], error=str(e)))
+                response = task.result()
+                # Attach lag metrics to response
+                response.lag_metrics = lag_monitor.get_metrics()
+                response_queue.put(response)
     finally:
         # Cleanup
         lag_monitor_task.cancel()
