@@ -31,7 +31,7 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     loss_mask: list[bool]
     advantages: list[float]
     inference_logprobs: list[float]
-    teacher_logprobs: list[float] | None = None
     position_ids: list[int]
     temperature: float
+    teacher_logprobs: list[float] | None = None
     lora_num_tokens: list[int] | None = None
