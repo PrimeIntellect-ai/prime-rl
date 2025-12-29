@@ -165,8 +165,6 @@ class NCCLWeightBroadcast(WeightBroadcast):
             # Wait for inference workers to signal readiness before starting NCCL broadcast
             self._wait_for_nccl_ready(notified_runs)
         self.nccl_broadcast_sender.broadcast_weights(model, step)
-        if self.world.is_master:
-            self._cleanup_nccl_ready(notified_runs)
         self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
 
     def _notify_orchestrator(self) -> list[tuple[int, Path]]:
@@ -210,15 +208,3 @@ class NCCLWeightBroadcast(WeightBroadcast):
                 self.logger.warning(f"Run {idx} is deleted, skipping NCCL ready wait")
             except Exception as e:
                 self.logger.error(f"Error waiting for NCCL ready for run {idx}: {e}")
-
-    def _cleanup_nccl_ready(self, notified_runs: list[tuple[int, Path]]):
-        """Clean up NCCL_READY marker after broadcast completes."""
-        for idx, save_dir in notified_runs:
-            try:
-                nccl_ready_file = save_dir / NCCL_READY_MARKER
-                if nccl_ready_file.exists():
-                    nccl_ready_file.unlink()
-            except FileNotFoundError:
-                pass
-            except Exception as e:
-                self.logger.warning(f"Error cleaning up NCCL ready marker for run {idx}: {e}")
