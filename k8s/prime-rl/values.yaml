@@ -84,6 +84,9 @@ trainer:
   autoStart: false
   command: ""  # e.g., "uv run trainer @ /app/examples/reverse_text/rl/train.toml --output-dir /data/outputs"
 
+  # Helps reduce CUDA memory fragmentation with PyTorch allocator
+  pytorchCudaAllocConf: "expandable_segments:True"
+
   gpu:
     enabled: true
     count: 1

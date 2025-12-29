@@ -20,3 +20,5 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`trainer.loss.adv_tau`**: Added tau parameter for advantages (default: 1.0)
 - **`trainer.loss.teacher_tau`**: Added tau parameter for teacher logprobs (default: 0.0). Renamed from `ref_tau`
 - **`{orchestrator,trainer}.transport.zmq`**: Added ZMQ transport for training batches and micro batches (#1446, 2025-12-22)
+- **`model.impl`**: Changed default from `hf` to `auto`. With `auto`, the implementation automatically selects `custom` if supported for the model, otherwise falls back to `hf` (#1488, 2025-12-27)
+- **`trainer.weight_broadcast.adapter_only`**: Removed. Adapter-only behavior is now automatically derived from the presence of LoRA configuration (2025-12-27)

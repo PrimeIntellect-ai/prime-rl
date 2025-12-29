@@ -33,6 +33,7 @@ from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import setup_dataloader, setup_dataset
 from prime_rl.trainer.utils import (
     MemoryProfiler,
+    get_ckpt_disk_metrics,
     print_sample,
     setup_torch_distributed,
     print_benchmark,
@@ -114,7 +115,7 @@ def train(config: SFTTrainerConfig):
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
-    optimizer = setup_optimizer(config.optim, model, parallel_dims.world_mesh["dp_shard_cp"])
+    optimizer = setup_optimizer(config.optim, list(model.named_parameters()), parallel_dims.world_mesh["dp_shard_cp"])
 
     # Set up the learning rate scheduler
     scheduler_steps = (
@@ -377,6 +378,11 @@ def train(config: SFTTrainerConfig):
             "step": progress.step,
         }
         monitor.log(time_metrics)
+
+        # Log disk metrics
+        disk_metrics = get_ckpt_disk_metrics(config.output_dir)
+        disk_metrics["step"] = progress.step
+        monitor.log(disk_metrics)
 
         if is_tt_moe_model(model):
             max_vio_log_metrics = {

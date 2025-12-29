@@ -33,6 +33,8 @@ def test_prepare_batch_balances_micro_batches_across_workers(
         temperature=0.5,
         seq_len=4,
         num_train_workers=num_train_workers,
+        idxs=[0] * rollout_count,
+        num_loras=1,
     )
 
     assert all(len(worker_batches) == expected_batches_per_worker for worker_batches in batches_per_gpu)

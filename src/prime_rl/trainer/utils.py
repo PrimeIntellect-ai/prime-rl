@@ -18,9 +18,29 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.pathing import get_ckpt_dir
 from prime_rl.utils.utils import format_num, format_time, get_step_path
 
 DEFAULT_TIMEOUT = timedelta(seconds=600)
+
+
+def get_ckpt_disk_metrics(output_dir: Path) -> dict[str, float]:
+    """
+    Disk usage metrics for the checkpoint directory (<output_dir>/checkpoints).
+
+    Intended to be called by trainer(s) on rank 0 and included in an existing
+    monitor.log(...) call (once per step).
+    """
+    ckpt_dir = get_ckpt_dir(output_dir)
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    usage = shutil.disk_usage(str(ckpt_dir))
+    total = float(usage.total) if usage.total else 0.0
+    return {
+        "system/ckpt_disk_free_gib": usage.free / 1024**3,
+        "system/ckpt_disk_used_gib": usage.used / 1024**3,
+        "system/ckpt_disk_total_gib": usage.total / 1024**3,
+        "system/ckpt_disk_free_ratio": (usage.free / total) if total else 0.0,
+    }
 
 
 def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: bool = False):

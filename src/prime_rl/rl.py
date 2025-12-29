@@ -401,7 +401,6 @@ class RLConfig(BaseSettings):
         if self.trainer.model.lora is not None:
             if self.trainer.weight_broadcast.type == "nccl":
                 raise ValueError("NCCL weight broadcast does not support LoRA yet.")
-            self.trainer.weight_broadcast.adapter_only = True
             if self.orchestrator.lora_name is None:
                 lora_name = f"r{self.trainer.model.lora.rank}-a{self.trainer.model.lora.alpha}"
                 self.orchestrator.lora_name = lora_name
@@ -682,6 +681,7 @@ def rl(config: RLConfig):
             "run",
             "env",
             "PYTHONUNBUFFERED=1",
+            "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True",
             "torchrun",
             f"--rdzv-endpoint=localhost:{get_free_port()}",
             f"--rdzv-id={uuid.uuid4().hex}",
@@ -704,6 +704,7 @@ def rl(config: RLConfig):
                 env={
                     **os.environ,
                     "CUDA_VISIBLE_DEVICES": ",".join(map(str, config.trainer_gpu_ids)),
+                    "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
                     "LOGURU_FORCE_COLORS": "1",
                     "WANDB_PROGRAM": "uv run rl",
                     "WANDB_ARGS": json.dumps(start_command),

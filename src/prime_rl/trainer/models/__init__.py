@@ -3,6 +3,7 @@
 from collections import OrderedDict
 
 from transformers import AutoConfig
+from transformers.configuration_utils import PretrainedConfig
 from transformers.models.auto.auto_factory import _BaseAutoModelClass, _LazyAutoMapping, auto_class_update
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
 from transformers.models.llama.configuration_llama import LlamaConfig
@@ -29,4 +30,16 @@ class AutoModelForCausalLMPrimeRL(_BaseAutoModelClass):
 AutoModelForCausalLMPrimeRL = auto_class_update(AutoModelForCausalLMPrimeRL, head_doc="causal language modeling")
 
 
-__all__ = ["AutoModelForCausalLMPrimeRL", "PreTrainedModelPrimeRL"]
+def supports_custom_impl(model_config: PretrainedConfig) -> bool:
+    """Check if the model configuration supports the custom PrimeRL implementation.
+
+    Args:
+        model_config: The model configuration to check.
+
+    Returns:
+        True if the model supports custom implementation, False otherwise.
+    """
+    return type(model_config) in _CUSTOM_CAUSAL_LM_MAPPING
+
+
+__all__ = ["AutoModelForCausalLMPrimeRL", "PreTrainedModelPrimeRL", "supports_custom_impl"]
