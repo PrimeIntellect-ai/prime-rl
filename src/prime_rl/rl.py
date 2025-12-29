@@ -596,7 +596,13 @@ def rl(config: RLConfig):
             )
 
         # Optionally, start teacher inference process
-        if config.teacher_gpu_ids is not None and config.teacher_inference is not None:
+        if config.teacher_inference:
+            if config.teacher_gpu_ids is None:
+                raise ValueError(
+                    "teacher_inference is configured but teacher_gpu_ids is not set. "
+                    "Either set teacher_gpu_ids to start a teacher inference server, "
+                    "or omit teacher_inference and configure orchestrator.teacher_model to use an existing server."
+                )
             teacher_inference_file = get_temp_toml_file()
             with open(teacher_inference_file, "wb") as f:
                 tomli_w.dump(config.teacher_inference.model_dump(exclude_none=True, mode="json"), f)
@@ -623,6 +629,11 @@ def rl(config: RLConfig):
             )
             monitor_thread.start()
             monitor_threads.append(monitor_thread)
+        elif config.trainer.loss.teacher_tau > 0 or config.orchestrator.teacher_model:
+            logger.warning(
+                "No teacher_inference config specified, skipping starting teacher inference server. "
+                "Is your teacher inference server running? Make sure orchestrator.teacher_model is configured."
+            )
 
         # Start orchestrator process
         orchestrator_file = get_temp_toml_file()
