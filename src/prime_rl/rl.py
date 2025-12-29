@@ -493,6 +493,11 @@ def rl(config: RLConfig):
     logger.info("Starting RL run")
     logger.debug(f"RL start command: {' '.join(start_command)}")
 
+    inference_file, orchestrator_file, trainer_file = create_sub_config_toml(config)
+    if config.only_sub_toml:
+        logger.success("Sub-config.toml file created successfully, exiting...")
+        return
+
     # Prepare paths to communicate with the trainer
     log_dir = get_log_dir(config.output_dir)
     orch_log_dir = get_log_dir(config.orchestrator.output_dir)
@@ -531,12 +536,6 @@ def rl(config: RLConfig):
     monitor_threads: list[Thread] = []
     error_queue: list[Exception] = []
     stop_events: dict[str, Event] = {}
-
-    inference_file, orchestrator_file, trainer_file = create_sub_config_toml(config)
-
-    if config.only_sub_toml:
-        logger.success("Sub-config.toml file created successfully, exiting...")
-        return
 
     try:
         # Optionally, start inference process

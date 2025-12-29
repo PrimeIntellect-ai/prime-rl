@@ -1,0 +1,37 @@
+# Debug config for event loop lag testing
+# Usage: EVENTLOOP_LAG_BLOCK_MS=100 uv run rl @ configs/debug/eventloop_lag.toml
+
+# Never update weights (async level infinity)
+max_async_level = 1000000000
+
+# Small batch for fast iteration
+batch_size = 16
+rollouts_per_example = 4
+seq_len = 512
+max_steps = 100
+
+# Multiple workers per env - uses least-pending routing
+# If one worker drifts/slows, others maintain throughput
+workers_per_env = 2
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[sampling]
+max_tokens = 64
+
+[[env]]
+id = "eventloop-lag-env"
+# block_ms: fixed base blocking time
+# block_growth_ms: increase per call (simulates growing lag)
+# block_max_ms: cap on total blocking time
+# alloc_mb: allocate memory per call to trigger GC
+args = { block_ms = 0, block_growth_ms = 5, block_max_ms = 60000 }
+
+[log]
+level = "debug"
+
+
+[wandb]
+project = "eventloop-lag-debug"
+name = "orch"
