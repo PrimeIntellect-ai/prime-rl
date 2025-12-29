@@ -148,7 +148,6 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
     ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
 
-    # Determine checkpoint step early to set correct model name before starting workers
     checkpoint_step = None
     if config.ckpt and config.ckpt.resume_step is not None and ckpt_manager is not None:
         if config.ckpt.resume_step == -1:
@@ -170,7 +169,6 @@ async def orchestrate(config: OrchestratorConfig):
         lora_name=config.lora_name,
     )
 
-    # Update model name before starting workers if resuming with LoRA
     if checkpoint_step is not None and config.lora_name is not None:
         scheduler.model_name = config.lora_name
         for workers in scheduler.workers.values():
