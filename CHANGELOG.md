@@ -19,6 +19,8 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`trainer.loss.geo_mask_high`** and **`trainer.loss.geo_mask_low`**: Added geometric importance ratio masking thresholds (2025-12-19)
 - **`trainer.loss.adv_tau`**: Added tau parameter for advantages (default: 1.0)
 - **`trainer.loss.teacher_tau`**: Added tau parameter for teacher logprobs (default: 0.0). Renamed from `ref_tau`
+- **`teacher_gpu_ids`**: Added GPU IDs for teacher inference server. When set, automatically starts a teacher inference server and configures `orchestrator.teacher_model`
+- **`teacher_inference`**: Added optional teacher inference config. Defaults to copying from `inference` config with port 8001
 - **`{orchestrator,trainer}.transport.zmq`**: Added ZMQ transport for training batches and micro batches (#1446, 2025-12-22)
 - **`model.impl`**: Changed default from `hf` to `auto`. With `auto`, the implementation automatically selects `custom` if supported for the model, otherwise falls back to `hf` (#1488, 2025-12-27)
 - **`trainer.weight_broadcast.adapter_only`**: Removed. Adapter-only behavior is now automatically derived from the presence of LoRA configuration (2025-12-27)
