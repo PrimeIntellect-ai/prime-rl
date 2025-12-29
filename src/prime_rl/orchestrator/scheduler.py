@@ -19,6 +19,7 @@ from prime_rl.utils.utils import (
     get_broadcast_dir,
     get_latest_ckpt_step,
     get_step_path,
+    sync_wait_for_path,
     wait_for_path,
 )
 from prime_rl.utils.vf import generate_group
@@ -51,6 +52,7 @@ class Scheduler:
         max_async_level: int,
         max_off_policy_steps: int,
         strict_async_level: bool,
+        blocking_checkpoint_wait: bool = False,
         lora_name: str | None = None,
     ):
         self.logger = get_logger()
@@ -67,6 +69,7 @@ class Scheduler:
         self.max_async_level = max_async_level
         self.max_off_policy_steps = max_off_policy_steps
         self.strict_async_level = strict_async_level
+        self.blocking_checkpoint_wait = blocking_checkpoint_wait
         self.lora_name = lora_name
         self.inflight_group_rollouts: dict[asyncio.Task, InflightRolloutInfo] = {}
         self.cycle_clients = cycle(self.clients)
@@ -115,7 +118,11 @@ class Scheduler:
                 )
                 self.checkpoint_ready.clear()
                 wait_for_ckpt_start_time = time.perf_counter()
-                await wait_for_path(get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
+                ckpt_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step) / "STABLE"
+                if self.blocking_checkpoint_wait:
+                    sync_wait_for_path(ckpt_path)  # Blocks event loop
+                else:
+                    await wait_for_path(ckpt_path)
                 self.wait_for_ckpt_time = time.perf_counter() - wait_for_ckpt_start_time
                 self.logger.debug(f"Waited for checkpoint {next_ckpt_step} for {self.wait_for_ckpt_time:.2f}s")
             self.logger.debug(

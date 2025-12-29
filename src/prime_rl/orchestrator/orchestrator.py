@@ -154,6 +154,7 @@ async def orchestrate(config: OrchestratorConfig):
         max_async_level=config.max_async_level,
         max_off_policy_steps=config.max_off_policy_steps,
         strict_async_level=config.strict_async_level,
+        blocking_checkpoint_wait=config.blocking_checkpoint_wait,
         lora_name=config.lora_name,
     )
 

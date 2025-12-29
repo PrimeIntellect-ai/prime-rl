@@ -626,6 +626,13 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = False
 
+    blocking_checkpoint_wait: Annotated[
+        bool,
+        Field(
+            description="Whether to block the entire event loop when waiting for a checkpoint. If True, freezes all orchestrator activity (including inflight rollout processing) until checkpoint arrives. Useful for debugging or when you want fully synchronous behavior.",
+        ),
+    ] = False
+
     bench: Annotated[
         bool,
         Field(
