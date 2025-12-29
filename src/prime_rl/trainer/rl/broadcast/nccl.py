@@ -173,10 +173,10 @@ class NCCLWeightBroadcast(WeightBroadcast):
         )
 
     @torch.no_grad()
-    def broadcast_weights(self, model: nn.Module, step: int, adapter_only: bool = False) -> None:
+    def broadcast_weights(self, model: nn.Module, step: int) -> None:
         """Broadcast the state dict of a model into the inference pool using NCCL and notifies the orchestrator."""
-        if adapter_only:
-            raise NotImplementedError("NCCL weight broadcast does not support adapter only yet")
+        if self.lora_config is not None:
+            raise NotImplementedError("NCCL weight broadcast does not support LoRA yet")
 
         # Only broadcast when at least one run has requested an update.
         # (Otherwise we'd enter NCCL collectives without receivers.)
