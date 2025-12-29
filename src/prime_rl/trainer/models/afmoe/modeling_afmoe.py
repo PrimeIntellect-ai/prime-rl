@@ -36,21 +36,9 @@ from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 
 try:
-    from .afmoe_attn import (
-        AFMOE_ATTN_IMPL2CLASS,
-        AfmoeAttentionConfig,
-        create_afmoe_block_masks,
-        create_afmoe_block_masks_with_documents,
-        create_document_mask_for_sdpa,
-    )
+    from .afmoe_attn import AFMOE_ATTN_IMPL2CLASS, AfmoeAttentionConfig
 except ImportError:
-    from afmoe_attn import (
-        AFMOE_ATTN_IMPL2CLASS,
-        AfmoeAttentionConfig,
-        create_afmoe_block_masks,
-        create_afmoe_block_masks_with_documents,
-        create_document_mask_for_sdpa,
-    )
+    from afmoe_attn import AFMOE_ATTN_IMPL2CLASS, AfmoeAttentionConfig
 
 try:
     from .configuration_afmoe import AfmoeConfig
@@ -327,42 +315,23 @@ class AfmoeModel(AfmoePreTrainedModel):
         # Determine if we should use flex_attention with BlockMask
         use_flex_attention = self.config._attn_implementation == "flex_attention"
 
-        # Create attention masks based on implementation
-        # Both paths handle document masking internally for packed sequences
-        if use_flex_attention:
-            # Use BlockMask for flex_attention (handles document boundaries internally)
-            block_mask_mapping = create_afmoe_block_masks_with_documents(
-                position_ids=position_ids,
-                sliding_window=self.config.sliding_window,
-                device=inputs_embeds.device,
-            )
-            causal_mask_mapping = None
-        else:
-            # Use dense masks for SDPA
-            block_mask_mapping = None
-            # It may already have been prepared by e.g. `generate`
-            if not isinstance(causal_mask_mapping := attention_mask, dict):
-                mask_kwargs = {
-                    "config": self.config,
-                    "input_embeds": inputs_embeds,
-                    "attention_mask": attention_mask,
-                    "cache_position": cache_position,
-                    "past_key_values": past_key_values,
-                }
-                causal_mask_mapping = {
-                    "full_attention": create_causal_mask(**mask_kwargs),
-                    "sliding_attention": create_sliding_window_causal_mask(**mask_kwargs),
-                }
-                # Apply document mask to prevent cross-document attention in packed sequences
-                document_mask = create_document_mask_for_sdpa(
-                    position_ids, inputs_embeds.dtype, inputs_embeds.device
-                )
-                if document_mask is not None:
-                    for key in causal_mask_mapping:
-                        if causal_mask_mapping[key] is not None:
-                            causal_mask_mapping[key] = causal_mask_mapping[key] + document_mask
-                        else:
-                            causal_mask_mapping[key] = document_mask
+        # Create attention masks using HuggingFace's utilities
+        # These handle both flex_attention (returns BlockMask) and SDPA (returns dense tensor)
+        # They also handle packed sequences automatically via position_ids
+        # It may already have been prepared by e.g. `generate`
+        if not isinstance(causal_mask_mapping := attention_mask, dict):
+            mask_kwargs = {
+                "config": self.config,
+                "input_embeds": inputs_embeds,
+                "attention_mask": attention_mask,
+                "cache_position": cache_position,
+                "past_key_values": past_key_values,
+                "position_ids": position_ids,
+            }
+            causal_mask_mapping = {
+                "full_attention": create_causal_mask(**mask_kwargs),
+                "sliding_attention": create_sliding_window_causal_mask(**mask_kwargs),
+            }
 
         hidden_states = inputs_embeds
 
@@ -376,12 +345,16 @@ class AfmoeModel(AfmoePreTrainedModel):
         filtered_kwargs = {k: v for k, v in kwargs.items() if k != "attention_mask"}
 
         for decoder_layer in self.layers:
-            # Select appropriate mask based on attention type and implementation
+            # Select appropriate mask based on attention type
+            # For flex_attention: mask is a BlockMask, pass as block_mask
+            # For SDPA: mask is a dense tensor (or None), pass as attention_mask
+            mask = causal_mask_mapping[decoder_layer.attention_type]
+            
             if use_flex_attention:
                 attn_mask = None
-                block_mask = block_mask_mapping[decoder_layer.attention_type]
+                block_mask = mask  # BlockMask from HF
             else:
-                attn_mask = causal_mask_mapping[decoder_layer.attention_type]
+                attn_mask = mask  # Dense tensor from HF
                 block_mask = None
 
             hidden_states = decoder_layer(

@@ -8,8 +8,7 @@ AFMoE attention has several unique features:
 """
 
 from dataclasses import dataclass
-from functools import lru_cache
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn.functional as F
@@ -23,251 +22,14 @@ if TYPE_CHECKING:
 
 
 # =============================================================================
-# Compiled Flex Attention (module-level singleton)
+# Flex Attention
 # =============================================================================
-
-_COMPILED_FLEX_ATTENTION = None
-
-
-def _get_compiled_flex_attention():
-    """Get the compiled flex_attention function (lazy singleton)."""
-    global _COMPILED_FLEX_ATTENTION
-    if _COMPILED_FLEX_ATTENTION is None:
-        try:
-            from torch.nn.attention.flex_attention import flex_attention
-
-            # Use reduce-overhead mode for better handling of variable shapes
-            # and dynamic=True to avoid recompilation on shape changes
-            _COMPILED_FLEX_ATTENTION = torch.compile(flex_attention, mode="default", dynamic=True)
-        except ImportError:
-            _COMPILED_FLEX_ATTENTION = None
-    return _COMPILED_FLEX_ATTENTION
-
-
-# =============================================================================
-# Flex Attention Mask Utilities
-# =============================================================================
-
-def _get_causal_mask_mod() -> Callable[[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]:
-    """Create a causal mask modifier for flex_attention."""
-
-    def causal_mask(b: torch.Tensor, h: torch.Tensor, q_idx: torch.Tensor, kv_idx: torch.Tensor) -> torch.Tensor:
-        return q_idx >= kv_idx
-
-    return causal_mask
-
-
-def _get_sliding_window_mask_mod(
-    sliding_window: int,
-) -> Callable[[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]:
-    """Create a sliding window mask modifier for flex_attention."""
-
-    def sliding_window_mask(
-        b: torch.Tensor, h: torch.Tensor, q_idx: torch.Tensor, kv_idx: torch.Tensor
-    ) -> torch.Tensor:
-        return q_idx - kv_idx <= sliding_window
-
-    return sliding_window_mask
-
-
-def _and_masks(
-    *mask_mods: Callable[[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor],
-) -> Callable[[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]:
-    """Combine multiple mask modifiers with AND logic."""
-
-    def combined_mask(b: torch.Tensor, h: torch.Tensor, q_idx: torch.Tensor, kv_idx: torch.Tensor) -> torch.Tensor:
-        result = mask_mods[0](b, h, q_idx, kv_idx)
-        for mask_mod in mask_mods[1:]:
-            result = result & mask_mod(b, h, q_idx, kv_idx)
-        return result
-
-    return combined_mask
-
-
-@lru_cache(maxsize=8)
-def _create_block_mask_cached(
-    mask_mod_key: str,
-    batch_size: int,
-    num_heads: int | None,
-    seq_len: int,
-    sliding_window: int | None,
-    device_str: str,
-) -> "BlockMask":
-    """Create and cache a BlockMask for flex_attention.
-
-    Args:
-        mask_mod_key: Key identifying the mask type ("causal" or "sliding_window")
-        batch_size: Batch size
-        num_heads: Number of attention heads (None for head-agnostic mask)
-        seq_len: Sequence length
-        sliding_window: Sliding window size (only used if mask_mod_key == "sliding_window")
-        device_str: Device string for placement
-
-    Returns:
-        BlockMask for use with flex_attention
-    """
-    from torch.nn.attention.flex_attention import create_block_mask
-
-    if mask_mod_key == "causal":
-        mask_mod = _get_causal_mask_mod()
-    elif mask_mod_key == "sliding_window":
-        assert sliding_window is not None
-        mask_mod = _and_masks(_get_causal_mask_mod(), _get_sliding_window_mask_mod(sliding_window))
-    else:
-        raise ValueError(f"Unknown mask type: {mask_mod_key}")
-
-    device = torch.device(device_str)
-    return create_block_mask(mask_mod, batch_size, num_heads, seq_len, seq_len, device=device)
-
-
-def create_afmoe_block_masks(
-    batch_size: int,
-    seq_len: int,
-    sliding_window: int,
-    device: torch.device,
-) -> dict[str, "BlockMask"]:
-    """Create BlockMasks for both full and sliding window attention.
-
-    Args:
-        batch_size: Batch size
-        seq_len: Sequence length
-        sliding_window: Sliding window size for local attention
-        device: Device for mask placement
-
-    Returns:
-        Dictionary with "full_attention" and "sliding_attention" BlockMasks
-    """
-    device_str = str(device)
-    
-    # Note: BlockMask is batch-size agnostic when B=1, so we always use B=1
-    # This allows cache hits even when batch size varies
-    # flex_attention will broadcast the mask across the batch dimension
-    return {
-        "full_attention": _create_block_mask_cached("causal", 1, None, seq_len, None, device_str),
-        "sliding_attention": _create_block_mask_cached(
-            "sliding_window", 1, None, seq_len, sliding_window, device_str
-        ),
-    }
-
-
-# =============================================================================
-# Document Masking for Packed Sequences
-# =============================================================================
-
-def _get_document_ids(position_ids: torch.Tensor) -> tuple[torch.Tensor, bool]:
-    """Compute document IDs from position_ids for packed sequence handling.
-    
-    Document boundaries are detected where position_ids resets to 0.
-    
-    Args:
-        position_ids: Position IDs tensor of shape (batch, seq_len)
-        
-    Returns:
-        Tuple of (doc_ids, has_packing) where:
-        - doc_ids: Tensor of shape (batch, seq_len) with document IDs (1-indexed)
-        - has_packing: True if any batch element has multiple documents
-    """
-    doc_starts = position_ids == 0  # (batch, seq_len)
-    num_docs = doc_starts.sum(dim=1)  # (batch,)
-    has_packing = not (num_docs == 1).all()
-    doc_ids = doc_starts.int().cumsum(dim=1) if has_packing else None
-    return doc_ids, has_packing
-
-
-def create_document_mask_for_sdpa(
-    position_ids: torch.Tensor,
-    dtype: torch.dtype,
-    device: torch.device,
-) -> torch.Tensor | None:
-    """Create a dense document mask for SDPA attention.
-    
-    Args:
-        position_ids: Position IDs tensor of shape (batch, seq_len)
-        dtype: Data type for the mask (should match attention dtype)
-        device: Device for the mask
-        
-    Returns:
-        Document mask of shape (batch, 1, seq_len, seq_len) or None if no packing
-    """
-    doc_ids, has_packing = _get_document_ids(position_ids)
-    if not has_packing:
-        return None
-    
-    # Create mask: 0 for same document, -inf for different documents
-    # Shape: (batch, seq_len, 1) vs (batch, 1, seq_len) -> (batch, seq_len, seq_len)
-    same_document = doc_ids.unsqueeze(2) == doc_ids.unsqueeze(1)
-    document_mask = torch.where(
-        same_document,
-        torch.zeros(1, dtype=dtype, device=device),
-        torch.finfo(dtype).min,
-    )
-    return document_mask.unsqueeze(1)  # (batch, 1, seq_len, seq_len)
-
-
-def create_afmoe_block_masks_with_documents(
-    position_ids: torch.Tensor,
-    sliding_window: int,
-    device: torch.device,
-) -> dict[str, "BlockMask"]:
-    """Create BlockMasks with document boundary awareness for packed sequences.
-
-    This creates masks that prevent cross-document attention, which is critical
-    for correct RoPE computation in packed sequences.
-
-    Args:
-        position_ids: Position IDs tensor of shape (batch, seq_len). Document
-            boundaries are detected where position_ids == 0.
-        sliding_window: Sliding window size for local attention
-        device: Device for mask placement
-
-    Returns:
-        Dictionary with "full_attention" and "sliding_attention" BlockMasks
-    """
-    from torch.nn.attention.flex_attention import create_block_mask
-    
-    batch_size, seq_len = position_ids.shape
-    doc_ids, has_packing = _get_document_ids(position_ids)
-    
-    # If no packing detected, use cached masks (more efficient)
-    if not has_packing:
-        device_str = str(device)
-        return {
-            "full_attention": _create_block_mask_cached("causal", 1, None, seq_len, None, device_str),
-            "sliding_attention": _create_block_mask_cached(
-                "sliding_window", 1, None, seq_len, sliding_window, device_str
-            ),
-        }
-    
-    # Create mask modifiers that capture document IDs
-    def make_document_causal_mask(doc_ids_tensor: torch.Tensor):
-        def mask_mod(b: torch.Tensor, h: torch.Tensor, q_idx: torch.Tensor, kv_idx: torch.Tensor) -> torch.Tensor:
-            causal = q_idx >= kv_idx
-            same_doc = doc_ids_tensor[b, q_idx] == doc_ids_tensor[b, kv_idx]
-            return causal & same_doc
-        return mask_mod
-    
-    def make_document_sliding_mask(doc_ids_tensor: torch.Tensor, window: int):
-        def mask_mod(b: torch.Tensor, h: torch.Tensor, q_idx: torch.Tensor, kv_idx: torch.Tensor) -> torch.Tensor:
-            causal = q_idx >= kv_idx
-            in_window = q_idx - kv_idx <= window
-            same_doc = doc_ids_tensor[b, q_idx] == doc_ids_tensor[b, kv_idx]
-            return causal & in_window & same_doc
-        return mask_mod
-    
-    # Create BlockMasks with document awareness
-    full_mask = create_block_mask(
-        make_document_causal_mask(doc_ids),
-        batch_size, None, seq_len, seq_len, device=device
-    )
-    sliding_mask = create_block_mask(
-        make_document_sliding_mask(doc_ids, sliding_window),
-        batch_size, None, seq_len, seq_len, device=device
-    )
-    
-    return {
-        "full_attention": full_mask,
-        "sliding_attention": sliding_mask,
-    }
+# BlockMask creation is now handled by HuggingFace's transformers.masking_utils
+# (create_causal_mask, create_sliding_window_causal_mask) which handle:
+# - Causal masking
+# - Sliding window masking
+# - Document masking for packed sequences (via position_ids)
+# - Proper compilation and caching
 
 
 @dataclass
@@ -349,7 +111,7 @@ class AfmoeSDPAAttention(nn.Module):
         Args:
             hidden_states: Input tensor of shape (batch, seq_len, hidden_size)
             position_embeddings: Tuple of (cos, sin) for rotary embeddings
-            attention_mask: Optional attention mask
+            attention_mask: Optional attention mask (includes document masking for SDPA)
             block_mask: Ignored (only used by flex_attention)
 
         Returns:
@@ -417,6 +179,7 @@ class AfmoeFlexAttention(nn.Module):
     - Output gating with learned gate projection
     - QK normalization always enabled
     - Native sliding window support via block_mask
+    - Efficient document masking via score_mod (avoids BlockMask recompilation)
     """
 
     def __init__(self, config: AfmoeAttentionConfig):
@@ -443,9 +206,6 @@ class AfmoeFlexAttention(nn.Module):
         self.q_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
         self.k_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
 
-        # Use module-level compiled flex_attention singleton
-        self._flex_attention = _get_compiled_flex_attention()
-
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -458,13 +218,12 @@ class AfmoeFlexAttention(nn.Module):
             hidden_states: Input tensor of shape (batch, seq_len, hidden_size)
             position_embeddings: Tuple of (cos, sin) for rotary embeddings
             attention_mask: Optional dense attention mask (falls back to SDPA if provided)
-            block_mask: Optional BlockMask for flex_attention
+            block_mask: Optional BlockMask for flex_attention (includes document masking)
 
         Returns:
             Tuple of (output, None) - None is for attention weights compatibility
         """
-        if self._flex_attention is None:
-            raise RuntimeError("flex_attention requires PyTorch 2.5+ with torch.nn.attention.flex_attention")
+        from transformers.integrations.flex_attention import compile_friendly_flex_attention
 
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
@@ -496,11 +255,13 @@ class AfmoeFlexAttention(nn.Module):
         # Use flex_attention when block_mask is provided (preferred)
         # Fall back to SDPA only if no block_mask and a dense attention_mask is provided
         if block_mask is not None:
-            # Use flex_attention with block_mask
-            attn_output = self._flex_attention(
+            # Use HF's compiled flex_attention singleton
+            # BlockMask includes document masking from HF's create_causal_mask/create_sliding_window_causal_mask
+            attn_output = compile_friendly_flex_attention(
                 query_states,
                 key_states,
                 value_states,
+                training=self.training,
                 block_mask=block_mask,
                 scale=self.scaling,
             )
@@ -517,10 +278,11 @@ class AfmoeFlexAttention(nn.Module):
             )
         else:
             # No mask provided, use flex_attention with causal
-            attn_output = self._flex_attention(
+            attn_output = compile_friendly_flex_attention(
                 query_states,
                 key_states,
                 value_states,
+                training=self.training,
                 block_mask=None,
                 scale=self.scaling,
             )
