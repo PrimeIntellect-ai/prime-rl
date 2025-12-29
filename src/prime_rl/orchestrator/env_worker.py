@@ -30,7 +30,6 @@ class RolloutResponse:
 
     id: str
     results: list[dict]  # Simplified state dicts
-    error: str | None = None
     lag_metrics: dict | None = None  # Event loop lag metrics from worker
 
 
@@ -81,25 +80,21 @@ async def process_request(
     sampling_args: dict,
 ) -> RolloutResponse:
     """Process a single rollout request."""
-    try:
-        client = next(client_cycle)
-        example = example_lookup[request.id]
-        group_inputs = [vf.RolloutInput(**example) for _ in range(request.rollouts_per_example)]
+    client = next(client_cycle)
+    example = example_lookup[request.id]
+    group_inputs = [vf.RolloutInput(**example) for _ in range(request.rollouts_per_example)]
 
-        states = await env.run_group(
-            group_inputs=group_inputs,
-            client=client,
-            model=model_name,
-            gen_sampling_args=sampling_args,
-            gen_sem=semaphore,
-            score_sem=semaphore,
-        )
+    states = await env.run_group(
+        group_inputs=group_inputs,
+        client=client,
+        model=model_name,
+        gen_sampling_args=sampling_args,
+        gen_sem=semaphore,
+        score_sem=semaphore,
+    )
 
-        results = [extract_result(state) for state in states]
-        return RolloutResponse(id=str(request.id), results=results)
-
-    except Exception as e:
-        return RolloutResponse(id=str(request.id), results=[], error=f"{type(e).__name__}: {e}")
+    results = [extract_result(state) for state in states]
+    return RolloutResponse(id=str(request.id), results=results)
 
 
 async def worker_loop(
@@ -128,17 +123,14 @@ async def worker_loop(
 
     def check_for_requests():
         """Non-blocking check for new requests."""
-        try:
-            while not request_queue.empty():
-                request = request_queue.get_nowait()
-                if request is None:  # Shutdown signal
-                    return False
-                task = asyncio.create_task(
-                    process_request(request, env, client_cycle, semaphore, example_lookup, model_name, sampling_args)
-                )
-                pending_tasks[task] = request.id
-        except Exception:
-            pass
+        while not request_queue.empty():
+            request = request_queue.get_nowait()
+            if request is None:  # Shutdown signal
+                return False
+            task = asyncio.create_task(
+                process_request(request, env, client_cycle, semaphore, example_lookup, model_name, sampling_args)
+            )
+            pending_tasks[task] = request.id
         return True
 
     try:
@@ -295,20 +287,15 @@ class EnvWorker:
         """Background task to collect responses and resolve futures."""
         while True:
             # Non-blocking check for responses
-            try:
-                while not self.response_queue.empty():
-                    response: RolloutResponse = self.response_queue.get_nowait()
-                    # Store latest lag metrics from worker
-                    if response.lag_metrics:
-                        self.latest_lag_metrics = response.lag_metrics
-                    if response.id in self.pending_futures:
-                        future = self.pending_futures.pop(response.id)
-                        if response.error:
-                            future.set_exception(RuntimeError(response.error))
-                        else:
-                            future.set_result(response.results)
-            except Exception:
-                pass
+            while not self.response_queue.empty():
+                response: RolloutResponse = self.response_queue.get_nowait()
+                # Store latest lag metrics from worker
+                if response.lag_metrics:
+                    self.latest_lag_metrics = response.lag_metrics
+                if response.id in self.pending_futures:
+                    future = self.pending_futures.pop(response.id)
+                    future.set_result(response.results)
+
             await asyncio.sleep(0.01)
 
     def update_model_name(self, model_name: str):
