@@ -180,41 +180,55 @@ class NCCLWeightBroadcast(WeightBroadcast):
 
         # Only broadcast when at least one run has requested an update.
         # (Otherwise we'd enter NCCL collectives without receivers.)
-        active_run_idxs = [idx for idx in self.runs.used_idxs if self.runs.ready_to_update[idx]]
-        if len(active_run_idxs) == 0:
+        requested_run_idxs = [idx for idx in self.runs.used_idxs if self.runs.ready_to_update[idx]]
+        if len(requested_run_idxs) == 0:
             return
 
         self.logger.debug("Starting broadcasting weights to inference engine via NCCL")
         start_time = time.perf_counter()
         if self.world.is_master:
-            self._notify_orchestrator()
+            notified_run_idxs = self._notify_orchestrator(requested_run_idxs)
+            if len(notified_run_idxs) == 0:
+                # If we couldn't notify any run, the orchestrator will not trigger inference
+                # to enter the NCCL receive path, so broadcasting would deadlock/time out.
+                self.logger.warning("No runs were successfully notified; skipping NCCL broadcast")
+                return
             # Handshake: wait for orchestrator to signal inference is about to enter
             # the receive path for this step.
-            for idx in active_run_idxs:
+            for idx in notified_run_idxs:
                 step_dir = get_step_path(get_broadcast_dir(self.runs.get_run_dir(idx)), self.runs.progress[idx].step)
                 ready_file = step_dir / NCCL_READY_FILENAME
                 _wait_for_path_with_timeout(ready_file, timeout_s=self.timeout_s)
         self.nccl_broadcast_sender.broadcast_weights(model, step)
         self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
 
-    def _notify_orchestrator(self):
-        """Notify the orchestrator to initiate weight broadcast."""
-        if self.world.is_master:
-            for idx in self.runs.used_idxs:
-                if not self.runs.ready_to_update[idx]:
-                    continue
+    def _notify_orchestrator(self, requested_run_idxs: list[int]) -> list[int]:
+        """Notify the orchestrator to initiate weight broadcast.
 
-                try:
-                    save_dir = get_step_path(
-                        get_broadcast_dir(self.runs.get_run_dir(idx)), self.runs.progress[idx].step
-                    )
-                    save_dir.mkdir(parents=True, exist_ok=True)
+        Returns the subset of requested runs that were successfully notified
+        (i.e., we managed to write the STABLE marker for that run's step dir).
+        """
+        if not self.world.is_master:
+            return []
 
-                    stable_file = save_dir / "STABLE"
-                    stable_file.touch()
-                except FileNotFoundError:
-                    self.logger.warning(f"Run {idx} is deleted, skipping")
-                except Exception as e:
-                    self.logger.error(f"Error broadcasting weights for run {idx}: {e}")
-                finally:
-                    self.runs.ready_to_update[idx] = False
+        notified: list[int] = []
+        for idx in requested_run_idxs:
+            try:
+                save_dir = get_step_path(
+                    get_broadcast_dir(self.runs.get_run_dir(idx)), self.runs.progress[idx].step
+                )
+                save_dir.mkdir(parents=True, exist_ok=True)
+
+                stable_file = save_dir / "STABLE"
+                stable_file.touch()
+                notified.append(idx)
+            except FileNotFoundError:
+                self.logger.warning(f"Run {idx} is deleted, skipping")
+            except Exception as e:
+                self.logger.error(f"Error broadcasting weights for run {idx}: {e}")
+            finally:
+                # Regardless of success, clear the request flag for this run; if it failed,
+                # the system will request another update on the next packer tick.
+                self.runs.ready_to_update[idx] = False
+
+        return notified
