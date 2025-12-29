@@ -323,7 +323,7 @@ class Scheduler:
         }
 
         # Add per-worker lag metrics and pending counts
-        for env_name, workers in self.workers.items():
+        for workers in self.workers.values():
             for worker in workers:
                 worker_key = worker.worker_name
                 # Track pending count per worker (useful for debugging load balancing)
