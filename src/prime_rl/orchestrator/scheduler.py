@@ -57,6 +57,7 @@ class Scheduler:
         max_off_policy_steps: int,
         strict_async_level: bool,
         lora_name: str | None = None,
+        worker_stats_interval: float = 120.0,  # Log worker stats every N seconds
     ):
         self.logger = get_logger()
         self.admin_clients = admin_clients
@@ -105,6 +106,8 @@ class Scheduler:
 
         # Background tasks
         self._response_collectors: list[asyncio.Task] = []
+        self._worker_stats_task: asyncio.Task | None = None
+        self._worker_stats_interval = worker_stats_interval
 
     async def start(self):
         """Start all workers and response collectors."""
@@ -116,14 +119,61 @@ class Scheduler:
                 # Start response collector for each worker
                 task = asyncio.create_task(worker.collect_responses())
                 self._response_collectors.append(task)
+        
+        # Start periodic worker stats logging
+        if self._worker_stats_interval > 0:
+            self._worker_stats_task = asyncio.create_task(self._log_worker_stats_loop())
 
     async def stop(self):
         """Stop all workers and collectors."""
+        if self._worker_stats_task:
+            self._worker_stats_task.cancel()
         for task in self._response_collectors:
             task.cancel()
         for workers in self.workers.values():
             for worker in workers:
                 worker.stop()
+
+    async def _log_worker_stats_loop(self):
+        """Periodically log worker stats to console."""
+        while True:
+            await asyncio.sleep(self._worker_stats_interval)
+            self._log_worker_stats()
+
+    def _log_worker_stats(self):
+        """Log current worker stats (pending counts and lag metrics)."""
+        lines = ["Worker Stats:"]
+        
+        for env_name, workers in self.workers.items():
+            pending_counts = [w.pending_count for w in workers]
+            total_pending = sum(pending_counts)
+            
+            # Get lag metrics from workers that have them
+            lag_maxes = []
+            lag_means = []
+            for w in workers:
+                if w.latest_lag_metrics:
+                    if "event_loop_lag/max" in w.latest_lag_metrics:
+                        lag_maxes.append(w.latest_lag_metrics["event_loop_lag/max"])
+                    if "event_loop_lag/mean" in w.latest_lag_metrics:
+                        lag_means.append(w.latest_lag_metrics["event_loop_lag/mean"])
+            
+            lag_str = ""
+            if lag_maxes:
+                avg_max_lag = sum(lag_maxes) / len(lag_maxes)
+                max_max_lag = max(lag_maxes)
+                lag_str = f" | lag(avg_max={avg_max_lag:.2f}s, max={max_max_lag:.2f}s)"
+            
+            lines.append(
+                f"  {env_name}: {len(workers)} workers, {total_pending} pending "
+                f"(per-worker: min={min(pending_counts)}, max={max(pending_counts)}, "
+                f"mean={sum(pending_counts)/len(pending_counts):.1f}){lag_str}"
+            )
+        
+        # Also show in-flight rollouts
+        lines.append(f"  In-flight group rollouts: {len(self.inflight_group_rollouts)}")
+        
+        self.logger.info("\n".join(lines))
 
     async def schedule_group_rollout(self):
         """Asynchronously schedules a group rollout request."""
