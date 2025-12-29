@@ -449,10 +449,15 @@ class RLConfig(BaseSettings):
         # Create or complete teacher_inference config
         if self.teacher_inference is None:
             self.teacher_inference = copy.deepcopy(self.inference) if self.inference else InferenceConfig()
-
-        # Always use port 8001 to avoid conflict with main inference (unless explicitly set)
-        if self.teacher_inference.server.port == 8000:
-            self.teacher_inference.server.port = 8001
+            # Avoid port conflict with main inference by using next port
+            if self.inference is not None:
+                self.teacher_inference.server.port = self.inference.server.port + 1
+        elif self.inference is not None and self.teacher_inference.server.port == self.inference.server.port:
+            raise ValueError(
+                f"teacher_inference.server.port ({self.teacher_inference.server.port}) conflicts with "
+                f"inference.server.port ({self.inference.server.port}). "
+                "Either use different ports or let teacher_inference be auto-configured."
+            )
 
         # Auto-configure DP based on GPU count
         tp = self.teacher_inference.parallel.tp
