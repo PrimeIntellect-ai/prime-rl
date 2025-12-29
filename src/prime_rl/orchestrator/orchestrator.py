@@ -144,6 +144,18 @@ async def orchestrate(config: OrchestratorConfig):
     else:
         val_buffer = None
 
+    # Get checkpoint manager
+    logger.info(f"Initializing checkpoint manager ({config.ckpt})")
+    ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
+
+    # Determine checkpoint step early to set correct model name before starting workers
+    checkpoint_step = None
+    if config.ckpt and config.ckpt.resume_step is not None and ckpt_manager is not None:
+        if config.ckpt.resume_step == -1:
+            checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+        else:
+            checkpoint_step = config.ckpt.resume_step
+
     # Setup scheduler (uses subprocess workers for env execution)
     scheduler = Scheduler(
         admin_clients=admin_clients,
@@ -157,6 +169,14 @@ async def orchestrate(config: OrchestratorConfig):
         strict_async_level=config.strict_async_level,
         lora_name=config.lora_name,
     )
+
+    # Update model name before starting workers if resuming with LoRA
+    if checkpoint_step is not None and config.lora_name is not None:
+        scheduler.model_name = config.lora_name
+        for workers in scheduler.workers.values():
+            for worker in workers:
+                worker.model_name = config.lora_name
+
     await scheduler.start()
 
     # Check health of the client
@@ -172,23 +192,12 @@ async def orchestrate(config: OrchestratorConfig):
             admin_clients, config.weight_broadcast.host, config.weight_broadcast.port, config.weight_broadcast.timeout
         )
 
-    # Get checkpoint manager
-    logger.info(f"Initializing checkpoint manager ({config.ckpt})")
-    ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
-
     # Setup training batch sender for sending training examples to trainer
     logger.info(f"Initializing training batch sender ({config.rollout_transport})")
     training_batch_sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
 
     # Reset weights to base model if starting from scratch
     progress = Progress()
-
-    checkpoint_step = None
-    if config.ckpt and config.ckpt.resume_step is not None and ckpt_manager is not None:
-        if config.ckpt.resume_step == -1:
-            checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
-        else:
-            checkpoint_step = config.ckpt.resume_step
 
     if checkpoint_step is not None and ckpt_manager is not None:
         ckpt_manager.load(progress, buffer, step=checkpoint_step)
@@ -199,8 +208,6 @@ async def orchestrate(config: OrchestratorConfig):
             get_step_path(get_broadcast_dir(config.output_dir), scheduler.ckpt_step),
             lora_name=config.lora_name,
         )
-        if config.lora_name is not None:
-            scheduler.model_name = config.lora_name
     else:
         logger.info("Training from scratch. Resetting weights to base model")
         if config.lora_name is None:
