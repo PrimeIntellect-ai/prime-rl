@@ -461,6 +461,22 @@ def monitor_process(process: Popen, stop_event: Event, error_queue: list, proces
         stop_event.set()
 
 
+def create_sub_config_toml(config: RLConfig):
+    if config.inference is not None:
+        inference_file = get_temp_toml_file()
+        with open(inference_file, "wb") as f:
+            tomli_w.dump(config.inference.model_dump(exclude_none=True, mode="json"), f)
+    if config.orchestrator is not None:
+        orchestrator_file = get_temp_toml_file()
+        with open(orchestrator_file, "wb") as f:
+            tomli_w.dump(config.orchestrator.model_dump(exclude_none=True, mode="json"), f)
+    if config.trainer is not None:
+        trainer_file = get_temp_toml_file()
+        with open(trainer_file, "wb") as f:
+            tomli_w.dump(config.trainer.model_dump(exclude_none=True, mode="json"), f)
+    return inference_file, orchestrator_file, trainer_file
+
+
 def rl(config: RLConfig):
     # Setup logger
     logger = setup_logger(
@@ -509,13 +525,11 @@ def rl(config: RLConfig):
     error_queue: list[Exception] = []
     stop_events: dict[str, Event] = {}
 
+    inference_file, orchestrator_file, trainer_file = create_sub_config_toml(config)
+
     try:
         # Optionally, start inference process
         if config.inference:
-            inference_file = get_temp_toml_file()
-            with open(inference_file, "wb") as f:
-                tomli_w.dump(config.inference.model_dump(exclude_none=True, mode="json"), f)
-
             inference_cmd = ["uv", "run", "inference", "@", inference_file.as_posix()]
             logger.info(f"Starting inference process on GPU(s) {' '.join(map(str, config.inference_gpu_ids))}")
             logger.debug(f"Inference start command: {' '.join(inference_cmd)}")
@@ -545,10 +559,6 @@ def rl(config: RLConfig):
             )
 
         # Start orchestrator process
-        orchestrator_file = get_temp_toml_file()
-        with open(orchestrator_file, "wb") as f:
-            tomli_w.dump(config.orchestrator.model_dump(exclude_none=True, mode="json"), f)
-
         orchestrator_cmd = [
             "uv",
             "run",
@@ -584,10 +594,6 @@ def rl(config: RLConfig):
         monitor_threads.append(monitor_thread)
 
         # Start training process
-        trainer_file = get_temp_toml_file()
-        with open(trainer_file, "wb") as f:
-            tomli_w.dump(config.trainer.model_dump(exclude_none=True, mode="json"), f)
-
         trainer_cmd = [
             "uv",
             "run",
