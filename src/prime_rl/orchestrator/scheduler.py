@@ -52,7 +52,6 @@ class Scheduler:
         max_off_policy_steps: int,
         strict_async_level: bool,
         lora_name: str | None = None,
-        is_nccl_broadcast: bool = False,
     ):
         self.logger = get_logger()
         self.clients = clients
@@ -69,7 +68,6 @@ class Scheduler:
         self.max_off_policy_steps = max_off_policy_steps
         self.strict_async_level = strict_async_level
         self.lora_name = lora_name
-        self.is_nccl_broadcast = is_nccl_broadcast
         self.inflight_group_rollouts: dict[asyncio.Task, InflightRolloutInfo] = {}
         self.cycle_clients = cycle(self.clients)
         self.step, self.ckpt_step = 0, 0
@@ -129,7 +127,6 @@ class Scheduler:
                 self.admin_clients,
                 get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step),
                 lora_name=self.lora_name,
-                is_nccl_broadcast=self.is_nccl_broadcast,
             )
             self.update_weights_time = time.perf_counter() - update_weights_start_time
             self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")

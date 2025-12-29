@@ -108,13 +108,12 @@ async def update_weights(
     admin_clients: list[AsyncClient],
     weight_dir: Path | None,
     lora_name: str | None = None,
-    is_nccl_broadcast: bool = False,
 ) -> None:
     """Make a HTTP post request to the vLLM server to update the weights.
 
-    For NCCL broadcast mode, creates a NCCL_READY marker file before calling the
-    update endpoint to signal to the trainer that inference workers are about to
-    enter the receive path.
+    Creates a NCCL_READY marker file before calling the update endpoint to signal
+    to the trainer that inference workers are about to enter the receive path.
+    This marker is only used in NCCL broadcast mode but is harmless in filesystem mode.
     """
     logger = get_logger()
 
@@ -134,8 +133,8 @@ async def update_weights(
                     return
                 raise
 
-        # For NCCL broadcast, create ready marker before servers enter receive path
-        if is_nccl_broadcast and weight_dir is not None:
+        # Create ready marker before servers enter receive path (used by NCCL broadcast)
+        if weight_dir is not None:
             nccl_ready_file = weight_dir / NCCL_READY_MARKER
             nccl_ready_file.touch()
             logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
