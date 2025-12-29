@@ -23,6 +23,7 @@ class RolloutRequest:
 
     id: int  # example_id
     rollouts_per_example: int
+    model_name: str  # Model name to use for this request (may change for LoRA)
 
 
 @dataclass
@@ -77,7 +78,6 @@ async def process_request(
     client_cycle: cycle,
     semaphore: asyncio.Semaphore,
     example_lookup: dict[int, dict],
-    model_name: str,
     sampling_args: dict,
 ) -> RolloutResponse:
     """Process a single rollout request."""
@@ -88,7 +88,7 @@ async def process_request(
     states = await env.run_group(
         group_inputs=group_inputs,
         client=client,
-        model=model_name,
+        model=request.model_name,
         gen_sampling_args=sampling_args,
         gen_sem=semaphore,
         score_sem=semaphore,
@@ -106,7 +106,6 @@ async def worker_loop(
     max_concurrent: int,
     env_id: str,
     example_lookup: dict[int, dict],
-    model_name: str,
     sampling_args: dict,
 ):
     """Main async loop for processing requests."""
@@ -132,7 +131,7 @@ async def worker_loop(
             if request is None:  # Shutdown signal
                 return False
             task = asyncio.create_task(
-                process_request(request, env, client_cycle, semaphore, example_lookup, model_name, sampling_args)
+                process_request(request, env, client_cycle, semaphore, example_lookup, sampling_args)
             )
             pending_tasks[task] = request.id
         return True
@@ -170,7 +169,6 @@ def worker_main(
     env_id: str,
     env_args: dict,
     client_config_dict: dict,
-    model_name: str,
     seq_len: int,
     interleaved_rollouts: bool,
     max_concurrent: int,
@@ -197,7 +195,6 @@ def worker_main(
             max_concurrent,
             env_id,
             example_lookup,
-            model_name,
             sampling_args,
         )
     )
@@ -250,7 +247,6 @@ class EnvWorker:
                 self.env_id,
                 self.env_args,
                 self.client_config.model_dump(),
-                self.model_name,
                 self.seq_len,
                 self.interleaved_rollouts,
                 self.max_concurrent,
@@ -278,6 +274,7 @@ class EnvWorker:
         request = RolloutRequest(
             id=example_id,
             rollouts_per_example=rollouts_per_example,
+            model_name=self.model_name,
         )
 
         loop = asyncio.get_event_loop()
