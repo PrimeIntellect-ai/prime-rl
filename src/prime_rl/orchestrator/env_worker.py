@@ -74,7 +74,6 @@ def extract_result(state: vf.State) -> dict:
 async def process_request(
     request: RolloutRequest,
     env: vf.Environment,
-    clients: list[AsyncOpenAI],
     client_cycle: cycle,
     semaphore: asyncio.Semaphore,
     example_lookup: dict[int, dict],
@@ -135,9 +134,7 @@ async def worker_loop(
                 if request is None:  # Shutdown signal
                     return False
                 task = asyncio.create_task(
-                    process_request(
-                        request, env, clients, client_cycle, semaphore, example_lookup, model_name, sampling_args
-                    )
+                    process_request(request, env, client_cycle, semaphore, example_lookup, model_name, sampling_args)
                 )
                 pending_tasks[task] = request.id
         except Exception:
