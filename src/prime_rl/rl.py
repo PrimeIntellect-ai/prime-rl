@@ -198,6 +198,13 @@ class RLConfig(BaseSettings):
         SharedWeightBroadcastConfig | None, Field(description="The weight broadcast config.")
     ] = None
 
+    only_sub_toml: Annotated[
+        bool,
+        Field(
+            description="Whether to only create a sub-config.toml file on start. If True, will only create a sub-config.toml file in the output directory with the current config.",
+        ),
+    ] = False
+
     @model_validator(mode="after")
     def auto_setup_dp(self):
         if self.inference and len(self.inference_gpu_ids) != self.inference.parallel.dp * self.inference.parallel.tp:
@@ -526,6 +533,10 @@ def rl(config: RLConfig):
     stop_events: dict[str, Event] = {}
 
     inference_file, orchestrator_file, trainer_file = create_sub_config_toml(config)
+
+    if config.only_sub_toml:
+        logger.success("Sub-config.toml file created successfully, exiting...")
+        return
 
     try:
         # Optionally, start inference process
