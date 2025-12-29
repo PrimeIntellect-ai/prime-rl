@@ -5,7 +5,8 @@ import torch
 import torch.nn as nn
 
 from prime_rl.trainer.config import LoRAConfig
-from prime_rl.trainer.models.layers.lora import LoRALinear
+from prime_rl.trainer.models.layers.lora import MultiLoRALinear, MultiLoRAModule
+from prime_rl.trainer.runs import get_runs
 from prime_rl.utils.logger import get_logger
 
 
@@ -131,6 +132,7 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
         config: LoRA configuration
     """
     logger = get_logger()
+    n_loras = get_runs().max_runs
 
     from torch.distributed.fsdp import FSDPModule
 
@@ -157,12 +159,14 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
             logger.warning(f"Module {module_name} is not nn.Linear, skipping")
             continue
 
-        lora_module = LoRALinear(
+        lora_module = MultiLoRALinear(
             base_layer=base_module,
             rank=config.rank,
+            n_adapters=n_loras,
             alpha=config.alpha,
             dropout=config.dropout,
         )
+        lora_module.register_with_runs(get_runs(), module_name)
 
         _set_module_by_name(model, module_name, lora_module)
 
@@ -174,8 +178,8 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
     lora_adapter_params = 0
     lora_adapted_params = 0
     for name, module in model.named_modules():
-        if isinstance(module, LoRALinear):
-            lora_adapter_params += module.lora_A.numel() + module.lora_B.numel()
+        if isinstance(module, MultiLoRAModule):
+            lora_adapter_params += module.lora_A[0].numel() + module.lora_B[0].numel()
             lora_adapted_params += module.base_layer.weight.numel()
 
     fully_trainable = trainable_params - lora_adapter_params
@@ -189,7 +193,7 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
 def has_lora_layers(model: nn.Module) -> bool:
     """Check if model has LoRA layers."""
     for module in model.modules():
-        if isinstance(module, LoRALinear):
+        if isinstance(module, MultiLoRAModule):
             return True
     return False
 
@@ -230,7 +234,7 @@ def save_lora_config(config: LoRAConfig, model: nn.Module, save_path) -> None:
     modules_to_save = set()
 
     for name, module in model.named_modules():
-        if isinstance(module, LoRALinear):
+        if isinstance(module, MultiLoRAModule):
             module_suffix = name.split(".")[-1]
             target_modules.add(module_suffix)
 
