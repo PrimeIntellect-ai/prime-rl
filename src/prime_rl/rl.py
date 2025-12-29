@@ -439,7 +439,7 @@ class RLConfig(BaseSettings):
     @model_validator(mode="after")
     def auto_setup_teacher_inference(self):
         """Auto-configure teacher inference server and orchestrator teacher_model client."""
-        if self.teacher_gpu_ids is None:
+        if self.teacher_gpu_ids is None or len(self.teacher_gpu_ids) == 0:
             return self
 
         import copy
@@ -458,6 +458,7 @@ class RLConfig(BaseSettings):
         tp = self.teacher_inference.parallel.tp
         if len(self.teacher_gpu_ids) != self.teacher_inference.parallel.dp * tp:
             assert len(self.teacher_gpu_ids) % tp == 0, "Number of teacher GPUs must be divisible by tensor parallel size"
+            assert len(self.teacher_gpu_ids) > 0, "teacher_gpu_ids cannot be empty"
             self.teacher_inference.parallel.dp = len(self.teacher_gpu_ids) // tp
 
         # Auto-configure orchestrator's teacher_model client
@@ -597,9 +598,9 @@ def rl(config: RLConfig):
 
         # Optionally, start teacher inference process
         if config.teacher_inference:
-            if config.teacher_gpu_ids is None:
+            if config.teacher_gpu_ids is None or len(config.teacher_gpu_ids) == 0:
                 raise ValueError(
-                    "teacher_inference is configured but teacher_gpu_ids is not set. "
+                    "teacher_inference is configured but teacher_gpu_ids is not set or is empty. "
                     "Either set teacher_gpu_ids to start a teacher inference server, "
                     "or omit teacher_inference and configure orchestrator.teacher_model to use an existing server."
                 )
