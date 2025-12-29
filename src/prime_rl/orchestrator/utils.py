@@ -12,7 +12,6 @@ from verifiers.utils.async_utils import maybe_semaphore
 
 from prime_rl.orchestrator.config import SamplingConfig
 from prime_rl.transport import TrainingSample
-from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import (
     format_num,
     format_time,

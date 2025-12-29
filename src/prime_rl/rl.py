@@ -443,6 +443,7 @@ class RLConfig(BaseSettings):
             return self
 
         import copy
+
         from prime_rl.orchestrator.config import TeacherModelConfig
 
         # Create or complete teacher_inference config
