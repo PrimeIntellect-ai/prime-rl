@@ -27,7 +27,7 @@ from prime_rl.trainer.rl.config import NCCLWeightBroadcastConfig as TrainerNCCLW
 from prime_rl.trainer.rl.config import RLTrainerConfig as TrainerConfig
 from prime_rl.utils.config import WandbConfig, WandbWithExtrasConfig
 from prime_rl.utils.logger import setup_logger
-from prime_rl.utils.pydantic_config import BaseSettings, get_temp_toml_file, parse_argv
+from prime_rl.utils.pydantic_config import BaseSettings, parse_argv
 from prime_rl.utils.utils import (
     get_broadcast_dir,
     get_free_port,
@@ -469,16 +469,18 @@ def monitor_process(process: Popen, stop_event: Event, error_queue: list, proces
 
 
 def create_sub_config_toml(config: RLConfig):
+    config_dir = config.output_dir / "configs"
+    config_dir.mkdir(parents=True, exist_ok=True)
     if config.inference is not None:
-        inference_file = get_temp_toml_file()
+        inference_file = config_dir / "infer.toml"
         with open(inference_file, "wb") as f:
             tomli_w.dump(config.inference.model_dump(exclude_none=True, mode="json"), f)
     if config.orchestrator is not None:
-        orchestrator_file = get_temp_toml_file()
+        orchestrator_file = config_dir / "orch.toml"
         with open(orchestrator_file, "wb") as f:
             tomli_w.dump(config.orchestrator.model_dump(exclude_none=True, mode="json"), f)
     if config.trainer is not None:
-        trainer_file = get_temp_toml_file()
+        trainer_file = config_dir / "train.toml"
         with open(trainer_file, "wb") as f:
             tomli_w.dump(config.trainer.model_dump(exclude_none=True, mode="json"), f)
     return inference_file, orchestrator_file, trainer_file
