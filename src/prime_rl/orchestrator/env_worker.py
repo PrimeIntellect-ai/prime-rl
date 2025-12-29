@@ -5,6 +5,7 @@ Runs environment rollouts in a separate process to isolate event loop lag.
 """
 
 import asyncio
+import queue
 from dataclasses import dataclass
 from itertools import cycle
 from multiprocessing import Process, Queue
@@ -123,8 +124,11 @@ async def worker_loop(
 
     def check_for_requests():
         """Non-blocking check for new requests."""
-        while not request_queue.empty():
-            request = request_queue.get_nowait()
+        while True:
+            try:
+                request = request_queue.get_nowait()
+            except queue.Empty:
+                break
             if request is None:  # Shutdown signal
                 return False
             task = asyncio.create_task(
@@ -287,14 +291,19 @@ class EnvWorker:
         """Background task to collect responses and resolve futures."""
         while True:
             # Non-blocking check for responses
-            while not self.response_queue.empty():
-                response: RolloutResponse = self.response_queue.get_nowait()
+            while True:
+                try:
+                    response: RolloutResponse = self.response_queue.get_nowait()
+                except queue.Empty:
+                    break
                 # Store latest lag metrics from worker
                 if response.lag_metrics:
                     self.latest_lag_metrics = response.lag_metrics
                 if response.id in self.pending_futures:
                     future = self.pending_futures.pop(response.id)
-                    future.set_result(response.results)
+                    # Check if future was cancelled (e.g., by update_policy)
+                    if not future.done():
+                        future.set_result(response.results)
 
             await asyncio.sleep(0.01)
 
