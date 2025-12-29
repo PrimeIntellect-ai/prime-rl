@@ -1,8 +1,10 @@
+import shutil
 import time
 from pathlib import Path
 from typing import Literal
 
 import torch.nn as nn
+from torch.distributed.tensor import DTensor
 
 from prime_rl.trainer.config import LoRAConfig
 from prime_rl.trainer.lora import save_lora_config
@@ -13,7 +15,6 @@ from prime_rl.trainer.runs import get_runs
 from prime_rl.trainer.utils import maybe_clean
 from prime_rl.trainer.weights import (
     gather_weights_on_master,
-    get_adapter_state_dict,
     save_state_dict,
 )
 from prime_rl.trainer.world import get_world
@@ -40,39 +41,52 @@ class FileSystemWeightBroadcast(WeightBroadcast):
         self.logger.debug("Starting broadcasting weights to inference engine via shared filesystem")
         start_time = time.perf_counter()
         adapter_only = self.lora_config is not None
-        if adapter_only:
-            state_dict = get_adapter_state_dict(model, is_master=self.world.is_master)
-        else:
-            state_dict = gather_weights_on_master(model, is_master=self.world.is_master)
 
-        if self.world.is_master:
-            # Convert PrimeRL format to HF format if needed
+        if not adapter_only:
+            state_dict = gather_weights_on_master(model, is_master=self.world.is_master)
             if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
                 model.convert_to_hf(state_dict)
 
-            for idx in self.runs.used_idxs:
-                if not self.runs.ready_to_update[idx]:
-                    continue
+        for idx in self.runs.ready_to_update_idxs:
+            self.logger.debug(f"Broadcasting weights for run {idx} (ready_to_update={self.runs.ready_to_update[idx]})")
 
+            if adapter_only:
+                # For adapter-only, Runs creates state dict directly for each run
+                # All ranks must participate in DTensor gathering, but only master saves
+                state_dict = self.runs.get_state_dict_for_run(idx)
+                for key, value in state_dict.items():
+                    if isinstance(value, DTensor):
+                        value = value.full_tensor()
+                    if self.world.is_master:
+                        state_dict[key] = value.to("cpu", non_blocking=False)
+
+            # TODO: Broadcast ready to update in sync, then we dont need to gather on not ready
+            if self.world.is_master:
                 try:
                     save_dir = get_step_path(
                         get_broadcast_dir(self.runs.get_run_dir(idx)), self.runs.progress[idx].step
                     )
                     save_dir.mkdir(parents=True, exist_ok=True)
 
-                    # Save weights to shared filesystem
                     save_state_dict(state_dict, save_dir, self.save_format, self.save_sharded, adapter=adapter_only)
                     if adapter_only:
                         save_lora_config(self.lora_config, model, save_dir)
 
-                    # Notify the orchestrator at the end of step to signal that it is safe to load weights from shared filesystem
                     self._notify_orchestrator(save_dir)
+
+                    # If the run is deleted, remove the run directory
+                    # This is avoid the creation of zombie runs when the directory is deleted while we are broadcasting which recreates the directory
+                    if self.runs.get_orchestrator_config(self.runs.idx_2_id[idx]) is None:
+                        shutil.rmtree(self.runs.get_run_dir(idx))
+
                 except FileNotFoundError:
                     self.logger.warning(f"Run {idx} is deleted, skipping")
                 except Exception as e:
                     self.logger.error(f"Error broadcasting weights for run {idx}: {e}")
                 finally:
                     self.runs.ready_to_update[idx] = False
+
+        if self.world.is_master:
             self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
 
     def _notify_orchestrator(self, save_dir: Path):

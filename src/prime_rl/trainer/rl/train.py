@@ -14,7 +14,8 @@ import torch.distributed.nn as dist_nn
 from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
 from prime_rl.trainer.ckpt import setup_ckpt_managers
-from prime_rl.trainer.optim import setup_optimizer
+from prime_rl.trainer.optim import setup_optimizer, setup_multi_optimizer
+from prime_rl.trainer.scheduler import setup_scheduler, setup_multi_scheduler
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.cp import (
@@ -28,7 +29,6 @@ from prime_rl.trainer.rl.loss import (
     compute_entropy,
     compute_loss,
 )
-from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
     setup_tokenizer,
@@ -48,6 +48,7 @@ from prime_rl.trainer.utils import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.trainer.runs import setup_runs, Progress, get_runs
+from prime_rl.trainer.models.layers.lora import set_multilora_offsets
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
@@ -66,8 +67,6 @@ def train(config: RLTrainerConfig):
     )
     logger.info(f"Starting RL trainer in {world}")
 
-    setup_runs(config.output_dir, config.max_concurrent_runs)
-    runs = get_runs()
     logger.info(f"Starting RL trainer in {world} in {config.output_dir}")
 
     # Print warning if running in benchmark mode
@@ -90,6 +89,12 @@ def train(config: RLTrainerConfig):
     )
     torch.set_float32_matmul_precision("high")
 
+    # Setup runs and offsets
+    setup_runs(config.output_dir, config.max_concurrent_runs)
+    runs = get_runs()
+    set_multilora_offsets(
+        torch.tensor([0] * config.max_concurrent_runs, dtype=torch.int32, device=torch.device("cuda", world.local_rank))
+    )
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
 
@@ -117,10 +122,18 @@ def train(config: RLTrainerConfig):
     logger.info(f"Initializing optimizer ({config.optim})")
     logger.info(f"Using `{config.loss.ratio_type}` importance ratio ({config.loss})")
 
-    optimizer = setup_optimizer(config.optim, model, parallel_dims.world_mesh["dp_shard_cp"])
+    if config.max_concurrent_runs == 1:
+        optimizer = setup_optimizer(
+            config.optim,
+            list(model.named_parameters()),
+            parallel_dims.world_mesh["dp_shard_cp"],
+            lora=config.model.lora is not None,
+        )
+        scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
+    else:
+        optimizer = setup_multi_optimizer(config.optim, parallel_dims.world_mesh["dp_shard_cp"])
+        scheduler = setup_multi_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
 
-    # Set up the learning rate scheduler
-    scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
     logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
 
     # Set up weight broadcast
@@ -265,6 +278,15 @@ def train(config: RLTrainerConfig):
                 input_ids, forward_position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
             else:
                 forward_position_ids = position_ids
+            if config.model.lora:
+                lora_num_tokens = micro_batch["lora_num_tokens"].to("cuda")
+                lora_cu_offsets = lora_num_tokens.cumsum(dim=0, dtype=torch.int32)
+                if cp_enabled:
+                    chunk_size = input_ids.shape[1]  # We pad to multiple of cp so this should be fine
+                    logger.debug(f"[Rank {world.rank}] {cp_rank=} {cp_size=} {cp_group=} {chunk_size=}")
+                    # Shift down by seq idx and clip to edges of chunk
+                    lora_cu_offsets = torch.clip(lora_cu_offsets - chunk_size * cp_rank, min=0, max=chunk_size)
+                set_multilora_offsets(lora_cu_offsets)
 
             temperature = micro_batch["temperature"]
 
@@ -346,12 +368,13 @@ def train(config: RLTrainerConfig):
         optimizer.zero_grad()
 
         # Update learning rate scheduler
-        current_lr = optimizer.param_groups[0]["lr"]
         scheduler.step()
 
+        if config.max_concurrent_runs == 1:
+            current_lr = optimizer.param_groups[0]["lr"]
+        else:
+            current_lr = optimizer.get_current_lr()
         forward_backward_time = time.perf_counter() - forward_backward_start_time
-
-        # TODO: Broadcast weight checkpoint via shardcast
 
         # Optionally, dump memory snapshot
         if memory_profiler is not None:

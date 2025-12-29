@@ -178,6 +178,9 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info(f"Initializing training batch sender ({config.rollout_transport})")
     training_batch_sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
 
+    # Track last online eval checkpoint step for this process
+    last_eval_step = -1
+
     # Reset weights to base model if starting from scratch
     progress = Progress()
 
@@ -192,6 +195,9 @@ async def orchestrate(config: OrchestratorConfig):
         ckpt_manager.load(progress, buffer, step=checkpoint_step)
         logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
         scheduler.ckpt_step = progress.step  # Always resume from the latest checkpoint
+        if config.eval and config.eval.skip_eval_on_resume:
+            last_eval_step = scheduler.ckpt_step
+            logger.info(f"Skipping online eval on resume (ckpt_step={scheduler.ckpt_step})")
         await update_weights(
             admin_clients,
             get_step_path(get_broadcast_dir(config.output_dir), scheduler.ckpt_step),
@@ -207,7 +213,6 @@ async def orchestrate(config: OrchestratorConfig):
     # Iterate over dataset in batches
     max_steps = config.max_steps or int(1e9)
     logger.info(f"Starting orchestrator loop (max_steps={max_steps or 'infinite'})")
-    last_eval_step = -1
     is_first_step = True
     await set_semaphore(config.max_concurrent or -1)
 
