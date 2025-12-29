@@ -623,6 +623,13 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = False
 
+    blocking_checkpoint_wait: Annotated[
+        bool,
+        Field(
+            description="Whether to block all event loops (main + workers) when waiting for a checkpoint. If True, freezes all orchestrator and worker activity until checkpoint arrives. Useful for debugging or fully synchronous behavior.",
+        ),
+    ] = False
+
     bench: Annotated[
         bool,
         Field(

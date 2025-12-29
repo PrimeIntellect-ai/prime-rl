@@ -22,6 +22,7 @@ from prime_rl.utils.utils import (
     get_broadcast_dir,
     get_latest_ckpt_step,
     get_step_path,
+    sync_wait_for_path,
     wait_for_path,
 )
 
@@ -56,6 +57,7 @@ class Scheduler:
         max_async_level: int,
         max_off_policy_steps: int,
         strict_async_level: bool,
+        blocking_checkpoint_wait: bool = False,
         lora_name: str | None = None,
         worker_stats_interval: float = 120.0,  # Log worker stats every N seconds
     ):
@@ -71,6 +73,7 @@ class Scheduler:
         self.max_async_level = max_async_level
         self.max_off_policy_steps = max_off_policy_steps
         self.strict_async_level = strict_async_level
+        self.blocking_checkpoint_wait = blocking_checkpoint_wait
         self.lora_name = lora_name
         self.sampling_args = get_sampling_args(config.sampling)
         self.model_name = self.config.model.name
@@ -119,7 +122,7 @@ class Scheduler:
                 # Start response collector for each worker
                 task = asyncio.create_task(worker.collect_responses())
                 self._response_collectors.append(task)
-        
+
         # Start periodic worker stats logging
         if self._worker_stats_interval > 0:
             self._worker_stats_task = asyncio.create_task(self._log_worker_stats_loop())
@@ -134,6 +137,20 @@ class Scheduler:
             for worker in workers:
                 worker.stop()
 
+    def _pause_all_workers(self):
+        """Pause all workers - they will block their event loops."""
+        self.logger.debug("Pausing all workers for blocking checkpoint wait")
+        for workers in self.workers.values():
+            for worker in workers:
+                worker.pause()
+
+    def _resume_all_workers(self):
+        """Resume all workers from paused state."""
+        self.logger.debug("Resuming all workers after checkpoint wait")
+        for workers in self.workers.values():
+            for worker in workers:
+                worker.resume()
+
     async def _log_worker_stats_loop(self):
         """Periodically log worker stats to console."""
         while True:
@@ -143,11 +160,11 @@ class Scheduler:
     def _log_worker_stats(self):
         """Log current worker stats (pending counts and lag metrics)."""
         lines = ["Worker Stats:"]
-        
+
         for env_name, workers in self.workers.items():
             pending_counts = [w.pending_count for w in workers]
             total_pending = sum(pending_counts)
-            
+
             # Get lag metrics from workers that have them
             lag_maxes = []
             lag_means = []
@@ -157,22 +174,22 @@ class Scheduler:
                         lag_maxes.append(w.latest_lag_metrics["event_loop_lag/max"])
                     if "event_loop_lag/mean" in w.latest_lag_metrics:
                         lag_means.append(w.latest_lag_metrics["event_loop_lag/mean"])
-            
+
             lag_str = ""
             if lag_maxes:
                 avg_max_lag = sum(lag_maxes) / len(lag_maxes)
                 max_max_lag = max(lag_maxes)
                 lag_str = f" | lag(avg_max={avg_max_lag:.2f}s, max={max_max_lag:.2f}s)"
-            
+
             lines.append(
                 f"  {env_name}: {len(workers)} workers, {total_pending} pending "
                 f"(per-worker: min={min(pending_counts)}, max={max(pending_counts)}, "
-                f"mean={sum(pending_counts)/len(pending_counts):.1f}){lag_str}"
+                f"mean={sum(pending_counts) / len(pending_counts):.1f}){lag_str}"
             )
-        
+
         # Also show in-flight rollouts
         lines.append(f"  In-flight group rollouts: {len(self.inflight_group_rollouts)}")
-        
+
         self.logger.info("\n".join(lines))
 
     async def schedule_group_rollout(self):
@@ -221,7 +238,13 @@ class Scheduler:
                 )
                 self.checkpoint_ready.clear()
                 wait_for_ckpt_start_time = time.perf_counter()
-                await wait_for_path(get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
+                ckpt_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step) / "STABLE"
+                if self.blocking_checkpoint_wait:
+                    self._pause_all_workers()
+                    sync_wait_for_path(ckpt_path)  # Blocks main event loop
+                    self._resume_all_workers()
+                else:
+                    await wait_for_path(ckpt_path)
                 self.wait_for_ckpt_time = time.perf_counter() - wait_for_ckpt_start_time
                 self.logger.debug(f"Waited for checkpoint {next_ckpt_step} for {self.wait_for_ckpt_time:.2f}s")
 

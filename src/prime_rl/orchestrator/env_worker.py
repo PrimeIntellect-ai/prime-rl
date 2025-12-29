@@ -29,6 +29,20 @@ class RolloutRequest:
 
 
 @dataclass
+class PauseRequest:
+    """Signal worker to pause processing."""
+
+    pass
+
+
+@dataclass
+class ResumeRequest:
+    """Signal worker to resume processing."""
+
+    pass
+
+
+@dataclass
 class RolloutResponse:
     """Response containing rollout results."""
 
@@ -112,6 +126,8 @@ async def worker_loop(
     env_id: str,
 ):
     """Main async loop for processing requests."""
+    import time
+
     from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 
     client_cycle = cycle(clients)
@@ -123,25 +139,40 @@ async def worker_loop(
 
     # Track in-flight tasks
     pending_tasks: dict[asyncio.Task, str] = {}
+    paused = False
 
     def check_for_requests():
-        """Non-blocking check for new requests."""
+        """Non-blocking check for new requests. Returns (should_continue, is_paused)."""
+        nonlocal paused
         try:
             while not request_queue.empty():
                 request = request_queue.get_nowait()
                 if request is None:  # Shutdown signal
-                    return False
-                task = asyncio.create_task(process_request(request, env, clients, client_cycle, semaphore))
-                pending_tasks[task] = request.id
+                    return False, paused
+                if isinstance(request, PauseRequest):
+                    paused = True
+                    continue
+                if isinstance(request, ResumeRequest):
+                    paused = False
+                    continue
+                if not paused:  # Only process rollout requests when not paused
+                    task = asyncio.create_task(process_request(request, env, clients, client_cycle, semaphore))
+                    pending_tasks[task] = request.id
         except Exception:
             pass
-        return True
+        return True, paused
 
     try:
         while True:
             # Check for new requests
-            if not check_for_requests():
+            should_continue, is_paused = check_for_requests()
+            if not should_continue:
                 break
+
+            # When paused, block with time.sleep to freeze event loop
+            if is_paused:
+                time.sleep(0.1)  # Blocking sleep - freezes this event loop
+                continue
 
             if not pending_tasks:
                 # No pending tasks, wait a bit for new requests
@@ -300,6 +331,14 @@ class EnvWorker:
     def update_model_name(self, model_name: str):
         """Update the model name for future requests."""
         self.model_name = model_name
+
+    def pause(self):
+        """Pause the worker - it will block its event loop."""
+        self.request_queue.put(PauseRequest())
+
+    def resume(self):
+        """Resume the worker from paused state."""
+        self.request_queue.put(ResumeRequest())
 
     @property
     def pending_count(self) -> int:
