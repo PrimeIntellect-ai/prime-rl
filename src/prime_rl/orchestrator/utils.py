@@ -161,23 +161,6 @@ async def compute_teacher_logprobs(
                 },
                 cast_to=ChatCompletion,
             )
-        return [0.0 if lp is None else next(iter(lp.values())) for lp in response.prompt_logprobs]
+        return [0.0 if lp is None else float(next(iter(lp.values()))["logprob"]) for lp in response.prompt_logprobs]
 
     return await asyncio.gather(*[_compute_single(client, sample) for client, sample in zip(cycle(clients), samples)])
-
-
-def validate_tokenizer_compatibility(
-    main_tokenizer: PreTrainedTokenizerFast,
-    teacher_tokenizer: PreTrainedTokenizerFast,
-) -> None:
-    """Validate that the main and teacher tokenizers are compatible."""
-    if main_tokenizer.vocab_size != teacher_tokenizer.vocab_size:
-        raise ValueError(
-            f"Tokenizer vocab size mismatch: main={main_tokenizer.vocab_size}, teacher={teacher_tokenizer.vocab_size}"
-        )
-    for attr in ("bos_token_id", "eos_token_id", "pad_token_id"):
-        if getattr(main_tokenizer, attr) != getattr(teacher_tokenizer, attr):
-            raise ValueError(
-                f"Special token mismatch for {attr}: main={getattr(main_tokenizer, attr)}, teacher={getattr(teacher_tokenizer, attr)}"
-            )
-    get_logger().info(f"Tokenizer compatibility validated: vocab_size={main_tokenizer.vocab_size}")

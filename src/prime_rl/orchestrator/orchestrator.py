@@ -33,7 +33,6 @@ from prime_rl.orchestrator.utils import (
     get_sampling_args,
     print_benchmark,
     set_semaphore,
-    validate_tokenizer_compatibility,
 )
 from prime_rl.utils.client import (
     check_has_model,
@@ -115,14 +114,6 @@ async def orchestrate(config: OrchestratorConfig):
     # Load tokenizer
     logger.info(f"Initializing tokenizer for {config.model.name}")
     tokenizer = AutoTokenizer.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
-
-    # If teacher model is configured, validate tokenizer compatibility
-    if config.teacher_model:
-        logger.info(f"Validating tokenizer compatibility with teacher model {config.teacher_model.model.name}")
-        teacher_tokenizer = AutoTokenizer.from_pretrained(
-            config.teacher_model.model.name, trust_remote_code=config.teacher_model.model.trust_remote_code
-        )
-        validate_tokenizer_compatibility(tokenizer, teacher_tokenizer)
 
     # Setup monitor
     logger.info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
