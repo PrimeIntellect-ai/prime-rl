@@ -198,12 +198,7 @@ class NCCLWeightBroadcast(WeightBroadcast):
     def _wait_for_nccl_ready(self, notified_runs: list[tuple[int, Path]]):
         """Wait for inference workers to signal they are ready to receive NCCL broadcast."""
         for idx, save_dir in notified_runs:
-            try:
-                nccl_ready_file = save_dir / NCCL_READY_MARKER
-                self.logger.debug(f"Waiting for NCCL_READY marker at {nccl_ready_file}")
-                sync_wait_for_path(nccl_ready_file, interval=0.1, log_interval=10)
-                self.logger.debug(f"Inference workers ready for NCCL broadcast (run {idx})")
-            except FileNotFoundError:
-                self.logger.warning(f"Run {idx} is deleted, skipping NCCL ready wait")
-            except Exception as e:
-                self.logger.error(f"Error waiting for NCCL ready for run {idx}: {e}")
+            nccl_ready_file = save_dir / NCCL_READY_MARKER
+            self.logger.debug(f"Waiting for NCCL_READY marker at {nccl_ready_file}")
+            sync_wait_for_path(nccl_ready_file, interval=0.1, log_interval=10)
+            self.logger.debug(f"Inference workers ready for NCCL broadcast (run {idx})")
