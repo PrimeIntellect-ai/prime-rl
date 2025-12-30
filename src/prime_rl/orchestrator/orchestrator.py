@@ -196,6 +196,8 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Track last online eval checkpoint step for this process
     last_eval_step = -1
+    # Track previous ckpt_step to detect skipped steps
+    prev_ckpt_step = 0
 
     # Reset weights to base model if starting from scratch
     progress = Progress()
@@ -204,6 +206,7 @@ async def orchestrate(config: OrchestratorConfig):
         ckpt_manager.load(progress, buffer, step=checkpoint_step)
         logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
         scheduler.ckpt_step = progress.step  # Always resume from the latest checkpoint
+        prev_ckpt_step = scheduler.ckpt_step  # Initialize to current step on resume
         if config.eval and config.eval.skip_eval_on_resume:
             last_eval_step = scheduler.ckpt_step
             logger.info(f"Skipping online eval on resume (ckpt_step={scheduler.ckpt_step})")
@@ -280,14 +283,27 @@ async def orchestrate(config: OrchestratorConfig):
             val_task = asyncio.create_task(asyncio.sleep(0))  # Dummy task
 
         # Schedule running evals at the specified interval
-        if (
-            config.eval
-            and ckpt_step % config.eval.interval == 0
-            and ckpt_step > last_eval_step
-            and ((ckpt_step == 0 and config.eval.eval_base_model) or ckpt_step > 0)
-        ):
-            last_eval_step = ckpt_step
-            logger.info(f"Running evals for checkpoint step {ckpt_step}")
+        # Find the highest checkpoint step in range (prev_ckpt_step, ckpt_step] that should trigger eval
+        # This handles cases where ckpt_step jumps (e.g., 9 -> 11) and we need to eval at step 10
+        eval_ckpt_step = None
+        if config.eval and ckpt_step > prev_ckpt_step:
+            interval = config.eval.interval
+            # Find highest step in (prev_ckpt_step, ckpt_step] divisible by interval
+            # Formula: largest multiple of interval <= ckpt_step that is > prev_ckpt_step
+            highest_interval_step = (ckpt_step // interval) * interval
+            if highest_interval_step > prev_ckpt_step and highest_interval_step > last_eval_step:
+                # Check base model eval condition for step 0
+                if highest_interval_step == 0 and not config.eval.eval_base_model:
+                    pass  # Skip step 0 if eval_base_model is False
+                else:
+                    eval_ckpt_step = highest_interval_step
+
+        if eval_ckpt_step is not None:
+            if eval_ckpt_step != ckpt_step:
+                logger.info(f"Running evals for skipped checkpoint step {eval_ckpt_step} (current ckpt_step={ckpt_step})")
+            else:
+                logger.info(f"Running evals for checkpoint step {eval_ckpt_step}")
+            last_eval_step = eval_ckpt_step
             eval_task = asyncio.create_task(
                 run_evals(
                     clients=clients,
@@ -297,12 +313,15 @@ async def orchestrate(config: OrchestratorConfig):
                     evals_client=evals_client,
                     reasoning_field=config.eval.reasoning_field,
                     output_dir=config.output_dir,
-                    ckpt_step=ckpt_step,
+                    ckpt_step=eval_ckpt_step,
                     step=progress.step,
                 )
             )
         else:
             eval_task = asyncio.create_task(asyncio.sleep(0))  # Dummy task
+
+        # Update prev_ckpt_step for next iteration
+        prev_ckpt_step = ckpt_step
 
         # Await train rollouts, process results and write batch to disk to consume by trainer
         await train_task
