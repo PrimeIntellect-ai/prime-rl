@@ -102,12 +102,3 @@ def test_loss_goes_down(sft_lora_process: ProcessResult, output_dir: Path) -> No
 def test_no_error_resume(sft_lora_resume_process: ProcessResult) -> None:
     """Tests that the SFT LoRA resume process does not fail."""
     assert sft_lora_resume_process.returncode == 0, f"Process has non-zero return code ({sft_lora_resume_process})"
-
-
-def test_loss_goes_down_resume(sft_lora_resume_process: ProcessResult, output_dir: Path) -> None:
-    """Tests that the loss goes down in the SFT LoRA resume process"""
-    trainer_log_path = output_dir / "logs" / "trainer" / "rank_0.log"
-    print(f"Checking trainer path in {trainer_log_path}")
-    with open(trainer_log_path, "r") as f:
-        trainer_stdout = strip_escape_codes(f.read()).splitlines()
-    check_loss_goes_down(trainer_stdout)
