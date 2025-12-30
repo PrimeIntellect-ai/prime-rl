@@ -119,7 +119,12 @@ def train(config: SFTTrainerConfig):
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
-    optimizer = setup_optimizer(config.optim, list(model.named_parameters()), parallel_dims.world_mesh["dp_shard_cp"])
+    optimizer = setup_optimizer(
+        config.optim,
+        list(model.named_parameters()),
+        parallel_dims.world_mesh["dp_shard_cp"],
+        lora=config.model.lora is not None,
+    )
 
     # Set up the learning rate scheduler
     scheduler_steps = (
