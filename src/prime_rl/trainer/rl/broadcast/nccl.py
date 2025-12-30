@@ -152,7 +152,6 @@ class NCCLWeightBroadcast(WeightBroadcast):
         self.nccl_broadcast_sender = NCCLWeightBroadcastSender(
             config.host, config.port, 0, config.inference_world_size + 1, device, config.timeout, dtype
         )
-        self.nccl_ready_timeout = config.timeout
 
     @torch.no_grad()
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
