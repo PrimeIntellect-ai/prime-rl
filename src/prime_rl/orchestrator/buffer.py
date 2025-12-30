@@ -241,14 +241,17 @@ class Buffer:
 
             self.num_examples_per_step[env_name][pool] += 1
             if self.config.online_difficulty_filtering:
-                if avg_reward == 0.0:
-                    self.num_rollouts_per_step[env_name]["hard"] += len(example_rollouts)
+                # Dictionary-based difficulty classification for O(1) lookup
+                difficulty_mapping = {
+                    0.0: "hard",
+                    1.0: "easy"
+                }
+                difficulty = difficulty_mapping.get(avg_reward, "normal")
+                self.num_rollouts_per_step[env_name][difficulty] += len(example_rollouts)
+                if avg_reward in difficulty_mapping:
                     continue
-                elif avg_reward == 1.0:
-                    self.num_rollouts_per_step[env_name]["easy"] += len(example_rollouts)
-                    continue
-
-            self.num_rollouts_per_step[env_name]["normal"] += len(example_rollouts)
+            else:
+                self.num_rollouts_per_step[env_name]["normal"] += len(example_rollouts)
             self.rollout_buffer.extend(example_rollouts)
 
     def sample_rollouts(self, n: int) -> list[vf.State]:
