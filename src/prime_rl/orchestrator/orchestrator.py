@@ -196,8 +196,8 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Track last online eval checkpoint step for this process
     last_eval_step = -1
-    # Track previous ckpt_step to detect skipped steps
-    prev_ckpt_step = 0
+    # Track previous ckpt_step to detect skipped steps (-1 so step 0 is included)
+    prev_ckpt_step = -1
 
     # Reset weights to base model if starting from scratch
     progress = Progress()
