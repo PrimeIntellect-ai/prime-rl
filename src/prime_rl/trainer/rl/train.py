@@ -30,7 +30,6 @@ from prime_rl.trainer.rl.loss import (
     compute_loss,
 )
 from prime_rl.trainer.model import (
-    forward,
     setup_tokenizer,
     setup_model,
     is_tt_moe_model,
@@ -292,63 +291,88 @@ def train(config: RLTrainerConfig):
 
             # Forward pass
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                logits = forward(model, input_ids, forward_position_ids).float().contiguous()
+                # logits = forward(model, input_ids, forward_position_ids).float().contiguous()
+                hidden_states = model.model(input_ids=input_ids, position_ids=forward_position_ids).last_hidden_state
 
-            if cp_enabled:
-                left_pad_logit = get_padding_logit_from_prev_cp_rank(logits, cp_rank, cp_size, cp_group)
-            else:
-                left_pad_logit = None
+            # Chunk hidden states and other tensors along sequence dimension
+            detached_hidden_states = hidden_states.detach().requires_grad_(True)
+            hidden_states_list = detached_hidden_states.chunk(config.logits_chunks, dim=1)
+            input_ids_list = input_ids.chunk(config.logits_chunks, dim=1)
+            position_ids_list = position_ids.chunk(config.logits_chunks, dim=1)
+            inference_logprobs_list = inference_logprobs.chunk(config.logits_chunks, dim=1)
+            advantages_list = advantages.chunk(config.logits_chunks, dim=1)
+            loss_mask_list = loss_mask.chunk(config.logits_chunks, dim=1)
 
-            shifted_logits = shift_logits(logits, left_pad_logit=left_pad_logit)
-            shifted_logits = shifted_logits / temperature
-            trainer_logprobs = selective_log_softmax(shifted_logits, input_ids)
+            # Process each chunk
+            for chunk_idx in range(config.logits_chunks):
+                hidden_states_chunk = hidden_states_list[chunk_idx]
+                input_ids_chunk = input_ids_list[chunk_idx]
+                position_ids_chunk = position_ids_list[chunk_idx]
+                inference_logprobs_chunk = inference_logprobs_list[chunk_idx]
+                advantages_chunk = advantages_list[chunk_idx]
+                loss_mask_chunk = loss_mask_list[chunk_idx]
 
-            if cp_enabled:
-                trainer_logprobs = dist_nn.all_gather(trainer_logprobs, group=cp_group)
-                trainer_logprobs = torch.cat(trainer_logprobs, dim=1)
+                # Apply lm_head to get logits for this chunk
+                logits = model.lm_head(hidden_states_chunk).float().contiguous()
 
-            # Compute loss
-            response_lengths = get_response_lengths(position_ids)
-            loss, loss_tensors = compute_loss(
-                trainer_logprobs=trainer_logprobs.squeeze().split(response_lengths),
-                inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
-                advantages=advantages.squeeze().split(response_lengths),
-                loss_mask=loss_mask.squeeze().split(response_lengths),
-                loss_config=config.loss,
-                loss_scale=loss_scale,
-            )
+                if cp_enabled:
+                    left_pad_logit = get_padding_logit_from_prev_cp_rank(logits, cp_rank, cp_size, cp_group)
+                else:
+                    left_pad_logit = None
 
-            # Compute entropy
-            entropy = compute_entropy(shifted_logits)
+                shifted_logits = shift_logits(logits, left_pad_logit=left_pad_logit)
+                shifted_logits = shifted_logits / temperature
+                trainer_logprobs_chunk = selective_log_softmax(shifted_logits, input_ids_chunk)
 
-            if cp_enabled:
-                entropies = [torch.zeros_like(entropy) for _ in range(cp_size)]
-                dist.all_gather(entropies, entropy, group=cp_group)
-                entropy = torch.cat(entropies, dim=1)
+                if cp_enabled:
+                    trainer_logprobs_chunk = dist_nn.all_gather(trainer_logprobs_chunk, group=cp_group)
+                    trainer_logprobs_chunk = torch.cat(trainer_logprobs_chunk, dim=1)
 
-            # Delete logits and shifted_logits before backward pass to avoid memory spike
-            del logits, shifted_logits
+                # Compute loss for this chunk
+                response_lengths_chunk = get_response_lengths(position_ids_chunk)
+                loss_chunk, loss_tensors_chunk = compute_loss(
+                    trainer_logprobs=trainer_logprobs_chunk.squeeze().split(response_lengths_chunk),
+                    inference_logprobs=inference_logprobs_chunk.squeeze().split(response_lengths_chunk),
+                    advantages=advantages_chunk.squeeze().split(response_lengths_chunk),
+                    loss_mask=loss_mask_chunk.squeeze().split(response_lengths_chunk),
+                    loss_config=config.loss,
+                    loss_scale=loss_scale,
+                )
 
-            # Backward pass
-            with maybe_record_function("backward"):
-                loss.backward()
+                # Compute entropy for this chunk
+                entropy_chunk = compute_entropy(shifted_logits)
 
-            # Add relevant tensors to tensor dict for logging purposes
-            tensors["trainer_probs"].append(torch.exp(trainer_logprobs)[loss_mask].detach().to("cpu"))
-            tensors["inference_probs"].append(torch.exp(inference_logprobs)[loss_mask].detach().to("cpu"))
-            tensors["entropy"].append(entropy[loss_mask].detach().to("cpu"))
-            tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
+                if cp_enabled:
+                    entropies = [torch.zeros_like(entropy_chunk) for _ in range(cp_size)]
+                    dist.all_gather(entropies, entropy_chunk, group=cp_group)
+                    entropy_chunk = torch.cat(entropies, dim=1)
 
+                del logits, shifted_logits
+
+                # Backward pass
+                with maybe_record_function("backward"):
+                    loss_chunk.backward()
+
+                # Add relevant tensors to tensor dict for logging purposes
+                tensors["trainer_probs"].append(torch.exp(trainer_logprobs_chunk)[loss_mask_chunk].detach().to("cpu"))
+                tensors["inference_probs"].append(
+                    torch.exp(inference_logprobs_chunk)[loss_mask_chunk].detach().to("cpu")
+                )
+                tensors["entropy"].append(entropy_chunk[loss_mask_chunk].detach().to("cpu"))
+                tensors["loss"].append(loss_chunk.detach().to("cpu").unsqueeze(0))
+
+                # Add loss tensors to tensor dict for logging purposes
+                for key, loss_tensor in loss_tensors_chunk.items():
+                    loss_tensor = loss_tensor.detach().to("cpu")
+                    tensors[key].append(loss_tensor)
+
+            # Now backward through the rest of the model with accumulated gradients
+            hidden_states.backward(detached_hidden_states.grad)
             if is_tt_moe_model(model):
                 load_balance_stats = get_load_balance_stats(model)
                 for k, v in load_balance_stats.items():
                     if v is not None:
                         tensors[k].append(v)
-
-            # Add loss tensors to tensor dict for logging purposes
-            for key, loss_tensor in loss_tensors.items():
-                loss_tensor = loss_tensor.detach().to("cpu")
-                tensors[key].append(loss_tensor)
 
             # Debug log with *local, micro step* stats
             micro_step_message = f"Micro Step {micro_step}/{len(micro_batches)} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy'][-1].mean().item():.4f} | Mismatch KL: {tensors['mismatch_kl'][-1].mean().item():.4f}"

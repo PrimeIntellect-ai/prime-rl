@@ -180,7 +180,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         get_logger().warning("Model is tied word embeddings, so not doing the last layer not resharding optimization")
 
     fully_shard(
-        model,
+        model.model,
         mesh=hsdp_mesh,
         mp_policy=mp_policy,
         offload_policy=offload_policy,
