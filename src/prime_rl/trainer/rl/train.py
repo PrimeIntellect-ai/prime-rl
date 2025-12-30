@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+import math
 import time
 from datetime import timedelta
 
@@ -296,15 +297,16 @@ def train(config: RLTrainerConfig):
 
             # Chunk hidden states and other tensors along sequence dimension
             detached_hidden_states = hidden_states.detach().requires_grad_(True)
-            hidden_states_list = detached_hidden_states.chunk(config.logits_chunks, dim=1)
-            input_ids_list = input_ids.chunk(config.logits_chunks, dim=1)
-            position_ids_list = position_ids.chunk(config.logits_chunks, dim=1)
-            inference_logprobs_list = inference_logprobs.chunk(config.logits_chunks, dim=1)
-            advantages_list = advantages.chunk(config.logits_chunks, dim=1)
-            loss_mask_list = loss_mask.chunk(config.logits_chunks, dim=1)
+            num_logits_chunks = int(math.ceil(seq_len / config.logits_chunk_size))
+            hidden_states_list = detached_hidden_states.chunk(num_logits_chunks, dim=1)
+            input_ids_list = input_ids.chunk(num_logits_chunks, dim=1)
+            position_ids_list = position_ids.chunk(num_logits_chunks, dim=1)
+            inference_logprobs_list = inference_logprobs.chunk(num_logits_chunks, dim=1)
+            advantages_list = advantages.chunk(num_logits_chunks, dim=1)
+            loss_mask_list = loss_mask.chunk(num_logits_chunks, dim=1)
 
             # Process each chunk
-            for chunk_idx in range(config.logits_chunks):
+            for chunk_idx in range(num_logits_chunks):
                 hidden_states_chunk = hidden_states_list[chunk_idx]
                 input_ids_chunk = input_ids_list[chunk_idx]
                 position_ids_chunk = position_ids_list[chunk_idx]
