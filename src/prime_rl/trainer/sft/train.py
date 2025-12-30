@@ -18,6 +18,7 @@ from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.trainer.sft.config import SFTTrainerConfig
 from prime_rl.utils.cp import setup_cp_params, shard_for_cp
 from prime_rl.trainer.runs import Progress, setup_runs
+from prime_rl.trainer.models.layers.lora import set_multilora_offsets
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
@@ -240,7 +241,14 @@ def train(config: SFTTrainerConfig):
                 logger.debug("Printing samples of the first micro batch")
                 print_sample(input_ids.flatten().tolist(), loss_mask.flatten().tolist(), tokenizer)
 
-                # Forward pass
+            # Set LoRA offsets before forward pass (all tokens go to single adapter for SFT)
+            if config.model.lora:
+                num_tokens = input_ids.numel()
+                set_multilora_offsets(
+                    torch.tensor([num_tokens], dtype=torch.int32, device=input_ids.device), reset_reference=True
+                )
+
+            # Forward pass
             logger.debug("Starting forward pass")
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
                 logits = forward(model, input_ids, position_ids)

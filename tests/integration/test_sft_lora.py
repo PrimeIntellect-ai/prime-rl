@@ -57,6 +57,8 @@ def sft_lora_resume_process(
     output_dir: Path,
 ) -> ProcessResult:
     """Fixture for resuming SFT LoRA CI integration test"""
+    if sft_lora_process.returncode != 0:
+        pytest.skip("SFT LoRA process failed")
     wandb_name += "-resume"
     cmd = [
         "uv",
