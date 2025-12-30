@@ -304,10 +304,14 @@ async def orchestrate(config: OrchestratorConfig):
 
         if eval_ckpt_step is not None:
             if eval_ckpt_step != ckpt_step:
-                logger.info(f"Running evals for skipped checkpoint step {eval_ckpt_step} (current ckpt_step={ckpt_step})")
+                logger.info(
+                    f"Interval step {eval_ckpt_step} was skipped, running eval at current ckpt_step={ckpt_step}"
+                )
             else:
-                logger.info(f"Running evals for checkpoint step {eval_ckpt_step}")
-            last_eval_step = eval_ckpt_step
+                logger.info(f"Running evals for checkpoint step {ckpt_step}")
+            # Use actual ckpt_step for labeling (not the skipped interval step) since
+            # weights are already updated to ckpt_step
+            last_eval_step = ckpt_step
             eval_task = asyncio.create_task(
                 run_evals(
                     clients=clients,
@@ -317,7 +321,7 @@ async def orchestrate(config: OrchestratorConfig):
                     evals_client=evals_client,
                     reasoning_field=config.eval.reasoning_field,
                     output_dir=config.output_dir,
-                    ckpt_step=eval_ckpt_step,
+                    ckpt_step=ckpt_step,
                     step=progress.step,
                 )
             )
