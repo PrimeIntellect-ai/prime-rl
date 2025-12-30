@@ -206,10 +206,14 @@ async def orchestrate(config: OrchestratorConfig):
         ckpt_manager.load(progress, buffer, step=checkpoint_step)
         logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
         scheduler.ckpt_step = progress.step  # Always resume from the latest checkpoint
-        prev_ckpt_step = scheduler.ckpt_step  # Initialize to current step on resume
         if config.eval and config.eval.skip_eval_on_resume:
+            # Skip eval at resumed step by setting prev_ckpt_step = current step
+            prev_ckpt_step = scheduler.ckpt_step
             last_eval_step = scheduler.ckpt_step
             logger.info(f"Skipping online eval on resume (ckpt_step={scheduler.ckpt_step})")
+        else:
+            # Allow eval at resumed step by setting prev_ckpt_step = current - 1
+            prev_ckpt_step = scheduler.ckpt_step - 1
         await update_weights(
             admin_clients,
             get_step_path(get_broadcast_dir(config.output_dir), scheduler.ckpt_step),
