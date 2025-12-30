@@ -202,9 +202,12 @@ class NCCLWeightBroadcast(WeightBroadcast):
             try:
                 nccl_ready_file = save_dir / NCCL_READY_MARKER
                 self.logger.debug(f"Waiting for NCCL_READY marker at {nccl_ready_file}")
-                sync_wait_for_path(nccl_ready_file, interval=0.1, log_interval=10)
+                sync_wait_for_path(nccl_ready_file, interval=0.1, log_interval=10, timeout=self.nccl_ready_timeout)
                 self.logger.debug(f"Inference workers ready for NCCL broadcast (run {idx})")
             except FileNotFoundError:
                 self.logger.warning(f"Run {idx} is deleted, skipping NCCL ready wait")
+            except TimeoutError:
+                self.logger.error(f"Timeout waiting for NCCL ready marker for run {idx}")
+                raise
             except Exception as e:
                 self.logger.error(f"Error waiting for NCCL ready for run {idx}: {e}")
