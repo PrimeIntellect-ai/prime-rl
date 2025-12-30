@@ -160,24 +160,24 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             reshard_after_forward=config.reshard_after_forward,
         )
 
-    if hasattr(model, "config") and not model.config.tie_word_embeddings:
-        # This optimization breaks weight tying
-        fully_shard(
-            model.model.embed_tokens,
-            mesh=hsdp_mesh,
-            mp_policy=mp_policy,
-            offload_policy=offload_policy,
-            reshard_after_forward=config.reshard_after_forward,
-        )
-        fully_shard(
-            [model.lm_head, model.model.norm],
-            mesh=hsdp_mesh,
-            mp_policy=mp_policy,
-            offload_policy=offload_policy,
-            reshard_after_forward=False,
-        )
-    else:
-        get_logger().warning("Model is tied word embeddings, so not doing the last layer not resharding optimization")
+    # if hasattr(model, "config") and not model.config.tie_word_embeddings:
+    #     # This optimization breaks weight tying
+    #     fully_shard(
+    #         model.model.embed_tokens,
+    #         mesh=hsdp_mesh,
+    #         mp_policy=mp_policy,
+    #         offload_policy=offload_policy,
+    #         reshard_after_forward=config.reshard_after_forward,
+    #     )
+    #     fully_shard(
+    #         [model.lm_head, model.model.norm],
+    #         mesh=hsdp_mesh,
+    #         mp_policy=mp_policy,
+    #         offload_policy=offload_policy,
+    #         reshard_after_forward=False,
+    #     )
+    # else:
+    #     get_logger().warning("Model is tied word embeddings, so not doing the last layer not resharding optimization")
 
     fully_shard(
         model.model,
@@ -185,6 +185,13 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         mp_policy=mp_policy,
         offload_policy=offload_policy,
         reshard_after_forward=config.reshard_after_forward,
+    )
+    fully_shard(
+        model.lm_head,
+        mesh=hsdp_mesh,
+        mp_policy=mp_policy,
+        offload_policy=offload_policy,
+        reshard_after_forward=False,
     )
 
 
