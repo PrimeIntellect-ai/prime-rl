@@ -296,9 +296,11 @@ async def orchestrate(config: OrchestratorConfig):
             # Formula: largest multiple of interval <= ckpt_step that is > prev_ckpt_step
             highest_interval_step = (ckpt_step // interval) * interval
             if highest_interval_step > prev_ckpt_step and highest_interval_step > last_eval_step:
-                # Check base model eval condition for step 0
-                if highest_interval_step == 0 and not config.eval.eval_base_model:
-                    pass  # Skip step 0 if eval_base_model is False
+                # Base model eval (step 0) only runs when ckpt_step is also 0
+                # Otherwise we'd eval non-base weights and label them as base
+                if highest_interval_step == 0:
+                    if ckpt_step == 0 and config.eval.eval_base_model:
+                        eval_ckpt_step = 0
                 else:
                     eval_ckpt_step = highest_interval_step
 
