@@ -312,6 +312,7 @@ def train(config: RLTrainerConfig):
             for chunk_idx in range(num_logits_chunks):
                 if chunk_idx == num_logits_chunks - 1:
                     model.lm_head._get_fsdp_state()._modules_to_run_forward.remove("blocker")
+                    model.lm_head._get_fsdp_state()._modules_to_run_forward.add(model.lm_head)
                     model.lm_head.set_reshard_after_backward(True)
                 hidden_states_chunk = hidden_states_list[chunk_idx]
                 input_ids_chunk = input_ids_list[chunk_idx]
