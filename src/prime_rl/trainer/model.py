@@ -160,27 +160,24 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             reshard_after_forward=config.reshard_after_forward,
         )
 
-    if hasattr(model, "config") and not model.config.tie_word_embeddings:
-        # This optimization breaks weight tying
+    if hasattr(model, "config") and model.config.tie_word_embeddings:
         fully_shard(
-            model.model.embed_tokens,
+            [model.model.embed_tokens, model.lm_head],
             mesh=hsdp_mesh,
             mp_policy=mp_policy,
             offload_policy=offload_policy,
             reshard_after_forward=config.reshard_after_forward,
         )
+    else:
         fully_shard(
-            [model.lm_head, model.model.norm],
+            model.lm_head,
             mesh=hsdp_mesh,
             mp_policy=mp_policy,
             offload_policy=offload_policy,
-            reshard_after_forward=False,
+            reshard_after_forward=config.reshard_after_forward,
         )
-    else:
-        get_logger().warning("Model is tied word embeddings, so not doing the last layer not resharding optimization")
-
     fully_shard(
-        model,
+        model.model,
         mesh=hsdp_mesh,
         mp_policy=mp_policy,
         offload_policy=offload_policy,

@@ -201,6 +201,14 @@ class RLTrainerConfig(BaseSettings):
         ),
     ] = 1
 
+    logits_chunk_size: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Size of each chunk for logits materialization. The sequence is split into ceil(seq_len / logits_chunk_size) chunks. Smaller values reduce memory usage but may increase computation time.",
+        ),
+    ] = 4096
+
     @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench:
