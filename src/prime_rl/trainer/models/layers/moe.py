@@ -325,7 +325,7 @@ class MoE(nn.Module):
         if torch.cuda.is_available():
             cc_major, _ = torch.cuda.get_device_capability()
             # grouped_mm requires Hopper (SM90, cc=9) or newer (Blackwell SM100, cc=10)
-            if cc_major < 9:
+            if cc_major != 9:
                 moe_args.use_grouped_mm = False
         self.experts = GroupedExperts(
             dim=dim,
