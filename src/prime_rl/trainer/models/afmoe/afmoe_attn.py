@@ -1,7 +1,6 @@
 """AFMoE-specific attention implementations."""
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 import torch
 import torch.nn.functional as F
@@ -9,10 +8,6 @@ from torch import nn
 
 from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
-
-if TYPE_CHECKING:
-    from torch.nn.attention.flex_attention import BlockMask
-
 
 @dataclass
 class AfmoeAttentionConfig:
@@ -112,10 +107,7 @@ class AfmoeSDPAAttention(AfmoeAttentionBase):
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attention_mask: torch.Tensor | None = None,
-        block_mask: "BlockMask | None" = None,
     ) -> tuple[torch.Tensor, None]:
-        del block_mask
-
         query_states, key_states, value_states, gate_states, input_shape = self._project_states(
             hidden_states, position_embeddings
         )
@@ -133,56 +125,6 @@ class AfmoeSDPAAttention(AfmoeAttentionBase):
 
         return self._finalize_output(attn_output, gate_states, input_shape)
 
-
-class AfmoeFlexAttention(AfmoeAttentionBase):
-    """AFMoE attention using PyTorch's flex_attention."""
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        attention_mask: torch.Tensor | None = None,
-        block_mask: "BlockMask | None" = None,
-    ) -> tuple[torch.Tensor, None]:
-        from transformers.integrations.flex_attention import compile_friendly_flex_attention
-
-        query_states, key_states, value_states, gate_states, input_shape = self._project_states(
-            hidden_states, position_embeddings
-        )
-
-        if block_mask is not None:
-            attn_output = compile_friendly_flex_attention(
-                query_states,
-                key_states,
-                value_states,
-                training=self.training,
-                block_mask=block_mask,
-                scale=self.scaling,
-            )
-        elif attention_mask is not None:
-            dropout_p = self.attention_dropout if self.training else 0.0
-            attn_output = F.scaled_dot_product_attention(
-                query_states,
-                key_states,
-                value_states,
-                attn_mask=attention_mask,
-                dropout_p=dropout_p,
-                scale=self.scaling,
-            )
-        else:
-            attn_output = compile_friendly_flex_attention(
-                query_states,
-                key_states,
-                value_states,
-                training=self.training,
-                block_mask=None,
-                scale=self.scaling,
-            )
-
-        return self._finalize_output(attn_output, gate_states, input_shape)
-
-
 AFMOE_ATTN_IMPL2CLASS = {
     "sdpa": AfmoeSDPAAttention,
-    "flex_attention": AfmoeFlexAttention,
 }

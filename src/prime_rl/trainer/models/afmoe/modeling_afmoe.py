@@ -19,6 +19,7 @@ from transformers.utils import TransformersKwargs
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
+from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 
 from .afmoe_attn import AFMOE_ATTN_IMPL2CLASS, AfmoeAttentionConfig
@@ -42,24 +43,6 @@ def _create_rotary_emb(config: AfmoeConfig) -> RotaryEmbedding:
         model_config=config,
     )
     return RotaryEmbedding(rotary_config)
-
-
-class AfmoeRMSNorm(nn.Module):
-
-    def __init__(self, hidden_size: int, eps: float):
-        super().__init__()
-        self.weight = nn.Parameter(torch.ones(hidden_size))
-        self.variance_epsilon = eps
-
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        input_dtype = hidden_states.dtype
-        hidden_states = hidden_states.to(torch.float32)
-        variance = hidden_states.pow(2).mean(-1, keepdim=True)
-        hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
-        return self.weight * hidden_states.to(input_dtype)
-
-    def extra_repr(self):
-        return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}"
 
 
 def _get_afmoe_attention(config: AfmoeConfig, layer_idx: int) -> nn.Module:
@@ -100,11 +83,11 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
         self.self_attn = _get_afmoe_attention(config, layer_idx)
         self.attention_type = config.layer_types[layer_idx]
 
-        self.input_layernorm = AfmoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = AfmoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
+        self.post_attention_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
 
-        self.pre_mlp_layernorm = AfmoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_mlp_layernorm = AfmoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.pre_mlp_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
+        self.post_mlp_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
 
         self.moe_enabled = layer_idx >= config.num_dense_layers
         mlp_config = MLPConfig(
@@ -134,7 +117,6 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
-        block_mask: Optional["BlockMask"] = None,  # noqa: F821
     ) -> torch.FloatTensor:
         residual = hidden_states
 
@@ -143,7 +125,6 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
             hidden_states=hidden_states,
             position_embeddings=position_embeddings,
             attention_mask=attention_mask,
-            block_mask=block_mask,
         )
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = residual + hidden_states
@@ -172,7 +153,7 @@ class AfmoePreTrainedModel(PreTrainedModelPrimeRL):
     ]
     _supports_sdpa = True
     _supports_flash_attn = False
-    _supports_flex_attn = True
+    _supports_flex_attn = False
     _supports_attention_backend = True
     _can_compile_fullgraph = False
     _can_record_outputs = {
@@ -226,7 +207,7 @@ class AfmoeModel(AfmoePreTrainedModel):
                 for layer_idx in range(config.num_hidden_layers)
             ]
         )
-        self.norm = AfmoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
         self.rotary_emb = _create_rotary_emb(config)
         self.gradient_checkpointing = False
 
@@ -258,8 +239,6 @@ class AfmoeModel(AfmoePreTrainedModel):
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
         cache_position = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device)
 
-        use_flex_attention = self.config._attn_implementation == "flex_attention"
-
         if not isinstance(causal_mask_mapping := attention_mask, dict):
             mask_kwargs = {
                 "config": self.config,
@@ -284,18 +263,10 @@ class AfmoeModel(AfmoePreTrainedModel):
         for decoder_layer in self.layers:
             mask = causal_mask_mapping[decoder_layer.attention_type]
 
-            if use_flex_attention:
-                attn_mask = None
-                block_mask = mask
-            else:
-                attn_mask = mask
-                block_mask = None
-
             hidden_states = decoder_layer(
                 hidden_states,
-                attention_mask=attn_mask,
+                attention_mask=mask,
                 position_embeddings=position_embeddings,
-                block_mask=block_mask,
             )
 
         hidden_states = self.norm(hidden_states)
