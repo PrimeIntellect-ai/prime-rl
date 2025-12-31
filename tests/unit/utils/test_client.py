@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -31,25 +32,22 @@ class TestIsRetryableLoraError:
 
 
 class TestLoadLoraAdapter:
-    @pytest.mark.asyncio
-    async def test_succeeds_on_first_attempt(self):
+    def test_succeeds_on_first_attempt(self):
         mock_client = AsyncMock()
         mock_response = MagicMock()
         mock_response.raise_for_status = MagicMock()
         mock_client.post.return_value = mock_response
 
-        await load_lora_adapter([mock_client], "test-lora", Path("/test/path"))
+        asyncio.run(load_lora_adapter([mock_client], "test-lora", Path("/test/path")))
 
         mock_client.post.assert_called_once_with(
             "/v1/load_lora_adapter",
             json={"lora_name": "test-lora", "lora_path": "/test/path"},
         )
 
-    @pytest.mark.asyncio
-    async def test_retries_on_404_then_succeeds(self):
+    def test_retries_on_404_then_succeeds(self):
         mock_client = AsyncMock()
 
-        # First call fails with 404, second succeeds
         error_response = MagicMock()
         error_response.status_code = 404
         success_response = MagicMock()
@@ -66,22 +64,21 @@ class TestLoadLoraAdapter:
 
         mock_client.post = mock_post
 
-        await load_lora_adapter([mock_client], "test-lora", Path("/test/path"))
+        asyncio.run(load_lora_adapter([mock_client], "test-lora", Path("/test/path")))
 
         assert call_count == 2
 
-    @pytest.mark.asyncio
-    async def test_raises_non_retryable_error_immediately(self):
+    def test_raises_non_retryable_error_immediately(self):
         mock_client = AsyncMock()
 
         error_response = MagicMock()
-        error_response.status_code = 400  # Bad request - not retryable
+        error_response.status_code = 400
         mock_client.post.side_effect = httpx.HTTPStatusError(
             "Bad request", request=MagicMock(), response=error_response
         )
 
         with pytest.raises(httpx.HTTPStatusError) as exc_info:
-            await load_lora_adapter([mock_client], "test-lora", Path("/test/path"))
+            asyncio.run(load_lora_adapter([mock_client], "test-lora", Path("/test/path")))
 
         assert exc_info.value.response.status_code == 400
-        assert mock_client.post.call_count == 1  # No retries
+        assert mock_client.post.call_count == 1
