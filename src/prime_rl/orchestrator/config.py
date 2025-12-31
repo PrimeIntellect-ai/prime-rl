@@ -366,11 +366,19 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = None
 
-    keep: Annotated[
+    keep_last: Annotated[
         int | None,
         Field(
             ge=1,
-            description="Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints.",
+            description="Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency.",
+        ),
+    ] = None
+
+    keep_interval: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Keep checkpoints at every N steps permanently (e.g., keep_interval=100 keeps step 100, 200, ...). If None, no interval-based keeping.",
         ),
     ] = None
 

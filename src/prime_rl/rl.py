@@ -72,11 +72,19 @@ class SharedCheckpointConfig(BaseSettings):
         int | None, Field(description="The step to resume from. If None, will not resume from a checkpoint.")
     ] = None
 
-    keep: Annotated[
+    keep_last: Annotated[
         int | None,
         Field(
             ge=1,
-            description="Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints.",
+            description="Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency.",
+        ),
+    ] = None
+
+    keep_interval: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Keep checkpoints at every N steps permanently (e.g., keep_interval=100 keeps step 100, 200, ...). If None, no interval-based keeping.",
         ),
     ] = None
 
@@ -252,9 +260,13 @@ class RLConfig(BaseSettings):
                 self.orchestrator.ckpt.resume_step = self.ckpt.resume_step
 
             # If specified, propagate keep policy
-            if self.ckpt.keep is not None:
-                self.trainer.ckpt.keep = self.ckpt.keep
-                self.orchestrator.ckpt.keep = self.ckpt.keep
+            if self.ckpt.keep_last is not None:
+                self.trainer.ckpt.keep_last = self.ckpt.keep_last
+                self.orchestrator.ckpt.keep_last = self.ckpt.keep_last
+
+            if self.ckpt.keep_interval is not None:
+                self.trainer.ckpt.keep_interval = self.ckpt.keep_interval
+                self.orchestrator.ckpt.keep_interval = self.ckpt.keep_interval
 
         validate_shared_ckpt_config(self.trainer, self.orchestrator)
 

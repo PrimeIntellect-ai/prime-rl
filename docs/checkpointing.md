@@ -8,7 +8,7 @@ Checkpointing is non-standard due to trainer/orchestrator separation and natural
 
 The default checkpoint directory is `checkpoints` and each checkpoint step will live in a step subdirectory, i.e. `checkpoints/step_{step}`.
 
-Checkpointing is configured with the config key `--ckpt`. One can specify the interval (`--ckpt.interval`), whether to save checkpoints asynchronoously  (`--ckpt.save-async`), and how many recent step checkpoints to keep on disk (`--ckpt.keep`). By default, we do not checkpoint to save disk space. 
+Checkpointing is configured with the config key `--ckpt`. One can specify the interval (`--ckpt.interval`), whether to save checkpoints asynchronoously  (`--ckpt.save-async`), how many recent step checkpoints to keep on disk (`--ckpt.keep-last`), and keep checkpoints at every N steps permanently (`--ckpt.keep-interval`). By default, we do not checkpoint to save disk space. 
 
 ## SFT
 
