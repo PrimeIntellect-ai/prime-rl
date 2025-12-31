@@ -35,6 +35,7 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
         completion_ids=deepcopy(first_step["tokens"]["completion_ids"]),
         completion_mask=completion_mask,
         completion_logprobs=deepcopy(first_step["tokens"]["completion_logprobs"]),
+        teacher_logprobs=None,  # Populated at the end after full sequence length is known if teacher model is configured
         advantage=None,
     )
 
@@ -70,6 +71,7 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
         # New prefix is the current prompt and completion ids concatenated
         prefix_tokens = tokens["prompt_ids"] + tokens["completion_ids"]
 
+
     return [interleaved_rollout]
 
 
@@ -98,6 +100,7 @@ def branch_rollout(state: vf.State) -> list[TrainingSample] | None:
             completion_mask=completion_mask,
             completion_logprobs=deepcopy(tokens["completion_logprobs"]),
             advantage=None,
+            teacher_logprobs=None,
         )
         rollouts.append(rollout)
     return rollouts

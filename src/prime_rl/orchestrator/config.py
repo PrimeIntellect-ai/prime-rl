@@ -464,6 +464,17 @@ class BufferConfig(BaseConfig):
         ),
     ] = ["task", "prompt"]
 
+    skip_verification: Annotated[
+        bool,
+        Field(
+            description=(
+                "Whether to skip verification of rollouts using the environment's rubric. "
+                "If True, rewards are always set to 0, online_difficulty_filtering is disabled, "
+                "and easy/hard thresholds are not used."
+            ),
+        ),
+    ] = False
+
     @model_validator(mode="after")
     def validate_thresholds(self):
         if self.easy_threshold is not None and self.hard_threshold is not None:
@@ -474,6 +485,27 @@ class BufferConfig(BaseConfig):
     def validate_env_ratios(self):
         if self.env_ratios is not None:
             assert all(ratio > 0 for ratio in self.env_ratios), "All env_ratios must be positive."
+        return self
+
+    @model_validator(mode="after")
+    def validate_skip_verification(self):
+        """Validate that skip_verification is not used with reward-dependent features."""
+        if self.skip_verification:
+            if self.online_difficulty_filtering:
+                raise ValueError(
+                    "skip_verification cannot be True when online_difficulty_filtering is True. "
+                    "These features depend on rewards which are disabled when skip_verification=True."
+                )
+            if self.easy_threshold is not None:
+                raise ValueError(
+                    "skip_verification cannot be True when easy_threshold is set. "
+                    "Easy threshold depends on rewards which are disabled when skip_verification=True."
+                )
+            if self.hard_threshold is not None:
+                raise ValueError(
+                    "skip_verification cannot be True when hard_threshold is set. "
+                    "Hard threshold depends on rewards which are disabled when skip_verification=True."
+                )
         return self
 
 
@@ -500,6 +532,20 @@ class NCCLWeightBroadcastConfig(BaseModel):
 WeightBroadcastConfigType: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig
 
 
+class TeacherModelConfig(BaseConfig):
+    """Configures the teacher model for computing teacher logprobs (e.g. for distillation)."""
+
+    client: Annotated[
+        ClientConfig,
+        Field(description="The OAI client configuration for the teacher model."),
+    ] = ClientConfig()
+
+    model: Annotated[
+        ModelConfig,
+        Field(description="The model configuration for the teacher model."),
+    ] = ModelConfig()
+
+
 class OrchestratorConfig(BaseSettings):
     """Configures the orchestrator for RL training."""
 
@@ -508,6 +554,16 @@ class OrchestratorConfig(BaseSettings):
 
     # The model configuration
     model: ModelConfig = ModelConfig()
+
+    # The teacher model configuration (optional)
+    teacher_model: Annotated[
+        TeacherModelConfig | None,
+        Field(
+            description="The teacher model configuration for computing teacher logprobs (e.g. for distillation). "
+            "If provided, teacher logprobs will be computed using the specified model. "
+            "If None, no teacher model will be used."
+        ),
+    ] = None
 
     # The sampling configuration
     sampling: SamplingConfig = SamplingConfig()

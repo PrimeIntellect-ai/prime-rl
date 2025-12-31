@@ -29,6 +29,7 @@ from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.orchestrator.config import BufferConfig, OrchestratorConfig
 from prime_rl.orchestrator.scheduler import Scheduler
 from prime_rl.orchestrator.utils import (
+    compute_teacher_logprobs,
     get_sampling_args,
     print_benchmark,
     set_semaphore,
@@ -99,6 +100,17 @@ async def orchestrate(config: OrchestratorConfig):
     admin_clients = setup_admin_clients(config.client)
     evals_client = setup_evals_client()
 
+    # Setup teacher model client if configured
+    teacher_clients = None
+    teacher_model_name = None
+    if config.teacher_model:
+        logger.info(
+            f"Initializing teacher OpenAI client (base_url={', '.join(config.teacher_model.client.base_url)}, "
+            f"model={config.teacher_model.model.name})"
+        )
+        teacher_clients = setup_clients(config.teacher_model.client)
+        teacher_model_name = config.teacher_model.model.name
+
     # Load tokenizer
     logger.info(f"Initializing tokenizer for {config.model.name}")
     tokenizer = AutoTokenizer.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
@@ -132,6 +144,9 @@ async def orchestrate(config: OrchestratorConfig):
     if config.trajectory_strategy == "interleaved":
         logger.info("Using token prompts in environment to avoid retokenization discrepancies in multi-turn rollouts")
         env.set_interleaved_rollouts(True)
+    if config.buffer.skip_verification:
+        logger.info("Skipping verification (rewards will be set to 0)")
+        env.set_score_rollouts(False)
 
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
@@ -332,6 +347,21 @@ async def orchestrate(config: OrchestratorConfig):
             f"Converted {len(train_rollouts)} training rollouts to {len(train_examples)} training examples using {config.trajectory_strategy} strategy"
         )
 
+        # Compute teacher logprobs if teacher model is configured
+        teacher_logprobs_time = 0
+        if config.teacher_model is not None:
+            logger.info(f"Computing teacher logprobs for {len(train_examples)} training examples")
+            teacher_logprobs_start_time = time.perf_counter()
+            teacher_logprobs_list = await compute_teacher_logprobs(
+                clients=teacher_clients,
+                model_name=teacher_model_name,
+                samples=train_examples,
+            )
+            for train_example, teacher_logprobs in zip(train_examples, teacher_logprobs_list):
+                train_example.teacher_logprobs = teacher_logprobs
+            teacher_logprobs_time = time.perf_counter() - teacher_logprobs_start_time
+            logger.debug(f"Computed teacher logprobs in {teacher_logprobs_time:.2f}s")
+
         training_batch = TrainingBatch(
             examples=train_examples,
             temperature=config.sampling.temperature,
@@ -447,6 +477,7 @@ async def orchestrate(config: OrchestratorConfig):
             # Time metrics
             "time/step": step_time,
             "time/generate_completions": generate_completions_time,
+            "time/teacher_logprobs": teacher_logprobs_time,
             "time/save_ckpt": save_ckpt_time,
             # Scheduler metrics
             **scheduler.get_metrics(),

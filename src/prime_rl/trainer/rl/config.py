@@ -35,7 +35,6 @@ class LossConfig(BaseConfig):
         10.0
     )
     geo_mask_low: Annotated[float, Field(ge=0, description="The low threshold for geo importance ratio to mask.")] = 0.1
-    kl_tau: Annotated[float, Field(ge=0, description="The tau for KL divergence.")] = 0.0
     sequence_mask_low: Annotated[
         float,
         Field(
@@ -50,6 +49,10 @@ class LossConfig(BaseConfig):
             description="If set, masks entire sequences when any generated token has an importance ratio above this value.",
         ),
     ] = 100.0
+
+    adv_tau: Annotated[float, Field(ge=0, description="The tau for advantages.")] = 1.0
+    teacher_tau: Annotated[float, Field(ge=0, description="The tau for teacher logprobs.")] = 0.0
+    kl_tau: Annotated[float, Field(ge=0, description="The tau for KL divergence.")] = 0.0
 
     @model_validator(mode="after")
     def validate_mask_bounds(self):
