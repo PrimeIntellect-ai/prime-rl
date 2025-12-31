@@ -1,3 +1,4 @@
+import wandb
 import asyncio
 import json
 import re
@@ -537,6 +538,7 @@ async def run_eval(
         eval_metrics.update(pd.Series(pass_at_k.mean()).to_dict())
     eval_metrics = {**{f"eval/{env_name_or_id}/{k}": v for k, v in eval_metrics.items()}}
     eval_metrics.update({"progress/ckpt_step": ckpt_step, "step": step or ckpt_step})
+    wandb.log(eval_metrics)
     monitor.log(eval_metrics)
 
     # Save results
