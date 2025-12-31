@@ -135,20 +135,32 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
-    buffer = Buffer(env, config.buffer)
+    train_dataset = env.get_dataset(seed=config.buffer.seed)
+    buffer = Buffer(train_dataset, env.env_names, config.buffer)
     if config.val is not None:
         val_buffer_config = BufferConfig(env_ratios=config.buffer.env_ratios)
-        val_buffer = Buffer(env, val_buffer_config, dataset_type="val")
+        val_dataset = env.get_eval_dataset(seed=val_buffer_config.seed)
+        val_buffer = Buffer(val_dataset, env.env_names, val_buffer_config)
     else:
         val_buffer = None
 
-    # Setup scheduler
+    # Get checkpoint manager
+    logger.info(f"Initializing checkpoint manager ({config.ckpt})")
+    ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
+
+    checkpoint_step = None
+    if config.ckpt and config.ckpt.resume_step is not None and ckpt_manager is not None:
+        if config.ckpt.resume_step == -1:
+            checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+        else:
+            checkpoint_step = config.ckpt.resume_step
+
+    # Setup scheduler (uses subprocess workers for env execution)
     scheduler = Scheduler(
-        clients=clients,
         admin_clients=admin_clients,
-        env=env,
+        client_config=config.client,
+        env_configs=config.env,
         buffer=buffer,
-        tokenizer=tokenizer,
         config=config,
         oversampling_factor=config.oversampling_factor,
         max_async_level=config.max_async_level,
@@ -156,6 +168,14 @@ async def orchestrate(config: OrchestratorConfig):
         strict_async_level=config.strict_async_level,
         lora_name=config.lora_name,
     )
+
+    if checkpoint_step is not None and config.lora_name is not None:
+        scheduler.model_name = config.lora_name
+        for workers in scheduler.workers.values():
+            for worker in workers:
+                worker.model_name = config.lora_name
+
+    await scheduler.start()
 
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")
@@ -170,10 +190,6 @@ async def orchestrate(config: OrchestratorConfig):
             admin_clients, config.weight_broadcast.host, config.weight_broadcast.port, config.weight_broadcast.timeout
         )
 
-    # Get checkpoint manager
-    logger.info(f"Initializing checkpoint manager ({config.ckpt})")
-    ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
-
     # Setup training batch sender for sending training examples to trainer
     logger.info(f"Initializing training batch sender ({config.rollout_transport})")
     training_batch_sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
@@ -183,13 +199,6 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Reset weights to base model if starting from scratch
     progress = Progress()
-
-    checkpoint_step = None
-    if config.ckpt and config.ckpt.resume_step is not None and ckpt_manager is not None:
-        if config.ckpt.resume_step == -1:
-            checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
-        else:
-            checkpoint_step = config.ckpt.resume_step
 
     if checkpoint_step is not None and ckpt_manager is not None:
         ckpt_manager.load(progress, buffer, step=checkpoint_step)
@@ -203,8 +212,6 @@ async def orchestrate(config: OrchestratorConfig):
             get_step_path(get_broadcast_dir(config.output_dir), scheduler.ckpt_step),
             lora_name=config.lora_name,
         )
-        if config.lora_name is not None:
-            scheduler.model_name = config.lora_name
     else:
         logger.info("Training from scratch. Resetting weights to base model")
         if config.lora_name is None:
@@ -346,10 +353,7 @@ async def orchestrate(config: OrchestratorConfig):
                 "task": [rollout["task"] for rollout in train_rollouts],
                 "reward": [rollout["reward"] for rollout in train_rollouts],
                 "is_truncated": [rollout["is_truncated"] for rollout in train_rollouts],
-                "error": [
-                    type(rollout["error"]).__name__ if rollout["error"] is not None else None
-                    for rollout in train_rollouts
-                ],
+                "error": [rollout["error"] for rollout in train_rollouts],
                 "completion_len": [get_completion_len(rollout) for rollout in train_rollouts],
                 "prompt_len": [get_prompt_len(rollout) for rollout in train_rollouts],
                 "seq_len": [get_seq_len(rollout) for rollout in train_rollouts],
@@ -527,6 +531,9 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Close training batch sender
     training_batch_sender.close()
+
+    # Stop env workers
+    await scheduler.stop()
 
     # Cancel event loop lag monitor task
     event_loop_lag_monitor_task.cancel()

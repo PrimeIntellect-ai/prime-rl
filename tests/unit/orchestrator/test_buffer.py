@@ -86,7 +86,8 @@ def get_normal_ids(buffer: Buffer) -> set[int]:
 
 
 def test_buffer_init_and_sample(dummy_env_group):
-    buffer = Buffer(dummy_env_group, BufferConfig())
+    dataset = dummy_env_group.get_dataset()
+    buffer = Buffer(dataset, dummy_env_group.env_names, BufferConfig())
     # Each env has 5 examples, so total is 10
     assert len(buffer.example_buffer["env_a"]) == 5
     assert len(buffer.example_buffer["env_b"]) == 5
@@ -96,7 +97,8 @@ def test_buffer_init_and_sample(dummy_env_group):
 
 def test_buffer_problem_pool_assignment(dummy_env_group, make_rollouts):
     """Problems are moved to easy/hard pools based on reward thresholds."""
-    buffer = Buffer(dummy_env_group, BufferConfig(easy_threshold=1.0, hard_threshold=0.0))
+    dataset = dummy_env_group.get_dataset()
+    buffer = Buffer(dataset, dummy_env_group.env_names, BufferConfig(easy_threshold=1.0, hard_threshold=0.0))
     dataset = buffer.dataset
     # Use first 5 examples (all from env_a since they come first in concatenated dataset)
     buffer.update(make_rollouts(dataset.select(range(5)), rewards=[1.0, 1.0, 0.5, 0.5, 0.0]))
@@ -109,11 +111,12 @@ def test_buffer_problem_pool_assignment(dummy_env_group, make_rollouts):
 
 def test_buffer_online_difficulty_filtering(dummy_env_group, make_rollouts):
     """With online_difficulty_filtering=True, only partial reward rollouts are kept."""
+    dataset = dummy_env_group.get_dataset()
     buffer = Buffer(
-        dummy_env_group,
+        dataset,
+        dummy_env_group.env_names,
         BufferConfig(online_difficulty_filtering=True),
     )
-    dataset = buffer.dataset
     buffer.update(make_rollouts(dataset.select(range(5)), rewards=[1.0, 0.5, 0.0, 0.5, 0.5]))
 
     # Only 3 problems with reward 0.5 -> 6 rollouts kept
@@ -122,8 +125,8 @@ def test_buffer_online_difficulty_filtering(dummy_env_group, make_rollouts):
 
 def test_buffer_no_filtering_by_default(dummy_env_group, make_rollouts):
     """With online_difficulty_filtering=False (default), all rollouts are kept."""
-    buffer = Buffer(dummy_env_group, BufferConfig())
-    dataset = buffer.dataset
+    dataset = dummy_env_group.get_dataset()
+    buffer = Buffer(dataset, dummy_env_group.env_names, BufferConfig())
     buffer.update(make_rollouts(dataset.select(range(5)), rewards=[1.0, 0.5, 0.0, 0.5, 0.5]))
 
     # All 5 problems -> 10 rollouts kept
@@ -132,12 +135,14 @@ def test_buffer_no_filtering_by_default(dummy_env_group, make_rollouts):
 
 def test_buffer_save_load_with_conversion(dummy_env_group, make_rollouts, tmp_path):
     """Easy/hard problems are partially converted to normal on load."""
-    buffer = Buffer(dummy_env_group, BufferConfig(easy_threshold=1.0, hard_threshold=0.0))
-    dataset = buffer.dataset
+    dataset = dummy_env_group.get_dataset()
+    buffer = Buffer(dataset, dummy_env_group.env_names, BufferConfig(easy_threshold=1.0, hard_threshold=0.0))
     buffer.update(make_rollouts(dataset.select(range(5)), rewards=[1.0, 1.0, 0.5, 0.5, 0.0]))
     buffer.save(tmp_path / "buffer")
 
-    new_buffer = Buffer(dummy_env_group, BufferConfig(easy_fraction=0.5, hash_keys=["prompt", "task"]))
+    new_buffer = Buffer(
+        dataset, dummy_env_group.env_names, BufferConfig(easy_fraction=0.5, hash_keys=["prompt", "task"])
+    )
     new_buffer.load(tmp_path / "buffer")
 
     # 1 of 2 easy problems converted to normal
@@ -147,7 +152,8 @@ def test_buffer_save_load_with_conversion(dummy_env_group, make_rollouts, tmp_pa
 
 
 def test_buffer_env_ratios(dummy_env_group):
-    buffer = Buffer(dummy_env_group, BufferConfig(env_ratios=[0.8, 0.2]))
+    dataset = dummy_env_group.get_dataset()
+    buffer = Buffer(dataset, dummy_env_group.env_names, BufferConfig(env_ratios=[0.8, 0.2]))
     assert len(buffer.example_buffer["env_a"]) == 5
     assert len(buffer.example_buffer["env_b"]) == 5
 
@@ -175,8 +181,9 @@ def test_buffer_no_cross_env_pool_assignment(mock_openai_client, tmp_path):
         rubric=vf.Rubric(),
     )
     original_env_group = vf.EnvGroup(envs=[original_env], env_names=["env_a"])
+    original_env_dataset = original_env_group.get_dataset()
 
-    buffer = Buffer(original_env_group, BufferConfig(easy_threshold=1.0))
+    buffer = Buffer(original_env_dataset, original_env_group.env_names, BufferConfig(easy_threshold=1.0))
     # Manually move the example to easy pool
     example_id = list(buffer.example_buffer["env_a"].keys())[0]
     example = buffer.example_buffer["env_a"].pop(example_id)
@@ -192,8 +199,9 @@ def test_buffer_no_cross_env_pool_assignment(mock_openai_client, tmp_path):
         rubric=vf.Rubric(),
     )
     new_env_group = vf.EnvGroup(envs=[new_env], env_names=["env_b"])
+    new_env_dataset = new_env_group.get_dataset()
 
-    new_buffer = Buffer(new_env_group, BufferConfig())
+    new_buffer = Buffer(new_env_dataset, new_env_group.env_names, BufferConfig())
     new_buffer.load(tmp_path / "buffer")
 
     # Should NOT be in easy pool (different content, different hash)
