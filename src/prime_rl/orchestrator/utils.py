@@ -78,6 +78,119 @@ def parse_is_truncated_completions(responses: list[list[ChatCompletion]]) -> lis
     return all_is_truncated
 
 
+def build_step_metrics(
+    *,
+    results_df: pd.DataFrame,
+    metrics_df: pd.DataFrame,
+    val_results_df: pd.DataFrame | None,
+    num_tokens: int,
+    batch_size: int,
+    rollouts_per_example: int,
+    progress_total_tokens: int,
+    progress_total_samples: int,
+    progress_total_problems: int,
+    progress_step: int,
+    ckpt_step: int,
+    throughput: float,
+    step_time: float,
+    generate_completions_time: float,
+    save_ckpt_time: float,
+    scheduler_metrics: dict[str, Any],
+    buffer_metrics: dict[str, Any],
+    event_loop_metrics: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the metrics dict for logging a training step."""
+    # Compute solve all and none
+    solve_all = (
+        results_df.groupby("example_id")
+        .apply(lambda x: x.reward.sum() == rollouts_per_example, include_groups=False)
+        .mean()
+    )
+    solve_none = results_df.groupby("example_id").apply(lambda x: x.reward.sum() == 0, include_groups=False).mean()
+    effective_batch_size = 1 - solve_none - solve_all
+
+    to_log = {
+        # Progress metrics
+        "progress/tokens": num_tokens,
+        "progress/samples": batch_size,
+        "progress/problems": batch_size // rollouts_per_example,
+        "progress/total_tokens": progress_total_tokens,
+        "progress/total_samples": progress_total_samples,
+        "progress/total_problems": progress_total_problems,
+        "progress/ckpt_step": ckpt_step,
+        # Sequence length metrics
+        "seq_len/mean": results_df.groupby("example_id").seq_len.mean().mean(),
+        "seq_len/max": results_df.groupby("example_id").seq_len.mean().max(),
+        "seq_len/min": results_df.groupby("example_id").seq_len.mean().min(),
+        "prompt_len/mean": results_df.groupby("example_id").prompt_len.mean().mean(),
+        "prompt_len/max": results_df.groupby("example_id").prompt_len.mean().max(),
+        "prompt_len/min": results_df.groupby("example_id").prompt_len.mean().min(),
+        "completion_len/mean": results_df.groupby("example_id").completion_len.mean().mean(),
+        "completion_len/max": results_df.groupby("example_id").completion_len.mean().max(),
+        "completion_len/min": results_df.groupby("example_id").completion_len.mean().min(),
+        "is_truncated/mean": results_df.groupby("example_id").is_truncated.mean().mean(),
+        "is_truncated/max": results_df.groupby("example_id").is_truncated.mean().max(),
+        "is_truncated/min": results_df.groupby("example_id").is_truncated.mean().min(),
+        # Turn metrics
+        "num_turns/mean": results_df.groupby("example_id").num_turns.mean().mean(),
+        "num_turns/max": results_df.groupby("example_id").num_turns.mean().max(),
+        "num_turns/min": results_df.groupby("example_id").num_turns.mean().min(),
+        # Verifier timing metrics
+        "generation_ms/mean": results_df.groupby("example_id").generation_ms.mean().mean(),
+        "generation_ms/max": results_df.groupby("example_id").generation_ms.mean().max(),
+        "generation_ms/min": results_df.groupby("example_id").generation_ms.mean().min(),
+        "scoring_ms/mean": results_df.groupby("example_id").scoring_ms.mean().mean(),
+        "scoring_ms/max": results_df.groupby("example_id").scoring_ms.mean().max(),
+        "scoring_ms/min": results_df.groupby("example_id").scoring_ms.mean().min(),
+        # Performance metrics
+        "perf/throughput": throughput,
+        # Train reward
+        "reward/mean": results_df.reward.mean(),
+        # Batch metrics
+        "batch/solve_none": solve_none,
+        "batch/solve_all": solve_all,
+        "batch/effective_batch_size": effective_batch_size,
+        # Error metrics
+        "error/mean": (~results_df.error.isna()).mean(),
+        **{f"error/{error}": error_rate for error, error_rate in results_df.error.dropna().value_counts(normalize=True).items()},
+        # Env metrics
+        **{f"metrics/{metric}": metrics_df[metric].mean() for metric in metrics_df.columns},
+        # Time metrics
+        "time/step": step_time,
+        "time/generate_completions": generate_completions_time,
+        "time/save_ckpt": save_ckpt_time,
+        # Scheduler metrics
+        **scheduler_metrics,
+        # Buffer metrics
+        **buffer_metrics,
+        # Event loop lag metrics
+        **event_loop_metrics,
+        # W&B axis
+        "step": progress_step,
+    }
+
+    # If more than one env, add per-env metrics
+    if results_df.task.nunique() > 1:
+        per_env_reward = results_df.groupby("task").reward.mean().to_dict()
+        to_log.update({f"reward/{env}": reward for env, reward in per_env_reward.items()})
+
+        per_env_ratio = results_df.task.value_counts(normalize=True).to_dict()
+        to_log.update({f"batch/{env}": ratio for env, ratio in per_env_ratio.items()})
+
+    # Optionally, add val metrics
+    if val_results_df is not None:
+        to_log.update({"val_reward/mean": val_results_df.reward.mean()})
+
+        if val_results_df.task.nunique() > 1:
+            per_env_reward = val_results_df.groupby("task").reward.mean().to_dict()
+            to_log.update({f"val_reward/{env}": reward for env, reward in per_env_reward.items()})
+
+            per_env_ratio = val_results_df.task.value_counts(normalize=True).to_dict()
+            to_log.update({f"val_batch/{env}": ratio for env, ratio in per_env_ratio.items()})
+
+    return to_log
+
+
 def print_benchmark(history: dict[str, list[Any]]) -> None:
     """
     Print benchmark results as rich table. Shows formatted values for the
