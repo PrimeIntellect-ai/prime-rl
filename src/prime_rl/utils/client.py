@@ -6,6 +6,7 @@ import httpx
 from httpx import AsyncClient
 from openai import AsyncOpenAI, NotFoundError
 from prime_evals import AsyncEvalsClient
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.logger import get_logger
@@ -160,20 +161,34 @@ async def reload_weights(admin_clients: list[AsyncClient]) -> None:
     await asyncio.gather(*[_reload_weights(admin_client) for admin_client in admin_clients])
 
 
-async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lora_path: Path) -> None:
-    """Make a HTTP post request to the vLLM server to load a LoRA adapter."""
-    logger = get_logger()
+def _is_retryable_lora_error(exception: BaseException) -> bool:
+    """Check if an exception should trigger a retry for LoRA loading."""
+    if isinstance(exception, httpx.HTTPStatusError):
+        # Retry on 404 (adapter not found) or 500 (server error during loading)
+        return exception.response.status_code in (404, 500)
+    return False
 
+
+async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lora_path: Path) -> None:
+    """Make a HTTP post request to the vLLM server to load a LoRA adapter.
+
+    Retries with exponential backoff if the adapter files are not found,
+    which can happen due to NFS propagation delays.
+    """
+    logger = get_logger()
     lora_path_posix = lora_path.as_posix()
 
+    @retry(
+        retry=retry_if_exception(_is_retryable_lora_error),
+        stop=stop_after_attempt(10),
+        wait=wait_exponential(multiplier=1, min=1, max=30),
+        reraise=True,
+    )
     async def _load_lora_adapter(admin_client: AsyncClient) -> None:
         logger.debug(f"Sending request to load LoRA adapter {lora_name} from {lora_path}")
         response = await admin_client.post(
             "/v1/load_lora_adapter",
-            json={
-                "lora_name": lora_name,
-                "lora_path": lora_path_posix,
-            },
+            json={"lora_name": lora_name, "lora_path": lora_path_posix},
         )
         response.raise_for_status()
 
