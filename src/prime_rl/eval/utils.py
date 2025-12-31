@@ -4,6 +4,7 @@ import re
 import time
 from copy import deepcopy
 from itertools import cycle
+from multiprocessing import Process
 from pathlib import Path
 from typing import Any
 
@@ -21,8 +22,11 @@ from verifiers.utils.eval_utils import get_hf_hub_dataset_name, make_dataset, sa
 
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.orchestrator.config import EvalConfig, EvalSamplingConfig, EvalSaveConfig, ModelConfig, RetryConfig
+from prime_rl.orchestrator.utils import set_semaphore
 from prime_rl.synthesize.utils import merge_reasoning_content, save_result
-from prime_rl.utils.logger import get_logger
+from prime_rl.utils.client import setup_clients, setup_evals_client
+from prime_rl.utils.config import ClientConfig
+from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.monitor import get_monitor
 from prime_rl.utils.utils import capitalize, get_eval_dir, get_step_path
 from prime_rl.utils.vf import (
@@ -638,3 +642,93 @@ async def run_evals(
             for env in eval_config.env
         ]
     )
+
+
+def _run_evals_in_subprocess(
+    client_config_dict: dict,
+    eval_config_dict: dict,
+    model_config_dict: dict,
+    sampling_config_dict: dict,
+    reasoning_field: str,
+    output_dir: str,
+    ckpt_step: int,
+    step: int | None,
+    max_concurrent: int,
+):
+    """Entry point for eval subprocess. Creates its own event loop and clients."""
+    # Setup logger for subprocess
+    logger = setup_logger("info")
+    logger.info(f"Eval subprocess started for checkpoint step {ckpt_step}")
+
+    # Reconstruct configs from dicts
+    client_config = ClientConfig(**client_config_dict)
+    eval_config = EvalConfig(**eval_config_dict)
+    model_config = ModelConfig(**model_config_dict)
+    sampling_config = EvalSamplingConfig(**sampling_config_dict)
+
+    # Create fresh clients in subprocess
+    clients = setup_clients(client_config)
+    evals_client = setup_evals_client()
+
+    async def _run():
+        await set_semaphore(max_concurrent)
+        await run_evals(
+            clients=clients,
+            eval_config=eval_config,
+            model_config=model_config,
+            sampling_config=sampling_config,
+            evals_client=evals_client,
+            reasoning_field=reasoning_field,
+            output_dir=Path(output_dir),
+            ckpt_step=ckpt_step,
+            step=step,
+        )
+
+    asyncio.run(_run())
+    logger.info(f"Eval subprocess finished for checkpoint step {ckpt_step}")
+
+
+async def run_evals_subprocess(
+    client_config: ClientConfig,
+    eval_config: EvalConfig | OfflineEvalConfig,
+    model_config: ModelConfig,
+    sampling_config: EvalSamplingConfig,
+    reasoning_field: str,
+    output_dir: Path,
+    ckpt_step: int,
+    step: int | None = None,
+    max_concurrent: int = -1,
+):
+    """Run evals in a separate subprocess to isolate the event loop.
+
+    This prevents eval's async work from causing event loop lag in the
+    orchestrator's main loop. The orchestrator blocks until eval completes.
+    """
+    logger = get_logger()
+    logger.info(f"Spawning eval subprocess for checkpoint step {ckpt_step}")
+
+    process = Process(
+        target=_run_evals_in_subprocess,
+        args=(
+            client_config.model_dump(),
+            eval_config.model_dump(),
+            model_config.model_dump(),
+            sampling_config.model_dump(),
+            reasoning_field,
+            str(output_dir),
+            ckpt_step,
+            step,
+            max_concurrent,
+        ),
+        daemon=True,
+    )
+    process.start()
+
+    # Wait for process to complete without blocking the event loop
+    while process.is_alive():
+        await asyncio.sleep(0.5)
+
+    if process.exitcode != 0:
+        logger.error(f"Eval subprocess failed with exit code {process.exitcode}")
+    else:
+        logger.success(f"Eval subprocess completed for checkpoint step {ckpt_step}")

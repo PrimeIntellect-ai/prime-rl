@@ -23,7 +23,7 @@ import verifiers as vf
 from loguru import logger
 from transformers import AutoTokenizer
 
-from prime_rl.eval.utils import run_evals
+from prime_rl.eval.utils import run_evals_subprocess
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.orchestrator.config import BufferConfig, OrchestratorConfig
@@ -40,7 +40,6 @@ from prime_rl.utils.client import (
     reload_weights,
     setup_admin_clients,
     setup_clients,
-    setup_evals_client,
     update_weights,
 )
 from prime_rl.utils.heartbeat import Heartbeat
@@ -97,7 +96,6 @@ async def orchestrate(config: OrchestratorConfig):
     )
     clients = setup_clients(config.client)
     admin_clients = setup_admin_clients(config.client)
-    evals_client = setup_evals_client()
 
     # Load tokenizer
     logger.info(f"Initializing tokenizer for {config.model.name}")
@@ -257,11 +255,40 @@ async def orchestrate(config: OrchestratorConfig):
         logger.info(f"Starting orchestrator step {progress.step}")
         step_start_time = time.perf_counter()
 
+        # Run evals BEFORE training (blocking, in subprocess to isolate event loop)
+        # This ensures weights don't change during eval and eval doesn't cause event loop lag
+        if (
+            config.eval
+            and ckpt_step % config.eval.interval == 0
+            and ckpt_step > last_eval_step
+            and ((ckpt_step == 0 and config.eval.eval_base_model) or ckpt_step > 0)
+        ):
+            last_eval_step = ckpt_step
+            logger.info(f"Running evals for checkpoint step {ckpt_step} (blocking, subprocess)")
+
+            # Pause weight updates during eval
+            scheduler.checkpoint_ready.clear()
+
+            await run_evals_subprocess(
+                client_config=config.client,
+                eval_config=config.eval,
+                model_config=config.model,
+                sampling_config=config.eval.sampling,
+                reasoning_field=config.eval.reasoning_field,
+                output_dir=config.output_dir,
+                ckpt_step=ckpt_step,
+                step=progress.step,
+                max_concurrent=config.max_concurrent or -1,
+            )
+
+            # Resume weight updates
+            scheduler.checkpoint_ready.set()
+
         # Schedule generating the training batch
         generate_completions_start_time = time.perf_counter()
         train_task = asyncio.create_task(scheduler.generate_batch(step=progress.step))
 
-        # Schedule running evals at the specified interval
+        # Schedule running validation at the specified interval
         if val_buffer and config.val and progress.step % config.val.interval == 0:
             logger.info(f"Running validation for step {progress.step}")
             val_examples = val_buffer.sample_examples(config.val.num_examples)
@@ -278,31 +305,6 @@ async def orchestrate(config: OrchestratorConfig):
             )
         else:
             val_task = asyncio.create_task(asyncio.sleep(0))  # Dummy task
-
-        # Schedule running evals at the specified interval
-        if (
-            config.eval
-            and ckpt_step % config.eval.interval == 0
-            and ckpt_step > last_eval_step
-            and ((ckpt_step == 0 and config.eval.eval_base_model) or ckpt_step > 0)
-        ):
-            last_eval_step = ckpt_step
-            logger.info(f"Running evals for checkpoint step {ckpt_step}")
-            eval_task = asyncio.create_task(
-                run_evals(
-                    clients=clients,
-                    eval_config=config.eval,
-                    model_config=config.model,
-                    sampling_config=config.eval.sampling,
-                    evals_client=evals_client,
-                    reasoning_field=config.eval.reasoning_field,
-                    output_dir=config.output_dir,
-                    ckpt_step=ckpt_step,
-                    step=progress.step,
-                )
-            )
-        else:
-            eval_task = asyncio.create_task(asyncio.sleep(0))  # Dummy task
 
         # Await train rollouts, process results and write batch to disk to consume by trainer
         await train_task
@@ -342,9 +344,6 @@ async def orchestrate(config: OrchestratorConfig):
         # Await and process val results
         await val_task
         val_outputs = val_task.result()
-
-        # Await eval results
-        await eval_task
 
         # Gather metrics in dataframes
         results_df = pd.DataFrame(
@@ -507,17 +506,17 @@ async def orchestrate(config: OrchestratorConfig):
             heart.beat()
 
     if config.eval:
-        logger.info("Running final evals")
-        await run_evals(
-            clients=clients,
+        logger.info("Running final evals (subprocess)")
+        await run_evals_subprocess(
+            client_config=config.client,
             eval_config=config.eval,
             model_config=config.model,
             sampling_config=config.eval.sampling,
-            evals_client=evals_client,
             reasoning_field=config.eval.reasoning_field,
             output_dir=config.output_dir,
             ckpt_step=scheduler.ckpt_step,
             step=progress.step,
+            max_concurrent=config.max_concurrent or -1,
         )
 
     # Log final (immutable) samples and distributions to monitor(s)
