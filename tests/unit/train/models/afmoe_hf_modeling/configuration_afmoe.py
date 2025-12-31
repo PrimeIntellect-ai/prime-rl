@@ -12,9 +12,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from transformers.configuration_utils import PretrainedConfig
+from transformers.configuration_utils import PretrainedConfig, layer_type_validation
 from transformers.modeling_rope_utils import rope_config_validation
-from transformers.configuration_utils import layer_type_validation
 from transformers.utils import logging
 
 logger = logging.get_logger(__name__)

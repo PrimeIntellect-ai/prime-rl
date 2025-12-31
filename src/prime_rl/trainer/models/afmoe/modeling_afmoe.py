@@ -31,6 +31,7 @@ from .converting_afmoe import (
     convert_tt_to_hf_moe,
 )
 
+
 def _create_rotary_emb(config: AfmoeConfig) -> RotaryEmbedding:
     if hasattr(config, "rope_scaling") and isinstance(config.rope_scaling, dict):
         rope_type = config.rope_scaling.get("rope_type", config.rope_scaling.get("type", "default"))

@@ -2,12 +2,12 @@ import pytest
 import torch
 from torch import nn
 
+from prime_rl.trainer.models.afmoe import AfmoeForCausalLM as PrimeRLAfmoeForCausalLM
+from prime_rl.utils.utils import default_dtype
 from tests.unit.train.models.afmoe_hf_modeling.configuration_afmoe import AfmoeConfig
 from tests.unit.train.models.afmoe_hf_modeling.modeling_afmoe import (
     AfmoeForCausalLM as HFAfmoeForCausalLM,
 )
-from prime_rl.trainer.models.afmoe import AfmoeForCausalLM as PrimeRLAfmoeForCausalLM
-from prime_rl.utils.utils import default_dtype
 
 pytestmark = [pytest.mark.gpu]
 

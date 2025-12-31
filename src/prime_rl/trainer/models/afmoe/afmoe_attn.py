@@ -9,6 +9,7 @@ from torch import nn
 from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
 
+
 @dataclass
 class AfmoeAttentionConfig:
     """Configuration for AFMoE attention layers."""
@@ -94,7 +95,7 @@ class AfmoeAttentionBase(nn.Module):
     ) -> tuple[torch.Tensor, None]:
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.view(*input_shape, -1)
-        attn_output = attn_output * F.sigmoid(gate_states)
+        attn_output = attn_output * torch.sigmoid(gate_states)
         attn_output = self.o_proj(attn_output)
         return attn_output, None
 

@@ -3,25 +3,23 @@ from typing import Callable, Optional, Tuple, Union
 import torch
 import torch.nn.functional as F
 from torch import nn
-
 from transformers.activations import ACT2FN
+from transformers.cache_utils import Cache, DynamicCache
 from transformers.generation import GenerationMixin
-from transformers.modeling_outputs import (
-    MoeCausalLMOutputWithPast,
-    MoeModelOutputWithPast,
-)
-from transformers.modeling_utils import PreTrainedModel, ALL_ATTENTION_FUNCTIONS
-from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
+from transformers.integrations import use_kernel_forward_from_hub
 from transformers.masking_utils import (
     create_causal_mask,
     create_sliding_window_causal_mask,
 )
 from transformers.modeling_layers import GradientCheckpointingLayer
+from transformers.modeling_outputs import (
+    MoeCausalLMOutputWithPast,
+    MoeModelOutputWithPast,
+)
+from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs
-from transformers.cache_utils import Cache, DynamicCache
-from transformers.integrations import use_kernel_forward_from_hub
-
 
 try:
     from .configuration_afmoe import AfmoeConfig
