@@ -18,12 +18,74 @@ def selective_log_softmax(
 
 
 @jaxtyped(typechecker=typechecker)
+def _chunked_logsumexp(
+    logits: Float[Tensor, "batch seq vocab"], *, vocab_chunk_size: int
+) -> Float[Tensor, "batch seq"]:
+    """Compute logsumexp over vocab without materializing full softmax/log_softmax.
+
+    This streams over the vocabulary dimension in chunks to keep peak memory low.
+    """
+    if vocab_chunk_size <= 0:
+        raise ValueError(f"vocab_chunk_size must be > 0, got {vocab_chunk_size}")
+
+    vocab = logits.shape[-1]
+    lse: Tensor | None = None
+    # Note: Python loop keeps memory low; typically only used when full log_softmax would OOM.
+    for start in range(0, vocab, vocab_chunk_size):
+        end = min(start + vocab_chunk_size, vocab)
+        chunk_lse = torch.logsumexp(logits[..., start:end], dim=-1)  # (batch, seq)
+        lse = chunk_lse if lse is None else torch.logaddexp(lse, chunk_lse)
+    # lse is always set because vocab >= 1 for any real model.
+    return lse  # type: ignore[return-value]
+
+
+@jaxtyped(typechecker=typechecker)
+def selective_log_softmax_chunked(
+    logits: Float[Tensor, "batch seq vocab"],
+    index: Int[Tensor, "batch seq"],
+    *,
+    vocab_chunk_size: int,
+) -> Float[Tensor, "batch seq"]:
+    """Gathered log_softmax(logits) in vocab chunks.
+
+    Equivalent to:
+      torch.gather(logits.log_softmax(-1), -1, index[..., None])[..., 0]
+
+    But avoids creating the full (batch, seq, vocab) logprobs tensor.
+    """
+    lse = _chunked_logsumexp(logits, vocab_chunk_size=vocab_chunk_size)  # (batch, seq)
+    selected_logits = torch.gather(logits, dim=-1, index=index.unsqueeze(-1)).squeeze(-1)  # (batch, seq)
+    return selected_logits - lse
+
+
+@jaxtyped(typechecker=typechecker)
 @torch.compile(dynamic=True)
 def compute_entropy(shifted_logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq"]:
     with torch.no_grad():
         pd = torch.nn.functional.softmax(shifted_logits, dim=-1)
         entropy = torch.logsumexp(shifted_logits, dim=-1) - torch.sum(pd * shifted_logits, dim=-1)
     return entropy
+
+
+@jaxtyped(typechecker=typechecker)
+def compute_entropy_chunked(
+    shifted_logits: Float[Tensor, "batch seq vocab"], *, vocab_chunk_size: int
+) -> Float[Tensor, "batch seq"]:
+    """Entropy in vocab chunks to avoid full softmax materialization."""
+    with torch.no_grad():
+        lse = _chunked_logsumexp(shifted_logits, vocab_chunk_size=vocab_chunk_size)  # (batch, seq)
+        lse_expanded = lse.unsqueeze(-1)  # (batch, seq, 1)
+
+        vocab = shifted_logits.shape[-1]
+        expected_logit = torch.zeros_like(lse)  # (batch, seq)
+        for start in range(0, vocab, vocab_chunk_size):
+            end = min(start + vocab_chunk_size, vocab)
+            chunk = shifted_logits[..., start:end]  # (batch, seq, chunk_vocab)
+            p = torch.exp(chunk - lse_expanded)  # (batch, seq, chunk_vocab)
+            expected_logit = expected_logit + torch.sum(p * chunk, dim=-1)
+
+        entropy = lse - expected_logit
+        return entropy
 
 
 @jaxtyped(typechecker=typechecker)

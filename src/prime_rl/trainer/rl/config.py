@@ -176,6 +176,18 @@ class RLTrainerConfig(BaseSettings):
 
     memory_profiler_path: Annotated[Path | None, Field(description="Path to write memory profile to.")] = None
 
+    logits_vocab_chunk_size: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description=(
+                "If set, compute gathered token logprobs (and entropy) by chunking the vocabulary dimension "
+                "to reduce peak memory usage for large vocab / long sequences. "
+                "Set to e.g. 2048/4096/8192 depending on available memory."
+            ),
+        ),
+    ] = None
+
     bench: Annotated[
         bool,
         Field(

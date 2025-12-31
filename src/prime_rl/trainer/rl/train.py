@@ -26,7 +26,9 @@ from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
     shift_logits,
     selective_log_softmax,
+    selective_log_softmax_chunked,
     compute_entropy,
+    compute_entropy_chunked,
     compute_loss,
 )
 from prime_rl.trainer.model import (
@@ -302,7 +304,13 @@ def train(config: RLTrainerConfig):
 
             shifted_logits = shift_logits(logits, left_pad_logit=left_pad_logit)
             shifted_logits = shifted_logits / temperature
-            trainer_logprobs = selective_log_softmax(shifted_logits, input_ids)
+            vocab_chunk_size = config.logits_vocab_chunk_size
+            if vocab_chunk_size is not None and vocab_chunk_size < shifted_logits.shape[-1]:
+                trainer_logprobs = selective_log_softmax_chunked(
+                    shifted_logits, input_ids, vocab_chunk_size=vocab_chunk_size
+                )
+            else:
+                trainer_logprobs = selective_log_softmax(shifted_logits, input_ids)
 
             if cp_enabled:
                 trainer_logprobs = dist_nn.all_gather(trainer_logprobs, group=cp_group)
@@ -321,7 +329,10 @@ def train(config: RLTrainerConfig):
             )
 
             # Compute entropy
-            entropy = compute_entropy(shifted_logits)
+            if vocab_chunk_size is not None and vocab_chunk_size < shifted_logits.shape[-1]:
+                entropy = compute_entropy_chunked(shifted_logits, vocab_chunk_size=vocab_chunk_size)
+            else:
+                entropy = compute_entropy(shifted_logits)
 
             if cp_enabled:
                 entropies = [torch.zeros_like(entropy) for _ in range(cp_size)]
