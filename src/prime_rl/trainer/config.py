@@ -124,6 +124,13 @@ class ModelConfig(BaseConfig):
         ),
     ] = "Qwen/Qwen3-0.6B"
 
+    local_files_only: Annotated[
+        bool,
+        Field(
+            description="Whether to only use local files and not connect to HuggingFace Hub. Useful for offline mode.",
+        ),
+    ] = False
+
     seq_len: Annotated[int, Field(description="The sequence length to use for the model.")] = 2048
 
     attn: Annotated[AttnImplementation, Field(description="The attention implementation to use.")] = "flash_attention_2"
@@ -278,6 +285,13 @@ class TokenizerConfig(BaseConfig):
         bool | None,
         Field(
             description="Whether to trust remote code for tokenizer initialization. If None, will use the model's default trust remote code setting.",
+        ),
+    ] = None
+
+    local_files_only: Annotated[
+        bool | None,
+        Field(
+            description="Whether to only use local files and not connect to HuggingFace Hub. If None, will use the model's setting.",
         ),
     ] = None
 

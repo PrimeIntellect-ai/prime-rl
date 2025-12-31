@@ -80,7 +80,10 @@ def get_model(
     model_config = cast(
         PretrainedConfig,
         AutoConfig.from_pretrained(
-            config.name, attn_implementation=config.attn, trust_remote_code=config.trust_remote_code
+            config.name,
+            attn_implementation=config.attn,
+            trust_remote_code=config.trust_remote_code,
+            local_files_only=config.local_files_only,
         ),
     )
     model_config.use_cache = False
@@ -122,6 +125,7 @@ def get_model(
                 pretrained_model_name_or_path=config.name,
                 config=model_config,
                 trust_remote_code=config.trust_remote_code,
+                local_files_only=config.local_files_only,
                 dtype=dtype,
             )
         logger.debug(f"Loaded model {config.name} in {time.perf_counter() - load_model_start_time:.2f} seconds")
@@ -132,8 +136,12 @@ def get_model(
     return model
 
 
-def setup_tokenizer(config: TokenizerConfig) -> PreTrainedTokenizer:
-    tokenizer = AutoTokenizer.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
+def setup_tokenizer(config: TokenizerConfig, local_files_only: bool = False) -> PreTrainedTokenizer:
+    tokenizer = AutoTokenizer.from_pretrained(
+        config.name,
+        trust_remote_code=config.trust_remote_code,
+        local_files_only=config.local_files_only if config.local_files_only is not None else local_files_only,
+    )
     if config.chat_template is not None:
         tokenizer.chat_template = config.chat_template
     tokenizer.pad_token_id = tokenizer.eos_token_id
@@ -198,7 +206,9 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
         return
 
     if not Path(config.name).exists():
-        snapshot_path = Path(snapshot_download(repo_id=config.name, repo_type="model"))
+        snapshot_path = Path(
+            snapshot_download(repo_id=config.name, repo_type="model", local_files_only=config.local_files_only)
+        )
     else:
         logger.info(
             f"Loading model weights from path {config.name}, skipping snapshot download. If this is not expected, please remove the directory {config.name} and run again"

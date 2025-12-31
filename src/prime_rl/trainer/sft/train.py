@@ -111,7 +111,7 @@ def train(config: SFTTrainerConfig):
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
-    tokenizer = setup_tokenizer(config.tokenizer)
+    tokenizer = setup_tokenizer(config.tokenizer, local_files_only=config.model.local_files_only)
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")

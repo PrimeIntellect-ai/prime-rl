@@ -17,6 +17,13 @@ class ModelConfig(BaseConfig):
         ),
     ] = False
 
+    local_files_only: Annotated[
+        bool,
+        Field(
+            description="Whether to only use local files and not connect to HuggingFace Hub. Useful for offline mode.",
+        ),
+    ] = False
+
 
 ServerType = Literal["vllm", "openai"]
 
