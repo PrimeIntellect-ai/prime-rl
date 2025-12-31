@@ -27,6 +27,7 @@ from prime_rl.trainer.models.layers.rotary_emb import (
     RotaryEmbeddingConfig,
     apply_rotary_pos_emb,
 )
+
 from .configuration_afmoe import AfmoeConfig
 from .converting_afmoe import (
     convert_hf_layer_to_tt,
