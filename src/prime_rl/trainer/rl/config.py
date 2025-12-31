@@ -50,6 +50,13 @@ class LossConfig(BaseConfig):
             description="If set, masks entire sequences when any generated token has an importance ratio above this value.",
         ),
     ] = 100.0
+    chunk_size: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Chunk size for memory-efficient log softmax computation. If None, uses standard (non-chunked) implementation. Lower values reduce peak memory but may be slower.",
+        ),
+    ] = None
 
     @model_validator(mode="after")
     def validate_mask_bounds(self):

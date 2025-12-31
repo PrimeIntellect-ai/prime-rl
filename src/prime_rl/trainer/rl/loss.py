@@ -17,6 +17,47 @@ def selective_log_softmax(
     return torch.gather(logprobs, dim=-1, index=index.unsqueeze(-1)).squeeze(-1)
 
 
+def chunked_selective_log_softmax(
+    logits: Float[Tensor, "batch seq vocab"],
+    index: Int[Tensor, "batch seq"],
+    chunk_size: int = 1024,
+) -> Float[Tensor, "batch seq"]:
+    """Memory-efficient selective log softmax using chunked computation.
+
+    Instead of materializing the full (batch, seq, vocab) logsoftmax tensor,
+    we process in chunks along the sequence dimension to reduce peak memory.
+
+    Args:
+        logits: Input logits tensor of shape (batch, seq, vocab)
+        index: Target indices of shape (batch, seq)
+        chunk_size: Number of sequence positions to process at once
+
+    Returns:
+        Log probabilities of shape (batch, seq)
+    """
+    batch, seq, vocab = logits.shape
+
+    if seq <= chunk_size:
+        # Fall back to standard implementation for short sequences
+        return selective_log_softmax(logits, index)
+
+    # Process in chunks to reduce memory
+    output = torch.empty(batch, seq, device=logits.device, dtype=logits.dtype)
+
+    for start in range(0, seq, chunk_size):
+        end = min(start + chunk_size, seq)
+        chunk_logits = logits[:, start:end, :]  # (batch, chunk, vocab)
+        chunk_index = index[:, start:end]  # (batch, chunk)
+
+        # Compute logsoftmax and gather in one go per chunk
+        chunk_logprobs = chunk_logits.log_softmax(dim=-1)
+        output[:, start:end] = torch.gather(
+            chunk_logprobs, dim=-1, index=chunk_index.unsqueeze(-1)
+        ).squeeze(-1)
+
+    return output
+
+
 @jaxtyped(typechecker=typechecker)
 @torch.compile(dynamic=True)
 def compute_entropy(shifted_logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq"]:

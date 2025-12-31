@@ -26,6 +26,7 @@ from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
     shift_logits,
     selective_log_softmax,
+    chunked_selective_log_softmax,
     compute_entropy,
     compute_loss,
 )
@@ -301,7 +302,10 @@ def train(config: RLTrainerConfig):
 
             shifted_logits = shift_logits(logits, left_pad_logit=left_pad_logit)
             shifted_logits = shifted_logits / temperature
-            trainer_logprobs = selective_log_softmax(shifted_logits, input_ids)
+            if config.loss.chunk_size is not None:
+                trainer_logprobs = chunked_selective_log_softmax(shifted_logits, input_ids, config.loss.chunk_size)
+            else:
+                trainer_logprobs = selective_log_softmax(shifted_logits, input_ids)
 
             if cp_enabled:
                 trainer_logprobs = dist_nn.all_gather(trainer_logprobs, group=cp_group)

@@ -2,9 +2,42 @@ import pytest
 import torch
 
 from prime_rl.trainer.rl.config import LossConfig
-from prime_rl.trainer.rl.loss import compute_entropy, compute_loss
+from prime_rl.trainer.rl.loss import (
+    chunked_selective_log_softmax,
+    compute_entropy,
+    compute_loss,
+    selective_log_softmax,
+)
 
 pytestmark = [pytest.mark.gpu]
+
+
+def test_chunked_selective_log_softmax():
+    """Test that chunked version produces same results as standard version."""
+    torch.manual_seed(42)
+    batch, seq, vocab = 2, 2048, 32000
+    logits = torch.randn(batch, seq, vocab, dtype=torch.float32).cuda()
+    index = torch.randint(0, vocab, (batch, seq)).cuda()
+
+    # Standard implementation
+    expected = selective_log_softmax(logits, index)
+
+    # Chunked implementations with different chunk sizes
+    for chunk_size in [128, 256, 512, 1024]:
+        result = chunked_selective_log_softmax(logits, index, chunk_size=chunk_size)
+        torch.testing.assert_close(result, expected, rtol=1e-5, atol=1e-5)
+
+
+def test_chunked_selective_log_softmax_short_seq():
+    """Test chunked version falls back correctly for short sequences."""
+    torch.manual_seed(42)
+    batch, seq, vocab = 2, 512, 32000
+    logits = torch.randn(batch, seq, vocab, dtype=torch.float32).cuda()
+    index = torch.randint(0, vocab, (batch, seq)).cuda()
+
+    expected = selective_log_softmax(logits, index)
+    result = chunked_selective_log_softmax(logits, index, chunk_size=1024)
+    torch.testing.assert_close(result, expected, rtol=1e-5, atol=1e-5)
 
 
 def test_grpo_loss():
