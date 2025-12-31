@@ -305,8 +305,14 @@ def train(config: RLTrainerConfig):
             advantages_list = advantages.chunk(num_logits_chunks, dim=1)
             loss_mask_list = loss_mask.chunk(num_logits_chunks, dim=1)
 
+            model.lm_head.set_reshard_after_forward(False)
+            model.lm_head.set_reshard_after_backward(False)
+            model.lm_head._get_fsdp_state()._modules_to_run_forward.add("blocker")
             # Process each chunk
             for chunk_idx in range(num_logits_chunks):
+                if chunk_idx == num_logits_chunks - 1:
+                    model.lm_head._get_fsdp_state()._modules_to_run_forward.remove("blocker")
+                    model.lm_head.set_reshard_after_backward(True)
                 hidden_states_chunk = hidden_states_list[chunk_idx]
                 input_ids_chunk = input_ids_list[chunk_idx]
                 position_ids_chunk = position_ids_list[chunk_idx]
