@@ -53,12 +53,6 @@ def convert_hf_layer_to_tt(state_dict: dict[str, Tensor], layer_idx: int) -> Non
         if hf_key in state_dict:
             state_dict[tt_key] = state_dict.pop(hf_key)
 
-    # Dense layers should not carry expert_bias; keep it for MoE layers.
-    expert_bias_key = f"{prefix}.expert_bias"
-    if expert_bias_key in state_dict and not is_moe_layer:
-        del state_dict[expert_bias_key]
-
-    
     # Stack individual expert weights into grouped format
     # HF: experts.{i}.gate_proj.weight [hidden_dim, hidden_size]
     # TT: experts.w1 [num_experts, hidden_dim, hidden_size]

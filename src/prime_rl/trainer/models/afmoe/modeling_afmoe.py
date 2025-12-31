@@ -1,22 +1,8 @@
-# coding=utf-8
-# Copyright 2022 EleutherAI and the HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 from typing import Optional, Tuple, Union
 
 import torch
 from torch import nn
-from transformers.cache_utils import Cache, DynamicCache
+from transformers.cache_utils import Cache
 from transformers.generation import GenerationMixin
 from transformers.masking_utils import (
     create_causal_mask,
@@ -35,30 +21,16 @@ from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 
-try:
-    from .afmoe_attn import AFMOE_ATTN_IMPL2CLASS, AfmoeAttentionConfig
-except ImportError:
-    from afmoe_attn import AFMOE_ATTN_IMPL2CLASS, AfmoeAttentionConfig
-
-try:
-    from .configuration_afmoe import AfmoeConfig
-    from .converting_afmoe import (
-        convert_hf_layer_to_tt,
-        convert_hf_to_tt_moe,
-        convert_tt_layer_to_hf,
-        convert_tt_to_hf_moe,
-    )
-except:
-    from configuration_afmoe import AfmoeConfig
-    from converting_afmoe import (
-        convert_hf_layer_to_tt,
-        convert_hf_to_tt_moe,
-        convert_tt_layer_to_hf,
-        convert_tt_to_hf_moe,
-    )
+from .afmoe_attn import AFMOE_ATTN_IMPL2CLASS, AfmoeAttentionConfig
+from .configuration_afmoe import AfmoeConfig
+from .converting_afmoe import (
+    convert_hf_layer_to_tt,
+    convert_hf_to_tt_moe,
+    convert_tt_layer_to_hf,
+    convert_tt_to_hf_moe,
+)
 
 def _create_rotary_emb(config: AfmoeConfig) -> RotaryEmbedding:
-    """Create a RotaryEmbedding instance from AFMoE config."""
     if hasattr(config, "rope_scaling") and isinstance(config.rope_scaling, dict):
         rope_type = config.rope_scaling.get("rope_type", config.rope_scaling.get("type", "default"))
     else:
@@ -73,7 +45,6 @@ def _create_rotary_emb(config: AfmoeConfig) -> RotaryEmbedding:
 
 
 class AfmoeRMSNorm(nn.Module):
-    """AFMoE RMSNorm - equivalent to T5LayerNorm."""
 
     def __init__(self, hidden_size: int, eps: float):
         super().__init__()
@@ -92,7 +63,6 @@ class AfmoeRMSNorm(nn.Module):
 
 
 def _get_afmoe_attention(config: AfmoeConfig, layer_idx: int) -> nn.Module:
-    """Factory function to create AFMoE attention for a specific layer."""
     is_local = config.layer_types[layer_idx] == "sliding_attention"
 
     attn_config = AfmoeAttentionConfig(
@@ -107,7 +77,6 @@ def _get_afmoe_attention(config: AfmoeConfig, layer_idx: int) -> nn.Module:
     )
 
     attn_impl = config._attn_implementation
-    # Map "eager" to "sdpa" since we don't have a separate eager implementation
     if attn_impl == "eager":
         attn_impl = "sdpa"
 
@@ -131,15 +100,12 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
         self.self_attn = _get_afmoe_attention(config, layer_idx)
         self.attention_type = config.layer_types[layer_idx]
 
-        # Dual normalization for attention
         self.input_layernorm = AfmoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = AfmoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
-        # Dual normalization for FFN
         self.pre_mlp_layernorm = AfmoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_mlp_layernorm = AfmoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
-        # MoE or dense FFN
         self.moe_enabled = layer_idx >= config.num_dense_layers
         mlp_config = MLPConfig(
             hidden_size=config.hidden_size,
@@ -167,17 +133,11 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
         self,
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_value: Optional[Cache] = None,
-        use_cache: Optional[bool] = None,
-        cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
         block_mask: Optional["BlockMask"] = None,  # noqa: F821
-        **kwargs: Unpack[TransformersKwargs],
     ) -> torch.FloatTensor:
         residual = hidden_states
 
-        # Self Attention with dual normalization
         hidden_states = self.input_layernorm(hidden_states)
         hidden_states, _ = self.self_attn(
             hidden_states=hidden_states,
@@ -188,7 +148,6 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = residual + hidden_states
 
-        # FFN with dual normalization
         residual = hidden_states
         hidden_states = self.pre_mlp_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
@@ -211,12 +170,14 @@ class AfmoePreTrainedModel(PreTrainedModelPrimeRL):
         "k_norm",
         "norm",
     ]
-    # AFMoE supports sdpa and flex_attention, but NOT flash attention
-    # due to the RoPE-only-on-sliding-window constraint
     _supports_sdpa = True
     _supports_flash_attn = False
     _supports_flex_attn = True
     _supports_attention_backend = True
+    _can_compile_fullgraph = False
+    _can_record_outputs = {
+        "hidden_states": AfmoeDecoderLayer,
+    }
     supports_gradient_checkpointing = True
 
     @classmethod
@@ -283,49 +244,29 @@ class AfmoeModel(AfmoePreTrainedModel):
         input_ids: torch.LongTensor,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[list[torch.FloatTensor]] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
-        use_cache: Optional[bool] = None,
-        cache_position: Optional[torch.LongTensor] = None,
-        **kwargs: Unpack[TransformersKwargs],
     ) -> MoeModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError(
                 "You must specify exactly one of input_ids or inputs_embeds"
             )
 
-        if use_cache and past_key_values is None:
-            past_key_values = DynamicCache()
-
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
-        if cache_position is None:
-            past_seen_tokens = (
-                past_key_values.get_seq_length() if past_key_values is not None else 0
-            )
-            cache_position = torch.arange(
-                past_seen_tokens,
-                past_seen_tokens + inputs_embeds.shape[1],
-                device=inputs_embeds.device,
-            )
         if position_ids is None:
-            position_ids = cache_position.unsqueeze(0)
+            position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
+        cache_position = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device)
 
-        # Determine if we should use flex_attention with BlockMask
         use_flex_attention = self.config._attn_implementation == "flex_attention"
 
-        # Create attention masks using HuggingFace's utilities
-        # These handle both flex_attention (returns BlockMask) and SDPA (returns dense tensor)
-        # They also handle packed sequences automatically via position_ids
-        # It may already have been prepared by e.g. `generate`
         if not isinstance(causal_mask_mapping := attention_mask, dict):
             mask_kwargs = {
                 "config": self.config,
                 "input_embeds": inputs_embeds,
                 "attention_mask": attention_mask,
                 "cache_position": cache_position,
-                "past_key_values": past_key_values,
+                "past_key_values": None,
                 "position_ids": position_ids,
             }
             causal_mask_mapping = {
@@ -335,44 +276,31 @@ class AfmoeModel(AfmoePreTrainedModel):
 
         hidden_states = inputs_embeds
 
-        # Apply muP input scaling if enabled
         if self.config.mup_enabled:
             hidden_states = hidden_states * (self.config.hidden_size**0.5)
 
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
-        # Filter out attention_mask from kwargs to avoid conflicts
-        filtered_kwargs = {k: v for k, v in kwargs.items() if k != "attention_mask"}
-
         for decoder_layer in self.layers:
-            # Select appropriate mask based on attention type
-            # For flex_attention: mask is a BlockMask, pass as block_mask
-            # For SDPA: mask is a dense tensor (or None), pass as attention_mask
             mask = causal_mask_mapping[decoder_layer.attention_type]
-            
+
             if use_flex_attention:
                 attn_mask = None
-                block_mask = mask  # BlockMask from HF
+                block_mask = mask
             else:
-                attn_mask = mask  # Dense tensor from HF
+                attn_mask = mask
                 block_mask = None
 
             hidden_states = decoder_layer(
                 hidden_states,
                 attention_mask=attn_mask,
-                position_ids=position_ids,
-                past_key_value=past_key_values,
-                use_cache=use_cache,
-                cache_position=cache_position,
                 position_embeddings=position_embeddings,
                 block_mask=block_mask,
-                **filtered_kwargs,
             )
 
         hidden_states = self.norm(hidden_states)
         return MoeModelOutputWithPast(
             last_hidden_state=hidden_states,
-            past_key_values=past_key_values,
         )
 
 
@@ -417,20 +345,18 @@ class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
         inputs_embeds: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = None,
-        cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
         token_type_ids: Optional[torch.Tensor] = None,  # will be ignored
         **kwargs: Unpack[TransformersKwargs],
     ) -> Union[Tuple, MoeCausalLMOutputWithPast]:
+        assert use_cache is None, "use_cache is not supported for custom afmoe for now"
+        assert past_key_values is None, "past_key_values is not supported for custom afmoe for now"
+
         outputs: MoeModelOutputWithPast = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             position_ids=position_ids,
-            past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
-            use_cache=use_cache,
-            cache_position=cache_position,
-            **kwargs,
         )
 
         hidden_states = outputs.last_hidden_state
@@ -450,7 +376,6 @@ class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
         return MoeCausalLMOutputWithPast(
             loss=loss,
             logits=logits,
-            past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
             router_logits=outputs.router_logits,
