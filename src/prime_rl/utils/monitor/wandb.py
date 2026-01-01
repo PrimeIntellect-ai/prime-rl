@@ -77,7 +77,7 @@ class WandbMonitor(Monitor):
             return
         if not self.enabled:
             return
-        wandb.log(metrics)
+        wandb.log(metrics, step=metrics.get("step", None))
 
     def log_samples(self, rollouts: list[vf.State], step: int) -> None:
         """Logs rollouts to W&B table."""
