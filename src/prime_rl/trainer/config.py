@@ -272,6 +272,12 @@ class ModelConfig(BaseConfig):
             self.ac = ActivationCheckpointConfig()
         return self
 
+    @model_validator(mode="after")
+    def fused_lm_head_chunk_size_requires_custom_impl(self):
+        if self.fused_lm_head_chunk_size is not None and self.impl != "custom":
+            raise ValueError("Fused LM head chunk size is only supported with the custom implementation")
+        return self
+
 
 class TokenizerConfig(BaseConfig):
     """Configuration for the tokenizer."""

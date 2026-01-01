@@ -40,6 +40,11 @@ def shift_logits(
     return logits
 
 
+def shift_tensor_right(t: Float[Tensor, "batch seq"]) -> Float[Tensor, "batch seq"]:
+    """Shifts the tensor one token to the right."""
+    return torch.cat([torch.zeros(t.shape[0], 1, device=t.device, dtype=t.dtype), t[:, :-1]], dim=1)
+
+
 def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
     """Mean of values over a boolean mask; returns 0 when mask is empty."""
     denom = torch.clamp_min(mask.sum(), 1)
