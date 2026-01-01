@@ -127,11 +127,6 @@ def get_model(
             )
         logger.debug(f"Loaded model {config.name} in {time.perf_counter() - load_model_start_time:.2f} seconds")
 
-        # TODO: replace with proper argument
-        if isinstance(model, PreTrainedModelPrimeRL) and False:
-            logger.warning("Replacing LM head with fused LM head for PrimeRL model")
-            model.replace_lm_head_with_fused_lm_head()
-
     assert model.lm_head.weight.dtype == dtype, (
         f"LM head dtype wasnt loaded correctly {model.lm_head.weight.dtype} != {dtype}"
     )
