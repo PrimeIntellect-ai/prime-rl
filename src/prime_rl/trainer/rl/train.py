@@ -23,7 +23,9 @@ from prime_rl.utils.cp import (
 )
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
+    compute_entropy,
     compute_loss,
+    selective_log_softmax,
 )
 from prime_rl.trainer.model import (
     forward,
@@ -179,47 +181,46 @@ def train(config: RLTrainerConfig):
 
         # Broadcast weights at every step, (except step 0, because no need to broadcast the base model)
         # Also, with NCCL broadcast, we do not broadcast weights the last async level step as the orchestrator is already finished and will not initialize the receive on the inference; for filesystem broadcast, we do "broadcast" until the final step to allow to resume from the broadcast directory
-        # last_async_level_steps = config.max_steps and progress.step >= config.max_steps - config.max_async_level
-        # if progress.step > 0 and (not last_async_level_steps or config.weight_broadcast.type == "filesystem"):
-        #     broadcast_weights_start_time = time.perf_counter()
-        #     weight_broadcast.broadcast_weights(model, step=progress.step)
-        #     broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
-        #     # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
-        #     ckpt_interval = config.ckpt and config.ckpt.interval
-        #     interval_to_keep = ckpt_interval if config.weight_broadcast.type == "filesystem" else None
-        #     if config.weight_broadcast.type == "filesystem":
-        #         weight_broadcast.maybe_clean(config.max_async_level, interval_to_keep)
-        # else:
-        broadcast_weights_time = 0
-        # Usually the broadcast will set this. If broadcast is skipped, we need to reset this here.
-        # for idx in runs.used_idxs:
-        #     runs.ready_to_update[idx] = False
+        last_async_level_steps = config.max_steps and progress.step >= config.max_steps - config.max_async_level
+        if progress.step > 0 and (not last_async_level_steps or config.weight_broadcast.type == "filesystem"):
+            broadcast_weights_start_time = time.perf_counter()
+            weight_broadcast.broadcast_weights(model, step=progress.step)
+            broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
+            # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
+            ckpt_interval = config.ckpt and config.ckpt.interval
+            interval_to_keep = ckpt_interval if config.weight_broadcast.type == "filesystem" else None
+            if config.weight_broadcast.type == "filesystem":
+                weight_broadcast.maybe_clean(config.max_async_level, interval_to_keep)
+        else:
+            broadcast_weights_time = 0
+            # Usually the broadcast will set this. If broadcast is skipped, we need to reset this here.
+            for idx in runs.used_idxs:
+                runs.ready_to_update[idx] = False
 
-        # if (
-        #     ckpt_manager is not None
-        #     and (config.ckpt and config.ckpt.interval)
-        #     and not (is_first_step or is_last_step)
-        #     and progress.step % config.ckpt.interval == 0
-        # ):
-        #     # Save full checkpoint
-        #     logger.info(f"Saving checkpoint at step {progress.step}")
-        #     save_ckpt_start_time = time.perf_counter()
-        #     ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
-        #     save_ckpt_time = time.perf_counter() - save_ckpt_start_time
+        if (
+            ckpt_manager is not None
+            and (config.ckpt and config.ckpt.interval)
+            and not (is_first_step or is_last_step)
+            and progress.step % config.ckpt.interval == 0
+        ):
+            # Save full checkpoint
+            logger.info(f"Saving checkpoint at step {progress.step}")
+            save_ckpt_start_time = time.perf_counter()
+            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+            save_ckpt_time = time.perf_counter() - save_ckpt_start_time
 
-        #     # Maybe clean up old checkpoints
-        #     ckpt_manager.maybe_clean()
+            # Maybe clean up old checkpoints
+            ckpt_manager.maybe_clean()
 
-        #     # Save weight checkpoint
-        #     if weight_ckpt_manager is not None:
-        #         logger.info(f"Saving weight checkpoint at step {progress.step}")
-        #         weight_ckpt_manager.save(progress.step, model, tokenizer)
+            # Save weight checkpoint
+            if weight_ckpt_manager is not None:
+                logger.info(f"Saving weight checkpoint at step {progress.step}")
+                weight_ckpt_manager.save(progress.step, model, tokenizer)
 
-        #         # Maybe clean up old weight checkpoint
-        #         weight_ckpt_manager.maybe_clean()
-        # else:
-        #     save_ckpt_time = 0
-        save_ckpt_time = 0
+                # Maybe clean up old weight checkpoint
+                weight_ckpt_manager.maybe_clean()
+        else:
+            save_ckpt_time = 0
 
         # Break if we have reached the maximum number of steps
         if config.max_steps is not None and progress.step >= config.max_steps:
@@ -292,25 +293,28 @@ def train(config: RLTrainerConfig):
 
             # Forward pass
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                trainer_logprobs = forward(model, input_ids, forward_position_ids, input_ids).float().contiguous()
+                out = forward(model, input_ids, forward_position_ids, input_ids, temperature)
 
-            # if cp_enabled:
-            #     left_pad_logit = get_padding_logit_from_prev_cp_rank(logits, cp_rank, cp_size, cp_group)
-            # else:
-            #     left_pad_logit = None
+            if out.logprobs is None:
+                assert out.logits is not None, "Logits must be provided to compute logprobs"
+                out.logprobs = selective_log_softmax(out.logits, input_ids)
 
-            # shifted_logits = shift_logits(logits, left_pad_logit=left_pad_logit)
-            # shifted_logits = shifted_logits / temperature
-            # trainer_logprobs = selective_log_softmax(shifted_logits, input_ids)
+            if out.entropy is None:
+                assert out.logits is not None, "Logits must be provided to compute entropy"
+                out.entropy = compute_entropy(out.logits)
 
             if cp_enabled:
-                trainer_logprobs = dist_nn.all_gather(trainer_logprobs, group=cp_group)
-                trainer_logprobs = torch.cat(trainer_logprobs, dim=1)
+                logprobs = dist_nn.all_gather(out.logprobs, group=cp_group)
+                out.logprobs = torch.cat(logprobs, dim=1)
+
+                entropies = [torch.zeros_like(out.entropy) for _ in range(cp_size)]
+                dist.all_gather(entropies, out.entropy, group=cp_group)
+                out.entropy = torch.cat(entropies, dim=1)
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
             loss, loss_tensors = compute_loss(
-                trainer_logprobs=trainer_logprobs.squeeze().split(response_lengths),
+                trainer_logprobs=out.logprobs.squeeze().split(response_lengths),
                 inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
                 teacher_logprobs=teacher_logprobs.squeeze().split(response_lengths)
                 if teacher_logprobs is not None
@@ -321,26 +325,14 @@ def train(config: RLTrainerConfig):
                 loss_scale=loss_scale,
             )
 
-            # Compute entropy
-            # entropy = compute_entropy(shifted_logits)
-            entropy = torch.randn_like(trainer_logprobs)
-
-            if cp_enabled:
-                entropies = [torch.zeros_like(entropy) for _ in range(cp_size)]
-                dist.all_gather(entropies, entropy, group=cp_group)
-                entropy = torch.cat(entropies, dim=1)
-
-            # Delete logits and shifted_logits before backward pass to avoid memory spike
-            # del logits, shifted_logits
-
             # Backward pass
             with maybe_record_function("backward"):
                 loss.backward()
 
             # Add relevant tensors to tensor dict for logging purposes
-            tensors["trainer_probs"].append(torch.exp(trainer_logprobs)[loss_mask].detach().to("cpu"))
+            tensors["trainer_probs"].append(torch.exp(out.logprobs)[loss_mask].detach().to("cpu"))
             tensors["inference_probs"].append(torch.exp(inference_logprobs)[loss_mask].detach().to("cpu"))
-            tensors["entropy"].append(entropy[loss_mask].detach().to("cpu"))
+            tensors["entropy"].append(out.entropy[loss_mask].detach().to("cpu"))
             tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
 
             if is_tt_moe_model(model):

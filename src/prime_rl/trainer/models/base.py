@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 from torch import Tensor
 from transformers.modeling_utils import PreTrainedModel
 
@@ -102,4 +104,21 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         raise NotImplementedError(f"init_buffers_post_meta is not implemented for {self.__class__.__name__}")
 
 
-__all__ = ["PreTrainedModelPrimeRL"]
+@dataclass
+class PrimeModelOutput:
+    logits: Tensor | None = None
+    logprobs: Tensor | None = None
+    entropy: Tensor | None = None
+
+    def __post_init__(self):
+        if self.logits is not None:
+            self.logits = self.logits.float().contiguous()
+
+        if self.logprobs is not None:
+            self.logprobs = self.logprobs.float().contiguous()
+
+        if self.entropy is not None:
+            self.entropy = self.entropy.float().contiguous()
+
+
+__all__ = ["PreTrainedModelPrimeRL", "PrimeModelOutput"]

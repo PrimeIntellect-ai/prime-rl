@@ -22,11 +22,11 @@ from transformers.generation import GenerationMixin
 from transformers.modeling_layers import (
     GradientCheckpointingLayer,
 )
-from transformers.modeling_outputs import MoeCausalLMOutputWithPast, MoeModelOutputWithPast
+from transformers.modeling_outputs import MoeModelOutputWithPast
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple, logging
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, PrimeModelOutput
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
@@ -39,7 +39,7 @@ from prime_rl.trainer.models.qwen3_moe.converting_qwen3_moe import (
     convert_tt_layer_to_hf,
     convert_tt_to_hf_moe,
 )
-from prime_rl.trainer.rl.chunked_logprobs import ChunkedLogprobsLinear
+from prime_rl.trainer.rl.chunked_logprobs import FusedLmHead
 
 logger = logging.get_logger(__name__)
 
@@ -332,10 +332,10 @@ class Qwen3MoeForCausalLM(Qwen3MoePreTrainedModel, GenerationMixin):
         super().__init__(config)
         self.model = Qwen3MoeModel(config)
         self.vocab_size = config.vocab_size
-        self.lm_head = ChunkedLogprobsLinear(config.hidden_size, config.vocab_size, chunk_size=4096)
         self.router_aux_loss_coef = config.router_aux_loss_coef
         self.num_experts = config.num_experts
         self.num_experts_per_tok = config.num_experts_per_tok
+        self.lm_head = FusedLmHead(config.hidden_size, config.vocab_size, chunk_size=1024)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -361,7 +361,7 @@ class Qwen3MoeForCausalLM(Qwen3MoePreTrainedModel, GenerationMixin):
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> MoeCausalLMOutputWithPast:
+    ) -> PrimeModelOutput:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
@@ -403,34 +403,23 @@ class Qwen3MoeForCausalLM(Qwen3MoePreTrainedModel, GenerationMixin):
             inputs_embeds=inputs_embeds,
         )
 
+        logits, logprobs, entropy = None, None, None
+
         hidden_states = outputs.last_hidden_state
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-        logits = self.lm_head(hidden_states[:, slice_indices, :], labels[:, slice_indices])
 
-        loss = None
-        if False:
-            loss = self.loss_function(logits, labels, self.vocab_size, **kwargs)
-
-        aux_loss = None
-        if output_router_logits:
-            aux_loss = load_balancing_loss_func(
-                outputs.router_logits,
-                self.num_experts,
-                self.num_experts_per_tok,
-                attention_mask,
+        if labels is not None:
+            logprobs, entropy = self.lm_head(
+                hidden_states[:, slice_indices, :], labels[:, slice_indices], temperature=kwargs["temperature"]
             )
-            if labels is not None:
-                loss += self.router_aux_loss_coef * aux_loss.to(loss.device)  # make sure to reside in the same device
+        else:
+            logits = self.lm_head(hidden_states[:, slice_indices, :])
 
-        return MoeCausalLMOutputWithPast(
-            loss=loss,
-            aux_loss=aux_loss,
+        return PrimeModelOutput(
             logits=logits,
-            past_key_values=outputs.past_key_values,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
-            router_logits=outputs.router_logits,
+            logprobs=logprobs,
+            entropy=entropy,
         )
 
     def init_buffers_post_meta(self):

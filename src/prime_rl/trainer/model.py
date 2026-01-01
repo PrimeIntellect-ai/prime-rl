@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from beartype import beartype as typechecker
 from huggingface_hub import snapshot_download
-from jaxtyping import Float, Int, jaxtyped
+from jaxtyping import Int, jaxtyped
 from liger_kernel.transformers import AutoLigerKernelForCausalLM
 from torch import Tensor
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
@@ -21,6 +21,7 @@ from transformers.utils.import_utils import is_flash_attn_3_available
 from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, ModelConfig, TokenizerConfig
 from prime_rl.trainer.lora import apply_lora_to_model, strip_lora_from_state_dict
 from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL, PreTrainedModelPrimeRL, supports_custom_impl
+from prime_rl.trainer.models.base import PrimeModelOutput
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.weights import (
     load_state_dict,
@@ -391,6 +392,12 @@ def forward(
     model: nn.Module,
     input_ids: Int[Tensor, "batch seq"],
     position_ids: Int[Tensor, "batch seq"],
-    labels: Int[Tensor, "batch seq"],
-) -> Float[Tensor, "batch seq"]:
-    return model(input_ids=input_ids, position_ids=position_ids, labels=labels).logits
+    labels: Int[Tensor, "batch seq"] | None = None,
+    temperature: float | None = None,
+) -> PrimeModelOutput:
+    out = model(input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature)
+
+    if isinstance(out, PrimeModelOutput):
+        return out
+
+    return PrimeModelOutput(logits=out.logits)
