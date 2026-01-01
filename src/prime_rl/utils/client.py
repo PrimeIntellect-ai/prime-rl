@@ -137,6 +137,7 @@ async def update_weights(
         # Create ready marker before servers enter receive path (used by NCCL broadcast)
         if weight_dir is not None:
             nccl_ready_file = weight_dir / NCCL_READY_MARKER
+            nccl_ready_file.parent.mkdir(parents=True, exist_ok=True)
             nccl_ready_file.touch()
             logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
 
