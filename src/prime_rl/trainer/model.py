@@ -21,8 +21,8 @@ from transformers.utils.import_utils import is_flash_attn_3_available
 from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, ModelConfig, TokenizerConfig
 from prime_rl.trainer.lora import apply_lora_to_model, strip_lora_from_state_dict
 from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL, PreTrainedModelPrimeRL, supports_custom_impl
-from prime_rl.trainer.models.base import PrimeModelOutput
 from prime_rl.trainer.parallel_dims import ParallelDims
+from prime_rl.trainer.rl.chunked_logprobs import PrimeLmHeadOutput
 from prime_rl.trainer.weights import (
     load_state_dict,
     save_state_dict,
@@ -126,6 +126,11 @@ def get_model(
                 dtype=dtype,
             )
         logger.debug(f"Loaded model {config.name} in {time.perf_counter() - load_model_start_time:.2f} seconds")
+
+        # TODO: replace with proper argument
+        if isinstance(model, PreTrainedModelPrimeRL) and False:
+            logger.warning("Replacing LM head with fused LM head for PrimeRL model")
+            model.replace_lm_head_with_fused_lm_head()
 
     assert model.lm_head.weight.dtype == dtype, (
         f"LM head dtype wasnt loaded correctly {model.lm_head.weight.dtype} != {dtype}"
@@ -342,6 +347,10 @@ def setup_model(
 
     # 1. We load to meta device by default
     model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype])
+
+    if isinstance(model, PreTrainedModelPrimeRL):
+        model.wrap_lm_head(chunk_size=config.fused_lm_head_chunk_size)
+
     possible_to_load_to_meta = can_reinit_empty_buffers(model)
 
     if config.debug.random_init and not possible_to_load_to_meta:
@@ -394,10 +403,10 @@ def forward(
     position_ids: Int[Tensor, "batch seq"],
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: float | None = None,
-) -> PrimeModelOutput:
+) -> PrimeLmHeadOutput:
     out = model(input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature)
 
-    if isinstance(out, PrimeModelOutput):
+    if isinstance(out, PrimeLmHeadOutput):
         return out
 
-    return PrimeModelOutput(logits=out.logits)
+    return PrimeLmHeadOutput(logits=out.logits)

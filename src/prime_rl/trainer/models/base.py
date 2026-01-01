@@ -1,7 +1,8 @@
-from dataclasses import dataclass
-
 from torch import Tensor
 from transformers.modeling_utils import PreTrainedModel
+
+from prime_rl.trainer.rl.chunked_logprobs import FusedLmHead, WrappedLmHead
+from prime_rl.utils.logger import get_logger
 
 
 class PreTrainedModelPrimeRL(PreTrainedModel):
@@ -103,22 +104,21 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         """
         raise NotImplementedError(f"init_buffers_post_meta is not implemented for {self.__class__.__name__}")
 
+    def wrap_lm_head(self, chunk_size: int | None = None) -> None:
+        old_lm_head = self.lm_head
 
-@dataclass
-class PrimeModelOutput:
-    logits: Tensor | None = None
-    logprobs: Tensor | None = None
-    entropy: Tensor | None = None
+        logger = get_logger()
+        logger.warning(f"Wrapping LM head with chunk size {chunk_size}")
 
-    def __post_init__(self):
-        if self.logits is not None:
-            self.logits = self.logits.float().contiguous()
+        if chunk_size is not None:
+            self.lm_head = FusedLmHead(
+                in_features=old_lm_head.in_features, out_features=old_lm_head.out_features, chunk_size=chunk_size
+            )
+        else:
+            self.lm_head = WrappedLmHead(in_features=old_lm_head.in_features, out_features=old_lm_head.out_features)
 
-        if self.logprobs is not None:
-            self.logprobs = self.logprobs.float().contiguous()
-
-        if self.entropy is not None:
-            self.entropy = self.entropy.float().contiguous()
+        self.lm_head.weight = old_lm_head.weight
+        del old_lm_head
 
 
-__all__ = ["PreTrainedModelPrimeRL", "PrimeModelOutput"]
+__all__ = ["PreTrainedModelPrimeRL"]

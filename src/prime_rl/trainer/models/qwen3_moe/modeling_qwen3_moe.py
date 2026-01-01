@@ -26,7 +26,7 @@ from transformers.modeling_outputs import MoeModelOutputWithPast
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple, logging
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, PrimeModelOutput
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
@@ -39,7 +39,7 @@ from prime_rl.trainer.models.qwen3_moe.converting_qwen3_moe import (
     convert_tt_layer_to_hf,
     convert_tt_to_hf_moe,
 )
-from prime_rl.trainer.rl.chunked_logprobs import FusedLmHead
+from prime_rl.trainer.rl.chunked_logprobs import PrimeLmHeadOutput
 
 logger = logging.get_logger(__name__)
 
@@ -335,7 +335,7 @@ class Qwen3MoeForCausalLM(Qwen3MoePreTrainedModel, GenerationMixin):
         self.router_aux_loss_coef = config.router_aux_loss_coef
         self.num_experts = config.num_experts
         self.num_experts_per_tok = config.num_experts_per_tok
-        self.lm_head = FusedLmHead(config.hidden_size, config.vocab_size, chunk_size=1024)
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -360,13 +360,16 @@ class Qwen3MoeForCausalLM(Qwen3MoePreTrainedModel, GenerationMixin):
         output_router_logits: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
+        temperature: Optional[float] = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> PrimeModelOutput:
+    ) -> PrimeLmHeadOutput:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
             config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
             (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
+        temperature (`float`, *optional*, defaults to 1.0):
+            The temperature to use for the logprobs/entropy.
 
         Example:
 
@@ -403,24 +406,11 @@ class Qwen3MoeForCausalLM(Qwen3MoePreTrainedModel, GenerationMixin):
             inputs_embeds=inputs_embeds,
         )
 
-        logits, logprobs, entropy = None, None, None
-
         hidden_states = outputs.last_hidden_state
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
 
-        if labels is not None:
-            logprobs, entropy = self.lm_head(
-                hidden_states[:, slice_indices, :], labels[:, slice_indices], temperature=kwargs["temperature"]
-            )
-        else:
-            logits = self.lm_head(hidden_states[:, slice_indices, :])
-
-        return PrimeModelOutput(
-            logits=logits,
-            logprobs=logprobs,
-            entropy=entropy,
-        )
+        return self.lm_head(hidden_states[:, slice_indices, :], labels[:, slice_indices], temperature=temperature)
 
     def init_buffers_post_meta(self):
         buffer_names = [name for name, _ in self.named_buffers()]

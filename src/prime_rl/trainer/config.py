@@ -237,6 +237,13 @@ class ModelConfig(BaseConfig):
         ),
     ] = DebugModelConfig()
 
+    fused_lm_head_chunk_size: Annotated[
+        int | None,
+        Field(
+            description="The chunk size to use for the model. If None, will not use chunking.",
+        ),
+    ] = None
+
     @model_validator(mode="after")
     def _map_model_name_for_moe(self):
         """Map model name if it exists in MOE_MODEL_MAPS."""

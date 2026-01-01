@@ -1,27 +1,57 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import torch
+from torch import Tensor
 
 
-def _online_logsumexp_and_weighted_update(
-    m: torch.Tensor, s: torch.Tensor, t: torch.Tensor, chunk_logits: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    Online logsumexp + weighted-sum accumulator for entropy.
+@dataclass
+class PrimeLmHeadOutput:
+    logits: Tensor | None = None
+    logprobs: Tensor | None = None
+    entropy: Tensor | None = None
 
-    Maintains:
-      m: running max
-      s: running sum(exp(x - m))
-      t: running sum(exp(x - m) * x)
-    """
-    chunk_m = torch.amax(chunk_logits, dim=-1)  # [N]
-    m_new = torch.maximum(m, chunk_m)  # [N]
-    exp_old = torch.exp(m - m_new)
+    def __post_init__(self):
+        if self.logits is not None:
+            self.logits = self.logits.float().contiguous()
 
-    chunk_exp = torch.exp(chunk_logits - m_new.unsqueeze(-1))  # [N, C]
-    s_new = s * exp_old + chunk_exp.sum(dim=-1)
-    t_new = t * exp_old + (chunk_exp * chunk_logits).sum(dim=-1)
-    return m_new, s_new, t_new
+        if self.logprobs is not None:
+            self.logprobs = self.logprobs.float().contiguous()
+
+        if self.entropy is not None:
+            self.entropy = self.entropy.float().contiguous()
+
+
+class FusedLmHead(torch.nn.Linear):
+    def __init__(self, in_features: int, out_features: int, chunk_size: int):
+        super().__init__(in_features, out_features, bias=False)
+        self.chunk_size = chunk_size
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        labels: torch.Tensor,
+        temperature: float = 1.0,
+    ) -> PrimeLmHeadOutput:
+        inv_t = 1.0 / float(temperature)
+        b, s, h = hidden_states.shape
+        hidden_states = hidden_states.reshape(b * s, h).contiguous()
+        labels = labels.reshape(b * s).contiguous()
+
+        logprobs, entropy = _ChunkedLogProbEntropyFn.apply(hidden_states, self.weight, labels, inv_t, self.chunk_size)
+
+        logprobs = logprobs.reshape(b, s)
+        entropy = entropy.reshape(b, s)
+        return PrimeLmHeadOutput(logits=None, logprobs=logprobs, entropy=entropy)
+
+
+class WrappedLmHead(torch.nn.Linear):
+    def __init__(self, in_features: int, out_features: int):
+        super().__init__(in_features, out_features, bias=False)
+
+    def forward(self, hidden_states: torch.Tensor, labels: torch.Tensor, temperature: float = 1.0) -> PrimeLmHeadOutput:
+        return PrimeLmHeadOutput(logits=super().forward(hidden_states), logprobs=None, entropy=None)
 
 
 class _ChunkedLogProbEntropyFn(torch.autograd.Function):
@@ -85,12 +115,8 @@ class _ChunkedLogProbEntropyFn(torch.autograd.Function):
         return logprobs, entropy
 
     @staticmethod
-    def backward(ctx, grad_logprobs: torch.Tensor, grad_entropy: torch.Tensor | None):  # type: ignore[override]
-        # Entropy is treated as a detached metric in this PoC (no gradient support).
-        if grad_entropy is not None:
-            # If someone wires entropy into the loss accidentally, fail loudly.
-            if torch.any(grad_entropy != 0):
-                raise RuntimeError("PoC: entropy output is non-differentiable (grad_entropy must be zero/unused).")
+    def backward(ctx, grad_logprobs: torch.Tensor, grad_entropy: torch.Tensor | None):
+        assert torch.all(grad_entropy == 0.0), "Entropy is not differentiable"
 
         hidden, weight, labels, logz = ctx.saved_tensors
         inv_temperature: float = ctx.inv_temperature
@@ -131,37 +157,22 @@ class _ChunkedLogProbEntropyFn(torch.autograd.Function):
         return grad_hidden, grad_weight, None, None, None
 
 
-def chunked_selective_log_softmax_and_entropy(
-    hidden: torch.Tensor,  # [B, S, H] or [N, H]
-    weight: torch.Tensor,  # [V, H]
-    labels: torch.Tensor,  # [B, S] or [N]
-    *,
-    temperature: float = 1.0,
-    chunk_size: int = 8192,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    inv_t = 1.0 / float(temperature)
-    b, s, h = hidden.shape
-    hidden_2d = hidden.reshape(b * s, h).contiguous()
-    labels_1d = labels.reshape(b * s).contiguous()
-    lp, ent = _ChunkedLogProbEntropyFn.apply(hidden_2d, weight, labels_1d, inv_t, int(chunk_size))
-    return lp.reshape(b, s), ent.reshape(b, s)
+def _online_logsumexp_and_weighted_update(
+    m: torch.Tensor, s: torch.Tensor, t: torch.Tensor, chunk_logits: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Online logsumexp + weighted-sum accumulator for entropy.
 
+    Maintains:
+      m: running max
+      s: running sum(exp(x - m))
+      t: running sum(exp(x - m) * x)
+    """
+    chunk_m = torch.amax(chunk_logits, dim=-1)  # [N]
+    m_new = torch.maximum(m, chunk_m)  # [N]
+    exp_old = torch.exp(m - m_new)
 
-class FusedLmHead(torch.nn.Linear):
-    def __init__(self, in_features: int, out_features: int, chunk_size: int):
-        super().__init__(in_features, out_features, bias=False)
-        self.chunk_size = chunk_size
-
-    def forward(
-        self,
-        hidden: torch.Tensor,
-        labels: torch.Tensor,
-        temperature: float = 1.0,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        return chunked_selective_log_softmax_and_entropy(
-            hidden,
-            self.weight,
-            labels,
-            temperature=temperature,
-            chunk_size=self.chunk_size,
-        )
+    chunk_exp = torch.exp(chunk_logits - m_new.unsqueeze(-1))  # [N, C]
+    s_new = s * exp_old + chunk_exp.sum(dim=-1)
+    t_new = t * exp_old + (chunk_exp * chunk_logits).sum(dim=-1)
+    return m_new, s_new, t_new
