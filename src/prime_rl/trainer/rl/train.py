@@ -273,7 +273,9 @@ def train(config: RLTrainerConfig):
             advantages = micro_batch["advantages"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
             inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
-            teacher_logprobs = micro_batch["teacher_logprobs"].to("cuda") if micro_batch["teacher_logprobs"] is not None else None
+            teacher_logprobs = (
+                micro_batch["teacher_logprobs"].to("cuda") if micro_batch["teacher_logprobs"] is not None else None
+            )
 
             if cp_enabled:
                 input_ids, forward_position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
@@ -313,7 +315,9 @@ def train(config: RLTrainerConfig):
             loss, loss_tensors = compute_loss(
                 trainer_logprobs=trainer_logprobs.squeeze().split(response_lengths),
                 inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
-                teacher_logprobs=teacher_logprobs.squeeze().split(response_lengths) if teacher_logprobs is not None else None,
+                teacher_logprobs=teacher_logprobs.squeeze().split(response_lengths)
+                if teacher_logprobs is not None
+                else None,
                 advantages=advantages.squeeze().split(response_lengths),
                 loss_mask=loss_mask.squeeze().split(response_lengths),
                 loss_config=config.loss,
@@ -411,7 +415,7 @@ def train(config: RLTrainerConfig):
             "perf/peak_memory": peak_memory,
             "step": progress.step,
         }
-        monitor.log(perf_metrics)
+        monitor.log(perf_metrics, step=progress.step)
 
         # Log optimizer metrics
         optim_metrics = {
@@ -419,11 +423,11 @@ def train(config: RLTrainerConfig):
             "optim/grad_norm": grad_norm.item(),
             "step": progress.step,
         }
-        monitor.log(optim_metrics)
+        monitor.log(optim_metrics, step=progress.step)
 
         # Log tensor stats
         tensor_stats["step"] = progress.step
-        monitor.log(tensor_stats)
+        monitor.log(tensor_stats, step=progress.step)
 
         # Log time metrics
         time_metrics = {
@@ -435,12 +439,12 @@ def train(config: RLTrainerConfig):
             "time/forward_backward": forward_backward_time,
             "step": progress.step,
         }
-        monitor.log(time_metrics)
+        monitor.log(time_metrics, step=progress.step)
 
         # Log disk metrics
         disk_metrics = get_ckpt_disk_metrics(config.output_dir)
         disk_metrics["step"] = progress.step
-        monitor.log(disk_metrics)
+        monitor.log(disk_metrics, step=progress.step)
 
         progress.step += 1
         is_first_step = False
