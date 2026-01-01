@@ -240,7 +240,7 @@ def train(config: SFTTrainerConfig):
                 # Forward pass
             logger.debug("Starting forward pass")
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                logits = forward(model, input_ids, position_ids)
+                logits = forward(model, input_ids, position_ids).logits
             B, L, V = logits.shape
 
             # Compute loss
