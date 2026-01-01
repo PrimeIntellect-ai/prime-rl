@@ -20,6 +20,7 @@ from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.cp import (
     setup_cp_params,
+    shard_for_cp,
 )
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
@@ -266,7 +267,7 @@ def train(config: RLTrainerConfig):
         cp_size = parallel_dims.cp
 
         for micro_step, micro_batch in enumerate(micro_batches):
-            input_ids = micro_batch["input_ids"].to("cuda")
+            labels = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
@@ -275,10 +276,24 @@ def train(config: RLTrainerConfig):
                 micro_batch["teacher_logprobs"].to("cuda") if micro_batch["teacher_logprobs"] is not None else None
             )
 
+            # We want per-position logprobs for `labels` without shifting logits (which is CP-hostile).
+            # Instead, shift the *inputs* one token to the right so that logits at position t predict labels[t].
+            # IMPORTANT: this must happen before CP sharding, so each CP rank has the correct context at its left edge.
+            pad_id = 0
+            if hasattr(model, "config"):
+                pad_id = getattr(model.config, "pad_token_id", None) or getattr(model.config, "eos_token_id", 0)
+
+            input_ids = torch.full_like(labels, pad_id)
+            # Shift within each packed sequence (position_ids resets to 0 mark new sequence starts),
+            # preventing cross-sequence leakage at packing boundaries.
+            input_ids[:, 1:] = torch.where(position_ids[:, 1:] == 0, pad_id, labels[:, :-1])
+
             if cp_enabled:
                 input_ids, forward_position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
+                forward_labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
             else:
                 forward_position_ids = position_ids
+                forward_labels = labels
             if config.model.lora:
                 lora_num_tokens = micro_batch["lora_num_tokens"].to("cuda")
                 lora_cu_offsets = lora_num_tokens.cumsum(dim=0, dtype=torch.int32)
@@ -293,15 +308,17 @@ def train(config: RLTrainerConfig):
 
             # Forward pass
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                out = forward(model, input_ids, forward_position_ids, input_ids, temperature)
+                out = forward(model, input_ids, forward_position_ids, labels=forward_labels, temperature=temperature)
 
             if out.logprobs is None:
                 assert out.logits is not None, "Logits must be provided to compute logprobs"
-                out.logprobs = selective_log_softmax(out.logits, input_ids)
+                logits = out.logits / float(temperature)
+                out.logprobs = selective_log_softmax(logits, forward_labels)
 
             if out.entropy is None:
                 assert out.logits is not None, "Logits must be provided to compute entropy"
-                out.entropy = compute_entropy(out.logits)
+                logits = out.logits / float(temperature)
+                out.entropy = compute_entropy(logits)
 
             if cp_enabled:
                 logprobs = dist_nn.all_gather(out.logprobs, group=cp_group)

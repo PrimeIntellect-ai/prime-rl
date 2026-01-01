@@ -20,7 +20,7 @@ from torch import Tensor, nn
 from transformers.cache_utils import Cache
 from transformers.generation import GenerationMixin
 from transformers.modeling_layers import GradientCheckpointingLayer
-from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
+from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring
 from transformers.utils.deprecation import deprecate_kwarg
@@ -38,6 +38,7 @@ from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
+from prime_rl.trainer.rl.chunked_logprobs import PrimeLmHeadOutput
 
 
 class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
@@ -263,9 +264,16 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
         use_cache: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
+        temperature: Optional[float] = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> CausalLMOutputWithPast:
+    ) -> PrimeLmHeadOutput:
         r"""
+        labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+            Labels used by PrimeRL's wrapped LM head to optionally compute per-token logprobs/entropy.
+            If not provided, the wrapped LM head returns logits only.
+        temperature (`float`, *optional*, defaults to 1.0):
+            Temperature used for the logprobs/entropy computation when `labels` are provided.
+
         Example:
 
         ```python
@@ -300,19 +308,10 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
         hidden_states = outputs.last_hidden_state
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-        logits = self.lm_head(hidden_states[:, slice_indices, :])
-
-        loss = None
-        if labels is not None:
-            loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
-
-        return CausalLMOutputWithPast(
-            loss=loss,
-            logits=logits,
-            past_key_values=outputs.past_key_values,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
-        )
+        t = 1.0 if temperature is None else float(temperature)
+        labels_slice = labels[:, slice_indices] if labels is not None else None
+        hs = hidden_states[:, slice_indices, :]
+        return self.lm_head(hs, labels_slice, temperature=t)
 
     def init_buffers_post_meta(self):
         buffer_names = [name for name, _ in self.named_buffers()]

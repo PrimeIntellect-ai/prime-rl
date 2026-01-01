@@ -33,6 +33,7 @@ bash -c '
         --model.debug.num_layers 2 \
         --model.debug.random_init \
         --model.seq_len ${SEQ} \
+        --model.fused_lm_head_chunk_size 1024 \
         --data.fake.batch_size ${BS} \
         --bench \
         --log.level debug \

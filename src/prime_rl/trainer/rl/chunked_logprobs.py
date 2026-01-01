@@ -31,9 +31,12 @@ class FusedLmHead(torch.nn.Linear):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        labels: torch.Tensor,
+        labels: torch.Tensor | None = None,
         temperature: float = 1.0,
     ) -> PrimeLmHeadOutput:
+        if labels is None:
+            return PrimeLmHeadOutput(logits=super().forward(hidden_states), logprobs=None, entropy=None)
+
         inv_t = 1.0 / float(temperature)
         b, s, h = hidden_states.shape
         hidden_states = hidden_states.reshape(b * s, h).contiguous()
@@ -50,7 +53,9 @@ class WrappedLmHead(torch.nn.Linear):
     def __init__(self, in_features: int, out_features: int):
         super().__init__(in_features, out_features, bias=False)
 
-    def forward(self, hidden_states: torch.Tensor, labels: torch.Tensor, temperature: float = 1.0) -> PrimeLmHeadOutput:
+    def forward(
+        self, hidden_states: torch.Tensor, labels: torch.Tensor | None = None, temperature: float = 1.0
+    ) -> PrimeLmHeadOutput:
         return PrimeLmHeadOutput(logits=super().forward(hidden_states), logprobs=None, entropy=None)
 
 
