@@ -32,7 +32,6 @@ class CheckpointManager:
     def _save_to_path(
         self,
         ckpt_path: Path,
-        ckpt_step: int,
         progress: Progress,
         buffer: Buffer,
     ):
@@ -88,7 +87,7 @@ class CheckpointManager:
         """Saves the full checkpoint state for a specified step."""
         ckpt_path = self.get_ckpt_path(step)
         ckpt_path.mkdir(parents=True, exist_ok=True)
-        self._save_to_path(ckpt_path, step, progress, buffer)
+        self._save_to_path(ckpt_path, progress, buffer)
 
 
 def setup_ckpt_manager(output_dir: Path, config: CheckpointConfig | None) -> CheckpointManager | None:
