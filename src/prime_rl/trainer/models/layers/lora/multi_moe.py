@@ -13,10 +13,11 @@ OFFSETS: torch.Tensor | None = None
 def set_multilora_offsets(offsets: torch.Tensor, reset_reference: bool = False) -> None:
     """Set global offsets for multi-adapter MoE LoRA."""
     global OFFSETS
+    num_tokens = torch.diff(offsets, prepend=torch.tensor([0], device=offsets.device))
     if OFFSETS is None or reset_reference:
-        OFFSETS = offsets
+        OFFSETS = num_tokens
     else:
-        OFFSETS.copy_(offsets)
+        OFFSETS.copy_(num_tokens)
 
 
 def _run_lora_grouped_mm(
