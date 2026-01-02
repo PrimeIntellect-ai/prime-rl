@@ -208,8 +208,6 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
             ]
         )
 
-        if dropout > 0.0:
-            raise NotImplementedError("Dropout is not supported for MultiLoRAGroupedExperts yet")
         self.reset_parameters()
 
     def reset_parameters(self, index: int | None = None) -> None:
@@ -336,23 +334,26 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
         # Compute offsets for grouped_mm
         offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
 
+        lora_x = self.lora_dropout(x)
+
         if self.use_grouped_mm:
             # Gate
             h1_base = torch._grouped_mm(x.bfloat16(), base_w1.bfloat16().transpose(-2, -1), offs=offsets)
-            w1_lora_out = _run_lora_grouped_mm(x, w1_lora_a, w1_lora_b, offsets)
+            w1_lora_out = _run_lora_grouped_mm(lora_x, w1_lora_a, w1_lora_b, offsets)
             h1 = h1_base + self.scaling * w1_lora_out.bfloat16()
 
             # Up
             h3_base = torch._grouped_mm(x.bfloat16(), base_w3.bfloat16().transpose(-2, -1), offs=offsets)
-            w3_lora_out = _run_lora_grouped_mm(x, w3_lora_a, w3_lora_b, offsets)
+            w3_lora_out = _run_lora_grouped_mm(lora_x, w3_lora_a, w3_lora_b, offsets)
             h3 = h3_base + self.scaling * w3_lora_out.bfloat16()
 
             # SwiGLU activation
             h = F.silu(h1) * h3
 
             # Down
+            lora_h = self.lora_dropout(h)
             h2_base = torch._grouped_mm(h, base_w2.bfloat16().transpose(-2, -1), offs=offsets)
-            w2_lora_out = _run_lora_grouped_mm(h.type_as(x), w2_lora_a, w2_lora_b, offsets)
+            w2_lora_out = _run_lora_grouped_mm(lora_h, w2_lora_a, w2_lora_b, offsets)
             out = h2_base + self.scaling * w2_lora_out.bfloat16()
 
             return out.type_as(x)
