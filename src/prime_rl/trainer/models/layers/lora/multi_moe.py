@@ -397,16 +397,18 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
                 continue
             end = start + num_tokens
             x_expert = x[start:end]
+            # Apply dropout for LoRA path (consistent with grouped_mm path)
+            x_expert_lora = self.lora_dropout(x_expert)
 
             # Compute w1 + w1_lora for this expert
             h1_base = torch.matmul(x_expert, base_w1[expert_idx].transpose(-2, -1))
-            w1_lora_tmp = torch.matmul(x_expert, w1_lora_a[expert_idx].transpose(-2, -1))
+            w1_lora_tmp = torch.matmul(x_expert_lora, w1_lora_a[expert_idx].transpose(-2, -1))
             w1_lora_out = torch.matmul(w1_lora_tmp, w1_lora_b[expert_idx].transpose(-2, -1))
             h1 = h1_base + self.scaling * w1_lora_out
 
             # Compute w3 + w3_lora for this expert
             h3_base = torch.matmul(x_expert, base_w3[expert_idx].transpose(-2, -1))
-            w3_lora_tmp = torch.matmul(x_expert, w3_lora_a[expert_idx].transpose(-2, -1))
+            w3_lora_tmp = torch.matmul(x_expert_lora, w3_lora_a[expert_idx].transpose(-2, -1))
             w3_lora_out = torch.matmul(w3_lora_tmp, w3_lora_b[expert_idx].transpose(-2, -1))
             h3 = h3_base + self.scaling * w3_lora_out
 
@@ -414,8 +416,10 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
             h = F.silu(h1) * h3
 
             # Compute w2 + w2_lora for this expert
+            # Apply dropout for LoRA path (consistent with grouped_mm path)
+            h_lora = self.lora_dropout(h)
             h2_base = torch.matmul(h, base_w2[expert_idx].transpose(-2, -1))
-            w2_lora_tmp = torch.matmul(h, w2_lora_a[expert_idx].transpose(-2, -1))
+            w2_lora_tmp = torch.matmul(h_lora, w2_lora_a[expert_idx].transpose(-2, -1))
             w2_lora_out = torch.matmul(w2_lora_tmp, w2_lora_b[expert_idx].transpose(-2, -1))
             out = h2_base + self.scaling * w2_lora_out
 
