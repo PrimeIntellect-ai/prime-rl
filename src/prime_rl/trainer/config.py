@@ -104,6 +104,7 @@ class LoRAConfig(BaseConfig):
         "gate_proj",
         "up_proj",
         "down_proj",
+        "experts",
     ]
 
     modules_to_save: Annotated[
