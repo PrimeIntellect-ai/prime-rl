@@ -252,14 +252,8 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
     def named_parameters_for_adapter(self, idx: int) -> list[tuple[str, nn.Parameter]]:
         """Get named parameters for a specific adapter index.
 
-        Returns per-expert parameter slices for vLLM compatibility.
-        For 8 experts, returns 48 parameters (8 experts × 3 projections × 2 matrices):
-        - experts.{expert_id}.gate_proj.lora_A
-        - experts.{expert_id}.gate_proj.lora_B
-        - experts.{expert_id}.down_proj.lora_A
-        - experts.{expert_id}.down_proj.lora_B
-        - experts.{expert_id}.up_proj.lora_A
-        - experts.{expert_id}.up_proj.lora_B
+        Returns the full stacked parameters (leaf tensors) for optimizer use.
+        Each parameter has shape [num_experts, ...] with all experts stacked.
 
         Args:
             idx: The adapter index to get parameters for
@@ -267,52 +261,53 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
         Returns:
             List of (name, parameter) tuples for the specified adapter
         """
-        params = []
+        return [
+            ("w1_lora_A", self.w1_lora_A[idx]),  # Shape: [num_experts, rank, dim]
+            ("w1_lora_B", self.w1_lora_B[idx]),  # Shape: [num_experts, hidden_dim, rank]
+            ("w2_lora_A", self.w2_lora_A[idx]),  # Shape: [num_experts, rank, hidden_dim]
+            ("w2_lora_B", self.w2_lora_B[idx]),  # Shape: [num_experts, dim, rank]
+            ("w3_lora_A", self.w3_lora_A[idx]),  # Shape: [num_experts, rank, dim]
+            ("w3_lora_B", self.w3_lora_B[idx]),  # Shape: [num_experts, hidden_dim, rank]
+        ]
+
+    def state_dict_for_adapter(self, idx: int) -> dict[str, torch.Tensor]:
+        """Get state dict for a specific adapter index in vLLM-compatible format.
+
+        Returns per-expert parameter slices for vLLM compatibility.
+        For 8 experts, returns 48 tensors (8 experts × 3 projections × 2 matrices):
+        - {expert_id}.gate_proj.lora_A.weight
+        - {expert_id}.gate_proj.lora_B.weight
+        - {expert_id}.down_proj.lora_A.weight
+        - {expert_id}.down_proj.lora_B.weight
+        - {expert_id}.up_proj.lora_A.weight
+        - {expert_id}.up_proj.lora_B.weight
+
+        Note: Keys don't include "experts." prefix because this module is registered
+        under a path ending in ".experts" (e.g., model.layers.0.mlp.experts).
+        The full key becomes: {prefix}.{expert_id}.gate_proj.lora_A.weight
+
+        Args:
+            idx: The adapter index to get state dict for
+
+        Returns:
+            Dict mapping vLLM-compatible names to parameter tensors
+        """
+        state_dict = {}
 
         for expert_id in range(self.num_experts):
             # gate_proj (w1)
-            params.append(
-                (
-                    f"experts.{expert_id}.gate_proj.lora_A",
-                    self.w1_lora_A[idx][expert_id],  # Shape: [rank, dim]
-                )
-            )
-            params.append(
-                (
-                    f"experts.{expert_id}.gate_proj.lora_B",
-                    self.w1_lora_B[idx][expert_id],  # Shape: [hidden_dim, rank]
-                )
-            )
+            state_dict[f"{expert_id}.gate_proj.lora_A.weight"] = self.w1_lora_A[idx][expert_id]
+            state_dict[f"{expert_id}.gate_proj.lora_B.weight"] = self.w1_lora_B[idx][expert_id]
 
             # down_proj (w2)
-            params.append(
-                (
-                    f"experts.{expert_id}.down_proj.lora_A",
-                    self.w2_lora_A[idx][expert_id],  # Shape: [rank, hidden_dim]
-                )
-            )
-            params.append(
-                (
-                    f"experts.{expert_id}.down_proj.lora_B",
-                    self.w2_lora_B[idx][expert_id],  # Shape: [dim, rank]
-                )
-            )
+            state_dict[f"{expert_id}.down_proj.lora_A.weight"] = self.w2_lora_A[idx][expert_id]
+            state_dict[f"{expert_id}.down_proj.lora_B.weight"] = self.w2_lora_B[idx][expert_id]
 
             # up_proj (w3)
-            params.append(
-                (
-                    f"experts.{expert_id}.up_proj.lora_A",
-                    self.w3_lora_A[idx][expert_id],  # Shape: [rank, dim]
-                )
-            )
-            params.append(
-                (
-                    f"experts.{expert_id}.up_proj.lora_B",
-                    self.w3_lora_B[idx][expert_id],  # Shape: [hidden_dim, rank]
-                )
-            )
+            state_dict[f"{expert_id}.up_proj.lora_A.weight"] = self.w3_lora_A[idx][expert_id]
+            state_dict[f"{expert_id}.up_proj.lora_B.weight"] = self.w3_lora_B[idx][expert_id]
 
-        return params
+        return state_dict
 
     def forward(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
         """

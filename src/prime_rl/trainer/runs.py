@@ -257,7 +257,18 @@ class Runs:
         Returns:
             State dict for the specified run index
         """
-        return {name: param.detach() for name, param in self.get_named_parameters_for_run(idx)}
+        state_dict = {}
+        for prefix, module in self._modules:
+            # Check if module has a custom state_dict_for_adapter method (e.g., MoE modules)
+            # which returns vLLM-compatible per-expert format
+            if hasattr(module, "state_dict_for_adapter"):
+                for name, tensor in module.state_dict_for_adapter(idx).items():
+                    state_dict[f"{prefix}.{name}"] = tensor.detach()
+            else:
+                # Default: use named_parameters_for_adapter
+                for name, param in module.named_parameters_for_adapter(idx):
+                    state_dict[f"{prefix}.{name}.weight"] = param.detach()
+        return state_dict
 
     def reset_run_parameters(self, idx: int) -> None:
         """Reset parameters for a specific run index.
