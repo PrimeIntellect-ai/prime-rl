@@ -71,13 +71,13 @@ class WandbMonitor(Monitor):
             self.logger.debug(f"Found WANDB_ARGS in environment variables {wandb_args}")
             sys.argv = json.loads(wandb_args)
 
-    def log(self, metrics: dict[str, Any]) -> None:
+    def log(self, metrics: dict[str, Any], step: int | None = None) -> None:
         self.history.append(metrics)
         if not self.is_master:
             return
         if not self.enabled:
             return
-        wandb.log(metrics, step=metrics.get("step", None))
+        wandb.log(metrics, step=step)
 
     def log_samples(self, rollouts: list[vf.State], step: int) -> None:
         """Logs rollouts to W&B table."""

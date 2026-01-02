@@ -4,9 +4,10 @@ import random
 from collections import defaultdict
 from functools import partial
 from pathlib import Path
-from typing import Literal, cast
+from typing import cast
 
 import verifiers as vf
+from datasets import Dataset
 
 from prime_rl.orchestrator.config import BufferConfig
 from prime_rl.utils.logger import get_logger
@@ -20,24 +21,18 @@ class Buffer:
     POOLS = ["easy", "normal", "hard"]
 
     def __init__(
-        self, env_group: vf.EnvGroup, buffer_config: BufferConfig, dataset_type: Literal["train", "val"] = "train"
+        self,
+        dataset: Dataset,
+        env_names: list[str],
+        buffer_config: BufferConfig,
     ):
-        self.env_group = env_group
+        self.dataset = dataset
+        self.env_names = env_names
         self.config = buffer_config
-        self.dataset_type = dataset_type
         self.logger = get_logger()
 
         if self.config.seed is not None:
             random.seed(self.config.seed)
-
-        if self.dataset_type == "train":
-            self.dataset = env_group.get_dataset(seed=self.config.seed)
-        elif self.dataset_type == "val":
-            self.dataset = env_group.get_eval_dataset(seed=self.config.seed)
-        else:
-            raise ValueError(f"Invalid dataset type: {self.dataset_type}")
-
-        self.env_names = env_group.env_names
 
         # Basic assertions
         assert "example_id" in self.dataset.column_names, "The dataset must contain a `example_id` column."
@@ -54,7 +49,7 @@ class Buffer:
             self.example_buffer[example["task"]][example["example_id"]] = example
         assert len(self.example_buffer) == len(self.env_names)
         self.logger.debug(
-            f"Initialized {dataset_type} buffer with {format_num(len(self.dataset), precision=0)} example(s) in {len(self.env_names)} environment(s)"
+            f"Initialized buffer with {format_num(len(self.dataset), precision=0)} example(s) in {len(self.env_names)} environment(s)"
         )
 
         if self.config.env_ratios is not None:
@@ -62,7 +57,7 @@ class Buffer:
             env_ratio = mean_normalize(self.config.env_ratios)
             self.env_probs = {env_name: ratio for env_name, ratio in zip(self.env_names, env_ratio)}
             self.logger.debug(
-                f"Sampling {dataset_type} buffer according to provided environment ratios ({', '.join(f'{k}={v:.2f}' for k, v in self.env_probs.items())})"
+                f"Sampling buffer according to provided environment ratios ({', '.join(f'{k}={v:.2f}' for k, v in self.env_probs.items())})"
             )
         else:
             # Count examples per environment to sample according to natural env distribution
@@ -70,7 +65,7 @@ class Buffer:
             env_ratio = mean_normalize(env_counts)
             self.env_probs = {env_name: ratio for env_name, ratio in zip(self.env_names, env_ratio)}
             self.logger.debug(
-                f"Sampling {dataset_type} buffer according to natural environment distribution ({', '.join(f'{k}={v:.2f}' for k, v in self.env_probs.items())})"
+                f"Sampling buffer according to natural environment distribution ({', '.join(f'{k}={v:.2f}' for k, v in self.env_probs.items())})"
             )
 
         # Initialize buffers for easy/ hard examples

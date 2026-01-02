@@ -26,6 +26,7 @@ def _interleave_steps(steps: list[dict], has_error: bool) -> TrainingSample | No
         completion_ids=deepcopy(first_step["tokens"]["completion_ids"]),
         completion_mask=completion_mask,
         completion_logprobs=deepcopy(first_step["tokens"]["completion_logprobs"]),
+        teacher_logprobs=None,  # Populated at the end after full sequence length is known if teacher model is configured
         advantage=None,
     )
 
@@ -114,6 +115,7 @@ def branch_rollout(state: vf.State) -> list[TrainingSample] | None:
             completion_mask=completion_mask,
             completion_logprobs=deepcopy(tokens["completion_logprobs"]),
             advantage=None,
+            teacher_logprobs=None,
         )
         rollouts.append(rollout)
     return rollouts
