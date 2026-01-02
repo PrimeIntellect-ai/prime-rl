@@ -70,6 +70,9 @@ class Packer:
             time.sleep(1)
             training_batches = self.get_batch()
 
+        # We pack this way because MultiLoRAMoE currently does not support having different run_idx
+        # in a microbatch. So we need to pad at run_idx boundaries to prevent there being different
+        # run idxs in sequences and across data world size.
         micro_batch_grid = [[] for _ in range(self.dp_world_size)]
         for idx, training_batch in training_batches.items():
             self.runs.progress[idx].step += 1
