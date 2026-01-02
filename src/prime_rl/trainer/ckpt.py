@@ -87,7 +87,14 @@ class CheckpointManager:
         self.ckpt_dir = get_ckpt_dir(output_dir)
         self.logger = get_logger()
         self.world = get_world()
-        self.ckpt_steps: list[int] = get_all_ckpt_steps(self.ckpt_dir) if self.world.is_master else []
+        if self.world.is_master:
+            all_steps = get_all_ckpt_steps(self.ckpt_dir)
+            if config.resume_step is not None and config.resume_step >= 0:
+                self.ckpt_steps = [s for s in all_steps if s <= config.resume_step]
+            else:
+                self.ckpt_steps = all_steps
+        else:
+            self.ckpt_steps = []
 
     def get_ckpt_path(self, step: int) -> Path:
         """Get the path to write the trainer checkpoint for a given step."""
@@ -237,13 +244,21 @@ class WeightCheckpointManager:
         save_async: bool = False,
         keep_last: int | None = None,
         keep_interval: int | None = None,
+        resume_step: int | None = None,
     ):
         self.weights_dir = get_weights_dir(output_dir)
         self.config = config
         self.lora_config = lora_config
         self.logger = get_logger()
         self.world = get_world()
-        self.ckpt_steps: list[int] = get_all_ckpt_steps(self.weights_dir) if self.world.is_master else []
+        if self.world.is_master:
+            all_steps = get_all_ckpt_steps(self.weights_dir)
+            if resume_step is not None and resume_step >= 0:
+                self.ckpt_steps = [s for s in all_steps if s <= resume_step]
+            else:
+                self.ckpt_steps = all_steps
+        else:
+            self.ckpt_steps = []
         self.keep_last = keep_last
         self.keep_interval = keep_interval
 
@@ -370,6 +385,7 @@ def setup_ckpt_managers(
             lora_config=lora_config,
             keep_last=ckpt_config.keep_last,
             keep_interval=ckpt_config.keep_interval,
+            resume_step=ckpt_config.resume_step,
         )
     else:
         weight_ckpt_manager = None
