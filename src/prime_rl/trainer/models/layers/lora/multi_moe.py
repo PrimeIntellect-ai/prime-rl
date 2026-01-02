@@ -255,6 +255,25 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
             ("w3_lora_B", self.w3_lora_B[idx]),  # Shape: [num_experts, moe_dim, rank]
         ]
 
+    def get_lora_param_counts(self) -> tuple[int, int]:
+        """Get the number of LoRA adapter parameters and adapted base parameters.
+
+        Returns:
+            A tuple of (adapter_params, adapted_params) where:
+            - adapter_params: Number of parameters in ONE LoRA adapter (all w1/w2/w3 lora_A + lora_B)
+            - adapted_params: Number of base layer parameters being adapted by LoRA (w1, w2, w3)
+        """
+        adapter_params = (
+            self.w1_lora_A[0].numel()
+            + self.w1_lora_B[0].numel()
+            + self.w2_lora_A[0].numel()
+            + self.w2_lora_B[0].numel()
+            + self.w3_lora_A[0].numel()
+            + self.w3_lora_B[0].numel()
+        )
+        adapted_params = self.base_layer.w1.numel() + self.base_layer.w2.numel() + self.base_layer.w3.numel()
+        return adapter_params, adapted_params
+
     def state_dict_for_adapter(self, idx: int) -> dict[str, torch.Tensor]:
         """Get state dict for a specific adapter index in vLLM-compatible format.
 

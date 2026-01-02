@@ -197,9 +197,9 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
     lora_adapted_params = 0
     for name, module in model.named_modules():
         if isinstance(module, MultiLoRAModule):
-            lora_adapter_params += module.lora_A[0].numel() + module.lora_B[0].numel()
-            # TODO: add back but doesnt support moe atm
-            # lora_adapted_params += module.base_layer.weight.numel()
+            adapter_params, adapted_params = module.get_lora_param_counts()
+            lora_adapter_params += adapter_params
+            lora_adapted_params += adapted_params
 
     fully_trainable = trainable_params - lora_adapter_params
     adapted_or_trainable = lora_adapted_params + fully_trainable

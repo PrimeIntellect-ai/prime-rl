@@ -25,8 +25,6 @@ class MultiLoRAModule(nn.Module):
     """
 
     base_layer: nn.Module
-    lora_A: nn.ParameterList
-    lora_B: nn.ParameterList
 
     def __init__(self, base_layer: nn.Module) -> None:
         super().__init__()
@@ -60,6 +58,17 @@ class MultiLoRAModule(nn.Module):
 
         Returns:
             List of (name, parameter) tuples for the specified adapter
+        """
+        ...
+
+    @abstractmethod
+    def get_lora_param_counts(self) -> tuple[int, int]:
+        """Get the number of LoRA adapter parameters and adapted base parameters.
+
+        Returns:
+            A tuple of (adapter_params, adapted_params) where:
+            - adapter_params: Number of parameters in ONE LoRA adapter (lora_A + lora_B)
+            - adapted_params: Number of base layer parameters being adapted by LoRA
         """
         ...
 
