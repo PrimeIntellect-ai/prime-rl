@@ -301,13 +301,15 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
         detached_w3_lora_a = self.w3_lora_A[idx].detach()
         detached_w3_lora_b = self.w3_lora_B[idx].detach()
 
+        # The clone is necessary to avoid views that cause giant memory spikes
+        # TODO: There's probably a better way to do this
         for expert_id in range(self.num_experts):
-            state_dict[f"{expert_id}.gate_proj.lora_A.weight"] = detached_w1_lora_a[expert_id]
-            state_dict[f"{expert_id}.gate_proj.lora_B.weight"] = detached_w1_lora_b[expert_id]
-            state_dict[f"{expert_id}.down_proj.lora_A.weight"] = detached_w2_lora_a[expert_id]
-            state_dict[f"{expert_id}.down_proj.lora_B.weight"] = detached_w2_lora_b[expert_id]
-            state_dict[f"{expert_id}.up_proj.lora_A.weight"] = detached_w3_lora_a[expert_id]
-            state_dict[f"{expert_id}.up_proj.lora_B.weight"] = detached_w3_lora_b[expert_id]
+            state_dict[f"{expert_id}.gate_proj.lora_A.weight"] = detached_w1_lora_a[expert_id].clone()
+            state_dict[f"{expert_id}.gate_proj.lora_B.weight"] = detached_w1_lora_b[expert_id].clone()
+            state_dict[f"{expert_id}.down_proj.lora_A.weight"] = detached_w2_lora_a[expert_id].clone()
+            state_dict[f"{expert_id}.down_proj.lora_B.weight"] = detached_w2_lora_b[expert_id].clone()
+            state_dict[f"{expert_id}.up_proj.lora_A.weight"] = detached_w3_lora_a[expert_id].clone()
+            state_dict[f"{expert_id}.up_proj.lora_B.weight"] = detached_w3_lora_b[expert_id].clone()
 
         return state_dict
 
