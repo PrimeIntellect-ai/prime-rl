@@ -1,0 +1,16 @@
+{
+  "peft_type": "LORA",
+  "task_type": "CAUSAL_LM",
+  "base_model_name_or_path": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+  "r": 8,
+  "lora_alpha": 16.0,
+  "lora_dropout": 0.0,
+  "bias": "none",
+  "target_modules": [
+    "k_proj",
+    "o_proj",
+    "q_proj",
+    "v_proj"
+  ],
+  "modules_to_save": null
+}

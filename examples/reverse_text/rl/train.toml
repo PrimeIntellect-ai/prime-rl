@@ -5,3 +5,11 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 [optim]
 lr = 3e-6
+
+[model.lora]
+rank = 8
+alpha = 32
+dropout = 0.0
+target_modules = [
+    "experts"
+]
