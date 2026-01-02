@@ -26,7 +26,7 @@ from prime_rl.orchestrator.utils import set_semaphore
 from prime_rl.synthesize.utils import merge_reasoning_content, save_result
 from prime_rl.utils.client import setup_clients, setup_evals_client
 from prime_rl.utils.config import ClientConfig
-from prime_rl.utils.logger import get_logger, setup_logger
+from prime_rl.utils.logger import get_logger, reset_logger, setup_logger
 from prime_rl.utils.monitor import get_monitor
 from prime_rl.utils.utils import capitalize, get_eval_dir, get_step_path
 from prime_rl.utils.vf import (
@@ -656,7 +656,8 @@ def _run_evals_in_subprocess(
     max_concurrent: int,
 ):
     """Entry point for eval subprocess. Creates its own event loop and clients."""
-    # Setup logger for subprocess
+    # Setup logger for subprocess (reset first since we inherit parent's global state when forked)
+    reset_logger()
     logger = setup_logger("info")
     logger.info(f"Eval subprocess started for checkpoint step {ckpt_step}")
 
