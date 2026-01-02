@@ -29,6 +29,7 @@ from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.orchestrator.config import BufferConfig, OrchestratorConfig
 from prime_rl.orchestrator.scheduler import Scheduler
 from prime_rl.orchestrator.utils import (
+    compute_teacher_logprobs,
     get_sampling_args,
     print_benchmark,
     set_semaphore,
@@ -99,6 +100,17 @@ async def orchestrate(config: OrchestratorConfig):
     admin_clients = setup_admin_clients(config.client)
     evals_client = setup_evals_client()
 
+    # Setup teacher model client if configured
+    teacher_clients = None
+    teacher_model_name = None
+    if config.teacher_model:
+        logger.info(
+            f"Initializing teacher OpenAI client (base_url={', '.join(config.teacher_model.client.base_url)}, "
+            f"model={config.teacher_model.model.name})"
+        )
+        teacher_clients = setup_clients(config.teacher_model.client)
+        teacher_model_name = config.teacher_model.model.name
+
     # Load tokenizer
     logger.info(f"Initializing tokenizer for {config.model.name}")
     tokenizer = AutoTokenizer.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
@@ -132,23 +144,38 @@ async def orchestrate(config: OrchestratorConfig):
     if config.trajectory_strategy == "interleaved":
         logger.info("Using token prompts in environment to avoid retokenization discrepancies in multi-turn rollouts")
         env.set_interleaved_rollouts(True)
+    if config.buffer.skip_verification:
+        logger.info("Skipping verification (rewards will be set to 0)")
+        env.set_score_rollouts(False)
 
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
-    buffer = Buffer(env, config.buffer)
+    train_dataset = env.get_dataset(seed=config.buffer.seed)
+    buffer = Buffer(train_dataset, env.env_names, config.buffer)
     if config.val is not None:
         val_buffer_config = BufferConfig(env_ratios=config.buffer.env_ratios)
-        val_buffer = Buffer(env, val_buffer_config, dataset_type="val")
+        val_dataset = env.get_eval_dataset(seed=val_buffer_config.seed)
+        val_buffer = Buffer(val_dataset, env.env_names, val_buffer_config)
     else:
         val_buffer = None
 
-    # Setup scheduler
+    # Get checkpoint manager
+    logger.info(f"Initializing checkpoint manager ({config.ckpt})")
+    ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
+
+    checkpoint_step = None
+    if config.ckpt and config.ckpt.resume_step is not None and ckpt_manager is not None:
+        if config.ckpt.resume_step == -1:
+            checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+        else:
+            checkpoint_step = config.ckpt.resume_step
+
+    # Setup scheduler (uses subprocess workers for env execution)
     scheduler = Scheduler(
-        clients=clients,
         admin_clients=admin_clients,
-        env=env,
+        client_config=config.client,
+        env_configs=config.env,
         buffer=buffer,
-        tokenizer=tokenizer,
         config=config,
         oversampling_factor=config.oversampling_factor,
         max_async_level=config.max_async_level,
@@ -156,6 +183,14 @@ async def orchestrate(config: OrchestratorConfig):
         strict_async_level=config.strict_async_level,
         lora_name=config.lora_name,
     )
+
+    if checkpoint_step is not None and config.lora_name is not None:
+        scheduler.model_name = config.lora_name
+        for workers in scheduler.workers.values():
+            for worker in workers:
+                worker.model_name = config.lora_name
+
+    await scheduler.start()
 
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")
@@ -170,10 +205,6 @@ async def orchestrate(config: OrchestratorConfig):
             admin_clients, config.weight_broadcast.host, config.weight_broadcast.port, config.weight_broadcast.timeout
         )
 
-    # Get checkpoint manager
-    logger.info(f"Initializing checkpoint manager ({config.ckpt})")
-    ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
-
     # Setup training batch sender for sending training examples to trainer
     logger.info(f"Initializing training batch sender ({config.rollout_transport})")
     training_batch_sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
@@ -183,13 +214,6 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Reset weights to base model if starting from scratch
     progress = Progress()
-
-    checkpoint_step = None
-    if config.ckpt and config.ckpt.resume_step is not None and ckpt_manager is not None:
-        if config.ckpt.resume_step == -1:
-            checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
-        else:
-            checkpoint_step = config.ckpt.resume_step
 
     if checkpoint_step is not None and ckpt_manager is not None:
         ckpt_manager.load(progress, buffer, step=checkpoint_step)
@@ -203,8 +227,6 @@ async def orchestrate(config: OrchestratorConfig):
             get_step_path(get_broadcast_dir(config.output_dir), scheduler.ckpt_step),
             lora_name=config.lora_name,
         )
-        if config.lora_name is not None:
-            scheduler.model_name = config.lora_name
     else:
         logger.info("Training from scratch. Resetting weights to base model")
         if config.lora_name is None:
@@ -325,6 +347,21 @@ async def orchestrate(config: OrchestratorConfig):
             f"Converted {len(train_rollouts)} training rollouts to {len(train_examples)} training examples using {config.trajectory_strategy} strategy"
         )
 
+        # Compute teacher logprobs if teacher model is configured
+        teacher_logprobs_time = 0
+        if config.teacher_model is not None:
+            logger.info(f"Computing teacher logprobs for {len(train_examples)} training examples")
+            teacher_logprobs_start_time = time.perf_counter()
+            teacher_logprobs_list = await compute_teacher_logprobs(
+                clients=teacher_clients,
+                model_name=teacher_model_name,
+                samples=train_examples,
+            )
+            for train_example, teacher_logprobs in zip(train_examples, teacher_logprobs_list):
+                train_example.teacher_logprobs = teacher_logprobs
+            teacher_logprobs_time = time.perf_counter() - teacher_logprobs_start_time
+            logger.debug(f"Computed teacher logprobs in {teacher_logprobs_time:.2f}s")
+
         training_batch = TrainingBatch(
             examples=train_examples,
             temperature=config.sampling.temperature,
@@ -346,10 +383,7 @@ async def orchestrate(config: OrchestratorConfig):
                 "task": [rollout["task"] for rollout in train_rollouts],
                 "reward": [rollout["reward"] for rollout in train_rollouts],
                 "is_truncated": [rollout["is_truncated"] for rollout in train_rollouts],
-                "error": [
-                    type(rollout["error"]).__name__ if rollout["error"] is not None else None
-                    for rollout in train_rollouts
-                ],
+                "error": [rollout["error"] for rollout in train_rollouts],
                 "completion_len": [get_completion_len(rollout) for rollout in train_rollouts],
                 "prompt_len": [get_prompt_len(rollout) for rollout in train_rollouts],
                 "seq_len": [get_seq_len(rollout) for rollout in train_rollouts],
@@ -443,6 +477,7 @@ async def orchestrate(config: OrchestratorConfig):
             # Time metrics
             "time/step": step_time,
             "time/generate_completions": generate_completions_time,
+            "time/teacher_logprobs": teacher_logprobs_time,
             "time/save_ckpt": save_ckpt_time,
             # Scheduler metrics
             **scheduler.get_metrics(),
@@ -527,6 +562,9 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Close training batch sender
     training_batch_sender.close()
+
+    # Stop env workers
+    await scheduler.stop()
 
     # Cancel event loop lag monitor task
     event_loop_lag_monitor_task.cancel()

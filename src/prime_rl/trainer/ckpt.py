@@ -193,13 +193,28 @@ class CheckpointManager:
             self.ckpt_steps.append(step)
 
     def maybe_clean(self) -> None:
-        """Deletes past checkpoints beyond the most recent config.keep steps. No-op if config.keep is None."""
-        if self.config.keep is None:
+        """Deletes past checkpoints based on keep_last and keep_interval policies. No-op if both are None."""
+        if self.config.keep_last is None and self.config.keep_interval is None:
             return
 
         # Get all the checkpoint steps to delete
         assert list(self.ckpt_steps) == sorted(self.ckpt_steps)
-        ckpt_steps_to_delete = self.ckpt_steps[: -self.config.keep]
+
+        # Determine which steps to keep
+        steps_to_keep = set()
+
+        # Keep the most recent keep_last steps
+        if self.config.keep_last is not None:
+            steps_to_keep.update(self.ckpt_steps[-self.config.keep_last :])
+
+        # Keep steps at keep_interval intervals
+        if self.config.keep_interval is not None:
+            for step in self.ckpt_steps:
+                if step % self.config.keep_interval == 0:
+                    steps_to_keep.add(step)
+
+        # Delete steps not in steps_to_keep
+        ckpt_steps_to_delete = [step for step in self.ckpt_steps if step not in steps_to_keep]
         for ckpt_step in ckpt_steps_to_delete:
             trainer_ckpt_path = self.get_ckpt_path(ckpt_step)
             ckpt_path = trainer_ckpt_path.parent
@@ -208,7 +223,7 @@ class CheckpointManager:
                 shutil.rmtree(ckpt_path)
 
         # Update checkpoint steps
-        self.ckpt_steps = self.ckpt_steps[-self.config.keep :]
+        self.ckpt_steps = [step for step in self.ckpt_steps if step in steps_to_keep]
 
 
 class WeightCheckpointManager:
@@ -220,7 +235,8 @@ class WeightCheckpointManager:
         config: WeightCheckpointConfig,
         lora_config: LoRAConfig | None = None,
         save_async: bool = False,
-        keep: int | None = None,
+        keep_last: int | None = None,
+        keep_interval: int | None = None,
     ):
         self.weights_dir = get_weights_dir(output_dir)
         self.config = config
@@ -228,7 +244,8 @@ class WeightCheckpointManager:
         self.logger = get_logger()
         self.world = get_world()
         self.ckpt_steps: list[int] = []  # Sorted list of steps that have been checkpointed, only used on master rank
-        self.keep = keep
+        self.keep_last = keep_last
+        self.keep_interval = keep_interval
 
     def get_step_path(self, step: int) -> Path:
         """Get the path to write the weight checkpoint for a given step."""
@@ -308,13 +325,28 @@ class WeightCheckpointManager:
             self.ckpt_steps.append(step)
 
     def maybe_clean(self) -> None:
-        """Deletes past checkpoints beyond the most recent config.keep steps. No-op if config.keep is None."""
-        if self.keep is None:
+        """Deletes past checkpoints based on keep_last and keep_interval policies. No-op if both are None."""
+        if self.keep_last is None and self.keep_interval is None:
             return
 
         # Get all the checkpoint steps to delete
         assert list(self.ckpt_steps) == sorted(self.ckpt_steps)
-        ckpt_steps_to_delete = self.ckpt_steps[: -self.keep]
+
+        # Determine which steps to keep
+        steps_to_keep = set()
+
+        # Keep the most recent keep_last steps
+        if self.keep_last is not None:
+            steps_to_keep.update(self.ckpt_steps[-self.keep_last :])
+
+        # Keep steps at keep_interval intervals
+        if self.keep_interval is not None:
+            for step in self.ckpt_steps:
+                if step % self.keep_interval == 0:
+                    steps_to_keep.add(step)
+
+        # Delete steps not in steps_to_keep
+        ckpt_steps_to_delete = [step for step in self.ckpt_steps if step not in steps_to_keep]
         for ckpt_step in ckpt_steps_to_delete:
             ckpt_path = self.get_step_path(ckpt_step)
             if ckpt_path.exists():
@@ -322,7 +354,7 @@ class WeightCheckpointManager:
                 shutil.rmtree(ckpt_path)
 
         # Update checkpoint steps
-        self.ckpt_steps = self.ckpt_steps[-self.keep :]
+        self.ckpt_steps = [step for step in self.ckpt_steps if step in steps_to_keep]
 
 
 def setup_ckpt_managers(
@@ -336,7 +368,8 @@ def setup_ckpt_managers(
             output_dir,
             ckpt_config.weights,
             lora_config=lora_config,
-            keep=ckpt_config.keep,
+            keep_last=ckpt_config.keep_last,
+            keep_interval=ckpt_config.keep_interval,
         )
     else:
         weight_ckpt_manager = None
