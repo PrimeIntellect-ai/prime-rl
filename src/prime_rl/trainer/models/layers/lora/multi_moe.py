@@ -433,5 +433,5 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
             f"{self.__class__.__name__}(base={self.base_layer}, rank={self.rank}, "
             f"n_adapters={self.n_adapters}, num_experts={self.num_experts}, "
             f"alpha={self.alpha}, dropout={self.lora_dropout}, "
-            f"use_grouped_mm={self.use_grouped_mm}"
+            f"use_grouped_mm={self.use_grouped_mm})"
         )
