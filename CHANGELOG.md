@@ -27,4 +27,3 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`trainer.weight_broadcast.adapter_only`**: Removed. Adapter-only behavior is now automatically derived from the presence of LoRA configuration (2025-12-27)
 - **`ckpt.keep`**: Renamed to `ckpt.keep_last`. Added `ckpt.keep_interval` to keep checkpoints at every N steps permanently (2025-12-31)
 - **`MultiLoRAMoE`**: QwenMoE now supports training expert loras and this is enabled by default in the `target_modules`. (2026-01-01)
-- 
