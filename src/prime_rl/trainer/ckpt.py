@@ -29,7 +29,7 @@ from prime_rl.trainer.weights import (
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.tensor_hashing import get_module_signature, get_optimizer_signature
-from prime_rl.utils.utils import get_ckpt_dir, get_step_path, get_weights_dir
+from prime_rl.utils.utils import get_all_ckpt_steps, get_ckpt_dir, get_step_path, get_weights_dir
 
 
 class AppState(Stateful):
@@ -87,7 +87,7 @@ class CheckpointManager:
         self.ckpt_dir = get_ckpt_dir(output_dir)
         self.logger = get_logger()
         self.world = get_world()
-        self.ckpt_steps: list[int] = []  # Sorted list of steps that have been checkpointed, only used on master rank
+        self.ckpt_steps: list[int] = get_all_ckpt_steps(self.ckpt_dir) if self.world.is_master else []
 
     def get_ckpt_path(self, step: int) -> Path:
         """Get the path to write the trainer checkpoint for a given step."""
@@ -243,7 +243,7 @@ class WeightCheckpointManager:
         self.lora_config = lora_config
         self.logger = get_logger()
         self.world = get_world()
-        self.ckpt_steps: list[int] = []  # Sorted list of steps that have been checkpointed, only used on master rank
+        self.ckpt_steps: list[int] = get_all_ckpt_steps(self.weights_dir) if self.world.is_master else []
         self.keep_last = keep_last
         self.keep_interval = keep_interval
 

@@ -17,6 +17,7 @@ from prime_rl.utils.logger import get_logger
 # TODO: Change all imports to use utils.pathing
 # ruff: noqa: F401
 from prime_rl.utils.pathing import (
+    get_all_ckpt_steps,
     get_broadcast_dir,
     get_ckpt_dir,
     get_eval_dir,
