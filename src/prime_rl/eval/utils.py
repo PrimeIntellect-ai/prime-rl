@@ -645,10 +645,10 @@ async def run_evals(
 
 
 def _run_evals_in_subprocess(
-    client_config_dict: dict,
-    eval_config_dict: dict,
-    model_config_dict: dict,
-    sampling_config_dict: dict,
+    client_config: ClientConfig,
+    eval_config: EvalConfig,
+    model_config: ModelConfig,
+    sampling_config: EvalSamplingConfig,
     reasoning_field: str,
     output_dir: str,
     ckpt_step: int,
@@ -660,12 +660,6 @@ def _run_evals_in_subprocess(
     reset_logger()
     logger = setup_logger("info")
     logger.info(f"Eval subprocess started for checkpoint step {ckpt_step}")
-
-    # Reconstruct configs from dicts
-    client_config = ClientConfig(**client_config_dict)
-    eval_config = EvalConfig(**eval_config_dict)
-    model_config = ModelConfig(**model_config_dict)
-    sampling_config = EvalSamplingConfig(**sampling_config_dict)
 
     # Create fresh clients in subprocess
     clients = setup_clients(client_config)
@@ -711,10 +705,10 @@ async def run_evals_subprocess(
     process = Process(
         target=_run_evals_in_subprocess,
         args=(
-            client_config.model_dump(),
-            eval_config.model_dump(),
-            model_config.model_dump(),
-            sampling_config.model_dump(),
+            client_config,
+            eval_config,
+            model_config,
+            sampling_config,
             reasoning_field,
             str(output_dir),
             ckpt_step,
