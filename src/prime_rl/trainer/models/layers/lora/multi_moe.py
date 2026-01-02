@@ -80,12 +80,7 @@ def _run_lora_for_loop(
 class MultiLoRAGroupedExperts(MultiLoRAModule):
     """
     GroupedExperts + multi-LoRA with grouped GEMM.
-
     Applies LoRA to all three expert projections (w1, w2, w3) for multi-tenant MoE training.
-
-    Phase 1: Uses adapter 0 for all tokens (single-tenant mode).
-    Phase 2 (future): Per-(adapter, expert) LoRA application using 2D offset grid.
-
     Compatible with vLLM's MoE LoRA format when broadcasting weights.
     """
 
@@ -96,21 +91,15 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
         n_adapters: int,
         alpha: float = 16.0,
         dropout: float = 0.0,
-        use_phase2: bool = False,
     ):
         super().__init__(base_layer)
         if rank <= 0 or n_adapters <= 0:
             raise ValueError("rank and n_adapters must be > 0")
 
-        # Extract dimensions from base layer
-        # w1: [num_experts, hidden_dim, dim]
-        # w2: [num_experts, dim, hidden_dim]
-        # w3: [num_experts, hidden_dim, dim]
         self.num_experts = base_layer.num_experts
         self.dim = base_layer.w1.shape[2]
         self.hidden_dim = base_layer.w1.shape[1]
 
-        # Determine use_grouped_mm based on compute capability and alignment
         use_grouped_mm = False
         if torch.cuda.is_available():
             cc_major, _ = torch.cuda.get_device_capability()
@@ -127,9 +116,8 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
         self.scaling = alpha / rank
         self.lora_dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
         self.use_grouped_mm = use_grouped_mm
-        self.use_phase2 = use_phase2
 
-        # Initialize LoRA parameters for w1 (gate_proj: dim -> hidden_dim)
+        # Initialize LoRA parameters for w1 (gate_proj: dim -> moe_dim)
         self.w1_lora_A = nn.ParameterList(
             [
                 nn.Parameter(
@@ -159,7 +147,7 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
             ]
         )
 
-        # Initialize LoRA parameters for w2 (down_proj: hidden_dim -> dim)
+        # Initialize LoRA parameters for w2 (down_proj: moe_dim -> dim)
         self.w2_lora_A = nn.ParameterList(
             [
                 nn.Parameter(
@@ -189,7 +177,7 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
             ]
         )
 
-        # Initialize LoRA parameters for w3 (up_proj: dim -> hidden_dim)
+        # Initialize LoRA parameters for w3 (up_proj: moe_dim -> dim)
         self.w3_lora_A = nn.ParameterList(
             [
                 nn.Parameter(
@@ -219,11 +207,8 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
             ]
         )
 
-        # Assign to lora_A and lora_B for base class compatibility
-        # These are used by reset_parameters and other base class methods
-        self.lora_A = nn.ParameterList([*self.w1_lora_A, *self.w2_lora_A, *self.w3_lora_A])
-        self.lora_B = nn.ParameterList([*self.w1_lora_B, *self.w2_lora_B, *self.w3_lora_B])
-
+        if dropout > 0.0:
+            raise NotImplementedError("Dropout is not supported for MultiLoRAGroupedExperts yet")
         self.reset_parameters()
 
     def reset_parameters(self, index: int | None = None) -> None:
@@ -263,11 +248,11 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
         """
         return [
             ("w1_lora_A", self.w1_lora_A[idx]),  # Shape: [num_experts, rank, dim]
-            ("w1_lora_B", self.w1_lora_B[idx]),  # Shape: [num_experts, hidden_dim, rank]
-            ("w2_lora_A", self.w2_lora_A[idx]),  # Shape: [num_experts, rank, hidden_dim]
+            ("w1_lora_B", self.w1_lora_B[idx]),  # Shape: [num_experts, moe_dim, rank]
+            ("w2_lora_A", self.w2_lora_A[idx]),  # Shape: [num_experts, rank, moe_dim]
             ("w2_lora_B", self.w2_lora_B[idx]),  # Shape: [num_experts, dim, rank]
             ("w3_lora_A", self.w3_lora_A[idx]),  # Shape: [num_experts, rank, dim]
-            ("w3_lora_B", self.w3_lora_B[idx]),  # Shape: [num_experts, hidden_dim, rank]
+            ("w3_lora_B", self.w3_lora_B[idx]),  # Shape: [num_experts, moe_dim, rank]
         ]
 
     def state_dict_for_adapter(self, idx: int) -> dict[str, torch.Tensor]:
@@ -282,10 +267,6 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
         - {expert_id}.up_proj.lora_A.weight
         - {expert_id}.up_proj.lora_B.weight
 
-        Note: Keys don't include "experts." prefix because this module is registered
-        under a path ending in ".experts" (e.g., model.layers.0.mlp.experts).
-        The full key becomes: {prefix}.{expert_id}.gate_proj.lora_A.weight
-
         Args:
             idx: The adapter index to get state dict for
 
@@ -294,62 +275,26 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
         """
         state_dict = {}
 
+        detached_w1_lora_a = self.w1_lora_A[idx].detach()
+        detached_w1_lora_b = self.w1_lora_B[idx].detach()
+        detached_w2_lora_a = self.w2_lora_A[idx].detach()
+        detached_w2_lora_b = self.w2_lora_B[idx].detach()
+        detached_w3_lora_a = self.w3_lora_A[idx].detach()
+        detached_w3_lora_b = self.w3_lora_B[idx].detach()
+
         for expert_id in range(self.num_experts):
-            # gate_proj (w1)
-            state_dict[f"{expert_id}.gate_proj.lora_A.weight"] = self.w1_lora_A[idx][expert_id]
-            state_dict[f"{expert_id}.gate_proj.lora_B.weight"] = self.w1_lora_B[idx][expert_id]
-
-            # down_proj (w2)
-            state_dict[f"{expert_id}.down_proj.lora_A.weight"] = self.w2_lora_A[idx][expert_id]
-            state_dict[f"{expert_id}.down_proj.lora_B.weight"] = self.w2_lora_B[idx][expert_id]
-
-            # up_proj (w3)
-            state_dict[f"{expert_id}.up_proj.lora_A.weight"] = self.w3_lora_A[idx][expert_id]
-            state_dict[f"{expert_id}.up_proj.lora_B.weight"] = self.w3_lora_B[idx][expert_id]
+            state_dict[f"{expert_id}.gate_proj.lora_A.weight"] = detached_w1_lora_a[expert_id]
+            state_dict[f"{expert_id}.gate_proj.lora_B.weight"] = detached_w1_lora_b[expert_id]
+            state_dict[f"{expert_id}.down_proj.lora_A.weight"] = detached_w2_lora_a[expert_id]
+            state_dict[f"{expert_id}.down_proj.lora_B.weight"] = detached_w2_lora_b[expert_id]
+            state_dict[f"{expert_id}.up_proj.lora_A.weight"] = detached_w3_lora_a[expert_id]
+            state_dict[f"{expert_id}.up_proj.lora_B.weight"] = detached_w3_lora_b[expert_id]
 
         return state_dict
 
     def forward(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass with LoRA applied to expert projections.
-
-        Phase 1: Uses adapter 0 for all tokens (ignores global OFFSETS).
-        Phase 2 (future): Uses per-(adapter, expert) offsets for multi-tenant.
-
-        Args:
-            x: Input tensor, shape [total_tokens, dim], already routed by expert
-            num_tokens_per_expert: Token counts per expert, shape [num_experts]
-
-        Returns:
-            Output tensor, shape [total_tokens, dim]
-        """
-        if self.use_phase2:
-            raise NotImplementedError(
-                "Phase 2 (per-adapter-expert offsets) requires extending the packing "
-                "system to track both adapter and expert assignments for each token."
-            )
-
-        # Phase 1: Apply adapter 0 to all tokens
-        return self._forward_phase1(x, num_tokens_per_expert)
-
-    def _forward_phase1(
-        self,
-        x: torch.Tensor,
-        num_tokens_per_expert: torch.Tensor,
-    ) -> torch.Tensor:
-        """Phase 1: Apply same LoRA (adapter 0) to all tokens.
-
-        Reimplements the expert forward pass with LoRA injections at correct points:
-        - LoRA on w1 before SiLU activation
-        - LoRA on w3 before element-wise multiplication
-        - LoRA on w2 for final projection
-
-        This ensures mathematically correct LoRA application for SwiGLU activation.
-        """
-        # Apply dropout
-        lora_x = self.lora_dropout(x)
-
-        # Get adapter 0 LoRA weights
+        # TODO: We always use adapter 0 for now
+        # We need to cat and do offsets for multi-adapter
         w1_lora_a = self.w1_lora_A[0]  # [num_experts, rank, dim]
         w1_lora_b = self.w1_lora_B[0]  # [num_experts, hidden_dim, rank]
         w2_lora_a = self.w2_lora_A[0]  # [num_experts, rank, hidden_dim]
@@ -366,29 +311,29 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
         offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
 
         if self.use_grouped_mm:
-            # Compute w1 + w1_lora
-            h1_base = torch._grouped_mm(lora_x.bfloat16(), base_w1.bfloat16().transpose(-2, -1), offs=offsets)
-            w1_lora_out = _run_lora_grouped_mm(lora_x, w1_lora_a, w1_lora_b, offsets)
+            # Gate
+            h1_base = torch._grouped_mm(x.bfloat16(), base_w1.bfloat16().transpose(-2, -1), offs=offsets)
+            w1_lora_out = _run_lora_grouped_mm(x, w1_lora_a, w1_lora_b, offsets)
             h1 = h1_base + self.scaling * w1_lora_out.bfloat16()
 
-            # Compute w3 + w3_lora
-            h3_base = torch._grouped_mm(lora_x.bfloat16(), base_w3.bfloat16().transpose(-2, -1), offs=offsets)
-            w3_lora_out = _run_lora_grouped_mm(lora_x, w3_lora_a, w3_lora_b, offsets)
+            # Up
+            h3_base = torch._grouped_mm(x.bfloat16(), base_w3.bfloat16().transpose(-2, -1), offs=offsets)
+            w3_lora_out = _run_lora_grouped_mm(x, w3_lora_a, w3_lora_b, offsets)
             h3 = h3_base + self.scaling * w3_lora_out.bfloat16()
 
             # SwiGLU activation
             h = F.silu(h1) * h3
 
-            # Compute w2 + w2_lora
+            # Down
             h2_base = torch._grouped_mm(h, base_w2.bfloat16().transpose(-2, -1), offs=offsets)
-            w2_lora_out = _run_lora_grouped_mm(h.type_as(lora_x), w2_lora_a, w2_lora_b, offsets)
+            w2_lora_out = _run_lora_grouped_mm(h.type_as(x), w2_lora_a, w2_lora_b, offsets)
             out = h2_base + self.scaling * w2_lora_out.bfloat16()
 
             return out.type_as(x)
         else:
             # For-loop fallback for older GPUs
-            return self._forward_phase1_for_loop(
-                lora_x,
+            return self._forward_for_loop(
+                x,
                 num_tokens_per_expert,
                 w1_lora_a,
                 w1_lora_b,
@@ -401,7 +346,7 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
                 base_w3,
             )
 
-    def _forward_phase1_for_loop(
+    def _forward_for_loop(
         self,
         x: torch.Tensor,
         num_tokens_per_expert: torch.Tensor,
@@ -415,7 +360,7 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
         base_w2: torch.Tensor,
         base_w3: torch.Tensor,
     ) -> torch.Tensor:
-        """For-loop implementation of Phase 1 forward (fallback for non-Hopper GPUs)."""
+        """For-loop implementation of forward pass (fallback for non-Hopper GPUs)."""
         num_tokens_per_expert_list = num_tokens_per_expert.tolist()
         out_splits = []
 
@@ -457,5 +402,5 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
             f"{self.__class__.__name__}(base={self.base_layer}, rank={self.rank}, "
             f"n_adapters={self.n_adapters}, num_experts={self.num_experts}, "
             f"alpha={self.alpha}, dropout={self.lora_dropout}, "
-            f"use_grouped_mm={self.use_grouped_mm}, use_phase2={self.use_phase2})"
+            f"use_grouped_mm={self.use_grouped_mm}"
         )
