@@ -314,14 +314,18 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
         return state_dict
 
     def forward(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
-        # TODO: We always use adapter 0 for now
-        # We need to cat and do offsets for multi-adapter
-        w1_lora_a = self.w1_lora_A[0]  # [num_experts, rank, dim]
-        w1_lora_b = self.w1_lora_B[0]  # [num_experts, hidden_dim, rank]
-        w2_lora_a = self.w2_lora_A[0]  # [num_experts, rank, hidden_dim]
-        w2_lora_b = self.w2_lora_B[0]  # [num_experts, dim, rank]
-        w3_lora_a = self.w3_lora_A[0]  # [num_experts, rank, dim]
-        w3_lora_b = self.w3_lora_B[0]  # [num_experts, hidden_dim, rank]
+        # TODO: We assume theres only one adapter active in a sequence for now
+        # Being able to route multi-adapter sequences efficiently requires two things that are tricky
+        # 1. We need the tensor to be interleaved [(e0, a0), (e0, a1), (e1, a0), (e1, a1), ...]
+        # This causes issues when we want to create a stacked param for the optimizer
+        # 2. The topkrouter needs to set the offsets by binning its hist for each adapter
+        # The sort currently occurs there, so it needs to be done there too
+        w1_lora_a = self.w1_lora_A[OFFSETS[0].argmax()]  # [num_experts, rank, dim]
+        w1_lora_b = self.w1_lora_B[OFFSETS[0].argmax()]  # [num_experts, hidden_dim, rank]
+        w2_lora_a = self.w2_lora_A[OFFSETS[0].argmax()]  # [num_experts, rank, hidden_dim]
+        w2_lora_b = self.w2_lora_B[OFFSETS[0].argmax()]  # [num_experts, dim, rank]
+        w3_lora_a = self.w3_lora_A[OFFSETS[0].argmax()]  # [num_experts, rank, dim]
+        w3_lora_b = self.w3_lora_B[OFFSETS[0].argmax()]  # [num_experts, hidden_dim, rank]
 
         # Access base weights directly
         base_w1 = self.base_layer.w1  # [num_experts, hidden_dim, dim]
