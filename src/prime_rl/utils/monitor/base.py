@@ -12,7 +12,7 @@ class Monitor(ABC):
     """
 
     @abstractmethod
-    def log(self, metrics: dict[str, Any]) -> None:
+    def log(self, metrics: dict[str, Any], step: int | None = None) -> None:
         pass
 
     @abstractmethod
@@ -42,7 +42,7 @@ class NoOpMonitor(Monitor):
     def __init__(self):
         self.history: list[dict[str, Any]] = []
 
-    def log(self, metrics: dict[str, Any]) -> None:
+    def log(self, metrics: dict[str, Any], step: int | None = None) -> None:
         self.history.append(metrics)
 
     def log_samples(self, rollouts: list[vf.State], step: int) -> None:
