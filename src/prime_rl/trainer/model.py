@@ -359,6 +359,9 @@ def setup_model(
         logger.warning("Cannot load model to meta device only, loading to CPU instead.")
         model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype])
 
+    if not isinstance(model, PreTrainedModelPrimeRL) and config.fused_lm_head_chunk_size is not None:
+        logger.warning("Fused LM head chunk size was specified but model is not a PrimeRL model, ignoring chunk size.")
+
     if isinstance(model, PreTrainedModelPrimeRL):
         model.wrap_lm_head(chunk_size=config.fused_lm_head_chunk_size)
 
