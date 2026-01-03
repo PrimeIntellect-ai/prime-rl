@@ -28,6 +28,7 @@ from prime_rl.trainer.rl.loss import (
     compute_loss,
     selective_log_softmax,
     shift_tensor_left,
+    shift_tensor_right,
 )
 from prime_rl.trainer.model import (
     forward,
@@ -314,6 +315,11 @@ def train(config: RLTrainerConfig):
                 entropies = [torch.zeros_like(out.entropy) for _ in range(cp_size)]
                 dist.all_gather(entropies, out.entropy, group=cp_group)
                 out.entropy = torch.cat(entropies, dim=1)
+
+            # Because we have to shift the labels to the left, we, this results in logprobs[i] = log P(labels[i]) = log P(input_ids[i+1]).
+            # However, inference_logprobs[i] = log P(input_ids[i]), so we need to shift the logprobs to the right to match the inference_logprobs.
+            # After shifting right: logprobs[i] = log P(input_ids[i]), matching inference_logprobs
+            out.logprobs = shift_tensor_right(out.logprobs)
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)

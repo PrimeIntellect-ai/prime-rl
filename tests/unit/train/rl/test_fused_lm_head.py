@@ -4,7 +4,7 @@ from transformers.models.llama.configuration_llama import LlamaConfig
 
 from prime_rl.trainer.models.layers.lm_head import FusedOutputLinear, VanillaOutputLinear
 from prime_rl.trainer.models.llama import LlamaForCausalLM as PrimeRLLlamaForCausalLM
-from prime_rl.trainer.rl.loss import compute_entropy, selective_log_softmax
+from prime_rl.trainer.rl.loss import compute_entropy, selective_log_softmax, shift_tensor_left, shift_tensor_right
 from prime_rl.utils.utils import default_dtype
 
 
@@ -210,3 +210,50 @@ def test_full_model_fused_vs_vanilla():
     for (name_v, param_v), (name_f, param_f) in zip(model_vanilla.named_parameters(), model_fused.named_parameters()):
         if "lm_head" not in name_v:  # Compare non-lm_head params
             torch.testing.assert_close(param_f, param_v, rtol=1e-3, atol=1e-4)
+
+
+def test_fused_lm_head_correct_shift():
+    """
+    End-to-end test that the fused LM head with shifted labels, after shift_tensor_right,
+    produces logprobs aligned with the inference convention.
+
+    This simulates the full training loop behavior and verifies the importance ratio
+    (trainer_logprobs - inference_logprobs) is ~0 for positions that matter in training.
+    """
+    torch.manual_seed(999)
+    b, s, h, v = 2, 16, 32, 50
+    temperature = 1.5
+    chunk_size = 13
+
+    hidden = torch.randn(b, s, h, dtype=torch.float32)
+    weight = torch.randn(v, h, dtype=torch.float32)
+    input_ids = torch.randint(0, v, (b, s), dtype=torch.long)
+
+    # Create shifted labels as done in training
+    labels = shift_tensor_left(input_ids)
+
+    # === Fused path (as in training) ===
+    fused_lm = FusedOutputLinear(in_features=h, out_features=v, chunk_size=chunk_size)
+    fused_lm.weight = torch.nn.Parameter(weight.clone())
+    fused_out = fused_lm(hidden, labels=labels, temperature=temperature)
+    trainer_logprobs = shift_tensor_right(fused_out.logprobs)
+
+    # === Inference convention (baseline) ===
+    logits = hidden @ weight.t()
+    logits = logits / temperature
+    # Shift logits right (prepend zeros, drop last) to get inference convention
+    shifted_logits = torch.cat([torch.zeros(b, 1, v, dtype=logits.dtype), logits[:, :-1, :]], dim=1)
+    inference_logprobs = (
+        torch.log_softmax(shifted_logits, dim=-1).gather(dim=-1, index=input_ids.unsqueeze(-1)).squeeze(-1)
+    )
+
+    assert torch.all(trainer_logprobs[:, 0] == 0), "Position 0 should be 0 after shift_tensor_right"
+
+    importance_ratio = trainer_logprobs[:, 1:] - inference_logprobs[:, 1:]
+    torch.testing.assert_close(
+        importance_ratio,
+        torch.zeros(b, s - 1),
+        rtol=0,
+        atol=1e-4,
+        msg="Importance ratio at positions 1 to s-1 should be ~0 (same token probs)",
+    )

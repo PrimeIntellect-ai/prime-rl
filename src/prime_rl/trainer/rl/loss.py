@@ -41,8 +41,21 @@ def shift_logits(
 
 
 def shift_tensor_left(t: Float[Tensor, "batch seq"]) -> Float[Tensor, "batch seq"]:
-    """Shifts the tensor one token to the left."""
+    """Shifts the tensor one token to the left.
+
+    Used to create labels from input_ids: labels[i] = input_ids[i+1].
+    """
     return torch.cat([t[:, 1:], torch.full((t.shape[0], 1), -100, device=t.device, dtype=t.dtype)], dim=1)
+
+
+def shift_tensor_right(t: Float[Tensor, "batch seq"]) -> Float[Tensor, "batch seq"]:
+    """Shifts the tensor one token to the right, prepending zeros.
+
+    Used to realign logprobs after computing with shifted labels.
+    After shift: result[i] = t[i-1], result[0] = 0.
+    This converts from "predict next token" convention to "probability of current token" convention.
+    """
+    return torch.cat([torch.zeros((t.shape[0], 1), device=t.device, dtype=t.dtype), t[:, :-1]], dim=1)
 
 
 def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
