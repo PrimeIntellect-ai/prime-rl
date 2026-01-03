@@ -332,10 +332,10 @@ class Qwen3MoeForCausalLM(Qwen3MoePreTrainedModel, GenerationMixin):
         super().__init__(config)
         self.model = Qwen3MoeModel(config)
         self.vocab_size = config.vocab_size
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         self.router_aux_loss_coef = config.router_aux_loss_coef
         self.num_experts = config.num_experts
         self.num_experts_per_tok = config.num_experts_per_tok
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
         # Initialize weights and apply final processing
         self.post_init()
