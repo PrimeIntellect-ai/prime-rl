@@ -20,9 +20,13 @@ from transformers.utils.import_utils import is_flash_attn_3_available
 
 from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, ModelConfig, TokenizerConfig
 from prime_rl.trainer.lora import apply_lora_to_model, strip_lora_from_state_dict
-from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL, PreTrainedModelPrimeRL, supports_custom_impl
+from prime_rl.trainer.models import (
+    AutoModelForCausalLMPrimeRL,
+    PreTrainedModelPrimeRL,
+    PrimeLmOutput,
+    supports_custom_impl,
+)
 from prime_rl.trainer.parallel_dims import ParallelDims
-from prime_rl.trainer.rl.chunked_logprobs import PrimeLmHeadOutput
 from prime_rl.trainer.weights import (
     load_state_dict,
     save_state_dict,
@@ -398,10 +402,10 @@ def forward(
     position_ids: Int[Tensor, "batch seq"],
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: float | None = None,
-) -> PrimeLmHeadOutput:
+) -> PrimeLmOutput:
     out = model(input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature)
 
-    if isinstance(out, PrimeLmHeadOutput):
+    if isinstance(out, PrimeLmOutput):
         return out
 
-    return PrimeLmHeadOutput(logits=out.logits)
+    return PrimeLmOutput(logits=out.logits)

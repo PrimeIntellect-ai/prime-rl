@@ -1,6 +1,6 @@
 import torch
 
-from prime_rl.trainer.rl.chunked_logprobs import FusedLmHead
+from prime_rl.trainer.models.layers.lm_head import FusedOutputLinear
 from prime_rl.trainer.rl.loss import compute_entropy
 
 
@@ -34,7 +34,7 @@ def test_fused_lm_head_matches_full_logits_forward_and_backward_cpu():
     # Fused
     hidden1 = hidden0.detach().clone().requires_grad_(True)
     weight1 = weight0.detach().clone().requires_grad_(True)
-    lm = FusedLmHead(in_features=h, out_features=v, chunk_size=chunk_size)
+    lm = FusedOutputLinear(in_features=h, out_features=v, chunk_size=chunk_size)
     lm.weight = torch.nn.Parameter(weight1)
 
     out = lm(hidden1, labels, temperature=temperature)
@@ -60,7 +60,7 @@ def test_fused_lm_head_labels_none_returns_logits():
     hidden = torch.randn(b, s, h, dtype=torch.float32)
     weight = torch.randn(v, h, dtype=torch.float32)
 
-    lm = FusedLmHead(in_features=h, out_features=v, chunk_size=5)
+    lm = FusedOutputLinear(in_features=h, out_features=v, chunk_size=5)
     lm.weight = torch.nn.Parameter(weight)
 
     out = lm(hidden, labels=None, temperature=1.0)

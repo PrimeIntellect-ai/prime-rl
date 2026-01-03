@@ -36,10 +36,10 @@ from transformers.utils.deprecation import deprecate_kwarg
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
+from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
-from prime_rl.trainer.rl.chunked_logprobs import PrimeLmHeadOutput
 
 logger = logging.get_logger(__name__)
 
@@ -250,7 +250,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
         logits_to_keep: Union[int, torch.Tensor] = 0,
         temperature: Optional[float] = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> PrimeLmHeadOutput:
+    ) -> PrimeLmOutput:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels used by PrimeRL's wrapped LM head to optionally compute per-token logprobs/entropy.

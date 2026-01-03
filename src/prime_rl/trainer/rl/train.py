@@ -23,7 +23,6 @@ from prime_rl.utils.cp import (
     shard_for_cp,
 )
 from prime_rl.utils.logger import setup_logger
-from prime_rl.trainer.rl.chunked_logprobs import postprocess_output
 from prime_rl.trainer.rl.loss import (
     compute_entropy,
     compute_loss,
@@ -304,10 +303,9 @@ def train(config: RLTrainerConfig):
 
             # Forward pass
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                out = forward(model, input_ids, forward_position_ids, labels=labels, temperature=temperature)
-
-            # Ensure all output tensors are float and contiguous
-            out = postprocess_output(out)
+                out = forward(
+                    model, input_ids, forward_position_ids, labels=labels, temperature=temperature
+                ).postprocess()
 
             if out.logprobs is None:
                 assert out.logits is not None, "Logits must be provided to compute logprobs"

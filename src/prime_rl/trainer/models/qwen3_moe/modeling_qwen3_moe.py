@@ -28,6 +28,7 @@ from transformers.utils import TransformersKwargs, auto_docstring, can_return_tu
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
+from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
@@ -39,7 +40,6 @@ from prime_rl.trainer.models.qwen3_moe.converting_qwen3_moe import (
     convert_tt_layer_to_hf,
     convert_tt_to_hf_moe,
 )
-from prime_rl.trainer.rl.chunked_logprobs import PrimeLmHeadOutput
 
 logger = logging.get_logger(__name__)
 
@@ -362,7 +362,7 @@ class Qwen3MoeForCausalLM(Qwen3MoePreTrainedModel, GenerationMixin):
         logits_to_keep: Union[int, torch.Tensor] = 0,
         temperature: Optional[float] = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> PrimeLmHeadOutput:
+    ) -> PrimeLmOutput:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,

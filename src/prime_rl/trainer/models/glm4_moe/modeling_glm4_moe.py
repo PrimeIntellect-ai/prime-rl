@@ -34,11 +34,11 @@ from prime_rl.trainer.models.glm4_moe.converting_glm4_moe import (
     convert_tt_to_hf_moe,
 )
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
+from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
-from prime_rl.trainer.rl.chunked_logprobs import PrimeLmHeadOutput
 
 
 class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
@@ -266,7 +266,7 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
         logits_to_keep: Union[int, torch.Tensor] = 0,
         temperature: Optional[float] = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> PrimeLmHeadOutput:
+    ) -> PrimeLmOutput:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels used by PrimeRL's wrapped LM head to optionally compute per-token logprobs/entropy.

@@ -1,7 +1,7 @@
 from torch import Tensor
 from transformers.modeling_utils import PreTrainedModel
 
-from prime_rl.trainer.rl.chunked_logprobs import FusedLmHead, WrappedLmHead
+from prime_rl.trainer.models.layers.lm_head import FusedOutputLinear, VanillaOutputLinear
 from prime_rl.utils.logger import get_logger
 
 
@@ -111,11 +111,13 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         logger.warning(f"Wrapping LM head with chunk size {chunk_size}")
 
         if chunk_size is not None:
-            self.lm_head = FusedLmHead(
+            self.lm_head = FusedOutputLinear(
                 in_features=old_lm_head.in_features, out_features=old_lm_head.out_features, chunk_size=chunk_size
             )
         else:
-            self.lm_head = WrappedLmHead(in_features=old_lm_head.in_features, out_features=old_lm_head.out_features)
+            self.lm_head = VanillaOutputLinear(
+                in_features=old_lm_head.in_features, out_features=old_lm_head.out_features
+            )
 
         self.lm_head.weight = old_lm_head.weight
         del old_lm_head
