@@ -168,7 +168,7 @@ class Qwen3MoeConfig(PretrainedConfig):
         router_aux_loss_coef=0.001,
         mlp_only_layers=None,
         load_balance_coeff=None,
-        use_grouped_mm=False,
+        use_grouped_mm=True,
         **kwargs,
     ):
         self.vocab_size = vocab_size
