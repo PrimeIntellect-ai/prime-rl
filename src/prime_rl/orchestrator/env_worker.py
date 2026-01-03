@@ -52,6 +52,7 @@ def extract_result(state: vf.State) -> dict:
             # tokens dict contains: prompt_ids, prompt_mask, completion_ids,
             # completion_mask, completion_logprobs, is_truncated
             "tokens": step.get("tokens"),
+            "trajectory_id": step.get("trajectory_id"),
         }
         trajectory.append(traj_step)
 
