@@ -26,6 +26,7 @@ def get_model_pairs() -> tuple[HFGlm4MoeForCausalLM, PrimeRLGlm4MoeForCausalLM]:
         rope_theta=1000000.0,
         first_k_dense_replace=1,
         partial_rotary_factor=0.5,
+        use_grouped_mm=False,
     )
     # TODO: We should test this path because it's the most performant
     # But the grad seems to be off in attn because of precision
