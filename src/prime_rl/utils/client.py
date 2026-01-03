@@ -102,10 +102,20 @@ async def check_health(
     await asyncio.gather(*[_check_health(admin_client) for admin_client in admin_clients])
 
 
+NCCL_READY_MARKER = "NCCL_READY"
+
+
 async def update_weights(
-    admin_clients: list[AsyncClient], weight_dir: Path | None, lora_name: str | None = None
+    admin_clients: list[AsyncClient],
+    weight_dir: Path | None,
+    lora_name: str | None = None,
 ) -> None:
-    """Make a HTTP post request to the vLLM server to update the weights."""
+    """Make a HTTP post request to the vLLM server to update the weights.
+
+    Creates a NCCL_READY marker file before calling the update endpoint to signal
+    to the trainer that inference workers are about to enter the receive path.
+    This marker is only used in NCCL broadcast mode but is harmless in filesystem mode.
+    """
     logger = get_logger()
 
     weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
@@ -123,6 +133,13 @@ async def update_weights(
                     logger.warning("The route /update_weights does not exist. Skipping weight update.")
                     return
                 raise
+
+        # Create ready marker before servers enter receive path (used by NCCL broadcast)
+        if weight_dir is not None:
+            nccl_ready_file = weight_dir / NCCL_READY_MARKER
+            nccl_ready_file.parent.mkdir(parents=True, exist_ok=True)
+            nccl_ready_file.touch()
+            logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
 
         await asyncio.gather(*[_update_weights(admin_client, weight_dir_posix) for admin_client in admin_clients])
 

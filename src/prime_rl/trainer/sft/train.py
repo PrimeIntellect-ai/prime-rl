@@ -344,7 +344,7 @@ def train(config: SFTTrainerConfig):
                     for subset_or_split, num_tokens in dataset.num_tokens.items()
                 },
             )
-        monitor.log(progress_metrics)
+        monitor.log(progress_metrics, step=progress.step)
 
         # Log performance metrics
         perf_metrics = {
@@ -354,7 +354,7 @@ def train(config: SFTTrainerConfig):
             "perf/mfu": mfu,
             "step": progress.step,
         }
-        monitor.log(perf_metrics)
+        monitor.log(perf_metrics, step=progress.step)
 
         # Log optimizer metrics
         optim_metrics = {
@@ -362,7 +362,7 @@ def train(config: SFTTrainerConfig):
             "optim/grad_norm": grad_norm.item(),
             "step": progress.step,
         }
-        monitor.log(optim_metrics)
+        monitor.log(optim_metrics, step=progress.step)
 
         loss_log_metrics = {
             "loss/mean": batch_loss.item(),
@@ -370,7 +370,7 @@ def train(config: SFTTrainerConfig):
             "step": progress.step,
         }
         # Log tensor stats
-        monitor.log(loss_log_metrics)
+        monitor.log(loss_log_metrics, step=progress.step)
 
         # Log time metrics
         time_metrics = {
@@ -379,19 +379,19 @@ def train(config: SFTTrainerConfig):
             "time/forward_backward": forward_backward_time,
             "step": progress.step,
         }
-        monitor.log(time_metrics)
+        monitor.log(time_metrics, step=progress.step)
 
         # Log disk metrics
         disk_metrics = get_ckpt_disk_metrics(config.output_dir)
         disk_metrics["step"] = progress.step
-        monitor.log(disk_metrics)
+        monitor.log(disk_metrics, step=progress.step)
 
         if is_tt_moe_model(model):
             max_vio_log_metrics = {
                 "max_vio/mean": batch_max_vio.item(),
                 "step": progress.step,
             }
-            monitor.log(max_vio_log_metrics)
+            monitor.log(max_vio_log_metrics, step=progress.step)
 
         is_first_step = False
         progress.step += 1

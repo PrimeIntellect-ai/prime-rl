@@ -412,7 +412,7 @@ def train(config: RLTrainerConfig):
             "perf/peak_memory": peak_memory,
             "step": progress.step,
         }
-        monitor.log(perf_metrics)
+        monitor.log(perf_metrics, step=progress.step)
 
         # Log optimizer metrics
         optim_metrics = {
@@ -420,11 +420,11 @@ def train(config: RLTrainerConfig):
             "optim/grad_norm": grad_norm.item(),
             "step": progress.step,
         }
-        monitor.log(optim_metrics)
+        monitor.log(optim_metrics, step=progress.step)
 
         # Log tensor stats
         tensor_stats["step"] = progress.step
-        monitor.log(tensor_stats)
+        monitor.log(tensor_stats, step=progress.step)
 
         # Log time metrics
         time_metrics = {
@@ -436,12 +436,12 @@ def train(config: RLTrainerConfig):
             "time/forward_backward": forward_backward_time,
             "step": progress.step,
         }
-        monitor.log(time_metrics)
+        monitor.log(time_metrics, step=progress.step)
 
         # Log disk metrics
         disk_metrics = get_ckpt_disk_metrics(config.output_dir)
         disk_metrics["step"] = progress.step
-        monitor.log(disk_metrics)
+        monitor.log(disk_metrics, step=progress.step)
 
         progress.step += 1
         is_first_step = False
