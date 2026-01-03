@@ -197,7 +197,8 @@ class PerfCounter:
         params = 0
         for module in self.model.modules():
             if isinstance(module, MultiLoRAModule):
-                params += module.lora_A[0].numel() + module.lora_B[0].numel()
+                adapter_params, _ = module.get_lora_param_counts()
+                params += adapter_params
         return params
 
     def _count_fully_trainable_params_excluding_lora(self) -> int:

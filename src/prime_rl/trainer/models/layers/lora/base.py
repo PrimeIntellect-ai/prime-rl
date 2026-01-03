@@ -13,8 +13,10 @@ _LORA_PREFIX = "base_layer."
 def set_multilora_offsets(offsets: torch.Tensor, reset_reference: bool = False) -> None:
     """Set offsets for all LoRA modules."""
     from prime_rl.trainer.models.layers.lora.multi_linear import set_multilora_offsets as set_multilora_offsets_linear
+    from prime_rl.trainer.models.layers.lora.multi_moe import set_multilora_offsets as set_multilora_offsets_moe
 
     set_multilora_offsets_linear(offsets, reset_reference)
+    set_multilora_offsets_moe(offsets, reset_reference)
 
 
 class MultiLoRAModule(nn.Module):
@@ -23,8 +25,6 @@ class MultiLoRAModule(nn.Module):
     """
 
     base_layer: nn.Module
-    lora_A: nn.ParameterList
-    lora_B: nn.ParameterList
 
     def __init__(self, base_layer: nn.Module) -> None:
         super().__init__()
@@ -58,6 +58,17 @@ class MultiLoRAModule(nn.Module):
 
         Returns:
             List of (name, parameter) tuples for the specified adapter
+        """
+        ...
+
+    @abstractmethod
+    def get_lora_param_counts(self) -> tuple[int, int]:
+        """Get the number of LoRA adapter parameters and adapted base parameters.
+
+        Returns:
+            A tuple of (adapter_params, adapted_params) where:
+            - adapter_params: Number of parameters in ONE LoRA adapter (lora_A + lora_B)
+            - adapted_params: Number of base layer parameters being adapted by LoRA
         """
         ...
 

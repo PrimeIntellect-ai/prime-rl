@@ -136,6 +136,18 @@ class MultiLoRALinear(MultiLoRAModule):
             ("lora_B", self.lora_B[idx]),
         ]
 
+    def get_lora_param_counts(self) -> tuple[int, int]:
+        """Get the number of LoRA adapter parameters and adapted base parameters.
+
+        Returns:
+            A tuple of (adapter_params, adapted_params) where:
+            - adapter_params: Number of parameters in ONE LoRA adapter (lora_A + lora_B)
+            - adapted_params: Number of base layer parameters being adapted by LoRA
+        """
+        adapter_params = self.lora_A[0].numel() + self.lora_B[0].numel()
+        adapted_params = self.base_layer.weight.numel()
+        return adapter_params, adapted_params
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         x: [..., in_features]
