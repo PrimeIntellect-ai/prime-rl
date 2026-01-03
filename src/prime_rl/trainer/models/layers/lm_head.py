@@ -91,7 +91,7 @@ class _ChunkedLogProbEntropyFn(torch.autograd.Function):
         m = torch.full((n,), float("-inf"), device=device, dtype=torch.float32)
         s = torch.zeros((n,), device=device, dtype=torch.float32)
         t = torch.zeros((n,), device=device, dtype=torch.float32)
-        target_logits = torch.empty((n,), device=device, dtype=torch.float32)
+        target_logits = torch.zeros((n,), device=device, dtype=torch.float32)
 
         for start in range(0, vocab, chunk_size):
             end = min(start + chunk_size, vocab)
