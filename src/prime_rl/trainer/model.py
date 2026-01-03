@@ -347,9 +347,6 @@ def setup_model(
     # 1. We load to meta device by default
     model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype])
 
-    if isinstance(model, PreTrainedModelPrimeRL):
-        model.wrap_lm_head(chunk_size=config.fused_lm_head_chunk_size)
-
     possible_to_load_to_meta = can_reinit_empty_buffers(model)
 
     if config.debug.random_init and not possible_to_load_to_meta:
@@ -361,6 +358,9 @@ def setup_model(
     if not possible_to_load_to_meta:
         logger.warning("Cannot load model to meta device only, loading to CPU instead.")
         model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype])
+
+    if isinstance(model, PreTrainedModelPrimeRL):
+        model.wrap_lm_head(chunk_size=config.fused_lm_head_chunk_size)
 
     # Apply LoRA before FSDP setup
     if config.lora is not None:
