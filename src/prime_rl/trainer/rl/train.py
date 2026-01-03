@@ -320,6 +320,7 @@ def train(config: RLTrainerConfig):
             # However, inference_logprobs[i] = log P(input_ids[i]), so we need to shift the logprobs to the right to match the inference_logprobs.
             # After shifting right: logprobs[i] = log P(input_ids[i]), matching inference_logprobs
             out.logprobs = shift_tensor_right(out.logprobs)
+            out.entropy = shift_tensor_right(out.entropy)
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
