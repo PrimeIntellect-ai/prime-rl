@@ -6,11 +6,13 @@ from transformers import AutoConfig
 from transformers.configuration_utils import PretrainedConfig
 from transformers.models.auto.auto_factory import _BaseAutoModelClass, _LazyAutoMapping, auto_class_update
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
+from transformers.models.gpt_oss.configuration_gpt_oss import GptOssConfig
 from transformers.models.llama.configuration_llama import LlamaConfig
 
 from prime_rl.trainer.models.afmoe import AfmoeConfig, AfmoeForCausalLM
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig, Glm4MoeForCausalLM
+from prime_rl.trainer.models.gpt_oss import GptOssForCausalLM
 from prime_rl.trainer.models.llama import LlamaForCausalLM
 from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig, Qwen3MoeForCausalLM
 
@@ -23,6 +25,7 @@ _CUSTOM_CAUSAL_LM_MAPPING = _LazyAutoMapping(CONFIG_MAPPING_NAMES, OrderedDict()
 _CUSTOM_CAUSAL_LM_MAPPING.register(LlamaConfig, LlamaForCausalLM, exist_ok=True)
 _CUSTOM_CAUSAL_LM_MAPPING.register(AfmoeConfig, AfmoeForCausalLM, exist_ok=True)
 _CUSTOM_CAUSAL_LM_MAPPING.register(Glm4MoeConfig, Glm4MoeForCausalLM, exist_ok=True)
+_CUSTOM_CAUSAL_LM_MAPPING.register(GptOssConfig, GptOssForCausalLM, exist_ok=True)
 _CUSTOM_CAUSAL_LM_MAPPING.register(Qwen3MoeConfig, Qwen3MoeForCausalLM, exist_ok=True)
 
 
