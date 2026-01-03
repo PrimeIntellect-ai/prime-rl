@@ -27,7 +27,7 @@ from prime_rl.trainer.rl.loss import (
     compute_entropy,
     compute_loss,
     selective_log_softmax,
-    shift_tensor_right,
+    shift_tensor_left,
 )
 from prime_rl.trainer.model import (
     forward,
@@ -268,7 +268,7 @@ def train(config: RLTrainerConfig):
         cp_size = parallel_dims.cp
 
         for micro_step, micro_batch in enumerate(micro_batches):
-            labels = micro_batch["input_ids"].to("cuda")
+            input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
@@ -277,7 +277,7 @@ def train(config: RLTrainerConfig):
                 micro_batch["teacher_logprobs"].to("cuda") if micro_batch["teacher_logprobs"] is not None else None
             )
 
-            input_ids = shift_tensor_right(labels)
+            labels = shift_tensor_left(input_ids)
 
             if cp_enabled:
                 input_ids, forward_position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)

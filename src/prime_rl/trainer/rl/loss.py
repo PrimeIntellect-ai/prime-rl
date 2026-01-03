@@ -40,9 +40,9 @@ def shift_logits(
     return logits
 
 
-def shift_tensor_right(t: Float[Tensor, "batch seq"]) -> Float[Tensor, "batch seq"]:
-    """Shifts the tensor one token to the right."""
-    return torch.cat([torch.zeros(t.shape[0], 1, device=t.device, dtype=t.dtype), t[:, :-1]], dim=1)
+def shift_tensor_left(t: Float[Tensor, "batch seq"]) -> Float[Tensor, "batch seq"]:
+    """Shifts the tensor one token to the left."""
+    return torch.cat([t[:, 1:], torch.full((t.shape[0], 1), -100, device=t.device, dtype=t.dtype)], dim=1)
 
 
 def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
