@@ -1,0 +1,56 @@
+###############
+# stuff stuff #
+###############
+inference_gpu_ids = [0,1,2,3,4,5]
+trainer_gpu_ids = [6,7]
+max_steps = 50
+
+[wandb]
+project = "swe-grep-env"
+name = "seq32k-lr5e6-idk"
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+######################
+# orchestrator stuff #
+######################
+[orchestrator]
+batch_size = 256
+rollouts_per_example = 8
+seq_len = 32000
+oversampling_factor = 2.0
+
+[orchestrator.sampling]
+max_tokens = 2048
+
+[[orchestrator.env]]
+id = "swe-grep-env"
+
+[orchestrator.val]
+interval = 5
+num_examples = 128
+
+#################
+# trainer stuff #
+#################
+[trainer.optim]
+lr = 5e-6
+weight_decay = 0.0
+
+[trainer.model]
+seq_len = 32000
+
+[trainer.model.ac]
+freq = 1
+
+###################
+# inference stuff #
+###################
+[inference]
+gpu_memory_utilization = 0.8
+
+[inference.model]
+enable_auto_tool_choice = true
+tool_call_parser = "hermes"
+max_model_len = 32000
