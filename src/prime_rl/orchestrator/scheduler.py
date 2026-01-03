@@ -110,6 +110,7 @@ class Scheduler:
         self.checkpoint_ready = asyncio.Event()
         self.checkpoint_ready.set()
         self.update_weights_time, self.wait_for_ckpt_time = 0, 0
+        self.cancelled_rollouts_count = 0
 
         # Background tasks
         self._response_collectors: list[asyncio.Task] = []
@@ -220,6 +221,7 @@ class Scheduler:
             # Remove cancelled
             for future, worker in futures_to_remove:
                 self.inflight_group_rollouts.pop(future, None)
+            self.cancelled_rollouts_count += len(futures_to_remove)
 
             # Update off-policy steps for remaining
             for future, off_policy_steps, worker, request_id in futures_to_update:
@@ -321,7 +323,9 @@ class Scheduler:
             "batch/off_policy_level/max": self.max_off_policy_level,
             "batch/off_policy_level/mean": self.mean_off_policy_level,
             "batch/off_policy_level/min": self.min_off_policy_level,
+            "batch/cancelled_rollouts": self.cancelled_rollouts_count,
         }
+        self.cancelled_rollouts_count = 0
 
         # Add per-worker lag metrics and pending counts
         for workers in self.workers.values():
