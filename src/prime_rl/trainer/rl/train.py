@@ -245,6 +245,12 @@ def train(config: RLTrainerConfig):
         load_data_time = time.perf_counter() - load_data_start_time
         logger.debug(f"Loaded batch in {load_data_time:.2f} seconds")
 
+        # Skip step if no data available (can happen when no rollouts are ready)
+        if not micro_batches:
+            logger.warning("No micro batches available, waiting for rollouts...")
+            time.sleep(1)
+            continue
+
         batch_size = len(micro_batches)
         memory_profiler = None
         if config.memory_profiler_path is not None:
