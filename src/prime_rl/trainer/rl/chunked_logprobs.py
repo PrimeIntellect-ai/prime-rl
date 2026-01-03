@@ -12,15 +12,19 @@ class PrimeLmHeadOutput:
     logprobs: Tensor | None = None
     entropy: Tensor | None = None
 
-    def __post_init__(self):
-        if self.logits is not None:
-            self.logits = self.logits.float().contiguous()
 
-        if self.logprobs is not None:
-            self.logprobs = self.logprobs.float().contiguous()
+def _process_lm_head_tensor(tensor: Tensor | None) -> Tensor | None:
+    """Convert tensor to float and make contiguous if not None."""
+    return tensor.float().contiguous() if tensor is not None else None
 
-        if self.entropy is not None:
-            self.entropy = self.entropy.float().contiguous()
+
+def postprocess_output(output: PrimeLmHeadOutput) -> PrimeLmHeadOutput:
+    """Postprocess a PrimeLmHeadOutput with tensors converted to float and made contiguous."""
+    return PrimeLmHeadOutput(
+        logits=_process_lm_head_tensor(output.logits),
+        logprobs=_process_lm_head_tensor(output.logprobs),
+        entropy=_process_lm_head_tensor(output.entropy),
+    )
 
 
 class FusedLmHead(torch.nn.Linear):
@@ -34,8 +38,7 @@ class FusedLmHead(torch.nn.Linear):
         labels: torch.Tensor | None = None,
         temperature: float = 1.0,
     ) -> PrimeLmHeadOutput:
-        if labels is None:
-            return PrimeLmHeadOutput(logits=super().forward(hidden_states), logprobs=None, entropy=None)
+        assert labels is not None, "FusedLmHead requires labels for chunked logprob computation"
 
         inv_t = 1.0 / float(temperature)
         b, s, h = hidden_states.shape
@@ -46,7 +49,7 @@ class FusedLmHead(torch.nn.Linear):
 
         logprobs = logprobs.reshape(b, s)
         entropy = entropy.reshape(b, s)
-        return PrimeLmHeadOutput(logits=None, logprobs=logprobs, entropy=entropy)
+        return PrimeLmHeadOutput(logprobs=logprobs, entropy=entropy)
 
 
 class WrappedLmHead(torch.nn.Linear):
@@ -56,7 +59,7 @@ class WrappedLmHead(torch.nn.Linear):
     def forward(
         self, hidden_states: torch.Tensor, labels: torch.Tensor | None = None, temperature: float = 1.0
     ) -> PrimeLmHeadOutput:
-        return PrimeLmHeadOutput(logits=super().forward(hidden_states), logprobs=None, entropy=None)
+        return PrimeLmHeadOutput(logits=super().forward(hidden_states))
 
 
 class _ChunkedLogProbEntropyFn(torch.autograd.Function):

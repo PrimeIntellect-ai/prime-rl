@@ -17,6 +17,7 @@ from prime_rl.trainer.ckpt import setup_ckpt_managers
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.trainer.sft.config import SFTTrainerConfig
 from prime_rl.utils.cp import setup_cp_params, shard_for_cp
+from prime_rl.trainer.rl.chunked_logprobs import postprocess_output
 from prime_rl.trainer.runs import Progress
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.optim import setup_optimizer
@@ -240,7 +241,11 @@ def train(config: SFTTrainerConfig):
                 # Forward pass
             logger.debug("Starting forward pass")
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                logits = forward(model, input_ids, position_ids).logits
+                out = forward(model, input_ids, position_ids)
+
+            # Ensure all output tensors are float and contiguous
+            out = postprocess_output(out)
+            logits = out.logits
             B, L, V = logits.shape
 
             # Compute loss

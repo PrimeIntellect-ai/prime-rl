@@ -26,3 +26,4 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`orchestrator.eval.skip_eval_on_resume`**: Added flag (default `True`) to skip the first potentially redundant online eval immediately after resuming from a checkpoint (#1491, 2025-12-27)
 - **`trainer.weight_broadcast.adapter_only`**: Removed. Adapter-only behavior is now automatically derived from the presence of LoRA configuration (2025-12-27)
 - **`ckpt.keep`**: Renamed to `ckpt.keep_last`. Added `ckpt.keep_interval` to keep checkpoints at every N steps permanently (2025-12-31)
+- **`model.fused_lm_head_chunk_size`**: Added chunk size configuration for fused LM head to enable memory-efficient chunked logprob computation. When set, splits vocabulary into chunks to avoid materializing full [N, V] logit tensor (default: None) (#1525, 2026-01-03)

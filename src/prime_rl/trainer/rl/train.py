@@ -20,8 +20,10 @@ from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.cp import (
     setup_cp_params,
+    shard_for_cp,
 )
 from prime_rl.utils.logger import setup_logger
+from prime_rl.trainer.rl.chunked_logprobs import postprocess_output
 from prime_rl.trainer.rl.loss import (
     compute_entropy,
     compute_loss,
@@ -261,7 +263,7 @@ def train(config: RLTrainerConfig):
 
         seq_len = micro_batches[0]["input_ids"].shape[1]
 
-        logger.debug(f"Starting forward and backward pass ({batch_size=}, {seq_len=})")
+        logger.info(f"Starting forward and backward pass ({batch_size=}, {seq_len=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
         cp_enabled = parallel_dims.cp_enabled
         cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
@@ -269,6 +271,7 @@ def train(config: RLTrainerConfig):
         cp_size = parallel_dims.cp
 
         for micro_step, micro_batch in enumerate(micro_batches):
+            logger.info(f"Micro batch {micro_step} / {len(micro_batches)}")
             labels = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
@@ -282,9 +285,8 @@ def train(config: RLTrainerConfig):
             position_ids = shift_tensor_right(position_ids)
 
             if cp_enabled:
-                input_ids, forward_position_ids, labels = setup_cp_params(
-                    input_ids, position_ids, labels, cp_rank, cp_size, cp_group
-                )
+                input_ids, forward_position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
+                labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
             else:
                 forward_position_ids = position_ids
 
@@ -303,6 +305,9 @@ def train(config: RLTrainerConfig):
             # Forward pass
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
                 out = forward(model, input_ids, forward_position_ids, labels=labels, temperature=temperature)
+
+            # Ensure all output tensors are float and contiguous
+            out = postprocess_output(out)
 
             if out.logprobs is None:
                 assert out.logits is not None, "Logits must be provided to compute logprobs"

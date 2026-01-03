@@ -65,7 +65,6 @@ def _get_cu_seqlens_for_cp(position_ids: torch.Tensor) -> torch.Tensor:
 def setup_cp_params(
     input_ids: torch.Tensor,
     position_ids: torch.Tensor,
-    labels: torch.Tensor,
     cp_rank: int,
     cp_world_size: int,
     cp_group: dist.ProcessGroup,
@@ -78,12 +77,10 @@ def setup_cp_params(
         cp_rank: The rank of the current process.
         cp_world_size: The number of processes in the context parallel group.
         cp_group: The context parallel group.
-        *extra_tensors: Extra tensors to prepare for context parallelism.
     Returns:
-        The prepared input for context parallelism.
+        The sharded input_ids and position_ids for context parallelism.
     """
     input_ids = shard_for_cp(input_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
-    labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_world_size)
 
     cu_seqlens = _get_cu_seqlens_for_cp(position_ids)
     update_ring_flash_attn_params(cu_seqlens, cp_group)
@@ -91,5 +88,4 @@ def setup_cp_params(
     return (
         input_ids,
         position_ids,
-        labels,
     )

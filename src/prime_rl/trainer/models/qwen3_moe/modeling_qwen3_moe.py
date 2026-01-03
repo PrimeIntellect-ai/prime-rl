@@ -409,7 +409,11 @@ class Qwen3MoeForCausalLM(Qwen3MoePreTrainedModel, GenerationMixin):
         hidden_states = outputs.last_hidden_state
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-        return self.lm_head(hidden_states[:, slice_indices, :], labels[:, slice_indices], temperature=temperature)
+        return self.lm_head(
+            hidden_states[:, slice_indices, :],
+            labels[:, slice_indices] if labels is not None else None,
+            temperature=temperature,
+        )
 
     def init_buffers_post_meta(self):
         buffer_names = [name for name, _ in self.named_buffers()]
