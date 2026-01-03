@@ -260,9 +260,7 @@ def train(config: RLTrainerConfig):
             loss_scale = batch_size
         loss_scale = max(loss_scale, 1)
 
-        seq_len = micro_batches[0]["input_ids"].shape[1]
-
-        logger.info(f"Starting forward and backward pass ({batch_size=}, {seq_len=})")
+        logger.debug(f"Starting forward and backward pass ({batch_size=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
         cp_enabled = parallel_dims.cp_enabled
         cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
@@ -270,7 +268,6 @@ def train(config: RLTrainerConfig):
         cp_size = parallel_dims.cp
 
         for micro_step, micro_batch in enumerate(micro_batches):
-            logger.info(f"Micro batch {micro_step} / {len(micro_batches)}")
             labels = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")

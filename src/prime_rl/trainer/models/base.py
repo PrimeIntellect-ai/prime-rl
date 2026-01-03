@@ -108,7 +108,7 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         old_lm_head = self.lm_head
 
         logger = get_logger()
-        logger.warning(f"Wrapping LM head with chunk size {chunk_size}")
+        logger.info(f"Wrapping LM head with chunk size {chunk_size}")
 
         if chunk_size is not None:
             self.lm_head = FusedOutputLinear(
