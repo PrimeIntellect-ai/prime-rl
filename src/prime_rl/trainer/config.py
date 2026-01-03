@@ -281,12 +281,11 @@ class ModelConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def fused_lm_head_chunk_size_is_valid_range(self):
+    def fused_lm_head_chunk_size_is_valid(self):
         if self.fused_lm_head_chunk_size is not None:
             low = 512
-            high = self.model_config.vocab_size
-            if self.fused_lm_head_chunk_size < low or self.fused_lm_head_chunk_size > high:
-                raise ValueError(f"Fused LM head chunk size must be in the range of [{low}, {high}]")
+            if self.fused_lm_head_chunk_size < low:
+                raise ValueError(f"Fused LM head chunk size must be greater than {low}")
 
         return self
 
