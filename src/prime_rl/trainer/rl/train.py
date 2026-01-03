@@ -278,7 +278,6 @@ def train(config: RLTrainerConfig):
             )
 
             input_ids = shift_tensor_right(labels)
-            position_ids = shift_tensor_right(position_ids)
 
             if cp_enabled:
                 input_ids, forward_position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
@@ -300,9 +299,7 @@ def train(config: RLTrainerConfig):
 
             # Forward pass
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                out = forward(
-                    model, input_ids, forward_position_ids, labels=labels, temperature=temperature
-                ).postprocess()
+                out = forward(model, input_ids, forward_position_ids, labels=labels, temperature=temperature)
 
             if out.logprobs is None:
                 assert out.logits is not None, "Logits must be provided to compute logprobs"

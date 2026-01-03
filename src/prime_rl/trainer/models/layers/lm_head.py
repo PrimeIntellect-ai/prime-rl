@@ -12,16 +12,16 @@ class PrimeLmOutput:
     logprobs: Tensor | None = None
     entropy: Tensor | None = None
 
-    def postprocess(self) -> PrimeLmOutput:
-        """Postprocess the output with tensors converted to float and made contiguous."""
+    def cast_float_and_contiguous(self) -> PrimeLmOutput:
+        """Convert tensors to float and make contiguous."""
 
-        def _process_output_tensor(tensor: Tensor | None) -> Tensor | None:
+        def _float_and_contiguous(tensor: Tensor | None) -> Tensor | None:
             return tensor.float().contiguous() if tensor is not None else None
 
         return PrimeLmOutput(
-            logits=_process_output_tensor(self.logits),
-            logprobs=_process_output_tensor(self.logprobs),
-            entropy=_process_output_tensor(self.entropy),
+            logits=_float_and_contiguous(self.logits),
+            logprobs=_float_and_contiguous(self.logprobs),
+            entropy=_float_and_contiguous(self.entropy),
         )
 
 

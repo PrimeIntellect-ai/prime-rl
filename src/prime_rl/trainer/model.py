@@ -406,6 +406,6 @@ def forward(
     out = model(input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature)
 
     if isinstance(out, PrimeLmOutput):
-        return out
+        return out.cast_float_and_contiguous()
 
-    return PrimeLmOutput(logits=out.logits)
+    return PrimeLmOutput(logits=out.logits).cast_float_and_contiguous()
