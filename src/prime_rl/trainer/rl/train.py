@@ -24,9 +24,7 @@ from prime_rl.utils.cp import (
 )
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
-    compute_entropy,
     compute_loss,
-    selective_log_softmax,
     shift_tensor_right,
 )
 from prime_rl.trainer.model import (
@@ -260,7 +258,7 @@ def train(config: RLTrainerConfig):
             loss_scale = batch_size
         loss_scale = max(loss_scale, 1)
 
-        logger.debug(f"Starting forward and backward pass ({batch_size=})")
+        logger.debug(f"Starting forward and backward pass ({batch_size=}, {seq_len=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
         cp_enabled = parallel_dims.cp_enabled
         cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
@@ -278,7 +276,8 @@ def train(config: RLTrainerConfig):
             )
 
             input_ids = shift_tensor_right(labels)
-            position_ids = shift_tensor_right(position_ids)
+            # Ensure packed-sequence boundaries (position_ids == 0) don't leak context across sequences.
+            input_ids = torch.where(position_ids == 0, torch.zeros_like(input_ids), input_ids)
 
             if cp_enabled:
                 input_ids, forward_position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
@@ -300,17 +299,10 @@ def train(config: RLTrainerConfig):
 
             # Forward pass
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                out = forward(
-                    model, input_ids, forward_position_ids, labels=labels, temperature=temperature
-                ).postprocess()
-
-            if out.logprobs is None:
-                assert out.logits is not None, "Logits must be provided to compute logprobs"
-                logits = out.logits / float(temperature)
-                out.logprobs = selective_log_softmax(logits, labels)
-                out.entropy = compute_entropy(logits)
+                out = forward(model, input_ids, forward_position_ids, labels=labels, temperature=temperature)
 
             if cp_enabled:
+                assert out.logprobs is not None and out.entropy is not None
                 logprobs = dist_nn.all_gather(out.logprobs, group=cp_group)
                 out.logprobs = torch.cat(logprobs, dim=1)
 

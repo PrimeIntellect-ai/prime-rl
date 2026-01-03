@@ -14,14 +14,10 @@ class PrimeLmOutput:
 
     def postprocess(self) -> PrimeLmOutput:
         """Postprocess the output with tensors converted to float and made contiguous."""
-
-        def _process_output_tensor(tensor: Tensor | None) -> Tensor | None:
-            return tensor.float().contiguous() if tensor is not None else None
-
         return PrimeLmOutput(
-            logits=_process_output_tensor(self.logits),
-            logprobs=_process_output_tensor(self.logprobs),
-            entropy=_process_output_tensor(self.entropy),
+            logits=self.logits.float().contiguous() if self.logits is not None else None,
+            logprobs=self.logprobs.float().contiguous() if self.logprobs is not None else None,
+            entropy=self.entropy.float().contiguous() if self.entropy is not None else None,
         )
 
 
@@ -34,10 +30,14 @@ class FusedOutputLinear(torch.nn.Linear):
         self,
         hidden_states: torch.Tensor,
         labels: torch.Tensor | None = None,
-        temperature: float = 1.0,
+        temperature: float | None = 1.0,
     ) -> PrimeLmOutput:
-        assert labels is not None, "FusedOutputLinear requires labels for chunked logprob computation"
+        # If labels are not provided, fall back to returning logits.
+        # This keeps the output interface consistent (and avoids forcing callers to always pass labels).
+        if labels is None:
+            return PrimeLmOutput(logits=super().forward(hidden_states))
 
+        temperature = 1.0 if temperature is None else temperature
         inv_t = 1.0 / float(temperature)
         b, s, h = hidden_states.shape
         hidden_states = hidden_states.reshape(b * s, h).contiguous()

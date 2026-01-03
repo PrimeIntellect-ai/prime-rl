@@ -26,6 +26,7 @@ from prime_rl.trainer.models import (
     PrimeLmOutput,
     supports_custom_impl,
 )
+from prime_rl.trainer.rl.loss import compute_entropy, selective_log_softmax
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.weights import (
     load_state_dict,
@@ -46,6 +47,21 @@ DTYPE_MAP = {
     "bfloat16": torch.bfloat16,
     "float32": torch.float32,
 }
+
+_PYTORCH_WRAPPED_MODULE_ATTRS = ("_fsdp_wrapped_module", "_orig_module", "_checkpoint_wrapped_module")
+
+
+def _unwrap_pytorch_wrapped_module(model: nn.Module) -> nn.Module:
+    """Best-effort unwrap for common PyTorch module wrappers (e.g. FSDP, checkpoint_wrapper)."""
+    current = model
+    while True:
+        for attr in _PYTORCH_WRAPPED_MODULE_ATTRS:
+            wrapped = getattr(current, attr, None)
+            if wrapped is not None and isinstance(wrapped, nn.Module):
+                current = wrapped
+                break
+        else:
+            return current
 
 
 def is_tt_moe_model(model: nn.Module) -> bool:
@@ -403,9 +419,33 @@ def forward(
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: float | None = None,
 ) -> PrimeLmOutput:
-    out = model(input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature)
+    temperature_value = 1.0 if temperature is None else float(temperature)
+    unwrapped_model = _unwrap_pytorch_wrapped_module(model)
+
+    # PrimeRL custom models accept (labels, temperature) to enable efficient
+    # logprob/entropy computation through the wrapped LM head.
+    if isinstance(unwrapped_model, PreTrainedModelPrimeRL):
+        out = model(
+            input_ids=input_ids,
+            position_ids=position_ids,
+            labels=labels,
+            temperature=temperature_value,
+        )
+    else:
+        # HF models don't accept `temperature`, and passing `labels` forces loss computation.
+        out = model(input_ids=input_ids, position_ids=position_ids)
 
     if isinstance(out, PrimeLmOutput):
-        return out
+        prime_out = out
+    else:
+        prime_out = PrimeLmOutput(logits=out.logits)
 
-    return PrimeLmOutput(logits=out.logits)
+    # If labels are provided, ensure logprobs/entropy are populated so call-sites
+    # (e.g. RL trainer) don't need special-case logic.
+    if labels is not None and (prime_out.logprobs is None or prime_out.entropy is None):
+        assert prime_out.logits is not None, "Logits must be present to compute logprobs/entropy"
+        shifted_logits = prime_out.logits / temperature_value
+        prime_out.logprobs = selective_log_softmax(shifted_logits, labels)
+        prime_out.entropy = compute_entropy(shifted_logits)
+
+    return prime_out.postprocess()
