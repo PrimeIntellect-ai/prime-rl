@@ -236,3 +236,11 @@ class SFTTrainerConfig(BaseSettings):
         if self.tokenizer.trust_remote_code is None:
             self.tokenizer.trust_remote_code = self.model.trust_remote_code
         return self
+
+    @model_validator(mode="after")
+    def validate_no_chunked_loss(self):
+        if self.model.fused_lm_head_chunk_size is not None:
+            raise ValueError(
+                "Chunked loss is not supported for SFT training yet, please set `model.fused_lm_head_chunk_size` to None"
+            )
+        return self

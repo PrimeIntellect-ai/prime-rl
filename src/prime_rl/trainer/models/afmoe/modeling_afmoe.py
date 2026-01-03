@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional, Tuple, Union
+from typing import Optional, Union
 
 import torch
 import torch.nn.functional as F
@@ -12,13 +12,13 @@ from transformers.masking_utils import (
 )
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import (
-    MoeCausalLMOutputWithPast,
     MoeModelOutputWithPast,
 )
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
@@ -326,14 +326,9 @@ class AfmoeModel(AfmoePreTrainedModel):
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
-        self.embed_tokens = nn.Embedding(
-            config.vocab_size, config.hidden_size, self.padding_idx
-        )
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList(
-            [
-                AfmoeDecoderLayer(config, layer_idx)
-                for layer_idx in range(config.num_hidden_layers)
-            ]
+            [AfmoeDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
         self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
         self.rotary_emb = _create_rotary_emb(config)
@@ -347,7 +342,6 @@ class AfmoeModel(AfmoePreTrainedModel):
     def set_input_embeddings(self, value):
         self.embed_tokens = value
 
-
     def forward(
         self,
         input_ids: torch.LongTensor,
@@ -356,9 +350,7 @@ class AfmoeModel(AfmoePreTrainedModel):
         inputs_embeds: Optional[torch.FloatTensor] = None,
     ) -> MoeModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
-            raise ValueError(
-                "You must specify exactly one of input_ids or inputs_embeds"
-            )
+            raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
@@ -446,8 +438,16 @@ class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
         use_cache: Optional[bool] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
         token_type_ids: Optional[torch.Tensor] = None,  # will be ignored
+        temperature: Optional[float] = 1.0,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> Union[Tuple, MoeCausalLMOutputWithPast]:
+    ) -> PrimeLmOutput:
+        r"""
+        labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+            Labels used by PrimeRL's wrapped LM head to optionally compute per-token logprobs/entropy.
+            If not provided, the wrapped LM head returns logits only.
+        temperature (`float`, *optional*, defaults to 1.0):
+            Temperature used for the logprobs/entropy computation when `labels` are provided.
+        """
         assert use_cache is None, "use_cache is not supported for custom afmoe for now"
         assert past_key_values is None, "past_key_values is not supported for custom afmoe for now"
 
@@ -459,25 +459,12 @@ class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
         )
 
         hidden_states = outputs.last_hidden_state
-        # Only compute necessary logits
-        slice_indices = (
-            slice(-logits_to_keep, None)
-            if isinstance(logits_to_keep, int)
-            else logits_to_keep
-        )
-        logits = self.lm_head(hidden_states[:, slice_indices, :])
-
-        loss = None
-        if labels is not None:
-            loss = self.loss_function(logits, labels, self.vocab_size, **kwargs)
-
-
-        return MoeCausalLMOutputWithPast(
-            loss=loss,
-            logits=logits,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
-            router_logits=outputs.router_logits,
+        # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
+        slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
+        return self.lm_head(
+            hidden_states[:, slice_indices, :],
+            labels[:, slice_indices] if labels is not None else None,
+            temperature=temperature,
         )
 
     def init_buffers_post_meta(self):

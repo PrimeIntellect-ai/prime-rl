@@ -19,15 +19,16 @@ from prime_rl.trainer.scheduler import setup_scheduler, setup_multi_scheduler
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.cp import (
-    get_padding_logit_from_prev_cp_rank,
     setup_cp_params,
+    shard_for_cp,
 )
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
-    shift_logits,
-    selective_log_softmax,
     compute_entropy,
     compute_loss,
+    selective_log_softmax,
+    shift_tensor_left,
+    shift_tensor_right,
 )
 from prime_rl.trainer.model import (
     forward,
@@ -277,10 +278,14 @@ def train(config: RLTrainerConfig):
                 micro_batch["teacher_logprobs"].to("cuda") if micro_batch["teacher_logprobs"] is not None else None
             )
 
+            labels = shift_tensor_left(input_ids)
+
             if cp_enabled:
                 input_ids, forward_position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
+                labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
             else:
                 forward_position_ids = position_ids
+
             if config.model.lora:
                 lora_num_tokens = micro_batch["lora_num_tokens"].to("cuda")
                 lora_cu_offsets = lora_num_tokens.cumsum(dim=0, dtype=torch.int32)
@@ -295,25 +300,31 @@ def train(config: RLTrainerConfig):
 
             # Forward pass
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                logits = forward(model, input_ids, forward_position_ids).float().contiguous()
+                out = forward(model, input_ids, forward_position_ids, labels=labels, temperature=temperature)
+
+            if out.logprobs is None:
+                assert out.logits is not None, "Logits must be provided to compute logprobs"
+                logits = out.logits / float(temperature)
+                out.logprobs = selective_log_softmax(logits, labels)
+                out.entropy = compute_entropy(logits)
 
             if cp_enabled:
-                left_pad_logit = get_padding_logit_from_prev_cp_rank(logits, cp_rank, cp_size, cp_group)
-            else:
-                left_pad_logit = None
+                logprobs = dist_nn.all_gather(out.logprobs, group=cp_group)
+                out.logprobs = torch.cat(logprobs, dim=1)
 
-            shifted_logits = shift_logits(logits, left_pad_logit=left_pad_logit)
-            shifted_logits = shifted_logits / temperature
-            trainer_logprobs = selective_log_softmax(shifted_logits, input_ids)
+                entropies = [torch.zeros_like(out.entropy) for _ in range(cp_size)]
+                dist.all_gather(entropies, out.entropy, group=cp_group)
+                out.entropy = torch.cat(entropies, dim=1)
 
-            if cp_enabled:
-                trainer_logprobs = dist_nn.all_gather(trainer_logprobs, group=cp_group)
-                trainer_logprobs = torch.cat(trainer_logprobs, dim=1)
+            vocab_size = model.config.vocab_size
+            # This is not really necessary as the first token should be masked out, but we do it anyway to be sure
+            out.logprobs = shift_tensor_right(out.logprobs, pad_value=torch.log(torch.tensor(1.0 / vocab_size)).item())
+            out.entropy = shift_tensor_right(out.entropy, pad_value=torch.log(torch.tensor(float(vocab_size))).item())
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
             loss, loss_tensors = compute_loss(
-                trainer_logprobs=trainer_logprobs.squeeze().split(response_lengths),
+                trainer_logprobs=out.logprobs.squeeze().split(response_lengths),
                 inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
                 teacher_logprobs=teacher_logprobs.squeeze().split(response_lengths)
                 if teacher_logprobs is not None
@@ -324,25 +335,14 @@ def train(config: RLTrainerConfig):
                 loss_scale=loss_scale,
             )
 
-            # Compute entropy
-            entropy = compute_entropy(shifted_logits)
-
-            if cp_enabled:
-                entropies = [torch.zeros_like(entropy) for _ in range(cp_size)]
-                dist.all_gather(entropies, entropy, group=cp_group)
-                entropy = torch.cat(entropies, dim=1)
-
-            # Delete logits and shifted_logits before backward pass to avoid memory spike
-            del logits, shifted_logits
-
             # Backward pass
             with maybe_record_function("backward"):
                 loss.backward()
 
             # Add relevant tensors to tensor dict for logging purposes
-            tensors["trainer_probs"].append(torch.exp(trainer_logprobs)[loss_mask].detach().to("cpu"))
+            tensors["trainer_probs"].append(torch.exp(out.logprobs)[loss_mask].detach().to("cpu"))
             tensors["inference_probs"].append(torch.exp(inference_logprobs)[loss_mask].detach().to("cpu"))
-            tensors["entropy"].append(entropy[loss_mask].detach().to("cpu"))
+            tensors["entropy"].append(out.entropy[loss_mask].detach().to("cpu"))
             tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
 
             if is_tt_moe_model(model):
