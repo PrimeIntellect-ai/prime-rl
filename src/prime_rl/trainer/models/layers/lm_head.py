@@ -122,7 +122,9 @@ class _ChunkedLogProbEntropyFn(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_logprobs: torch.Tensor, grad_entropy: torch.Tensor | None):
-        assert torch.all(grad_entropy == 0.0), "Entropy is not differentiable"
+        assert grad_entropy is None or torch.all(grad_entropy == 0.0), (
+            "Backward through entropy is not implemented in FusedOutputLinear"
+        )
 
         hidden, weight, labels, logz = ctx.saved_tensors
         inv_temperature: float = ctx.inv_temperature
