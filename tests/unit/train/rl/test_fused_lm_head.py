@@ -106,7 +106,7 @@ def test_fused_vs_vanilla_integration():
     # Vanilla path: get logits, compute logprobs manually
     vanilla_lm = VanillaOutputLinear(in_features=h, out_features=v)
     vanilla_lm.weight = torch.nn.Parameter(weight.clone())
-    vanilla_out = vanilla_lm(hidden, labels=None, temperature=temperature).postprocess()
+    vanilla_out = vanilla_lm(hidden, labels=None, temperature=temperature).cast_float_and_contiguous()
 
     assert vanilla_out.logits is not None
     logits = vanilla_out.logits / float(temperature)
@@ -116,7 +116,7 @@ def test_fused_vs_vanilla_integration():
     # Fused path: get logprobs and entropy directly
     fused_lm = FusedOutputLinear(in_features=h, out_features=v, chunk_size=chunk_size)
     fused_lm.weight = torch.nn.Parameter(weight.clone())
-    fused_out = fused_lm(hidden, labels=labels, temperature=temperature).postprocess()
+    fused_out = fused_lm(hidden, labels=labels, temperature=temperature).cast_float_and_contiguous()
 
     assert fused_out.logprobs is not None
     assert fused_out.entropy is not None
@@ -175,7 +175,9 @@ def test_full_model_fused_vs_vanilla():
 
         # Vanilla forward (returns logits, compute logprobs/entropy using RL train functions)
         optimizer_vanilla.zero_grad()
-        out_vanilla = model_vanilla(labels, position_ids, labels=labels, temperature=temperature).postprocess()
+        out_vanilla = model_vanilla(
+            labels, position_ids, labels=labels, temperature=temperature
+        ).cast_float_and_contiguous()
         if out_vanilla.logprobs is None:
             assert out_vanilla.logits is not None
             logits = out_vanilla.logits / float(temperature)
@@ -187,7 +189,9 @@ def test_full_model_fused_vs_vanilla():
 
         # Fused forward (returns logprobs and entropy directly)
         optimizer_fused.zero_grad()
-        out_fused = model_fused(labels, position_ids, labels=labels, temperature=temperature).postprocess()
+        out_fused = model_fused(
+            labels, position_ids, labels=labels, temperature=temperature
+        ).cast_float_and_contiguous()
         if out_fused.logprobs is None:
             assert out_fused.logits is not None
             logits = out_fused.logits / float(temperature)
