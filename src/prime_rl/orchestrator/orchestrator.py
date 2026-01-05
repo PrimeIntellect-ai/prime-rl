@@ -36,7 +36,7 @@ from prime_rl.orchestrator.utils import (
     set_semaphore,
 )
 from prime_rl.utils.client import (
-    check_has_model,
+    maybe_check_has_model,
     check_health,
     init_nccl_broadcast,
     reload_weights,
@@ -202,7 +202,7 @@ async def orchestrate(config: OrchestratorConfig):
     if teacher_admin_clients is not None:
         logger.info("Waiting for teacher inference pool to be ready")
         await check_health(teacher_admin_clients)
-        await check_has_model(teacher_clients, teacher_model_name)
+        await maybe_check_has_model(teacher_clients, teacher_model_name)
         logger.success("Teacher inference pool ready")
 
     # Set up weight broadcast backend

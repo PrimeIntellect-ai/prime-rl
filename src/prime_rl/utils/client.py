@@ -12,6 +12,9 @@ from prime_evals import AsyncEvalsClient
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from prime_rl.utils.config import ClientConfig
+from prime_rl.orchestrator.config import OrchestratorConfig
+from prime_rl.synthesize.config import SynthesizeConfig
+from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.utils.logger import get_logger
 
 
@@ -63,7 +66,7 @@ class StaticInferencePool:
 
     async def wait_for_ready(self, model_name: str, timeout: int = 1800) -> None:
         await check_health(self._admin_clients, timeout=timeout)
-        await check_has_model(self._clients, model_name)
+        await maybe_check_has_model(self._clients, model_name)
 
     async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
         await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
@@ -143,7 +146,10 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
     return [_setup_admin_client(base_url) for base_url in client_config.base_url]
 
 
-async def check_has_model(clients: list[AsyncOpenAI], model_name: str) -> None:
+async def maybe_check_has_model(clients: list[AsyncOpenAI], config: OrchestratorConfig | SynthesizeConfig | OfflineEvalConfig) -> None:
+    if config.client.skip_model_check:
+        return
+    model_name = config.model.name
     logger = get_logger()
     logger.debug(f"Checking if model {model_name} is in the inference pool")
     results = await asyncio.gather(*[client.models.list() for client in clients])
