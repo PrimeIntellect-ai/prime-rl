@@ -262,3 +262,9 @@ class RLTrainerConfig(BaseSettings):
         if self.tokenizer.trust_remote_code is None:
             self.tokenizer.trust_remote_code = self.model.trust_remote_code
         return self
+
+    @model_validator(mode="after")
+    def auto_setup_fused_lm_head_chunk_size(self):
+        if self.model.fused_lm_head_chunk_size is None:
+            self.model.fused_lm_head_chunk_size = 2048
+        return self
