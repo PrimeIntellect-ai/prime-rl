@@ -1,6 +1,9 @@
 from torch import Tensor
 from transformers.modeling_utils import PreTrainedModel
 
+from prime_rl.trainer.models.layers.lm_head import FusedOutputLinear, VanillaOutputLinear
+from prime_rl.utils.logger import get_logger
+
 
 class PreTrainedModelPrimeRL(PreTrainedModel):
     """
@@ -100,6 +103,24 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         This is called after loading the model from a checkpoint with meta device.
         """
         raise NotImplementedError(f"init_buffers_post_meta is not implemented for {self.__class__.__name__}")
+
+    def wrap_lm_head(self, chunk_size: int | None = None) -> None:
+        old_lm_head = self.lm_head
+
+        logger = get_logger()
+        logger.info(f"Wrapping LM head with chunk size {chunk_size}")
+
+        if chunk_size is not None:
+            self.lm_head = FusedOutputLinear(
+                in_features=old_lm_head.in_features, out_features=old_lm_head.out_features, chunk_size=chunk_size
+            )
+        else:
+            self.lm_head = VanillaOutputLinear(
+                in_features=old_lm_head.in_features, out_features=old_lm_head.out_features
+            )
+
+        self.lm_head.weight = old_lm_head.weight
+        del old_lm_head
 
 
 __all__ = ["PreTrainedModelPrimeRL"]

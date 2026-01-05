@@ -26,6 +26,7 @@ def get_model_pairs() -> tuple[HFGlm4MoeForCausalLM, PrimeRLGlm4MoeForCausalLM]:
         rope_theta=1000000.0,
         first_k_dense_replace=1,
         partial_rotary_factor=0.5,
+        use_grouped_mm=False,
     )
     # TODO: We should test this path because it's the most performant
     # But the grad seems to be off in attn because of precision
@@ -39,6 +40,8 @@ def get_model_pairs() -> tuple[HFGlm4MoeForCausalLM, PrimeRLGlm4MoeForCausalLM]:
         prime_state_keys = prime_model.state_dict().keys()
         prime_model.convert_to_prime(state_dict)
         prime_model.load_state_dict(state_dict)
+    # Training code wraps the LM head; tests should mirror that (so forward can accept labels/temperature).
+    prime_model.wrap_lm_head(chunk_size=None)
     assert set(prime_state_keys) - set(state_dict.keys()) == set()
     return hf_model, prime_model
 

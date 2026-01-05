@@ -40,6 +40,34 @@ def shift_logits(
     return logits
 
 
+def shift_tensor_left(t: Float[Tensor, "batch seq"]) -> Float[Tensor, "batch seq"]:
+    """Shifts the tensor one token to the left.
+
+    Used to create labels from input_ids: labels[i] = input_ids[i+1].
+    The last position is padded with 0 (a valid token index) since this value
+    will be shifted off by shift_tensor_right and never used.
+    """
+    return torch.cat([t[:, 1:], torch.full((t.shape[0], 1), 0, device=t.device, dtype=t.dtype)], dim=1)
+
+
+def shift_tensor_right(t: Float[Tensor, "batch seq"], pad_value: float | None = None) -> Float[Tensor, "batch seq"]:
+    """Shifts the tensor one token to the right, prepending a padding value.
+
+    Used to realign logprobs/entropy after computing with shifted labels.
+    After shift: result[i] = t[i-1], result[0] = pad_value.
+    This converts from "predict next token" convention to "probability of current token" convention.
+
+    Args:
+        t: Tensor to shift right
+        pad_value: Value to use for position 0. If None, uses 0.0 for backward compatibility.
+                   For logprobs, should be log(1/vocab_size) to represent uniform distribution.
+                   For entropy, should be log(vocab_size) to represent maximum entropy.
+    """
+    if pad_value is None:
+        pad_value = 0.0
+    return torch.cat([torch.full((t.shape[0], 1), pad_value, device=t.device, dtype=t.dtype), t[:, :-1]], dim=1)
+
+
 def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
     """Mean of values over a boolean mask; returns 0 when mask is empty."""
     denom = torch.clamp_min(mask.sum(), 1)

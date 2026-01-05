@@ -238,6 +238,13 @@ class ModelConfig(BaseConfig):
         ),
     ] = DebugModelConfig()
 
+    fused_lm_head_chunk_size: Annotated[
+        int | None,
+        Field(
+            description="The chunk size to use for the model. If None, will not use chunking.",
+        ),
+    ] = None
+
     @model_validator(mode="after")
     def _map_model_name_for_moe(self):
         """Map model name if it exists in MOE_MODEL_MAPS."""
@@ -264,6 +271,23 @@ class ModelConfig(BaseConfig):
         """Automatically enable activation checkpointing when activation offloading is enabled."""
         if self.ac_offloading is not None and self.ac is None:
             self.ac = ActivationCheckpointConfig()
+        return self
+
+    @model_validator(mode="after")
+    def fused_lm_head_chunk_size_requires_custom_impl(self):
+        if self.fused_lm_head_chunk_size is not None and self.impl not in ("custom", "auto"):
+            raise ValueError(
+                "Fused LM head chunk size is only supported with the custom implementation or auto mode (if the model doesn't support custom implementation and chunk size is provided, it will be ignored)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def fused_lm_head_chunk_size_is_valid(self):
+        if self.fused_lm_head_chunk_size is not None:
+            low = 512
+            if self.fused_lm_head_chunk_size < low:
+                raise ValueError(f"Fused LM head chunk size must be greater than {low}")
+
         return self
 
 

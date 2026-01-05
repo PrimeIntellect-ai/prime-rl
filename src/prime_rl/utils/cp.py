@@ -77,9 +77,8 @@ def setup_cp_params(
         cp_rank: The rank of the current process.
         cp_world_size: The number of processes in the context parallel group.
         cp_group: The context parallel group.
-        *extra_tensors: Extra tensors to prepare for context parallelism.
     Returns:
-        The prepared input for context parallelism.
+        The sharded input_ids and position_ids for context parallelism.
     """
     input_ids = shard_for_cp(input_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
 
