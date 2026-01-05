@@ -241,7 +241,7 @@ class ModelConfig(BaseConfig):
     fused_lm_head_chunk_size: Annotated[
         int | None,
         Field(
-            description="The chunk size to use for the model. If None, will not use chunking.",
+            description="The chunk size to use for the fused LM head. If None, will not use chunking. RL training auto-sets this to 2048 if not specified.",
         ),
     ] = None
 

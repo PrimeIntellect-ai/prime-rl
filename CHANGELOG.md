@@ -28,3 +28,4 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`ckpt.keep`**: Renamed to `ckpt.keep_last`. Added `ckpt.keep_interval` to keep checkpoints at every N steps permanently (2025-12-31)
 - **`MultiLoRAMoE`**: QwenMoE now supports training expert loras and this is enabled by default in the `target_modules`. (2026-01-01)
 - **`model.fused_lm_head_chunk_size`**: Added chunk size configuration for fused LM head to enable memory-efficient chunked logprob computation. When set, splits vocabulary into chunks to avoid materializing full [N, V] logit tensor (default: None) (#1525, 2026-01-03)
+- **`model.fused_lm_head_chunk_size`**: RL training now auto-sets this to 2048 if not specified. SFT training continues to use None (2026-01-05)
