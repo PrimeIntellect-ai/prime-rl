@@ -35,7 +35,7 @@ from prime_rl.orchestrator.utils import (
     set_semaphore,
 )
 from prime_rl.utils.client import (
-    check_has_model,
+    maybe_check_has_model,
     check_health,
     init_nccl_broadcast,
     reload_weights,
@@ -193,7 +193,7 @@ async def orchestrate(config: OrchestratorConfig):
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")
     await check_health(admin_clients)
-    await check_has_model(clients, config.model.name)
+    await maybe_check_has_model(clients, config)
     logger.success("Inference pool ready")
 
     # Set up weight broadcast backend
