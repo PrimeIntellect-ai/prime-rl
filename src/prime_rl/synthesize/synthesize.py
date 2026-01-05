@@ -6,8 +6,8 @@ from prime_rl.orchestrator.utils import (
 from prime_rl.synthesize.config import SynthesizeConfig
 from prime_rl.synthesize.utils import generate_synthetic_data
 from prime_rl.utils.client import (
-    maybe_check_has_model,
     check_health,
+    maybe_check_has_model,
     setup_admin_clients,
     setup_clients,
 )

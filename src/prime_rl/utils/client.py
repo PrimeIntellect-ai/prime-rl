@@ -11,10 +11,10 @@ from openai import AsyncOpenAI, NotFoundError
 from prime_evals import AsyncEvalsClient
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-from prime_rl.utils.config import ClientConfig
+from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.synthesize.config import SynthesizeConfig
-from prime_rl.eval.config import OfflineEvalConfig
+from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.logger import get_logger
 
 
@@ -146,7 +146,9 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
     return [_setup_admin_client(base_url) for base_url in client_config.base_url]
 
 
-async def maybe_check_has_model(clients: list[AsyncOpenAI], config: OrchestratorConfig | SynthesizeConfig | OfflineEvalConfig) -> None:
+async def maybe_check_has_model(
+    clients: list[AsyncOpenAI], config: OrchestratorConfig | SynthesizeConfig | OfflineEvalConfig
+) -> None:
     if config.client.skip_model_check:
         return
     model_name = config.model.name

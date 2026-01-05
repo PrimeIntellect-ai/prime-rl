@@ -4,8 +4,8 @@ from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.eval.utils import run_evals
 from prime_rl.orchestrator.utils import set_semaphore
 from prime_rl.utils.client import (
-    maybe_check_has_model,
     check_health,
+    maybe_check_has_model,
     reload_weights,
     setup_admin_clients,
     setup_clients,

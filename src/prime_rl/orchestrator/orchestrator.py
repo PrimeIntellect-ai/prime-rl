@@ -36,9 +36,9 @@ from prime_rl.orchestrator.utils import (
     set_semaphore,
 )
 from prime_rl.utils.client import (
-    maybe_check_has_model,
     check_health,
     init_nccl_broadcast,
+    maybe_check_has_model,
     reload_weights,
     setup_admin_clients,
     setup_clients,
