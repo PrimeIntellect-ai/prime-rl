@@ -60,9 +60,9 @@ def test_glm4_moe_attn_only() -> None:
     hf_output = hf_model(input_ids, position_ids)
     prime_output = prime_model(input_ids, position_ids)
     hf_output.logits.sum().backward()
-    prime_output.logits.sum().backward()
+    prime_output["logits"].sum().backward()
 
-    logits_diff = prime_output.logits - hf_output.logits
+    logits_diff = prime_output["logits"] - hf_output.logits
     assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=2e-2), (
         f"Max logits diff: {logits_diff.abs().max()}"
     )
@@ -88,9 +88,9 @@ def test_glm4_moe_mlp_only() -> None:
     hf_output = hf_model(input_ids, position_ids)
     prime_output = prime_model(input_ids, position_ids)
     hf_output.logits.sum().backward()
-    prime_output.logits.sum().backward()
+    prime_output["logits"].sum().backward()
 
-    logits_diff = prime_output.logits - hf_output.logits
+    logits_diff = prime_output["logits"] - hf_output.logits
     assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=2e-2), (
         f"Max logits diff: {logits_diff.abs().max()}"
     )
@@ -108,9 +108,9 @@ def test_glm4_moe() -> None:
     hf_output = hf_model(input_ids, position_ids)
     prime_output = prime_model(input_ids, position_ids)
     hf_output.logits.sum().backward()
-    prime_output.logits.sum().backward()
+    prime_output["logits"].sum().backward()
 
-    logits_diff = prime_output.logits - hf_output.logits
+    logits_diff = prime_output["logits"] - hf_output.logits
     assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=2e-2), (
         f"Max logits diff: {logits_diff.abs().max()}"
     )

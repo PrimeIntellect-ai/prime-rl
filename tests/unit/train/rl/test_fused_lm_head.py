@@ -4,7 +4,7 @@ from transformers import AutoModelForCausalLM
 from transformers.models.llama.configuration_llama import LlamaConfig
 
 from prime_rl.trainer.model import wrap_lm_head_for_hf_model
-from prime_rl.trainer.models import PrimeLmOutput
+from prime_rl.trainer.models import cast_float_and_contiguous
 from prime_rl.trainer.models.layers.lm_head import FusedOutputLinear, VanillaOutputLinear
 from prime_rl.trainer.models.llama import LlamaForCausalLM as PrimeRLLlamaForCausalLM
 from prime_rl.trainer.rl.loss import compute_entropy, selective_log_softmax, shift_tensor_left, shift_tensor_right
@@ -45,17 +45,17 @@ def test_fused_lm_head_matches_full_logits_forward_and_backward_cpu():
     lm.weight = torch.nn.Parameter(weight1)
 
     out = lm(hidden1, labels, temperature=temperature)
-    assert out.logits is None
-    assert out.logprobs is not None
-    assert out.entropy is not None
+    assert out.get("logits") is None
+    assert out.get("logprobs") is not None
+    assert out.get("entropy") is not None
 
-    loss1 = out.logprobs.sum()
+    loss1 = out["logprobs"].sum()
     loss1.backward()
     grad_hidden1 = hidden1.grad.detach().clone()
     grad_weight1 = lm.weight.grad.detach().clone()
 
-    torch.testing.assert_close(out.logprobs, logp0, rtol=0, atol=1e-5)
-    torch.testing.assert_close(out.entropy, ent0, rtol=0, atol=1e-5)
+    torch.testing.assert_close(out["logprobs"], logp0, rtol=0, atol=1e-5)
+    torch.testing.assert_close(out["entropy"], ent0, rtol=0, atol=1e-5)
     torch.testing.assert_close(grad_hidden1, grad_hidden0, rtol=0, atol=1e-5)
     torch.testing.assert_close(grad_weight1, grad_weight0, rtol=0, atol=1e-5)
 
@@ -87,12 +87,12 @@ def test_vanilla_lm_head_returns_logits():
     lm.weight = torch.nn.Parameter(weight)
 
     out = lm(hidden, labels=None, temperature=1.0)
-    assert out.logits is not None
-    assert out.logprobs is None
-    assert out.entropy is None
+    assert out.get("logits") is not None
+    assert out.get("logprobs") is None
+    assert out.get("entropy") is None
 
     logits_ref = hidden @ weight.t()
-    torch.testing.assert_close(out.logits, logits_ref, rtol=0, atol=1e-6)
+    torch.testing.assert_close(out["logits"], logits_ref, rtol=0, atol=1e-6)
 
 
 def test_fused_vs_vanilla_integration():
@@ -109,24 +109,24 @@ def test_fused_vs_vanilla_integration():
     # Vanilla path: get logits, compute logprobs manually
     vanilla_lm = VanillaOutputLinear(in_features=h, out_features=v)
     vanilla_lm.weight = torch.nn.Parameter(weight.clone())
-    vanilla_out = vanilla_lm(hidden, labels=None, temperature=temperature).cast_float_and_contiguous()
+    vanilla_out = cast_float_and_contiguous(vanilla_lm(hidden, labels=None, temperature=temperature))
 
-    assert vanilla_out.logits is not None
-    logits = vanilla_out.logits / float(temperature)
+    assert vanilla_out.get("logits") is not None
+    logits = vanilla_out["logits"] / float(temperature)
     vanilla_logprobs = torch.log_softmax(logits, dim=-1).gather(dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
     vanilla_entropy = compute_entropy(logits)
 
     # Fused path: get logprobs and entropy directly
     fused_lm = FusedOutputLinear(in_features=h, out_features=v, chunk_size=chunk_size)
     fused_lm.weight = torch.nn.Parameter(weight.clone())
-    fused_out = fused_lm(hidden, labels=labels, temperature=temperature).cast_float_and_contiguous()
+    fused_out = cast_float_and_contiguous(fused_lm(hidden, labels=labels, temperature=temperature))
 
-    assert fused_out.logprobs is not None
-    assert fused_out.entropy is not None
+    assert fused_out.get("logprobs") is not None
+    assert fused_out.get("entropy") is not None
 
     # Compare: fused should match vanilla within tolerance
-    torch.testing.assert_close(fused_out.logprobs, vanilla_logprobs, rtol=1e-3, atol=1e-4)
-    torch.testing.assert_close(fused_out.entropy, vanilla_entropy, rtol=1e-3, atol=1e-4)
+    torch.testing.assert_close(fused_out["logprobs"], vanilla_logprobs, rtol=1e-3, atol=1e-4)
+    torch.testing.assert_close(fused_out["entropy"], vanilla_entropy, rtol=1e-3, atol=1e-4)
 
 
 @pytest.mark.gpu
@@ -178,35 +178,33 @@ def test_full_model_fused_vs_vanilla():
 
         # Vanilla forward (returns logits, compute logprobs/entropy using RL train functions)
         optimizer_vanilla.zero_grad()
-        out_vanilla = model_vanilla(
-            labels, position_ids, labels=labels, temperature=temperature
-        ).cast_float_and_contiguous()
-        if out_vanilla.logprobs is None:
-            assert out_vanilla.logits is not None
-            logits = out_vanilla.logits / float(temperature)
-            out_vanilla.logprobs = selective_log_softmax(logits, labels)
-            out_vanilla.entropy = compute_entropy(logits)
-        loss_vanilla = -out_vanilla.logprobs.mean()
+        out_vanilla = cast_float_and_contiguous(
+            model_vanilla(labels, position_ids, labels=labels, temperature=temperature)
+        )
+        if out_vanilla.get("logprobs") is None:
+            assert out_vanilla.get("logits") is not None
+            logits = out_vanilla["logits"] / float(temperature)
+            out_vanilla["logprobs"] = selective_log_softmax(logits, labels)
+            out_vanilla["entropy"] = compute_entropy(logits)
+        loss_vanilla = -out_vanilla["logprobs"].mean()
         loss_vanilla.backward()
         optimizer_vanilla.step()
 
         # Fused forward (returns logprobs and entropy directly)
         optimizer_fused.zero_grad()
-        out_fused = model_fused(
-            labels, position_ids, labels=labels, temperature=temperature
-        ).cast_float_and_contiguous()
-        if out_fused.logprobs is None:
-            assert out_fused.logits is not None
-            logits = out_fused.logits / float(temperature)
-            out_fused.logprobs = selective_log_softmax(logits, labels)
-            out_fused.entropy = compute_entropy(logits)
-        loss_fused = -out_fused.logprobs.mean()
+        out_fused = cast_float_and_contiguous(model_fused(labels, position_ids, labels=labels, temperature=temperature))
+        if out_fused.get("logprobs") is None:
+            assert out_fused.get("logits") is not None
+            logits = out_fused["logits"] / float(temperature)
+            out_fused["logprobs"] = selective_log_softmax(logits, labels)
+            out_fused["entropy"] = compute_entropy(logits)
+        loss_fused = -out_fused["logprobs"].mean()
         loss_fused.backward()
         optimizer_fused.step()
 
         # Compare outputs (should be very close since models started identical)
-        torch.testing.assert_close(out_fused.logprobs, out_vanilla.logprobs, rtol=1e-4, atol=1e-5)
-        torch.testing.assert_close(out_fused.entropy, out_vanilla.entropy, rtol=1e-4, atol=1e-5)
+        torch.testing.assert_close(out_fused["logprobs"], out_vanilla["logprobs"], rtol=1e-4, atol=1e-5)
+        torch.testing.assert_close(out_fused["entropy"], out_vanilla["entropy"], rtol=1e-4, atol=1e-5)
         torch.testing.assert_close(loss_fused, loss_vanilla, rtol=1e-4, atol=1e-5)
 
     # After training, weights should still be close (optimizer steps should be similar)
@@ -239,7 +237,7 @@ def test_fused_lm_head_correct_shift():
     fused_lm = FusedOutputLinear(in_features=h, out_features=v, chunk_size=chunk_size)
     fused_lm.weight = torch.nn.Parameter(weight.clone())
     fused_out = fused_lm(hidden, labels=labels, temperature=temperature)
-    trainer_logprobs = shift_tensor_right(fused_out.logprobs)
+    trainer_logprobs = shift_tensor_right(fused_out["logprobs"])
 
     # === Inference convention (baseline) ===
     logits = hidden @ weight.t()
@@ -303,10 +301,10 @@ def test_wrap_lm_head_for_hf_model_vanilla():
         out = model(input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature)
 
     # VanillaOutputLinear returns logits
-    assert isinstance(out, PrimeLmOutput), "Output should be PrimeLmOutput"
-    assert out.logits is not None, "Vanilla path should return logits"
-    assert out.logprobs is None, "Vanilla path should not return logprobs"
-    assert out.logits.shape == (batch_size, seq_len, config.vocab_size), "Logits shape mismatch"
+    assert isinstance(out, dict), "Output should be PrimeLmOutput (dict)"
+    assert out.get("logits") is not None, "Vanilla path should return logits"
+    assert out.get("logprobs") is None, "Vanilla path should not return logprobs"
+    assert out["logits"].shape == (batch_size, seq_len, config.vocab_size), "Logits shape mismatch"
 
 
 @pytest.mark.gpu
@@ -350,12 +348,12 @@ def test_wrap_lm_head_for_hf_model_fused():
         out = model(input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature)
 
     # FusedOutputLinear returns logprobs and entropy
-    assert isinstance(out, PrimeLmOutput), "Output should be PrimeLmOutput"
-    assert out.logprobs is not None, "Fused path should return logprobs"
-    assert out.entropy is not None, "Fused path should return entropy"
-    assert out.logits is None, "Fused path should not return logits"
-    assert out.logprobs.shape == (batch_size, seq_len), "Logprobs shape mismatch"
-    assert out.entropy.shape == (batch_size, seq_len), "Entropy shape mismatch"
+    assert isinstance(out, dict), "Output should be PrimeLmOutput (dict)"
+    assert out.get("logprobs") is not None, "Fused path should return logprobs"
+    assert out.get("entropy") is not None, "Fused path should return entropy"
+    assert out.get("logits") is None, "Fused path should not return logits"
+    assert out["logprobs"].shape == (batch_size, seq_len), "Logprobs shape mismatch"
+    assert out["entropy"].shape == (batch_size, seq_len), "Entropy shape mismatch"
 
 
 @pytest.mark.gpu
@@ -399,10 +397,12 @@ def test_hf_model_fused_vs_vanilla_matches():
 
     # Run vanilla model
     with torch.autocast("cuda", dtype=torch.bfloat16):
-        out_vanilla = model_vanilla(input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature)
+        out_vanilla = model_vanilla(
+            input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature
+        )
 
     # Compute logprobs and entropy from vanilla logits
-    logits = out_vanilla.logits.float() / float(temperature)
+    logits = out_vanilla["logits"].float() / float(temperature)
     vanilla_logprobs = selective_log_softmax(logits, labels)
     vanilla_entropy = compute_entropy(logits)
 
@@ -410,8 +410,8 @@ def test_hf_model_fused_vs_vanilla_matches():
     with torch.autocast("cuda", dtype=torch.bfloat16):
         out_fused = model_fused(input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature)
 
-    fused_logprobs = out_fused.logprobs.float()
-    fused_entropy = out_fused.entropy.float()
+    fused_logprobs = out_fused["logprobs"].float()
+    fused_entropy = out_fused["entropy"].float()
 
     # Compare results
     torch.testing.assert_close(fused_logprobs, vanilla_logprobs, rtol=1e-3, atol=1e-4)
