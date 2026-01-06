@@ -1,7 +1,10 @@
 import pytest
 import torch
+from transformers import AutoModelForCausalLM
 from transformers.models.llama.configuration_llama import LlamaConfig
 
+from prime_rl.trainer.model import wrap_lm_head_for_hf_model
+from prime_rl.trainer.models import PrimeLmOutput
 from prime_rl.trainer.models.layers.lm_head import FusedOutputLinear, VanillaOutputLinear
 from prime_rl.trainer.models.llama import LlamaForCausalLM as PrimeRLLlamaForCausalLM
 from prime_rl.trainer.rl.loss import compute_entropy, selective_log_softmax, shift_tensor_left, shift_tensor_right
@@ -257,3 +260,159 @@ def test_fused_lm_head_correct_shift():
         atol=1e-4,
         msg="Importance ratio at positions 1 to s-1 should be ~0 (same token probs)",
     )
+
+
+@pytest.mark.gpu
+def test_wrap_lm_head_for_hf_model_vanilla():
+    """Test that wrap_lm_head_for_hf_model correctly wraps HF model with VanillaOutputLinear."""
+    torch.manual_seed(123)
+
+    # Create tiny Llama model using HuggingFace AutoModelForCausalLM
+    config = LlamaConfig(
+        hidden_size=128,
+        intermediate_size=256,
+        max_position_embeddings=512,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        num_hidden_layers=2,
+        vocab_size=1000,
+        rms_norm_eps=1e-5,
+        rope_theta=10000.0,
+        attention_bias=False,
+        mlp_bias=False,
+    )
+
+    with torch.device("cuda"), default_dtype(torch.float32):
+        model = AutoModelForCausalLM.from_config(config)
+
+    # Wrap with VanillaOutputLinear (chunk_size=None)
+    wrap_lm_head_for_hf_model(model, chunk_size=None)
+
+    assert isinstance(model.lm_head, VanillaOutputLinear), "lm_head should be VanillaOutputLinear"
+
+    # Test forward with labels and temperature
+    batch_size, seq_len = 2, 64
+    temperature = 1.5
+
+    with torch.device("cuda"):
+        input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
+        position_ids = torch.arange(seq_len).unsqueeze(0).expand(batch_size, -1)
+        labels = torch.randint(0, config.vocab_size, (batch_size, seq_len))
+
+    with torch.autocast("cuda", dtype=torch.bfloat16):
+        out = model(input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature)
+
+    # VanillaOutputLinear returns logits
+    assert isinstance(out, PrimeLmOutput), "Output should be PrimeLmOutput"
+    assert out.logits is not None, "Vanilla path should return logits"
+    assert out.logprobs is None, "Vanilla path should not return logprobs"
+    assert out.logits.shape == (batch_size, seq_len, config.vocab_size), "Logits shape mismatch"
+
+
+@pytest.mark.gpu
+def test_wrap_lm_head_for_hf_model_fused():
+    """Test that wrap_lm_head_for_hf_model correctly wraps HF model with FusedOutputLinear."""
+    torch.manual_seed(123)
+
+    # Create tiny Llama model using HuggingFace AutoModelForCausalLM
+    config = LlamaConfig(
+        hidden_size=128,
+        intermediate_size=256,
+        max_position_embeddings=512,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        num_hidden_layers=2,
+        vocab_size=1000,
+        rms_norm_eps=1e-5,
+        rope_theta=10000.0,
+        attention_bias=False,
+        mlp_bias=False,
+    )
+
+    with torch.device("cuda"), default_dtype(torch.float32):
+        model = AutoModelForCausalLM.from_config(config)
+
+    # Wrap with FusedOutputLinear (chunk_size=512)
+    wrap_lm_head_for_hf_model(model, chunk_size=512)
+
+    assert isinstance(model.lm_head, FusedOutputLinear), "lm_head should be FusedOutputLinear"
+
+    # Test forward with labels and temperature
+    batch_size, seq_len = 2, 64
+    temperature = 1.5
+
+    with torch.device("cuda"):
+        input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
+        position_ids = torch.arange(seq_len).unsqueeze(0).expand(batch_size, -1)
+        labels = torch.randint(0, config.vocab_size, (batch_size, seq_len))
+
+    with torch.autocast("cuda", dtype=torch.bfloat16):
+        out = model(input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature)
+
+    # FusedOutputLinear returns logprobs and entropy
+    assert isinstance(out, PrimeLmOutput), "Output should be PrimeLmOutput"
+    assert out.logprobs is not None, "Fused path should return logprobs"
+    assert out.entropy is not None, "Fused path should return entropy"
+    assert out.logits is None, "Fused path should not return logits"
+    assert out.logprobs.shape == (batch_size, seq_len), "Logprobs shape mismatch"
+    assert out.entropy.shape == (batch_size, seq_len), "Entropy shape mismatch"
+
+
+@pytest.mark.gpu
+def test_hf_model_fused_vs_vanilla_matches():
+    """Test that fused and vanilla paths produce equivalent results for HF models."""
+    torch.manual_seed(42)
+
+    # Create tiny Llama model using HuggingFace AutoModelForCausalLM
+    config = LlamaConfig(
+        hidden_size=128,
+        intermediate_size=256,
+        max_position_embeddings=512,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        num_hidden_layers=2,
+        vocab_size=1000,
+        rms_norm_eps=1e-5,
+        rope_theta=10000.0,
+        attention_bias=False,
+        mlp_bias=False,
+    )
+
+    with torch.device("cuda"), default_dtype(torch.float32):
+        model_vanilla = AutoModelForCausalLM.from_config(config)
+        model_fused = AutoModelForCausalLM.from_config(config)
+        # Share weights
+        model_fused.load_state_dict(model_vanilla.state_dict())
+
+    # Wrap models
+    wrap_lm_head_for_hf_model(model_vanilla, chunk_size=None)
+    wrap_lm_head_for_hf_model(model_fused, chunk_size=512)
+
+    # Test data
+    batch_size, seq_len = 2, 64
+    temperature = 1.5
+
+    with torch.device("cuda"):
+        input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
+        position_ids = torch.arange(seq_len).unsqueeze(0).expand(batch_size, -1)
+        labels = torch.randint(0, config.vocab_size, (batch_size, seq_len))
+
+    # Run vanilla model
+    with torch.autocast("cuda", dtype=torch.bfloat16):
+        out_vanilla = model_vanilla(input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature)
+
+    # Compute logprobs and entropy from vanilla logits
+    logits = out_vanilla.logits.float() / float(temperature)
+    vanilla_logprobs = selective_log_softmax(logits, labels)
+    vanilla_entropy = compute_entropy(logits)
+
+    # Run fused model
+    with torch.autocast("cuda", dtype=torch.bfloat16):
+        out_fused = model_fused(input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature)
+
+    fused_logprobs = out_fused.logprobs.float()
+    fused_entropy = out_fused.entropy.float()
+
+    # Compare results
+    torch.testing.assert_close(fused_logprobs, vanilla_logprobs, rtol=1e-3, atol=1e-4)
+    torch.testing.assert_close(fused_entropy, vanilla_entropy, rtol=1e-3, atol=1e-4)

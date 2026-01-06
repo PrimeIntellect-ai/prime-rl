@@ -1,5 +1,6 @@
 import logging
 import time
+import types
 from pathlib import Path
 from typing import cast
 
@@ -26,6 +27,7 @@ from prime_rl.trainer.models import (
     PrimeLmOutput,
     supports_custom_impl,
 )
+from prime_rl.trainer.models.layers.lm_head import FusedOutputLinear, VanillaOutputLinear
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.weights import (
     load_state_dict,
@@ -50,6 +52,80 @@ DTYPE_MAP = {
 
 def is_tt_moe_model(model: nn.Module) -> bool:
     return hasattr(model.config, "num_experts") or hasattr(model.config, "n_routed_experts")
+
+
+def wrap_lm_head_for_hf_model(model: nn.Module, chunk_size: int | None = None) -> None:
+    """
+    Wrap the lm_head of a HuggingFace model with FusedOutputLinear or VanillaOutputLinear,
+    and override the forward method to use it with labels and temperature.
+
+    This enables chunked loss computation for non-custom (HuggingFace) models.
+    """
+    logger = get_logger()
+    old_lm_head = model.lm_head
+
+    logger.info(f"Wrapping LM head for HF model with chunk size {chunk_size}")
+
+    if chunk_size is not None:
+        model.lm_head = FusedOutputLinear(
+            in_features=old_lm_head.in_features, out_features=old_lm_head.out_features, chunk_size=chunk_size
+        )
+    else:
+        model.lm_head = VanillaOutputLinear(
+            in_features=old_lm_head.in_features, out_features=old_lm_head.out_features
+        )
+
+    model.lm_head.weight = old_lm_head.weight
+    del old_lm_head
+
+    # Create a new forward method that uses the wrapped lm_head
+    def new_forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        position_ids=None,
+        past_key_values=None,
+        inputs_embeds=None,
+        labels=None,
+        use_cache=None,
+        output_attentions=None,
+        output_hidden_states=None,
+        return_dict=None,
+        cache_position=None,
+        logits_to_keep=0,
+        temperature=1.0,
+        **kwargs,
+    ) -> PrimeLmOutput:
+        # Run through base model to get hidden states
+        # Most HF models have self.model as the base transformer
+        outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=True,
+            cache_position=cache_position,
+            **kwargs,
+        )
+
+        hidden_states = outputs.last_hidden_state
+
+        # Slice hidden states for logits_to_keep
+        slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) and logits_to_keep > 0 else slice(None)
+
+        # Pass through the wrapped lm_head
+        return self.lm_head(
+            hidden_states[:, slice_indices, :],
+            labels[:, slice_indices] if labels is not None else None,
+            temperature=temperature,
+        )
+
+    # Bind the new forward to the model
+    model.forward = types.MethodType(new_forward, model)
 
 
 def get_load_balance_stats(
@@ -359,11 +435,11 @@ def setup_model(
         logger.warning("Cannot load model to meta device only, loading to CPU instead.")
         model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype])
 
-    if not isinstance(model, PreTrainedModelPrimeRL) and config.fused_lm_head_chunk_size is not None:
-        logger.warning("Fused LM head chunk size was specified but model is not a PrimeRL model, ignoring chunk size.")
-
     if isinstance(model, PreTrainedModelPrimeRL):
         model.wrap_lm_head(chunk_size=config.fused_lm_head_chunk_size)
+    else:
+        # For non-custom (HuggingFace) models, wrap the lm_head to enable chunked loss computation
+        wrap_lm_head_for_hf_model(model, chunk_size=config.fused_lm_head_chunk_size)
 
     # Apply LoRA before FSDP setup
     if config.lora is not None:
