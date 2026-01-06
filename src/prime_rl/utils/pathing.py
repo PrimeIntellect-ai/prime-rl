@@ -52,6 +52,50 @@ def resolve_latest_ckpt_step(ckpt_dir: Path) -> int | None:
     return latest_step
 
 
+def get_common_ckpt_steps(dirs: list[Path]) -> list[int]:
+    """Returns sorted intersection of checkpoint steps across directories."""
+    sets = [set(get_all_ckpt_steps(d)) for d in dirs if d.exists()]
+    if not sets:
+        return []
+    return sorted(set.intersection(*sets))
+
+
+def warn_if_ckpts_inconsistent(output_dir: Path, resume_step: int) -> None:
+    """Warns if resume_step is not safe given checkpoint state across directories."""
+    logger = get_logger()
+    orch_dirs = list(output_dir.glob("run_*"))
+    if len(orch_dirs) > 1:
+        return  # Multi-tenant: orchestrators may legitimately differ
+
+    all_dirs_and_steps = {
+        get_ckpt_dir(output_dir): get_all_ckpt_steps(get_ckpt_dir(output_dir)),
+        get_weights_dir(output_dir): get_all_ckpt_steps(get_weights_dir(output_dir)),
+    }
+    if orch_dirs:
+        all_dirs_and_steps[get_ckpt_dir(orch_dirs[0])] = get_all_ckpt_steps(get_ckpt_dir(orch_dirs[0]))
+
+    if not all(all_dirs_and_steps.values()): # no checkpoints found
+        return
+
+    common_steps = get_common_ckpt_steps(all_dirs_and_steps.keys())
+    if not common_steps:
+        logger.error(f"No common checkpoint steps across dirs: {all_dirs_and_steps}. Cannot safely resume.")
+        return
+    latest_common_step = max(common_steps)
+    latest_steps_all_equal = all(all_dirs_and_steps[_dir][-1] == latest_common_step for _dir in all_dirs_and_steps.keys())
+
+    if resume_step == -1 and not latest_steps_all_equal:
+        logger.warning(
+            f"Checkpoint mismatch detected with resume_step=-1. Check: {all_dirs_and_steps.keys()}. "
+            f"Consider setting resume_step={latest_common_step} explicitly."
+        )
+    elif resume_step >= 0 and resume_step not in common_steps:
+        logger.warning(
+            f"resume_step={resume_step} not found in all checkpoint dirs: {all_dirs_and_steps.keys()}. "
+            f"Latest common step: {latest_common_step}."
+        )
+
+
 def sync_wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:
     logger = get_logger()
     wait_time = 0
