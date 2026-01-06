@@ -123,11 +123,9 @@ class MultiLoRAScheduler:
         self,
         scheduler_config: SchedulerConfigType,
         max_steps: int | None,
-        lr: float,
     ):
         self.scheduler_config = scheduler_config
         self.max_steps = max_steps
-        self.lr = lr
         self.runs = get_runs()
         self.logger = get_logger()
 
@@ -138,11 +136,12 @@ class MultiLoRAScheduler:
 
         This should be called after an optimizer is created for a run.
         """
+        lr = self.runs.config[idx].optim.lr
         self.schedulers[idx] = setup_scheduler(
             optimizer,
             self.scheduler_config,
             self.max_steps,
-            self.lr,
+            lr,
         )
 
     def step(self) -> None:
@@ -171,10 +170,9 @@ def setup_multi_scheduler(
     optimizer: "MultiLoRAOptimizer",
     scheduler_config: SchedulerConfigType,
     max_steps: int | None,
-    lr: float,
 ) -> MultiLoRAScheduler:
     """Create a MultiLoRAScheduler for managing per-run schedulers."""
-    scheduler = MultiLoRAScheduler(scheduler_config, max_steps, lr)
+    scheduler = MultiLoRAScheduler(scheduler_config, max_steps)
     # Register callback so schedulers are created when optimizers are created
     optimizer.register_post_creation_callback(scheduler.scheduler_creation_hook)
     return scheduler

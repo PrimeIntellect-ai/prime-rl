@@ -8,11 +8,63 @@ from prime_rl.utils.config import (
     ClientConfig,
     HeartbeatConfig,
     LogConfig,
-    ModelConfig,
     PrimeMonitorConfig,
     WandbWithExtrasConfig,
 )
+from prime_rl.utils.config import (
+    ModelConfig as BaseModelConfig,
+)
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
+
+
+class OptimizerConfig(BaseConfig):
+    """Per-run optimizer configuration for multi-run training."""
+
+    lr: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="Learning rate for this run.",
+        ),
+    ] = 1e-6
+
+
+class LoRAConfig(BaseConfig):
+    """Per-run LoRA configuration for multi-run training."""
+
+    name: Annotated[
+        str | None,
+        Field(
+            description="Name of the LoRA adapter. If None, auto-generated from rank and alpha.",
+        ),
+    ] = None
+
+    rank: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="LoRA rank for this run. Must be <= trainer's max rank. If None, uses trainer's rank.",
+        ),
+    ] = None
+
+    alpha: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="LoRA alpha for this run.",
+        ),
+    ] = 16.0
+
+
+class ModelConfig(BaseModelConfig):
+    """Extended model configuration with per-run LoRA settings."""
+
+    lora: Annotated[
+        LoRAConfig | None,
+        Field(
+            description="LoRA configuration. If None, LoRA is not used.",
+        ),
+    ] = None
 
 
 class SamplingConfig(BaseConfig):
@@ -555,6 +607,9 @@ class OrchestratorConfig(BaseSettings):
     # The model configuration
     model: ModelConfig = ModelConfig()
 
+    # The optimizer configuration (per-run LR for multi-run training)
+    optim: OptimizerConfig = OptimizerConfig()
+
     # The teacher model configuration (optional)
     teacher_model: Annotated[
         TeacherModelConfig | None,
@@ -706,13 +761,6 @@ class OrchestratorConfig(BaseSettings):
     ] = False
 
     seed: Annotated[int | None, Field(description="Random seed for the orchestrator.")] = 42
-
-    lora_name: Annotated[
-        str | None,
-        Field(
-            description="Name of the LoRA to use for the orchestrator. If None, will not use any LoRA.",
-        ),
-    ] = None
 
     heartbeat: Annotated[
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
