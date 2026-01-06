@@ -339,7 +339,7 @@ def load_environment(
     rubric = vf.JudgeRubric(judge_prompt=JUDGE_PROMPT)
     rubric.add_reward_func(parallel_tool_calls_reward_func, weight=0.0)
     rubric.add_reward_func(turns_used_reward_func, weight=0.0)
-    rubric.add_reward_func(group_avg_turns_used_reward_func, weight=0.0)
+    #rubric.add_reward_func(group_avg_turns_used_reward_func, weight=0.0)
     rubric.add_reward_func(correct_answer_reward_func, weight=1.0)
     rubric.add_reward_func(efficiency_bonus_for_correct, weight=1.0)
     
