@@ -242,7 +242,7 @@ def train(config: SFTTrainerConfig):
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
                 out = forward(model, input_ids, position_ids)
 
-            logits = out.logits
+            logits = out["logits"]
             B, L, V = logits.shape
 
             # Compute loss

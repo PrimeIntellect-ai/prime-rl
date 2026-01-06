@@ -25,6 +25,7 @@ from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
     PreTrainedModelPrimeRL,
     PrimeLmOutput,
+    cast_float_and_contiguous,
     supports_custom_impl,
 )
 from prime_rl.trainer.models.layers.lm_head import FusedOutputLinear, VanillaOutputLinear
@@ -484,7 +485,8 @@ def forward(
 ) -> PrimeLmOutput:
     out = model(input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature)
 
-    if isinstance(out, PrimeLmOutput):
-        return out.cast_float_and_contiguous()
+    # PrimeLmOutput is a TypedDict (dict at runtime), HF outputs are dataclass-like objects
+    if isinstance(out, dict):
+        return cast_float_and_contiguous(out)
 
-    return PrimeLmOutput(logits=out.logits).cast_float_and_contiguous()
+    return cast_float_and_contiguous(PrimeLmOutput(logits=out.logits))

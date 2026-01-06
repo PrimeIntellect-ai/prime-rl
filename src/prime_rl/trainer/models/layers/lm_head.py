@@ -1,28 +1,30 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from typing import TypedDict
 
 import torch
 from torch import Tensor
 
 
-@dataclass
-class PrimeLmOutput:
-    logits: Tensor | None = None
-    logprobs: Tensor | None = None
-    entropy: Tensor | None = None
+class PrimeLmOutput(TypedDict, total=False):
+    """Output from LM head - a TypedDict so pytree can find tensors for FSDP2 hooks."""
 
-    def cast_float_and_contiguous(self) -> PrimeLmOutput:
-        """Convert tensors to float and make contiguous."""
+    logits: Tensor | None
+    logprobs: Tensor | None
+    entropy: Tensor | None
 
-        def _float_and_contiguous(tensor: Tensor | None) -> Tensor | None:
-            return tensor.float().contiguous() if tensor is not None else None
 
-        return PrimeLmOutput(
-            logits=_float_and_contiguous(self.logits),
-            logprobs=_float_and_contiguous(self.logprobs),
-            entropy=_float_and_contiguous(self.entropy),
-        )
+def cast_float_and_contiguous(output: PrimeLmOutput) -> PrimeLmOutput:
+    """Convert tensors in PrimeLmOutput to float and make contiguous."""
+
+    def _float_and_contiguous(tensor: Tensor | None) -> Tensor | None:
+        return tensor.float().contiguous() if tensor is not None else None
+
+    return PrimeLmOutput(
+        logits=_float_and_contiguous(output.get("logits")),
+        logprobs=_float_and_contiguous(output.get("logprobs")),
+        entropy=_float_and_contiguous(output.get("entropy")),
+    )
 
 
 class FusedOutputLinear(torch.nn.Linear):

@@ -11,7 +11,7 @@ from transformers.models.llama.configuration_llama import LlamaConfig
 from prime_rl.trainer.models.afmoe import AfmoeConfig, AfmoeForCausalLM
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig, Glm4MoeForCausalLM
-from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
+from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, cast_float_and_contiguous
 from prime_rl.trainer.models.llama import LlamaForCausalLM
 from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig, Qwen3MoeForCausalLM
 
@@ -46,4 +46,4 @@ def supports_custom_impl(model_config: PretrainedConfig) -> bool:
     return type(model_config) in _CUSTOM_CAUSAL_LM_MAPPING
 
 
-__all__ = ["AutoModelForCausalLMPrimeRL", "PreTrainedModelPrimeRL", "supports_custom_impl", "PrimeLmOutput"]
+__all__ = ["AutoModelForCausalLMPrimeRL", "PreTrainedModelPrimeRL", "supports_custom_impl", "PrimeLmOutput", "cast_float_and_contiguous"]
