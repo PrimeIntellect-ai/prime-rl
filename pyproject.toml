@@ -56,6 +56,9 @@ synthesize = "prime_rl.synthesize.synthesize:main"
 flash-attn = [
     "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.6.8/flash_attn-2.8.3+cu128torch2.9-cp312-cp312-linux_x86_64.whl",
 ]
+metrics = [
+    "prometheus_client>=0.20.0",
+]
 
 [dependency-groups]
 dev = [

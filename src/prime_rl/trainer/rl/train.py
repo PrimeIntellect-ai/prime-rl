@@ -51,6 +51,7 @@ from prime_rl.trainer.world import get_world
 from prime_rl.trainer.runs import setup_runs, Progress, get_runs
 from prime_rl.trainer.models.layers.lora import set_multilora_offsets
 from prime_rl.utils.heartbeat import Heartbeat
+from prime_rl.utils.metrics_server import MetricsServer
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step, to_col_format
@@ -83,6 +84,13 @@ def train(config: RLTrainerConfig):
     if config.heartbeat is not None and world.is_master:
         logger.info("Initializing heartbeat")
         heart = Heartbeat(config.heartbeat.url)
+
+    # Setup metrics server (only on rank 0)
+    metrics_server = None
+    if config.metrics_server is not None and world.is_master:
+        logger.info(f"Initializing metrics server on port {config.metrics_server.port}")
+        metrics_server = MetricsServer(config.metrics_server)
+        metrics_server.start()
 
     # Set precision
     setup_torch_distributed(
@@ -446,6 +454,19 @@ def train(config: RLTrainerConfig):
         disk_metrics["step"] = progress.step
         monitor.log(disk_metrics, step=progress.step)
 
+        # Update Prometheus metrics if configured
+        if metrics_server is not None:
+            metrics_server.update(
+                step=progress.step,
+                loss=tensor_stats["loss/mean"],
+                throughput=throughput,
+                grad_norm=grad_norm.item(),
+                peak_memory_gib=peak_memory,
+                learning_rate=current_lr,
+                mfu=mfu,
+                entropy=tensor_stats.get("entropy/mean", 0.0),
+            )
+
         progress.step += 1
         is_first_step = False
 
@@ -475,6 +496,10 @@ def train(config: RLTrainerConfig):
 
     logger.info(f"Peak memory: {max(to_col_format(monitor.history)['perf/peak_memory']):.1f} GiB")
     logger.success("RL trainer finished!")
+
+    # Stop metrics server if configured
+    if metrics_server is not None:
+        metrics_server.stop()
 
     # Optionally, print benchmark table
     if config.bench and world.is_master:
