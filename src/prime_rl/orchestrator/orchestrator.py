@@ -508,7 +508,7 @@ async def orchestrate(config: OrchestratorConfig):
                 to_log.update({f"val_batch/{env}": ratio for env, ratio in per_env_ratio.items()})
 
         # Log metrics to monitor(s)
-        monitor.log(to_log)
+        monitor.log(to_log, step=progress.step)
 
         # Log samples to monitor(s) if enabled
         subset_train_rollouts = random.sample(train_rollouts, min(8, len(train_rollouts)))
