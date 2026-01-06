@@ -62,20 +62,24 @@ def wrap_lm_head_for_hf_model(model: nn.Module, chunk_size: int | None = None) -
 
     This enables chunked loss computation for non-custom (HuggingFace) models.
     """
+    # Guards so we have nicer error messages when a non-standard model is used
+    assert hasattr(model, "model"), f"model doesnt have backbone in model.model:\n{model}"
+    assert isinstance(model.model, nn.Module), f"model.model is not a nn.Module: {type(model.model)}\n{model}"
+    assert hasattr(model, "lm_head"), f"model doesnt have lm_head in model.lm_head:\n{model}"
+    assert isinstance(model.lm_head, nn.Linear), f"model.lm_head is not a nn.Linear: {type(model.lm_head)}\n{model}"
+
     logger = get_logger()
-    old_lm_head = model.lm_head
 
     logger.info(f"Wrapping LM head for HF model with chunk size {chunk_size}")
 
+    # Set model.lm_head to the new lm_head
+    old_lm_head = model.lm_head
     if chunk_size is not None:
         model.lm_head = FusedOutputLinear(
             in_features=old_lm_head.in_features, out_features=old_lm_head.out_features, chunk_size=chunk_size
         )
     else:
-        model.lm_head = VanillaOutputLinear(
-            in_features=old_lm_head.in_features, out_features=old_lm_head.out_features
-        )
-
+        model.lm_head = VanillaOutputLinear(in_features=old_lm_head.in_features, out_features=old_lm_head.out_features)
     model.lm_head.weight = old_lm_head.weight
     del old_lm_head
 
@@ -91,14 +95,11 @@ def wrap_lm_head_for_hf_model(model: nn.Module, chunk_size: int | None = None) -
         use_cache=None,
         output_attentions=None,
         output_hidden_states=None,
-        return_dict=None,
         cache_position=None,
         logits_to_keep=0,
         temperature=1.0,
         **kwargs,
     ) -> PrimeLmOutput:
-        # Run through base model to get hidden states
-        # Most HF models have self.model as the base transformer
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -112,11 +113,12 @@ def wrap_lm_head_for_hf_model(model: nn.Module, chunk_size: int | None = None) -
             cache_position=cache_position,
             **kwargs,
         )
-
         hidden_states = outputs.last_hidden_state
 
         # Slice hidden states for logits_to_keep
-        slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) and logits_to_keep > 0 else slice(None)
+        slice_indices = (
+            slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) and logits_to_keep > 0 else slice(None)
+        )
 
         # Pass through the wrapped lm_head
         return self.lm_head(
