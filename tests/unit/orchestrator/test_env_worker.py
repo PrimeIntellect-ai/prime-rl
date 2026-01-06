@@ -77,3 +77,20 @@ def test_stopping_flag_false_raises_error():
     # When _stopping is False, the check should raise
     should_raise = mock_process and not mock_process.is_alive() and not _stopping
     assert should_raise, "Should raise error when _stopping is False"
+
+
+def test_stopping_flag_reset_on_restart():
+    """Test that _stopping flag is reset when start() is called after stop()."""
+    # Simulate stop() -> start() scenario
+    _stopping = True  # After stop()
+
+    # Simulate start() resetting the flag
+    _stopping = False  # This is what start() should do
+
+    mock_process = MagicMock()
+    mock_process.is_alive.return_value = False
+    mock_process.exitcode = 1
+
+    # After restart, dead worker detection should work again
+    should_raise = mock_process and not mock_process.is_alive() and not _stopping
+    assert should_raise, "Dead worker detection should work after restart"

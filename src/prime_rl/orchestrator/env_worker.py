@@ -242,6 +242,7 @@ class EnvWorker:
 
     def start(self):
         """Start the worker process."""
+        self._stopping = False  # Reset in case of restart
         self.process = Process(
             target=worker_main,
             args=(
