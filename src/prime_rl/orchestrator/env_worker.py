@@ -237,6 +237,9 @@ class EnvWorker:
         # Track latest lag metrics from this worker
         self.latest_lag_metrics: dict = {}
 
+        # Track intentional shutdown to avoid false error on clean stop
+        self._stopping = False
+
     def start(self):
         """Start the worker process."""
         self.process = Process(
@@ -259,6 +262,7 @@ class EnvWorker:
 
     def stop(self):
         """Stop the worker process."""
+        self._stopping = True
         if self.process and self.process.is_alive():
             self.request_queue.put(None)  # Shutdown signal
             self.process.join(timeout=5)
@@ -287,8 +291,8 @@ class EnvWorker:
     async def collect_responses(self):
         """Background task to collect responses and resolve futures."""
         while True:
-            # Check if worker process died unexpectedly
-            if self.process and not self.process.is_alive():
+            # Check if worker process died unexpectedly (but not during intentional shutdown)
+            if self.process and not self.process.is_alive() and not self._stopping:
                 exit_code = self.process.exitcode
                 raise RuntimeError(
                     f"Worker '{self.worker_name}' died unexpectedly (exit code: {exit_code})"

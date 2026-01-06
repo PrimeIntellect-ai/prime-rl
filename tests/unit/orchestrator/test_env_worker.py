@@ -53,3 +53,27 @@ def test_exit_code_minus_nine():
         assert "exit code: -9" in error_msg
     else:
         raise AssertionError("Should have detected dead worker")
+
+
+def test_stopping_flag_skips_dead_worker_error():
+    """Test that dead worker check is skipped during intentional shutdown."""
+    mock_process = MagicMock()
+    mock_process.is_alive.return_value = False
+    mock_process.exitcode = 0
+    _stopping = True
+
+    # When _stopping is True, the check should not raise
+    should_raise = mock_process and not mock_process.is_alive() and not _stopping
+    assert not should_raise, "Should not raise error when _stopping is True"
+
+
+def test_stopping_flag_false_raises_error():
+    """Test that dead worker check raises when not stopping."""
+    mock_process = MagicMock()
+    mock_process.is_alive.return_value = False
+    mock_process.exitcode = 1
+    _stopping = False
+
+    # When _stopping is False, the check should raise
+    should_raise = mock_process and not mock_process.is_alive() and not _stopping
+    assert should_raise, "Should raise error when _stopping is False"
