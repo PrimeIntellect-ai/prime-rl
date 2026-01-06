@@ -287,6 +287,13 @@ class EnvWorker:
     async def collect_responses(self):
         """Background task to collect responses and resolve futures."""
         while True:
+            # Check if worker process died unexpectedly
+            if self.process and not self.process.is_alive():
+                exit_code = self.process.exitcode
+                raise RuntimeError(
+                    f"Worker '{self.worker_name}' died unexpectedly (exit code: {exit_code})"
+                )
+
             # Non-blocking check for responses
             while True:
                 try:
