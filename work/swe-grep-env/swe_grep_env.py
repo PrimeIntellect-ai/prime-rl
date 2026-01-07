@@ -1,7 +1,7 @@
 import asyncio
 import verifiers as vf
 from prime_sandboxes import AsyncSandboxClient
-from datasets import Dataset
+from datasets import Dataset, load_dataset
 import pandas as pd
 from typing import Any
 import logging
@@ -243,13 +243,21 @@ class SweGrepEnv(vf.SandboxEnv):
             return f"Error: {str(e)[:100]}"
 
 
+#def convert_dataset(train_ratio=0.9):
+#    df = pd.read_parquet("/root/prime-rl/work/swe-grep-env/data/grep_dataset_20k_clean.parquet")
+#    dataset = Dataset.from_pandas(df)
+#    dataset = dataset.rename_columns({"user_query": "question", "ground_truth": "answer"}).remove_columns(["file"])
+#    
+#    split = dataset.train_test_split(test_size=1 - train_ratio, seed=42)
+#    return split["train"], split["test"]
+
 def convert_dataset(train_ratio=0.9):
-    df = pd.read_parquet("/root/prime-rl/work/swe-grep-env/data/grep_dataset_20k_clean.parquet")
-    dataset = Dataset.from_pandas(df)
+    dataset = load_dataset("cdreetz/swe-grep-env-v3", split="2k_v3")
     dataset = dataset.rename_columns({"user_query": "question", "ground_truth": "answer"}).remove_columns(["file"])
     
     split = dataset.train_test_split(test_size=1 - train_ratio, seed=42)
     return split["train"], split["test"]
+
 
 
 JUDGE_PROMPT = """Given a ground truth answer and a response, determine if the answer is correct.
