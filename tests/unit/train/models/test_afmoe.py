@@ -3,6 +3,7 @@ import torch
 from torch import nn
 
 from prime_rl.trainer.models.afmoe import AfmoeForCausalLM as PrimeRLAfmoeForCausalLM
+from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.utils.utils import default_dtype
 from tests.unit.train.models.afmoe_hf_modeling.configuration_afmoe import AfmoeConfig
 from tests.unit.train.models.afmoe_hf_modeling.modeling_afmoe import (
@@ -64,7 +65,7 @@ def get_model_pairs():
         prime_state_keys = prime_model.state_dict().keys()
         prime_model.convert_to_prime(state_dict)
         prime_model.load_state_dict(state_dict)
-        prime_model.wrap_lm_head(chunk_size=None)
+        inject_prime_lm_head(prime_model, chunk_size=None)
     assert set(prime_state_keys) - set(state_dict.keys()) == set()
     return hf_model, prime_model
 

@@ -5,6 +5,7 @@ from transformers import Glm4MoeForCausalLM as HFGlm4MoeForCausalLM
 
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig
 from prime_rl.trainer.models.glm4_moe import Glm4MoeForCausalLM as PrimeRLGlm4MoeForCausalLM
+from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.utils.utils import default_dtype
 
 pytestmark = [pytest.mark.gpu]
@@ -41,7 +42,7 @@ def get_model_pairs() -> tuple[HFGlm4MoeForCausalLM, PrimeRLGlm4MoeForCausalLM]:
         prime_model.convert_to_prime(state_dict)
         prime_model.load_state_dict(state_dict)
     # Training code wraps the LM head; tests should mirror that (so forward can accept labels/temperature).
-    prime_model.wrap_lm_head(chunk_size=None)
+    inject_prime_lm_head(prime_model, chunk_size=None)
     assert set(prime_state_keys) - set(state_dict.keys()) == set()
     return hf_model, prime_model
 

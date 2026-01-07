@@ -4,6 +4,7 @@ from torch import nn
 from transformers import LlamaForCausalLM as HFLlamaForCausalLM
 from transformers.models.llama.configuration_llama import LlamaConfig
 
+from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.llama import LlamaForCausalLM as PrimeRLLlamaForCausalLM
 from prime_rl.utils.utils import default_dtype
 
@@ -34,7 +35,7 @@ def get_model_pairs():
         prime_model.convert_to_prime(state_dict)
         prime_model.load_state_dict(state_dict)
     # Training code wraps the LM head; tests should mirror that (so forward can accept labels/temperature).
-    prime_model.wrap_lm_head(chunk_size=None)
+    inject_prime_lm_head(prime_model, chunk_size=None)
     assert set(prime_state_keys) - set(state_dict.keys()) == set()
     return hf_model, prime_model
 

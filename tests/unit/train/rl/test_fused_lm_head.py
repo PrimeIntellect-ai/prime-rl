@@ -3,9 +3,8 @@ import torch
 from transformers import AutoModelForCausalLM
 from transformers.models.llama.configuration_llama import LlamaConfig
 
-from prime_rl.trainer.model import wrap_lm_head_for_hf_model
 from prime_rl.trainer.models import cast_float_and_contiguous
-from prime_rl.trainer.models.layers.lm_head import FusedOutputLinear, VanillaOutputLinear
+from prime_rl.trainer.models.layers.lm_head import FusedOutputLinear, VanillaOutputLinear, inject_prime_lm_head
 from prime_rl.trainer.models.llama import LlamaForCausalLM as PrimeRLLlamaForCausalLM
 from prime_rl.trainer.rl.loss import compute_entropy, selective_log_softmax, shift_tensor_left, shift_tensor_right
 from prime_rl.utils.utils import default_dtype
@@ -158,8 +157,8 @@ def test_full_model_fused_vs_vanilla():
         model_fused.load_state_dict(model_vanilla.state_dict())
 
         # Wrap with different LM heads
-        model_vanilla.wrap_lm_head(chunk_size=None)  # Vanilla
-        model_fused.wrap_lm_head(chunk_size=256)  # Fused with chunking
+        inject_prime_lm_head(model_vanilla, chunk_size=None)  # Vanilla
+        inject_prime_lm_head(model_fused, chunk_size=256)  # Fused with chunking
 
     # Setup optimizers
     optimizer_vanilla = torch.optim.AdamW(model_vanilla.parameters(), lr=1e-4)
@@ -261,8 +260,8 @@ def test_fused_lm_head_correct_shift():
 
 
 @pytest.mark.gpu
-def test_wrap_lm_head_for_hf_model_vanilla():
-    """Test that wrap_lm_head_for_hf_model correctly wraps HF model with VanillaOutputLinear."""
+def test_inject_prime_lm_head_vanilla():
+    """Test that inject_prime_lm_head correctly wraps HF model with VanillaOutputLinear."""
     torch.manual_seed(123)
 
     # Create tiny Llama model using HuggingFace AutoModelForCausalLM
@@ -284,7 +283,7 @@ def test_wrap_lm_head_for_hf_model_vanilla():
         model = AutoModelForCausalLM.from_config(config)
 
     # Wrap with VanillaOutputLinear (chunk_size=None)
-    wrap_lm_head_for_hf_model(model, chunk_size=None)
+    inject_prime_lm_head(model, chunk_size=None)
 
     assert isinstance(model.lm_head, VanillaOutputLinear), "lm_head should be VanillaOutputLinear"
 
@@ -308,8 +307,8 @@ def test_wrap_lm_head_for_hf_model_vanilla():
 
 
 @pytest.mark.gpu
-def test_wrap_lm_head_for_hf_model_fused():
-    """Test that wrap_lm_head_for_hf_model correctly wraps HF model with FusedOutputLinear."""
+def test_inject_prime_lm_head_fused():
+    """Test that inject_prime_lm_head correctly wraps HF model with FusedOutputLinear."""
     torch.manual_seed(123)
 
     # Create tiny Llama model using HuggingFace AutoModelForCausalLM
@@ -331,7 +330,7 @@ def test_wrap_lm_head_for_hf_model_fused():
         model = AutoModelForCausalLM.from_config(config)
 
     # Wrap with FusedOutputLinear (chunk_size=512)
-    wrap_lm_head_for_hf_model(model, chunk_size=512)
+    inject_prime_lm_head(model, chunk_size=512)
 
     assert isinstance(model.lm_head, FusedOutputLinear), "lm_head should be FusedOutputLinear"
 
@@ -383,8 +382,8 @@ def test_hf_model_fused_vs_vanilla_matches():
         model_fused.load_state_dict(model_vanilla.state_dict())
 
     # Wrap models
-    wrap_lm_head_for_hf_model(model_vanilla, chunk_size=None)
-    wrap_lm_head_for_hf_model(model_fused, chunk_size=512)
+    inject_prime_lm_head(model_vanilla, chunk_size=None)
+    inject_prime_lm_head(model_fused, chunk_size=512)
 
     # Test data
     batch_size, seq_len = 2, 64
