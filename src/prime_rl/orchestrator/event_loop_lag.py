@@ -63,18 +63,18 @@ class EventLoopLagMonitor:
         p90_lag = float(np.percentile(last_lags, 90))
         min_lag = float(np.min(last_lags))
         max_lag = float(np.max(last_lags))
-        if (
-            med_lag > self.warn_med_lag_threshold
-            or p90_lag > self.warn_p90_lag_threshold
-            or max_lag > self.warn_max_lag_threshold
-        ):
-            self.logger.warning(
-                f"Detected busy event loop. Measured {mean_lag:.1f}s (min={min_lag:.1f}s, med={med_lag:.1f}s, p90={p90_lag:.1f}s, max={max_lag:.1f}s) event loop lag over the last {len(last_lags)} measurement(s)"
-            )
-        else:
-            self.logger.debug(
-                f"Event loop is running smoothly. Measured {mean_lag:.1f}s (min={min_lag:.1f}s, med={med_lag:.1f}s, p90={p90_lag:.1f}s, max={max_lag:.1f}s) event loop lag over the last {len(last_lags)} measurement(s)"
-            )
+        # if (
+        #     med_lag > self.warn_med_lag_threshold
+        #     or p90_lag > self.warn_p90_lag_threshold
+        #     or max_lag > self.warn_max_lag_threshold
+        # ):
+        #     self.logger.warning(
+        #         f"Detected busy event loop. Measured {mean_lag:.1f}s (min={min_lag:.1f}s, med={med_lag:.1f}s, p90={p90_lag:.1f}s, max={max_lag:.1f}s) event loop lag over the last {len(last_lags)} measurement(s)"
+        #     )
+        # else:
+        #     self.logger.debug(
+        #         f"Event loop is running smoothly. Measured {mean_lag:.1f}s (min={min_lag:.1f}s, med={med_lag:.1f}s, p90={p90_lag:.1f}s, max={max_lag:.1f}s) event loop lag over the last {len(last_lags)} measurement(s)"
+        #     )
 
         return {
             "event_loop_lag/min": min_lag,
