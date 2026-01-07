@@ -49,7 +49,7 @@ from prime_rl.trainer.utils import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.trainer.runs import setup_runs, Progress, get_runs
-from prime_rl.trainer.models.layers.lora import set_lora_num_tokens, set_multilora_scaling
+from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
@@ -91,7 +91,7 @@ def train(config: RLTrainerConfig):
     torch.set_float32_matmul_precision("high")
 
     # Setup runs and offsets
-    setup_runs(config.output_dir, config.max_concurrent_runs)
+    setup_runs(config.output_dir, config.max_concurrent_runs, torch.device("cuda", world.local_rank))
     runs = get_runs()
 
     # Register validation and scaling hooks for LoRA
@@ -115,16 +115,6 @@ def train(config: RLTrainerConfig):
         runs.register_config_validation_hook(validate_lora_rank)
         runs.register_scaling_hook(compute_scaling)
 
-    # Initialize lora_num_tokens with zeros (will be updated per batch)
-    set_lora_num_tokens(
-        torch.zeros(config.max_concurrent_runs, dtype=torch.int32, device=torch.device("cuda", world.local_rank)),
-        reset_reference=True,
-    )
-    # Initialize per-run scaling factors for LoRA
-    set_multilora_scaling(
-        runs.get_scaling_factors().to(torch.device("cuda", world.local_rank)),
-        reset_reference=True,
-    )
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
 

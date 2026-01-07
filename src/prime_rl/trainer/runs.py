@@ -26,7 +26,7 @@ class Progress:
 class Runs:
     """This class stores information about the runs in the system."""
 
-    def __init__(self, output_dir: Path, max_runs: int):
+    def __init__(self, output_dir: Path, max_runs: int, device: torch.device):
         self.output_dir = output_dir
         self.max_runs = max_runs
         self.logger = get_logger()
@@ -40,6 +40,8 @@ class Runs:
         self.ready_to_update = [False] * max_runs
 
         self._creation_hooks: list[Callable[[int, str], None]] = []
+        self._config_validation_hooks: list[Callable[["OrchestratorConfig"], tuple[bool, str]]] = []
+        self._scaling_hook: Callable[["OrchestratorConfig"], float] | None = None
 
         # We use the store to keep other ranks in sync with master
         self.store = c10d._get_default_store()
@@ -50,43 +52,84 @@ class Runs:
         # Store modules with their FQN prefixes for parameter management
         self._modules: list[tuple[str, "MultiLoRALinear"]] = []
 
+        # Initialize lora globals on device so runs.* ARE the global tensors
+        from prime_rl.trainer.models.layers.lora import (
+            get_lora_num_tokens,
+            get_multilora_scaling,
+            set_lora_num_tokens,
+            set_multilora_scaling,
+        )
+
+        set_lora_num_tokens(torch.zeros(max_runs, dtype=torch.int32, device=device), reset_reference=True)
+        self.lora_num_tokens = get_lora_num_tokens()
+
+        set_multilora_scaling(
+            torch.ones(max_runs, dtype=torch.float32, device=device) * 1000_000.0, reset_reference=True
+        )
+        self.scaling_factors = get_multilora_scaling()
+
+    def register_config_validation_hook(self, hook: Callable[["OrchestratorConfig"], tuple[bool, str]]) -> None:
+        """Register a hook to validate orchestrator config when a run is created.
+
+        Args:
+            hook: A callable that takes (config: OrchestratorConfig) and returns
+                  (is_valid: bool, error_message: str). Error message is used when invalid.
+        """
+        self._config_validation_hooks.append(hook)
+
+    def register_scaling_hook(self, hook: Callable[["OrchestratorConfig"], float]) -> None:
+        """Register a hook to compute LoRA scaling factor for a run.
+
+        Args:
+            hook: A callable that takes (config: OrchestratorConfig) and returns the scaling factor.
+        """
+        self._scaling_hook = hook
+
     def get_orchestrator_config(self, run_id: str) -> Optional["OrchestratorConfig"]:
-        # Load orchestrator config first to validate it
+        """Load and validate orchestrator config for a run.
+
+        Returns None if config doesn't exist, fails to parse, or fails validation.
+        Writes error to config dir for orchestrator to consume.
+        """
         config_path = self.output_dir / run_id / "configs" / "orch.toml"
         config_dir = config_path.parent
         error_path = config_dir / "error.txt"
 
         if not config_path.exists():
-            # Skip run if no config exists
             if not error_path.exists():
                 config_dir.mkdir(parents=True, exist_ok=True)
                 with open(error_path, "w") as f:
-                    f.write(f"Error: No orchestrator config found at {config_path}\n")
-            self.logger.error(f"Error: No orchestrator config found at {config_path}")
+                    f.write(f"No orchestrator config found at {config_path}\n")
+            self.logger.error(f"Run {run_id}: No orchestrator config found at {config_path}")
             return None
 
         try:
-            # Import here to avoid circular dependency
-
             with open(config_path, "rb") as f:
                 config_dict = tomli.load(f)
 
-            # Parse config with Pydantic validation
             from prime_rl.orchestrator.config import OrchestratorConfig
 
             config = OrchestratorConfig(**config_dict)
-
-            # Remove error file if it exists (config is now valid)
-            if error_path.exists():
-                error_path.unlink()
-
         except Exception as e:
-            # Write error to file and skip this run
             config_dir.mkdir(parents=True, exist_ok=True)
             with open(error_path, "w") as f:
                 f.write(f"Error parsing orchestrator config:\n{str(e)}\n")
-            self.logger.error(f"Error parsing orchestrator config for run {run_id}: {e}")
+            self.logger.error(f"Run {run_id}: Error parsing orchestrator config: {e}")
             return None
+
+        # Run registered validation hooks
+        for hook in self._config_validation_hooks:
+            is_valid, error_message = hook(config)
+            if not is_valid:
+                self.logger.error(f"Run {run_id}: {error_message}")
+                config_dir.mkdir(parents=True, exist_ok=True)
+                with open(error_path, "w") as f:
+                    f.write(f"{error_message}\n")
+                return None
+
+        # Config is valid, remove any stale error file
+        if error_path.exists():
+            error_path.unlink()
 
         return config
 
@@ -95,6 +138,9 @@ class Runs:
         del self.progress[deleted_idx]
         if deleted_idx in self.config:
             del self.config[deleted_idx]
+
+        # A big value might help make it error loudly
+        self.scaling_factors[deleted_idx] = 1000_000.0
 
         # Process mappings
         self.unused_idxs.add(deleted_idx)
@@ -140,7 +186,6 @@ class Runs:
 
         for new_run in new_runs:
             try:
-                # Process mappings
                 new_id = next(iter(self.unused_idxs))
 
                 config = self.get_orchestrator_config(new_run)
@@ -160,9 +205,17 @@ class Runs:
         """
 
         if self.world.is_master:
+            # Compute scaling factors for new runs before sync
+            new_runs = self.id_2_idx.keys() - self._last_synced_id_2_idx.keys()
+            for new_run in new_runs:
+                new_id = self.id_2_idx[new_run]
+                if self._scaling_hook is not None:
+                    self.scaling_factors[new_id] = self._scaling_hook(self.config[new_id])
+
             sync_data = {
                 "id_2_idx": self.id_2_idx,
                 "ready_to_update": self.ready_to_update,
+                "scaling_factors": self.scaling_factors.cpu(),
             }
             self.store.set("runs", pickle.dumps(sync_data))
         dist.barrier()
@@ -175,6 +228,7 @@ class Runs:
             sync_data: dict = pickle.loads(self.store.get("runs"))
             new_id_2_idx: dict[str, int] = sync_data["id_2_idx"]
             self.ready_to_update = sync_data["ready_to_update"]
+            self.scaling_factors.copy_(sync_data["scaling_factors"])
 
             new_runs = new_id_2_idx.keys() - self.id_2_idx.keys()
             deleted_runs = self.id_2_idx.keys() - new_id_2_idx.keys()
@@ -186,8 +240,7 @@ class Runs:
 
             for new_run in new_runs:
                 new_id = new_id_2_idx[new_run]
-                config = {}  # The other ranks dont need them for now
-                self._create_run_data(new_run, new_id, config)  # type: ignore[arg-type]
+                self._create_run_data(new_run, new_id, {})  # type: ignore[arg-type]
 
         for new_run in new_runs:
             new_id = self.id_2_idx[new_run]
@@ -297,6 +350,6 @@ def get_runs() -> Runs:
     return _RUNS
 
 
-def setup_runs(output_dir: Path, max_runs: int):
+def setup_runs(output_dir: Path, max_runs: int, device: torch.device):
     global _RUNS
-    _RUNS = Runs(output_dir, max_runs)
+    _RUNS = Runs(output_dir, max_runs, device)
