@@ -9,14 +9,65 @@ if TYPE_CHECKING:
 
 _LORA_PREFIX = "base_layer."
 
+# Global state for multilora - initialized once in train.py, referenced by modules
+LORA_NUM_TOKENS: torch.Tensor | None = None  # [n_adapters] token counts per adapter
+SCALING_FACTORS: torch.Tensor | None = None  # [max_runs] scaling factors per run
 
-def set_multilora_offsets(offsets: torch.Tensor, reset_reference: bool = False) -> None:
-    """Set offsets for all LoRA modules."""
-    from prime_rl.trainer.models.layers.lora.multi_linear import set_multilora_offsets as set_multilora_offsets_linear
-    from prime_rl.trainer.models.layers.lora.multi_moe import set_multilora_offsets as set_multilora_offsets_moe
 
-    set_multilora_offsets_linear(offsets, reset_reference)
-    set_multilora_offsets_moe(offsets, reset_reference)
+def set_lora_num_tokens(num_tokens: torch.Tensor, reset_reference: bool = False) -> None:
+    """Set the number of tokens per adapter.
+
+    Args:
+        num_tokens: Tensor of shape [n_adapters] with token counts per adapter.
+        reset_reference: If True, replace the tensor reference. If False, copy values in-place.
+    """
+    global LORA_NUM_TOKENS
+    if LORA_NUM_TOKENS is None or reset_reference:
+        if SCALING_FACTORS is not None:
+            assert num_tokens.shape == SCALING_FACTORS.shape, (
+                f"lora_num_tokens shape {num_tokens.shape} != scaling_factors shape {SCALING_FACTORS.shape}"
+            )
+        LORA_NUM_TOKENS = num_tokens
+    else:
+        LORA_NUM_TOKENS.copy_(num_tokens)
+
+
+def get_lora_num_tokens() -> torch.Tensor:
+    """Get the current lora_num_tokens tensor.
+
+    Raises:
+        AssertionError: If called before set_lora_num_tokens() has been called.
+    """
+    assert LORA_NUM_TOKENS is not None, "LORA_NUM_TOKENS not initialized. Call set_lora_num_tokens() first."
+    return LORA_NUM_TOKENS
+
+
+def set_multilora_scaling(scaling_factors: torch.Tensor, reset_reference: bool = False) -> None:
+    """Set per-run scaling factors (alpha / rank).
+
+    Args:
+        scaling_factors: Tensor of shape [max_runs] with scaling factors per run.
+        reset_reference: If True, replace the tensor reference. If False, copy values in-place.
+    """
+    global SCALING_FACTORS
+    if SCALING_FACTORS is None or reset_reference:
+        if LORA_NUM_TOKENS is not None:
+            assert scaling_factors.shape == LORA_NUM_TOKENS.shape, (
+                f"scaling_factors shape {scaling_factors.shape} != lora_num_tokens shape {LORA_NUM_TOKENS.shape}"
+            )
+        SCALING_FACTORS = scaling_factors
+    else:
+        SCALING_FACTORS.copy_(scaling_factors)
+
+
+def get_multilora_scaling() -> torch.Tensor:
+    """Get the current scaling factors tensor.
+
+    Raises:
+        AssertionError: If called before set_multilora_scaling() has been called.
+    """
+    assert SCALING_FACTORS is not None, "SCALING_FACTORS not initialized. Call set_multilora_scaling() first."
+    return SCALING_FACTORS
 
 
 class MultiLoRAModule(nn.Module):
