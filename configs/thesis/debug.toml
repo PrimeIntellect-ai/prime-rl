@@ -1,0 +1,20 @@
+inference_gpu_ids = [0,1,2,3]
+trainer_gpu_ids = [4,5,6,7]
+
+max_steps = 100
+seq_len = 2048
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[orchestrator]
+batch_size = 512
+rollouts_per_example = 8
+
+[[orchestrator.env]]
+id = "primeintellect/alphabet-sort"
+name = "alphabet-sort"
+
+[trainer]
+
+[inference]
