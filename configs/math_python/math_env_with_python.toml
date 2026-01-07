@@ -17,9 +17,11 @@ max_tokens = 512
 
 [[orchestrator.env]]
 id = "math-env"
-args = { dataset_name="openai/gsm8k", dataset_subset="main", python_tool = true, sandbox_client_max_workers = 128 }
+args = { dataset_name="openai/gsm8k", dataset_subset="main", python_tool = true, sandbox_client_max_workers = 128, max_startup_wait_seconds = 120 }
 
 [trainer] # Default trainer config
+
+[trainer.model.ac]
 
 [inference]
 api_server_count = 4
