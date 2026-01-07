@@ -3,6 +3,7 @@ import torch
 
 from prime_rl.trainer.config import AttnImplementation, ModelConfig
 from prime_rl.trainer.model import get_model
+from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 
 BS = 1
 SEQ_LEN = 8
@@ -40,9 +41,10 @@ def test_model_forward(model):
     model = model.to("cuda")
     with torch.autocast("cuda", dtype=torch.bfloat16):
         inputs_ids = torch.randint(0, 100, (BS, SEQ_LEN)).to("cuda")
-        outputs = model(input_ids=inputs_ids).logits
+        outputs = model(input_ids=inputs_ids)
+        logits = outputs["logits"]
 
-        assert outputs.shape == (BS, SEQ_LEN, model.config.vocab_size)
+        assert logits.shape == (BS, SEQ_LEN, model.config.vocab_size)
 
 
 def test_model_with_position_ids(model):
@@ -51,9 +53,10 @@ def test_model_with_position_ids(model):
         inputs_ids = torch.randint(0, 100, (BS, SEQ_LEN)).to("cuda")
         position_ids = torch.arange(SEQ_LEN).unsqueeze(0).repeat(BS, 1).to("cuda")
 
-        outputs = model(input_ids=inputs_ids, position_ids=position_ids).logits
+        outputs = model(input_ids=inputs_ids, position_ids=position_ids)
+        logits = outputs["logits"]
 
-        assert outputs.shape == (BS, SEQ_LEN, model.config.vocab_size)
+        assert logits.shape == (BS, SEQ_LEN, model.config.vocab_size)
 
 
 @pytest.mark.skip(reason="Sequence packing for Qwen not working.")
@@ -75,7 +78,8 @@ def test_model_with_sequence_packing(model, correct_position_ids):
 
     with torch.autocast("cuda", dtype=torch.bfloat16):
         inputs_ids = torch.Tensor(inputs).repeat(1, 1).int().to("cuda")
-        output_base = model(input_ids=inputs_ids).logits
+        outputs = model(input_ids=inputs_ids)
+        output_base = outputs["logits"]
 
         assert output_base.shape == (1, len(inputs), model.config.vocab_size)
 
@@ -87,7 +91,8 @@ def test_model_with_sequence_packing(model, correct_position_ids):
         else:
             position_ids = torch.Tensor([0, 1, 2, 3, 4, 5, 6, 7]).repeat(1, 1).int().to("cuda")
             # should fail
-        outputs_packed = model(input_ids=inputs_ids, position_ids=position_ids).logits
+        outputs = model(input_ids=inputs_ids, position_ids=position_ids)
+        outputs_packed = outputs["logits"]
 
         assert outputs_packed.shape == (1, 2 * len(inputs), model.config.vocab_size)
 
@@ -110,12 +115,13 @@ def test_moe_custom_impl():
     model = get_model(config)
     model = model.to("cuda")
     # we need to wrap the lm head as custom forward only works with it, this is done in setup_model
-    model.wrap_lm_head(chunk_size=None)
+    inject_prime_lm_head(model, chunk_size=None)
     with torch.autocast("cuda", dtype=torch.bfloat16):
         inputs_ids = torch.randint(0, 100, (BS, SEQ_LEN)).to("cuda")
-        outputs = model(input_ids=inputs_ids).logits
+        outputs = model(input_ids=inputs_ids)
+        logits = outputs["logits"]
 
-        assert outputs.shape == (BS, SEQ_LEN, model.config.vocab_size)
+        assert logits.shape == (BS, SEQ_LEN, model.config.vocab_size)
 
 
 @pytest.mark.skip(reason="need special token for meta stuff in ci")
@@ -124,10 +130,11 @@ def test_model_forward_custom_impl(model_name):
     config = ModelConfig(name=model_name, impl="custom", attn="sdpa")
     model = get_model(config)
     # we need to wrap the lm head as custom forward only works with it, this is done in setup_model
-    model.wrap_lm_head(chunk_size=None)
+    inject_prime_lm_head(model, chunk_size=None)
     model = model.to("cuda")
     with torch.autocast("cuda", dtype=torch.bfloat16):
         inputs_ids = torch.randint(0, 100, (BS, SEQ_LEN)).to("cuda")
-        outputs = model(input_ids=inputs_ids).logits
+        outputs = model(input_ids=inputs_ids)
+        logits = outputs["logits"]
 
-        assert outputs.shape == (BS, SEQ_LEN, model.config.vocab_size)
+        assert logits.shape == (BS, SEQ_LEN, model.config.vocab_size)

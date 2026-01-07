@@ -274,14 +274,6 @@ class ModelConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def fused_lm_head_chunk_size_requires_custom_impl(self):
-        if self.fused_lm_head_chunk_size is not None and self.impl not in ("custom", "auto"):
-            raise ValueError(
-                "Fused LM head chunk size is only supported with the custom implementation or auto mode (if the model doesn't support custom implementation and chunk size is provided, it will be ignored)"
-            )
-        return self
-
-    @model_validator(mode="after")
     def fused_lm_head_chunk_size_is_valid(self):
         if self.fused_lm_head_chunk_size is not None:
             low = 512

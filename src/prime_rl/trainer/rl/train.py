@@ -302,29 +302,29 @@ def train(config: RLTrainerConfig):
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
                 out = forward(model, input_ids, forward_position_ids, labels=labels, temperature=temperature)
 
-            if out.logprobs is None:
-                assert out.logits is not None, "Logits must be provided to compute logprobs"
-                logits = out.logits / float(temperature)
-                out.logprobs = selective_log_softmax(logits, labels)
-                out.entropy = compute_entropy(logits)
+            if out.get("logprobs") is None:
+                assert out.get("logits") is not None, "Logits must be provided to compute logprobs"
+                logits = out["logits"] / float(temperature)
+                out["logprobs"] = selective_log_softmax(logits, labels)
+                out["entropy"] = compute_entropy(logits)
 
             if cp_enabled:
-                logprobs = dist_nn.all_gather(out.logprobs, group=cp_group)
-                out.logprobs = torch.cat(logprobs, dim=1)
+                logprobs = dist_nn.all_gather(out["logprobs"], group=cp_group)
+                out["logprobs"] = torch.cat(logprobs, dim=1)
 
-                entropies = [torch.zeros_like(out.entropy) for _ in range(cp_size)]
-                dist.all_gather(entropies, out.entropy, group=cp_group)
-                out.entropy = torch.cat(entropies, dim=1)
+                entropies = [torch.zeros_like(out["entropy"]) for _ in range(cp_size)]
+                dist.all_gather(entropies, out["entropy"], group=cp_group)
+                out["entropy"] = torch.cat(entropies, dim=1)
 
             vocab_size = model.config.vocab_size
             # This is not really necessary as the first token should be masked out, but we do it anyway to be sure
-            out.logprobs = shift_tensor_right(out.logprobs, pad_value=torch.log(torch.tensor(1.0 / vocab_size)).item())
-            out.entropy = shift_tensor_right(out.entropy, pad_value=torch.log(torch.tensor(float(vocab_size))).item())
+            out["logprobs"] = shift_tensor_right(out["logprobs"], pad_value=torch.log(torch.tensor(1.0 / vocab_size)).item())
+            out["entropy"] = shift_tensor_right(out["entropy"], pad_value=torch.log(torch.tensor(float(vocab_size))).item())
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
             loss, loss_tensors = compute_loss(
-                trainer_logprobs=out.logprobs.squeeze().split(response_lengths),
+                trainer_logprobs=out["logprobs"].squeeze().split(response_lengths),
                 inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
                 teacher_logprobs=teacher_logprobs.squeeze().split(response_lengths)
                 if teacher_logprobs is not None
@@ -340,9 +340,9 @@ def train(config: RLTrainerConfig):
                 loss.backward()
 
             # Add relevant tensors to tensor dict for logging purposes
-            tensors["trainer_probs"].append(torch.exp(out.logprobs)[loss_mask].detach().to("cpu"))
+            tensors["trainer_probs"].append(torch.exp(out["logprobs"])[loss_mask].detach().to("cpu"))
             tensors["inference_probs"].append(torch.exp(inference_logprobs)[loss_mask].detach().to("cpu"))
-            tensors["entropy"].append(out.entropy[loss_mask].detach().to("cpu"))
+            tensors["entropy"].append(out["entropy"][loss_mask].detach().to("cpu"))
             tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
 
             if is_tt_moe_model(model):

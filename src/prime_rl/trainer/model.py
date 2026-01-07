@@ -24,8 +24,10 @@ from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
     PreTrainedModelPrimeRL,
     PrimeLmOutput,
+    cast_float_and_contiguous,
     supports_custom_impl,
 )
+from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.weights import (
     load_state_dict,
@@ -359,11 +361,7 @@ def setup_model(
         logger.warning("Cannot load model to meta device only, loading to CPU instead.")
         model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype])
 
-    if not isinstance(model, PreTrainedModelPrimeRL) and config.fused_lm_head_chunk_size is not None:
-        logger.warning("Fused LM head chunk size was specified but model is not a PrimeRL model, ignoring chunk size.")
-
-    if isinstance(model, PreTrainedModelPrimeRL):
-        model.wrap_lm_head(chunk_size=config.fused_lm_head_chunk_size)
+    inject_prime_lm_head(model, chunk_size=config.fused_lm_head_chunk_size)
 
     # Apply LoRA before FSDP setup
     if config.lora is not None:
@@ -408,7 +406,8 @@ def forward(
 ) -> PrimeLmOutput:
     out = model(input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature)
 
-    if isinstance(out, PrimeLmOutput):
-        return out.cast_float_and_contiguous()
+    # PrimeLmOutput is a TypedDict (dict at runtime), HF outputs are dataclass-like objects
+    if isinstance(out, dict):
+        return cast_float_and_contiguous(out)
 
-    return PrimeLmOutput(logits=out.logits).cast_float_and_contiguous()
+    return cast_float_and_contiguous(PrimeLmOutput(logits=out.logits))

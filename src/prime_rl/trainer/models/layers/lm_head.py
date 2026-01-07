@@ -1,28 +1,34 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import types
+from typing import TypedDict
 
 import torch
+import torch.nn as nn
 from torch import Tensor
 
+from prime_rl.utils.logger import get_logger
 
-@dataclass
-class PrimeLmOutput:
-    logits: Tensor | None = None
-    logprobs: Tensor | None = None
-    entropy: Tensor | None = None
 
-    def cast_float_and_contiguous(self) -> PrimeLmOutput:
-        """Convert tensors to float and make contiguous."""
+class PrimeLmOutput(TypedDict, total=False):
+    """Output from LM head - a TypedDict so pytree can find tensors for FSDP2 hooks."""
 
-        def _float_and_contiguous(tensor: Tensor | None) -> Tensor | None:
-            return tensor.float().contiguous() if tensor is not None else None
+    logits: Tensor | None
+    logprobs: Tensor | None
+    entropy: Tensor | None
 
-        return PrimeLmOutput(
-            logits=_float_and_contiguous(self.logits),
-            logprobs=_float_and_contiguous(self.logprobs),
-            entropy=_float_and_contiguous(self.entropy),
-        )
+
+def cast_float_and_contiguous(output: PrimeLmOutput) -> PrimeLmOutput:
+    """Convert tensors in PrimeLmOutput to float and make contiguous."""
+
+    def _float_and_contiguous(tensor: Tensor | None) -> Tensor | None:
+        return tensor.float().contiguous() if tensor is not None else None
+
+    return PrimeLmOutput(
+        logits=_float_and_contiguous(output.get("logits")),
+        logprobs=_float_and_contiguous(output.get("logprobs")),
+        entropy=_float_and_contiguous(output.get("entropy")),
+    )
 
 
 class FusedOutputLinear(torch.nn.Linear):
@@ -184,3 +190,76 @@ def _online_logsumexp_and_weighted_update(
     s_new = s * exp_old + chunk_exp.sum(dim=-1)
     t_new = t * exp_old + (chunk_exp * chunk_logits).sum(dim=-1)
     return m_new, s_new, t_new
+
+
+def inject_prime_lm_head(model: nn.Module, chunk_size: int | None = None) -> None:
+    """
+    Inject a PrimeRL LM head (FusedOutputLinear or VanillaOutputLinear) into a model.
+
+    This replaces the model's lm_head and overrides the forward method to use labels
+    and temperature for chunked loss computation.
+
+    Args:
+        model: The model to wrap.
+        chunk_size: If provided, use FusedOutputLinear with chunked logprob/entropy computation.
+                    If None, use VanillaOutputLinear which just returns logits.
+    """
+    # Guards so we have nicer error messages when a non-standard model is used
+    assert hasattr(model, "model"), f"model doesnt have backbone in model.model:\n{model}"
+    assert isinstance(model.model, nn.Module), f"model.model is not a nn.Module: {type(model.model)}\n{model}"
+    assert hasattr(model, "lm_head"), f"model doesnt have lm_head in model.lm_head:\n{model}"
+    assert isinstance(model.lm_head, nn.Linear), f"model.lm_head is not a nn.Linear: {type(model.lm_head)}\n{model}"
+    assert not hasattr(model.lm_head, "bias") or model.lm_head.bias is None, (
+        f"model.lm_head.bias is not supported: {model.lm_head}\n{model}"
+    )
+
+    logger = get_logger()
+    logger.info(f"Injecting Prime LM head with chunk size {chunk_size}")
+
+    # Replace the lm_head with the appropriate wrapper
+    old_lm_head = model.lm_head
+    if chunk_size is not None:
+        model.lm_head = FusedOutputLinear(
+            in_features=old_lm_head.in_features, out_features=old_lm_head.out_features, chunk_size=chunk_size
+        )
+    else:
+        model.lm_head = VanillaOutputLinear(in_features=old_lm_head.in_features, out_features=old_lm_head.out_features)
+    model.lm_head.weight = old_lm_head.weight
+    del old_lm_head
+
+    # Patch the forward method to use the new lm_head with labels and temperature
+    def new_forward(
+        self: nn.Module,
+        input_ids: torch.Tensor | None = None,
+        position_ids: torch.Tensor | None = None,
+        inputs_embeds: torch.Tensor | None = None,
+        labels: torch.Tensor | None = None,
+        logits_to_keep: int = 0,
+        temperature: float = 1.0,
+        **kwargs: object,
+    ) -> PrimeLmOutput:
+        if position_ids is None:
+            reference_tensor = input_ids if input_ids is not None else inputs_embeds
+            position_ids = torch.arange(1, reference_tensor.shape[1] + 1, device=reference_tensor.device).unsqueeze(0)
+        outputs = self.model(
+            input_ids=input_ids,
+            position_ids=position_ids,
+            inputs_embeds=inputs_embeds,
+            **kwargs,
+        )
+        hidden_states = outputs.last_hidden_state
+
+        # Slice hidden states for logits_to_keep
+        slice_indices = (
+            slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) and logits_to_keep > 0 else slice(None)
+        )
+
+        # Pass through the wrapped lm_head
+        return self.lm_head(
+            hidden_states[:, slice_indices, :],
+            labels[:, slice_indices] if labels is not None else None,
+            temperature=temperature,
+        )
+
+    # Bind the new forward to the model
+    model.forward = types.MethodType(new_forward, model)

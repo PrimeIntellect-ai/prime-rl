@@ -3,6 +3,7 @@ import torch
 from torch import nn
 from transformers import Qwen3MoeForCausalLM as HFQwen3MoeForCausalLM
 
+from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig
 from prime_rl.trainer.models.qwen3_moe import Qwen3MoeForCausalLM as PrimeRLQwen3MoeForCausalLM
 from prime_rl.utils.utils import default_dtype
@@ -40,7 +41,7 @@ def get_model_pairs():
         prime_model.convert_to_prime(state_dict)
         prime_model.load_state_dict(state_dict)
     # Training code wraps the LM head; tests should mirror that (so forward can accept labels/temperature).
-    prime_model.wrap_lm_head(chunk_size=None)
+    inject_prime_lm_head(prime_model, chunk_size=None)
     assert set(prime_state_keys) - set(state_dict.keys()) == set()
     return hf_model, prime_model
 
@@ -59,9 +60,9 @@ def test_qwen3_moe_attn_only():
     hf_output = hf_model(input_ids, position_ids)
     prime_output = prime_model(input_ids, position_ids)
     hf_output.logits.sum().backward()
-    prime_output.logits.sum().backward()
+    prime_output["logits"].sum().backward()
 
-    logits_diff = prime_output.logits - hf_output.logits
+    logits_diff = prime_output["logits"] - hf_output.logits
     assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=2e-2), (
         f"Max logits diff: {logits_diff.abs().max()}"
     )
@@ -87,9 +88,9 @@ def test_qwen3_moe_mlp_only():
     hf_output = hf_model(input_ids, position_ids)
     prime_output = prime_model(input_ids, position_ids)
     hf_output.logits.sum().backward()
-    prime_output.logits.sum().backward()
+    prime_output["logits"].sum().backward()
 
-    logits_diff = prime_output.logits - hf_output.logits
+    logits_diff = prime_output["logits"] - hf_output.logits
     assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=2e-2), (
         f"Max logits diff: {logits_diff.abs().max()}"
     )
@@ -107,9 +108,9 @@ def test_qwen3_moe():
     hf_output = hf_model(input_ids, position_ids)
     prime_output = prime_model(input_ids, position_ids)
     hf_output.logits.sum().backward()
-    prime_output.logits.sum().backward()
+    prime_output["logits"].sum().backward()
 
-    logits_diff = prime_output.logits - hf_output.logits
+    logits_diff = prime_output["logits"] - hf_output.logits
     assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=2e-2), (
         f"Max logits diff: {logits_diff.abs().max()}"
     )
