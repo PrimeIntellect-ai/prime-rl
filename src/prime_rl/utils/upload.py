@@ -2,9 +2,28 @@
 Checkpoint upload utility for uploading training checkpoints to HuggingFace Hub.
 
 Usage:
-    uv run upload-ckpt /path/to/output
-    uv run upload-ckpt /path/to/output --type weights --steps 100 200 300
-    uv run upload-ckpt /path/to/output --public
+    # Upload all checkpoint types for all common steps (oldest first)
+    uv run upload-ckpt /shared/outputs/int4
+
+    # Upload specific type only
+    uv run upload-ckpt /shared/outputs/int4 --type weights
+    uv run upload-ckpt /shared/outputs/int4 --type trainer
+    uv run upload-ckpt /shared/outputs/int4 --type orchestrator
+
+    # Upload specific steps (in given order)
+    uv run upload-ckpt /shared/outputs/int4 --steps 100 200 300
+
+    # Combine: specific type + specific steps
+    uv run upload-ckpt /shared/outputs/int4 --type weights --steps 450
+
+    # Custom org/prefix
+    uv run upload-ckpt /shared/outputs/int4 --org MyOrg --repo-prefix MyModel
+
+    # Public repo (default is private)
+    uv run upload-ckpt /shared/outputs/int4 --public
+
+    # Dry run - show what would be uploaded
+    uv run upload-ckpt /shared/outputs/int4 --dry-run
 """
 
 import os
