@@ -21,7 +21,9 @@ save_adapter_separately = true
 [orchestrator]
 batch_size = 128
 rollouts_per_example = 16
-lora_name = "r8-1e-4"
+
+[orchestrator.model.lora]
+name = "r8-1e-4"
 
 [orchestrator.sampling]
 max_tokens = 128

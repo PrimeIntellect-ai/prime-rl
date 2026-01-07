@@ -1,5 +1,5 @@
 # Orchestrator config for multi-run RL integration test
-# lora_name and output_dir are set via CLI
+# model.lora.name and output_dir are set via CLI
 batch_size = 128
 rollouts_per_example = 16
 seq_len = 2048
