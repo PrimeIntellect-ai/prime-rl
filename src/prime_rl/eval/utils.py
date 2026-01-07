@@ -235,10 +235,6 @@ async def generate_and_save_rollout(
             state = await generate_rollout(client, env, model_name, example, sampling_args)
             # Re-raise infrastructure errors to trigger retry
             if state.get("error") and isinstance(state["error"], vf.InfraError):
-                logger.warning(
-                    f"[{env.env_id}] SandboxError in rollout (example_id={example.get('example_id')})",
-                    exc_info=state["error"],
-                )
                 raise state["error"]
             return state
         except BadRequestError as e:
@@ -251,10 +247,6 @@ async def generate_and_save_rollout(
                 sampling_args["max_tokens"] = new_max_tokens
                 state = await generate_rollout(client, env, model_name, example, sampling_args)
                 if state.get("error") and isinstance(state["error"], vf.InfraError):
-                    logger.warning(
-                        f"[{env.env_id}] SandboxError in rollout (example_id={example.get('example_id')})",
-                        exc_info=state["error"],
-                    )
                     raise state["error"]
                 return state
             raise
@@ -329,10 +321,6 @@ async def generate_and_save_group(
             # Re-raise infrastructure errors to trigger retry (check all states in group)
             for state in states:
                 if state.get("error") and isinstance(state["error"], vf.InfraError):
-                    logger.warning(
-                        f"[{env.env_id}] SandboxError in group (example_id={example.get('example_id')})",
-                        exc_info=state["error"],
-                    )
                     raise state["error"]
             return states
         except BadRequestError as e:
@@ -345,10 +333,6 @@ async def generate_and_save_group(
                 states = await generate_group(client, env, model_name, example, rollouts_per_example, sampling_args)
                 for state in states:
                     if state.get("error") and isinstance(state["error"], vf.InfraError):
-                        logger.warning(
-                            f"[{env.env_id}] SandboxError in group (example_id={example.get('example_id')})",
-                            exc_info=state["error"],
-                        )
                         raise state["error"]
                 return states
             raise
