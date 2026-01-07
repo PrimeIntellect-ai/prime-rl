@@ -19,17 +19,17 @@ class MultiMonitor(Monitor):
             return []
         return self.monitors[0].history
 
-    def log(self, metrics: dict[str, Any], step: int | None = None) -> None:
+    def log(self, metrics: dict[str, Any], step: int | None = None, commit: bool | None = None) -> None:
         for monitor in self.monitors:
             try:
-                monitor.log(metrics, step=step)
+                monitor.log(metrics, step=step, commit=commit)
             except Exception as e:
                 self.logger.warning(f"Failed to log metrics to {monitor.__class__.__name__}: {e}")
 
-    def log_samples(self, rollouts: list[vf.State], step: int) -> None:
+    def log_samples(self, rollouts: list[vf.State], step: int, commit: bool | None = None) -> None:
         for monitor in self.monitors:
             try:
-                monitor.log_samples(rollouts=rollouts, step=step)
+                monitor.log_samples(rollouts=rollouts, step=step, commit=commit)
             except Exception as e:
                 self.logger.warning(f"Failed to log samples to {monitor.__class__.__name__}: {e}")
 
