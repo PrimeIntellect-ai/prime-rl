@@ -67,6 +67,7 @@ def wrap_lm_head_for_hf_model(model: nn.Module, chunk_size: int | None = None) -
     assert isinstance(model.model, nn.Module), f"model.model is not a nn.Module: {type(model.model)}\n{model}"
     assert hasattr(model, "lm_head"), f"model doesnt have lm_head in model.lm_head:\n{model}"
     assert isinstance(model.lm_head, nn.Linear), f"model.lm_head is not a nn.Linear: {type(model.lm_head)}\n{model}"
+    assert not hasattr(model.lm_head.bias), f"model.lm_head.bias is not supported: {model.lm_head}\n{model}"
 
     logger = get_logger()
 
