@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import types
 from typing import TypedDict
 
 import torch
+import torch.nn as nn
 from torch import Tensor
+
+from prime_rl.utils.logger import get_logger
 
 
 class PrimeLmOutput(TypedDict, total=False):
@@ -186,3 +190,86 @@ def _online_logsumexp_and_weighted_update(
     s_new = s * exp_old + chunk_exp.sum(dim=-1)
     t_new = t * exp_old + (chunk_exp * chunk_logits).sum(dim=-1)
     return m_new, s_new, t_new
+
+
+def inject_prime_lm_head(model: nn.Module, chunk_size: int | None = None) -> None:
+    """
+    Inject a PrimeRL LM head (FusedOutputLinear or VanillaOutputLinear) into a model.
+
+    This replaces the model's lm_head and overrides the forward method to use labels
+    and temperature for chunked loss computation.
+
+    Args:
+        model: The model to wrap.
+        chunk_size: If provided, use FusedOutputLinear with chunked logprob/entropy computation.
+                    If None, use VanillaOutputLinear which just returns logits.
+    """
+    # Guards so we have nicer error messages when a non-standard model is used
+    assert hasattr(model, "model"), f"model doesnt have backbone in model.model:\n{model}"
+    assert isinstance(model.model, nn.Module), f"model.model is not a nn.Module: {type(model.model)}\n{model}"
+    assert hasattr(model, "lm_head"), f"model doesnt have lm_head in model.lm_head:\n{model}"
+    assert isinstance(model.lm_head, nn.Linear), f"model.lm_head is not a nn.Linear: {type(model.lm_head)}\n{model}"
+    assert not hasattr(model.lm_head, "bias") or model.lm_head.bias is None, (
+        f"model.lm_head.bias is not supported: {model.lm_head}\n{model}"
+    )
+
+    logger = get_logger()
+    logger.info(f"Injecting Prime LM head with chunk size {chunk_size}")
+
+    # Replace the lm_head with the appropriate wrapper
+    old_lm_head = model.lm_head
+    if chunk_size is not None:
+        model.lm_head = FusedOutputLinear(
+            in_features=old_lm_head.in_features, out_features=old_lm_head.out_features, chunk_size=chunk_size
+        )
+    else:
+        model.lm_head = VanillaOutputLinear(in_features=old_lm_head.in_features, out_features=old_lm_head.out_features)
+    model.lm_head.weight = old_lm_head.weight
+    del old_lm_head
+
+    # Patch the forward method to use the new lm_head with labels and temperature
+    def new_forward(
+        self: nn.Module,
+        input_ids: torch.Tensor | None = None,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.Tensor | None = None,
+        past_key_values: torch.Tensor | None = None,
+        inputs_embeds: torch.Tensor | None = None,
+        labels: torch.Tensor | None = None,
+        use_cache: bool | None = None,
+        output_attentions: bool | None = None,
+        output_hidden_states: bool | None = None,
+        cache_position: torch.Tensor | None = None,
+        logits_to_keep: int = 0,
+        temperature: float = 1.0,
+        **kwargs: object,
+    ) -> PrimeLmOutput:
+        outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=True,
+            cache_position=cache_position,
+            **kwargs,
+        )
+        hidden_states = outputs.last_hidden_state
+
+        # Slice hidden states for logits_to_keep
+        slice_indices = (
+            slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) and logits_to_keep > 0 else slice(None)
+        )
+
+        # Pass through the wrapped lm_head
+        return self.lm_head(
+            hidden_states[:, slice_indices, :],
+            labels[:, slice_indices] if labels is not None else None,
+            temperature=temperature,
+        )
+
+    # Bind the new forward to the model
+    model.forward = types.MethodType(new_forward, model)
