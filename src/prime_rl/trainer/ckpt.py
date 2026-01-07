@@ -29,6 +29,7 @@ from prime_rl.trainer.weights import (
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.tensor_hashing import get_module_signature, get_optimizer_signature
+from prime_rl.utils.upload import UPLOADING_MARKER
 from prime_rl.utils.utils import get_all_ckpt_steps, get_ckpt_dir, get_step_path, get_weights_dir
 
 
@@ -226,6 +227,10 @@ class CheckpointManager:
             trainer_ckpt_path = self.get_ckpt_path(ckpt_step)
             ckpt_path = trainer_ckpt_path.parent
             if ckpt_path.exists():
+                if (ckpt_path / UPLOADING_MARKER).exists():
+                    self.logger.debug(f"Skipping {ckpt_path} - upload in progress")
+                    steps_to_keep.add(ckpt_step)  # Keep it in ckpt_steps for next cleanup cycle
+                    continue
                 self.logger.debug(f"Removing past checkpoint for step {ckpt_step} ({ckpt_path})")
                 shutil.rmtree(ckpt_path)
 
@@ -365,6 +370,10 @@ class WeightCheckpointManager:
         for ckpt_step in ckpt_steps_to_delete:
             ckpt_path = self.get_step_path(ckpt_step)
             if ckpt_path.exists():
+                if (ckpt_path / UPLOADING_MARKER).exists():
+                    self.logger.debug(f"Skipping {ckpt_path} - upload in progress")
+                    steps_to_keep.add(ckpt_step)  # Keep it in ckpt_steps for next cleanup cycle
+                    continue
                 self.logger.debug(f"Removing past checkpoint for step {ckpt_step} ({ckpt_path})")
                 shutil.rmtree(ckpt_path)
 

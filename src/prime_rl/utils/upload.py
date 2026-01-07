@@ -13,6 +13,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Annotated
 
+UPLOADING_MARKER = ".uploading"
+
 from huggingface_hub import HfApi
 from pydantic import Field
 from pydantic_settings import BaseSettings, CliApp, CliPositionalArg
@@ -45,6 +47,19 @@ def offline_disabled():
         for k, v in saved.items():
             if v is not None:
                 os.environ[k] = v
+
+
+def clear_uploading_markers(output_dir: Path) -> int:
+    """Remove all .uploading markers from checkpoint directories. Returns count of markers removed."""
+    logger = get_logger()
+    count = 0
+    for marker in output_dir.rglob(UPLOADING_MARKER):
+        logger.debug(f"Removing stale marker: {marker}")
+        marker.unlink()
+        count += 1
+    if count > 0:
+        logger.info(f"Cleared {count} stale {UPLOADING_MARKER} marker(s)")
+    return count
 
 
 class CheckpointUploader:
@@ -103,18 +118,24 @@ class CheckpointUploader:
             self.logger.info(f"[DRY-RUN] Would upload {folder_path} -> {repo_id}")
             return
 
-        self.logger.info(f"Uploading {folder_path} -> {repo_id}")
+        # Create marker to prevent trainer from deleting during upload
+        marker = folder_path / UPLOADING_MARKER
+        try:
+            marker.touch()
+            self.logger.info(f"Uploading {folder_path} -> {repo_id}")
 
-        # Enable high performance mode for Xet backend
-        os.environ["HF_XET_HIGH_PERFORMANCE"] = "1"
+            # Enable high performance mode for Xet backend
+            os.environ["HF_XET_HIGH_PERFORMANCE"] = "1"
 
-        self.api.upload_large_folder(
-            repo_id=repo_id,
-            repo_type="model",
-            folder_path=str(folder_path),
-            num_workers=self.num_workers,
-        )
-        self.logger.info(f"Completed upload: {folder_path} -> {repo_id}")
+            self.api.upload_large_folder(
+                repo_id=repo_id,
+                repo_type="model",
+                folder_path=str(folder_path),
+                num_workers=self.num_workers,
+            )
+            self.logger.info(f"Completed upload: {folder_path} -> {repo_id}")
+        finally:
+            marker.unlink(missing_ok=True)
 
     def upload_weights(self, step: int) -> None:
         """Upload weights checkpoint for a step."""
@@ -228,6 +249,9 @@ def main():
 
     logger = get_logger()
     logger.info(f"Upload config: {config}")
+
+    # Clear any stale markers from previous runs
+    clear_uploading_markers(config.output_dir)
 
     uploader = CheckpointUploader(
         output_dir=config.output_dir,
