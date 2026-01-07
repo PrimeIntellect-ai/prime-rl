@@ -252,7 +252,7 @@ class CheckpointUploader:
 class UploadConfig(BaseSettings):
     """Configuration for checkpoint upload CLI."""
 
-    output_dir: Annotated[Path, CliPositionalArg()] = Field(description="Output directory containing checkpoints")
+    output_dir: Annotated[Path, CliPositionalArg] = Field(description="Output directory containing checkpoints")
     org: str = Field(default="PrimeIntellect", description="HuggingFace organization")
     repo_prefix: str = Field(default="INTELLECT-4", description="Repository name prefix")
     type: CheckpointType = Field(default=CheckpointType.ALL, description="Checkpoint type to upload")
