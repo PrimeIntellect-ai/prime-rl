@@ -344,6 +344,7 @@ async def orchestrate(config: OrchestratorConfig):
             if train_example is not None:
                 for te in train_example:
                     te.advantage = advantage
+                    te.reward = train_rollout["reward"]
                 train_examples.extend(train_example)
         logger.debug(
             f"Converted {len(train_rollouts)} training rollouts to {len(train_examples)} training examples using {config.trajectory_strategy} strategy"

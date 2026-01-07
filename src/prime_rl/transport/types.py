@@ -12,6 +12,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     completion_logprobs: list[float]
     teacher_logprobs: list[float] | None = None
     advantage: float | None = None
+    reward: float | None = None
 
 
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
