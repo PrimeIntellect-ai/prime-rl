@@ -99,6 +99,9 @@ def train(config: RLTrainerConfig):
         trainer_lora = config.model.lora
 
         def validate_lora_rank(orch_config) -> tuple[bool, str]:
+            # Default to trainer's rank if not specified
+            if orch_config.model.lora.rank is None:
+                orch_config.model.lora.rank = trainer_lora.rank
             if orch_config.model.lora.rank > trainer_lora.rank:
                 return (
                     False,
@@ -107,10 +110,7 @@ def train(config: RLTrainerConfig):
             return True, ""
 
         def compute_scaling(orch_config) -> float:
-            orch_lora = orch_config.model.lora if orch_config.model else None
-            rank = orch_lora.rank if orch_lora and orch_lora.rank is not None else trainer_lora.rank
-            alpha = orch_lora.alpha if orch_lora else trainer_lora.alpha
-            return alpha / rank
+            return orch_config.model.lora.alpha / orch_config.model.lora.rank
 
         runs.register_config_validation_hook(validate_lora_rank)
         runs.register_scaling_hook(compute_scaling)
