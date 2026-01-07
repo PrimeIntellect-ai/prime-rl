@@ -167,12 +167,13 @@ async def make_and_save_result(state: vf.State, save_file: Path, reasoning_field
 
 
 def log_retry_attempt(retry_state: RetryCallState) -> None:
-    """Log retry attempts at WARNING level using the global logger."""
+    """Log retry attempts with full traceback using the global logger."""
     logger = get_logger()
     exception = retry_state.outcome.exception()
     wait_time = retry_state.next_action.sleep
     logger.warning(
-        f"Retrying {retry_state.fn.__name__} in {wait_time:.1f} seconds as it raised {exception.__class__.__name__}: {exception}"
+        f"Retrying {retry_state.fn.__name__} in {wait_time:.1f} seconds",
+        exc_info=exception,
     )
 
 
