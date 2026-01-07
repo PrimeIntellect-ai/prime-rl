@@ -41,7 +41,7 @@ def test_model_forward(model):
     with torch.autocast("cuda", dtype=torch.bfloat16):
         inputs_ids = torch.randint(0, 100, (BS, SEQ_LEN)).to("cuda")
         outputs = model(input_ids=inputs_ids)
-        logits = outputs["logits"] if isinstance(outputs, dict) else outputs.logits
+        logits = outputs["logits"]
 
         assert logits.shape == (BS, SEQ_LEN, model.config.vocab_size)
 
@@ -53,7 +53,7 @@ def test_model_with_position_ids(model):
         position_ids = torch.arange(SEQ_LEN).unsqueeze(0).repeat(BS, 1).to("cuda")
 
         outputs = model(input_ids=inputs_ids, position_ids=position_ids)
-        logits = outputs["logits"] if isinstance(outputs, dict) else outputs.logits
+        logits = outputs["logits"]
 
         assert logits.shape == (BS, SEQ_LEN, model.config.vocab_size)
 
@@ -78,7 +78,7 @@ def test_model_with_sequence_packing(model, correct_position_ids):
     with torch.autocast("cuda", dtype=torch.bfloat16):
         inputs_ids = torch.Tensor(inputs).repeat(1, 1).int().to("cuda")
         outputs = model(input_ids=inputs_ids)
-        output_base = outputs["logits"] if isinstance(outputs, dict) else outputs.logits
+        output_base = outputs["logits"]
 
         assert output_base.shape == (1, len(inputs), model.config.vocab_size)
 
@@ -91,7 +91,7 @@ def test_model_with_sequence_packing(model, correct_position_ids):
             position_ids = torch.Tensor([0, 1, 2, 3, 4, 5, 6, 7]).repeat(1, 1).int().to("cuda")
             # should fail
         outputs = model(input_ids=inputs_ids, position_ids=position_ids)
-        outputs_packed = outputs["logits"] if isinstance(outputs, dict) else outputs.logits
+        outputs_packed = outputs["logits"]
 
         assert outputs_packed.shape == (1, 2 * len(inputs), model.config.vocab_size)
 
@@ -118,7 +118,7 @@ def test_moe_custom_impl():
     with torch.autocast("cuda", dtype=torch.bfloat16):
         inputs_ids = torch.randint(0, 100, (BS, SEQ_LEN)).to("cuda")
         outputs = model(input_ids=inputs_ids)
-        logits = outputs["logits"] if isinstance(outputs, dict) else outputs.logits
+        logits = outputs["logits"]
 
         assert logits.shape == (BS, SEQ_LEN, model.config.vocab_size)
 
@@ -134,6 +134,6 @@ def test_model_forward_custom_impl(model_name):
     with torch.autocast("cuda", dtype=torch.bfloat16):
         inputs_ids = torch.randint(0, 100, (BS, SEQ_LEN)).to("cuda")
         outputs = model(input_ids=inputs_ids)
-        logits = outputs["logits"] if isinstance(outputs, dict) else outputs.logits
+        logits = outputs["logits"]
 
         assert logits.shape == (BS, SEQ_LEN, model.config.vocab_size)
