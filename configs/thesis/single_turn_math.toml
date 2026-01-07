@@ -20,18 +20,17 @@ max_tokens = 16384
 
 [[orchestrator.env]]
 id = "primeintellect/math-env"
-args = { dataset_name = "nvidia/AceReason-Math", dataset_subset = "default", question_key = "problem" }
 name = "math"
 
 [orchestrator.eval]
 interval = 20
 
 [orchestrator.eval.sampling]
-max_tokens = 32768
+max_tokens = 16384
 
 [[orchestrator.eval.env]]
-id = "primeintellect/aime2024"
-name = "aime2024"
+id = "primeintellect/aime2025"
+name = "aime2025"
 rollouts_per_example = 8 # 30 examples * 8 rollouts = 240 rollouts
 
 [trainer.model.ac]
