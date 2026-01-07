@@ -231,30 +231,19 @@ def inject_prime_lm_head(model: nn.Module, chunk_size: int | None = None) -> Non
     def new_forward(
         self: nn.Module,
         input_ids: torch.Tensor | None = None,
-        attention_mask: torch.Tensor | None = None,
         position_ids: torch.Tensor | None = None,
-        past_key_values: torch.Tensor | None = None,
         inputs_embeds: torch.Tensor | None = None,
         labels: torch.Tensor | None = None,
-        use_cache: bool | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
-        cache_position: torch.Tensor | None = None,
         logits_to_keep: int = 0,
         temperature: float = 1.0,
         **kwargs: object,
     ) -> PrimeLmOutput:
+        if position_ids is None:
+            position_ids = torch.arange(1, input_ids.shape[1] + 1, device=input_ids.device).unsqueeze(0)
         outputs = self.model(
             input_ids=input_ids,
-            attention_mask=attention_mask,
             position_ids=position_ids,
-            past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=True,
-            cache_position=cache_position,
             **kwargs,
         )
         hidden_states = outputs.last_hidden_state
