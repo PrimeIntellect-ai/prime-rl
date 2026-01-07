@@ -64,7 +64,7 @@ class Runs:
         self.lora_num_tokens = get_lora_num_tokens()
 
         set_multilora_scaling(
-            torch.ones(max_runs, dtype=torch.float32, device=device) * 1000_000.0, reset_reference=True
+            torch.ones(max_runs, dtype=torch.bfloat16, device=device) * 1000_000.0, reset_reference=True
         )
         self.scaling_factors = get_multilora_scaling()
 
