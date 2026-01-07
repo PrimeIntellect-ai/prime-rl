@@ -41,6 +41,8 @@ dependencies = [
     "prime>=0.5.0",
     "tenacity>=8.2.0",
     "pyzmq>=27.1.0",
+    "hatchling>=1.28.0",
+    "editables>=0.5",
 ]
 
 [project.scripts]
@@ -56,6 +58,8 @@ synthesize = "prime_rl.synthesize.synthesize:main"
 flash-attn = [
     "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.6.8/flash_attn-2.8.3+cu128torch2.9-cp312-cp312-linux_x86_64.whl",
 ]
+te-cu12 = ["transformer-engine[pytorch,core_cu12]"]
+te-cu13 = ["transformer-engine[pytorch,core_cu13]"]
 
 [dependency-groups]
 dev = [
@@ -68,7 +72,7 @@ dev = [
 
 
 [tool.uv]
-no-build-isolation-package = ["flash-attn"]
+no-build-isolation-package = ["flash-attn", "transformer-engine"]
 prerelease = "allow"
 
 [tool.uv.sources]

@@ -41,6 +41,11 @@ PRIME-RL is a framework for large-scale asynchronous reinforcement learning. It 
 
 > *We develop and test on NVIDIA RTX 3090/4090/5090, A100, H100, H200, and B200. If your setup fails, please create an [issue](https://github.com/PrimeIntellect-ai/prime-rl/issues).*
 
+## TE (REMOVE TODO)
+
+- to install transformer-engine with pytorch and core_cu13, set: `export C_INCLUDE_PATH=/home/ubuntu/workspace/prime-rl/.venv/lib/python3.12/site-packages/nvidia/nvtx/include/:/home/ubuntu/workspace/prime-rl/.venv/lib/python3.12/site-packages/nvidia/cudnn/include:$C_INCLUDE_PATH` and likewise for `CPLUS_INCLUDE_PATH` to your proper paths, then set `export CUDNN_PATH=/home/ubuntu/workspace/prime-rl/.venv/lib/python3.12/site-packages/nvidia/cudnn/` and then run `uv sync --all-extras`
+
+
 ### Prerequisites
 
 Currently, you **need at least one NVIDIA GPU to use PRIME-RL**. If you don't already have access to one, we recommend our [compute platform](https://app.primeintellect.ai) for everything from renting on-demand single GPUs for developing, debugging and small ablations, to [reserving 1000+ GPU clusters](https://app.primeintellect.ai/dashboard/quotes) for production-scale training.
