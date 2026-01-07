@@ -231,7 +231,11 @@ async def generate_and_save_rollout(
         """Asynchronously generate and score a single rollout."""
         logger = get_logger()
         try:
-            return await generate_rollout(client, env, model_name, example, sampling_args)
+            state = await generate_rollout(client, env, model_name, example, sampling_args)
+            # Re-raise infrastructure errors to trigger retry
+            if state.get("error") and isinstance(state["error"], vf.SandboxError):
+                raise state["error"]
+            return state
         except BadRequestError as e:
             # Check if this is a context length error and retry with adjusted max_tokens
             error_message = str(e)
@@ -240,7 +244,10 @@ async def generate_and_save_rollout(
             if new_max_tokens is not None:
                 logger.warning(f"Context length error: reducing max_tokens to {new_max_tokens}.")
                 sampling_args["max_tokens"] = new_max_tokens
-                return await generate_rollout(client, env, model_name, example, sampling_args)
+                state = await generate_rollout(client, env, model_name, example, sampling_args)
+                if state.get("error") and isinstance(state["error"], vf.SandboxError):
+                    raise state["error"]
+                return state
             raise
 
     try:
@@ -303,7 +310,12 @@ async def generate_and_save_group(
         """Asynchronously generate and score a group of rollouts."""
         logger = get_logger()
         try:
-            return await generate_group(client, env, model_name, example, rollouts_per_example, sampling_args)
+            states = await generate_group(client, env, model_name, example, rollouts_per_example, sampling_args)
+            # Re-raise infrastructure errors to trigger retry (check all states in group)
+            for state in states:
+                if state.get("error") and isinstance(state["error"], vf.SandboxError):
+                    raise state["error"]
+            return states
         except BadRequestError as e:
             error_message = str(e)
             new_max_tokens = parse_and_calculate_max_tokens(error_message)
@@ -311,7 +323,11 @@ async def generate_and_save_group(
             if new_max_tokens is not None:
                 logger.warning(f"Context length error: reducing max_tokens to {new_max_tokens}.")
                 sampling_args["max_tokens"] = new_max_tokens
-                return await generate_group(client, env, model_name, example, rollouts_per_example, sampling_args)
+                states = await generate_group(client, env, model_name, example, rollouts_per_example, sampling_args)
+                for state in states:
+                    if state.get("error") and isinstance(state["error"], vf.SandboxError):
+                        raise state["error"]
+                return states
             raise
 
     try:
