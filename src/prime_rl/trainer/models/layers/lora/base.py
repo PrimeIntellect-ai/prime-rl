@@ -23,7 +23,7 @@ def set_lora_num_tokens(num_tokens: torch.Tensor, reset_reference: bool = False)
     """
     global LORA_NUM_TOKENS
     if LORA_NUM_TOKENS is None or reset_reference:
-        if SCALING_FACTORS is not None:
+        if SCALING_FACTORS is not None and num_tokens is not None:
             assert num_tokens.shape == SCALING_FACTORS.shape, (
                 f"lora_num_tokens shape {num_tokens.shape} != scaling_factors shape {SCALING_FACTORS.shape}"
             )
@@ -51,7 +51,7 @@ def set_multilora_scaling(scaling_factors: torch.Tensor, reset_reference: bool =
     """
     global SCALING_FACTORS
     if SCALING_FACTORS is None or reset_reference:
-        if LORA_NUM_TOKENS is not None:
+        if LORA_NUM_TOKENS is not None and scaling_factors is not None:
             assert scaling_factors.shape == LORA_NUM_TOKENS.shape, (
                 f"scaling_factors shape {scaling_factors.shape} != lora_num_tokens shape {LORA_NUM_TOKENS.shape}"
             )

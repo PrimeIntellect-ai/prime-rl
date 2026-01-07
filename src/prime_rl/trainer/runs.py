@@ -26,7 +26,7 @@ class Progress:
 class Runs:
     """This class stores information about the runs in the system."""
 
-    def __init__(self, output_dir: Path, max_runs: int, device: torch.device):
+    def __init__(self, output_dir: Path, max_runs: int, device: torch.device = torch.device("cpu")):
         self.output_dir = output_dir
         self.max_runs = max_runs
         self.logger = get_logger()
@@ -59,6 +59,11 @@ class Runs:
             set_lora_num_tokens,
             set_multilora_scaling,
         )
+
+        # We first set to None so we dont check the shape
+        # Might be better to not have the check at all but this will do for now
+        set_lora_num_tokens(None, reset_reference=True)
+        set_multilora_scaling(None, reset_reference=True)
 
         set_lora_num_tokens(torch.zeros(max_runs, dtype=torch.int32, device=device), reset_reference=True)
         self.lora_num_tokens = get_lora_num_tokens()
