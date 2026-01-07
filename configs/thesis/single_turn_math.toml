@@ -26,6 +26,9 @@ name = "math"
 [orchestrator.eval]
 interval = 20
 
+[orchestrator.eval.sampling]
+max_tokens = 32768
+
 [[orchestrator.eval.env]]
 id = "primeintellect/aime2024"
 name = "aime2024"
