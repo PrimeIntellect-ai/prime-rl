@@ -239,7 +239,8 @@ def inject_prime_lm_head(model: nn.Module, chunk_size: int | None = None) -> Non
         **kwargs: object,
     ) -> PrimeLmOutput:
         if position_ids is None:
-            position_ids = torch.arange(1, input_ids.shape[1] + 1, device=input_ids.device).unsqueeze(0)
+            reference_tensor = input_ids if input_ids is not None else inputs_embeds
+            position_ids = torch.arange(1, reference_tensor.shape[1] + 1, device=reference_tensor.device).unsqueeze(0)
         outputs = self.model(
             input_ids=input_ids,
             position_ids=position_ids,
