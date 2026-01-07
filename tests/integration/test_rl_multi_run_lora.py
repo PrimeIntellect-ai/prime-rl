@@ -129,7 +129,7 @@ def multi_run_result(
                     "configs/ci/integration/rl_multi_run/orchestrator.toml",
                     "--output-dir",
                     run_dir.as_posix(),
-                    "--lora.name",
+                    "--model.lora.name",
                     name,
                     "--wandb.project",
                     wandb_project,
