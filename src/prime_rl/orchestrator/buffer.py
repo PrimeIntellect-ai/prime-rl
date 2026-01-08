@@ -1,33 +1,37 @@
-import hashlib
-import json
+from prime_rl.orchestrator.env_worker_group import EnvWorkerGroup
+from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
+
+# This monkey patch is necessary to avoid Pydantic validating fields using typing.Iterable (e.g. in multimodal or tool call messages) lazily which leads to tokenization errors, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1249
+monkey_patch_oai_iterable_types()
+
+
+# This monkey patch is necessary to avoid heavy CPU overhead from constructing the OAI ChatCompletion Pydantic model with logprobs, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1189
+monkey_patch_chat_completion_logprobs()
+
 import random
 from collections import defaultdict
-from functools import partial
 from pathlib import Path
-from typing import cast
 
 import verifiers as vf
-from datasets import Dataset
 
 from prime_rl.orchestrator.config import BufferConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import format_num, mean, mean_normalize
-from prime_rl.utils.vf import from_serializable_state, to_serializable_state
 
 
 class Buffer:
-    """A buffer for storing rollouts and metadata."""
+    """A buffer for storing rollouts and metadata, based on dataset indices as dataset is in different process.."""
 
     POOLS = ["easy", "normal", "hard"]
 
     def __init__(
         self,
-        dataset: Dataset,
-        env_names: list[str],
+        env_worker_group: EnvWorkerGroup,
         buffer_config: BufferConfig,
     ):
-        self.dataset = dataset
-        self.env_names = env_names
+        self.env_worker_group = env_worker_group
+        self.env_names = env_worker_group.env_names
+        self.env_sizes = [self.env_worker_group.get_dataset_size(env_name) for env_name in self.env_names]
         self.config = buffer_config
         self.logger = get_logger()
 
@@ -35,21 +39,14 @@ class Buffer:
             random.seed(self.config.seed)
 
         # Basic assertions
-        assert "example_id" in self.dataset.column_names, "The dataset must contain a `example_id` column."
-        assert "prompt" in self.dataset.column_names, "The dataset must contain a `prompt` column."
-        assert "task" in self.dataset.column_names, "The dataset must contain a `task` column."
-        assert len(self.dataset) > 0, "The dataset must contain at least one example."
-        assert isinstance(self.dataset["example_id"][0], int), "The `example_id` column must be of type int."
-        assert len(set(self.dataset["example_id"])) == len(self.dataset), "The `example_id` column must be unique."
-        assert set(self.dataset["task"]) == set(self.env_names), "The `task` column must contain all environment names."
+        assert sum(self.env_sizes) > 0, "there must be at least one example in the buffer."
 
-        # Initialize example buffer (env_name -> (example_id -> example))
-        self.example_buffer: dict[str, dict[int, dict]] = defaultdict(dict)
-        for example in map(partial(cast, dict), self.dataset):
-            self.example_buffer[example["task"]][example["example_id"]] = example
-        assert len(self.example_buffer) == len(self.env_names)
+        # Initialize example buffer (env_name -> list[example_id])
+        self.example_buffer: dict[str, list[int]] = defaultdict(list)
+        for env_name, env_size in zip(self.env_names, self.env_sizes):
+            self.example_buffer[env_name] = list(range(env_size))
         self.logger.debug(
-            f"Initialized buffer with {format_num(len(self.dataset), precision=0)} example(s) in {len(self.env_names)} environment(s)"
+            f"Initialized buffer with {format_num(sum(self.env_sizes), precision=0)} example(s) in {len(self.env_names)} environment(s)"
         )
 
         if self.config.env_ratios is not None:
@@ -69,133 +66,135 @@ class Buffer:
             )
 
         # Initialize buffers for easy/ hard examples
-        self.easy_examples: list[dict] = []
-        self.hard_examples: list[dict] = []
+        self.easy_examples: list[int] = []
+        self.hard_examples: list[int] = []
 
         # Initialize rollout buffer (flat list of rollouts)
         self.rollout_buffer: list[vf.State] = []
 
         self.reset_step_metrics()
 
-    def get_example_hash(self, example: dict) -> str:
-        """Returns a hash of the example based on hash keys."""
-        hash_keys = [key for key in self.config.hash_keys if key in example]
-        assert hash_keys, "No hashable keys found in example."
-        return hashlib.sha256(json.dumps([example[key] for key in hash_keys]).encode()).hexdigest()
+    # def get_example_hash(self, example: dict) -> str:
+    #     """Returns a hash of the example based on hash keys."""
+    #     hash_keys = [key for key in self.config.hash_keys if key in example]
+    #     assert hash_keys, "No hashable keys found in example."
+    #     return hashlib.sha256(json.dumps([example[key] for key in hash_keys]).encode()).hexdigest()
 
     def save(self, path: Path) -> None:
         """Saves pool assignments and rollout buffer."""
-        path.mkdir(parents=True, exist_ok=True)
+        pass
+        # path.mkdir(parents=True, exist_ok=True)
 
-        def write_jsonl(lst: list[dict], path: Path) -> None:
-            with open(path, "w") as f:
-                for item in lst:
-                    f.write(json.dumps(item) + "\n")
+        # def write_jsonl(lst: list[dict], path: Path) -> None:
+        #     with open(path, "w") as f:
+        #         for item in lst:
+        #             f.write(json.dumps(item) + "\n")
 
-        write_jsonl(self.easy_examples, path / "easy_examples.jsonl")
-        write_jsonl(self.hard_examples, path / "hard_examples.jsonl")
+        # write_jsonl(self.easy_examples, path / "easy_examples.jsonl")
+        # write_jsonl(self.hard_examples, path / "hard_examples.jsonl")
 
-        serializable_rollouts = [to_serializable_state(rollout) for rollout in self.rollout_buffer]
-        write_jsonl(serializable_rollouts, path / "rollout_buffer.jsonl")
+        # serializable_rollouts = [to_serializable_state(rollout) for rollout in self.rollout_buffer]
+        # write_jsonl(serializable_rollouts, path / "rollout_buffer.jsonl")
 
     def load(self, path: Path) -> None:
         """Loads pool assignments and rollouts."""
+        pass
 
-        def read_jsonl(path: Path) -> list[dict]:
-            with open(path, "r") as f:
-                return [json.loads(line) for line in f]
+        # def read_jsonl(path: Path) -> list[dict]:
+        #     with open(path, "r") as f:
+        #         return [json.loads(line) for line in f]
 
-        saved_easy_examples = read_jsonl(path / "easy_examples.jsonl")
-        saved_hard_examples = read_jsonl(path / "hard_examples.jsonl")
-        saved_rollout_buffer = [
-            from_serializable_state(rollout) for rollout in read_jsonl(path / "rollout_buffer.jsonl")
-        ]
+        # saved_easy_examples = read_jsonl(path / "easy_examples.jsonl")
+        # saved_hard_examples = read_jsonl(path / "hard_examples.jsonl")
+        # saved_rollout_buffer = [
+        #     from_serializable_state(rollout) for rollout in read_jsonl(path / "rollout_buffer.jsonl")
+        # ]
 
-        if any(saved_easy_examples) or any(saved_hard_examples) or any(saved_rollout_buffer):
-            # Build hash lookup for example buffer (env -> (example_hash -> example_id))
-            example_hash_lookup = defaultdict(dict)
-            all_hashes = set()
-            for env in self.example_buffer:
-                for example_id, example in self.example_buffer[env].items():
-                    example_hash = self.get_example_hash(example)
-                    if example_hash in all_hashes:
-                        self.logger.warning(
-                            f"Duplicate example hash found based on hash_keys={self.config.hash_keys}. Overwriting with latest example. This may cause unexpected behavior when resuming the buffer."
-                        )
-                    example_hash_lookup[env][example_hash] = example_id
-                    all_hashes.add(example_hash)
+        # if any(saved_easy_examples) or any(saved_hard_examples) or any(saved_rollout_buffer):
+        #     # Build hash lookup for example buffer (env -> (example_hash -> example_id))
+        #     example_hash_lookup = defaultdict(dict)
+        #     all_hashes = set()
+        #     for env in self.example_buffer:
+        #         for example_id, example in self.example_buffer[env].items():
+        #             example_hash = self.get_example_hash(example)
+        #             if example_hash in all_hashes:
+        #                 self.logger.warning(
+        #                     f"Duplicate example hash found based on hash_keys={self.config.hash_keys}. Overwriting with latest example. This may cause unexpected behavior when resuming the buffer."
+        #                 )
+        #             example_hash_lookup[env][example_hash] = example_id
+        #             all_hashes.add(example_hash)
 
-            def move_saved_pool(saved_examples: list[dict], target_pool: list[dict]) -> int:
-                """Moves saved examples to the target pool from example buffer based on hash lookup."""
-                num_moved = 0
-                for example in saved_examples:
-                    example_hash = self.get_example_hash(example)
-                    for env in example_hash_lookup:
-                        if example_hash in example_hash_lookup[env]:
-                            example_id = example_hash_lookup[env][example_hash]
-                            example = self.example_buffer[env].pop(example_id, None)
-                            if example is not None:
-                                target_pool.append(example)
-                                num_moved += 1
-                                break
-                return num_moved
+        #     def move_saved_pool(saved_examples: list[dict], target_pool: list[dict]) -> int:
+        #         """Moves saved examples to the target pool from example buffer based on hash lookup."""
+        #         num_moved = 0
+        #         for example in saved_examples:
+        #             example_hash = self.get_example_hash(example)
+        #             for env in example_hash_lookup:
+        #                 if example_hash in example_hash_lookup[env]:
+        #                     example_id = example_hash_lookup[env][example_hash]
+        #                     example = self.example_buffer[env].pop(example_id, None)
+        #                     if example is not None:
+        #                         target_pool.append(example)
+        #                         num_moved += 1
+        #                         break
+        #         return num_moved
 
-            if any(saved_easy_examples):
-                num_moved = move_saved_pool(saved_easy_examples, self.easy_examples)
-                self.logger.debug(
-                    f"Loaded {num_moved}/{len(saved_easy_examples)} example(s) to easy pool from checkpoint."
-                )
-                if num_moved != len(saved_easy_examples):
-                    num_not_moved = len(saved_easy_examples) - num_moved
-                    self.logger.warning(
-                        f"Could not move {num_not_moved} example(s) from checkpoint to easy pool. This usually means you resumed with an env mix that does not contain all previous examples."
-                    )
+        #     if any(saved_easy_examples):
+        #         num_moved = move_saved_pool(saved_easy_examples, self.easy_examples)
+        #         self.logger.debug(
+        #             f"Loaded {num_moved}/{len(saved_easy_examples)} example(s) to easy pool from checkpoint."
+        #         )
+        #         if num_moved != len(saved_easy_examples):
+        #             num_not_moved = len(saved_easy_examples) - num_moved
+        #             self.logger.warning(
+        #                 f"Could not move {num_not_moved} example(s) from checkpoint to easy pool. This usually means you resumed with an env mix that does not contain all previous examples."
+        #             )
 
-            if any(saved_hard_examples):
-                num_moved = move_saved_pool(saved_hard_examples, self.hard_examples)
-                self.logger.debug(
-                    f"Moved {num_moved}/{len(saved_hard_examples)} example(s) to hard pool from checkpoint."
-                )
-                if num_moved != len(saved_hard_examples):
-                    num_not_moved = len(saved_hard_examples) - num_moved
-                    self.logger.warning(
-                        f"Could not move {num_not_moved} example(s) from checkpoint to hard pool. This usually means you resumed with an env mix that does not contain all previous examples."
-                    )
+        #     if any(saved_hard_examples):
+        #         num_moved = move_saved_pool(saved_hard_examples, self.hard_examples)
+        #         self.logger.debug(
+        #             f"Moved {num_moved}/{len(saved_hard_examples)} example(s) to hard pool from checkpoint."
+        #         )
+        #         if num_moved != len(saved_hard_examples):
+        #             num_not_moved = len(saved_hard_examples) - num_moved
+        #             self.logger.warning(
+        #                 f"Could not move {num_not_moved} example(s) from checkpoint to hard pool. This usually means you resumed with an env mix that does not contain all previous examples."
+        #             )
 
-            if any(saved_rollout_buffer):
-                # Extend rollout buffer, but only include rollouts for which the example still exists in the example buffer
-                valid_saved_rollouts = [
-                    rollout for rollout in saved_rollout_buffer if rollout["task"] in self.env_names
-                ]
-                self.rollout_buffer.extend(valid_saved_rollouts)
-                self.logger.debug(f"Loaded {len(valid_saved_rollouts)} rollout(s) from checkpoint.")
+        #     if any(saved_rollout_buffer):
+        #         # Extend rollout buffer, but only include rollouts for which the example still exists in the example buffer
+        #         valid_saved_rollouts = [
+        #             rollout for rollout in saved_rollout_buffer if rollout["task"] in self.env_names
+        #         ]
+        #         self.rollout_buffer.extend(valid_saved_rollouts)
+        #         self.logger.debug(f"Loaded {len(valid_saved_rollouts)} rollout(s) from checkpoint.")
 
-            # Load rollouts, filtering out removed environments and problems
-            def convert_examples_to_normal(examples: list[dict], fraction: float) -> int:
-                """Moves a fraction of examples from the given pool back to normal."""
-                if fraction <= 0.0 or not examples:
-                    return 0
-                num_moved = round(len(examples) * fraction)
-                if num_moved <= 0:
-                    return 0
-                for _ in range(num_moved):
-                    example = random.choice(examples)
-                    env_name = example["task"]
-                    example_id = example["example_id"]
-                    examples.remove(example)
-                    self.example_buffer[env_name][example_id] = example
-                return num_moved
+        #     # Load rollouts, filtering out removed environments and problems
+        #     def convert_examples_to_normal(examples: list[dict], fraction: float) -> int:
+        #         """Moves a fraction of examples from the given pool back to normal."""
+        #         if fraction <= 0.0 or not examples:
+        #             return 0
+        #         num_moved = round(len(examples) * fraction)
+        #         if num_moved <= 0:
+        #             return 0
+        #         for _ in range(num_moved):
+        #             example = random.choice(examples)
+        #             env_name = example["task"]
+        #             example_id = example["example_id"]
+        #             examples.remove(example)
+        #             self.example_buffer[env_name][example_id] = example
+        #         return num_moved
 
-            num_easy_examples = len(self.easy_examples)
-            num_moved = convert_examples_to_normal(self.easy_examples, self.config.easy_fraction)
-            self.logger.debug(f"Converted {num_moved}/{num_easy_examples} example(s) back to normal from easy pool.")
-            num_hard_examples = len(self.hard_examples)
-            num_moved = convert_examples_to_normal(self.hard_examples, self.config.hard_fraction)
-            self.logger.debug(f"Converted {num_moved}/{num_hard_examples} example(s) back to normal from hard pool.")
-        else:
-            self.logger.debug("No easy/ hard examples or rollouts found in checkpoint")
+        #     num_easy_examples = len(self.easy_examples)
+        #     num_moved = convert_examples_to_normal(self.easy_examples, self.config.easy_fraction)
+        #     self.logger.debug(f"Converted {num_moved}/{num_easy_examples} example(s) back to normal from easy pool.")
+        #     num_hard_examples = len(self.hard_examples)
+        #     num_moved = convert_examples_to_normal(self.hard_examples, self.config.hard_fraction)
+        #     self.logger.debug(f"Converted {num_moved}/{num_hard_examples} example(s) back to normal from hard pool.")
+        # else:
+        #     self.logger.debug("No easy/ hard examples or rollouts found in checkpoint")
 
-    def sample_examples(self, n: int) -> list[dict]:
+    def sample_inputs(self, n: int) -> list[tuple[str, int]]:
         """Samples n examples from the buffer, respecting env ratios."""
 
         non_empty_envs = [env for env, examples in self.example_buffer.items() if examples]
@@ -204,12 +203,12 @@ class Buffer:
             raise ValueError("No environments left with examples.")
 
         non_empty_env_probs = [self.env_probs[env] for env in non_empty_envs]
-        sampled_examples = []
+        sampled = []
         for sampled_env in random.choices(non_empty_envs, weights=non_empty_env_probs, k=n):
-            sampled_example = random.choice(list(self.example_buffer[sampled_env].values()))
-            sampled_examples.append(sampled_example)
+            sampled_example_id = random.choice(self.example_buffer[sampled_env])
+            sampled.append((sampled_env, sampled_example_id))
 
-        return sampled_examples
+        return sampled
 
     def update(self, rollouts: list[vf.State]):
         """Updates the buffer state with completed rollouts."""
@@ -230,9 +229,9 @@ class Buffer:
                 pool = "normal"
 
             if pool != "normal" and example_id in self.example_buffer[env_name]:
-                example = self.example_buffer[env_name].pop(example_id)
+                example_id = self.example_buffer[env_name].pop(example_id)
                 target_pool = self.easy_examples if pool == "easy" else self.hard_examples
-                target_pool.append(example)
+                target_pool.append(example_id)
 
             self.num_examples_per_step[env_name][pool] += 1
             if self.config.online_difficulty_filtering:

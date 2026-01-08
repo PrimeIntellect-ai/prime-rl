@@ -298,58 +298,103 @@ class RetryConfig(BaseConfig):
     ] = True
 
 
-class EnvConfig(BaseConfig):
-    """Configures an environment for training."""
+class SharedBaseEnvConfig(BaseConfig):
+    """Shared configuration for any environments."""
+
+    seq_len: Annotated[
+        int | None,
+        Field(
+            description="Sequence length to use for training. Can be configured per-env, falls back to shared config if not specified."
+        ),
+    ] = None
+
+    interleaved_rollouts: Annotated[
+        bool,
+        Field(
+            description="Whether to use interleaved rollouts. If True, will try to concatenate consecutive trajectory steps into a single training example. If False, will create a separate training example for each trajectory step."
+        ),
+    ] = True
+
+    max_concurrent: Annotated[
+        int,
+        Field(
+            description="Maximum number of concurrent rollouts to generate and score. Will create a global semaphore and pass to verifiers Environment. If -1, will not limit concurrency."
+        ),
+    ] = -1
+
+    client_config: Annotated[ClientConfig, Field(description="Client configuration to use for the environment.")] = (
+        ClientConfig()
+    )
+
+
+class SharedTrainEnvConfig(SharedBaseEnvConfig):
+    """Shared configuration for training environments."""
+
+    rollouts_per_example: int = 8
+    sampling: SamplingConfig = Field(
+        default_factory=SamplingConfig,
+        description="Shared sampling configuration for training; can differ from evaluation sampling.",
+    )
+
+
+class SharedEvalEnvConfig(SharedBaseEnvConfig):
+    """Shared configuration for evaluation environments."""
+
+    num_examples: int | None = None
+    rollouts_per_example: int = 1
+    skip_first: int | None = 0
+    sampling: EvalSamplingConfig = Field(
+        default_factory=EvalSamplingConfig,
+        description="Shared sampling configuration for evals; can differ from training sampling.",
+    )
+
+
+class BaseEnvConfig(SharedBaseEnvConfig):
+    """Configures a base environment."""
 
     id: Annotated[str, Field(description="ID of the environment to use.")] = "reverse-text"
     args: Annotated[dict, Field(description="Arguments to pass to the environment.")] = {}
     name: Annotated[str | None, Field(description="Name of the environment to use.")] = None
 
 
-class EvalEnvConfig(EnvConfig):
+class TrainEnvConfig(SharedTrainEnvConfig, BaseEnvConfig):
+    """Configures an environment for training."""
+
+    type: Literal["train"] = "train"
+
+
+class EvalEnvConfig(SharedEvalEnvConfig, BaseEnvConfig):
     """Configures an environment for evaluation."""
 
-    num_examples: Annotated[
-        int | None,
-        Field(
-            description="Number of examples to evaluate per environment. If not set, will use 'num_examples' from main config."
-        ),
-    ] = None
-    rollouts_per_example: Annotated[
-        int | None,
-        Field(
-            description="Number of samples to generate per example for each environment. If not set, will use 'rollouts_per_example' from main config."
-        ),
-    ] = None
-
-    skip_first: Annotated[
-        int,
-        Field(
-            description="Number of examples to skip from the beginning of the dataset.",
-        ),
-    ] = 0
+    type: Literal["eval"] = "eval"
 
 
-class ValConfig(BaseConfig):
-    """Configures the validation of the model."""
+class TrainEnvGroupConfig(SharedTrainEnvConfig):
+    """Configures a group of environments for training."""
 
-    num_examples: Annotated[
-        int, Field(ge=1, description="Number of examples to use for validation. If -1, will use all examples.")
-    ] = 16
-    rollouts_per_example: Annotated[
-        int, Field(ge=1, description="Number of samples to generate per example for validation.")
-    ] = 1
-    interval: Annotated[int, Field(description="Interval at which to validate the model.")] = 10
+    envs: list[TrainEnvConfig] = [TrainEnvConfig()]
+
+
+class EvalEnvGroupConfig(SharedEvalEnvConfig):
+    """Configures a group of environments for evaluation."""
+
+    envs: list[EvalEnvConfig] = []
+
+
+class TrainConfig(BaseConfig):
+    envs: TrainEnvGroupConfig = TrainEnvGroupConfig()
+
+
+class ValidationConfig(BaseConfig):
+    envs: EvalEnvGroupConfig = EvalEnvGroupConfig()
+    interval: int = 10
 
 
 class EvalConfig(BaseConfig):
     """Configures evaluation using verifiers environments."""
 
-    env: list[EvalEnvConfig] = [EvalEnvConfig()]
-    sampling: EvalSamplingConfig = Field(
-        default_factory=EvalSamplingConfig,
-        description="Shared sampling configuration for evals; can differ from training sampling.",
-    )
+    envs: EvalEnvGroupConfig = EvalEnvGroupConfig()
+
     save: EvalSaveConfig = Field(
         default_factory=EvalSaveConfig,
         description="Configures how to save the eval results.",
@@ -625,7 +670,9 @@ class OrchestratorConfig(BaseSettings):
     sampling: SamplingConfig = SamplingConfig()
 
     # The environment configuration
-    env: list[EnvConfig] = [EnvConfig()]
+    train: TrainConfig = TrainConfig()
+
+    validation: ValidationConfig | None = None
 
     # The evaluation configuration
     eval: OnlineEvalConfig | None = None
@@ -647,9 +694,6 @@ class OrchestratorConfig(BaseSettings):
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
-
-    # The validation configuration
-    val: ValConfig | None = None
 
     weight_broadcast: Annotated[WeightBroadcastConfigType, Field(discriminator="type")] = (
         FileSystemWeightBroadcastConfig()
@@ -677,14 +721,6 @@ class OrchestratorConfig(BaseSettings):
             description="Maximum number of concurrent rollouts to generate and score. Will create a global semaphore and pass to verifiers Environment. If None, will not limit concurrency.",
         ),
     ] = None
-
-    workers_per_env: Annotated[
-        int,
-        Field(
-            ge=1,
-            description="Number of worker subprocesses to spawn per environment. Multiple workers enable isolation of event loop lag - if one worker slows down, others continue at full speed. Uses least-pending routing to distribute load.",
-        ),
-    ] = 1
 
     batch_size: Annotated[int, Field(ge=1, description="Number of samples to train on per step.")] = 128
 

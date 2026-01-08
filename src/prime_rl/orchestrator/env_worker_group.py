@@ -16,19 +16,19 @@ class EnvWorkerGroup:
     def env_names(self) -> list[str]:
         return list(self.env_workers.keys())
 
-    async def start(self):
+    def start(self):
         for env_worker in self.env_workers.values():
             env_worker.start()
+        return self
 
-    async def run_group(self, env_name: str, example_id: int, rollouts_per_example: int, model_name: str):
+    async def run_group(self, env_name: str, example_id: int, model_name: str):
         return await self.env_workers[env_name].run_group(
             example_id=example_id,
-            rollouts_per_example=rollouts_per_example,
             model_name=model_name,
         )
 
-    async def get_dataset_size(self, env_name: str) -> int:
-        return await self.env_workers[env_name].get_dataset_size()
+    def get_dataset_size(self, env_name: str) -> int:
+        return self.env_workers[env_name].get_dataset_size()
 
     async def stop(self):
         for env_worker in self.env_workers.values():

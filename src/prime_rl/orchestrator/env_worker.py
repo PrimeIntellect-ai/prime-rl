@@ -8,7 +8,7 @@ import asyncio
 import queue
 from dataclasses import dataclass
 from itertools import cycle
-from multiprocessing import Process, Queue
+from multiprocessing import Process, Queue, Value
 from typing import Literal
 
 import verifiers as vf
@@ -57,7 +57,6 @@ class BaseRequestResponse:
 @dataclass
 class EnvWorkerRunGroupRequest(BaseRequestResponse):
     example_id: int
-    rollouts_per_example: int
     model_name: str  # required for multi-tenant run
     type: Literal["run_group"] = "run_group"
 
@@ -93,16 +92,19 @@ class EnvWorkerHelper:
         env_config: TrainEnvConfig | EvalEnvConfig,
         request_queue: "Queue[EnvWorkerRequest]",
         response_queue: "Queue[EnvWorkerResponse]",
+        num_examples,  # mp.Value
     ):
         self.env_config = env_config
         if env_config.type == "train":
             self.sampling_args = get_train_sampling_args(env_config.sampling)
         else:
             self.sampling_args = get_eval_sampling_args(env_config.sampling)
+        print(self.sampling_args)
 
         self.process: Process | None = None
         self.request_queue = request_queue
         self.response_queue = response_queue
+        self.num_examples = num_examples
 
     def start(self):
         # install_env(self.env_config.id) # TODO: install env in subprocess
@@ -112,6 +114,9 @@ class EnvWorkerHelper:
         env.set_max_seq_len(self.env_config.seq_len)
         env.set_interleaved_rollouts(self.env_config.interleaved_rollouts)
         dataset = env.get_dataset()
+
+        # Set dataset size in shared value for synchronous access from parent process
+        self.num_examples.value = len(dataset)
 
         # create client
         client_config = ClientConfig(**self.env_config.client_config.model_dump())
@@ -138,13 +143,13 @@ class EnvWorkerHelper:
             async def process_run_group_request(request: EnvWorkerRunGroupRequest) -> EnvWorkerRunGroupResponse:
                 client = next(client_cycle)
                 example = dataset[request.example_id]
-                group_inputs = [vf.RolloutInput(**example) for _ in range(request.rollouts_per_example)]
+                group_inputs = [vf.RolloutInput(**example) for _ in range(self.env_config.rollouts_per_example)]
 
                 states = await env.run_group(
                     group_inputs=group_inputs,
                     client=client,
                     model=request.model_name,
-                    gen_sampling_args=self.env_config.sampling.model_dump(),
+                    gen_sampling_args=self.sampling_args,
                     gen_sem=semaphore,
                     score_sem=semaphore,
                 )
@@ -206,10 +211,12 @@ class EnvWorker:
 
         self.request_queue: Queue[EnvWorkerRequest] = Queue()
         self.response_queue: Queue[EnvWorkerResponse] = Queue()
+        self.num_examples = Value("i", 0)
         self.env_worker_helper = EnvWorkerHelper(
             env_config=env_config,
             request_queue=self.request_queue,
             response_queue=self.response_queue,
+            num_examples=self.num_examples,
         )
         self.env_worker_process: Process | None = None
 
@@ -245,14 +252,12 @@ class EnvWorker:
     async def run_group(
         self,
         example_id: int,
-        rollouts_per_example: int,
         model_name: str,
     ) -> list[dict]:
         request_id = self.get_next_request_id()
         request = EnvWorkerRunGroupRequest(
             request_id=request_id,
             example_id=example_id,
-            rollouts_per_example=rollouts_per_example,
             model_name=model_name,
         )
         self.request_queue.put(request)
@@ -261,14 +266,10 @@ class EnvWorker:
 
         return await future
 
-    async def get_dataset_size(self) -> int:
-        request_id = self.get_next_request_id()
-        request = EnvWorkerGetDatasetSizeRequest(request_id=request_id)
-        self.request_queue.put(request)
-        future = asyncio.Future()
-        self.pending_futures[request_id] = future
-
-        return await future
+    def get_dataset_size(self) -> int:
+        """Returns the dataset size synchronously via shared memory."""
+        assert self.env_worker_process and self.env_worker_process.is_alive()
+        return self.num_examples.value
 
     async def collect_responses(self):
         """Background task to collect responses from the response queue and resolve futures."""
@@ -324,14 +325,12 @@ if __name__ == "__main__":
         env_worker = EnvWorker(env_worker_config)
         env_worker.start()
 
-        dataset_size = await env_worker.get_dataset_size()
+        dataset_size = env_worker.get_dataset_size()
         print(dataset_size)
 
         tasks = []
         for i in range(1):
-            tasks.append(
-                env_worker.run_group(example_id=i, rollouts_per_example=1, model_name="Qwen/Qwen3-4B-Instruct-2507")
-            )
+            tasks.append(env_worker.run_group(example_id=i, model_name="Qwen/Qwen3-4B-Instruct-2507"))
         responses = await asyncio.gather(*tasks)
         for response in responses:
             print(response)

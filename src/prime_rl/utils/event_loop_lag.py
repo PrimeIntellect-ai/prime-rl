@@ -48,6 +48,10 @@ class EventLoopLagMonitor:
             if len(self.lags) > self.max_window_size:
                 self.lags.pop(0)
 
+    async def start(self):
+        """Start the event loop lag monitor as a background task."""
+        return asyncio.create_task(self.run())
+
     def reset(self):
         """Reset the list of measured lags."""
         self.lags = []

@@ -12,13 +12,12 @@ name = "reverse-text"
 batch_size = 128
 rollouts_per_example = 16
 
-[orchestrator.sampling]
+[orchestrator.train.envs.sampling]
 max_tokens = 128
 
-[[orchestrator.env]]
+[[orchestrator.train.envs.envs]]
 id = "reverse-text"
+sampling = { max_tokens = 128 }
 
 [trainer.optim]
 lr = 3e-6
-
-[inference]

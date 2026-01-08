@@ -11,7 +11,7 @@ import torch
 import torch.distributed as dist
 import wandb
 
-from prime_rl.orchestrator.config import EnvConfig, EvalEnvConfig
+from prime_rl.orchestrator.config import EvalEnvConfig
 from prime_rl.utils.logger import get_logger
 
 # TODO: Change all imports to use utils.pathing
@@ -282,20 +282,11 @@ def default_dtype(dtype):
 
 
 def install_env(env_id: str) -> None:
-    """Install an environment in subprocess."""
-    logger = get_logger()
-    logger.info(f"Installing environment {env_id}")
+    """Install an environment via a subprocess."""
+    # logger = get_logger()
+    # logger.info(f"Installing environment {env_id}")
     install_cmd = ["uv", "run", "--no-sync", "prime", "env", "install", env_id]
     result = subprocess.run(install_cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"Failed to install environment {env_id} (stdout={result.stdout}, stderr={result.stderr})")
-    logger.info(f"Successfully installed environment {env_id}")
-
-
-def get_env_ids_to_install(env_configs: list[EnvConfig] | list[EvalEnvConfig]) -> set[str]:
-    """Get the list of environment IDs to install."""
-    env_ids_to_install = set()
-    for env_config in env_configs:
-        if "/" in env_config.id:
-            env_ids_to_install.add(env_config.id)
-    return env_ids_to_install
+    # logger.info(f"Successfully installed environment {env_id}")
