@@ -136,7 +136,7 @@ class MultiLoRAScheduler:
 
         This should be called after an optimizer is created for a run.
         """
-        lr = self.runs.config[idx].optim.lr
+        lr = self.runs.config[idx].optim.learning_rate
         self.schedulers[idx] = setup_scheduler(
             optimizer,
             self.scheduler_config,

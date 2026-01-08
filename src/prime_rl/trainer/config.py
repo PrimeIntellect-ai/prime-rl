@@ -348,7 +348,7 @@ SchedulerConfigType: TypeAlias = ConstantSchedulerConfig | LinearSchedulerConfig
 
 
 class BaseOptimizerConfig(BaseModel):
-    lr: Annotated[float, Field(ge=0)] = 1e-6
+    learning_rate: Annotated[float, Field(ge=0, description="Learning rate for the optimizer.")] = 1e-6
     weight_decay: Annotated[float, Field(ge=0)] = 0.01
     max_norm: Annotated[float, Field(ge=0, description="Maximum gradient norm to clip.")] = 1.0
 

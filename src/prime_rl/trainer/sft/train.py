@@ -125,7 +125,7 @@ def train(config: SFTTrainerConfig):
         else config.max_steps
     )
     logger.info(f"Setting up {config.scheduler.type} scheduler with {scheduler_steps} steps ({config.scheduler})")
-    scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
+    scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.learning_rate)
 
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
@@ -148,7 +148,7 @@ def train(config: SFTTrainerConfig):
         logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
         # This redundant setup is necessary because loading the optimizer's state has side effects on the scheduler state dict
         if config.ckpt.skip_scheduler:
-            scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
+            scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.learning_rate)
     logger.info(
         f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples}, dataset_state={dataloader.state_dict()['dataset_state']})"
     )

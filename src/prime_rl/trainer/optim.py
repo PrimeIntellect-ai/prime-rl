@@ -120,7 +120,7 @@ class MultiLoRAOptimizer:
         # Get named parameters for this run from the Runs system
         named_params = self.runs.get_named_parameters_for_run(idx)
 
-        lr = self.runs.config[idx].optim.lr
+        lr = self.runs.config[idx].optim.learning_rate
         self.optimizers[idx] = _create_optimizer(self.config, named_params, self.device_mesh, lr)
 
         # Call post-creation callbacks (e.g., for scheduler creation)

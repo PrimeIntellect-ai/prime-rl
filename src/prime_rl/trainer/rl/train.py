@@ -149,7 +149,7 @@ def train(config: RLTrainerConfig):
             parallel_dims.world_mesh["dp_shard_cp"],
             lora=config.model.lora is not None,
         )
-        scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
+        scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.learning_rate)
     else:
         optimizer = setup_multi_optimizer(config.optim, parallel_dims.world_mesh["dp_shard_cp"])
         scheduler = setup_multi_scheduler(optimizer, config.scheduler, config.max_steps)
