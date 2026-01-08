@@ -27,13 +27,21 @@ def make_batch(
     run_idx: int | None = 0,
     prompt_len: int = 2,
     completion_len: int = 2,
+    temperature: float = 1.0,
 ) -> TrainingBatch:
     return TrainingBatch(
         examples=[make_sample(prompt_len, completion_len) for _ in range(num_examples)],
-        temperature=1.0,
+        temperature=temperature,
         step=1,
         run_idx=run_idx,
     )
+
+
+def make_mock_config(batch_size: int = 10) -> MagicMock:
+    """Create a mock OrchestratorConfig with batch_size."""
+    config = MagicMock()
+    config.batch_size = batch_size
+    return config
 
 
 @pytest.fixture
@@ -43,6 +51,7 @@ def mock_runs() -> MagicMock:
     runs.max_runs = 4
     runs.ready_to_update = [False, False, False, False]
     runs.progress = {0: Progress()}
+    runs.config = {0: make_mock_config(batch_size=10)}
     runs.output_dir = Path("/tmp/test_output")
     return runs
 
@@ -79,31 +88,28 @@ def packer(mock_runs: MagicMock, tmp_path: Path) -> Packer:
 
 
 # =============================================================================
-# Tests for Packer.get_batch()
+# Tests for Packer.get_batch() - now buffers samples instead of returning dict
 # =============================================================================
 
 
-def test_get_batch_returns_dict_keyed_by_run_idx(packer: Packer) -> None:
-    batch = make_batch(run_idx=0)
+def test_get_batch_buffers_samples(packer: Packer) -> None:
+    batch = make_batch(num_examples=3, run_idx=0)
     packer._receiver.receive.return_value = [batch]
 
-    result = packer.get_batch()
+    packer.get_batch()
 
-    assert isinstance(result, dict)
-    assert 0 in result
-    assert result[0] == batch
+    assert len(packer.buffers[0]) == 3
 
 
 def test_get_batch_filters_none_run_idx(packer: Packer) -> None:
-    batch_valid = make_batch(run_idx=0)
-    batch_invalid = make_batch(run_idx=None)
+    batch_valid = make_batch(num_examples=3, run_idx=0)
+    batch_invalid = make_batch(num_examples=2, run_idx=None)
     packer._receiver.receive.return_value = [batch_valid, batch_invalid]
 
-    result = packer.get_batch()
+    packer.get_batch()
 
-    assert len(result) == 1
-    assert 0 in result
-    assert None not in result
+    assert len(packer.buffers[0]) == 3
+    assert len(packer.buffers[None]) == 0  # None run_idx is filtered
 
 
 def test_get_batch_calls_check_for_changes(packer: Packer) -> None:
@@ -114,66 +120,197 @@ def test_get_batch_calls_check_for_changes(packer: Packer) -> None:
 
 def test_get_batch_multiple_run_idxs(packer: Packer) -> None:
     packer._receiver.receive.return_value = [
-        make_batch(run_idx=0),
-        make_batch(run_idx=1),
-        make_batch(run_idx=2),
+        make_batch(num_examples=3, run_idx=0),
+        make_batch(num_examples=4, run_idx=1),
+        make_batch(num_examples=5, run_idx=2),
     ]
 
-    result = packer.get_batch()
+    packer.get_batch()
 
-    assert len(result) == 3
-    assert 0 in result
-    assert 1 in result
-    assert 2 in result
+    assert len(packer.buffers[0]) == 3
+    assert len(packer.buffers[1]) == 4
+    assert len(packer.buffers[2]) == 5
 
 
 def test_get_batch_empty_receiver(packer: Packer) -> None:
     packer._receiver.receive.return_value = []
 
-    result = packer.get_batch()
+    packer.get_batch()
 
-    assert result == {}
+    assert len(packer.buffers) == 0
+
+
+def test_get_batch_preserves_temperature(packer: Packer) -> None:
+    batch = make_batch(num_examples=2, run_idx=0, temperature=0.7)
+    packer._receiver.receive.return_value = [batch]
+
+    packer.get_batch()
+
+    sample, temperature = packer.buffers[0][0]
+    assert temperature == 0.7
 
 
 # =============================================================================
-# Tests for Packer.has_enough_tokens()
+# Tests for Packer.has_enough_tokens() - now checks internal buffers
 # =============================================================================
 
 
 def test_has_enough_tokens_returns_false_when_empty(packer: Packer) -> None:
-    assert packer.has_enough_tokens({}) is False
+    assert packer.has_enough_tokens() is False
 
 
 def test_has_enough_tokens_below_threshold(packer: Packer) -> None:
     # 3 examples * 4 tokens = 12 tokens, threshold = 100 * 2 = 200
-    rollouts = {0: make_batch(num_examples=3)}
+    batch = make_batch(num_examples=3)
+    packer._receiver.receive.return_value = [batch]
+    packer.get_batch()
 
-    assert packer.has_enough_tokens(rollouts) is False
+    assert packer.has_enough_tokens() is False
 
 
 def test_has_enough_tokens_above_threshold(packer: Packer) -> None:
     # 60 examples * 4 tokens = 240 tokens, threshold = 200
-    rollouts = {0: make_batch(num_examples=60)}
+    batch = make_batch(num_examples=60)
+    packer._receiver.receive.return_value = [batch]
+    packer.get_batch()
 
-    assert packer.has_enough_tokens(rollouts) is True
+    assert packer.has_enough_tokens() is True
 
 
 def test_has_enough_tokens_threshold_calculation(packer: Packer) -> None:
     # 26 examples * 4 tokens = 104 tokens per batch
     # With estimation logic, this should exceed threshold
-    rollouts = {0: make_batch(num_examples=26)}
+    batch = make_batch(num_examples=26)
+    packer._receiver.receive.return_value = [batch]
+    packer.get_batch()
 
-    assert packer.has_enough_tokens(rollouts) is True
+    assert packer.has_enough_tokens() is True
 
 
-def test_has_enough_tokens_multiple_batches(packer: Packer) -> None:
-    # 2 batches * 10 examples * 4 tokens = 80 tokens, threshold = 200
-    rollouts = {
-        0: make_batch(num_examples=10),
-        1: make_batch(num_examples=10),
-    }
+def test_has_enough_tokens_multiple_runs(packer: Packer) -> None:
+    # 2 runs * 10 examples * 4 tokens = 80 tokens, threshold = 200
+    packer._receiver.receive.return_value = [
+        make_batch(num_examples=10, run_idx=0),
+        make_batch(num_examples=10, run_idx=1),
+    ]
+    packer.get_batch()
 
-    assert packer.has_enough_tokens(rollouts) is False
+    assert packer.has_enough_tokens() is False
+
+
+# =============================================================================
+# Tests for Packer._update_run_progress() - step completion logic
+# =============================================================================
+
+
+def test_update_run_progress_increments_step_at_batch_size(packer: Packer) -> None:
+    # batch_size = 10, so 10 samples should trigger step increment
+    packer._runs.config[0].batch_size = 10
+
+    packer._update_run_progress(run_idx=0, num_samples=10, num_tokens=40)
+
+    assert packer._runs.progress[0].step == 1
+    assert packer._runs.ready_to_update[0] is True
+
+
+def test_update_run_progress_no_step_below_batch_size(packer: Packer) -> None:
+    # batch_size = 10, so 5 samples should not trigger step
+    packer._runs.config[0].batch_size = 10
+
+    packer._update_run_progress(run_idx=0, num_samples=5, num_tokens=20)
+
+    assert packer._runs.progress[0].step == 0
+    assert packer._runs.ready_to_update[0] is False
+
+
+def test_update_run_progress_accumulates_samples(packer: Packer) -> None:
+    # batch_size = 10, two calls of 5 samples should trigger step
+    packer._runs.config[0].batch_size = 10
+
+    packer._update_run_progress(run_idx=0, num_samples=5, num_tokens=20)
+    assert packer._runs.progress[0].step == 0
+
+    packer._update_run_progress(run_idx=0, num_samples=5, num_tokens=20)
+    assert packer._runs.progress[0].step == 1
+    assert packer._runs.ready_to_update[0] is True
+
+
+def test_update_run_progress_always_updates_totals(packer: Packer) -> None:
+    packer._runs.config[0].batch_size = 100  # Large so step won't increment
+
+    packer._update_run_progress(run_idx=0, num_samples=5, num_tokens=20)
+
+    assert packer._runs.progress[0].total_samples == 5
+    assert packer._runs.progress[0].total_tokens == 20
+
+
+def test_update_run_progress_carries_over_excess(packer: Packer) -> None:
+    # batch_size = 10, sending 15 samples should increment step and carry over 5
+    packer._runs.config[0].batch_size = 10
+
+    packer._update_run_progress(run_idx=0, num_samples=15, num_tokens=60)
+
+    assert packer._runs.progress[0].step == 1
+    assert packer.samples_consumed_this_step[0] == 5  # 15 - 10 = 5 carried over
+
+
+# =============================================================================
+# Tests for Packer._select_samples_round_robin()
+# =============================================================================
+
+
+def test_select_samples_round_robin_single_run(packer: Packer) -> None:
+    # Add 5 samples to run 0
+    for _ in range(5):
+        packer.buffers[0].append((make_sample(), 1.0))
+
+    selected = packer._select_samples_round_robin(token_budget=20)  # 5 samples * 4 tokens
+
+    assert len(selected) == 5
+    assert all(run_idx == 0 for run_idx, _, _ in selected)
+
+
+def test_select_samples_round_robin_multiple_runs(packer: Packer) -> None:
+    # Add samples to two runs
+    packer._runs.used_idxs = [0, 1]
+    for _ in range(4):
+        packer.buffers[0].append((make_sample(), 1.0))
+        packer.buffers[1].append((make_sample(), 1.0))
+
+    # Budget for 6 samples (24 tokens), should take 3 from each run
+    selected = packer._select_samples_round_robin(token_budget=24)
+
+    run_counts = {0: 0, 1: 0}
+    for run_idx, _, _ in selected:
+        run_counts[run_idx] += 1
+
+    assert run_counts[0] == 3
+    assert run_counts[1] == 3
+
+
+def test_select_samples_round_robin_skips_empty_buffer(packer: Packer) -> None:
+    # Run 0 is empty, run 1 has samples
+    packer._runs.used_idxs = [0, 1]
+    for _ in range(4):
+        packer.buffers[1].append((make_sample(), 1.0))
+
+    selected = packer._select_samples_round_robin(token_budget=16)
+
+    assert len(selected) == 4
+    assert all(run_idx == 1 for run_idx, _, _ in selected)
+
+
+def test_select_samples_round_robin_respects_token_budget(packer: Packer) -> None:
+    # Add many samples
+    for _ in range(100):
+        packer.buffers[0].append((make_sample(), 1.0))
+
+    # Budget for 10 tokens (2-3 samples at 4 tokens each)
+    selected = packer._select_samples_round_robin(token_budget=10)
+
+    total_tokens = sum(len(sample.prompt_ids) + len(sample.completion_ids) for _, sample, _ in selected)
+    assert total_tokens >= 10  # At least budget
+    assert total_tokens <= 14  # No more than one extra sample
 
 
 # =============================================================================
@@ -181,35 +318,57 @@ def test_has_enough_tokens_multiple_batches(packer: Packer) -> None:
 # =============================================================================
 
 
-def test_pack_updates_progress_step(packer: Packer) -> None:
+def test_pack_updates_progress_step_when_batch_size_reached(packer: Packer) -> None:
+    # batch_size = 10, sending 60 samples (240 tokens) exceeds threshold (200)
+    # Token budget = 200, samples have 4 tokens each, so ~50 samples selected
+    packer._runs.config[0].batch_size = 10
     packer._receiver.receive.return_value = [make_batch(num_examples=60)]
-    initial_step = packer._runs.progress[0].step
 
     packer.pack()
 
-    assert packer._runs.progress[0].step == initial_step + 1
+    # With token budget of 200 and 4 tokens/sample, we select ~50 samples
+    # batch_size = 10, so step should be 5
+    assert packer._runs.progress[0].step == 5
+
+
+def test_pack_no_step_increment_below_batch_size(packer: Packer) -> None:
+    # batch_size = 100, sending 60 samples should not increment step
+    packer._runs.config[0].batch_size = 100
+    packer._receiver.receive.return_value = [make_batch(num_examples=60)]
+
+    packer.pack()
+
+    assert packer._runs.progress[0].step == 0
+    assert packer._runs.ready_to_update[0] is False
 
 
 def test_pack_updates_progress_total_tokens(packer: Packer) -> None:
-    # 10 examples * 4 tokens = 40 tokens
-    packer._receiver.receive.return_value = [make_batch(num_examples=10)]
+    # 60 examples * 4 tokens = 240 tokens, exceeds threshold (200)
+    # Token budget = 200, so ~50 samples (200 tokens) selected
+    packer._runs.config[0].batch_size = 100  # High so step doesn't increment
+    packer._receiver.receive.return_value = [make_batch(num_examples=60)]
     packer._runs.progress[0].total_tokens = 0
 
     packer.pack()
 
-    assert packer._runs.progress[0].total_tokens == 40
+    # With token budget of 200 and 4 tokens/sample, we select ~50 samples = 200 tokens
+    assert packer._runs.progress[0].total_tokens == 200
 
 
 def test_pack_updates_progress_total_samples(packer: Packer) -> None:
-    packer._receiver.receive.return_value = [make_batch(num_examples=10)]
+    # 60 examples * 4 tokens = 240 tokens, exceeds threshold (200)
+    packer._runs.config[0].batch_size = 100  # High so step doesn't increment
+    packer._receiver.receive.return_value = [make_batch(num_examples=60)]
     packer._runs.progress[0].total_samples = 0
 
     packer.pack()
 
-    assert packer._runs.progress[0].total_samples == 10
+    # With token budget of 200 and 4 tokens/sample, we select ~50 samples
+    assert packer._runs.progress[0].total_samples == 50
 
 
-def test_pack_sets_ready_to_update_flag(packer: Packer) -> None:
+def test_pack_sets_ready_to_update_flag_on_step_completion(packer: Packer) -> None:
+    packer._runs.config[0].batch_size = 10
     packer._receiver.receive.return_value = [make_batch(num_examples=60, run_idx=0)]
     packer._runs.ready_to_update = [False, False, False, False]
 
@@ -219,6 +378,7 @@ def test_pack_sets_ready_to_update_flag(packer: Packer) -> None:
 
 
 def test_pack_calls_sender_with_micro_batch_grid(packer: Packer) -> None:
+    packer._runs.config[0].batch_size = 10
     packer._receiver.receive.return_value = [make_batch(num_examples=60)]
 
     packer.pack()
@@ -229,28 +389,27 @@ def test_pack_calls_sender_with_micro_batch_grid(packer: Packer) -> None:
     assert len(sent_grid) == 2  # dp_world_size
 
 
-def test_pack_asserts_no_ready_runs_at_start(packer: Packer) -> None:
-    packer._receiver.receive.return_value = [make_batch(num_examples=60)]
-    packer._runs.ready_to_update = [True, False, False, False]
-
-    with pytest.raises(AssertionError, match="No runs should be ready to update"):
-        packer.pack()
-
-
 def test_pack_handles_multiple_runs(packer: Packer) -> None:
+    # 60 samples total = 240 tokens, exceeds threshold (200)
+    # With round-robin, we get ~25 samples from each run
+    packer._runs.used_idxs = [0, 1]
+    packer._runs.config[0].batch_size = 25
+    packer._runs.config[1] = make_mock_config(batch_size=25)
+    packer._runs.progress[1] = Progress()
     packer._receiver.receive.return_value = [
         make_batch(num_examples=30, run_idx=0),
         make_batch(num_examples=30, run_idx=1),
     ]
-    packer._runs.progress[1] = Progress()
 
     packer.pack()
 
+    # Each run gets ~25 samples, batch_size = 25, so step = 1 for each
     assert packer._runs.progress[0].step == 1
     assert packer._runs.progress[1].step == 1
 
 
 def test_pack_sends_grid_with_equal_batch_counts(packer: Packer) -> None:
+    packer._runs.config[0].batch_size = 10
     packer._receiver.receive.return_value = [make_batch(num_examples=60)]
 
     packer.pack()
@@ -261,6 +420,7 @@ def test_pack_sends_grid_with_equal_batch_counts(packer: Packer) -> None:
 
 
 def test_pack_sends_non_empty_batches_per_rank(packer: Packer) -> None:
+    packer._runs.config[0].batch_size = 10
     packer._receiver.receive.return_value = [make_batch(num_examples=60)]
 
     packer.pack()
@@ -270,6 +430,7 @@ def test_pack_sends_non_empty_batches_per_rank(packer: Packer) -> None:
 
 
 def test_pack_lora_num_tokens_invariant(packer: Packer) -> None:
+    packer._runs.config[0].batch_size = 10
     packer._receiver.receive.return_value = [make_batch(num_examples=60)]
 
     packer.pack()
@@ -287,6 +448,7 @@ def test_pack_lora_num_tokens_invariant(packer: Packer) -> None:
 
 def test_pack_with_timeout_warning(packer: Packer) -> None:
     batch = make_batch(num_examples=3)
+    packer._runs.config[0].batch_size = 3
 
     call_count = 0
 
@@ -307,19 +469,26 @@ def test_pack_with_timeout_warning(packer: Packer) -> None:
 
 
 def test_pack_with_sparse_run_idxs(packer: Packer) -> None:
+    # 60 samples total = 240 tokens, exceeds threshold (200)
+    # Round-robin gives ~25 samples to each run
+    packer._runs.used_idxs = [0, 3]
+    packer._runs.config[0].batch_size = 25
+    packer._runs.config[3] = make_mock_config(batch_size=25)
+    packer._runs.progress[3] = Progress()
     packer._receiver.receive.return_value = [
         make_batch(num_examples=30, run_idx=0),
         make_batch(num_examples=30, run_idx=3),
     ]
-    packer._runs.progress[3] = Progress()
 
     packer.pack()
 
+    # Each run gets ~25 samples, batch_size = 25, so ready_to_update = True
     assert packer._runs.ready_to_update[0] is True
     assert packer._runs.ready_to_update[3] is True
 
 
 def test_pack_with_single_sample(packer: Packer) -> None:
+    packer._runs.config[0].batch_size = 1
     packer._receiver.receive.return_value = [make_batch(num_examples=1, prompt_len=50, completion_len=50)]
 
     packer.pack()
@@ -327,3 +496,74 @@ def test_pack_with_single_sample(packer: Packer) -> None:
     packer._sender.send.assert_called_once()
     sent_grid = packer._sender.send.call_args[0][0]
     assert all(len(rank_batches) > 0 for rank_batches in sent_grid)
+
+
+def test_pack_with_timeout_sends_available_samples(packer: Packer) -> None:
+    """When timeout occurs with insufficient tokens, pack what's available."""
+    # Only 3 samples = 12 tokens, below threshold (200)
+    packer._runs.config[0].batch_size = 3
+    packer._receiver.receive.return_value = [make_batch(num_examples=3)]
+
+    with patch("prime_rl.trainer.rl.packer.time") as mock_time:
+        mock_time.time.side_effect = [0.0, 0.0, 100.0]  # First check, second check triggers timeout
+        mock_time.sleep = MagicMock()
+
+        packer.pack()
+
+    # Should still pack and send the available samples after timeout
+    packer._sender.send.assert_called_once()
+
+
+# =============================================================================
+# Tests for buffering behavior
+# =============================================================================
+
+
+def test_buffer_accumulates_across_get_batch_calls(packer: Packer) -> None:
+    packer._receiver.receive.return_value = [make_batch(num_examples=3, run_idx=0)]
+
+    packer.get_batch()
+    packer.get_batch()
+
+    assert len(packer.buffers[0]) == 6
+
+
+def test_partial_step_persists_across_pack_calls(packer: Packer) -> None:
+    # Token budget = 200, batch_size = 100
+    # 60 samples = 240 tokens, ~50 samples selected
+    packer._runs.config[0].batch_size = 100
+
+    # First pack: 60 samples, ~50 selected, not enough for step
+    packer._receiver.receive.return_value = [make_batch(num_examples=60)]
+    packer.pack()
+
+    assert packer._runs.progress[0].step == 0
+    assert packer.samples_consumed_this_step[0] == 50  # Token budget limits selection
+
+    # Second pack: 60 more samples in buffer (10 leftover + 60 = 70)
+    # After first pack, buffer has ~10 leftover, add 60 more = 70 samples
+    # ~50 more selected, total consumed = 50 + 50 = 100, step increments
+    packer._receiver.receive.return_value = [make_batch(num_examples=60)]
+    packer.pack()
+
+    assert packer._runs.progress[0].step == 1
+    assert packer.samples_consumed_this_step[0] == 0  # 100 - 100 = 0
+
+
+def test_round_robin_position_persists_across_pack_calls(packer: Packer) -> None:
+    packer._runs.used_idxs = [0, 1]
+    packer._runs.config[0].batch_size = 100
+    packer._runs.config[1] = make_mock_config(batch_size=100)
+    packer._runs.progress[1] = Progress()
+
+    # Add samples to both runs
+    for _ in range(30):
+        packer.buffers[0].append((make_sample(), 1.0))
+        packer.buffers[1].append((make_sample(), 1.0))
+
+    # Pack should use round-robin
+    packer.pack()
+
+    # Both runs should have had samples taken
+    assert packer._runs.progress[0].total_samples > 0
+    assert packer._runs.progress[1].total_samples > 0

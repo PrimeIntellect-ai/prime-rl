@@ -1,5 +1,6 @@
 import shutil
 import time
+from collections import defaultdict, deque
 
 from transformers.tokenization_utils import PreTrainedTokenizer
 
@@ -7,7 +8,7 @@ from prime_rl.trainer.batch import prepare_batch
 from prime_rl.trainer.runs import get_runs
 from prime_rl.transport import (
     MicroBatchSender,
-    TrainingBatch,
+    TrainingSample,
     TransportConfigType,
     setup_micro_batch_sender,
     setup_training_batch_receiver,
@@ -40,57 +41,123 @@ class Packer:
             self.runs.output_dir, dp_world_size, start_step, config
         )
 
-    def get_batch(self) -> dict[int, TrainingBatch]:
+        # Per-run buffer: stores (TrainingSample, temperature) tuples
+        self.buffers: dict[int, deque[tuple[TrainingSample, float]]] = defaultdict(deque)
+
+        # Per-run sample count consumed in current step
+        self.samples_consumed_this_step: dict[int, int] = defaultdict(int)
+
+        # Round-robin position (persists across pack() calls)
+        self._round_robin_position: int = 0
+
+    def get_batch(self) -> None:
+        """Receive batches from orchestrator and buffer samples per run."""
         self.runs.check_for_changes()
         batches = self.receiver.receive()
-        return {batch.run_idx: batch for batch in batches if batch.run_idx is not None}
 
-    def has_enough_tokens(self, rollouts: dict[int, TrainingBatch]) -> bool:
+        for batch in batches:
+            if batch.run_idx is None:
+                # TODO: put a warning here
+                continue
+            for sample in batch.examples:
+                self.buffers[batch.run_idx].append((sample, batch.temperature))
+
+    def has_enough_tokens(self) -> bool:
+        """Check if buffered samples have enough tokens to pack."""
+        threshold = self.seq_len * self.dp_world_size
         tokens = 0
         batches = 1e-5  # Avoid division by zero
-        threshold = self.seq_len * self.dp_world_size
-        for _rollouts in rollouts.values():
-            for rollout in _rollouts.examples:
-                tokens += len(rollout.prompt_ids) + len(rollout.completion_ids)
-            batches += 1
+
+        for run_idx, buffer in self.buffers.items():
+            for sample, _ in buffer:
+                tokens += len(sample.prompt_ids) + len(sample.completion_ids)
+            if buffer:
+                batches += 1
             estimated_next_batch_tokens = tokens + tokens / batches
             if estimated_next_batch_tokens >= threshold:
                 return True
-        else:
-            return False
+        return False
+
+    def _select_samples_round_robin(self, token_budget: int) -> list[tuple[int, TrainingSample, float]]:
+        """Select samples using round-robin from runs with buffered work."""
+        selected: list[tuple[int, TrainingSample, float]] = []
+        tokens_collected = 0
+
+        while tokens_collected < token_budget:
+            runs_with_work = [idx for idx in self.runs.used_idxs if self.buffers[idx]]
+            if not runs_with_work:
+                break
+
+            self._round_robin_position = self._round_robin_position % len(runs_with_work)
+            run_idx = runs_with_work[self._round_robin_position]
+
+            if self.buffers[run_idx]:
+                sample, temperature = self.buffers[run_idx].popleft()
+                selected.append((run_idx, sample, temperature))
+                tokens_collected += len(sample.prompt_ids) + len(sample.completion_ids)
+
+            self._round_robin_position += 1
+
+        return selected
+
+    def _update_run_progress(self, run_idx: int, num_samples: int, num_tokens: int) -> None:
+        """Update progress, increment step only when batch_size reached."""
+        self.samples_consumed_this_step[run_idx] += num_samples
+        batch_size = self.runs.config[run_idx].batch_size
+
+        # May complete multiple steps if we consumed more than batch_size worth
+        while self.samples_consumed_this_step[run_idx] >= batch_size:
+            self.runs.progress[run_idx].step += 1
+            self.runs.ready_to_update[run_idx] = True
+            self.samples_consumed_this_step[run_idx] -= batch_size
+
+        self.runs.progress[run_idx].total_tokens += num_tokens
+        self.runs.progress[run_idx].total_samples += num_samples
 
     def pack(self):
-        assert all(not i for i in self.runs.ready_to_update), "No runs should be ready to update at start of pack."
-        training_batches: dict[int, TrainingBatch] = self.get_batch()
+        """Pack samples from buffers using round-robin fair scheduling."""
+        self.get_batch()
         start_time = time.time()
-        while not self.has_enough_tokens(training_batches):
-            if time.time() - start_time > TIMEOUT_SECONDS and training_batches:
+
+        while not self.has_enough_tokens():
+            if time.time() - start_time > TIMEOUT_SECONDS and any(self.buffers.values()):
                 self.logger.warning("Timeout waiting for enough tokens to pack")
                 break
             time.sleep(1)
-            training_batches = self.get_batch()
+            self.get_batch()
 
-        # We pack this way because MultiLoRAMoE currently does not support having different run_idx
-        # in a microbatch. So we need to pad at run_idx boundaries to prevent there being different
-        # run idxs in sequences and across data world size.
+        token_budget = self.seq_len * self.dp_world_size
+        selected_samples = self._select_samples_round_robin(token_budget)
+
+        if not selected_samples:
+            return
+
+        # Group by run for prepare_batch (MultiLoRAMoE requires same run_idx in microbatch)
+        samples_by_run: dict[int, list[tuple[TrainingSample, float]]] = defaultdict(list)
+        for run_idx, sample, temperature in selected_samples:
+            samples_by_run[run_idx].append((sample, temperature))
+
         micro_batch_grid = [[] for _ in range(self.dp_world_size)]
-        for idx, training_batch in training_batches.items():
-            self.runs.progress[idx].step += 1
-            self.runs.progress[idx].total_tokens += sum(
-                len(rollout.prompt_ids) + len(rollout.completion_ids) for rollout in training_batch.examples
-            )
-            self.runs.progress[idx].total_samples += len(training_batch.examples)
-            self.runs.ready_to_update[idx] = True
+
+        for run_idx, sample_temp_pairs in samples_by_run.items():
+            samples = [s for s, _ in sample_temp_pairs]
+            temperature = sample_temp_pairs[0][1]
+
+            num_samples = len(samples)
+            num_tokens = sum(len(s.prompt_ids) + len(s.completion_ids) for s in samples)
+
+            self._update_run_progress(run_idx, num_samples, num_tokens)
 
             _micro_batch_grid = prepare_batch(
-                rollouts=training_batch.examples,
-                temperature=training_batch.temperature,
+                rollouts=samples,
+                temperature=temperature,
                 seq_len=self.seq_len,
                 pad_to_multiple_of=self.pad_to_multiple_of,
                 num_train_workers=self.dp_world_size,
-                idxs=[idx] * len(training_batch.examples),
+                idxs=[run_idx] * num_samples,
                 num_loras=self.runs.max_runs,
             )
+
             for i, micro_batch in enumerate(_micro_batch_grid):
                 micro_batch_grid[i].extend(micro_batch)
 
