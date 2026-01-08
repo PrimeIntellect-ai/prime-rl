@@ -33,23 +33,40 @@ The **Packer** (`src/prime_rl/trainer/rl/packer.py`) is a critical component tha
 │  │  get_batch()                                                                                            │ │
 │  │    - calls runs.check_for_changes()                                                                     │ │
 │  │    - calls receiver.receive()                                                                           │ │
-│  │    - filters out batches with run_idx=None                                                              │ │
-│  │    - returns dict[run_idx -> TrainingBatch]                                                             │ │
+│  │    - buffers samples per run in self.buffers[run_idx]                                                   │ │
+│  │    - stores (sample, temperature) tuples for later packing                                              │ │
 │  └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘ │
 │                                              │                                                               │
 │                                              ▼                                                               │
 │  ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐ │
-│  │  has_enough_tokens(rollouts)                                                                            │ │
+│  │  has_enough_tokens()                                                                                    │ │
 │  │    - threshold = seq_len * dp_world_size                                                                │ │
-│  │    - estimates if next batch will exceed threshold                                                      │ │
+│  │    - checks internal buffers for token count                                                            │ │
+│  └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘ │
+│                                              │                                                               │
+│                                              ▼                                                               │
+│  ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐ │
+│  │  _select_samples_round_robin(token_budget)                                                              │ │
+│  │    - selects samples from buffers using round-robin fair scheduling                                     │ │
+│  │    - takes samples evenly from runs with buffered work                                                  │ │
+│  │    - skips runs with empty buffers                                                                      │ │
+│  └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘ │
+│                                              │                                                               │
+│                                              ▼                                                               │
+│  ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐ │
+│  │  _update_run_progress(run_idx, num_samples, num_tokens)                                                 │ │
+│  │    - tracks samples consumed per step via samples_consumed_this_step[run_idx]                           │ │
+│  │    - increments progress[idx].step only when batch_size samples consumed                                │ │
+│  │    - sets ready_to_update[idx] = True only on step completion                                           │ │
+│  │    - reads batch_size from runs.config[run_idx].batch_size                                              │ │
 │  └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘ │
 │                                              │                                                               │
 │                                              ▼                                                               │
 │  ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐ │
 │  │  pack()                                                                                                 │ │
 │  │    - waits for enough tokens (with 10s timeout)                                                         │ │
-│  │    - updates runs.progress[idx] (step, total_tokens, total_samples)                                     │ │
-│  │    - sets runs.ready_to_update[idx] = True                                                              │ │
+│  │    - calls _select_samples_round_robin() for fair sample selection                                      │ │
+│  │    - calls _update_run_progress() per run (step completion check)                                       │ │
 │  │    - calls prepare_batch() for packing logic                                                            │ │
 │  │    - calls sender.send(micro_batch_grid)                                                                │ │
 │  └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘ │
@@ -93,29 +110,46 @@ The **Packer** (`src/prime_rl/trainer/rl/packer.py`) is a critical component tha
 
 ## Core Responsibilities
 
-### 1. Receiving Rollouts
+### 1. Buffering Rollouts
 
-The Packer receives `TrainingBatch` objects from the Orchestrator via the transport layer:
+The Packer receives `TrainingBatch` objects and buffers samples per run:
 
 ```python
-def get_batch(self) -> dict[int, TrainingBatch]:
+def get_batch(self) -> None:
     batches = self.receiver.receive()
-    return {batch.run_idx: batch for batch in batches if batch.run_idx is not None}
+    for batch in batches:
+        if batch.run_idx is None:
+            continue
+        for sample in batch.examples:
+            self.buffers[batch.run_idx].append((sample, batch.temperature))
 ```
 
-Returns a dictionary mapping `run_idx` → `TrainingBatch`, enabling multi-run (multi-LoRA) support.
+Each sample is stored with its temperature for later packing. This decouples receiving from packing, preventing one run from flooding the trainer.
 
 ### 2. Token Threshold Waiting
 
-The Packer waits until enough tokens are accumulated before packing:
+The Packer waits until buffered samples provide enough tokens:
 
 ```python
 threshold = seq_len * dp_world_size
 ```
 
-This ensures efficient GPU utilization. It uses a rolling average to estimate if the next batch will exceed the threshold, with a 10-second timeout to prevent indefinite blocking.
+This ensures efficient GPU utilization. It checks internal buffers with a 10-second timeout to prevent indefinite blocking.
 
-### 3. Sequence Packing Algorithm
+### 3. Fair Sample Selection (Round-Robin)
+
+When packing, samples are selected fairly across runs:
+
+```python
+def _select_samples_round_robin(self, token_budget: int):
+    # Takes samples evenly from runs with buffered work
+    # Skips runs with empty buffers
+    # Persists round-robin position across pack() calls
+```
+
+This prevents any single run from dominating trainer time.
+
+### 4. Sequence Packing Algorithm
 
 Uses **First-Fit Decreasing (FFD)** bin packing in `prepare_batch()`:
 
@@ -125,7 +159,7 @@ Uses **First-Fit Decreasing (FFD)** bin packing in `prepare_batch()`:
 4. **Padding**: Micro-batches are padded to `pad_to_multiple_of` alignment (for tensor cores)
 5. **Distribution**: Micro-batches are distributed round-robin across data-parallel ranks
 
-### 4. Multi-LoRA Support
+### 5. Multi-LoRA Support
 
 Packing respects LoRA adapter boundaries:
 
@@ -137,13 +171,26 @@ Packing respects LoRA adapter boundaries:
 
 Each micro-batch tracks `lora_num_tokens` - token counts per LoRA adapter.
 
-### 5. Progress Tracking
+### 6. Step-Based Progress Tracking
 
-For each run, the Packer updates:
-- `progress[idx].step` - Training steps completed
+Progress is tracked per-run, with step completion based on `batch_size`:
+
+```python
+def _update_run_progress(self, run_idx: int, num_samples: int, num_tokens: int) -> None:
+    self.samples_consumed_this_step[run_idx] += num_samples
+    batch_size = self.runs.config[run_idx].batch_size
+
+    while self.samples_consumed_this_step[run_idx] >= batch_size:
+        self.runs.progress[run_idx].step += 1
+        self.runs.ready_to_update[run_idx] = True
+        self.samples_consumed_this_step[run_idx] -= batch_size
+```
+
+- `progress[idx].step` - Incremented only when `batch_size` samples consumed
 - `progress[idx].total_tokens` - Cumulative tokens processed
 - `progress[idx].total_samples` - Cumulative samples processed
-- `ready_to_update[idx]` - Flag for weight synchronization
+- `ready_to_update[idx]` - Set to True only on step completion
+- `samples_consumed_this_step[idx]` - Tracks partial progress toward next step
 
 ## Data Structures
 
@@ -200,6 +247,9 @@ self.runs.sync_runs()       # Synchronize run state
 
 | Feature | Purpose |
 |---------|---------|
+| Per-run buffering | Decouple receiving from packing, prevent run flooding |
+| Round-robin fair scheduling | Even work distribution across runs |
+| Step-based progress | Increment step only when batch_size samples consumed |
 | Token threshold waiting | Batch efficient GPU utilization |
 | First-Fit Decreasing | Minimize padding overhead |
 | Run-based partitioning | Support multi-LoRA without conflicts |
