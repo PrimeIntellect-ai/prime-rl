@@ -242,7 +242,6 @@ class EnvWorker:
 
     def start(self):
         """Start the worker process."""
-        self._stopping = False  # Reset in case of restart
         self.process = Process(
             target=worker_main,
             args=(
@@ -260,6 +259,7 @@ class EnvWorker:
             daemon=True,
         )
         self.process.start()
+        self._stopping = False  # Reset after process is alive to avoid race condition
 
     def stop(self):
         """Stop the worker process."""
@@ -295,9 +295,15 @@ class EnvWorker:
             # Check if worker process died unexpectedly (but not during intentional shutdown)
             if self.process and not self.process.is_alive() and not self._stopping:
                 exit_code = self.process.exitcode
-                raise RuntimeError(
+                error = RuntimeError(
                     f"Worker '{self.worker_name}' died unexpectedly (exit code: {exit_code})"
                 )
+                # Fail all pending futures so callers don't hang indefinitely
+                for future in self.pending_futures.values():
+                    if not future.done():
+                        future.set_exception(error)
+                self.pending_futures.clear()
+                raise error
 
             # Non-blocking check for responses
             while True:
