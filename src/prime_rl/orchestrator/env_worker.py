@@ -11,304 +11,276 @@ from itertools import cycle
 from multiprocessing import Process, Queue
 
 import verifiers as vf
-from openai import AsyncOpenAI
 
 from prime_rl.utils.client import setup_clients
 from prime_rl.utils.config import ClientConfig
 
 
-@dataclass
-class RolloutRequest:
-    """Request to generate rollouts for an example."""
-
-    id: int  # example_id
-    rollouts_per_example: int
-    model_name: str  # Model name to use for this request (may change for LoRA)
-
-
-@dataclass
-class RolloutResponse:
-    """Response containing rollout results."""
-
-    id: str
-    results: list[dict]  # Simplified state dicts
-    lag_metrics: dict | None = None  # Event loop lag metrics from worker
-
-
-def extract_result(state: vf.State) -> dict:
-    """Extract only the fields needed from vf.State for IPC.
-
-    The extracted dict must contain all fields needed by:
-    - Buffer.update(): example_id, task, reward
-    - orchestrator metrics: reward, is_truncated, error, timing, metrics, trajectory
-    - interleave_rollout/branch_rollout: trajectory[*]["tokens"] with all token fields
-    """
-    # Get trajectory with tokens (needed for training)
+# TODO: move to utils later
+# future TODO: have vf guarantee that base fields of vf.State are serializable
+def to_serializable_state(state: vf.State) -> dict:
     trajectory = []
     for step in state.get("trajectory", []):
-        traj_step = {
+        step = {
             "prompt": step.get("prompt"),
             "completion": step.get("completion"),
-            # tokens dict contains: prompt_ids, prompt_mask, completion_ids,
-            # completion_mask, completion_logprobs, is_truncated
             "tokens": step.get("tokens"),
         }
-        trajectory.append(traj_step)
+        trajectory.append(step)
 
     return {
-        # Required by buffer
+        # required by buffer
         "example_id": state.get("example_id"),
         "task": state.get("task"),
         "reward": state.get("reward"),
-        # Required by orchestrator metrics
+        # required by orchestrator metrics
         "is_truncated": state.get("is_truncated", False),
         "error": type(state["error"]).__name__ if state.get("error") else None,
         "timing": dict(state.get("timing", {})),
         "metrics": state.get("metrics", {}),
-        # Required for training examples
+        # required for training examples
         "prompt": state.get("prompt"),
         "completion": state.get("completion"),
         "trajectory": trajectory,
     }
 
 
-async def process_request(
-    request: RolloutRequest,
-    env: vf.Environment,
-    client_cycle: cycle,
-    semaphore: asyncio.Semaphore,
-    example_lookup: dict[int, dict],
-    sampling_args: dict,
-) -> RolloutResponse:
-    """Process a single rollout request."""
-    client = next(client_cycle)
-    example = example_lookup[request.id]
-    group_inputs = [vf.RolloutInput(**example) for _ in range(request.rollouts_per_example)]
-
-    states = await env.run_group(
-        group_inputs=group_inputs,
-        client=client,
-        model=request.model_name,
-        gen_sampling_args=sampling_args,
-        gen_sem=semaphore,
-        score_sem=semaphore,
-    )
-
-    results = [extract_result(state) for state in states]
-    return RolloutResponse(id=str(request.id), results=results)
+@dataclass
+class EnvWorkerRequest:
+    example_id: int
+    rollouts_per_example: int
+    model_name: str  # required for multi-tenant run
 
 
-async def worker_loop(
-    request_queue: Queue,
-    response_queue: Queue,
-    env: vf.Environment,
-    clients: list[AsyncOpenAI],
-    max_concurrent: int,
-    env_id: str,
-    example_lookup: dict[int, dict],
-    sampling_args: dict,
-):
-    """Main async loop for processing requests."""
-    from prime_rl.utils.event_loop_lag import EventLoopLagMonitor
+@dataclass
+class EnvWorkerResponse:
+    example_id: int
+    serialized_state: list[dict]  # serialized vf.State
 
-    client_cycle = cycle(clients)
-    semaphore = asyncio.Semaphore(max_concurrent) if max_concurrent > 0 else asyncio.Semaphore(10000)
 
-    # Start event loop lag monitor for this worker
-    lag_monitor = EventLoopLagMonitor(interval=0.1)  # More frequent sampling for workers
-    lag_monitor_task = asyncio.create_task(lag_monitor.run())
+class EnvWorkerHelper:
+    """Consumes env worker requests from a queue, runs rollouts and returns responses to a response queue. Used by EnvWorker which starts the helper in a separate process."""
 
-    # Track in-flight tasks
-    pending_tasks: dict[asyncio.Task, int] = {}
+    def __init__(
+        self,
+        # all args need to be picklable
+        env_id: str,
+        env_args: dict,
+        client_config_dict: dict,
+        seq_len: int,
+        interleaved_rollouts: bool,
+        max_concurrent: int,
+        sampling_args: dict,
+        request_queue: "Queue[EnvWorkerRequest]",
+        response_queue: "Queue[EnvWorkerResponse]",
+    ):
+        self.env_id = env_id
+        self.env_args = env_args
+        self.client_config_dict = client_config_dict
+        self.seq_len = seq_len
+        self.interleaved_rollouts = interleaved_rollouts
+        self.max_concurrent = max_concurrent
+        self.sampling_args = sampling_args
 
-    def check_for_requests():
-        """Non-blocking check for new requests."""
-        while True:
-            try:
-                request = request_queue.get_nowait()
-            except queue.Empty:
-                break
-            if request is None:  # Shutdown signal
-                return False
-            task = asyncio.create_task(
-                process_request(request, env, client_cycle, semaphore, example_lookup, sampling_args)
+        self.process: Process | None = None
+        self.request_queue = request_queue
+        self.response_queue = response_queue
+
+    def start(self):
+        # load environment
+        env = vf.load_environment(self.env_id, **self.env_args)
+        env.set_max_seq_len(self.seq_len)
+        env.set_interleaved_rollouts(self.interleaved_rollouts)
+        dataset = env.get_dataset()
+
+        # create client
+        client_config = ClientConfig(**self.client_config_dict)
+        clients = setup_clients(client_config)
+        client_cycle = cycle(clients)
+
+        pending_requests: dict[asyncio.Task[EnvWorkerResponse], EnvWorkerRequest] = {}
+
+        # create semaphore
+        semaphore = asyncio.Semaphore(self.max_concurrent) if self.max_concurrent > 0 else asyncio.Semaphore(10000)
+
+        async def process_request(request: EnvWorkerRequest) -> EnvWorkerResponse:
+            """Process a single rollout request."""
+            client = next(client_cycle)
+            example = dataset[request.example_id]
+            group_inputs = [vf.RolloutInput(**example) for _ in range(request.rollouts_per_example)]
+
+            states = await env.run_group(
+                group_inputs=group_inputs,
+                client=client,
+                model=request.model_name,
+                gen_sampling_args=self.sampling_args,
+                gen_sem=semaphore,
+                score_sem=semaphore,
             )
-            pending_tasks[task] = request.id
-        return True
 
-    try:
-        while True:
-            # Check for new requests
-            if not check_for_requests():
-                break
+            serialized_state = [to_serializable_state(state) for state in states]
+            return EnvWorkerResponse(example_id=request.example_id, serialized_state=serialized_state)
 
-            if not pending_tasks:
-                # No pending tasks, wait a bit for new requests
-                await asyncio.sleep(0.01)
-                continue
+        def process_request_loop():
+            """Non-blocking check for new requests."""
+            while True:
+                try:
+                    request = self.request_queue.get_nowait()
+                except queue.Empty:
+                    break
+                task = asyncio.create_task(process_request(request))
+                pending_requests[task] = request
+            return True
 
-            # Wait for at least one task to complete
-            done, _ = await asyncio.wait(pending_tasks.keys(), timeout=0.1, return_when=asyncio.FIRST_COMPLETED)
+        async def worker_loop():
+            while True:
+                # process request
+                running = process_request_loop()
 
-            for task in done:
-                pending_tasks.pop(task)
-                response = task.result()
-                # Attach lag metrics to response
-                response.lag_metrics = lag_monitor.get_metrics()
-                response_queue.put(response)
-    finally:
-        # Cleanup
-        lag_monitor_task.cancel()
-        for task in pending_tasks:
-            task.cancel()
+                if not running:
+                    break
 
+                if not pending_requests:
+                    # No pending tasks, wait a bit for new requests
+                    await asyncio.sleep(0.01)
+                    continue
 
-def worker_main(
-    request_queue: Queue,
-    response_queue: Queue,
-    env_id: str,
-    env_args: dict,
-    client_config_dict: dict,
-    seq_len: int,
-    interleaved_rollouts: bool,
-    max_concurrent: int,
-    example_lookup: dict[int, dict],
-    sampling_args: dict,
-):
-    """Main entry point for worker process."""
-    # Load environment
-    env = vf.load_environment(env_id, **env_args)
-    env.set_max_seq_len(seq_len)
-    env.set_interleaved_rollouts(interleaved_rollouts)
+                # Wait for at least one task to complete
+                finished_requests, _ = await asyncio.wait(
+                    pending_requests.keys(), timeout=0.1, return_when=asyncio.FIRST_COMPLETED
+                )
 
-    # Create clients
-    client_config = ClientConfig(**client_config_dict)
-    clients = setup_clients(client_config)
+                for request in finished_requests:
+                    pending_requests.pop(request)
+                    response = request.result()
+                    self.response_queue.put(response)
 
-    # Run async loop
-    asyncio.run(
-        worker_loop(
-            request_queue,
-            response_queue,
-            env,
-            clients,
-            max_concurrent,
-            env_id,
-            example_lookup,
-            sampling_args,
-        )
-    )
+        # Run async loop
+        asyncio.run(worker_loop())
 
 
 class EnvWorker:
-    """Manages a worker subprocess for an environment."""
+    """Proxies vf.Environment.run_group, but delegates work to EnvWorkerHelper in a separate process."""
 
     def __init__(
         self,
         env_id: str,
         env_args: dict,
         client_config: ClientConfig,
-        model_name: str,
         seq_len: int,
         interleaved_rollouts: bool,
         max_concurrent: int,
-        example_lookup: dict[int, dict],
         sampling_args: dict,
-        worker_name: str | None = None,
     ):
-        self.env_id = env_id
-        self.env_args = env_args
-        self.client_config = client_config
-        self.model_name = model_name
-        self.seq_len = seq_len
-        self.interleaved_rollouts = interleaved_rollouts
-        self.max_concurrent = max_concurrent
-        self.example_lookup = example_lookup
-        self.sampling_args = sampling_args
-        self.worker_name = worker_name or env_id
-
-        self.request_queue: Queue = Queue()
-        self.response_queue: Queue = Queue()
-        self.process: Process | None = None
-
-        # Track pending requests for response matching
-        self.pending_futures: dict[str, asyncio.Future] = {}
-
-        # Track latest lag metrics from this worker
-        self.latest_lag_metrics: dict = {}
+        self.request_queue: Queue[EnvWorkerRequest] = Queue()
+        self.response_queue: Queue[EnvWorkerResponse] = Queue()
+        self.env_worker_helper = EnvWorkerHelper(
+            env_id=env_id,
+            env_args=env_args,
+            client_config_dict=client_config.model_dump(),
+            seq_len=seq_len,
+            interleaved_rollouts=interleaved_rollouts,
+            max_concurrent=max_concurrent,
+            sampling_args=sampling_args,
+            request_queue=self.request_queue,
+            response_queue=self.response_queue,
+        )
+        self.env_worker_process: Process | None = None
+        self.response_collector_task: asyncio.Task | None = None
+        self.pending_futures: dict[int, asyncio.Future] = {}
 
     def start(self):
-        """Start the worker process."""
-        self.process = Process(
-            target=worker_main,
-            args=(
-                self.request_queue,
-                self.response_queue,
-                self.env_id,
-                self.env_args,
-                self.client_config.model_dump(),
-                self.seq_len,
-                self.interleaved_rollouts,
-                self.max_concurrent,
-                self.example_lookup,
-                self.sampling_args,
-            ),
-            daemon=True,
-        )
-        self.process.start()
+        self.env_worker_process = Process(target=self.env_worker_helper.start)
+        self.env_worker_process.start()
+        self.response_collector_task = asyncio.create_task(self.collect_responses())
 
     def stop(self):
-        """Stop the worker process."""
-        if self.process and self.process.is_alive():
-            self.request_queue.put(None)  # Shutdown signal
-            self.process.join(timeout=5)
-            if self.process.is_alive():
-                self.process.terminate()
+        self.response_queue.close()
+        self.request_queue.close()
+        if self.env_worker_process:
+            self.env_worker_process.join(timeout=5)
+            if self.env_worker_process.is_alive():
+                self.env_worker_process.terminate()
+        if self.response_collector_task:
+            self.response_collector_task.cancel()
 
-    async def submit_request(
+    async def run_group(
         self,
         example_id: int,
         rollouts_per_example: int,
-    ) -> asyncio.Future:
-        """Submit a rollout request and return a future for the response."""
-        request = RolloutRequest(
-            id=example_id,
+        model_name: str,
+    ) -> list[dict]:
+        """Run a specified example from the environment."""
+        request = EnvWorkerRequest(
+            example_id=example_id,
             rollouts_per_example=rollouts_per_example,
-            model_name=self.model_name,
+            model_name=model_name,
         )
-
-        loop = asyncio.get_event_loop()
-        future = loop.create_future()
-        self.pending_futures[str(example_id)] = future
-
         self.request_queue.put(request)
-        return future
+        future = asyncio.Future()
+        self.pending_futures[example_id] = future
+
+        return await future
 
     async def collect_responses(self):
-        """Background task to collect responses and resolve futures."""
+        """Background task to collect responses from the response queue and resolve futures."""
         while True:
-            # Non-blocking check for responses
             while True:
                 try:
-                    response: RolloutResponse = self.response_queue.get_nowait()
+                    response = self.response_queue.get_nowait()
                 except queue.Empty:
                     break
-                # Store latest lag metrics from worker
-                if response.lag_metrics:
-                    self.latest_lag_metrics = response.lag_metrics
-                if response.id in self.pending_futures:
-                    future = self.pending_futures.pop(response.id)
-                    # Check if future was cancelled (e.g., by update_policy)
+                if response.example_id in self.pending_futures:
+                    future = self.pending_futures.pop(response.example_id)
+                    # Check if future was cancelled (e.g. by update_policy)
                     if not future.done():
-                        future.set_result(response.results)
+                        future.set_result(response.serialized_state)
 
             await asyncio.sleep(0.01)
 
-    def update_model_name(self, model_name: str):
-        """Update the model name for future requests."""
-        self.model_name = model_name
 
-    @property
-    def pending_count(self) -> int:
-        """Number of pending requests for this worker."""
-        return len(self.pending_futures)
+if __name__ == "__main__":
+    # env helper
+    # request_queue: "Queue[EnvWorkerRequest]" = Queue()
+    # response_queue: "Queue[EnvWorkerResponse]" = Queue()
+    # env_worker_helper = EnvWorkerHelper(
+    #     env_id="gsm8k",
+    #     env_args={},
+    #     client_config_dict={},
+    #     seq_len=1024,
+    #     interleaved_rollouts=True,
+    #     max_concurrent=10,
+    #     sampling_args={},
+    #     request_queue=request_queue,
+    #     response_queue=response_queue,
+    # )
+    # Process(target=env_worker_helper.start, daemon=True).start()
+
+    # env_worker_request = EnvWorkerRequest(
+    #     example_id=0,
+    #     rollouts_per_example=1,
+    #     model_name="Qwen/Qwen3-4B-Instruct-2507",
+    # )
+    # request_queue.put(env_worker_request)
+    # response = response_queue.get()
+    # print(response)
+
+    # env worker
+    async def main():
+        env_worker = EnvWorker(
+            env_id="gsm8k",
+            env_args={},
+            client_config=ClientConfig(),
+            seq_len=1024,
+            interleaved_rollouts=True,
+            max_concurrent=10,
+            sampling_args={},
+        )
+        env_worker.start()
+
+        response = await env_worker.run_group(
+            example_id=0, rollouts_per_example=1, model_name="Qwen/Qwen3-4B-Instruct-2507"
+        )
+        print(response)
+
+    asyncio.run(main())
