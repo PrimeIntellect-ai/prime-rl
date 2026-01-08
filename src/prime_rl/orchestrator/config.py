@@ -26,7 +26,7 @@ class OptimizerConfig(BaseConfig):
             ge=0,
             description="Learning rate for this run.",
         ),
-    ] = 1e-6
+    ] = 1e-4
 
 
 class LoRAConfig(BaseConfig):
