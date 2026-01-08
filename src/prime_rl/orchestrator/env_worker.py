@@ -16,7 +16,7 @@ from openai import AsyncOpenAI
 
 from prime_rl.utils.client import setup_clients
 from prime_rl.utils.config import ClientConfig
-from prime_rl.utils.logger import setup_logger
+from prime_rl.utils.logger import reset_logger, setup_logger
 
 
 @dataclass
@@ -182,6 +182,8 @@ def worker_main(
     log_file: str | None,
 ):
     """Main entry point for worker process."""
+    # Reset logger inherited from parent process, then setup fresh logger for this worker
+    reset_logger()
     if log_enabled and log_file:
         setup_logger(log_level, log_file=Path(log_file))
         vf.setup_logging(level=vf_log_level.upper())
