@@ -47,6 +47,7 @@ def to_serializable_state(state: vf.State) -> dict:
 
 @dataclass
 class EnvWorkerRequest:
+    request_id: int
     example_id: int
     rollouts_per_example: int
     model_name: str  # required for multi-tenant run
@@ -54,7 +55,7 @@ class EnvWorkerRequest:
 
 @dataclass
 class EnvWorkerResponse:
-    example_id: int
+    request_id: int
     serialized_state: list[dict]  # serialized vf.State
 
 
@@ -119,7 +120,7 @@ class EnvWorkerHelper:
             )
 
             serialized_state = [to_serializable_state(state) for state in states]
-            return EnvWorkerResponse(example_id=request.example_id, serialized_state=serialized_state)
+            return EnvWorkerResponse(request_id=request.request_id, serialized_state=serialized_state)
 
         def process_request_loop():
             """Non-blocking check for new requests."""
@@ -188,21 +189,27 @@ class EnvWorker:
         self.env_worker_process: Process | None = None
         self.response_collector_task: asyncio.Task | None = None
         self.pending_futures: dict[int, asyncio.Future] = {}
+        self.next_request_id: int = 0
 
     def start(self):
-        self.env_worker_process = Process(target=self.env_worker_helper.start)
+        self.env_worker_process = Process(target=self.env_worker_helper.start, daemon=True)
         self.env_worker_process.start()
         self.response_collector_task = asyncio.create_task(self.collect_responses())
 
-    def stop(self):
-        self.response_queue.close()
-        self.request_queue.close()
-        if self.env_worker_process:
-            self.env_worker_process.join(timeout=5)
-            if self.env_worker_process.is_alive():
-                self.env_worker_process.terminate()
+    async def stop(self):
         if self.response_collector_task:
             self.response_collector_task.cancel()
+            try:
+                await self.response_collector_task
+            except asyncio.CancelledError:
+                pass
+
+        if self.env_worker_process:
+            self.env_worker_process.terminate()
+            self.env_worker_process.join(timeout=1)
+
+        self.response_queue.close()
+        self.request_queue.close()
 
     async def run_group(
         self,
@@ -211,14 +218,18 @@ class EnvWorker:
         model_name: str,
     ) -> list[dict]:
         """Run a specified example from the environment."""
+        request_id = self.next_request_id
+        self.next_request_id += 1
+
         request = EnvWorkerRequest(
+            request_id=request_id,
             example_id=example_id,
             rollouts_per_example=rollouts_per_example,
             model_name=model_name,
         )
         self.request_queue.put(request)
         future = asyncio.Future()
-        self.pending_futures[example_id] = future
+        self.pending_futures[request_id] = future
 
         return await future
 
@@ -230,8 +241,8 @@ class EnvWorker:
                     response = self.response_queue.get_nowait()
                 except queue.Empty:
                     break
-                if response.example_id in self.pending_futures:
-                    future = self.pending_futures.pop(response.example_id)
+                if response.request_id in self.pending_futures:
+                    future = self.pending_futures.pop(response.request_id)
                     # Check if future was cancelled (e.g. by update_policy)
                     if not future.done():
                         future.set_result(response.serialized_state)
@@ -278,9 +289,15 @@ if __name__ == "__main__":
         )
         env_worker.start()
 
-        response = await env_worker.run_group(
-            example_id=0, rollouts_per_example=1, model_name="Qwen/Qwen3-4B-Instruct-2507"
-        )
-        print(response)
+        tasks = []
+        for i in range(10):
+            tasks.append(
+                env_worker.run_group(example_id=i, rollouts_per_example=1, model_name="Qwen/Qwen3-4B-Instruct-2507")
+            )
+        responses = await asyncio.gather(*tasks)
+        for response in responses:
+            print(response)
+
+        # await env_worker.stop()
 
     asyncio.run(main())
