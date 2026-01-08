@@ -52,6 +52,13 @@ class ClientConfig(BaseConfig):
         ),
     ] = {}
 
+    skip_model_check: Annotated[
+        bool,
+        Field(
+            description="Whether to skip checking if the model is available in the inference pool. Useful for external APIs or API Keys that don't support the /models endpoint.",
+        ),
+    ] = False
+
 
 class LogConfig(BaseConfig):
     """Configures the logger."""
