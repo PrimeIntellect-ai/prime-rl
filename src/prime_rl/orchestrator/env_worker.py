@@ -109,7 +109,7 @@ async def worker_loop(
     sampling_args: dict,
 ):
     """Main async loop for processing requests."""
-    from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
+    from prime_rl.utils.event_loop_lag import EventLoopLagMonitor
 
     client_cycle = cycle(clients)
     semaphore = asyncio.Semaphore(max_concurrent) if max_concurrent > 0 else asyncio.Semaphore(10000)

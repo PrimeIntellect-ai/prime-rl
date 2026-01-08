@@ -5,10 +5,10 @@ import time
 import tomli_w
 
 from prime_rl.orchestrator.advantage import compute_advantages
-from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.trajectories import branch_rollout, interleave_rollout
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
+from prime_rl.utils.event_loop_lag import EventLoopLagMonitor
 
 # This monkey patch is necessary to avoid Pydantic validating fields using typing.Iterable (e.g. in multimodal or tool call messages) lazily which leads to tokenization errors, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1249
 monkey_patch_oai_iterable_types()
