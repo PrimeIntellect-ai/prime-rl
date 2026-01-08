@@ -179,14 +179,14 @@ async def orchestrate(config: OrchestratorConfig):
         max_async_level=config.max_async_level,
         max_off_policy_steps=config.max_off_policy_steps,
         strict_async_level=config.strict_async_level,
-        lora_name=config.lora_name,
+        lora_name=config.model.lora.name if config.model.lora else None,
     )
 
-    if checkpoint_step is not None and config.lora_name is not None:
-        scheduler.model_name = config.lora_name
+    if checkpoint_step is not None and config.model.lora is not None:
+        scheduler.model_name = config.model.lora.name
         for workers in scheduler.workers.values():
             for worker in workers:
-                worker.model_name = config.lora_name
+                worker.model_name = config.model.lora.name
 
     await scheduler.start()
 
@@ -223,11 +223,11 @@ async def orchestrate(config: OrchestratorConfig):
         await update_weights(
             admin_clients,
             get_step_path(get_broadcast_dir(config.output_dir), scheduler.ckpt_step),
-            lora_name=config.lora_name,
+            lora_name=config.model.lora.name if config.model.lora else None,
         )
     else:
         logger.info("Training from scratch. Resetting weights to base model")
-        if config.lora_name is None:
+        if config.model.lora is None:
             await reload_weights(admin_clients)
 
     # Iterate over dataset in batches

@@ -138,7 +138,12 @@ class RLConfig(BaseSettings):
 
     inference_gpu_ids: Annotated[list[int], Field(description="The GPU IDs to use for inference.")] = [0]
     trainer_gpu_ids: Annotated[list[int], Field(description="The GPU IDs to use for trainer.")] = [1]
-    teacher_gpu_ids: Annotated[list[int] | None, Field(description="The GPU IDs to use for teacher inference. If None, teacher inference server will not be started.")] = None
+    teacher_gpu_ids: Annotated[
+        list[int] | None,
+        Field(
+            description="The GPU IDs to use for teacher inference. If None, teacher inference server will not be started."
+        ),
+    ] = None
 
     teacher_inference: Annotated[
         InferenceConfig | None,
@@ -413,9 +418,17 @@ class RLConfig(BaseSettings):
         if self.trainer.model.lora is not None:
             if self.trainer.weight_broadcast.type == "nccl":
                 raise ValueError("NCCL weight broadcast does not support LoRA yet.")
-            if self.orchestrator.lora_name is None:
-                lora_name = f"r{self.trainer.model.lora.rank}-a{self.trainer.model.lora.alpha}"
-                self.orchestrator.lora_name = lora_name
+
+            # Ensure orchestrator has LoRA config
+            if self.orchestrator.model.lora is None:
+                from prime_rl.orchestrator.config import LoRAConfig
+
+                self.orchestrator.model.lora = LoRAConfig()
+
+            # Auto-generate name if not provided
+            if self.orchestrator.model.lora.name is None:
+                self.orchestrator.model.lora.name = f"r{self.trainer.model.lora.rank}-a{self.trainer.model.lora.alpha}"
+
             if self.inference is not None:
                 self.inference.enable_lora = True
                 self.inference.max_lora_rank = self.trainer.model.lora.rank
@@ -474,7 +487,9 @@ class RLConfig(BaseSettings):
         # Auto-configure DP based on GPU count
         tp = self.teacher_inference.parallel.tp
         if len(self.teacher_gpu_ids) != self.teacher_inference.parallel.dp * tp:
-            assert len(self.teacher_gpu_ids) % tp == 0, "Number of teacher GPUs must be divisible by tensor parallel size"
+            assert len(self.teacher_gpu_ids) % tp == 0, (
+                "Number of teacher GPUs must be divisible by tensor parallel size"
+            )
             assert len(self.teacher_gpu_ids) > 0, "teacher_gpu_ids cannot be empty"
             self.teacher_inference.parallel.dp = len(self.teacher_gpu_ids) // tp
 

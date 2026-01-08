@@ -36,13 +36,19 @@ def setup_optimizer(
 
 
 def _create_optimizer(
-    config: OptimizerConfigType, named_params: list[tuple[str, nn.Parameter]], device_mesh: DeviceMesh
+    config: OptimizerConfigType,
+    named_params: list[tuple[str, nn.Parameter]],
+    device_mesh: DeviceMesh,
+    lr: float | None = None,
 ) -> Optimizer:
+    """Create optimizer. If lr is None, uses config.lr."""
+    if lr is None:
+        lr = config.lr
     match config.type:
         case "sgd":
             return SGD(
                 params=[p for _, p in named_params],
-                lr=config.lr,
+                lr=lr,
                 weight_decay=config.weight_decay,
                 momentum=config.momentum,
                 nesterov=config.nesterov,
@@ -50,7 +56,7 @@ def _create_optimizer(
         case "adamw":
             return AdamW(
                 params=[p for _, p in named_params],
-                lr=config.lr,
+                lr=lr,
                 weight_decay=config.weight_decay,
                 betas=(config.betas1, config.betas2),
             )
@@ -73,13 +79,13 @@ def _create_optimizer(
                     dict(
                         params=muon_params,
                         algorithm="muon",
-                        lr=config.lr,
+                        lr=lr,
                         weight_decay=config.weight_decay,
                         adjust_lr="rms_norm",
                     ),
-                    dict(params=adamw_params, algorithm="adamw", lr=config.lr, weight_decay=config.weight_decay),
+                    dict(params=adamw_params, algorithm="adamw", lr=lr, weight_decay=config.weight_decay),
                 ],
-                lr=config.lr,
+                lr=lr,
                 weight_decay=config.weight_decay,
                 adjust_lr="rms_norm",
                 distributed_mesh=device_mesh,
@@ -113,7 +119,9 @@ class MultiLoRAOptimizer:
     def optimizer_creation_hook(self, idx: int, run_id: str) -> None:
         # Get named parameters for this run from the Runs system
         named_params = self.runs.get_named_parameters_for_run(idx)
-        self.optimizers[idx] = _create_optimizer(self.config, named_params, self.device_mesh)
+
+        lr = self.runs.config[idx].optim.lr
+        self.optimizers[idx] = _create_optimizer(self.config, named_params, self.device_mesh, lr)
 
         # Call post-creation callbacks (e.g., for scheduler creation)
         for callback in self._post_creation_callbacks:

@@ -4,20 +4,8 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from prime_rl.trainer.models.layers.lora.base import MultiLoRAModule
+from prime_rl.trainer.models.layers.lora.base import MultiLoRAModule, get_lora_num_tokens, get_multilora_scaling
 from prime_rl.trainer.models.layers.moe import GroupedExperts
-
-OFFSETS: torch.Tensor | None = None
-
-
-def set_multilora_offsets(offsets: torch.Tensor, reset_reference: bool = False) -> None:
-    """Set global offsets for multi-adapter MoE LoRA."""
-    global OFFSETS
-    num_tokens = torch.diff(offsets, prepend=torch.tensor([0], device=offsets.device))
-    if OFFSETS is None or reset_reference:
-        OFFSETS = num_tokens
-    else:
-        OFFSETS.copy_(num_tokens)
 
 
 def _run_lora_grouped_mm(
@@ -114,9 +102,11 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
         self.rank = rank
         self.n_adapters = n_adapters
         self.alpha = alpha
-        self.scaling = alpha / rank
         self.lora_dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
         self.use_grouped_mm = use_grouped_mm
+
+        self._lora_num_tokens = get_lora_num_tokens()
+        self._scaling_factors = get_multilora_scaling()
 
         # Initialize LoRA parameters for w1 (gate_proj: dim -> moe_dim)
         self.w1_lora_A = nn.ParameterList(
@@ -319,12 +309,16 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
         # This causes issues when we want to create a stacked param for the optimizer
         # 2. The topkrouter needs to set the offsets by binning its hist for each adapter
         # The sort currently occurs there, so it needs to be done there too
-        w1_lora_a = self.w1_lora_A[OFFSETS.argmax()]  # [num_experts, rank, dim]
-        w1_lora_b = self.w1_lora_B[OFFSETS.argmax()]  # [num_experts, hidden_dim, rank]
-        w2_lora_a = self.w2_lora_A[OFFSETS.argmax()]  # [num_experts, rank, hidden_dim]
-        w2_lora_b = self.w2_lora_B[OFFSETS.argmax()]  # [num_experts, dim, rank]
-        w3_lora_a = self.w3_lora_A[OFFSETS.argmax()]  # [num_experts, rank, dim]
-        w3_lora_b = self.w3_lora_B[OFFSETS.argmax()]  # [num_experts, hidden_dim, rank]
+        adapter_idx = self._lora_num_tokens.argmax().item()
+        w1_lora_a = self.w1_lora_A[adapter_idx]  # [num_experts, rank, dim]
+        w1_lora_b = self.w1_lora_B[adapter_idx]  # [num_experts, hidden_dim, rank]
+        w2_lora_a = self.w2_lora_A[adapter_idx]  # [num_experts, rank, hidden_dim]
+        w2_lora_b = self.w2_lora_B[adapter_idx]  # [num_experts, dim, rank]
+        w3_lora_a = self.w3_lora_A[adapter_idx]  # [num_experts, rank, dim]
+        w3_lora_b = self.w3_lora_B[adapter_idx]  # [num_experts, hidden_dim, rank]
+
+        # Get per-adapter scaling factor
+        scaling = self._scaling_factors[adapter_idx].item()
 
         # Access base weights directly
         base_w1 = self.base_layer.w1  # [num_experts, hidden_dim, dim]
@@ -340,12 +334,12 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
             # Gate
             h1_base = torch._grouped_mm(x.bfloat16(), base_w1.bfloat16().transpose(-2, -1), offs=offsets)
             w1_lora_out = _run_lora_grouped_mm(lora_x, w1_lora_a, w1_lora_b, offsets)
-            h1 = h1_base + self.scaling * w1_lora_out.bfloat16()
+            h1 = h1_base + scaling * w1_lora_out.bfloat16()
 
             # Up
             h3_base = torch._grouped_mm(x.bfloat16(), base_w3.bfloat16().transpose(-2, -1), offs=offsets)
             w3_lora_out = _run_lora_grouped_mm(lora_x, w3_lora_a, w3_lora_b, offsets)
-            h3 = h3_base + self.scaling * w3_lora_out.bfloat16()
+            h3 = h3_base + scaling * w3_lora_out.bfloat16()
 
             # SwiGLU activation
             h = F.silu(h1) * h3
@@ -354,7 +348,7 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
             lora_h = self.lora_dropout(h)
             h2_base = torch._grouped_mm(h, base_w2.bfloat16().transpose(-2, -1), offs=offsets)
             w2_lora_out = _run_lora_grouped_mm(lora_h, w2_lora_a, w2_lora_b, offsets)
-            out = h2_base + self.scaling * w2_lora_out.bfloat16()
+            out = h2_base + scaling * w2_lora_out.bfloat16()
 
             return out.type_as(x)
         else:
@@ -371,6 +365,7 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
                 base_w1,
                 base_w2,
                 base_w3,
+                scaling,
             )
 
     def _forward_for_loop(
@@ -386,6 +381,7 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
         base_w1: torch.Tensor,
         base_w2: torch.Tensor,
         base_w3: torch.Tensor,
+        scaling: float,
     ) -> torch.Tensor:
         """For-loop implementation of forward pass (fallback for non-Hopper GPUs)."""
         num_tokens_per_expert_list = num_tokens_per_expert.tolist()
@@ -404,13 +400,13 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
             h1_base = torch.matmul(x_expert, base_w1[expert_idx].transpose(-2, -1))
             w1_lora_tmp = torch.matmul(x_expert_lora, w1_lora_a[expert_idx].transpose(-2, -1))
             w1_lora_out = torch.matmul(w1_lora_tmp, w1_lora_b[expert_idx].transpose(-2, -1))
-            h1 = h1_base + self.scaling * w1_lora_out
+            h1 = h1_base + scaling * w1_lora_out
 
             # Compute w3 + w3_lora for this expert
             h3_base = torch.matmul(x_expert, base_w3[expert_idx].transpose(-2, -1))
             w3_lora_tmp = torch.matmul(x_expert_lora, w3_lora_a[expert_idx].transpose(-2, -1))
             w3_lora_out = torch.matmul(w3_lora_tmp, w3_lora_b[expert_idx].transpose(-2, -1))
-            h3 = h3_base + self.scaling * w3_lora_out
+            h3 = h3_base + scaling * w3_lora_out
 
             # SwiGLU activation
             h = F.silu(h1) * h3
@@ -421,7 +417,7 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
             h2_base = torch.matmul(h, base_w2[expert_idx].transpose(-2, -1))
             w2_lora_tmp = torch.matmul(h_lora, w2_lora_a[expert_idx].transpose(-2, -1))
             w2_lora_out = torch.matmul(w2_lora_tmp, w2_lora_b[expert_idx].transpose(-2, -1))
-            out = h2_base + self.scaling * w2_lora_out
+            out = h2_base + scaling * w2_lora_out
 
             out_splits.append(out)
             start = end

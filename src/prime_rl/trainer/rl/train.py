@@ -49,7 +49,7 @@ from prime_rl.trainer.utils import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.trainer.runs import setup_runs, Progress, get_runs
-from prime_rl.trainer.models.layers.lora import set_multilora_offsets
+from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
@@ -91,11 +91,30 @@ def train(config: RLTrainerConfig):
     torch.set_float32_matmul_precision("high")
 
     # Setup runs and offsets
-    setup_runs(config.output_dir, config.max_concurrent_runs)
+    setup_runs(config.output_dir, config.max_concurrent_runs, torch.device("cuda", world.local_rank))
     runs = get_runs()
-    set_multilora_offsets(
-        torch.tensor([0] * config.max_concurrent_runs, dtype=torch.int32, device=torch.device("cuda", world.local_rank))
-    )
+
+    # Register validation and scaling hooks for LoRA
+    if config.model.lora:
+        trainer_lora = config.model.lora
+
+        def validate_lora_rank(orch_config) -> tuple[bool, str]:
+            # Default to trainer's rank if not specified
+            if orch_config.model.lora.rank is None:
+                orch_config.model.lora.rank = trainer_lora.rank
+            if orch_config.model.lora.rank > trainer_lora.rank:
+                return (
+                    False,
+                    f"model.lora.rank ({orch_config.model.lora.rank}) exceeds trainer max rank ({trainer_lora.rank})",
+                )
+            return True, ""
+
+        def compute_scaling(orch_config) -> float:
+            return orch_config.model.lora.alpha / orch_config.model.lora.rank
+
+        runs.register_config_validation_hook(validate_lora_rank)
+        runs.register_scaling_hook(compute_scaling)
+
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
 
@@ -133,7 +152,7 @@ def train(config: RLTrainerConfig):
         scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
     else:
         optimizer = setup_multi_optimizer(config.optim, parallel_dims.world_mesh["dp_shard_cp"])
-        scheduler = setup_multi_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
+        scheduler = setup_multi_scheduler(optimizer, config.scheduler, config.max_steps)
 
     logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
 
@@ -288,13 +307,16 @@ def train(config: RLTrainerConfig):
 
             if config.model.lora:
                 lora_num_tokens = micro_batch["lora_num_tokens"].to("cuda")
-                lora_cu_offsets = lora_num_tokens.cumsum(dim=0, dtype=torch.int32)
                 if cp_enabled:
                     chunk_size = input_ids.shape[1]  # We pad to multiple of cp so this should be fine
                     logger.debug(f"[Rank {world.rank}] {cp_rank=} {cp_size=} {cp_group=} {chunk_size=}")
-                    # Shift down by seq idx and clip to edges of chunk
-                    lora_cu_offsets = torch.clip(lora_cu_offsets - chunk_size * cp_rank, min=0, max=chunk_size)
-                set_multilora_offsets(lora_cu_offsets)
+                    # Convert to cumsum, adjust for CP chunk, convert back to num_tokens
+                    cu_offsets = lora_num_tokens.cumsum(dim=0, dtype=torch.int32)
+                    adjusted_cu = torch.clip(cu_offsets - chunk_size * cp_rank, min=0, max=chunk_size)
+                    lora_num_tokens = torch.diff(
+                        adjusted_cu, prepend=torch.tensor([0], device=adjusted_cu.device, dtype=adjusted_cu.dtype)
+                    )
+                set_lora_num_tokens(lora_num_tokens)
 
             temperature = micro_batch["temperature"]
 

@@ -3,17 +3,7 @@ import math
 import torch
 from torch import nn
 
-from prime_rl.trainer.models.layers.lora.base import MultiLoRAModule
-
-OFFSETS: torch.Tensor | None = None
-
-
-def set_multilora_offsets(offsets: torch.Tensor, reset_reference: bool = False) -> None:
-    global OFFSETS
-    if OFFSETS is None or reset_reference:
-        OFFSETS = offsets
-    else:
-        OFFSETS.copy_(offsets)
+from prime_rl.trainer.models.layers.lora.base import MultiLoRAModule, get_lora_num_tokens, get_multilora_scaling
 
 
 def _run_lora_grouped_mm(
@@ -77,10 +67,12 @@ class MultiLoRALinear(MultiLoRAModule):
         self.n_adapters = n_adapters
         self.alpha = alpha
         self.lora_dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
-        self.scaling = alpha / rank
         self.use_grouped_mm = use_grouped_mm
         self.in_features = base_layer.in_features
         self.out_features = base_layer.out_features
+
+        self._lora_num_tokens = get_lora_num_tokens()
+        self._scaling_factors = get_multilora_scaling()
 
         # LoRA weights: one low-rank pair per adapter
         # [n_adapters, in, r]
@@ -151,13 +143,11 @@ class MultiLoRALinear(MultiLoRAModule):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         x: [..., in_features]
-        offsets: [n_adapters]
         """
-        global OFFSETS
-        offsets = OFFSETS
         ori_shape = x.shape
         new_shape = ori_shape[:-1] + (self.out_features,)
         x = x.view(-1, x.shape[-1])
+        offsets = self._lora_num_tokens.cumsum(dim=0, dtype=torch.int32)
         assert offsets[-1] == x.shape[0], f"offsets: {offsets}, x.shape: {x.shape}"
 
         base_out = self.base_layer(x)
@@ -169,7 +159,10 @@ class MultiLoRALinear(MultiLoRAModule):
             lora_out = _run_lora_grouped_mm(lora_x, combined_lora_A, combined_lora_B, offsets)
         else:
             lora_out = _run_lora_for_loop(lora_x, combined_lora_A, combined_lora_B, offsets)
-        return (base_out + self.scaling * lora_out).view(new_shape)
+
+        # Apply per-token scaling
+        per_token_scaling = torch.repeat_interleave(self._scaling_factors, self._lora_num_tokens).unsqueeze(-1)
+        return (base_out + per_token_scaling * lora_out).view(new_shape)
 
     def __repr__(self) -> str:
         return (
