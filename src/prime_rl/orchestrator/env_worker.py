@@ -10,12 +10,14 @@ import uuid
 from dataclasses import dataclass
 from itertools import cycle
 from multiprocessing import Process, Queue
+from pathlib import Path
 
 import verifiers as vf
 from openai import AsyncOpenAI
 
 from prime_rl.utils.client import setup_clients
 from prime_rl.utils.config import ClientConfig
+from prime_rl.utils.logger import setup_logger
 
 
 class WorkerDiedError(Exception):
@@ -182,8 +184,16 @@ def worker_main(
     max_concurrent: int,
     example_lookup: dict[int, dict],
     sampling_args: dict,
+    log_enabled: bool,
+    log_level: str,
+    vf_log_level: str,
+    log_file: str | None,
 ):
     """Main entry point for worker process."""
+    if log_enabled and log_file:
+        setup_logger(log_level, log_file=Path(log_file))
+        vf.setup_logging(level=vf_log_level.upper())
+
     # Load environment
     env = vf.load_environment(env_id, **env_args)
     env.set_max_seq_len(seq_len)
@@ -223,6 +233,10 @@ class EnvWorker:
         example_lookup: dict[int, dict],
         sampling_args: dict,
         worker_name: str | None = None,
+        log_enabled: bool = False,
+        log_level: str = "warn",
+        vf_log_level: str = "warn",
+        log_file: str | None = None,
     ):
         self.env_id = env_id
         self.env_args = env_args
@@ -234,6 +248,11 @@ class EnvWorker:
         self.example_lookup = example_lookup
         self.sampling_args = sampling_args
         self.worker_name = worker_name or env_id
+
+        self.log_enabled = log_enabled
+        self.log_level = log_level
+        self.vf_log_level = vf_log_level
+        self.log_file = log_file
 
         self.request_queue: Queue = Queue()
         self.response_queue: Queue = Queue()
@@ -265,6 +284,10 @@ class EnvWorker:
                 self.max_concurrent,
                 self.example_lookup,
                 self.sampling_args,
+                self.log_enabled,
+                self.log_level,
+                self.vf_log_level,
+                self.log_file,
             ),
             daemon=True,
         )

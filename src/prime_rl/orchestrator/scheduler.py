@@ -6,6 +6,7 @@ Isolates event loop lag from environment execution.
 
 import asyncio
 import time
+from pathlib import Path
 from typing import NamedTuple
 
 from httpx import AsyncClient
@@ -18,6 +19,7 @@ from prime_rl.orchestrator.utils import get_sampling_args
 from prime_rl.utils.client import update_weights
 from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.pathing import get_env_worker_log_dir
 from prime_rl.utils.utils import (
     get_broadcast_dir,
     get_latest_ckpt_step,
@@ -57,6 +59,7 @@ class Scheduler:
         max_off_policy_steps: int,
         strict_async_level: bool,
         lora_name: str | None = None,
+        output_dir: Path | None = None,
     ):
         self.logger = get_logger()
         self.admin_clients = admin_clients
@@ -88,6 +91,14 @@ class Scheduler:
             env_name = env_config.name or env_config.id
             self.env_names.append(env_name)
             self.workers[env_name] = []
+
+            # Setup log directory if logging is enabled for this env
+            env_log = env_config.log
+            env_log_dir = None
+            if env_log.enabled and output_dir is not None:
+                env_log_dir = get_env_worker_log_dir(output_dir, env_name)
+                env_log_dir.mkdir(parents=True, exist_ok=True)
+
             for worker_idx in range(self.workers_per_env):
                 worker = EnvWorker(
                     env_id=env_config.id,
@@ -100,6 +111,10 @@ class Scheduler:
                     example_lookup=self.example_lookups[env_name],
                     sampling_args=self.sampling_args,
                     worker_name=f"{env_name}_{worker_idx}",
+                    log_enabled=env_log.enabled,
+                    log_level=env_log.level,
+                    vf_log_level=env_log.vf_level,
+                    log_file=str(env_log_dir / f"worker_{worker_idx}.log") if env_log_dir else None,
                 )
                 self.workers[env_name].append(worker)
 
