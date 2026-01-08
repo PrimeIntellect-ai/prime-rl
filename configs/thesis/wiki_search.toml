@@ -24,11 +24,14 @@ online_difficulty_filtering = true
 max_tokens = 8192
 
 [[orchestrator.env]]
-id = "primeintellect/wiki-search"
-name = "wiki-search"
+id = "wiki-search"
 
 [trainer]
 
 [inference.model]
 enable_auto_tool_choice = true
 tool_call_parser = "hermes"
+
+[inference.parallel]
+tp = 2
+dp = 3
