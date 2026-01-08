@@ -217,10 +217,14 @@ class Runs:
                 if self._scaling_hook is not None:
                     self.scaling_factors[new_id] = self._scaling_hook(self.config[new_id])
 
+            # Include configs for new runs so non-master ranks have them
+            new_configs = {new_run: self.config[self.id_2_idx[new_run]] for new_run in new_runs}
+
             sync_data = {
                 "id_2_idx": self.id_2_idx,
                 "ready_to_update": self.ready_to_update,
                 "scaling_factors": self.scaling_factors.cpu(),
+                "new_configs": new_configs,
             }
             self.store.set("runs", pickle.dumps(sync_data))
         dist.barrier()
@@ -234,6 +238,7 @@ class Runs:
             new_id_2_idx: dict[str, int] = sync_data["id_2_idx"]
             self.ready_to_update = sync_data["ready_to_update"]
             self.scaling_factors.copy_(sync_data["scaling_factors"])
+            new_configs: dict[str, "OrchestratorConfig"] = sync_data["new_configs"]
 
             new_runs = new_id_2_idx.keys() - self.id_2_idx.keys()
             deleted_runs = self.id_2_idx.keys() - new_id_2_idx.keys()
@@ -245,7 +250,7 @@ class Runs:
 
             for new_run in new_runs:
                 new_id = new_id_2_idx[new_run]
-                self._create_run_data(new_run, new_id, {})  # type: ignore[arg-type]
+                self._create_run_data(new_run, new_id, new_configs[new_run])
 
         for new_run in new_runs:
             new_id = self.id_2_idx[new_run]
