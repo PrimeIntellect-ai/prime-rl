@@ -2,13 +2,14 @@
 """Interactive TUI for viewing prime-rl rollouts."""
 
 from pathlib import Path
+
 import msgspec
-from textual.app import App, ComposeResult
-from textual.widgets import Header, Footer, Static, ListView, ListItem, Label
-from textual.containers import Horizontal, Vertical, ScrollableContainer
-from textual.reactive import reactive
-from textual.binding import Binding
 from rich.text import Text
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Horizontal, ScrollableContainer, Vertical
+from textual.reactive import reactive
+from textual.widgets import Footer, Header, Label, ListItem, ListView, Static
 
 
 class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
@@ -38,14 +39,15 @@ def load_batch(path: Path) -> TrainingBatch:
 def get_steps(rollouts_dir: Path) -> list[int]:
     if not rollouts_dir.exists():
         return []
-    return sorted([int(d.name.split("_")[1]) for d in rollouts_dir.iterdir()
-                   if d.is_dir() and d.name.startswith("step_")])
+    return sorted(
+        [int(d.name.split("_")[1]) for d in rollouts_dir.iterdir() if d.is_dir() and d.name.startswith("step_")]
+    )
 
 
 def parse_chatml_from_ids(token_ids: list[int], tokenizer) -> list[tuple[str, str]] | None:
     """Parse ChatML format from token IDs. Returns None if not ChatML."""
-    start_id = tokenizer.convert_tokens_to_ids('<|im_start|>')
-    end_id = tokenizer.convert_tokens_to_ids('<|im_end|>')
+    start_id = tokenizer.convert_tokens_to_ids("<|im_start|>")
+    end_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
     if start_id == tokenizer.unk_token_id or end_id == tokenizer.unk_token_id:
         return None
     messages = []
@@ -55,9 +57,9 @@ def parse_chatml_from_ids(token_ids: list[int], tokenizer) -> list[tuple[str, st
             j = i + 1
             while j < len(token_ids) and token_ids[j] != end_id:
                 j += 1
-            segment = tokenizer.decode(token_ids[i+1:j], skip_special_tokens=False)
-            if '\n' in segment:
-                role, content = segment.split('\n', 1)
+            segment = tokenizer.decode(token_ids[i + 1 : j], skip_special_tokens=False)
+            if "\n" in segment:
+                role, content = segment.split("\n", 1)
                 messages.append((role.strip(), content.strip()))
             i = j + 1
         else:
@@ -175,6 +177,7 @@ class RolloutViewer(App):
     def on_mount(self) -> None:
         self.notify("Loading tokenizer...")
         from transformers import AutoTokenizer
+
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         self.refresh_steps()
         if self.steps:
@@ -198,8 +201,9 @@ class RolloutViewer(App):
             return
         self.batch = load_batch(batch_path)
         self.groups = group_samples_by_prompt(self.batch.examples)
-        self.group_keys = sorted(self.groups.keys(),
-            key=lambda h: max(self._get_score(s) for _, s in self.groups[h]), reverse=True)
+        self.group_keys = sorted(
+            self.groups.keys(), key=lambda h: max(self._get_score(s) for _, s in self.groups[h]), reverse=True
+        )
         self._update_group_list()
         self.current_group_idx = 0
         self.current_sample_idx = 0
@@ -213,7 +217,7 @@ class RolloutViewer(App):
         for i, h in enumerate(self.group_keys):
             group = self.groups[h]
             best = max(self._get_score(s) for _, s in group)
-            group_list.append(ListItem(Label(f"P{i+1} ({len(group)}) {best:.2f}")))
+            group_list.append(ListItem(Label(f"P{i + 1} ({len(group)}) {best:.2f}")))
 
     def _load_group(self, idx: int) -> None:
         if not self.group_keys or idx >= len(self.group_keys):
@@ -231,8 +235,10 @@ class RolloutViewer(App):
         if self.current_group_samples:
             scores = [self._get_score(s) for _, s in self.current_group_samples]
             spark = sparkline(sorted(scores), 10)
-            stats.update(f"Step {self.current_step} | Problem {self.current_group_idx+1}/{n_groups} | "
-                        f"{n_attempts} attempts | {min(scores):.2f}[dim]{spark}[/]{max(scores):.2f}")
+            stats.update(
+                f"Step {self.current_step} | Problem {self.current_group_idx + 1}/{n_groups} | "
+                f"{n_attempts} attempts | {min(scores):.2f}[dim]{spark}[/]{max(scores):.2f}"
+            )
         else:
             stats.update(f"Step {self.current_step} | No samples")
 
@@ -248,16 +254,16 @@ class RolloutViewer(App):
 
         text = Text()
         adv_style = "bold green" if adv > 0.1 else "bold red" if adv < -0.1 else "bold yellow"
-        text.append(f"Sample {self.current_sample_idx+1}/{len(self.current_group_samples)}", style="bold")
+        text.append(f"Sample {self.current_sample_idx + 1}/{len(self.current_group_samples)}", style="bold")
         text.append(f" (#{orig_idx})\n", style="dim")
         if sample.reward is not None:
             reward_style = "bold green" if sample.reward > 0.5 else "bold red" if sample.reward < 0.5 else "bold yellow"
-            text.append(f"Reward: ", style="dim")
+            text.append("Reward: ", style="dim")
             text.append(f"{sample.reward:.4f}", style=reward_style)
-            text.append(f" | Adv: ", style="dim")
+            text.append(" | Adv: ", style="dim")
             text.append(f"{adv:+.4f}", style=adv_style)
         else:
-            text.append(f"Advantage: ", style="dim")
+            text.append("Advantage: ", style="dim")
             text.append(f"{adv:+.4f}", style=adv_style)
         text.append(f" | {len(sample.prompt_ids)}+{len(sample.completion_ids)} toks\n", style="dim")
 
@@ -386,6 +392,7 @@ class RolloutViewer(App):
             self.notify("No sample to export!", severity="warning")
             return
         from datetime import datetime
+
         orig_idx, sample = self.current_group_samples[self.current_sample_idx]
         prompt = self.tokenizer.decode(sample.prompt_ids, skip_special_tokens=False)
         completion = self.tokenizer.decode(sample.completion_ids, skip_special_tokens=False)
@@ -398,10 +405,10 @@ class RolloutViewer(App):
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         path = Path.cwd() / f"sample_s{self.current_step}_p{self.current_group_idx}_{ts}.txt"
         with open(path, "w") as f:
-            f.write(f"# Exported from rollout_viewer\n")
+            f.write("# Exported from rollout_viewer\n")
             f.write(f"# Step: {self.current_step}\n")
-            f.write(f"# Problem: {self.current_group_idx+1}/{len(self.group_keys)}\n")
-            f.write(f"# Sample: {self.current_sample_idx+1}/{len(self.current_group_samples)} (orig #{orig_idx})\n")
+            f.write(f"# Problem: {self.current_group_idx + 1}/{len(self.group_keys)}\n")
+            f.write(f"# Sample: {self.current_sample_idx + 1}/{len(self.current_group_samples)} (orig #{orig_idx})\n")
             f.write(f"# Timestamp: {ts}\n\n")
             f.write(f"Advantage: {adv:+.4f}\n")
             if sample.reward is not None:
@@ -419,17 +426,18 @@ class RolloutViewer(App):
 def find_latest_rollouts() -> str:
     cwd = Path.cwd()
     for d in cwd.iterdir():
-        if d.is_dir() and d.name.startswith('outputs'):
+        if d.is_dir() and d.name.startswith("outputs"):
             for run_dir in d.iterdir():
-                if run_dir.is_dir() and run_dir.name.startswith('run_'):
-                    rollouts = run_dir / 'rollouts'
+                if run_dir.is_dir() and run_dir.name.startswith("run_"):
+                    rollouts = run_dir / "rollouts"
                     if rollouts.exists():
                         return str(rollouts)
-    return 'outputs/run_default/rollouts'
+    return "outputs/run_default/rollouts"
 
 
 def main():
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--dir", default=None)
     parser.add_argument("--model", default="Qwen/Qwen3-4B-Instruct-2507")
