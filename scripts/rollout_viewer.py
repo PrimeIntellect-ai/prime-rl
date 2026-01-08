@@ -156,6 +156,7 @@ class RolloutViewer(App):
         self.groups: dict[int, list[tuple[int, TrainingSample]]] = {}
         self.group_keys: list[int] = []
         self.current_group_samples: list[tuple[int, TrainingSample]] = []
+        self._original_group_order: list[tuple[int, TrainingSample]] = []
         self.chat_format = True
 
     def compose(self) -> ComposeResult:
@@ -222,8 +223,10 @@ class RolloutViewer(App):
     def _load_group(self, idx: int) -> None:
         if not self.group_keys or idx >= len(self.group_keys):
             self.current_group_samples = []
+            self._original_group_order = []
             return
-        self.current_group_samples = list(self.groups[self.group_keys[idx]])
+        self._original_group_order = list(self.groups[self.group_keys[idx]])
+        self.current_group_samples = list(self._original_group_order)
         self.current_group_samples.sort(key=lambda x: self._get_score(x[1]), reverse=True)
 
     def _update_stats(self) -> None:
@@ -368,24 +371,24 @@ class RolloutViewer(App):
     def action_sort_best(self) -> None:
         if self.sort_mode == "best":
             self.sort_mode = "default"
-            self._load_group(self.current_group_idx)  # Reset to default order
+            self.current_group_samples = list(self._original_group_order)
         else:
             self.sort_mode = "best"
             self.current_group_samples.sort(key=lambda x: self._get_score(x[1]), reverse=True)
         self.current_sample_idx = 0
         self._update_sample_view()
-        self.notify("Sorted: best first" if self.sort_mode == "best" else "Default order")
+        self.notify("Sorted: best first" if self.sort_mode == "best" else "Original order")
 
     def action_sort_worst(self) -> None:
         if self.sort_mode == "worst":
             self.sort_mode = "default"
-            self._load_group(self.current_group_idx)  # Reset to default order
+            self.current_group_samples = list(self._original_group_order)
         else:
             self.sort_mode = "worst"
             self.current_group_samples.sort(key=lambda x: self._get_score(x[1]), reverse=False)
         self.current_sample_idx = 0
         self._update_sample_view()
-        self.notify("Sorted: worst first" if self.sort_mode == "worst" else "Default order")
+        self.notify("Sorted: worst first" if self.sort_mode == "worst" else "Original order")
 
     def action_export(self) -> None:
         if not self.current_group_samples:
@@ -404,7 +407,7 @@ class RolloutViewer(App):
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         path = Path.cwd() / f"sample_s{self.current_step}_p{self.current_group_idx}_{ts}.txt"
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write("# Exported from rollout_viewer\n")
             f.write(f"# Step: {self.current_step}\n")
             f.write(f"# Problem: {self.current_group_idx + 1}/{len(self.group_keys)}\n")
