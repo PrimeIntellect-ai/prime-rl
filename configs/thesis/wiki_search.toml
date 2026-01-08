@@ -15,6 +15,7 @@ name = "Qwen/Qwen3-4B-Instruct-2507"
 batch_size = 1024
 rollouts_per_example = 16
 oversampling_factor = 1.5
+max_concurrent = 256
 
 [orchestrator.buffer]
 online_difficulty_filtering = true
