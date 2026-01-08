@@ -1,7 +1,6 @@
 from pathlib import Path
 
-from transformers.tokenization_utils import PreTrainedTokenizer
-
+from prime_rl.trainer.config import TokenizerConfig
 from prime_rl.utils.config import PrimeMonitorConfig, WandbWithExtrasConfig
 from prime_rl.utils.monitor.base import Monitor, NoOpMonitor
 from prime_rl.utils.monitor.multi import MultiMonitor
@@ -33,7 +32,7 @@ def get_monitor() -> Monitor:
 def setup_monitor(
     wandb_config: WandbWithExtrasConfig | None = None,
     output_dir: Path | None = None,
-    tokenizer: PreTrainedTokenizer | None = None,
+    tokenizer_config: TokenizerConfig | None = None,
     run_config: BaseSettings | None = None,
     *,
     prime_config: PrimeMonitorConfig | None = None,
@@ -57,7 +56,7 @@ def setup_monitor(
             WandbMonitor(
                 config=wandb_config,
                 output_dir=output_dir,
-                tokenizer=tokenizer,
+                tokenizer_config=tokenizer_config,
                 run_config=run_config,
             )
         )
@@ -67,7 +66,7 @@ def setup_monitor(
             PrimeMonitor(
                 config=prime_config,
                 output_dir=output_dir,
-                tokenizer=tokenizer,
+                tokenizer_config=tokenizer_config,
                 run_config=run_config,
             )
         )
@@ -80,4 +79,3 @@ def setup_monitor(
         _MONITOR = MultiMonitor(monitors)
 
     return _MONITOR
-

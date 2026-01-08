@@ -3,6 +3,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import AliasChoices, BaseModel, Field, model_validator
 
+from prime_rl.trainer.config import TokenizerConfig
 from prime_rl.transport.config import FileSystemTransportConfig, TransportConfigType
 from prime_rl.utils.config import (
     ClientConfig,
@@ -601,16 +602,16 @@ class TeacherModelConfig(BaseConfig):
 class OrchestratorConfig(BaseSettings):
     """Configures the orchestrator for RL training."""
 
-    # The OAI client configuration
     client: ClientConfig = ClientConfig()
 
-    # The model configuration
     model: ModelConfig = ModelConfig()
 
-    # The optimizer configuration (per-run LR for multi-run training)
+    tokenizer: TokenizerConfig = TokenizerConfig()
+
+    # per-run lr for multi-run training
     optim: OptimizerConfig = OptimizerConfig()
 
-    # The teacher model configuration (optional)
+    # for on-policy distillation
     teacher_model: Annotated[
         TeacherModelConfig | None,
         Field(
@@ -798,4 +799,12 @@ class OrchestratorConfig(BaseSettings):
             if self.prime_monitor:
                 self.prime_monitor.log_extras = None
 
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_tokenizer(self):
+        if self.tokenizer.name is None:
+            self.tokenizer.name = self.model.name
+        if self.tokenizer.trust_remote_code is None:
+            self.tokenizer.trust_remote_code = self.model.trust_remote_code
         return self

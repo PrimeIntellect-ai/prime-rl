@@ -21,7 +21,6 @@ monkey_patch_chat_completion_logprobs()
 import pandas as pd
 import verifiers as vf
 from loguru import logger
-from transformers import AutoTokenizer
 
 from prime_rl.eval.utils import run_evals_subprocess
 from prime_rl.orchestrator.buffer import Buffer
@@ -50,9 +49,7 @@ from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import (
     clean_exit,
     get_broadcast_dir,
-    get_env_ids_to_install,
     get_step_path,
-    install_env,
     resolve_latest_ckpt_step,
     to_col_format,
 )
@@ -82,44 +79,26 @@ async def orchestrate(config: OrchestratorConfig):
     with open(config_dir / "orch.toml", "wb") as f:
         tomli_w.dump(config.model_dump(exclude_none=True, mode="json"), f)
 
-    # Install environments
-    env_ids_to_install = set()
-    env_ids_to_install.update(get_env_ids_to_install(config.env))
-    if config.eval is not None:
-        env_ids_to_install.update(get_env_ids_to_install(config.eval.env))
-
-    for env_id in env_ids_to_install:
-        install_env(env_id)
-
-    # Setup client
-    logger.info(
-        f"Initializing OpenAI client (base_url={', '.join(config.client.base_url)}, api_key_var={config.client.api_key_var}, headers={config.client.headers})"
-    )
-    clients = setup_clients(config.client)
+    # setup admin clients (used for weight control reqs, like reload_weights/ update_weights)
+    logger.info(f"Initializing admin clients ({config.client})")
     admin_clients = setup_admin_clients(config.client)
 
-    # Setup teacher model client if configured
-    teacher_clients = None
-    teacher_model_name = None
+    # Setup teacher model client, if configured
     if config.teacher_model:
         logger.info(
-            f"Initializing teacher OpenAI client (base_url={', '.join(config.teacher_model.client.base_url)}, "
-            f"model={config.teacher_model.model.name})"
+            f"Initializing teacher clients for {config.teacher_model.model.name} ({config.teacher_model.client})"
         )
         teacher_clients = setup_clients(config.teacher_model.client)
-        teacher_model_name = config.teacher_model.model.name
+    else:
+        teacher_clients = None
 
-    # Load tokenizer
-    logger.info(f"Initializing tokenizer for {config.model.name}")
-    tokenizer = AutoTokenizer.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
-
-    # Setup monitor
-    logger.info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
+    # Setup monitors
+    logger.info(f"Initializing monitor(s) (wandb={config.wandb}, prime={config.prime_monitor})")
     monitor = setup_monitor(
         wandb_config=config.wandb,
         prime_config=config.prime_monitor,
+        tokenizer_config=config.tokenizer,
         output_dir=config.output_dir,
-        tokenizer=tokenizer,
         run_config=config,
     )
 
@@ -353,11 +332,12 @@ async def orchestrate(config: OrchestratorConfig):
         # Compute teacher logprobs if teacher model is configured
         teacher_logprobs_time = 0
         if config.teacher_model is not None:
+            assert teacher_clients is not None
             logger.info(f"Computing teacher logprobs for {len(train_examples)} training examples")
             teacher_logprobs_start_time = time.perf_counter()
             teacher_logprobs_list = await compute_teacher_logprobs(
                 clients=teacher_clients,
-                model_name=teacher_model_name,
+                model_name=config.teacher_model.model.name,
                 samples=train_examples,
             )
             for train_example, teacher_logprobs in zip(train_examples, teacher_logprobs_list):

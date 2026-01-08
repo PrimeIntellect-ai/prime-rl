@@ -8,12 +8,13 @@ from typing import Any
 import pandas as pd
 import verifiers as vf
 import wandb
-from transformers.tokenization_utils import PreTrainedTokenizer
 
+from prime_rl.trainer.config import TokenizerConfig
 from prime_rl.utils.config import WandbConfig, WandbWithExtrasConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor.base import Monitor
 from prime_rl.utils.pydantic_config import BaseSettings
+from prime_rl.utils.tokenizer_utils import setup_tokenizer
 
 
 class WandbMonitor(Monitor):
@@ -23,7 +24,7 @@ class WandbMonitor(Monitor):
         self,
         config: WandbConfig | WandbWithExtrasConfig | None,
         output_dir: Path | None = None,
-        tokenizer: PreTrainedTokenizer | None = None,
+        tokenizer_config: TokenizerConfig | None = None,
         run_config: BaseSettings | None = None,
     ):
         self.config = config
@@ -61,7 +62,7 @@ class WandbMonitor(Monitor):
                     columns=self.samples_cols,
                     log_mode="INCREMENTAL",
                 )
-                self.tokenizer = tokenizer
+                self.tokenizer = setup_tokenizer(tokenizer_config)
                 self.samples = []
 
     def _maybe_overwrite_wandb_command(self) -> None:

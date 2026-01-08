@@ -25,9 +25,9 @@ from prime_rl.trainer.model import (
     forward,
     get_load_balance_stats,
     is_tt_moe_model,
-    setup_tokenizer,
     setup_model,
 )
+from prime_rl.utils.tokenizer_utils import setup_tokenizer
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import setup_dataloader, setup_dataset

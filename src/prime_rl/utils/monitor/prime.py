@@ -7,12 +7,13 @@ from typing import Any
 
 import httpx
 import verifiers as vf
-from transformers.tokenization_utils import PreTrainedTokenizer
 
+from prime_rl.trainer.config import TokenizerConfig
 from prime_rl.utils.config import PrimeMonitorConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor.base import Monitor
 from prime_rl.utils.pydantic_config import BaseSettings
+from prime_rl.utils.tokenizer_utils import setup_tokenizer
 
 
 class PrimeMonitor(Monitor):
@@ -22,7 +23,7 @@ class PrimeMonitor(Monitor):
         self,
         config: PrimeMonitorConfig | None,
         output_dir: Path | None = None,
-        tokenizer: PreTrainedTokenizer | None = None,
+        tokenizer_config: TokenizerConfig | None = None,
         run_config: BaseSettings | None = None,
     ):
         self.config = config
@@ -71,7 +72,7 @@ class PrimeMonitor(Monitor):
         if config is not None and config.log_extras:
             if config.log_extras.samples:
                 self.last_log_samples_step = -1
-                self.tokenizer = tokenizer
+                self.tokenizer = setup_tokenizer(tokenizer_config) if tokenizer_config else None
             if config.log_extras.distributions:
                 self.last_log_distributions_step = -1
 
