@@ -147,7 +147,7 @@ class MultiLoRALinear(MultiLoRAModule):
         ori_shape = x.shape
         new_shape = ori_shape[:-1] + (self.out_features,)
         x = x.view(-1, x.shape[-1])
-        offsets = self._lora_num_tokens.cumsum(dim=0)
+        offsets = self._lora_num_tokens.cumsum(dim=0, dtype=torch.int32)
         assert offsets[-1] == x.shape[0], f"offsets: {offsets}, x.shape: {x.shape}"
 
         base_out = self.base_layer(x)
