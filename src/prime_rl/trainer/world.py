@@ -1,14 +1,14 @@
-from prime_rl.trainer import envs
+import os
 
 
 class World:
     """This class stores topology information for distributed training and inference settings by parsing environment variables set by torchrun."""
 
     def __init__(self):
-        self.rank = envs.RANK
-        self.world_size = envs.WORLD_SIZE
-        self.local_rank = envs.LOCAL_RANK
-        self.local_world_size = envs.LOCAL_WORLD_SIZE
+        self.rank = int(os.environ.get("RANK", 0))
+        self.world_size = int(os.environ.get("WORLD_SIZE", 1))
+        self.local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        self.local_world_size = int(os.environ.get("LOCAL_WORLD_SIZE", 1))
         self._check_world()
         self.num_nodes = self.world_size // self.local_world_size
 
