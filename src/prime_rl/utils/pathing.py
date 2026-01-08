@@ -29,6 +29,10 @@ def get_broadcast_dir(output_dir: Path) -> Path:
     return output_dir / "broadcasts"
 
 
+def get_env_worker_log_dir(output_dir: Path, env_name: str) -> Path:
+    return output_dir / "logs" / "env_workers" / env_name
+
+
 def get_step_path(path: Path, step: int) -> Path:
     return path / f"step_{step}"
 
@@ -74,7 +78,7 @@ def warn_if_ckpts_inconsistent(output_dir: Path, resume_step: int) -> None:
     if orch_dirs:
         all_dirs_and_steps[get_ckpt_dir(orch_dirs[0])] = get_all_ckpt_steps(get_ckpt_dir(orch_dirs[0]))
 
-    if not all(all_dirs_and_steps.values()): # no checkpoints found
+    if not all(all_dirs_and_steps.values()):  # no checkpoints found
         return
 
     common_steps = get_common_ckpt_steps(all_dirs_and_steps.keys())
@@ -82,7 +86,9 @@ def warn_if_ckpts_inconsistent(output_dir: Path, resume_step: int) -> None:
         logger.error(f"No common checkpoint steps across dirs: {all_dirs_and_steps}. Cannot safely resume.")
         return
     latest_common_step = max(common_steps)
-    latest_steps_all_equal = all(all_dirs_and_steps[_dir][-1] == latest_common_step for _dir in all_dirs_and_steps.keys())
+    latest_steps_all_equal = all(
+        all_dirs_and_steps[_dir][-1] == latest_common_step for _dir in all_dirs_and_steps.keys()
+    )
 
     if resume_step == -1 and not latest_steps_all_equal:
         logger.warning(

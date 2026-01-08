@@ -164,7 +164,9 @@ async def orchestrate(config: OrchestratorConfig):
 
     checkpoint_step = None
     if config.ckpt and config.ckpt.resume_step is not None and ckpt_manager is not None:
-        warn_if_ckpts_inconsistent(config.output_dir.parent, config.ckpt.resume_step)  # output_dir=run_0, parent=$OUTPUT_DIR
+        warn_if_ckpts_inconsistent(
+            config.output_dir.parent, config.ckpt.resume_step
+        )  # output_dir=run_0, parent=$OUTPUT_DIR
         if config.ckpt.resume_step == -1:
             checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
         else:
@@ -182,6 +184,7 @@ async def orchestrate(config: OrchestratorConfig):
         max_off_policy_steps=config.max_off_policy_steps,
         strict_async_level=config.strict_async_level,
         lora_name=config.lora_name,
+        output_dir=config.output_dir,
     )
 
     if checkpoint_step is not None and config.lora_name is not None:
