@@ -239,6 +239,8 @@ class EnvWorker:
 
         # Track intentional shutdown to avoid false error on clean stop
         self._stopping = False
+        # Track if worker died unexpectedly (prevents scheduler from routing to dead worker)
+        self._dead = False
 
     def start(self):
         """Start the worker process."""
@@ -260,6 +262,7 @@ class EnvWorker:
         )
         self.process.start()
         self._stopping = False  # Reset after process is alive to avoid race condition
+        self._dead = False  # Reset in case of restart
 
     def stop(self):
         """Stop the worker process."""
@@ -298,6 +301,8 @@ class EnvWorker:
                 error = RuntimeError(
                     f"Worker '{self.worker_name}' died unexpectedly (exit code: {exit_code})"
                 )
+                # Mark worker as dead so scheduler won't route new requests here
+                self._dead = True
                 # Fail all pending futures so callers don't hang indefinitely
                 for future in self.pending_futures.values():
                     if not future.done():
@@ -328,5 +333,10 @@ class EnvWorker:
 
     @property
     def pending_count(self) -> int:
-        """Number of pending requests for this worker."""
+        """Number of pending requests for this worker.
+
+        Returns a large number if the worker is dead to prevent scheduler from selecting it.
+        """
+        if self._dead:
+            return 999999  # Effectively infinite - scheduler will pick other workers
         return len(self.pending_futures)
