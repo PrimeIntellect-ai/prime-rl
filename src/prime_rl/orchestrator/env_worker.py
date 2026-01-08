@@ -9,9 +9,13 @@ import queue
 from dataclasses import dataclass
 from itertools import cycle
 from multiprocessing import Process, Queue
+from typing import Literal
 
 import verifiers as vf
 
+from prime_rl.eval.utils import prepare_sampling_args as get_eval_sampling_args  # TODO: rename
+from prime_rl.orchestrator.config import EvalEnvConfig, TrainEnvConfig
+from prime_rl.orchestrator.utils import get_sampling_args as get_train_sampling_args  # TODO: rename
 from prime_rl.utils.client import setup_clients
 from prime_rl.utils.config import ClientConfig
 
@@ -46,17 +50,39 @@ def to_serializable_state(state: vf.State) -> dict:
 
 
 @dataclass
-class EnvWorkerRequest:
+class BaseRequestResponse:
     request_id: int
-    example_id: int
-    rollouts_per_example: int
-    model_name: str  # required for multi-tenant run
 
 
 @dataclass
-class EnvWorkerResponse:
-    request_id: int
+class EnvWorkerRunGroupRequest(BaseRequestResponse):
+    example_id: int
+    rollouts_per_example: int
+    model_name: str  # required for multi-tenant run
+    type: Literal["run_group"] = "run_group"
+
+
+@dataclass
+class EnvWorkerGetDatasetSizeRequest(BaseRequestResponse):
+    type: Literal["get_dataset_size"] = "get_dataset_size"
+
+
+EnvWorkerRequest = EnvWorkerRunGroupRequest | EnvWorkerGetDatasetSizeRequest
+
+
+@dataclass
+class EnvWorkerGetDatasetSizeResponse(BaseRequestResponse):
+    dataset_size: int
+    type: Literal["get_dataset_size"] = "get_dataset_size"
+
+
+@dataclass
+class EnvWorkerRunGroupResponse(BaseRequestResponse):
     serialized_state: list[dict]  # serialized vf.State
+    type: Literal["run_group"] = "run_group"
+
+
+EnvWorkerResponse = EnvWorkerGetDatasetSizeResponse | EnvWorkerRunGroupResponse
 
 
 class EnvWorkerHelper:
@@ -64,63 +90,74 @@ class EnvWorkerHelper:
 
     def __init__(
         self,
-        # all args need to be picklable
-        env_id: str,
-        env_args: dict,
-        client_config_dict: dict,
-        seq_len: int,
-        interleaved_rollouts: bool,
-        max_concurrent: int,
-        sampling_args: dict,
+        env_config: TrainEnvConfig | EvalEnvConfig,
         request_queue: "Queue[EnvWorkerRequest]",
         response_queue: "Queue[EnvWorkerResponse]",
     ):
-        self.env_id = env_id
-        self.env_args = env_args
-        self.client_config_dict = client_config_dict
-        self.seq_len = seq_len
-        self.interleaved_rollouts = interleaved_rollouts
-        self.max_concurrent = max_concurrent
-        self.sampling_args = sampling_args
+        self.env_config = env_config
+        if env_config.type == "train":
+            self.sampling_args = get_train_sampling_args(env_config.sampling)
+        else:
+            self.sampling_args = get_eval_sampling_args(env_config.sampling)
 
         self.process: Process | None = None
         self.request_queue = request_queue
         self.response_queue = response_queue
 
     def start(self):
+        # install_env(self.env_config.id) # TODO: install env in subprocess
+
         # load environment
-        env = vf.load_environment(self.env_id, **self.env_args)
-        env.set_max_seq_len(self.seq_len)
-        env.set_interleaved_rollouts(self.interleaved_rollouts)
+        env = vf.load_environment(self.env_config.id, **self.env_config.args)
+        env.set_max_seq_len(self.env_config.seq_len)
+        env.set_interleaved_rollouts(self.env_config.interleaved_rollouts)
         dataset = env.get_dataset()
 
         # create client
-        client_config = ClientConfig(**self.client_config_dict)
+        client_config = ClientConfig(**self.env_config.client_config.model_dump())
         clients = setup_clients(client_config)
         client_cycle = cycle(clients)
 
         pending_requests: dict[asyncio.Task[EnvWorkerResponse], EnvWorkerRequest] = {}
 
         # create semaphore
-        semaphore = asyncio.Semaphore(self.max_concurrent) if self.max_concurrent > 0 else asyncio.Semaphore(10000)
+        semaphore = (
+            asyncio.Semaphore(self.env_config.max_concurrent)
+            if self.env_config.max_concurrent > 0
+            else asyncio.Semaphore(10000)
+        )
 
         async def process_request(request: EnvWorkerRequest) -> EnvWorkerResponse:
             """Process a single rollout request."""
-            client = next(client_cycle)
-            example = dataset[request.example_id]
-            group_inputs = [vf.RolloutInput(**example) for _ in range(request.rollouts_per_example)]
 
-            states = await env.run_group(
-                group_inputs=group_inputs,
-                client=client,
-                model=request.model_name,
-                gen_sampling_args=self.sampling_args,
-                gen_sem=semaphore,
-                score_sem=semaphore,
-            )
+            def process_get_dataset_size_request(
+                request: EnvWorkerGetDatasetSizeRequest,
+            ) -> EnvWorkerGetDatasetSizeResponse:
+                return EnvWorkerGetDatasetSizeResponse(request_id=request.request_id, dataset_size=len(dataset))
 
-            serialized_state = [to_serializable_state(state) for state in states]
-            return EnvWorkerResponse(request_id=request.request_id, serialized_state=serialized_state)
+            async def process_run_group_request(request: EnvWorkerRunGroupRequest) -> EnvWorkerRunGroupResponse:
+                client = next(client_cycle)
+                example = dataset[request.example_id]
+                group_inputs = [vf.RolloutInput(**example) for _ in range(request.rollouts_per_example)]
+
+                states = await env.run_group(
+                    group_inputs=group_inputs,
+                    client=client,
+                    model=request.model_name,
+                    gen_sampling_args=self.env_config.sampling.model_dump(),
+                    gen_sem=semaphore,
+                    score_sem=semaphore,
+                )
+
+                serialized_state = [to_serializable_state(state) for state in states]
+                return EnvWorkerRunGroupResponse(request_id=request.request_id, serialized_state=serialized_state)
+
+            if request.type == "get_dataset_size":
+                return process_get_dataset_size_request(request)
+            elif request.type == "run_group":
+                return await process_run_group_request(request)
+            else:
+                raise ValueError(f"Unknown request type: {request.type}")
 
         def process_request_loop():
             """Non-blocking check for new requests."""
@@ -163,33 +200,27 @@ class EnvWorkerHelper:
 class EnvWorker:
     """Proxies vf.Environment.run_group, but delegates work to EnvWorkerHelper in a separate process."""
 
-    def __init__(
-        self,
-        env_id: str,
-        env_args: dict,
-        client_config: ClientConfig,
-        seq_len: int,
-        interleaved_rollouts: bool,
-        max_concurrent: int,
-        sampling_args: dict,
-    ):
+    def __init__(self, env_config: TrainEnvConfig | EvalEnvConfig):
+        self.env_config = env_config
+        self.name = env_config.name or env_config.id
+
         self.request_queue: Queue[EnvWorkerRequest] = Queue()
         self.response_queue: Queue[EnvWorkerResponse] = Queue()
         self.env_worker_helper = EnvWorkerHelper(
-            env_id=env_id,
-            env_args=env_args,
-            client_config_dict=client_config.model_dump(),
-            seq_len=seq_len,
-            interleaved_rollouts=interleaved_rollouts,
-            max_concurrent=max_concurrent,
-            sampling_args=sampling_args,
+            env_config=env_config,
             request_queue=self.request_queue,
             response_queue=self.response_queue,
         )
         self.env_worker_process: Process | None = None
+
         self.response_collector_task: asyncio.Task | None = None
         self.pending_futures: dict[int, asyncio.Future] = {}
         self.next_request_id: int = 0
+
+    def get_next_request_id(self) -> int:
+        request_id = self.next_request_id
+        self.next_request_id += 1
+        return request_id
 
     def start(self):
         self.env_worker_process = Process(target=self.env_worker_helper.start, daemon=True)
@@ -217,16 +248,22 @@ class EnvWorker:
         rollouts_per_example: int,
         model_name: str,
     ) -> list[dict]:
-        """Run a specified example from the environment."""
-        request_id = self.next_request_id
-        self.next_request_id += 1
-
-        request = EnvWorkerRequest(
+        request_id = self.get_next_request_id()
+        request = EnvWorkerRunGroupRequest(
             request_id=request_id,
             example_id=example_id,
             rollouts_per_example=rollouts_per_example,
             model_name=model_name,
         )
+        self.request_queue.put(request)
+        future = asyncio.Future()
+        self.pending_futures[request_id] = future
+
+        return await future
+
+    async def get_dataset_size(self) -> int:
+        request_id = self.get_next_request_id()
+        request = EnvWorkerGetDatasetSizeRequest(request_id=request_id)
         self.request_queue.put(request)
         future = asyncio.Future()
         self.pending_futures[request_id] = future
@@ -245,7 +282,12 @@ class EnvWorker:
                     future = self.pending_futures.pop(response.request_id)
                     # Check if future was cancelled (e.g. by update_policy)
                     if not future.done():
-                        future.set_result(response.serialized_state)
+                        if response.type == "get_dataset_size":
+                            future.set_result(response.dataset_size)
+                        elif response.type == "run_group":
+                            future.set_result(response.serialized_state)
+                        else:
+                            raise ValueError(f"Unknown response type: {response.type}")
 
             await asyncio.sleep(0.01)
 
@@ -278,19 +320,15 @@ if __name__ == "__main__":
 
     # env worker
     async def main():
-        env_worker = EnvWorker(
-            env_id="gsm8k",
-            env_args={},
-            client_config=ClientConfig(),
-            seq_len=1024,
-            interleaved_rollouts=True,
-            max_concurrent=10,
-            sampling_args={},
-        )
+        env_worker_config = EvalEnvConfig(id="gsm8k")
+        env_worker = EnvWorker(env_worker_config)
         env_worker.start()
 
+        dataset_size = await env_worker.get_dataset_size()
+        print(dataset_size)
+
         tasks = []
-        for i in range(10):
+        for i in range(1):
             tasks.append(
                 env_worker.run_group(example_id=i, rollouts_per_example=1, model_name="Qwen/Qwen3-4B-Instruct-2507")
             )
