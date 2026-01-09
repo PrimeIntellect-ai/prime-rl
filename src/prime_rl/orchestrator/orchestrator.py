@@ -4,8 +4,8 @@ import time
 import tomli_w
 
 from prime_rl.orchestrator.advantage import compute_advantages
-from prime_rl.orchestrator.env_worker_group import EnvWorkerGroup
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
+from prime_rl.orchestrator.scheduler import TrainRolloutScheduler
 from prime_rl.orchestrator.trajectories import branch_rollout, interleave_rollout
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
 from prime_rl.utils.event_loop_lag import EventLoopLagMonitor
@@ -53,21 +53,42 @@ class Orchestrator:
             config.log.level, log_file=config.output_dir / "logs" / "orchestrator.log" if config.log.file else None
         )
 
+        # Start from scratch
+        self.progress = Progress()
+
         self.logger.info(f"Initializing env worker groups ({config.train.envs}")
-        self.train_env_worker_group = EnvWorkerGroup(config.train.envs)
-        if config.validation:
-            self.logger.info(f"Initializing validation env worker groups ({config.validation.envs}")
-            self.validation_env_worker_group = EnvWorkerGroup(config.validation.envs)
-        else:
-            self.validation_env_worker_group = None
-        if config.eval:
-            self.logger.info(f"Initializing eval env worker groups ({config.eval.envs}")
-            self.eval_env_worker_group = EnvWorkerGroup(config.eval.envs)
-        else:
-            self.eval_env_worker_group = None
+        self.train_scheduler = TrainRolloutScheduler(
+            step=0,
+            max_async_level=config.max_async_level,
+            strict_async_level=config.strict_async_level,
+            max_off_policy_steps=config.max_off_policy_steps,
+            client_config=config.client,
+            output_dir=config.output_dir,
+            model_name=config.model.name,
+            lora_name=config.model.lora.name if config.model.lora else None,
+            env_worker_group_config=config.train.envs,
+            buffer_config=config.buffer,
+            batch_size=config.batch_size,
+            rollouts_per_example=config.rollouts_per_example,
+            oversampling_factor=config.oversampling_factor,
+        )
+        # if config.validation:
+        #     self.logger.info(f"Initializing validation env worker groups ({config.validation.envs}")
+        #     self.validation_env_worker_group = EnvWorkerGroup(config.validation.envs)
+        # else:
+        #     self.validation_env_worker_group = None
+        # if config.eval:
+        #     self.logger.info(f"Initializing eval env worker groups ({config.eval.envs}")
+        #     self.eval_env_worker_group = EnvWorkerGroup(config.eval.envs)
+        # else:
+        #     self.eval_env_worker_group = None
 
         self.logger.info(f"Initializing admin clients ({config.client})")
         self.admin_clients = setup_admin_clients(config.client)
+
+        # Setup training batch sender for sending training examples to trainer
+        logger.info(f"Initializing training batch sender ({config.rollout_transport})")
+        self.training_batch_sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
 
         if config.teacher_model:
             self.logger.info(
@@ -114,11 +135,17 @@ class Orchestrator:
         logger.info("Starting orchestrator")
         await self.event_loop_lag_monitor.start()
 
-        self.train_env_worker_group.start()
-        if self.validation_env_worker_group is not None:
-            self.validation_env_worker_group.start()
-        if self.eval_env_worker_group is not None:
-            self.eval_env_worker_group.start()
+        self.train_scheduler.start()
+
+        # Set up weight broadcast backend
+        logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
+        if config.weight_broadcast.type == "nccl":
+            await init_nccl_broadcast(
+                self.admin_clients,
+                config.weight_broadcast.host,
+                config.weight_broadcast.port,
+                config.weight_broadcast.timeout,
+            )
 
         # Load environment and extract dataset
         # logger.info(
@@ -179,25 +206,8 @@ class Orchestrator:
         # await check_has_model(clients, config.model.name)
         logger.success("Inference pool ready")
 
-        # Set up weight broadcast backend
-        logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
-        if config.weight_broadcast.type == "nccl":
-            await init_nccl_broadcast(
-                self.admin_clients,
-                config.weight_broadcast.host,
-                config.weight_broadcast.port,
-                config.weight_broadcast.timeout,
-            )
-
-        # Setup training batch sender for sending training examples to trainer
-        logger.info(f"Initializing training batch sender ({config.rollout_transport})")
-        training_batch_sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
-
         # Track last online eval checkpoint step for this process
         # last_eval_step = -1
-
-        # Reset weights to base model if starting from scratch
-        progress = Progress()
 
         # if checkpoint_step is not None and ckpt_manager is not None:
         #     ckpt_manager.load(progress, buffer, step=checkpoint_step)
