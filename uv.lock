@@ -2793,10 +2793,10 @@ requires-dist = [
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
     { name = "transformers", specifier = ">=4.56.0" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=db11e43" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=5813ff1" },
     { name = "vllm", specifier = "==0.12.0" },
     { name = "wandb", specifier = ">=0.20.1" },
-    { name = "wiki-search", git = "https://github.com/PrimeIntellect-ai/verifiers.git?subdirectory=environments%2Fwiki_search&rev=db11e43" },
+    { name = "wiki-search", git = "https://github.com/PrimeIntellect-ai/verifiers.git?subdirectory=environments%2Fwiki_search&rev=5813ff1" },
 ]
 provides-extras = ["flash-attn"]
 
@@ -4173,7 +4173,7 @@ wheels = [
 [[package]]
 name = "verifiers"
 version = "0.1.9.post0"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=db11e43#db11e43e677d4e4aca687e669e987992b2268088" }
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=5813ff1#5813ff1853256ce96dc1976fbd01bb59387df945" }
 dependencies = [
     { name = "datasets" },
     { name = "jinja2" },
@@ -4404,7 +4404,7 @@ wheels = [
 [[package]]
 name = "wiki-search"
 version = "0.1.21"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?subdirectory=environments%2Fwiki_search&rev=db11e43#db11e43e677d4e4aca687e669e987992b2268088" }
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?subdirectory=environments%2Fwiki_search&rev=5813ff1#5813ff1853256ce96dc1976fbd01bb59387df945" }
 dependencies = [
     { name = "chromadb" },
     { name = "datasets" },
