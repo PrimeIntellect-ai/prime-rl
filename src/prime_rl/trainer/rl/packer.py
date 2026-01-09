@@ -52,6 +52,26 @@ class Packer:
         # Round-robin position (persists across pack() calls)
         self._round_robin_position: int = 0
 
+        # Register creation hook to reset state when a run is replaced
+        self.runs.register_creation_hook(self._on_run_created)
+
+    def _on_run_created(self, idx: int, run_id: str) -> None:
+        """Reset packer state for a run index when a new run is created.
+
+        Called via creation hook when a run is deleted and a new run takes its place.
+        Clears buffered samples and partial step progress for the index.
+        """
+        # Clear any buffered samples from the old run
+        if idx in self.buffers:
+            self.buffers[idx].clear()
+
+        # Reset partial step progress
+        if idx in self.samples_consumed_this_step:
+            del self.samples_consumed_this_step[idx]
+
+        # Reset receiver state (e.g., received step tracking)
+        self.receiver.reset_run(idx)
+
     def get_batch(self) -> None:
         """Receive batches from orchestrator and buffer samples per run."""
         self.runs.check_for_changes()
