@@ -17,6 +17,12 @@ from prime_rl.utils.client import setup_clients
 from prime_rl.utils.config import ClientConfig
 
 
+class WorkerDiedError(Exception):
+    """Raised when a worker subprocess dies unexpectedly."""
+
+    pass
+
+
 @dataclass
 class RolloutRequest:
     """Request to generate rollouts for an example."""
@@ -313,7 +319,7 @@ class EnvWorker:
             # Check if worker process died unexpectedly (but not during intentional shutdown)
             if self.process and not self.process.is_alive() and not self._stopping:
                 exit_code = self.process.exitcode
-                error = RuntimeError(
+                error = WorkerDiedError(
                     f"Worker '{self.worker_name}' died unexpectedly (exit code: {exit_code})"
                 )
                 # Mark worker as dead so scheduler won't route new requests here
