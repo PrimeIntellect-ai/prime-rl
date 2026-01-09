@@ -5,7 +5,6 @@ Also exposes /health endpoint for Kubernetes liveness probes.
 Runs in a background thread to avoid blocking the training loop.
 """
 
-import json
 import threading
 import time
 from dataclasses import dataclass
@@ -48,8 +47,6 @@ class MetricsServer:
         self._server: HTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._started = False
-        self._start_time: float = 0.0
-        self._last_heartbeat: float = 0.0
 
         if PROMETHEUS_AVAILABLE:
             self._registry = CollectorRegistry()
@@ -99,9 +96,8 @@ class MetricsServer:
             self._registry = None
 
     def _make_handler(self):
-        """Create handler class with access to our registry and health state."""
+        """Create handler class with access to our registry."""
         registry = self._registry
-        server = self
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
@@ -125,53 +121,11 @@ class MetricsServer:
                     self.wfile.write(b"# prometheus_client not installed\n")
 
             def _handle_health(self):
-                """Liveness probe: checks if main thread is responsive."""
-                health_config = server.config.health
-
-                # No health config = always healthy
-                if health_config is None:
-                    self._respond(200, {"status": "healthy"})
-                    return
-
-                now = time.time()
-                startup_age = now - server._start_time
-
-                # During startup grace period, always healthy
-                if startup_age < health_config.startup_grace_seconds:
-                    self._respond(200, {
-                        "status": "healthy",
-                        "reason": "startup_grace",
-                        "startup_age_seconds": round(startup_age, 1),
-                    })
-                    return
-
-                # No heartbeat yet after grace period = unhealthy
-                if server._last_heartbeat == 0:
-                    self._respond(503, {
-                        "status": "unhealthy",
-                        "reason": "no_heartbeat",
-                    })
-                    return
-
-                # Check heartbeat age
-                heartbeat_age = now - server._last_heartbeat
-                if heartbeat_age > health_config.timeout_seconds:
-                    self._respond(503, {
-                        "status": "unhealthy",
-                        "reason": "heartbeat_timeout",
-                        "last_heartbeat_seconds": round(heartbeat_age, 1),
-                    })
-                else:
-                    self._respond(200, {
-                        "status": "healthy",
-                        "last_heartbeat_seconds": round(heartbeat_age, 1),
-                    })
-
-            def _respond(self, code: int, body: dict):
-                self.send_response(code)
-                self.send_header("Content-Type", "application/json")
+                """Simple liveness probe - returns 200 if server is running."""
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
                 self.end_headers()
-                self.wfile.write(json.dumps(body).encode())
+                self.wfile.write(b"ok\n")
 
             def log_message(self, format, *args):
                 pass
@@ -187,7 +141,6 @@ class MetricsServer:
         if not PROMETHEUS_AVAILABLE:
             logger.warning("prometheus_client not installed. Install with: uv sync --extra metrics")
 
-        self._start_time = time.time()
         self._server = HTTPServer((self.config.host, self.config.port), self._make_handler())
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
@@ -220,8 +173,6 @@ class MetricsServer:
         mismatch_kl: float = 0.0,
     ) -> None:
         """Update metrics after a training step."""
-        self.heartbeat()
-
         if not PROMETHEUS_AVAILABLE:
             return
 
@@ -234,16 +185,7 @@ class MetricsServer:
         self._mfu.set(mfu)
         self._entropy.set(entropy)
         self._mismatch_kl.set(mismatch_kl)
-        self._last_step_ts.set(self._last_heartbeat)
-
-    def heartbeat(self) -> None:
-        """Signal that the main thread is alive.
-
-        Call this from the main training loop every iteration,
-        even when idle/waiting for runs. The /health endpoint
-        checks this to detect hung threads.
-        """
-        self._last_heartbeat = time.time()
+        self._last_step_ts.set(time.time())
 
     def update_runs(
         self,

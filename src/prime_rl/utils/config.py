@@ -173,27 +173,6 @@ class HeartbeatConfig(BaseConfig):
     url: Annotated[str, Field(description="The URL to send the heartbeat to.")]
 
 
-class HealthCheckConfig(BaseConfig):
-    """Configures /health endpoint for Kubernetes liveness probes."""
-
-    timeout_seconds: Annotated[
-        int,
-        Field(
-            ge=1,
-            description="Maximum seconds since last heartbeat before /health returns unhealthy.",
-        ),
-    ] = 60
-
-    startup_grace_seconds: Annotated[
-        int,
-        Field(
-            ge=0,
-            description="Grace period in seconds after server start before enforcing heartbeat check. "
-            "Allows time for model loading and initialization.",
-        ),
-    ] = 600
-
-
 class MetricsServerConfig(BaseConfig):
     """Configures the Prometheus metrics server for trainer observability."""
 
@@ -212,10 +191,3 @@ class MetricsServerConfig(BaseConfig):
             description="Host to bind the server to. Defaults to 0.0.0.0.",
         ),
     ] = "0.0.0.0"
-
-    health: Annotated[
-        HealthCheckConfig | None,
-        Field(
-            description="Health check configuration. If None, /health always returns healthy.",
-        ),
-    ] = None
