@@ -41,6 +41,7 @@ dependencies = [
     "prime>=0.5.0",
     "tenacity>=8.2.0",
     "pyzmq>=27.1.0",
+    "wiki-search"
 ]
 
 [project.scripts]
@@ -74,7 +75,8 @@ prerelease = "allow"
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
 reverse-text = { index = "primeintellect" }
-verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "2d3439b" }
+wiki-search = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "5813ff1", subdirectory = "environments/wiki_search" }
+verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "5813ff1" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "main" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 
