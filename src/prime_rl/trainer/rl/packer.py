@@ -72,14 +72,14 @@ class Packer:
         # Reset receiver state (e.g., received step tracking)
         self.receiver.reset_run(idx)
 
-    def get_batch(self) -> None:
+    def _get_batch(self) -> None:
         """Receive batches from orchestrator and buffer samples per run."""
         self.runs.check_for_changes()
         batches = self.receiver.receive()
 
         for batch in batches:
             if batch.run_idx is None:
-                # TODO: put a warning here
+                self.logger.warning("Received batch with no run index")
                 continue
             for sample in batch.examples:
                 self.buffers[batch.run_idx].append((sample, batch.temperature))
@@ -88,73 +88,65 @@ class Packer:
         """Get run indices that have at least batch_size samples buffered."""
         runs_with_full_batch = []
         for run_idx in self.runs.used_idxs:
-            if run_idx not in self.runs.config:
-                continue
             batch_size = self.runs.config[run_idx].batch_size
             if len(self.buffers[run_idx]) >= batch_size:
                 runs_with_full_batch.append(run_idx)
         return runs_with_full_batch
 
-    def has_enough_tokens(self) -> bool:
-        """Check if buffered samples have enough tokens to pack.
+    def _has_enough_tokens(self) -> bool:
+        """Check if we have enough samples in buffer to pack a step
 
-        When small_batch_granularity=False (default), requires at least one run
-        to have batch_size samples before packing.
-        When small_batch_granularity=True, packs whenever token threshold is met.
+        When small_batch_granularity=False, requires at least one run to have batch_size samples before packing.
+        When small_batch_granularity=True, we pack whenever we can make at least 1 micro batch for each data rank.
         """
         # When not using small batch granularity, require at least one full batch
         if not self.small_batch_granularity:
-            if not self._get_runs_with_full_batch():
-                return False
+            return len(self._get_runs_with_full_batch()) > 0
 
         threshold = self.seq_len * self.dp_world_size
         tokens = 0
-        batches = 1e-5  # Avoid division by zero
+        samples = 1e-5  # Avoid division by zero
 
-        for run_idx, buffer in self.buffers.items():
+        for buffer in self.buffers.values():
             for sample, _ in buffer:
                 tokens += len(sample.prompt_ids) + len(sample.completion_ids)
-            if buffer:
-                batches += 1
-            estimated_next_batch_tokens = tokens + tokens / batches
-            if estimated_next_batch_tokens >= threshold:
-                return True
+                estimated_next_sample_tokens = tokens + tokens / samples
+                if estimated_next_sample_tokens >= threshold:
+                    return True
         return False
 
     def _select_samples_round_robin(self, token_budget: int) -> list[tuple[int, TrainingSample, float]]:
         """Select samples using round-robin from runs with buffered work.
 
-        When small_batch_granularity=False (default), only selects from runs
-        that have at least batch_size samples buffered at the start of selection.
-        When small_batch_granularity=True, selects from any run with buffered work.
+        When small_batch_granularity=False, we ignore the token budget and select all the samples from a run with enough samples.
+        When small_batch_granularity=True, we select samples from runs with buffered work until we have enough tokens to pack a step.
         """
         selected: list[tuple[int, TrainingSample, float]] = []
         tokens_collected = 0
 
         # For full batch mode, determine eligible runs once at the start
         # (so popping samples doesn't disqualify runs mid-selection)
-        eligible_runs = set(self._get_runs_with_full_batch()) if not self.small_batch_granularity else None
+        if not self.small_batch_granularity:
+            run_idx = self._get_runs_with_full_batch()[0]
+            while len(self.buffers[run_idx]) > 0:
+                sample, temperature = self.buffers[run_idx].pop()
+                selected.append((run_idx, sample, temperature))
+            return selected
 
         while tokens_collected < token_budget:
-            if self.small_batch_granularity:
-                # Select from any run with buffered work
-                runs_with_work = [idx for idx in self.runs.used_idxs if self.buffers[idx]]
-            else:
-                # Only select from runs that had full batch_size at start AND still have samples
-                runs_with_work = [idx for idx in self.runs.used_idxs if idx in eligible_runs and self.buffers[idx]]
-
-            if not runs_with_work:
-                break
-
-            self._round_robin_position = self._round_robin_position % len(runs_with_work)
-            run_idx = runs_with_work[self._round_robin_position]
-
-            if self.buffers[run_idx]:
-                sample, temperature = self.buffers[run_idx].popleft()
-                selected.append((run_idx, sample, temperature))
-                tokens_collected += len(sample.prompt_ids) + len(sample.completion_ids)
-
+            # Round-robin until we find a run with work
+            while len(self.buffers[self._round_robin_position]) == 0:
+                self._round_robin_position = (self._round_robin_position + 1) % len(self.buffers)
+            run_idx = self._round_robin_position
             self._round_robin_position += 1
+
+            while len(self.buffers[run_idx]) > 0:
+                sample, temperature = self.buffers[run_idx][-1]
+                tokens_collected += len(sample.prompt_ids) + len(sample.completion_ids)
+                if tokens_collected > token_budget:
+                    return selected
+                selected.append((run_idx, sample, temperature))
+                self.buffers[run_idx].pop()
 
         return selected
 
@@ -174,21 +166,23 @@ class Packer:
 
     def pack(self):
         """Pack samples from buffers using round-robin fair scheduling."""
-        self.get_batch()
+        self._get_batch()
         start_time = time.time()
 
-        while not self.has_enough_tokens():
-            if time.time() - start_time > TIMEOUT_SECONDS and any(self.buffers.values()):
+        while not self._has_enough_tokens():
+            if (
+                self.small_batch_granularity
+                and time.time() - start_time > TIMEOUT_SECONDS
+                and any(self.buffers.values())
+            ):
                 self.logger.warning("Timeout waiting for enough tokens to pack")
                 break
             time.sleep(1)
-            self.get_batch()
+            self._get_batch()
 
         token_budget = self.seq_len * self.dp_world_size
         selected_samples = self._select_samples_round_robin(token_budget)
-
-        if not selected_samples:
-            return
+        assert selected_samples, "No samples selected"
 
         # Group by run for prepare_batch (MultiLoRAMoE requires same run_idx in microbatch)
         samples_by_run: dict[int, list[tuple[TrainingSample, float]]] = defaultdict(list)
