@@ -1,5 +1,6 @@
 import asyncio
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from prime_rl.utils.logger import get_logger
@@ -52,11 +53,18 @@ def resolve_latest_ckpt_step(ckpt_dir: Path) -> int | None:
     return latest_step
 
 
-def sync_wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:
+def sync_wait_for_path(
+    path: Path,
+    interval: int = 1,
+    log_interval: int = 10,
+    on_wait: Callable[[], None] | None = None,
+) -> None:
     logger = get_logger()
     wait_time = 0
     logger.debug(f"Waiting for path `{path}`")
     while True:
+        if on_wait is not None:
+            on_wait()
         if path.exists():
             logger.debug(f"Found path `{path}`")
             break
