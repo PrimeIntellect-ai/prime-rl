@@ -37,19 +37,22 @@ class MetricsServer:
 
         if PROMETHEUS_AVAILABLE:
             self._registry = CollectorRegistry()
-            self._step = Gauge("rft_trainer_step", "Current training step", registry=self._registry)
-            self._loss = Gauge("rft_trainer_loss", "Current training loss", registry=self._registry)
+            self._step = Gauge("trainer_step", "Current training step", registry=self._registry)
+            self._loss = Gauge("trainer_loss", "Current training loss", registry=self._registry)
             self._throughput = Gauge(
-                "rft_trainer_throughput_tokens_per_sec", "Training throughput in tokens/sec", registry=self._registry
+                "trainer_throughput_tokens_per_sec", "Training throughput in tokens/sec", registry=self._registry
             )
             self._last_step_ts = Gauge(
-                "rft_trainer_last_step_timestamp_seconds", "Unix timestamp of last step", registry=self._registry
+                "trainer_last_step_timestamp_seconds", "Unix timestamp of last step", registry=self._registry
             )
-            self._grad_norm = Gauge("rft_trainer_grad_norm", "Gradient norm", registry=self._registry)
-            self._peak_mem = Gauge("rft_trainer_peak_memory_gib", "Peak GPU memory in GiB", registry=self._registry)
-            self._lr = Gauge("rft_trainer_learning_rate", "Current learning rate", registry=self._registry)
-            self._mfu = Gauge("rft_trainer_mfu_percent", "Model FLOPS utilization %", registry=self._registry)
-            self._entropy = Gauge("rft_trainer_entropy", "Mean entropy", registry=self._registry)
+            self._grad_norm = Gauge("trainer_grad_norm", "Gradient norm", registry=self._registry)
+            self._peak_mem = Gauge("trainer_peak_memory_gib", "Peak GPU memory in GiB", registry=self._registry)
+            self._lr = Gauge("trainer_learning_rate", "Current learning rate", registry=self._registry)
+            self._mfu = Gauge("trainer_mfu_percent", "Model FLOPS utilization %", registry=self._registry)
+            self._entropy = Gauge("trainer_entropy", "Mean entropy", registry=self._registry)
+            self._mismatch_kl = Gauge(
+                "trainer_mismatch_kl", "KL divergence between trainer and inference model", registry=self._registry
+            )
         else:
             self._registry = None
 
@@ -112,6 +115,7 @@ class MetricsServer:
         learning_rate: float,
         mfu: float = 0.0,
         entropy: float = 0.0,
+        mismatch_kl: float = 0.0,
     ) -> None:
         """Update metrics after a training step."""
         if not PROMETHEUS_AVAILABLE:
@@ -125,4 +129,5 @@ class MetricsServer:
         self._lr.set(learning_rate)
         self._mfu.set(mfu)
         self._entropy.set(entropy)
+        self._mismatch_kl.set(mismatch_kl)
         self._last_step_ts.set(time.time())

@@ -89,9 +89,10 @@ def test_server_update_metrics():
     content = response.read().decode()
 
     if PROMETHEUS_AVAILABLE:
-        assert "rft_trainer_step" in content
-        assert "rft_trainer_loss" in content
-        assert "rft_trainer_last_step_timestamp_seconds" in content
+        assert "trainer_step" in content
+        assert "trainer_loss" in content
+        assert "trainer_last_step_timestamp_seconds" in content
+        assert "trainer_mismatch_kl" in content
 
     server.stop()
 
@@ -103,13 +104,22 @@ def test_server_metrics_values_are_correct():
     server.start()
     time.sleep(0.1)
 
-    server.update(step=100, loss=0.123, throughput=5000.0, grad_norm=2.5, peak_memory_gib=16.0, learning_rate=3e-5)
+    server.update(
+        step=100,
+        loss=0.123,
+        throughput=5000.0,
+        grad_norm=2.5,
+        peak_memory_gib=16.0,
+        learning_rate=3e-5,
+        mismatch_kl=0.045,
+    )
 
     response = urllib.request.urlopen(f"http://localhost:{port}/metrics", timeout=2)
     content = response.read().decode()
 
-    assert "rft_trainer_step 100.0" in content
-    assert "rft_trainer_loss 0.123" in content
+    assert "trainer_step 100.0" in content
+    assert "trainer_loss 0.123" in content
+    assert "trainer_mismatch_kl 0.045" in content
 
     server.stop()
 

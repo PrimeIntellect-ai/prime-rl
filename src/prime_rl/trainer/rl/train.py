@@ -465,6 +465,7 @@ def train(config: RLTrainerConfig):
                 learning_rate=current_lr,
                 mfu=mfu,
                 entropy=tensor_stats.get("entropy/mean", 0.0),
+                mismatch_kl=tensor_stats.get("mismatch_kl/mean", 0.0),
             )
 
         progress.step += 1
