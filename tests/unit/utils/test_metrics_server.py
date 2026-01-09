@@ -8,7 +8,7 @@ from contextlib import closing
 import pytest
 
 from prime_rl.utils.config import MetricsServerConfig
-from prime_rl.utils.metrics_server import PROMETHEUS_AVAILABLE, MetricsServer
+from prime_rl.utils.metrics_server import PROMETHEUS_AVAILABLE, MetricsServer, RunStats
 
 
 def find_free_port() -> int:
@@ -159,3 +159,68 @@ def test_server_port_conflict_raises():
         server2.start()
 
     server1.stop()
+
+
+@pytest.mark.skipif(not PROMETHEUS_AVAILABLE, reason="prometheus_client not installed")
+def test_server_update_runs():
+    port = find_free_port()
+    server = MetricsServer(MetricsServerConfig(port=port))
+    server.start()
+    time.sleep(0.1)
+
+    run_stats = [
+        RunStats(run_id="run_001", step=50, total_tokens=100000, learning_rate=1e-4, ready=True),
+        RunStats(run_id="run_002", step=25, total_tokens=50000, learning_rate=1e-5, ready=False),
+    ]
+    server.update_runs(runs_discovered=5, runs_max=8, run_stats=run_stats)
+
+    response = urllib.request.urlopen(f"http://localhost:{port}/metrics", timeout=2)
+    content = response.read().decode()
+
+    # Check aggregate metrics
+    assert "trainer_runs_discovered 5.0" in content
+    assert "trainer_runs_active 2.0" in content
+    assert "trainer_runs_ready 1.0" in content
+    assert "trainer_runs_max 8.0" in content
+
+    # Check per-run metrics with labels
+    assert 'trainer_run_step{run="run_001"} 50.0' in content
+    assert 'trainer_run_step{run="run_002"} 25.0' in content
+    assert 'trainer_run_tokens{run="run_001"} 100000.0' in content
+    assert 'trainer_run_learning_rate{run="run_001"}' in content
+    assert 'trainer_run_ready{run="run_001"} 1.0' in content
+    assert 'trainer_run_ready{run="run_002"} 0.0' in content
+
+    server.stop()
+
+
+@pytest.mark.skipif(not PROMETHEUS_AVAILABLE, reason="prometheus_client not installed")
+def test_server_update_runs_cleanup():
+    """Test that removed runs are cleaned up from metrics."""
+    port = find_free_port()
+    server = MetricsServer(MetricsServerConfig(port=port))
+    server.start()
+    time.sleep(0.1)
+
+    # First update with two runs
+    run_stats = [
+        RunStats(run_id="run_001", step=50, total_tokens=100000, learning_rate=1e-4, ready=True),
+        RunStats(run_id="run_002", step=25, total_tokens=50000, learning_rate=1e-5, ready=False),
+    ]
+    server.update_runs(runs_discovered=2, runs_max=8, run_stats=run_stats)
+
+    # Second update with only one run (run_002 removed)
+    run_stats = [
+        RunStats(run_id="run_001", step=60, total_tokens=120000, learning_rate=1e-4, ready=True),
+    ]
+    server.update_runs(runs_discovered=1, runs_max=8, run_stats=run_stats)
+
+    response = urllib.request.urlopen(f"http://localhost:{port}/metrics", timeout=2)
+    content = response.read().decode()
+
+    # run_001 should be updated
+    assert 'trainer_run_step{run="run_001"} 60.0' in content
+    # run_002 should be removed
+    assert 'run_002' not in content
+
+    server.stop()

@@ -51,7 +51,7 @@ from prime_rl.trainer.world import get_world
 from prime_rl.trainer.runs import setup_runs, Progress, get_runs
 from prime_rl.trainer.models.layers.lora import set_multilora_offsets
 from prime_rl.utils.heartbeat import Heartbeat
-from prime_rl.utils.metrics_server import MetricsServer
+from prime_rl.utils.metrics_server import MetricsServer, RunStats
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step, to_col_format
@@ -466,6 +466,31 @@ def train(config: RLTrainerConfig):
                 mfu=mfu,
                 entropy=tensor_stats.get("entropy/mean", 0.0),
                 mismatch_kl=tensor_stats.get("mismatch_kl/mean", 0.0),
+            )
+            # Update run/LoRA metrics
+            runs = get_runs()
+            runs_discovered = len(list(config.output_dir.glob("run_*")))
+            run_stats = []
+            for idx in runs.used_idxs:
+                run_id = runs.idx_2_id[idx]
+                run_progress = runs.progress[idx]
+                if config.max_concurrent_runs == 1:
+                    lr = optimizer.param_groups[0]["lr"]
+                else:
+                    lr = optimizer.get_current_lr(idx) if optimizer.optimizers[idx] else 0.0
+                run_stats.append(
+                    RunStats(
+                        run_id=run_id,
+                        step=run_progress.step,
+                        total_tokens=run_progress.total_tokens,
+                        learning_rate=lr,
+                        ready=runs.ready_to_update[idx],
+                    )
+                )
+            metrics_server.update_runs(
+                runs_discovered=runs_discovered,
+                runs_max=runs.max_runs,
+                run_stats=run_stats,
             )
 
         progress.step += 1
