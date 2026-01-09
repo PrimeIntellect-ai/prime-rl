@@ -74,7 +74,7 @@ prerelease = "allow"
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
 reverse-text = { index = "primeintellect" }
-verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "e908eb58c942f39a2665a3f03ff1e6b31e11eebb" }
+verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "1c3c5da04d6b7fd1ff63b820191fff33225a6bee" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "main" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 
