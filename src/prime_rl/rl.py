@@ -763,6 +763,16 @@ def rl(config: RLConfig):
             # Small delay to avoid busy waiting
             time.sleep(1)
 
+        # Check for errors after both processes have finished (handles race condition
+        # where both processes exit quickly and the loop exits before checking error_queue)
+        if error_queue:
+            error = error_queue[0]
+            logger.error(f"Error: {error}")
+            logger.error("Terminating all processes...")
+            cleanup_threads(monitor_threads)
+            cleanup_processes(processes)
+            sys.exit(1)
+
         logger.success("RL training finished!")
 
         # Cleanup threads and processes
