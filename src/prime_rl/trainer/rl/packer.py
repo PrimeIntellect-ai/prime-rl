@@ -179,6 +179,8 @@ class Packer:
 
         for run_idx, sample_temp_pairs in samples_by_run.items():
             samples = [s for s, _ in sample_temp_pairs]
+            # We don't support dynamic temperatures in orchestrator yet
+            # So this works for now
             temperature = sample_temp_pairs[0][1]
 
             num_samples = len(samples)
