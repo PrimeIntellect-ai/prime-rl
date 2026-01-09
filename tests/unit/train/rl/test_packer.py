@@ -56,8 +56,8 @@ def mock_runs() -> MagicMock:
     return runs
 
 
-@pytest.fixture
-def packer(mock_runs: MagicMock, tmp_path: Path) -> Packer:
+def _make_packer(mock_runs: MagicMock, tmp_path: Path, small_batch_granularity: bool) -> Packer:
+    """Helper to create a Packer with specified granularity setting."""
     mock_runs.output_dir = tmp_path
     mock_receiver = MagicMock()
     mock_receiver.receive.return_value = []
@@ -80,11 +80,24 @@ def packer(mock_runs: MagicMock, tmp_path: Path) -> Packer:
             tokenizer=MagicMock(pad_token_id=0),  # Only pad_token_id is used
             config=MagicMock(),
             start_step=0,
+            small_batch_granularity=small_batch_granularity,
         )
         p._runs = mock_runs
         p._receiver = mock_receiver
         p._sender = mock_sender
-        yield p
+        return p
+
+
+@pytest.fixture
+def packer(mock_runs: MagicMock, tmp_path: Path) -> Packer:
+    """Packer with small_batch_granularity=True for testing small batch behavior."""
+    yield _make_packer(mock_runs, tmp_path, small_batch_granularity=True)
+
+
+@pytest.fixture
+def packer_full_batch(mock_runs: MagicMock, tmp_path: Path) -> Packer:
+    """Packer with small_batch_granularity=False (default) for testing full batch behavior."""
+    yield _make_packer(mock_runs, tmp_path, small_batch_granularity=False)
 
 
 # =============================================================================
@@ -567,3 +580,154 @@ def test_round_robin_position_persists_across_pack_calls(packer: Packer) -> None
     # Both runs should have had samples taken
     assert packer._runs.progress[0].total_samples > 0
     assert packer._runs.progress[1].total_samples > 0
+
+
+# =============================================================================
+# Tests for full batch behavior (small_batch_granularity=False, the default)
+# =============================================================================
+
+
+def test_full_batch_has_enough_tokens_requires_batch_size(packer_full_batch: Packer) -> None:
+    """When small_batch_granularity=False, has_enough_tokens requires batch_size samples."""
+    packer = packer_full_batch
+    packer._runs.config[0].batch_size = 10
+
+    # Add 9 samples with enough tokens to meet threshold (200 tokens needed)
+    # 9 samples * 25 tokens = 225 tokens (above threshold)
+    for _ in range(9):
+        packer.buffers[0].append((make_sample(prompt_len=10, completion_len=15), 1.0))
+
+    # Even with enough tokens for threshold, should return False without batch_size samples
+    assert not packer.has_enough_tokens()
+
+    # Add one more to reach batch_size
+    packer.buffers[0].append((make_sample(prompt_len=10, completion_len=15), 1.0))
+    assert packer.has_enough_tokens()
+
+
+def test_full_batch_select_only_from_full_batches(packer_full_batch: Packer) -> None:
+    """When small_batch_granularity=False, only select from runs with batch_size samples."""
+    packer = packer_full_batch
+    packer._runs.used_idxs = [0, 1]
+    packer._runs.config[0].batch_size = 10
+    packer._runs.config[1] = make_mock_config(batch_size=10)
+    packer._runs.progress[1] = Progress()
+
+    # Run 0: 5 samples (below batch_size)
+    for _ in range(5):
+        packer.buffers[0].append((make_sample(), 1.0))
+
+    # Run 1: 15 samples (above batch_size)
+    for _ in range(15):
+        packer.buffers[1].append((make_sample(), 1.0))
+
+    # Select should only take from run 1
+    selected = packer._select_samples_round_robin(token_budget=200)
+
+    # All selected should be from run 1
+    run_idxs = [run_idx for run_idx, _, _ in selected]
+    assert all(idx == 1 for idx in run_idxs)
+    assert len(selected) > 0
+
+
+def test_full_batch_pack_waits_for_batch_size(packer_full_batch: Packer) -> None:
+    """When small_batch_granularity=False, pack waits for batch_size samples."""
+    packer = packer_full_batch
+    packer._runs.config[0].batch_size = 10
+
+    # Add 5 samples (below batch_size)
+    for _ in range(5):
+        packer.buffers[0].append((make_sample(), 1.0))
+
+    # Pack should not send (timeout with no full batch)
+    packer.pack()
+
+    # No samples should be consumed (waiting for full batch)
+    assert packer._runs.progress[0].total_samples == 0
+    packer._sender.send.assert_not_called()
+
+
+def test_full_batch_pack_processes_full_batch(packer_full_batch: Packer) -> None:
+    """When small_batch_granularity=False, pack processes runs with batch_size samples."""
+    packer = packer_full_batch
+    packer._runs.config[0].batch_size = 10
+
+    # Add 15 samples (above batch_size)
+    for _ in range(15):
+        packer.buffers[0].append((make_sample(), 1.0))
+
+    packer.pack()
+
+    # Should have processed samples
+    assert packer._runs.progress[0].total_samples > 0
+    packer._sender.send.assert_called_once()
+
+
+def test_full_batch_multiple_runs_only_full_processed(packer_full_batch: Packer) -> None:
+    """With multiple runs, only those with batch_size samples are processed."""
+    packer = packer_full_batch
+    packer._runs.used_idxs = [0, 1]
+    packer._runs.config[0].batch_size = 20
+    packer._runs.config[1] = make_mock_config(batch_size=10)
+    packer._runs.progress[1] = Progress()
+
+    # Run 0: 15 samples (below batch_size of 20)
+    for _ in range(15):
+        packer.buffers[0].append((make_sample(), 1.0))
+
+    # Run 1: 15 samples (above batch_size of 10)
+    for _ in range(15):
+        packer.buffers[1].append((make_sample(), 1.0))
+
+    packer.pack()
+
+    # Only run 1 should have been processed
+    assert packer._runs.progress[0].total_samples == 0
+    assert packer._runs.progress[1].total_samples > 0
+
+
+def test_full_batch_get_runs_with_full_batch(packer_full_batch: Packer) -> None:
+    """Test _get_runs_with_full_batch helper method."""
+    packer = packer_full_batch
+    packer._runs.used_idxs = [0, 1, 2]
+    packer._runs.config[0].batch_size = 10
+    packer._runs.config[1] = make_mock_config(batch_size=5)
+    packer._runs.config[2] = make_mock_config(batch_size=20)
+    packer._runs.progress[1] = Progress()
+    packer._runs.progress[2] = Progress()
+
+    # Run 0: 10 samples (exactly batch_size)
+    for _ in range(10):
+        packer.buffers[0].append((make_sample(), 1.0))
+
+    # Run 1: 3 samples (below batch_size)
+    for _ in range(3):
+        packer.buffers[1].append((make_sample(), 1.0))
+
+    # Run 2: 25 samples (above batch_size)
+    for _ in range(25):
+        packer.buffers[2].append((make_sample(), 1.0))
+
+    runs_with_full = packer._get_runs_with_full_batch()
+
+    assert 0 in runs_with_full  # Exactly batch_size
+    assert 1 not in runs_with_full  # Below batch_size
+    assert 2 in runs_with_full  # Above batch_size
+
+
+def test_full_batch_step_always_completes(packer_full_batch: Packer) -> None:
+    """When small_batch_granularity=False, each pack should complete at least one step."""
+    packer = packer_full_batch
+    # batch_size=8 so that 8 samples (200 tokens) fit within token budget (200)
+    packer._runs.config[0].batch_size = 8
+
+    # Add batch_size samples with enough tokens to meet budget (200)
+    # 8 samples * 25 tokens = 200 tokens
+    for _ in range(8):
+        packer.buffers[0].append((make_sample(prompt_len=10, completion_len=15), 1.0))
+
+    packer.pack()
+
+    # Step should have incremented (8 samples consumed, batch_size=8)
+    assert packer._runs.progress[0].step == 1
+    assert packer._runs.ready_to_update[0] is True
