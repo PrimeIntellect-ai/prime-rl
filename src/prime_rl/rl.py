@@ -763,12 +763,15 @@ def rl(config: RLConfig):
             # Small delay to avoid busy waiting
             time.sleep(1)
 
-        # Check for errors after both processes have finished (handles race condition
-        # where both processes exit quickly and the loop exits before checking error_queue)
-        if error_queue:
-            error = error_queue[0]
-            logger.error(f"Error: {error}")
-            logger.error("Terminating all processes...")
+        # Check if any critical process failed
+        if orchestrator_process.returncode != 0:
+            logger.error(f"Orchestrator failed with exit code {orchestrator_process.returncode}")
+            cleanup_threads(monitor_threads)
+            cleanup_processes(processes)
+            sys.exit(1)
+
+        if trainer_process.returncode != 0:
+            logger.error(f"Trainer failed with exit code {trainer_process.returncode}")
             cleanup_threads(monitor_threads)
             cleanup_processes(processes)
             sys.exit(1)
