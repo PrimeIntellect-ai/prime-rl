@@ -2,7 +2,7 @@ inference_gpu_ids = [0,1,2,3,4,5]
 trainer_gpu_ids = [6,7]
 
 max_steps = 500
-seq_len = 8192
+seq_len = 4096
 
 [wandb]
 project = "mika-thesis"
@@ -12,16 +12,12 @@ name = "wiki-search"
 name = "Qwen/Qwen3-4B-Instruct-2507"
 
 [orchestrator]
-batch_size = 1024
+batch_size = 512
 rollouts_per_example = 16
-oversampling_factor = 1.5
-max_concurrent = 256
-
-[orchestrator.buffer]
-online_difficulty_filtering = true
+oversampling_factor = 2.0
 
 [orchestrator.sampling]
-max_tokens = 8192
+max_tokens = 512
 
 [[orchestrator.env]]
 id = "wiki-search"
@@ -31,7 +27,3 @@ id = "wiki-search"
 [inference.model]
 enable_auto_tool_choice = true
 tool_call_parser = "hermes"
-
-[inference.parallel]
-tp = 2
-dp = 3
