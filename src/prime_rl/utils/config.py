@@ -173,6 +173,27 @@ class HeartbeatConfig(BaseConfig):
     url: Annotated[str, Field(description="The URL to send the heartbeat to.")]
 
 
+class HealthCheckConfig(BaseConfig):
+    """Configures /health endpoint for Kubernetes liveness probes."""
+
+    max_step_age_seconds: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Maximum seconds since last training step before /health returns unhealthy.",
+        ),
+    ] = 300
+
+    startup_grace_seconds: Annotated[
+        int,
+        Field(
+            ge=0,
+            description="Grace period in seconds after server start before enforcing step age check. "
+            "Allows time for model loading and first training step.",
+        ),
+    ] = 600
+
+
 class MetricsServerConfig(BaseConfig):
     """Configures the Prometheus metrics server for trainer observability."""
 
@@ -181,13 +202,20 @@ class MetricsServerConfig(BaseConfig):
         Field(
             ge=1,
             le=65535,
-            description="Port to expose Prometheus metrics on. Defaults to 8000.",
+            description="Port to expose metrics and health endpoints. Defaults to 8000.",
         ),
     ] = 8000
 
     host: Annotated[
         str,
         Field(
-            description="Host to bind the metrics server to. Defaults to 0.0.0.0.",
+            description="Host to bind the server to. Defaults to 0.0.0.0.",
         ),
     ] = "0.0.0.0"
+
+    health: Annotated[
+        HealthCheckConfig | None,
+        Field(
+            description="Health check configuration. If None, /health always returns healthy.",
+        ),
+    ] = None

@@ -1,9 +1,11 @@
 """Prometheus metrics server for trainer observability.
 
 Exposes training metrics at /metrics in Prometheus format.
+Also exposes /health endpoint for Kubernetes liveness probes.
 Runs in a background thread to avoid blocking the training loop.
 """
 
+import json
 import threading
 import time
 from dataclasses import dataclass
@@ -46,6 +48,8 @@ class MetricsServer:
         self._server: HTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._started = False
+        self._start_time: float = 0.0
+        self._last_step_time: float = 0.0
 
         if PROMETHEUS_AVAILABLE:
             self._registry = CollectorRegistry()
@@ -95,24 +99,82 @@ class MetricsServer:
             self._registry = None
 
     def _make_handler(self):
-        """Create handler class with access to our registry."""
+        """Create handler class with access to our registry and health state."""
         registry = self._registry
+        server = self
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 if self.path == "/metrics":
-                    self.send_response(200)
-                    if registry is not None:
-                        self.send_header("Content-Type", CONTENT_TYPE_LATEST)
-                        self.end_headers()
-                        self.wfile.write(generate_latest(registry))
-                    else:
-                        self.send_header("Content-Type", "text/plain")
-                        self.end_headers()
-                        self.wfile.write(b"# prometheus_client not installed\n")
+                    self._handle_metrics()
+                elif self.path == "/health":
+                    self._handle_health()
                 else:
                     self.send_response(404)
                     self.end_headers()
+
+            def _handle_metrics(self):
+                self.send_response(200)
+                if registry is not None:
+                    self.send_header("Content-Type", CONTENT_TYPE_LATEST)
+                    self.end_headers()
+                    self.wfile.write(generate_latest(registry))
+                else:
+                    self.send_header("Content-Type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"# prometheus_client not installed\n")
+
+            def _handle_health(self):
+                """Liveness probe: checks if trainer is making progress."""
+                health_config = server.config.health
+
+                # No health config = always healthy
+                if health_config is None:
+                    self._respond(200, {"status": "healthy"})
+                    return
+
+                now = time.time()
+                startup_age = now - server._start_time
+
+                # During startup grace period, always healthy
+                if startup_age < health_config.startup_grace_seconds:
+                    self._respond(200, {
+                        "status": "healthy",
+                        "reason": "startup_grace",
+                        "startup_age_seconds": round(startup_age, 1),
+                        "grace_seconds": health_config.startup_grace_seconds,
+                    })
+                    return
+
+                # No steps yet after grace period = unhealthy
+                if server._last_step_time == 0:
+                    self._respond(503, {
+                        "status": "unhealthy",
+                        "reason": "no_steps_after_grace",
+                        "startup_age_seconds": round(startup_age, 1),
+                    })
+                    return
+
+                # Check step age
+                step_age = now - server._last_step_time
+                if step_age > health_config.max_step_age_seconds:
+                    self._respond(503, {
+                        "status": "unhealthy",
+                        "reason": "step_timeout",
+                        "last_step_age_seconds": round(step_age, 1),
+                        "max_step_age_seconds": health_config.max_step_age_seconds,
+                    })
+                else:
+                    self._respond(200, {
+                        "status": "healthy",
+                        "last_step_age_seconds": round(step_age, 1),
+                    })
+
+            def _respond(self, code: int, body: dict):
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(body).encode())
 
             def log_message(self, format, *args):
                 pass
@@ -128,16 +190,21 @@ class MetricsServer:
         if not PROMETHEUS_AVAILABLE:
             logger.warning("prometheus_client not installed. Install with: uv sync --extra metrics")
 
+        self._start_time = time.time()
         self._server = HTTPServer((self.config.host, self.config.port), self._make_handler())
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
         self._started = True
         logger.info(f"Metrics server started at http://{self.config.host}:{self.config.port}/metrics")
+        logger.info(f"Health endpoint available at http://{self.config.host}:{self.config.port}/health")
 
     def stop(self) -> None:
-        """Stop the metrics server."""
+        """Stop the metrics server and release the port."""
         if self._server is not None:
             self._server.shutdown()
+            self._server.server_close()  # Close socket to release port
+            if self._thread is not None:
+                self._thread.join(timeout=5.0)  # Wait for thread to finish
             self._server = None
             self._thread = None
             self._started = False
@@ -156,6 +223,9 @@ class MetricsServer:
         mismatch_kl: float = 0.0,
     ) -> None:
         """Update metrics after a training step."""
+        # Always update health tracking, even without prometheus
+        self._last_step_time = time.time()
+
         if not PROMETHEUS_AVAILABLE:
             return
 
@@ -168,7 +238,7 @@ class MetricsServer:
         self._mfu.set(mfu)
         self._entropy.set(entropy)
         self._mismatch_kl.set(mismatch_kl)
-        self._last_step_ts.set(time.time())
+        self._last_step_ts.set(self._last_step_time)
 
     def update_runs(
         self,
