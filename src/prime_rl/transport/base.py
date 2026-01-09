@@ -50,6 +50,13 @@ class TrainingBatchReceiver(ABC):
         """
         pass
 
+    def reset_run(self, idx: int) -> None:
+        """Reset state for a run index. Called when a run is deleted and replaced.
+
+        Override in subclasses that maintain per-run state.
+        """
+        pass
+
     def close(self) -> None:
         """Clean up any resources. Override if needed."""
         pass

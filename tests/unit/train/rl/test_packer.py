@@ -731,3 +731,71 @@ def test_full_batch_step_always_completes(packer_full_batch: Packer) -> None:
     # Step should have incremented (8 samples consumed, batch_size=8)
     assert packer._runs.progress[0].step == 1
     assert packer._runs.ready_to_update[0] is True
+
+
+# =============================================================================
+# Tests for run creation hook - resetting state when run is replaced
+# =============================================================================
+
+
+def test_on_run_created_clears_buffer(packer: Packer) -> None:
+    """_on_run_created should clear buffered samples for the run index."""
+    # Add samples to buffer
+    for _ in range(5):
+        packer.buffers[0].append((make_sample(), 1.0))
+    packer.buffers[1].append((make_sample(), 1.0))
+
+    # Simulate run 0 being replaced
+    packer._on_run_created(0, "run_new")
+
+    # Buffer for run 0 should be empty
+    assert len(packer.buffers[0]) == 0
+    # Buffer for run 1 should be unchanged
+    assert len(packer.buffers[1]) == 1
+
+
+def test_on_run_created_clears_samples_consumed(packer: Packer) -> None:
+    """_on_run_created should clear partial step progress for the run index."""
+    packer.samples_consumed_this_step[0] = 5
+    packer.samples_consumed_this_step[1] = 3
+
+    packer._on_run_created(0, "run_new")
+
+    # Run 0 should be cleared
+    assert 0 not in packer.samples_consumed_this_step
+    # Run 1 should be unchanged
+    assert packer.samples_consumed_this_step[1] == 3
+
+
+def test_on_run_created_calls_receiver_reset(packer: Packer) -> None:
+    """_on_run_created should call receiver.reset_run()."""
+    packer._on_run_created(0, "run_new")
+
+    packer._receiver.reset_run.assert_called_once_with(0)
+
+
+def test_creation_hook_registered(mock_runs: MagicMock, tmp_path: Path) -> None:
+    """Packer should register its creation hook with Runs."""
+    mock_runs.output_dir = tmp_path
+    mock_receiver = MagicMock()
+    mock_receiver.receive.return_value = []
+    mock_sender = MagicMock()
+
+    with (
+        patch("prime_rl.trainer.rl.packer.get_logger", return_value=MagicMock()),
+        patch("prime_rl.trainer.rl.packer.get_runs", return_value=mock_runs),
+        patch("prime_rl.trainer.rl.packer.setup_training_batch_receiver", return_value=mock_receiver),
+        patch("prime_rl.trainer.rl.packer.setup_micro_batch_sender", return_value=mock_sender),
+    ):
+        packer = Packer(
+            dp_world_size=2,
+            seq_len=100,
+            pad_to_multiple_of=8,
+            tokenizer=MagicMock(pad_token_id=0),
+            config=MagicMock(),
+            start_step=0,
+            small_batch_granularity=True,
+        )
+
+        # Verify the creation hook was registered
+        mock_runs.register_creation_hook.assert_called_once_with(packer._on_run_created)

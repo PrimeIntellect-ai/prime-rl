@@ -248,3 +248,44 @@ def test_receive_resumes_from_checkpoint_step(receiver: FileSystemTrainingBatchR
     batches = receiver.receive()
     assert len(batches) == 1
     assert receiver._received_steps[0] == 6
+
+
+# =============================================================================
+# Tests for reset_run - clearing state when run is replaced
+# =============================================================================
+
+
+def test_reset_run_clears_received_step(receiver: FileSystemTrainingBatchReceiver) -> None:
+    """reset_run should clear _received_steps entry for the run index."""
+    # Set up some received step state
+    receiver._received_steps[0] = 10
+    receiver._received_steps[1] = 5
+
+    receiver.reset_run(0)
+
+    # Run 0 should be cleared
+    assert 0 not in receiver._received_steps
+    # Run 1 should be unchanged
+    assert receiver._received_steps[1] == 5
+
+
+def test_reset_run_no_error_if_not_present(receiver: FileSystemTrainingBatchReceiver) -> None:
+    """reset_run should not raise if run index not in _received_steps."""
+    # Should not raise
+    receiver.reset_run(99)
+
+
+def test_reset_run_reinitializes_from_progress(receiver: FileSystemTrainingBatchReceiver, tmp_path: Path) -> None:
+    """After reset_run, the next access should reinitialize from runs.progress."""
+    # Simulate: run 0 was at step 10, then deleted and replaced
+    receiver._received_steps[0] = 10
+
+    # New run starts at step 0
+    receiver.runs.progress[0].step = 0
+
+    # Reset the run
+    receiver.reset_run(0)
+
+    # Next access should reinitialize from progress (step 0)
+    assert receiver._get_received_step(0) == 0
+    assert receiver._received_steps[0] == 0

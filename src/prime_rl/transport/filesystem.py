@@ -103,6 +103,15 @@ class FileSystemTrainingBatchReceiver(TrainingBatchReceiver):
                     self.logger.error(f"Error loading rollouts for run {idx}: {e}")
         return batches
 
+    def reset_run(self, idx: int) -> None:
+        """Reset received step tracking for a run index.
+
+        Called when a run is deleted and a new run takes its place.
+        The next access to _get_received_step will re-initialize from runs.progress.
+        """
+        if idx in self._received_steps:
+            del self._received_steps[idx]
+
 
 class FileSystemMicroBatchSender(MicroBatchSender):
     """Filesystem-based micro batch sender that writes micro batches to disk."""
