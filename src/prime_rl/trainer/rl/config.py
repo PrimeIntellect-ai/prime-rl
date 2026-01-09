@@ -13,7 +13,7 @@ from prime_rl.trainer.config import (
     TokenizerConfig,
 )
 from prime_rl.transport.config import FileSystemTransportConfig, TransportConfigType
-from prime_rl.utils.config import HeartbeatConfig, LogConfig, WandbConfig
+from prime_rl.utils.config import HeartbeatConfig, LogConfig, MetricsServerConfig, WandbConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
@@ -194,6 +194,11 @@ class RLTrainerConfig(BaseSettings):
 
     heartbeat: Annotated[
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
+    ] = None
+
+    metrics_server: Annotated[
+        MetricsServerConfig | None,
+        Field(description="Prometheus metrics server config. If set, exposes /metrics endpoint for scraping."),
     ] = None
 
     max_concurrent_runs: Annotated[

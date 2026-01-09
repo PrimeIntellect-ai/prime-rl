@@ -29,3 +29,4 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`MultiLoRAMoE`**: QwenMoE now supports training expert loras and this is enabled by default in the `target_modules`. (2026-01-01)
 - **`model.fused_lm_head_chunk_size`**: Added chunk size configuration for fused LM head to enable memory-efficient chunked logprob computation. When set, splits vocabulary into chunks to avoid materializing full [N, V] logit tensor (default: None) (#1525, 2026-01-03)
 - **`model.fused_lm_head_chunk_size`**: RL training now auto-sets this to 2048 if not specified (except when `impl='liger_kernel'`). SFT training continues to use None (2026-01-05)
+- **`trainer.metrics_server`**: Added optional Prometheus metrics server for trainer observability. Exposes `/metrics` endpoint with step, loss, throughput, grad_norm, etc. Disabled by default (default: None) (#1547, 2026-01-06)
