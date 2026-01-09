@@ -295,22 +295,7 @@ class EnvWorker:
     async def collect_responses(self):
         """Background task to collect responses and resolve futures."""
         while True:
-            # Check if worker process died unexpectedly (but not during intentional shutdown)
-            if self.process and not self.process.is_alive() and not self._stopping:
-                exit_code = self.process.exitcode
-                error = RuntimeError(
-                    f"Worker '{self.worker_name}' died unexpectedly (exit code: {exit_code})"
-                )
-                # Mark worker as dead so scheduler won't route new requests here
-                self._dead = True
-                # Fail all pending futures so callers don't hang indefinitely
-                for future in self.pending_futures.values():
-                    if not future.done():
-                        future.set_exception(error)
-                self.pending_futures.clear()
-                raise error
-
-            # Non-blocking check for responses
+            # Drain queue first to salvage any responses before checking for dead worker
             while True:
                 try:
                     response: RolloutResponse = self.response_queue.get_nowait()
@@ -324,6 +309,21 @@ class EnvWorker:
                     # Check if future was cancelled (e.g., by update_policy)
                     if not future.done():
                         future.set_result(response.results)
+
+            # Check if worker process died unexpectedly (but not during intentional shutdown)
+            if self.process and not self.process.is_alive() and not self._stopping:
+                exit_code = self.process.exitcode
+                error = RuntimeError(
+                    f"Worker '{self.worker_name}' died unexpectedly (exit code: {exit_code})"
+                )
+                # Mark worker as dead so scheduler won't route new requests here
+                self._dead = True
+                # Fail remaining pending futures so callers don't hang indefinitely
+                for future in self.pending_futures.values():
+                    if not future.done():
+                        future.set_exception(error)
+                self.pending_futures.clear()
+                raise error
 
             await asyncio.sleep(0.01)
 
