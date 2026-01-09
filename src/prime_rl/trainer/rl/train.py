@@ -186,6 +186,10 @@ def train(config: RLTrainerConfig):
         prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
         maybe_record_function = record_function
     while True:
+        # Heartbeat for health check (signals main thread is alive)
+        if metrics_server is not None:
+            metrics_server.heartbeat()
+
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
         is_last_step = config.max_steps is not None and progress.step == config.max_steps

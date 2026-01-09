@@ -49,7 +49,7 @@ class MetricsServer:
         self._thread: threading.Thread | None = None
         self._started = False
         self._start_time: float = 0.0
-        self._last_step_time: float = 0.0
+        self._last_heartbeat: float = 0.0
 
         if PROMETHEUS_AVAILABLE:
             self._registry = CollectorRegistry()
@@ -125,7 +125,7 @@ class MetricsServer:
                     self.wfile.write(b"# prometheus_client not installed\n")
 
             def _handle_health(self):
-                """Liveness probe: checks if trainer is making progress."""
+                """Liveness probe: checks if main thread is responsive."""
                 health_config = server.config.health
 
                 # No health config = always healthy
@@ -142,32 +142,29 @@ class MetricsServer:
                         "status": "healthy",
                         "reason": "startup_grace",
                         "startup_age_seconds": round(startup_age, 1),
-                        "grace_seconds": health_config.startup_grace_seconds,
                     })
                     return
 
-                # No steps yet after grace period = unhealthy
-                if server._last_step_time == 0:
+                # No heartbeat yet after grace period = unhealthy
+                if server._last_heartbeat == 0:
                     self._respond(503, {
                         "status": "unhealthy",
-                        "reason": "no_steps_after_grace",
-                        "startup_age_seconds": round(startup_age, 1),
+                        "reason": "no_heartbeat",
                     })
                     return
 
-                # Check step age
-                step_age = now - server._last_step_time
-                if step_age > health_config.max_step_age_seconds:
+                # Check heartbeat age
+                heartbeat_age = now - server._last_heartbeat
+                if heartbeat_age > health_config.timeout_seconds:
                     self._respond(503, {
                         "status": "unhealthy",
-                        "reason": "step_timeout",
-                        "last_step_age_seconds": round(step_age, 1),
-                        "max_step_age_seconds": health_config.max_step_age_seconds,
+                        "reason": "heartbeat_timeout",
+                        "last_heartbeat_seconds": round(heartbeat_age, 1),
                     })
                 else:
                     self._respond(200, {
                         "status": "healthy",
-                        "last_step_age_seconds": round(step_age, 1),
+                        "last_heartbeat_seconds": round(heartbeat_age, 1),
                     })
 
             def _respond(self, code: int, body: dict):
@@ -223,8 +220,7 @@ class MetricsServer:
         mismatch_kl: float = 0.0,
     ) -> None:
         """Update metrics after a training step."""
-        # Always update health tracking, even without prometheus
-        self._last_step_time = time.time()
+        self.heartbeat()
 
         if not PROMETHEUS_AVAILABLE:
             return
@@ -238,7 +234,16 @@ class MetricsServer:
         self._mfu.set(mfu)
         self._entropy.set(entropy)
         self._mismatch_kl.set(mismatch_kl)
-        self._last_step_ts.set(self._last_step_time)
+        self._last_step_ts.set(self._last_heartbeat)
+
+    def heartbeat(self) -> None:
+        """Signal that the main thread is alive.
+
+        Call this from the main training loop every iteration,
+        even when idle/waiting for runs. The /health endpoint
+        checks this to detect hung threads.
+        """
+        self._last_heartbeat = time.time()
 
     def update_runs(
         self,

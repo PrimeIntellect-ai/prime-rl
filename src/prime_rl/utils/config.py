@@ -176,20 +176,20 @@ class HeartbeatConfig(BaseConfig):
 class HealthCheckConfig(BaseConfig):
     """Configures /health endpoint for Kubernetes liveness probes."""
 
-    max_step_age_seconds: Annotated[
+    timeout_seconds: Annotated[
         int,
         Field(
             ge=1,
-            description="Maximum seconds since last training step before /health returns unhealthy.",
+            description="Maximum seconds since last heartbeat before /health returns unhealthy.",
         ),
-    ] = 300
+    ] = 60
 
     startup_grace_seconds: Annotated[
         int,
         Field(
             ge=0,
-            description="Grace period in seconds after server start before enforcing step age check. "
-            "Allows time for model loading and first training step.",
+            description="Grace period in seconds after server start before enforcing heartbeat check. "
+            "Allows time for model loading and initialization.",
         ),
     ] = 600
 
