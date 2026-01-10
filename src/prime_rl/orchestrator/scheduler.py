@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.config import EnvConfig, OrchestratorConfig
-from prime_rl.orchestrator.env_worker import EnvWorker
+from prime_rl.orchestrator.env_worker import EnvWorker, WorkerDiedError
 from prime_rl.orchestrator.utils import get_sampling_args
 from prime_rl.utils.client import update_weights
 from prime_rl.utils.config import ClientConfig
@@ -284,6 +284,8 @@ class Scheduler:
 
                 except asyncio.CancelledError:
                     pass  # Request was cancelled, will be rescheduled
+                except WorkerDiedError:
+                    raise  # Re-raise to exit process for K8s restart
                 except Exception as e:
                     self.logger.warning(f"Rollout failed: {e}")
 

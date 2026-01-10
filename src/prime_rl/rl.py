@@ -778,6 +778,19 @@ def rl(config: RLConfig):
             # Small delay to avoid busy waiting
             time.sleep(1)
 
+        # Check if any critical process failed
+        if orchestrator_process.returncode != 0:
+            logger.error(f"Orchestrator failed with exit code {orchestrator_process.returncode}")
+            cleanup_threads(monitor_threads)
+            cleanup_processes(processes)
+            sys.exit(1)
+
+        if trainer_process.returncode != 0:
+            logger.error(f"Trainer failed with exit code {trainer_process.returncode}")
+            cleanup_threads(monitor_threads)
+            cleanup_processes(processes)
+            sys.exit(1)
+
         logger.success("RL training finished!")
 
         # Cleanup threads and processes

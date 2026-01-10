@@ -17,6 +17,12 @@ from prime_rl.utils.client import setup_clients
 from prime_rl.utils.config import ClientConfig
 
 
+class WorkerDiedError(Exception):
+    """Raised when a worker subprocess dies unexpectedly."""
+
+    pass
+
+
 @dataclass
 class RolloutRequest:
     """Request to generate rollouts for an example."""
@@ -237,6 +243,11 @@ class EnvWorker:
         # Track latest lag metrics from this worker
         self.latest_lag_metrics: dict = {}
 
+        # Track intentional shutdown to avoid false error on clean stop
+        self._stopping = False
+        # Track if worker died unexpectedly (prevents scheduler from routing to dead worker)
+        self._dead = False
+
     def start(self):
         """Start the worker process."""
         self.process = Process(
@@ -256,9 +267,12 @@ class EnvWorker:
             daemon=True,
         )
         self.process.start()
+        self._stopping = False  # Reset after process is alive to avoid race condition
+        self._dead = False  # Reset in case of restart
 
     def stop(self):
         """Stop the worker process."""
+        self._stopping = True
         if self.process and self.process.is_alive():
             self.request_queue.put(None)  # Shutdown signal
             self.process.join(timeout=5)
@@ -287,7 +301,7 @@ class EnvWorker:
     async def collect_responses(self):
         """Background task to collect responses and resolve futures."""
         while True:
-            # Non-blocking check for responses
+            # Drain queue first to salvage any responses before checking for dead worker
             while True:
                 try:
                     response: RolloutResponse = self.response_queue.get_nowait()
@@ -302,6 +316,21 @@ class EnvWorker:
                     if not future.done():
                         future.set_result(response.results)
 
+            # Check if worker process died unexpectedly (but not during intentional shutdown)
+            if self.process and not self.process.is_alive() and not self._stopping:
+                exit_code = self.process.exitcode
+                error = WorkerDiedError(
+                    f"Worker '{self.worker_name}' died unexpectedly (exit code: {exit_code})"
+                )
+                # Mark worker as dead so scheduler won't route new requests here
+                self._dead = True
+                # Fail remaining pending futures so callers don't hang indefinitely
+                for future in self.pending_futures.values():
+                    if not future.done():
+                        future.set_exception(error)
+                self.pending_futures.clear()
+                raise error
+
             await asyncio.sleep(0.01)
 
     def update_model_name(self, model_name: str):
@@ -310,5 +339,10 @@ class EnvWorker:
 
     @property
     def pending_count(self) -> int:
-        """Number of pending requests for this worker."""
+        """Number of pending requests for this worker.
+
+        Returns a large number if the worker is dead to prevent scheduler from selecting it.
+        """
+        if self._dead:
+            return 999999  # Effectively infinite - scheduler will pick other workers
         return len(self.pending_futures)
