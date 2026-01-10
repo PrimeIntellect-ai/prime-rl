@@ -1,5 +1,6 @@
 import os
 from argparse import Namespace
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from pydantic import Field, model_validator
@@ -114,6 +115,22 @@ class WeightBroadcastConfig(BaseSettings):
     )
 
 
+class AdapterPersistenceConfig(BaseConfig):
+    """Configures adapter persistence across inference server restarts.
+
+    When enabled, the inference server will look for existing broadcast adapters
+    in the run folders on startup and pre-load them into vLLM.
+    """
+
+    output_dir: Annotated[
+        Path | None,
+        Field(
+            description="Path to the output directory containing run folders. If set, the server will "
+            "discover and load existing LoRA adapters from broadcasts on startup.",
+        ),
+    ] = None
+
+
 # Valid vLLM max_lora_rank values (from vllm/config/lora.py)
 # TODO: on newer vLLM, can import via `get_args(vllm.config.lora.MaxLoRARanks)`
 VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
@@ -187,6 +204,11 @@ class InferenceConfig(BaseSettings):
     weight_broadcast: Annotated[WeightBroadcastConfig, Field(description="The weight broadcast config.")] = (
         WeightBroadcastConfig()
     )
+
+    adapter_persistence: Annotated[
+        AdapterPersistenceConfig,
+        Field(description="Configures adapter persistence across restarts."),
+    ] = AdapterPersistenceConfig()
 
     @model_validator(mode="after")
     def nccl_and_dp(self):
