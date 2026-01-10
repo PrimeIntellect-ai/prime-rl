@@ -48,6 +48,7 @@ from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_se
 from vllm.logger import init_logger
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 
+from prime_rl.inference.adapter_discovery import discover_adapters, format_lora_modules_arg
 from prime_rl.inference.config import InferenceConfig
 
 logger = init_logger("vllm.entrypoints.openai.api_server")
@@ -194,6 +195,31 @@ vllm.entrypoints.cli.serve.run_api_server_worker_proc = custom_run_api_server_wo
 def server(config: InferenceConfig, vllm_args: list[str]):
     from vllm.entrypoints.openai.api_server import run_server
     from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server
+
+    # Discover and load existing adapters if adapter persistence is configured
+    if config.adapter_persistence.output_dir is not None:
+        logger.info(
+            f"Adapter persistence enabled, discovering adapters from {config.adapter_persistence.output_dir}"
+        )
+        adapters = discover_adapters(config.adapter_persistence.output_dir)
+
+        if adapters:
+            logger.info(f"Discovered {len(adapters)} adapter(s) to preload")
+            lora_modules = format_lora_modules_arg(adapters)
+
+            # Add --lora-modules arguments to vllm_args
+            for lora_module in lora_modules:
+                vllm_args.extend(["--lora-modules", lora_module])
+                logger.info(f"Will preload adapter: {lora_module}")
+
+            # Ensure enable_lora is set if we have adapters
+            if not config.enable_lora:
+                logger.warning(
+                    "Discovered adapters but enable_lora is False. "
+                    "You should set enable_lora=True in your inference config to use the adapters."
+                )
+        else:
+            logger.info("No adapters discovered to preload")
 
     parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")
     parser = make_arg_parser(parser)
