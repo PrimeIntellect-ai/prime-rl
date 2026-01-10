@@ -1,3 +1,4 @@
+import json
 import pickle
 import shutil
 import time
@@ -162,6 +163,63 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
 
     # Display table
     console.print(table)
+
+
+def export_benchmark_json(history: dict[str, list[Any]], output_path: Path) -> None:
+    """
+    Export benchmark results to a JSON file.
+
+    The JSON contains aggregated statistics (mean, std, min, max) for each metric.
+    """
+    history = history.copy()
+    history.pop("step", None)
+
+    # Turn metric history into pd.DataFrame
+    df = pd.DataFrame(dict(history.items()))
+    columns = {
+        "perf/mfu": "mfu",
+        "perf/throughput": "throughput",
+        "time/step": "step_time",
+        "perf/peak_memory": "peak_memory",
+    }
+    df = df[columns.keys()].rename(columns=columns)
+    df = df.iloc[1:]  # Exclude first warmup row
+
+    # Calculate statistics
+    stats = df.describe().loc[["mean", "std", "min", "max"], :]
+
+    # Get peak memory percentage
+    total_memory_gib = torch.cuda.mem_get_info()[1] / 1024**3
+    peak_memory_pct = stats["peak_memory"]["mean"] / total_memory_gib * 100
+
+    result = {
+        "mfu": {
+            "mean": float(stats["mfu"]["mean"]),
+            "std": float(stats["mfu"]["std"]),
+            "min": float(stats["mfu"]["min"]),
+            "max": float(stats["mfu"]["max"]),
+        },
+        "throughput": {
+            "mean": float(stats["throughput"]["mean"]),
+            "std": float(stats["throughput"]["std"]),
+            "min": float(stats["throughput"]["min"]),
+            "max": float(stats["throughput"]["max"]),
+        },
+        "step_time": {
+            "mean": float(stats["step_time"]["mean"]),
+            "std": float(stats["step_time"]["std"]),
+            "min": float(stats["step_time"]["min"]),
+            "max": float(stats["step_time"]["max"]),
+        },
+        "peak_memory": {
+            "gib": float(stats["peak_memory"]["mean"]),
+            "pct": float(peak_memory_pct),
+        },
+    }
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w") as f:
+        json.dump(result, f, indent=2)
 
 
 def flexible_all_gather(tensor: Tensor) -> Tensor:

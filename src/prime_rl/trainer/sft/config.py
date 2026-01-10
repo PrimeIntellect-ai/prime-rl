@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from prime_rl.trainer.config import (
     AdamWConfig,
+    BenchConfig,
     CheckpointConfig,
     ConstantSchedulerConfig,
     ModelConfig,
@@ -145,11 +146,11 @@ class SFTTrainerConfig(BaseSettings):
     memory_profiler_path: Annotated[Path | None, Field(description="Path to write memory profile to.")] = None
 
     bench: Annotated[
-        bool,
+        BenchConfig | None,
         Field(
-            description="Whether to run in benchmark mode. It will automatically set the maximum number of steps to run to 5 and use fake data.",
+            description="Whether to run in benchmark mode. It will automatically set the maximum number of steps to run to 4 and use fake data.",
         ),
-    ] = False
+    ] = None
 
     trace_path: Annotated[Path | None, Field(description="Path to write pytorch profiler trace to.")] = None
 
@@ -170,7 +171,7 @@ class SFTTrainerConfig(BaseSettings):
 
     @model_validator(mode="after")
     def auto_setup_bench(self):
-        if self.bench:
+        if self.bench is not None:
             self.max_steps = 4  # 1 Warmup + 3 Benchmark
             if self.ckpt:  # Do not checkpoint
                 self.ckpt = None

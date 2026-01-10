@@ -42,6 +42,7 @@ from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     MemoryProfiler,
     Tensors,
+    export_benchmark_json,
     get_ckpt_disk_metrics,
     setup_torch_distributed,
     print_benchmark,
@@ -72,7 +73,7 @@ def train(config: RLTrainerConfig):
     logger.info(f"Starting RL trainer in {world} in {config.output_dir}")
 
     # Print warning if running in benchmark mode
-    if config.bench:
+    if config.bench is not None:
         logger.warning(f"Running in benchmark mode (max_steps={config.max_steps})")
 
     # Setup the monitor
@@ -553,9 +554,13 @@ def train(config: RLTrainerConfig):
     if metrics_server is not None:
         metrics_server.stop()
 
-    # Optionally, print benchmark table
-    if config.bench and world.is_master:
-        print_benchmark(to_col_format(monitor.history))
+    # Optionally, print benchmark table and export JSON
+    if config.bench is not None and world.is_master:
+        history = to_col_format(monitor.history)
+        print_benchmark(history)
+        if config.bench.output_json:
+            export_benchmark_json(history, config.bench.output_json)
+            logger.info(f"Benchmark results written to {config.bench.output_json}")
 
 
 def main():

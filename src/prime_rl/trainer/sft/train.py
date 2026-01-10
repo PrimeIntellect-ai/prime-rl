@@ -33,6 +33,7 @@ from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import setup_dataloader, setup_dataset
 from prime_rl.trainer.utils import (
     MemoryProfiler,
+    export_benchmark_json,
     get_ckpt_disk_metrics,
     print_sample,
     setup_torch_distributed,
@@ -59,7 +60,7 @@ def train(config: SFTTrainerConfig):
     logger.info(f"Starting SFT trainer in {world}")
 
     # Print warning if running in benchmark mode
-    if config.bench:
+    if config.bench is not None:
         logger.warning(f"Running in benchmark mode (max_steps={config.max_steps})")
 
     # Setup the monitor
@@ -423,9 +424,13 @@ def train(config: SFTTrainerConfig):
     logger.info(f"Peak memory: {max(to_col_format(monitor.history)['perf/peak_memory']):.1f} GiB")
     logger.success("SFT trainer finished!")
 
-    # Optionally, print benchmark table
-    if config.bench and world.is_master:
-        print_benchmark(to_col_format(monitor.history))
+    # Optionally, print benchmark table and export JSON
+    if config.bench is not None and world.is_master:
+        history = to_col_format(monitor.history)
+        print_benchmark(history)
+        if config.bench.output_json:
+            export_benchmark_json(history, config.bench.output_json)
+            logger.info(f"Benchmark results written to {config.bench.output_json}")
 
 
 def main():
