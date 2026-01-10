@@ -337,12 +337,24 @@ class Runs:
         """Reset parameters for a specific run index.
 
         Called when a new run is created to initialize fresh adapter weights.
+        If the run's config specifies a lora_rank, uses that for initialization
+        (zero-padding higher dimensions). Otherwise uses the full module rank.
 
         Args:
             idx: The run index to reset parameters for
         """
+        # Get lora_rank from run config if available
+        lora_rank = None
+        if idx in self.config:
+            config = self.config[idx]
+            if config.model.lora is not None and config.model.lora.rank is not None:
+                lora_rank = config.model.lora.rank
+
+        if lora_rank is not None:
+            self.logger.info(f"Run {self.idx_2_id.get(idx, idx)}: Initializing LoRA with rank {lora_rank}")
+
         for _, module in self._modules:
-            module.reset_parameters(idx)
+            module.reset_parameters(idx, lora_rank=lora_rank)
 
     def __repr__(self):
         return f"Runs(max={self.max_runs})[{self.idx_2_id.keys()}]"

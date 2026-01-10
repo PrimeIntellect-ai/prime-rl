@@ -106,12 +106,25 @@ class MultiLoRALinear(MultiLoRAModule):
 
         self.reset_parameters()
 
-    def reset_parameters(self, index: int | None = None) -> None:
+    def reset_parameters(self, index: int | None = None, lora_rank: int | None = None) -> None:
         if index is None:
             for i in range(self.n_adapters):
-                self.reset_parameters(i)
+                self.reset_parameters(i, lora_rank)
         else:
-            nn.init.kaiming_uniform_(self.lora_A[index], a=math.sqrt(5))
+            # Determine effective rank (use full rank if not specified)
+            effective_rank = lora_rank if lora_rank is not None else self.rank
+
+            if effective_rank > self.rank:
+                raise ValueError(f"lora_rank ({effective_rank}) cannot exceed module rank ({self.rank})")
+
+            # Initialize lora_A: [rank, in_features]
+            # Only initialize first effective_rank rows with Kaiming, rest are zeros
+            nn.init.zeros_(self.lora_A[index])
+            if effective_rank > 0:
+                nn.init.kaiming_uniform_(self.lora_A[index][:effective_rank], a=math.sqrt(5))
+
+            # Initialize lora_B: [out_features, rank]
+            # All zeros (standard LoRA initialization)
             nn.init.zeros_(self.lora_B[index])
 
     def named_parameters_for_adapter(self, idx: int) -> list[tuple[str, nn.Parameter]]:
