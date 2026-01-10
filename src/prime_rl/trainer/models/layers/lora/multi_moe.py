@@ -200,27 +200,43 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
 
         self.reset_parameters()
 
-    def reset_parameters(self, index: int | None = None) -> None:
+    def reset_parameters(self, index: int | None = None, lora_rank: int | None = None) -> None:
         """Reset LoRA parameters using Kaiming uniform for A, zeros for B.
 
         Args:
             index: If provided, reset only the parameters for that adapter index.
                    If None, reset all adapter parameters.
+            lora_rank: If provided, only initialize the first lora_rank dimensions
+                       of lora_A matrices (zero-padding the rest). This enables
+                       lower-rank computation while maintaining tensor shape for batching.
+                       If None, uses the full rank.
         """
         if index is None:
             for i in range(self.n_adapters):
-                self.reset_parameters(i)
+                self.reset_parameters(i, lora_rank)
         else:
-            # Reset w1 LoRA
-            nn.init.kaiming_uniform_(self.w1_lora_A[index], a=math.sqrt(5))
+            # Determine effective rank (use full rank if not specified)
+            effective_rank = lora_rank if lora_rank is not None else self.rank
+
+            if effective_rank > self.rank:
+                raise ValueError(f"lora_rank ({effective_rank}) cannot exceed module rank ({self.rank})")
+
+            # Reset w1 LoRA: lora_A shape [num_experts, rank, dim]
+            nn.init.zeros_(self.w1_lora_A[index])
+            if effective_rank > 0:
+                nn.init.kaiming_uniform_(self.w1_lora_A[index][:, :effective_rank, :], a=math.sqrt(5))
             nn.init.zeros_(self.w1_lora_B[index])
 
-            # Reset w2 LoRA
-            nn.init.kaiming_uniform_(self.w2_lora_A[index], a=math.sqrt(5))
+            # Reset w2 LoRA: lora_A shape [num_experts, rank, hidden_dim]
+            nn.init.zeros_(self.w2_lora_A[index])
+            if effective_rank > 0:
+                nn.init.kaiming_uniform_(self.w2_lora_A[index][:, :effective_rank, :], a=math.sqrt(5))
             nn.init.zeros_(self.w2_lora_B[index])
 
-            # Reset w3 LoRA
-            nn.init.kaiming_uniform_(self.w3_lora_A[index], a=math.sqrt(5))
+            # Reset w3 LoRA: lora_A shape [num_experts, rank, dim]
+            nn.init.zeros_(self.w3_lora_A[index])
+            if effective_rank > 0:
+                nn.init.kaiming_uniform_(self.w3_lora_A[index][:, :effective_rank, :], a=math.sqrt(5))
             nn.init.zeros_(self.w3_lora_B[index])
 
     def named_parameters_for_adapter(self, idx: int) -> list[tuple[str, nn.Parameter]]:
