@@ -370,6 +370,9 @@ async def orchestrate(config: OrchestratorConfig):
             temperature=config.sampling.temperature,
             step=progress.step,
         )
+        assert len(training_batch.examples) == config.batch_size, (
+            f"Batch size mismatch: {len(training_batch.examples)} != {config.batch_size}"
+        )
         training_batch_sender.send(training_batch)
 
         # Await and process val results
