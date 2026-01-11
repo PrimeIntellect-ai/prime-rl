@@ -1,0 +1,19 @@
+max_steps = 100
+batch_size = 512
+rollouts_per_example = 16
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+seq_len = 2048
+
+[sampling]
+max_tokens = 512
+
+[[env]]
+id = "primeintellect/alphabet-sort"
+name = "alphabet-sort"
+args = { min_turns = 2, max_turns = 2 }
+
+[wandb]
+project = "daniel-repro"
+name = "repro-orch"

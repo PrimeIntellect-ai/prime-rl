@@ -1,0 +1,10 @@
+max_steps = 100
+
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+seq_len = 2048
+
+[wandb]
+project = "daniel-repro"
+name = "repro-train"
