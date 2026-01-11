@@ -33,12 +33,18 @@ jobs:
           cat << 'EOF' > /tmp/matrix.json
           {
             "include": [
-              {"model": "Qwen/Qwen3-0.6B", "runner": "2xa6000", "num_gpus": 2, "type": "rl", "lora_rank": 16, "seq_len": 8192},
-              {"model": "Qwen/Qwen3-0.6B", "runner": "2xa6000", "num_gpus": 2, "type": "sft", "lora_rank": 16, "seq_len": 8192},
-              {"model": "Qwen/Qwen3-0.6B", "runner": "2xa6000", "num_gpus": 2, "type": "rl", "lora_rank": null, "seq_len": 8192},
-              {"model": "Qwen/Qwen3-4B", "runner": "2xa6000", "num_gpus": 2, "type": "rl", "lora_rank": 16, "seq_len": 8192},
-              {"model": "Qwen/Qwen3-4B", "runner": "2xa6000", "num_gpus": 2, "type": "sft", "lora_rank": 16, "seq_len": 8192},
-              {"model": "Qwen/Qwen3-4B", "runner": "2xa6000", "num_gpus": 2, "type": "rl", "lora_rank": null, "seq_len": 8192}
+              {"model": "Qwen/Qwen3-0.6B", "runner": "2xa6000", "num_gpus": 2, "type": "rl", "lora_rank": 16, "seq_len": 8192, "attention": "flash_attention_2", "ac": "Recompute"},
+              {"model": "Qwen/Qwen3-0.6B", "runner": "2xa6000", "num_gpus": 2, "type": "sft", "lora_rank": 16, "seq_len": 8192, "attention": "flash_attention_2", "ac": "Recompute"},
+              {"model": "Qwen/Qwen3-0.6B", "runner": "2xa6000", "num_gpus": 2, "type": "rl", "lora_rank": null, "seq_len": 8192, "attention": "flash_attention_2", "ac": "Recompute"},
+              {"model": "Qwen/Qwen3-4B", "runner": "2xa6000", "num_gpus": 2, "type": "rl", "lora_rank": 16, "seq_len": 8192, "attention": "flash_attention_2", "ac": "Recompute"},
+              {"model": "Qwen/Qwen3-4B", "runner": "2xa6000", "num_gpus": 2, "type": "sft", "lora_rank": 16, "seq_len": 8192, "attention": "flash_attention_2", "ac": "Recompute"},
+              {"model": "Qwen/Qwen3-4B", "runner": "2xa6000", "num_gpus": 2, "type": "rl", "lora_rank": null, "seq_len": 8192, "attention": "flash_attention_2", "ac": "Recompute"},
+              {"model": "Qwen/Qwen3-0.6B", "runner": "2xh100", "num_gpus": 2, "type": "rl", "lora_rank": 16, "seq_len": 8192, "attention": "flash_attention_2", "ac": "Recompute"},
+              {"model": "Qwen/Qwen3-0.6B", "runner": "2xh100", "num_gpus": 2, "type": "sft", "lora_rank": 16, "seq_len": 8192, "attention": "flash_attention_2", "ac": "Recompute"},
+              {"model": "Qwen/Qwen3-0.6B", "runner": "2xh100", "num_gpus": 2, "type": "rl", "lora_rank": null, "seq_len": 8192, "attention": "flash_attention_2", "ac": "Recompute"},
+              {"model": "Qwen/Qwen3-4B", "runner": "2xh100", "num_gpus": 2, "type": "rl", "lora_rank": 16, "seq_len": 8192, "attention": "flash_attention_2", "ac": "Recompute"},
+              {"model": "Qwen/Qwen3-4B", "runner": "2xh100", "num_gpus": 2, "type": "sft", "lora_rank": 16, "seq_len": 8192, "attention": "flash_attention_2", "ac": "Recompute"},
+              {"model": "Qwen/Qwen3-4B", "runner": "2xh100", "num_gpus": 2, "type": "rl", "lora_rank": null, "seq_len": 8192, "attention": "flash_attention_2", "ac": "Recompute"},
             ]
           }
           EOF
@@ -59,13 +65,16 @@ jobs:
       - name: Run benchmark
         run: |
           python benchmarks/scripts/run_single_benchmark.py \
-            --model-name "${{ matrix.model }}" \
-            --num-gpus "${{ matrix.num_gpus }}" \
             --type "${{ matrix.type }}" \
-            --seq-len "${{ matrix.seq_len }}" \
-            --docker-image "${{ inputs.image }}" \
+            --num-gpus "${{ matrix.num_gpus }}" \
+            --model-name "${{ matrix.model }}" \
             ${{ matrix.lora_rank && format('--lora-rank {0}', matrix.lora_rank) || '' }} \
-            --output "/tmp/benchmark_result.json"
+            --seq-len "${{ matrix.seq_len }}" \
+            --ac "${{ matrix.ac }}" \
+            --attention "${{ matrix.attention }}" \
+            --output "/tmp/benchmark_result.json" \
+            --docker-image "${{ inputs.image }}" \
+            --timeout 1800
       - name: Upload benchmark result
         uses: actions/upload-artifact@v4
         if: always()
