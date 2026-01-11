@@ -8,9 +8,10 @@ on:
         required: false
         default: false
         type: boolean
-  # Disable for now
-  # schedule:
-  #   - cron: "0 4 * * *"
+      image:
+        description: "Docker image to use for benchmarks"
+        required: true
+        type: string
 
 concurrency:
   group: nightly-benchmarks
@@ -32,12 +33,12 @@ jobs:
           cat << 'EOF' > /tmp/matrix.json
           {
             "include": [
-              {"model": "Qwen/Qwen3-0.6B", "runner": "2xa6000", "num_gpus": 2, "type": "rl", "lora_rank": 16, "seq_len": 8192, "micro_batches": 2},
-              {"model": "Qwen/Qwen3-0.6B", "runner": "2xa6000", "num_gpus": 2, "type": "sft", "lora_rank": 16, "seq_len": 8192, "micro_batches": 2},
-              {"model": "Qwen/Qwen3-0.6B", "runner": "2xa6000", "num_gpus": 2, "type": "rl", "lora_rank": null, "seq_len": 8192, "micro_batches": 2},
-              {"model": "Qwen/Qwen3-4B", "runner": "2xa6000", "num_gpus": 2, "type": "rl", "lora_rank": 16, "seq_len": 8192, "micro_batches": 2},
-              {"model": "Qwen/Qwen3-4B", "runner": "2xa6000", "num_gpus": 2, "type": "sft", "lora_rank": 16, "seq_len": 8192, "micro_batches": 2},
-              {"model": "Qwen/Qwen3-4B", "runner": "2xa6000", "num_gpus": 2, "type": "rl", "lora_rank": null, "seq_len": 8192, "micro_batches": 2}
+              {"model": "Qwen/Qwen3-0.6B", "runner": "2xa6000", "num_gpus": 2, "type": "rl", "lora_rank": 16, "seq_len": 8192},
+              {"model": "Qwen/Qwen3-0.6B", "runner": "2xa6000", "num_gpus": 2, "type": "sft", "lora_rank": 16, "seq_len": 8192},
+              {"model": "Qwen/Qwen3-0.6B", "runner": "2xa6000", "num_gpus": 2, "type": "rl", "lora_rank": null, "seq_len": 8192},
+              {"model": "Qwen/Qwen3-4B", "runner": "2xa6000", "num_gpus": 2, "type": "rl", "lora_rank": 16, "seq_len": 8192},
+              {"model": "Qwen/Qwen3-4B", "runner": "2xa6000", "num_gpus": 2, "type": "sft", "lora_rank": 16, "seq_len": 8192},
+              {"model": "Qwen/Qwen3-4B", "runner": "2xa6000", "num_gpus": 2, "type": "rl", "lora_rank": null, "seq_len": 8192}
             ]
           }
           EOF
@@ -48,7 +49,7 @@ jobs:
     needs: build-matrix
     runs-on: ${{ matrix.runner }}
     container:
-      image: primeintellect/prime-rl:${{ github.sha }}
+      image: ${{ inputs.image }}
       options: --gpus all --shm-size=16g
     timeout-minutes: 30
     strategy:
@@ -62,8 +63,7 @@ jobs:
             --num-gpus "${{ matrix.num_gpus }}" \
             --type "${{ matrix.type }}" \
             --seq-len "${{ matrix.seq_len }}" \
-            --micro-batches "${{ matrix.micro_batches }}" \
-            --commit-sha "${{ github.sha }}" \
+            --docker-image "${{ inputs.image }}" \
             ${{ matrix.lora_rank && format('--lora-rank {0}', matrix.lora_rank) || '' }} \
             --output "/tmp/benchmark_result.json"
       - name: Upload benchmark result
