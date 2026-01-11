@@ -180,6 +180,7 @@ async def orchestrate(config: OrchestratorConfig):
         max_off_policy_steps=config.max_off_policy_steps,
         strict_async_level=config.strict_async_level,
         lora_name=config.model.lora.name if config.model.lora else None,
+        output_dir=config.output_dir,
     )
 
     if checkpoint_step is not None and config.model.lora is not None:
