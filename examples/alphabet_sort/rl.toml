@@ -21,7 +21,7 @@ freq = 1
 rank = 32
 
 [trainer.optim]
-lr = 5e-6
+lr = 2e-5
 
 [orchestrator]
 batch_size = 512
