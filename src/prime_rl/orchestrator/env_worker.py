@@ -135,7 +135,7 @@ async def worker_loop(
             task = asyncio.create_task(
                 process_request(request, env, client_cycle, semaphore, example_lookup, sampling_args)
             )
-            pending_tasks[task] = request.id
+            pending_tasks[task] = request.request_id
         return True
 
     try:
