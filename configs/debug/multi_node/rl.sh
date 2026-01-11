@@ -110,7 +110,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     export HF_DATASETS_OFFLINE=1
 
     uv run inference \
-        @ debug/multi_node/infer.toml \
+        @ configs/debug/multi_node/infer.toml \
         --weight_broadcast.type nccl \
         --enable-log-requests \
         --no-disable-log-requests \
@@ -121,7 +121,7 @@ else
     if [ "$TRAIN_NODE_RANK" -eq 0 ]; then
 
         uv run orchestrator \
-            @ debug/multi_node/orch.toml \
+            @ configs/debug/multi_node/orch.toml \
             --weight_broadcast.type nccl \
             --weight_broadcast.host $MASTER_ADDR \
             --weight_broadcast.port $BROADCAST_PORT \
@@ -153,7 +153,7 @@ else
         --redirects=3 \
         --local-ranks-filter=0,1,2,3,4,5,6,7 \
         src/prime_rl/trainer/rl/train.py \
-        @ debug/multi_node/train.toml \
+        @ configs/debug/multi_node/train.toml \
         --weight_broadcast.type nccl \
         --weight_broadcast.host 0.0.0.0 \
         --weight_broadcast.port $BROADCAST_PORT \
