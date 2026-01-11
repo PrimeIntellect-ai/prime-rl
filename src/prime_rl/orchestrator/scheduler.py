@@ -143,13 +143,10 @@ class Scheduler:
         workers = self.workers[task]
         worker = min(workers, key=lambda w: w.pending_count)
 
-        future = await worker.submit_request(
+        future, request_id = await worker.submit_request(
             example_id=example["example_id"],
             rollouts_per_example=self.config.rollouts_per_example,
         )
-
-        # Extract request_id from the future's pending tracking
-        request_id = [k for k, v in worker.pending_futures.items() if v is future][0]
 
         self.inflight_group_rollouts[future] = InflightRolloutInfo(
             off_policy_steps=0,
