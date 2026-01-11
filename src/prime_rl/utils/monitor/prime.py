@@ -75,7 +75,7 @@ class PrimeMonitor(Monitor):
             if config.log_extras.distributions:
                 self.last_log_distributions_step = -1
 
-    def log(self, metrics: dict[str, Any], step: int | None = None) -> None:
+    def log(self, metrics: dict[str, Any], step: int | None = None, commit: bool | None = None) -> None:
         self.history.append(metrics)
         if not self.is_master:
             return
@@ -89,7 +89,7 @@ class PrimeMonitor(Monitor):
             },
         )
 
-    def log_samples(self, rollouts: list[vf.State], step: int) -> None:
+    def log_samples(self, rollouts: list[vf.State], step: int, commit: bool | None = None) -> None:
         """Logs rollouts to Prime Intellect API."""
         if not self.is_master:
             return
