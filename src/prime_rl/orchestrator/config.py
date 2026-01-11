@@ -53,7 +53,7 @@ class LoRAConfig(BaseConfig):
             ge=0,
             description="LoRA alpha for this run.",
         ),
-    ] = 16.0
+    ] = 32.0
 
 
 class ModelConfig(BaseModelConfig):

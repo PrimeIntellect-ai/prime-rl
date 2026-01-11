@@ -80,7 +80,7 @@ class LoRAConfig(BaseConfig):
             ge=0,
             description="LoRA scaling parameter.",
         ),
-    ] = 16.0
+    ] = 32.0
 
     dropout: Annotated[
         float,
