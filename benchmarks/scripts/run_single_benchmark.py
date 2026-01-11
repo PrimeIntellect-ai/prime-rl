@@ -46,8 +46,6 @@ class BenchmarkConfig(BaseSettings):
 
     seq_len: Annotated[int, Field(ge=1, description="Sequence length")] = 512
 
-    batch_size: Annotated[int, Field(ge=1, description="Batch size")] = 4
-
     ac: Annotated[Literal["Recompute", "Offload", "None"], Field(description="Activation checkpointing type")] = (
         "Recompute"
     )
@@ -62,6 +60,8 @@ class BenchmarkConfig(BaseSettings):
     dry_run: Annotated[bool, Field(description="Print command without executing")] = False
 
     timeout: Annotated[int, Field(description="Timeout in seconds")] = 3600
+
+    micro_batches: Annotated[int, Field(ge=1, description="Number of micro batches")] = 2
 
     # Metadata set by the script
     device_name: Annotated[str, Field(description="Device name. This is set automatically by the script.")] = (
@@ -118,14 +118,14 @@ def build_command(config: BenchmarkConfig) -> list[str]:
 
     # Data configuration differs between RL and SFT
     if config.type.startswith("rl"):
-        cmd.extend(["--data.fake.batch-size", str(config.batch_size)])
+        cmd.extend(["--data.fake.batch-size", str(config.micro_batches * config.num_gpus)])
     else:
         cmd.extend(
             [
                 "--data.type",
                 "fake",
                 "--data.batch-size",
-                str(config.batch_size),
+                str(config.micro_batches * config.num_gpus),
                 "--data.seq-len",
                 str(config.seq_len),
             ]
