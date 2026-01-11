@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -82,6 +83,8 @@ def compute_loss(
     loss_mask: Any,  # list of Bool[Tensor, "seq_i"] with potentially different seq_i lengths
     loss_config: LossConfig,
     loss_scale: int,
+    step: int | None = None,
+    rank: int | None = None,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
@@ -94,10 +97,26 @@ def compute_loss(
         loss_mask: Loss mask tensor for packed sequences
         loss_config: Loss configuration object
         loss_scale: Scale factor to normalize the loss
+        step: Optional step number for saving debug tensors
+        rank: Optional rank number for saving debug tensors
 
     Returns:
         Tuple of (scaled_loss, aggregated_loss_tensors)
     """
+    # Save debug tensors if step and rank are provided
+    if step is not None and rank is not None and step % 10 == 0:
+        output_dir = Path("outputs/loss") / f"step_{step}"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_file = output_dir / f"rank_{rank}.bin"
+        torch.save(
+            {
+                "trainer_logprobs": [t.detach().cpu() for t in trainer_logprobs],
+                "inference_logprobs": [t.detach().cpu() for t in inference_logprobs],
+                "advantages": [t.detach().cpu() for t in advantages],
+                "loss_mask": [t.detach().cpu() for t in loss_mask],
+            },
+            output_file,
+        )
 
     total_loss = 0.0
     total_mismatch_kl = []
