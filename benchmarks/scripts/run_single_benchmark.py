@@ -63,6 +63,8 @@ class BenchmarkConfig(BaseSettings):
 
     micro_batches: Annotated[int, Field(ge=1, description="Number of micro batches")] = 2
 
+    docker_image: Annotated[str | None, Field(description="Docker image used for the benchmark")] = None
+
     # Metadata set by the script
     device_name: Annotated[str, Field(description="Device name. This is set automatically by the script.")] = (
         torch.cuda.get_device_name()
