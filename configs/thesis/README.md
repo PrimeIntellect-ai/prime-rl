@@ -51,9 +51,12 @@ got crashing run with 16 step off-policy and otherwise defaults.
 ```bash
 # more aggressive masking (token-level)
 uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-token-mask-0.25-4 --trainer.loss.token-mask-low 0.25 --trainer.loss.token-mask-high 4
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-token-mask-0.5-2 --trainer.loss.token-mask-low 0.5 --trainer.loss.token-mask-high 2
 
 # kl tau
 uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-kl-tau-2e-3 --trainer.loss.kl-tau 2e-3
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-kl-tau-1e-2 --trainer.loss.kl-tau 1e-2
+
 ```
 
 to try later:
