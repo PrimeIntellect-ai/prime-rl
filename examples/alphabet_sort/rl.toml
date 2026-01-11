@@ -19,10 +19,9 @@ freq = 1
 
 [trainer.model.lora]
 rank = 32
-alpha = 64
 
 [trainer.optim]
-lr = 1e-5
+lr = 2e-5
 
 [orchestrator]
 batch_size = 512

@@ -17,7 +17,6 @@ weight_decay = 0.0
 
 [trainer.model.lora]
 rank = 8
-alpha = 32
 dropout = 0.0
 target_modules = [
     "q_proj",
