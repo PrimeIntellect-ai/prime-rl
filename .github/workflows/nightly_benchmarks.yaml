@@ -1,0 +1,153 @@
+name: Nightly Benchmarks
+
+on:
+  workflow_dispatch:
+    inputs:
+      set_baselines:
+        description: "Save results as new baselines"
+        required: false
+        default: false
+        type: boolean
+  # Disable for now
+  # schedule:
+  #   - cron: "0 4 * * *"
+
+concurrency:
+  group: nightly-benchmarks
+  cancel-in-progress: false
+
+env:
+  BENCHMARK_BRANCH: benchmark-results-${{ github.run_id }}
+
+jobs:
+  build-matrix:
+    name: Build benchmark matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.build.outputs.matrix }}
+    steps:
+      - name: Build matrix
+        id: build
+        run: |
+          cat << 'EOF' > /tmp/matrix.json
+          {
+            "include": [
+              {"model": "Qwen/Qwen3-0.6B", "runner": "2xa6000", "num_gpus": 2, "type": "rl", "lora_rank": 16, "seq_len": 8192, "micro_batches": 2},
+              {"model": "Qwen/Qwen3-0.6B", "runner": "2xa6000", "num_gpus": 2, "type": "sft", "lora_rank": 16, "seq_len": 8192, "micro_batches": 2},
+              {"model": "Qwen/Qwen3-0.6B", "runner": "2xa6000", "num_gpus": 2, "type": "rl", "lora_rank": null, "seq_len": 8192, "micro_batches": 2},
+              {"model": "Qwen/Qwen3-4B", "runner": "2xa6000", "num_gpus": 2, "type": "rl", "lora_rank": 16, "seq_len": 8192, "micro_batches": 2},
+              {"model": "Qwen/Qwen3-4B", "runner": "2xa6000", "num_gpus": 2, "type": "sft", "lora_rank": 16, "seq_len": 8192, "micro_batches": 2},
+              {"model": "Qwen/Qwen3-4B", "runner": "2xa6000", "num_gpus": 2, "type": "rl", "lora_rank": null, "seq_len": 8192, "micro_batches": 2}
+            ]
+          }
+          EOF
+          echo "matrix=$(cat /tmp/matrix.json | jq -c .)" >> "$GITHUB_OUTPUT"
+
+  run-benchmark:
+    name: "${{ matrix.model }} (${{ matrix.type }}${{ matrix.lora_rank && format(' r={0}', matrix.lora_rank) || '' }}) on ${{ matrix.num_gpus }}xGPU"
+    needs: build-matrix
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: primeintellect/prime-rl:${{ github.sha }}
+      options: --gpus all --shm-size=16g
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.build-matrix.outputs.matrix) }}
+    steps:
+      - name: Run benchmark
+        run: |
+          python benchmarks/scripts/run_single_benchmark.py \
+            --model-name "${{ matrix.model }}" \
+            --num-gpus "${{ matrix.num_gpus }}" \
+            --type "${{ matrix.type }}" \
+            --seq-len "${{ matrix.seq_len }}" \
+            --micro-batches "${{ matrix.micro_batches }}" \
+            --commit-sha "${{ github.sha }}" \
+            ${{ matrix.lora_rank && format('--lora-rank {0}', matrix.lora_rank) || '' }} \
+            --output "/tmp/benchmark_result.json"
+      - name: Upload benchmark result
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-${{ matrix.model }}-${{ matrix.type }}-${{ matrix.lora_rank || 'full' }}-${{ matrix.num_gpus }}gpu
+          path: /tmp/benchmark_result.json
+          retention-days: 30
+
+  aggregate-and-report:
+    name: Aggregate results and create PR
+    needs: run-benchmark
+    runs-on: ubuntu-latest
+    if: always()
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Install dependencies
+        run: uv sync
+      - name: Download all benchmark artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/benchmark_artifacts
+          pattern: benchmark-*
+      - name: Set baselines from artifacts
+        if: ${{ github.event.inputs.set_baselines == 'true' }}
+        run: |
+          rm -f benchmarks/baselines/*.json
+          for dir in /tmp/benchmark_artifacts/*/; do
+            name=$(basename "$dir")
+            cp "$dir/benchmark_result.json" "benchmarks/baselines/${name}.json"
+          done
+      - name: Aggregate results
+        id: aggregate
+        run: |
+          uv run python benchmarks/scripts/aggregate_results.py \
+            --artifacts-dir "/tmp/benchmark_artifacts" \
+            --baselines-dir "benchmarks/baselines" \
+            --output-markdown "benchmarks/results/BENCHMARKS.md" \
+            --regression-threshold 0.05
+
+          if [ -f /tmp/has_regressions ]; then
+            echo "has_regressions=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_regressions=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Create PR branch and commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BENCHMARK_BRANCH"
+          git add benchmarks/results/BENCHMARKS.md
+          ${{ github.event.inputs.set_baselines == 'true' && 'git add benchmarks/baselines/' || 'true' }}
+          git commit -m "Update benchmark results $(date +%Y-%m-%d)" || echo "No changes to commit"
+          git push origin "$BENCHMARK_BRANCH" --force
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v5
+        with:
+          branch: ${{ env.BENCHMARK_BRANCH }}
+          base: main
+          title: "[Benchmarks] Nightly performance results - ${{ github.run_id }}"
+          body: |
+            ## Nightly Benchmark Results
+
+            **Run ID:** ${{ github.run_id }}
+            **Date:** $(date +%Y-%m-%d)
+            **Regression Detected:** ${{ steps.aggregate.outputs.has_regressions }}
+
+            ${{ steps.aggregate.outputs.has_regressions == 'true' && '> :warning: **Performance regressions detected!** Please review the results carefully.' || '> :white_check_mark: No regressions detected.' }}
+
+            See `benchmarks/results/BENCHMARKS.md` for detailed results.
+
+            ---
+            *This PR was automatically generated by the nightly benchmark workflow.*
+          labels: |
+            benchmarks
+            automated
+            ${{ steps.aggregate.outputs.has_regressions == 'true' && 'regression' || '' }}
