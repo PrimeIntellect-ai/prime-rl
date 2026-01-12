@@ -6,6 +6,7 @@ import httpx
 from httpx import AsyncClient
 from openai import AsyncOpenAI, NotFoundError
 from prime_evals import AsyncEvalsClient
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.logger import get_logger
@@ -101,10 +102,20 @@ async def check_health(
     await asyncio.gather(*[_check_health(admin_client) for admin_client in admin_clients])
 
 
+NCCL_READY_MARKER = "NCCL_READY"
+
+
 async def update_weights(
-    admin_clients: list[AsyncClient], weight_dir: Path | None, lora_name: str | None = None
+    admin_clients: list[AsyncClient],
+    weight_dir: Path | None,
+    lora_name: str | None = None,
 ) -> None:
-    """Make a HTTP post request to the vLLM server to update the weights."""
+    """Make a HTTP post request to the vLLM server to update the weights.
+
+    Creates a NCCL_READY marker file before calling the update endpoint to signal
+    to the trainer that inference workers are about to enter the receive path.
+    This marker is only used in NCCL broadcast mode but is harmless in filesystem mode.
+    """
     logger = get_logger()
 
     weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
@@ -122,6 +133,13 @@ async def update_weights(
                     logger.warning("The route /update_weights does not exist. Skipping weight update.")
                     return
                 raise
+
+        # Create ready marker before servers enter receive path (used by NCCL broadcast)
+        if weight_dir is not None:
+            nccl_ready_file = weight_dir / NCCL_READY_MARKER
+            nccl_ready_file.parent.mkdir(parents=True, exist_ok=True)
+            nccl_ready_file.touch()
+            logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
 
         await asyncio.gather(*[_update_weights(admin_client, weight_dir_posix) for admin_client in admin_clients])
 
@@ -144,20 +162,34 @@ async def reload_weights(admin_clients: list[AsyncClient]) -> None:
     await asyncio.gather(*[_reload_weights(admin_client) for admin_client in admin_clients])
 
 
-async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lora_path: Path) -> None:
-    """Make a HTTP post request to the vLLM server to load a LoRA adapter."""
-    logger = get_logger()
+def _is_retryable_lora_error(exception: BaseException) -> bool:
+    """Check if an exception should trigger a retry for LoRA loading."""
+    if isinstance(exception, httpx.HTTPStatusError):
+        # Retry on 404 (adapter not found) or 500 (server error during loading)
+        return exception.response.status_code in (404, 500)
+    return False
 
+
+async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lora_path: Path) -> None:
+    """Make a HTTP post request to the vLLM server to load a LoRA adapter.
+
+    Retries with exponential backoff if the adapter files are not found,
+    which can happen due to NFS propagation delays.
+    """
+    logger = get_logger()
     lora_path_posix = lora_path.as_posix()
 
+    @retry(
+        retry=retry_if_exception(_is_retryable_lora_error),
+        stop=stop_after_attempt(10),
+        wait=wait_exponential(multiplier=1, min=1, max=30),
+        reraise=True,
+    )
     async def _load_lora_adapter(admin_client: AsyncClient) -> None:
         logger.debug(f"Sending request to load LoRA adapter {lora_name} from {lora_path}")
         response = await admin_client.post(
             "/v1/load_lora_adapter",
-            json={
-                "lora_name": lora_name,
-                "lora_path": lora_path_posix,
-            },
+            json={"lora_name": lora_name, "lora_path": lora_path_posix},
         )
         response.raise_for_status()
 

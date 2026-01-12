@@ -8,6 +8,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.rl.config import FakeDataLoaderConfig
 from prime_rl.trainer.rl.packer import Packer
+from prime_rl.trainer.runs import get_runs
 from prime_rl.trainer.world import get_world
 from prime_rl.transport import MicroBatch, MicroBatchReceiver, TransportConfigType, setup_micro_batch_receiver
 
@@ -20,22 +21,12 @@ class TensorMicroBatch(TypedDict):
     position_ids: Int[Tensor, "batch seq"]
     advantages: Float[Tensor, "batch seq"]
     inference_logprobs: Float[Tensor, "batch seq"]
+    teacher_logprobs: Float[Tensor, "batch seq"] | None
     loss_mask: Bool[Tensor, "batch seq"]
 
     # Batch level
     temperature: float
-
-
-def micro_batch_to_tensor(micro_batch: MicroBatch) -> TensorMicroBatch:
-    """Convert a MicroBatch (msgspec struct with lists) to a TensorMicroBatch (dict with tensors)."""
-    return TensorMicroBatch(
-        input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),
-        position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
-        advantages=torch.tensor(micro_batch.advantages, dtype=torch.float).unsqueeze(0),
-        inference_logprobs=torch.tensor(micro_batch.inference_logprobs, dtype=torch.float).unsqueeze(0),
-        loss_mask=torch.tensor(micro_batch.loss_mask, dtype=torch.bool).unsqueeze(0),
-        temperature=micro_batch.temperature if micro_batch.temperature is not None else 1.0,
-    )
+    lora_num_tokens: Int[Tensor, "n_loras"]
 
 
 class FakeDataLoader:
@@ -50,6 +41,7 @@ class FakeDataLoader:
         self.seq_len = seq_len
         self.generate_samples = config.generate_samples
         self.batch_counter = 0
+        self.runs = get_runs()
 
     def wait_for_batch(self) -> None:
         return
@@ -92,17 +84,23 @@ class FakeDataLoader:
         loss_mask = torch.ones(input_ids.shape[0], dtype=torch.bool)
         advantages = torch.randn(input_ids.shape[0], generator=generator)
         inference_logprobs = torch.randn(input_ids.shape[0], generator=generator)
+        lora_num_tokens = torch.zeros(self.runs.max_runs, dtype=torch.int32)
+        lora_num_tokens[0] = input_ids.shape[0]
 
         return {
             "input_ids": input_ids.unsqueeze(0),
             "position_ids": position_ids.unsqueeze(0),
             "advantages": advantages.unsqueeze(0),
             "inference_logprobs": inference_logprobs.unsqueeze(0),
+            "teacher_logprobs": None,
             "temperature": 1.0,
             "loss_mask": loss_mask.unsqueeze(0),
+            "lora_num_tokens": lora_num_tokens,
         }
 
     def _get_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
+        lora_num_tokens = torch.zeros(self.runs.max_runs, dtype=torch.int32)
+        lora_num_tokens[0] = self.seq_len
         return {
             "input_ids": torch.randint(
                 0,
@@ -116,8 +114,10 @@ class FakeDataLoader:
             "position_ids": torch.cat([torch.arange(self.seq_len)]).unsqueeze(0),
             "advantages": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
             "inference_logprobs": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
+            "teacher_logprobs": None,
             "temperature": 1.0,
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
+            "lora_num_tokens": lora_num_tokens,
         }
 
 
@@ -148,6 +148,7 @@ class DataLoader:
 
         non_dp_world_size = self.world.world_size // dp_world_size
         dp_rank = self.world.rank // non_dp_world_size
+        self.runs = get_runs()
 
         self.receiver: MicroBatchReceiver = setup_micro_batch_receiver(output_dir, dp_rank, start_step, config)
 
@@ -155,7 +156,24 @@ class DataLoader:
         if self.world.is_master:
             self.packer.pack()
         self.receiver.wait()
+        self.runs.sync_runs()
 
     def get_batch(self) -> list[TensorMicroBatch]:
         micro_batches = self.receiver.receive()
-        return [micro_batch_to_tensor(mb) for mb in micro_batches]
+        return [self._micro_batch_to_tensor(mb) for mb in micro_batches]
+
+    def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:
+        """Convert a MicroBatch (msgspec struct with lists) to a TensorMicroBatch (dict with tensors)."""
+        if micro_batch.lora_num_tokens is None:
+            micro_batch.lora_num_tokens = [0] * self.runs.max_runs
+            micro_batch.lora_num_tokens[0] = len(micro_batch.input_ids)
+        return TensorMicroBatch(
+            input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),
+            position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
+            advantages=torch.tensor(micro_batch.advantages, dtype=torch.float).unsqueeze(0),
+            inference_logprobs=torch.tensor(micro_batch.inference_logprobs, dtype=torch.float).unsqueeze(0),
+            teacher_logprobs=torch.tensor(micro_batch.teacher_logprobs, dtype=torch.float).unsqueeze(0) if micro_batch.teacher_logprobs is not None else None,
+            loss_mask=torch.tensor(micro_batch.loss_mask, dtype=torch.bool).unsqueeze(0),
+            temperature=micro_batch.temperature,
+            lora_num_tokens=torch.tensor(micro_batch.lora_num_tokens, dtype=torch.int32),
+        )

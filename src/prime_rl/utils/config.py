@@ -171,3 +171,23 @@ class HeartbeatConfig(BaseConfig):
     """Configures the heartbeat for BetterStack."""
 
     url: Annotated[str, Field(description="The URL to send the heartbeat to.")]
+
+
+class MetricsServerConfig(BaseConfig):
+    """Configures the Prometheus metrics server for trainer observability."""
+
+    port: Annotated[
+        int,
+        Field(
+            ge=1,
+            le=65535,
+            description="Port to expose metrics and health endpoints. Defaults to 8000.",
+        ),
+    ] = 8000
+
+    host: Annotated[
+        str,
+        Field(
+            description="Host to bind the server to. Defaults to 0.0.0.0.",
+        ),
+    ] = "0.0.0.0"

@@ -1,19 +1,22 @@
+"""
+Scheduler that runs environments in subprocesses.
+
+Isolates event loop lag from environment execution.
+"""
+
 import asyncio
 import time
-from itertools import cycle
 from typing import NamedTuple
 
-import verifiers as vf
 from httpx import AsyncClient
-from openai import AsyncOpenAI
 from tqdm import tqdm
-from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
-from verifiers import Environment
 
 from prime_rl.orchestrator.buffer import Buffer
-from prime_rl.orchestrator.config import OrchestratorConfig
+from prime_rl.orchestrator.config import EnvConfig, OrchestratorConfig
+from prime_rl.orchestrator.env_worker import EnvWorker, WorkerDiedError
 from prime_rl.orchestrator.utils import get_sampling_args
 from prime_rl.utils.client import update_weights
+from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import (
     get_broadcast_dir,
@@ -21,18 +24,21 @@ from prime_rl.utils.utils import (
     get_step_path,
     wait_for_path,
 )
-from prime_rl.utils.vf import generate_group
 
 
 class InflightRolloutInfo(NamedTuple):
     """Metadata for an in-flight group rollout request."""
 
     off_policy_steps: int
-    client: AsyncOpenAI
+    worker: EnvWorker
+    request_id: str
 
 
 class Scheduler:
-    """Asynchronously schedules group rollout requests and re-schedules them as they complete (continuous batching). Updates policy in between group rollout requests.
+    """Asynchronously schedules group rollout requests using subprocess workers.
+
+    Runs environment execution in separate processes to isolate event loop lag
+    from the main orchestrator process.
 
     References:
     - AReal: https://arxiv.org/abs/2505.24298v1
@@ -41,11 +47,10 @@ class Scheduler:
 
     def __init__(
         self,
-        clients: list[AsyncOpenAI],
         admin_clients: list[AsyncClient],
-        env: Environment,
+        client_config: ClientConfig,
+        env_configs: list[EnvConfig],
         buffer: Buffer,
-        tokenizer: PreTrainedTokenizerFast,
         config: OrchestratorConfig,
         oversampling_factor: float,
         max_async_level: int,
@@ -54,11 +59,9 @@ class Scheduler:
         lora_name: str | None = None,
     ):
         self.logger = get_logger()
-        self.clients = clients
         self.admin_clients = admin_clients
-        self.env = env
+        self.client_config = client_config
         self.buffer = buffer
-        self.tokenizer = tokenizer
         self.config = config
         self.batch_size = config.batch_size
         self.rollouts_per_example = config.rollouts_per_example
@@ -68,32 +71,88 @@ class Scheduler:
         self.max_off_policy_steps = max_off_policy_steps
         self.strict_async_level = strict_async_level
         self.lora_name = lora_name
-        self.inflight_group_rollouts: dict[asyncio.Task, InflightRolloutInfo] = {}
-        self.cycle_clients = cycle(self.clients)
-        self.step, self.ckpt_step = 0, 0
-        self.checkpoint_ready = asyncio.Event()
-        self.checkpoint_ready.set()  # Initially ready
-        self.update_weights_time, self.wait_for_ckpt_time = 0, 0
         self.sampling_args = get_sampling_args(config.sampling)
         self.model_name = self.config.model.name
 
-    async def schedule_group_rollout(self, client: AsyncOpenAI | None = None):
+        # Build example lookup dicts per env (example_id -> example)
+        self.example_lookups: dict[str, dict[int, dict]] = {}
+        for env_config in env_configs:
+            env_name = env_config.name or env_config.id
+            self.example_lookups[env_name] = buffer.example_buffer[env_name].copy()
+
+        # Create workers - multiple per env
+        self.workers_per_env = config.workers_per_env or 1
+        self.workers: dict[str, list[EnvWorker]] = {}
+        self.env_names: list[str] = []
+        for env_config in env_configs:
+            env_name = env_config.name or env_config.id
+            self.env_names.append(env_name)
+            self.workers[env_name] = []
+            for worker_idx in range(self.workers_per_env):
+                worker = EnvWorker(
+                    env_id=env_config.id,
+                    env_args=env_config.args,
+                    client_config=client_config,
+                    model_name=self.model_name,
+                    seq_len=config.seq_len,
+                    interleaved_rollouts=config.trajectory_strategy == "interleaved",
+                    max_concurrent=config.max_concurrent or -1,
+                    example_lookup=self.example_lookups[env_name],
+                    sampling_args=self.sampling_args,
+                    worker_name=f"{env_name}_{worker_idx}",
+                )
+                self.workers[env_name].append(worker)
+
+        # Track in-flight requests: future -> info
+        self.inflight_group_rollouts: dict[asyncio.Future, InflightRolloutInfo] = {}
+
+        self.step, self.ckpt_step = 0, 0
+        self.checkpoint_ready = asyncio.Event()
+        self.checkpoint_ready.set()
+        self.update_weights_time, self.wait_for_ckpt_time = 0, 0
+        self.cancelled_rollouts_count = 0
+
+        # Background tasks
+        self._response_collectors: list[asyncio.Task] = []
+
+    async def start(self):
+        """Start all workers and response collectors."""
+        total_workers = sum(len(workers) for workers in self.workers.values())
+        self.logger.info(f"Starting {total_workers} env worker(s) ({self.workers_per_env} per env)")
+        for workers in self.workers.values():
+            for worker in workers:
+                worker.start()
+                # Start response collector for each worker
+                task = asyncio.create_task(worker.collect_responses())
+                self._response_collectors.append(task)
+
+    async def stop(self):
+        """Stop all workers and collectors."""
+        for task in self._response_collectors:
+            task.cancel()
+        for workers in self.workers.values():
+            for worker in workers:
+                worker.stop()
+
+    async def schedule_group_rollout(self):
         """Asynchronously schedules a group rollout request."""
         example = self.buffer.sample_examples(n=1)[0]
-        if client is None:
-            client = next(self.cycle_clients)
-        group_rollout_request = asyncio.create_task(
-            generate_group(
-                client=client,
-                env=self.env,
-                model_name=self.model_name,
-                example=example,
-                rollouts_per_example=self.config.rollouts_per_example,
-                sampling_args=self.sampling_args,
-            )
+
+        # Route to worker for this example's environment
+        task = example["task"]
+        workers = self.workers[task]
+        worker = min(workers, key=lambda w: w.pending_count)
+
+        future, request_id = await worker.submit_request(
+            example_id=example["example_id"],
+            rollouts_per_example=self.config.rollouts_per_example,
         )
-        await asyncio.sleep(0)
-        self.inflight_group_rollouts[group_rollout_request] = InflightRolloutInfo(0, client)
+
+        self.inflight_group_rollouts[future] = InflightRolloutInfo(
+            off_policy_steps=0,
+            worker=worker,
+            request_id=request_id,
+        )
 
     async def update_policy_loop(self):
         """Continuously checks for new policy checkpoints."""
@@ -108,6 +167,7 @@ class Scheduler:
         next_ckpt_step = (
             async_away_ckpt_step if self.strict_async_level else max(async_away_ckpt_step, latest_ckpt_step)
         )
+
         if next_ckpt_step > self.ckpt_step:
             if next_ckpt_step == async_away_ckpt_step:
                 self.logger.info(
@@ -118,10 +178,12 @@ class Scheduler:
                 await wait_for_path(get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
                 self.wait_for_ckpt_time = time.perf_counter() - wait_for_ckpt_start_time
                 self.logger.debug(f"Waited for checkpoint {next_ckpt_step} for {self.wait_for_ckpt_time:.2f}s")
+
             self.logger.debug(
                 f"Got new policy with step {next_ckpt_step}. Updating weights and cancelling old rollout requests."
             )
 
+            # Update weights on inference servers
             update_weights_start_time = time.perf_counter()
             await update_weights(
                 self.admin_clients,
@@ -130,109 +192,149 @@ class Scheduler:
             )
             self.update_weights_time = time.perf_counter() - update_weights_start_time
             self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
+
             if self.lora_name is not None:
                 self.model_name = self.lora_name
+
+            # Update model name on all workers
+            for workers in self.workers.values():
+                for worker in workers:
+                    worker.update_model_name(self.model_name)
+
             self.checkpoint_ready.set()
 
-            # Cancel old rollout requests
-            tasks_to_remove = []
-            tasks_to_update = []
+            # Handle off-policy tracking - cancel old requests
+            futures_to_remove = []
+            futures_to_update = []
 
-            for task, (off_policy_steps, client) in self.inflight_group_rollouts.items():
-                if off_policy_steps > self.max_off_policy_steps and task.cancel():
-                    tasks_to_remove.append((task, client))
+            for future, info in self.inflight_group_rollouts.items():
+                if info.off_policy_steps > self.max_off_policy_steps:
+                    if not future.done():
+                        future.cancel()
+                    futures_to_remove.append((future, info.worker))
                 else:
-                    tasks_to_update.append((task, off_policy_steps + 1, client))
+                    futures_to_update.append((future, info.off_policy_steps + 1, info.worker, info.request_id))
 
-            # Remove cancelled tasks
-            for task, client in tasks_to_remove:
-                if self.inflight_group_rollouts.pop(task, None):
-                    await self.schedule_group_rollout(client)
+            # Remove cancelled
+            for future, worker in futures_to_remove:
+                self.inflight_group_rollouts.pop(future, None)
+            self.cancelled_rollouts_count += len(futures_to_remove)
 
-            # Update retention steps for remaining tasks
-            for task, off_policy_steps, client in tasks_to_update:
-                if self.inflight_group_rollouts.get(task, None):
-                    self.inflight_group_rollouts[task] = InflightRolloutInfo(
-                        off_policy_steps=off_policy_steps, client=client
+            # Update off-policy steps for remaining
+            for future, off_policy_steps, worker, request_id in futures_to_update:
+                if future in self.inflight_group_rollouts:
+                    self.inflight_group_rollouts[future] = InflightRolloutInfo(
+                        off_policy_steps=off_policy_steps,
+                        worker=worker,
+                        request_id=request_id,
                     )
 
-            if len(tasks_to_remove) > 0:
-                self.logger.warning(f"Cancelled and re-scheduled {len(tasks_to_remove)} old rollout requests.")
+            if len(futures_to_remove) > 0:
+                self.logger.warning(
+                    f"Cancelled {len(futures_to_remove)} old rollout requests (will refill naturally). Consider increasing max_off_policy_steps to avoid this."
+                )
 
             self.ckpt_step = next_ckpt_step
 
-    async def generate_batch(self, step: int) -> list[vf.State]:
-        """Continuously schedules group rollouts, allowing them to be in-flight across steps."""
+    async def generate_batch(self, step: int) -> list[dict]:
+        """Generate a batch of rollouts using workers.
+
+        Returns list of result dicts (not vf.State, since those stay in workers).
+        """
         self.step = step
 
         # Schedule initial tasks
         self.logger.debug("Starting to generate batch rollouts")
         while len(self.inflight_group_rollouts) < self.problems_per_batch:
-            await self.schedule_group_rollout()  # Schedule requests in round-robin fashion
+            await self.schedule_group_rollout()
 
-        batch_rollouts: list[vf.State] = []
+        batch_rollouts: list[dict] = []
         pbar = tqdm(total=self.config.batch_size, desc="Generating rollouts (train)")
+
         while len(batch_rollouts) < self.config.batch_size:
-            finished_group_rollouts, _ = await asyncio.wait(
-                self.inflight_group_rollouts, return_when=asyncio.FIRST_COMPLETED
+            # Wait for at least one future to complete
+            done, _ = await asyncio.wait(
+                self.inflight_group_rollouts.keys(),
+                return_when=asyncio.FIRST_COMPLETED,
             )
 
             await self.checkpoint_ready.wait()
 
-            for finished_group_rollout in finished_group_rollouts:
+            for finished_future in done:
                 if len(batch_rollouts) >= self.config.batch_size:
                     batch_rollouts = batch_rollouts[: self.config.batch_size]
                     break
 
-                # Safely pop the task info. If it returns None, the task was removed externally.
-                # This handles the race condition where update_policy() might have concurrently
-                # cancelled the task and removed it from inflight_group_rollouts.
-                popped_info = self.inflight_group_rollouts.pop(finished_group_rollout, None)
-                if popped_info is None:
+                # Safely pop the future from tracking
+                if self.inflight_group_rollouts.pop(finished_future, None) is None:
                     continue
-                _, client = popped_info
 
-                group_states: list[vf.State] = finished_group_rollout.result()
+                try:
+                    group_results: list[dict] = finished_future.result()
 
-                self.buffer.update(group_states)
-                accepted_rollouts = self.buffer.sample_rollouts(n=self.config.rollouts_per_example)
+                    # Update buffer with results
+                    self.buffer.update(group_results)
+                    accepted_rollouts = self.buffer.sample_rollouts(n=self.config.rollouts_per_example)
 
-                batch_rollouts.extend(accepted_rollouts)
-                pbar.update(len(accepted_rollouts))
+                    batch_rollouts.extend(accepted_rollouts)
+                    pbar.update(len(accepted_rollouts))
 
-                await self.schedule_group_rollout(client)
+                except asyncio.CancelledError:
+                    pass  # Request was cancelled, will be rescheduled
+                except WorkerDiedError:
+                    raise  # Re-raise to exit process for K8s restart
+                except Exception as e:
+                    self.logger.warning(f"Rollout failed: {e}")
 
+                await self.schedule_group_rollout()
+
+        pbar.close()
         return batch_rollouts
 
     @property
     def max_off_policy_level(self) -> int:
         if not self.inflight_group_rollouts:
             return 0
-        return max(retention_step for retention_step, _ in self.inflight_group_rollouts.values())
+        return max(info.off_policy_steps for info in self.inflight_group_rollouts.values())
 
     @property
     def min_off_policy_level(self) -> int:
         if not self.inflight_group_rollouts:
             return 0
-        return min(retention_step for retention_step, _ in self.inflight_group_rollouts.values())
+        return min(info.off_policy_steps for info in self.inflight_group_rollouts.values())
 
     @property
     def mean_off_policy_level(self) -> float:
         if not self.inflight_group_rollouts:
             return 0
-        retention_steps = [retention_step for retention_step, _ in self.inflight_group_rollouts.values()]
-        return sum(retention_steps) / len(retention_steps)
+        steps = [info.off_policy_steps for info in self.inflight_group_rollouts.values()]
+        return sum(steps) / len(steps)
 
     @property
     def async_level(self) -> int:
         return self.step - self.ckpt_step
 
     def get_metrics(self) -> dict[str, float]:
-        return {
+        metrics = {
             "time/wait_for_ckpt": self.wait_for_ckpt_time,
             "time/update_weights": self.update_weights_time,
             "batch/async_level": self.async_level,
             "batch/off_policy_level/max": self.max_off_policy_level,
             "batch/off_policy_level/mean": self.mean_off_policy_level,
             "batch/off_policy_level/min": self.min_off_policy_level,
+            "batch/cancelled_rollouts": self.cancelled_rollouts_count,
         }
+        self.cancelled_rollouts_count = 0
+
+        # Add per-worker lag metrics and pending counts
+        for workers in self.workers.values():
+            for worker in workers:
+                worker_key = worker.worker_name
+                # Track pending count per worker (useful for debugging load balancing)
+                metrics[f"worker/{worker_key}/pending"] = worker.pending_count
+                if worker.latest_lag_metrics:
+                    for metric_name, value in worker.latest_lag_metrics.items():
+                        # e.g. "worker_lag/env_0/max"
+                        metrics[f"worker_lag/{worker_key}/{metric_name.split('/')[-1]}"] = value
+
+        return metrics

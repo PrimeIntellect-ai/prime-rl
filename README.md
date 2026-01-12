@@ -34,7 +34,7 @@ PRIME-RL is a framework for large-scale asynchronous reinforcement learning. It 
 1. Integrates natively with [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) environments via the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars)
 2. Supports end-to-end post-training, including SFT and RL training and evals
 3. Multi-node deployment with [FSDP2](https://docs.pytorch.org/tutorials/intermediate/FSDP_tutorial.html) training and [vLLM](https://github.com/vllm-project/vllm) inference backend
-4. Designed for asynchronous training in decentralized settings
+4. Designed for asynchronous RL training for scaling agentic RL training at scale
 5. Hackable, modular and extensible by nature
 
 ## Setup

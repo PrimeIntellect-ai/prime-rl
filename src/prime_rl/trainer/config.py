@@ -80,7 +80,7 @@ class LoRAConfig(BaseConfig):
             ge=0,
             description="LoRA scaling parameter.",
         ),
-    ] = 16.0
+    ] = 32.0
 
     dropout: Annotated[
         float,
@@ -104,6 +104,7 @@ class LoRAConfig(BaseConfig):
         "gate_proj",
         "up_proj",
         "down_proj",
+        "experts",
     ]
 
     modules_to_save: Annotated[
@@ -196,11 +197,11 @@ class ModelConfig(BaseConfig):
     ] = 1
 
     impl: Annotated[
-        Literal["hf", "liger_kernel", "custom"],
+        Literal["hf", "liger_kernel", "custom", "auto"],
         Field(
-            description="Whether to use Liger Kernel.",
+            description="Model implementation to use. 'auto' (default) selects 'custom' if supported by the model, otherwise 'hf'.",
         ),
-    ] = "hf"
+    ] = "auto"
 
     optimization_dtype: Annotated[
         Literal["bfloat16", "float32"],
@@ -237,6 +238,13 @@ class ModelConfig(BaseConfig):
         ),
     ] = DebugModelConfig()
 
+    fused_lm_head_chunk_size: Annotated[
+        int | None,
+        Field(
+            description="The chunk size to use for the fused LM head. If None, will not use chunking. RL training auto-sets this to 2048 if not specified (except when impl='liger_kernel').",
+        ),
+    ] = None
+
     @model_validator(mode="after")
     def _map_model_name_for_moe(self):
         """Map model name if it exists in MOE_MODEL_MAPS."""
@@ -248,14 +256,30 @@ class ModelConfig(BaseConfig):
     def trust_remote_code_only_with_hf(self):
         """Trust remote code only if the model is from HF."""
         if self.trust_remote_code:
-            if self.impl != "hf":
-                raise ValueError("Trust remote code is only supported with the HF implementation.")
+            if self.impl not in ("hf", "auto"):
+                raise ValueError("Trust remote code is only supported with the HF implementation or auto mode.")
         return self
 
     @model_validator(mode="after")
     def cp_only_with_flash_attn(self):
         if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3"]:
             raise ValueError("CP is only supported with flash attention 2 or flash attention 3")
+        return self
+
+    @model_validator(mode="after")
+    def ac_offloading_requires_ac(self):
+        """Automatically enable activation checkpointing when activation offloading is enabled."""
+        if self.ac_offloading is not None and self.ac is None:
+            self.ac = ActivationCheckpointConfig()
+        return self
+
+    @model_validator(mode="after")
+    def fused_lm_head_chunk_size_is_valid(self):
+        if self.fused_lm_head_chunk_size is not None:
+            low = 512
+            if self.fused_lm_head_chunk_size < low:
+                raise ValueError(f"Fused LM head chunk size must be greater than {low}")
+
         return self
 
 
@@ -398,11 +422,19 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = None
 
-    keep: Annotated[
+    keep_last: Annotated[
         int | None,
         Field(
             ge=1,
-            description="Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints.",
+            description="Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency.",
+        ),
+    ] = None
+
+    keep_interval: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Keep checkpoints at every N steps permanently (e.g., keep_interval=100 keeps step 100, 200, ...). If None, no interval-based keeping.",
         ),
     ] = None
 

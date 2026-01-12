@@ -56,6 +56,9 @@ synthesize = "prime_rl.synthesize.synthesize:main"
 flash-attn = [
     "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.6.8/flash_attn-2.8.3+cu128torch2.9-cp312-cp312-linux_x86_64.whl",
 ]
+metrics = [
+    "prometheus_client>=0.20.0",
+]
 
 [dependency-groups]
 dev = [
@@ -74,7 +77,7 @@ prerelease = "allow"
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
 reverse-text = { index = "primeintellect" }
-verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "cdbc417" }
+verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "eb3bae36c93b2f574e13a39da2908609d4ec4b2f" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "main" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 

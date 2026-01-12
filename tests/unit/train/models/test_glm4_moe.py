@@ -5,6 +5,7 @@ from transformers import Glm4MoeForCausalLM as HFGlm4MoeForCausalLM
 
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig
 from prime_rl.trainer.models.glm4_moe import Glm4MoeForCausalLM as PrimeRLGlm4MoeForCausalLM
+from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.utils.utils import default_dtype
 
 pytestmark = [pytest.mark.gpu]
@@ -26,6 +27,7 @@ def get_model_pairs() -> tuple[HFGlm4MoeForCausalLM, PrimeRLGlm4MoeForCausalLM]:
         rope_theta=1000000.0,
         first_k_dense_replace=1,
         partial_rotary_factor=0.5,
+        use_grouped_mm=False,
     )
     # TODO: We should test this path because it's the most performant
     # But the grad seems to be off in attn because of precision
@@ -39,6 +41,8 @@ def get_model_pairs() -> tuple[HFGlm4MoeForCausalLM, PrimeRLGlm4MoeForCausalLM]:
         prime_state_keys = prime_model.state_dict().keys()
         prime_model.convert_to_prime(state_dict)
         prime_model.load_state_dict(state_dict)
+    # Training code wraps the LM head; tests should mirror that (so forward can accept labels/temperature).
+    inject_prime_lm_head(prime_model, chunk_size=None)
     assert set(prime_state_keys) - set(state_dict.keys()) == set()
     return hf_model, prime_model
 
@@ -57,9 +61,9 @@ def test_glm4_moe_attn_only() -> None:
     hf_output = hf_model(input_ids, position_ids)
     prime_output = prime_model(input_ids, position_ids)
     hf_output.logits.sum().backward()
-    prime_output.logits.sum().backward()
+    prime_output["logits"].sum().backward()
 
-    logits_diff = prime_output.logits - hf_output.logits
+    logits_diff = prime_output["logits"] - hf_output.logits
     assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=2e-2), (
         f"Max logits diff: {logits_diff.abs().max()}"
     )
@@ -85,9 +89,9 @@ def test_glm4_moe_mlp_only() -> None:
     hf_output = hf_model(input_ids, position_ids)
     prime_output = prime_model(input_ids, position_ids)
     hf_output.logits.sum().backward()
-    prime_output.logits.sum().backward()
+    prime_output["logits"].sum().backward()
 
-    logits_diff = prime_output.logits - hf_output.logits
+    logits_diff = prime_output["logits"] - hf_output.logits
     assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=2e-2), (
         f"Max logits diff: {logits_diff.abs().max()}"
     )
@@ -105,9 +109,9 @@ def test_glm4_moe() -> None:
     hf_output = hf_model(input_ids, position_ids)
     prime_output = prime_model(input_ids, position_ids)
     hf_output.logits.sum().backward()
-    prime_output.logits.sum().backward()
+    prime_output["logits"].sum().backward()
 
-    logits_diff = prime_output.logits - hf_output.logits
+    logits_diff = prime_output["logits"] - hf_output.logits
     assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=2e-2), (
         f"Max logits diff: {logits_diff.abs().max()}"
     )

@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from beartype import beartype as typechecker
 from huggingface_hub import snapshot_download
-from jaxtyping import Float, Int, jaxtyped
+from jaxtyping import Int, jaxtyped
 from liger_kernel.transformers import AutoLigerKernelForCausalLM
 from torch import Tensor
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
@@ -20,7 +20,14 @@ from transformers.utils.import_utils import is_flash_attn_3_available
 
 from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, ModelConfig, TokenizerConfig
 from prime_rl.trainer.lora import apply_lora_to_model, strip_lora_from_state_dict
-from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL, PreTrainedModelPrimeRL
+from prime_rl.trainer.models import (
+    AutoModelForCausalLMPrimeRL,
+    PreTrainedModelPrimeRL,
+    PrimeLmOutput,
+    cast_float_and_contiguous,
+    supports_custom_impl,
+)
+from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.weights import (
     load_state_dict,
@@ -94,8 +101,17 @@ def get_model(
         )
         model_config.num_hidden_layers = num_hidden_layers
 
+    # Determine the implementation to use
+    if config.impl == "auto":
+        impl_to_use = "custom" if supports_custom_impl(model_config) else "hf"
+        logger.info(
+            f"Auto-selected implementation: {impl_to_use} (custom implementation {'supported' if supports_custom_impl(model_config) else 'not supported'})"
+        )
+    else:
+        impl_to_use = config.impl
+
     with device:
-        match config.impl:
+        match impl_to_use:
             case "hf":
                 model_cls = AutoModelForCausalLM
             case "liger_kernel":
@@ -332,6 +348,7 @@ def setup_model(
 
     # 1. We load to meta device by default
     model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype])
+
     possible_to_load_to_meta = can_reinit_empty_buffers(model)
 
     if config.debug.random_init and not possible_to_load_to_meta:
@@ -343,6 +360,8 @@ def setup_model(
     if not possible_to_load_to_meta:
         logger.warning("Cannot load model to meta device only, loading to CPU instead.")
         model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype])
+
+    inject_prime_lm_head(model, chunk_size=config.fused_lm_head_chunk_size)
 
     # Apply LoRA before FSDP setup
     if config.lora is not None:
@@ -379,6 +398,16 @@ def setup_model(
 
 @jaxtyped(typechecker=typechecker)
 def forward(
-    model: nn.Module, input_ids: Int[Tensor, "batch seq"], position_ids: Int[Tensor, "batch seq"]
-) -> Float[Tensor, "batch seq vocab"]:
-    return model(input_ids=input_ids, position_ids=position_ids).logits
+    model: nn.Module,
+    input_ids: Int[Tensor, "batch seq"],
+    position_ids: Int[Tensor, "batch seq"],
+    labels: Int[Tensor, "batch seq"] | None = None,
+    temperature: float | None = None,
+) -> PrimeLmOutput:
+    out = model(input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature)
+
+    # PrimeLmOutput is a TypedDict (dict at runtime), HF outputs are dataclass-like objects
+    if isinstance(out, dict):
+        return cast_float_and_contiguous(out)
+
+    return cast_float_and_contiguous(PrimeLmOutput(logits=out.logits))

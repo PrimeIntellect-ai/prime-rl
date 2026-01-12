@@ -1,0 +1,14 @@
+# Trainer config for multi-run RL integration test
+max_steps = 1000
+max_concurrent_runs = 2
+max_async_level = 5
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[model.lora]
+rank = 8
+
+[weight_broadcast]
+adapter_only = true
+

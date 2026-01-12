@@ -8,7 +8,6 @@ from prime_rl.trainer.runs import get_runs
 from prime_rl.transport import (
     MicroBatchSender,
     TrainingBatch,
-    TrainingSample,
     TransportConfigType,
     setup_micro_batch_sender,
     setup_training_batch_receiver,
@@ -61,6 +60,7 @@ class Packer:
             return False
 
     def pack(self):
+        assert all(not i for i in self.runs.ready_to_update), "No runs should be ready to update at start of pack."
         training_batches: dict[int, TrainingBatch] = self.get_batch()
         start_time = time.time()
         while not self.has_enough_tokens(training_batches):
@@ -70,27 +70,28 @@ class Packer:
             time.sleep(1)
             training_batches = self.get_batch()
 
-        train_examples: list[TrainingSample] = []
-        train_idxs = []
+        # We pack this way because MultiLoRAMoE currently does not support having different run_idx
+        # in a microbatch. So we need to pad at run_idx boundaries to prevent there being different
+        # run idxs in sequences and across data world size.
+        micro_batch_grid = [[] for _ in range(self.dp_world_size)]
         for idx, training_batch in training_batches.items():
             self.runs.progress[idx].step += 1
             self.runs.progress[idx].total_tokens += sum(
                 len(rollout.prompt_ids) + len(rollout.completion_ids) for rollout in training_batch.examples
             )
             self.runs.progress[idx].total_samples += len(training_batch.examples)
-            train_examples.extend(training_batch.examples)
-            train_idxs.extend([idx] * len(training_batch.examples))
             self.runs.ready_to_update[idx] = True
 
-        # TODO: Handle different temperatures for each run
-        some_temperature = next(iter(training_batches.values())).temperature
-        micro_batch_grid = prepare_batch(
-            rollouts=train_examples,
-            temperature=some_temperature,
-            seq_len=self.seq_len,
-            pad_to_multiple_of=self.pad_to_multiple_of,
-            num_train_workers=self.dp_world_size,
-            # idxs=train_idxs, # Needed for lora later
-        )
+            _micro_batch_grid = prepare_batch(
+                rollouts=training_batch.examples,
+                temperature=training_batch.temperature,
+                seq_len=self.seq_len,
+                pad_to_multiple_of=self.pad_to_multiple_of,
+                num_train_workers=self.dp_world_size,
+                idxs=[idx] * len(training_batch.examples),
+                num_loras=self.runs.max_runs,
+            )
+            for i, micro_batch in enumerate(_micro_batch_grid):
+                micro_batch_grid[i].extend(micro_batch)
 
         self.sender.send(micro_batch_grid)

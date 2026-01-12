@@ -11,7 +11,7 @@ resume_step = 20
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 [trainer.optim]
-lr = 1e-4
+lr = 5e-5
 
 [trainer.model.lora]
 rank = 8
@@ -19,13 +19,12 @@ rank = 8
 [trainer.ckpt.weights]
 save_adapter_separately = true
 
-[trainer.weight_broadcast]
-adapter_only = true
-
 [orchestrator]
 batch_size = 128
 rollouts_per_example = 16
-lora_name = "r8-1e-4"
+
+[orchestrator.model.lora]
+name = "r8-1e-4"
 
 [orchestrator.sampling]
 max_tokens = 128
@@ -35,3 +34,4 @@ id = "reverse-text"
 
 [inference]
 enable_lora = true
+gpu_memory_utilization = 0.7

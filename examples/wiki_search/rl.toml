@@ -17,7 +17,6 @@ weight_decay = 0.0
 
 [trainer.model.lora]
 rank = 8
-alpha = 32
 dropout = 0.0
 target_modules = [
     "q_proj",
@@ -33,7 +32,9 @@ target_modules = [
 batch_size = 512
 rollouts_per_example = 16
 oversampling_factor = 2.0
-lora_name = "qwen3-4b-wiki-search"
+
+[orchestrator.model.lora]
+name = "qwen3-4b-wiki-search"
 
 [orchestrator.sampling]
 max_tokens = 512

@@ -2432,6 +2432,9 @@ dependencies = [
 flash-attn = [
     { name = "flash-attn" },
 ]
+metrics = [
+    { name = "prometheus-client" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -2461,6 +2464,7 @@ requires-dist = [
     { name = "openai", specifier = ">=1.106.1" },
     { name = "prime", specifier = ">=0.5.0" },
     { name = "prime-evals", specifier = ">=0.1.5" },
+    { name = "prometheus-client", marker = "extra == 'metrics'", specifier = ">=0.20.0" },
     { name = "pydantic", specifier = ">=1.10.13" },
     { name = "pydantic-settings", specifier = ">=2.10.1" },
     { name = "pylatexenc", specifier = ">=2.10" },
@@ -2478,11 +2482,11 @@ requires-dist = [
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
     { name = "transformers", specifier = ">=4.56.0" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=cdbc417" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=eb3bae36c93b2f574e13a39da2908609d4ec4b2f" },
     { name = "vllm", specifier = "==0.12.0" },
     { name = "wandb", specifier = ">=0.20.1" },
 ]
-provides-extras = ["flash-attn"]
+provides-extras = ["flash-attn", "metrics"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -3815,7 +3819,7 @@ wheels = [
 [[package]]
 name = "verifiers"
 version = "0.1.8.post2"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=cdbc417#cdbc417ad23e66642fa846c5579f9c5002d1bc10" }
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=eb3bae36c93b2f574e13a39da2908609d4ec4b2f#eb3bae36c93b2f574e13a39da2908609d4ec4b2f" }
 dependencies = [
     { name = "datasets" },
     { name = "jinja2" },

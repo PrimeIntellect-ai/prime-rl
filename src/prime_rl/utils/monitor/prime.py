@@ -44,7 +44,9 @@ class PrimeMonitor(Monitor):
         # Get API key from environment variable
         api_key = os.getenv(config.api_key_var)
         if not api_key:
-            self.logger.warning(f"API key not found. Set {config.api_key_var} environment variable. PrimeMonitor will not be able to upload data.")
+            self.logger.warning(
+                f"API key not found. Set {config.api_key_var} environment variable. PrimeMonitor will not be able to upload data."
+            )
             self.enabled = False
             return
 
@@ -73,7 +75,7 @@ class PrimeMonitor(Monitor):
             if config.log_extras.distributions:
                 self.last_log_distributions_step = -1
 
-    def log(self, metrics: dict[str, Any]) -> None:
+    def log(self, metrics: dict[str, Any], step: int | None = None) -> None:
         self.history.append(metrics)
         if not self.is_master:
             return
@@ -112,23 +114,32 @@ class PrimeMonitor(Monitor):
         samples = []
         for rollout in rollouts:
             # Extract prompt and completion separately from the last trajectory step
-            last_step = rollout["trajectory"][-1]
+            trajectory = rollout["trajectory"]
+            if not trajectory:
+                continue
+            last_step = trajectory[-1]
             prompt_messages = last_step["prompt"]
             completion_messages = last_step["completion"]
-            
+
             # Serialize full trajectory array (excluding large response objects and token arrays)
             trajectory_data = []
             for traj_step in rollout["trajectory"]:
-                trajectory_data.append({
-                    "prompt": traj_step["prompt"],
-                    "completion": traj_step["completion"],
-                    "reward": traj_step.get("reward"),
-                    "advantage": traj_step.get("advantage"),
-                    "extras": traj_step.get("extras", {}),
-                    "num_input_tokens": len(traj_step.get("tokens", {}).get("prompt_ids", [])) if traj_step.get("tokens") else None,
-                    "num_output_tokens": len(traj_step.get("tokens", {}).get("completion_ids", [])) if traj_step.get("tokens") else None,
-                })
-            
+                trajectory_data.append(
+                    {
+                        "prompt": traj_step["prompt"],
+                        "completion": traj_step["completion"],
+                        "reward": traj_step.get("reward"),
+                        "advantage": traj_step.get("advantage"),
+                        "extras": traj_step.get("extras", {}),
+                        "num_input_tokens": len(traj_step.get("tokens", {}).get("prompt_ids", []))
+                        if traj_step.get("tokens")
+                        else None,
+                        "num_output_tokens": len(traj_step.get("tokens", {}).get("completion_ids", []))
+                        if traj_step.get("tokens")
+                        else None,
+                    }
+                )
+
             # Get info, timing, and metrics fields - send raw data, backend will serialize
             info = rollout.get("info")
             timing = rollout.get("timing")
@@ -160,7 +171,9 @@ class PrimeMonitor(Monitor):
             },
         )
         self.last_log_samples_step = step
-        self.logger.debug(f"Logged samples at step {step} to Prime Intellect API in {time.perf_counter() - start_time:.2f}s")
+        self.logger.debug(
+            f"Logged samples at step {step} to Prime Intellect API in {time.perf_counter() - start_time:.2f}s"
+        )
 
     def log_final_samples(self) -> None:
         """Log final samples (no-op - samples are logged per-step only)."""
@@ -197,7 +210,9 @@ class PrimeMonitor(Monitor):
             },
         )
         self.last_log_distributions_step = step
-        self.logger.debug(f"Logged distributions at step {step} to Prime Intellect API in {time.perf_counter() - start_time:.2f}s")
+        self.logger.debug(
+            f"Logged distributions at step {step} to Prime Intellect API in {time.perf_counter() - start_time:.2f}s"
+        )
 
     def save_final_summary(self, filename: str = "final_summary.json") -> None:
         """Save final summary to Prime Intellect API."""
@@ -248,7 +263,7 @@ class PrimeMonitor(Monitor):
             "Content-Type": "application/json",
         }
         full_endpoint = f"{self.base_url}/{endpoint}"
-        
+
         for attempt in range(max_retries):
             try:
                 response = await self._client.post(
@@ -261,11 +276,15 @@ class PrimeMonitor(Monitor):
             except Exception as e:
                 is_last_attempt = attempt == max_retries - 1
                 if is_last_attempt:
-                    self.logger.warning(f"Failed to upload to Prime Intellect API ({endpoint}) after {max_retries} attempts: {type(e).__name__}: {e}")
+                    self.logger.warning(
+                        f"Failed to upload to Prime Intellect API ({endpoint}) after {max_retries} attempts: {type(e).__name__}: {e}"
+                    )
                 else:
                     # Exponential backoff: 1s, 2s, 4s...
-                    delay = 2 ** attempt
-                    self.logger.debug(f"Retrying {endpoint} upload in {delay}s (attempt {attempt + 1}/{max_retries}): {type(e).__name__}: {e}")
+                    delay = 2**attempt
+                    self.logger.debug(
+                        f"Retrying {endpoint} upload in {delay}s (attempt {attempt + 1}/{max_retries}): {type(e).__name__}: {e}"
+                    )
                     await asyncio.sleep(delay)
 
     def _make_request(self, endpoint: str, data: dict[str, Any]) -> None:

@@ -13,7 +13,7 @@ from prime_rl.trainer.config import (
     TokenizerConfig,
 )
 from prime_rl.transport.config import FileSystemTransportConfig, TransportConfigType
-from prime_rl.utils.config import HeartbeatConfig, LogConfig, WandbConfig
+from prime_rl.utils.config import HeartbeatConfig, LogConfig, MetricsServerConfig, WandbConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
@@ -23,23 +23,36 @@ class LossConfig(BaseConfig):
     ratio_type: Annotated[Literal["token", "sequence"], Field(description="Type of importance ratio to use.")] = "token"
 
     token_mask_high: Annotated[
-        float, 
-        Field(ge=0, description="The high threshold for token importance ratio to mask.")] = 8.0 
+        float, Field(ge=0, description="The high threshold for token importance ratio to mask.")
+    ] = 8.0
     token_mask_low: Annotated[
-        float, 
-        Field(ge=0, description="The low threshold for token importance ratio to mask.")] = 0.125
-    sequence_clip_high: Annotated[float, Field(ge=0, description="The high threshold for sequence importance ratio to clip.")] = 10.0
-    geo_mask_high: Annotated[float, Field(ge=0, description="The high threshold for geo importance ratio to mask.")] = 10.0
+        float, Field(ge=0, description="The low threshold for token importance ratio to mask.")
+    ] = 0.125
+    sequence_clip_high: Annotated[
+        float, Field(ge=0, description="The high threshold for sequence importance ratio to clip.")
+    ] = 10.0
+    geo_mask_high: Annotated[float, Field(ge=0, description="The high threshold for geo importance ratio to mask.")] = (
+        10.0
+    )
     geo_mask_low: Annotated[float, Field(ge=0, description="The low threshold for geo importance ratio to mask.")] = 0.1
-    kl_tau: Annotated[float, Field(ge=0, description="The tau for KL divergence.")] = 0.0
     sequence_mask_low: Annotated[
         float,
-        Field(ge=0, description="If set, masks entire sequences when any generated token has an importance ratio below this value."),
+        Field(
+            ge=0,
+            description="If set, masks entire sequences when any generated token has an importance ratio below this value.",
+        ),
     ] = 0.0
     sequence_mask_high: Annotated[
         float,
-        Field(ge=0, description="If set, masks entire sequences when any generated token has an importance ratio above this value."),
+        Field(
+            ge=0,
+            description="If set, masks entire sequences when any generated token has an importance ratio above this value.",
+        ),
     ] = 100.0
+
+    adv_tau: Annotated[float, Field(ge=0, description="The tau for advantages.")] = 1.0
+    teacher_tau: Annotated[float, Field(ge=0, description="The tau for teacher logprobs.")] = 0.0
+    kl_tau: Annotated[float, Field(ge=0, description="The tau for KL divergence.")] = 0.0
 
     @model_validator(mode="after")
     def validate_mask_bounds(self):
@@ -76,7 +89,7 @@ class DataLoaderConfig(BaseConfig):
 class BaseWeightBroadcastConfig(BaseModel):
     """Configures the base weight broadcast."""
 
-    adapter_only: Annotated[bool, Field(description="Whether to save LoRA adapters only for weight broadcast.")] = False
+    pass
 
 
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
@@ -183,13 +196,18 @@ class RLTrainerConfig(BaseSettings):
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
     ] = None
 
+    metrics_server: Annotated[
+        MetricsServerConfig | None,
+        Field(description="Prometheus metrics server config. If set, exposes /metrics endpoint for scraping."),
+    ] = None
+
     max_concurrent_runs: Annotated[
         int,
         Field(
             ge=1,
             description="The maximum number of concurrent runs to allow. If 1, then only one run will be allowed at a time.",
         ),
-    ] = 4
+    ] = 1
 
     @model_validator(mode="after")
     def auto_setup_bench(self):
@@ -237,9 +255,7 @@ class RLTrainerConfig(BaseSettings):
 
     @model_validator(mode="after")
     def validate_lora_broadcast(self):
-        if self.weight_broadcast.adapter_only and not self.model.lora:
-            raise ValueError("Adapter only weight broadcast requires LoRA to be enabled.")
-        if self.weight_broadcast.type == "nccl" and self.weight_broadcast.adapter_only:
+        if self.model.lora is not None and self.weight_broadcast.type == "nccl":
             # TODO: Support this
             raise ValueError("NCCL weight broadcast does not support LoRA yet.")
         return self
@@ -250,4 +266,10 @@ class RLTrainerConfig(BaseSettings):
             self.tokenizer.name = self.model.name
         if self.tokenizer.trust_remote_code is None:
             self.tokenizer.trust_remote_code = self.model.trust_remote_code
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_fused_lm_head_chunk_size(self):
+        if self.model.fused_lm_head_chunk_size is None and self.model.impl != "liger_kernel":
+            self.model.fused_lm_head_chunk_size = 2048
         return self

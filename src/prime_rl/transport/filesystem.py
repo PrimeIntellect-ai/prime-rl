@@ -38,6 +38,7 @@ class FileSystemTrainingBatchReceiver(TrainingBatchReceiver):
         self.runs = get_runs()
         self._last_logged_paths: list[Path] | None = None
         self._last_logged_time = time()
+        self._waiting_since: float | None = None
 
     def _get_batch_path(self, idx: int) -> Path:
         """Get the batch file path for a specific run at its current step."""
@@ -56,15 +57,26 @@ class FileSystemTrainingBatchReceiver(TrainingBatchReceiver):
     def receive(self) -> list[TrainingBatch]:
         """Read and return all available batches from all runs."""
         batches: list[TrainingBatch] = []
+        now = time()
+
+        # Track how long we've been waiting for any new batch to appear.
+        if self.can_receive():
+            self._waiting_since = None
+        else:
+            self._waiting_since = self._waiting_since or now
+
         current_paths = [self._get_batch_path(idx) for idx in self.runs.used_idxs]
-        if current_paths != self._last_logged_paths or time() - self._last_logged_time > LOG_FREQ_SECONDS:
+        if current_paths != self._last_logged_paths or now - self._last_logged_time > LOG_FREQ_SECONDS:
             if len(current_paths) == 0:
                 self.logger.debug(
                     "Did you set the output dir of the orchestrator to a run_* subdirectory of the trainer output dir?"
                 )
-            self.logger.debug(f"Looking for batches in {current_paths}")
+            waiting_suffix = ""
+            if self._waiting_since is not None:
+                waiting_suffix = f" (waiting {now - self._waiting_since:.1f}s)"
+            self.logger.debug(f"Looking for batches in {current_paths}{waiting_suffix}")
             self._last_logged_paths = current_paths
-            self._last_logged_time = time()
+            self._last_logged_time = now
         for idx in list(self.runs.used_idxs):
             if self.runs.ready_to_update[idx]:
                 continue

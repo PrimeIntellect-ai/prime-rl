@@ -1,18 +1,70 @@
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 
 from prime_rl.transport.config import FileSystemTransportConfig, TransportConfigType
 from prime_rl.utils.config import (
     ClientConfig,
     HeartbeatConfig,
     LogConfig,
-    ModelConfig,
     PrimeMonitorConfig,
     WandbWithExtrasConfig,
 )
+from prime_rl.utils.config import (
+    ModelConfig as BaseModelConfig,
+)
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
+
+
+class OptimizerConfig(BaseConfig):
+    """Per-run optimizer configuration for multi-run training."""
+
+    lr: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="Learning rate for this run.",
+        ),
+    ] = 1e-4
+
+
+class LoRAConfig(BaseConfig):
+    """Per-run LoRA configuration for multi-run training."""
+
+    name: Annotated[
+        str | None,
+        Field(
+            description="Name of the LoRA adapter. If None, auto-generated from rank and alpha.",
+        ),
+    ] = None
+
+    rank: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="LoRA rank for this run. Must be <= trainer's max rank. If None, uses trainer's rank.",
+        ),
+    ] = None
+
+    alpha: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="LoRA alpha for this run.",
+        ),
+    ] = 32.0
+
+
+class ModelConfig(BaseModelConfig):
+    """Extended model configuration with per-run LoRA settings."""
+
+    lora: Annotated[
+        LoRAConfig | None,
+        Field(
+            description="LoRA configuration. If None, LoRA is not used.",
+        ),
+    ] = None
 
 
 class SamplingConfig(BaseConfig):
@@ -341,6 +393,17 @@ class OnlineEvalConfig(EvalConfig):
         ),
     ] = True
 
+    skip_eval_on_resume: Annotated[
+        bool,
+        Field(
+            validation_alias=AliasChoices("skip_eval_on_resume", "skip_eval_on_restart"),
+            description=(
+                "If True and resuming the orchestrator from a checkpoint, skip the (potentially redundant) "
+                "online eval that would otherwise run immediately at the resumed checkpoint step."
+            ),
+        ),
+    ] = True
+
 
 class CheckpointConfig(BaseConfig):
     """Configures checkpointing the orchestrator."""
@@ -355,11 +418,19 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = None
 
-    keep: Annotated[
+    keep_last: Annotated[
         int | None,
         Field(
             ge=1,
-            description="Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints.",
+            description="Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency.",
+        ),
+    ] = None
+
+    keep_interval: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Keep checkpoints at every N steps permanently (e.g., keep_interval=100 keeps step 100, 200, ...). If None, no interval-based keeping.",
         ),
     ] = None
 
@@ -445,6 +516,17 @@ class BufferConfig(BaseConfig):
         ),
     ] = ["task", "prompt"]
 
+    skip_verification: Annotated[
+        bool,
+        Field(
+            description=(
+                "Whether to skip verification of rollouts using the environment's rubric. "
+                "If True, rewards are always set to 0, online_difficulty_filtering is disabled, "
+                "and easy/hard thresholds are not used."
+            ),
+        ),
+    ] = False
+
     @model_validator(mode="after")
     def validate_thresholds(self):
         if self.easy_threshold is not None and self.hard_threshold is not None:
@@ -455,6 +537,27 @@ class BufferConfig(BaseConfig):
     def validate_env_ratios(self):
         if self.env_ratios is not None:
             assert all(ratio > 0 for ratio in self.env_ratios), "All env_ratios must be positive."
+        return self
+
+    @model_validator(mode="after")
+    def validate_skip_verification(self):
+        """Validate that skip_verification is not used with reward-dependent features."""
+        if self.skip_verification:
+            if self.online_difficulty_filtering:
+                raise ValueError(
+                    "skip_verification cannot be True when online_difficulty_filtering is True. "
+                    "These features depend on rewards which are disabled when skip_verification=True."
+                )
+            if self.easy_threshold is not None:
+                raise ValueError(
+                    "skip_verification cannot be True when easy_threshold is set. "
+                    "Easy threshold depends on rewards which are disabled when skip_verification=True."
+                )
+            if self.hard_threshold is not None:
+                raise ValueError(
+                    "skip_verification cannot be True when hard_threshold is set. "
+                    "Hard threshold depends on rewards which are disabled when skip_verification=True."
+                )
         return self
 
 
@@ -481,6 +584,20 @@ class NCCLWeightBroadcastConfig(BaseModel):
 WeightBroadcastConfigType: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig
 
 
+class TeacherModelConfig(BaseConfig):
+    """Configures the teacher model for computing teacher logprobs (e.g. for distillation)."""
+
+    client: Annotated[
+        ClientConfig,
+        Field(description="The OAI client configuration for the teacher model."),
+    ] = ClientConfig()
+
+    model: Annotated[
+        ModelConfig,
+        Field(description="The model configuration for the teacher model."),
+    ] = ModelConfig()
+
+
 class OrchestratorConfig(BaseSettings):
     """Configures the orchestrator for RL training."""
 
@@ -489,6 +606,19 @@ class OrchestratorConfig(BaseSettings):
 
     # The model configuration
     model: ModelConfig = ModelConfig()
+
+    # The optimizer configuration (per-run LR for multi-run training)
+    optim: OptimizerConfig = OptimizerConfig()
+
+    # The teacher model configuration (optional)
+    teacher_model: Annotated[
+        TeacherModelConfig | None,
+        Field(
+            description="The teacher model configuration for computing teacher logprobs (e.g. for distillation). "
+            "If provided, teacher logprobs will be computed using the specified model. "
+            "If None, no teacher model will be used."
+        ),
+    ] = None
 
     # The sampling configuration
     sampling: SamplingConfig = SamplingConfig()
@@ -546,6 +676,14 @@ class OrchestratorConfig(BaseSettings):
             description="Maximum number of concurrent rollouts to generate and score. Will create a global semaphore and pass to verifiers Environment. If None, will not limit concurrency.",
         ),
     ] = None
+
+    workers_per_env: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Number of worker subprocesses to spawn per environment. Multiple workers enable isolation of event loop lag - if one worker slows down, others continue at full speed. Uses least-pending routing to distribute load.",
+        ),
+    ] = 1
 
     batch_size: Annotated[int, Field(ge=1, description="Number of samples to train on per step.")] = 128
 
@@ -623,13 +761,6 @@ class OrchestratorConfig(BaseSettings):
     ] = False
 
     seed: Annotated[int | None, Field(description="Random seed for the orchestrator.")] = 42
-
-    lora_name: Annotated[
-        str | None,
-        Field(
-            description="Name of the LoRA to use for the orchestrator. If None, will not use any LoRA.",
-        ),
-    ] = None
 
     heartbeat: Annotated[
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")

@@ -56,7 +56,7 @@ class WandbMonitor(Monitor):
         if config is not None and isinstance(config, WandbWithExtrasConfig) and config.log_extras:
             if config.log_extras.samples:
                 self.last_log_samples_step = -1
-                self.samples_cols = ["step", "example_id", "messages", "input_ids", "reward"]
+                self.samples_cols = ["step", "task", "example_id", "messages", "input_ids", "reward"]
                 self.samples_table = wandb.Table(
                     columns=self.samples_cols,
                     log_mode="INCREMENTAL",
@@ -71,13 +71,13 @@ class WandbMonitor(Monitor):
             self.logger.debug(f"Found WANDB_ARGS in environment variables {wandb_args}")
             sys.argv = json.loads(wandb_args)
 
-    def log(self, metrics: dict[str, Any]) -> None:
+    def log(self, metrics: dict[str, Any], step: int | None = None) -> None:
         self.history.append(metrics)
         if not self.is_master:
             return
         if not self.enabled:
             return
-        wandb.log(metrics, step=metrics.get("step", None))
+        wandb.log(metrics, step=step)
 
     def log_samples(self, rollouts: list[vf.State], step: int) -> None:
         """Logs rollouts to W&B table."""
@@ -101,11 +101,16 @@ class WandbMonitor(Monitor):
         start_time = time.perf_counter()
 
         for rollout in rollouts:
-            tokens = rollout["trajectory"][-1]["tokens"]
+            trajectory = rollout["trajectory"]
+            if not trajectory:
+                continue
+            last_step = trajectory[-1]
+            tokens = last_step["tokens"]
             full_ids = tokens["prompt_ids"] + tokens["completion_ids"]
             messages_text = self.tokenizer.decode(full_ids)
             sample = {
                 "step": step,
+                "task": rollout.get("task"),
                 "example_id": rollout["example_id"],
                 "messages": messages_text,
                 "input_ids": str(full_ids),

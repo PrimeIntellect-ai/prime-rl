@@ -13,6 +13,7 @@ def make_training_example():
             completion_ids=[3, 4],
             completion_mask=[True, True],
             completion_logprobs=[-0.1, -0.2],
+            teacher_logprobs=[0.0, 0.0, 0.0, 0.0],
             advantage=1.0,
         )
 
@@ -32,6 +33,8 @@ def test_prepare_batch_balances_micro_batches_across_workers(
         temperature=0.5,
         seq_len=4,
         num_train_workers=num_train_workers,
+        idxs=[0] * rollout_count,
+        num_loras=1,
     )
 
     assert all(len(worker_batches) == expected_batches_per_worker for worker_batches in batches_per_gpu)

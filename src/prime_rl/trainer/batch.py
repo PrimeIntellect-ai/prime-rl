@@ -6,6 +6,7 @@ from prime_rl.transport.types import MicroBatch, TrainingSample
 def prepare_sample(
     training_example: TrainingSample,
     seq_len: int,
+    temperature: float,
 ) -> MicroBatch:
     """
     Prepare a problem for sequence packing training.
@@ -14,9 +15,14 @@ def prepare_sample(
     # Prepare input_ids, loss_mask, position_ids, inference_logprobs, and advantages
     input_ids = training_example.prompt_ids + training_example.completion_ids
     loss_mask = training_example.prompt_mask + training_example.completion_mask
+    # Inference logprobs only cover completion tokens, so prepend zeros for prompt tokens
     inference_logprobs = [0.0] * len(training_example.prompt_ids) + training_example.completion_logprobs
     advantages = [training_example.advantage] * len(input_ids)
     position_ids = list(range(len(input_ids)))
+
+    # Teacher logprobs already cover the full sequence (prompt + completion),
+    # computed via prefill in the orchestrator when a teacher model is configured
+    teacher_logprobs = training_example.teacher_logprobs
 
     if len(input_ids) > seq_len:
         input_ids = input_ids[:seq_len]
@@ -24,30 +30,44 @@ def prepare_sample(
         inference_logprobs = inference_logprobs[:seq_len]
         position_ids = position_ids[:seq_len]
         advantages = advantages[:seq_len]
+        if teacher_logprobs is not None:
+            teacher_logprobs = teacher_logprobs[:seq_len]
 
-    assert len(input_ids) == len(advantages) == len(loss_mask) == len(position_ids) == len(inference_logprobs), (
+    assert (
+        len(input_ids)
+        == len(advantages)
+        == len(loss_mask)
+        == len(position_ids)
+        == len(inference_logprobs)
+    ), (
         f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, inference_logprobs: {len(inference_logprobs)}"
     )
+    if teacher_logprobs is not None:
+        assert len(teacher_logprobs) == len(input_ids), f"teacher_logprobs: {len(teacher_logprobs)}"
     return MicroBatch(
         input_ids=input_ids,
         advantages=advantages,
         loss_mask=loss_mask,
         position_ids=position_ids,
         inference_logprobs=inference_logprobs,
+        teacher_logprobs=teacher_logprobs,
+        temperature=temperature,
     )
 
 
-def packed_samples_into_micro_bs(samples: list[MicroBatch], max_seq_len: int) -> list[MicroBatch]:
+def packed_samples_into_micro_bs(
+    samples: list[tuple[int, MicroBatch]], max_seq_len: int, num_loras: int
+) -> list[MicroBatch]:
     """
     Pack samples into micro_batch efficiently.
     We follow the First Fit Decreasing algorithm to pack the samples into bins and minimize potential padding while never truncating.
     """
-    sorted_samples = sorted(samples, key=lambda x: len(x.input_ids), reverse=True)
+    samples.sort(key=lambda x: (x[0], -len(x[1].input_ids)))
 
     ## we create bins
     micro_batches: list[MicroBatch] = []
 
-    for sample in sorted_samples:
+    for idx, sample in samples:
         # Try to find a bin that can fit this sequence
         for bin_content in micro_batches:
             # Check if sequence fits in this bin
@@ -56,9 +76,16 @@ def packed_samples_into_micro_bs(samples: list[MicroBatch], max_seq_len: int) ->
                 bin_content.loss_mask.extend(sample.loss_mask)
                 bin_content.advantages.extend(sample.advantages)
                 bin_content.inference_logprobs.extend(sample.inference_logprobs)
+                if sample.teacher_logprobs is not None:
+                    if bin_content.teacher_logprobs is None:
+                        bin_content.teacher_logprobs = []
+                    bin_content.teacher_logprobs.extend(sample.teacher_logprobs)
                 bin_content.position_ids.extend(sample.position_ids)
+                bin_content.lora_num_tokens[idx] += len(sample.input_ids)
                 break
         else:
+            sample.lora_num_tokens = [0] * num_loras
+            sample.lora_num_tokens[idx] = len(sample.input_ids)
             micro_batches.append(sample)
 
     return micro_batches
@@ -80,11 +107,16 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     if not (pad_to_multiple_of > 1 and padding_size > 0):
         return micro_batch
 
-    micro_batch.input_ids.extend([1 for _ in range(padding_size)])
-    micro_batch.advantages.extend([0.0 for _ in range(padding_size)])
-    micro_batch.loss_mask.extend([False for _ in range(padding_size)])
+    micro_batch.input_ids.extend([1] * padding_size)
+    micro_batch.advantages.extend([0.0] * padding_size)
+    micro_batch.loss_mask.extend([False] * padding_size)
     micro_batch.position_ids.extend(list(range(padding_size)))
-    micro_batch.inference_logprobs.extend([0.0 for _ in range(padding_size)])
+    micro_batch.inference_logprobs.extend([0.0] * padding_size)
+    if micro_batch.teacher_logprobs is not None:
+        micro_batch.teacher_logprobs.extend([0.0] * padding_size)
+    micro_batch.lora_num_tokens[-1] += (
+        padding_size  # We send padding to the last lora so that tokens have ascending lora idx
+    )
 
     return micro_batch
 
@@ -94,6 +126,8 @@ def prepare_batch(
     temperature: float,
     seq_len: int,
     num_train_workers: int,
+    idxs: list[int],
+    num_loras: int,
     pad_to_multiple_of: int = 1,
 ) -> list[list[MicroBatch]]:
     """
@@ -102,13 +136,10 @@ def prepare_batch(
     """
     max_seq_len = seq_len
 
-    all_samples = [prepare_sample(rollout, max_seq_len) for rollout in rollouts]
+    all_samples = [(idx, prepare_sample(rollout, max_seq_len, temperature)) for idx, rollout in zip(idxs, rollouts)]
 
-    micro_batches = packed_samples_into_micro_bs(all_samples, max_seq_len)
+    micro_batches = packed_samples_into_micro_bs(all_samples, max_seq_len, num_loras)
     micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]
-
-    for micro_batch in micro_batches:
-        micro_batch.temperature = temperature
 
     num_padding_batch = -len(micro_batches) % num_train_workers
 

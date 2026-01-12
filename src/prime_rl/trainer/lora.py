@@ -5,7 +5,10 @@ import torch
 import torch.nn as nn
 
 from prime_rl.trainer.config import LoRAConfig
-from prime_rl.trainer.models.layers.lora import LoRALinear
+from prime_rl.trainer.models.layers.lora import MultiLoRALinear, MultiLoRAModule
+from prime_rl.trainer.models.layers.lora.multi_moe import MultiLoRAGroupedExperts
+from prime_rl.trainer.models.layers.moe import GroupedExperts
+from prime_rl.trainer.runs import get_runs
 from prime_rl.utils.logger import get_logger
 
 
@@ -65,11 +68,14 @@ def _find_target_modules(model: nn.Module, target_patterns: List[str]) -> List[s
 
     Patterns can be simple module names (e.g., "q_proj") or regex patterns
     (e.g., r".*\\.q_proj$"). Simple names match any component in the module path.
+
+    Supports both nn.Linear layers and GroupedExperts (MoE) modules.
     """
     target_modules = []
 
     for name, module in model.named_modules():
-        if not isinstance(module, nn.Linear):
+        # Check if module is Linear or GroupedExperts
+        if not (isinstance(module, nn.Linear) or isinstance(module, GroupedExperts)):
             continue
 
         for pattern in target_patterns:
@@ -131,6 +137,7 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
         config: LoRA configuration
     """
     logger = get_logger()
+    n_loras = get_runs().max_runs
 
     from torch.distributed.fsdp import FSDPModule
 
@@ -153,17 +160,32 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
     for module_name in target_modules:
         base_module = _get_module_by_name(model, module_name)
 
-        if not isinstance(base_module, nn.Linear):
-            logger.warning(f"Module {module_name} is not nn.Linear, skipping")
+        # Handle Linear layers
+        if isinstance(base_module, nn.Linear):
+            lora_module = MultiLoRALinear(
+                base_layer=base_module,
+                rank=config.rank,
+                n_adapters=n_loras,
+                alpha=config.alpha,
+                dropout=config.dropout,
+            )
+        # Handle GroupedExperts (MoE)
+        elif isinstance(base_module, GroupedExperts):
+            lora_module = MultiLoRAGroupedExperts(
+                base_layer=base_module,
+                rank=config.rank,
+                n_adapters=n_loras,
+                alpha=config.alpha,
+                dropout=config.dropout,
+            )
+        else:
+            logger.warning(
+                f"Module {module_name} is type {type(base_module).__name__}, "
+                f"expected nn.Linear or GroupedExperts. Skipping."
+            )
             continue
 
-        lora_module = LoRALinear(
-            base_layer=base_module,
-            rank=config.rank,
-            alpha=config.alpha,
-            dropout=config.dropout,
-        )
-
+        lora_module.register_with_runs(get_runs(), module_name)
         _set_module_by_name(model, module_name, lora_module)
 
     freeze_all_except_lora_and_specified(model, config)
@@ -174,9 +196,10 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
     lora_adapter_params = 0
     lora_adapted_params = 0
     for name, module in model.named_modules():
-        if isinstance(module, LoRALinear):
-            lora_adapter_params += module.lora_A.numel() + module.lora_B.numel()
-            lora_adapted_params += module.base_layer.weight.numel()
+        if isinstance(module, MultiLoRAModule):
+            adapter_params, adapted_params = module.get_lora_param_counts()
+            lora_adapter_params += adapter_params
+            lora_adapted_params += adapted_params
 
     fully_trainable = trainable_params - lora_adapter_params
     adapted_or_trainable = lora_adapted_params + fully_trainable
@@ -189,7 +212,7 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
 def has_lora_layers(model: nn.Module) -> bool:
     """Check if model has LoRA layers."""
     for module in model.modules():
-        if isinstance(module, LoRALinear):
+        if isinstance(module, MultiLoRAModule):
             return True
     return False
 
@@ -230,7 +253,7 @@ def save_lora_config(config: LoRAConfig, model: nn.Module, save_path) -> None:
     modules_to_save = set()
 
     for name, module in model.named_modules():
-        if isinstance(module, LoRALinear):
+        if isinstance(module, MultiLoRAModule):
             module_suffix = name.split(".")[-1]
             target_modules.add(module_suffix)
 

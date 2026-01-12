@@ -14,21 +14,22 @@ import torch.distributed.nn as dist_nn
 from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
 from prime_rl.trainer.ckpt import setup_ckpt_managers
-from prime_rl.trainer.optim import setup_optimizer
+from prime_rl.trainer.optim import setup_optimizer, setup_multi_optimizer
+from prime_rl.trainer.scheduler import setup_scheduler, setup_multi_scheduler
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.cp import (
-    get_padding_logit_from_prev_cp_rank,
     setup_cp_params,
+    shard_for_cp,
 )
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
-    shift_logits,
-    selective_log_softmax,
     compute_entropy,
     compute_loss,
+    selective_log_softmax,
+    shift_tensor_left,
+    shift_tensor_right,
 )
-from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
     setup_tokenizer,
@@ -41,13 +42,16 @@ from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     MemoryProfiler,
     Tensors,
+    get_ckpt_disk_metrics,
     setup_torch_distributed,
     print_benchmark,
     get_response_lengths,
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.trainer.runs import setup_runs, Progress, get_runs
+from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.heartbeat import Heartbeat
+from prime_rl.utils.metrics_server import MetricsServer, RunStats
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step, to_col_format
@@ -65,8 +69,6 @@ def train(config: RLTrainerConfig):
     )
     logger.info(f"Starting RL trainer in {world}")
 
-    setup_runs(config.output_dir, config.max_concurrent_runs)
-    runs = get_runs()
     logger.info(f"Starting RL trainer in {world} in {config.output_dir}")
 
     # Print warning if running in benchmark mode
@@ -83,11 +85,43 @@ def train(config: RLTrainerConfig):
         logger.info("Initializing heartbeat")
         heart = Heartbeat(config.heartbeat.url)
 
+    # Setup metrics server (only on rank 0)
+    metrics_server = None
+    if config.metrics_server is not None and world.is_master:
+        logger.info(f"Initializing metrics server on port {config.metrics_server.port}")
+        metrics_server = MetricsServer(config.metrics_server)
+        metrics_server.start()
+
     # Set precision
     setup_torch_distributed(
         timeout=timedelta(seconds=config.dist_timeout_seconds), enable_gloo=config.model.fsdp_cpu_offload
     )
     torch.set_float32_matmul_precision("high")
+
+    # Setup runs and offsets
+    setup_runs(config.output_dir, config.max_concurrent_runs, torch.device("cuda", world.local_rank))
+    runs = get_runs()
+
+    # Register validation and scaling hooks for LoRA
+    if config.model.lora:
+        trainer_lora = config.model.lora
+
+        def validate_lora_rank(orch_config) -> tuple[bool, str]:
+            # Default to trainer's rank if not specified
+            if orch_config.model.lora.rank is None:
+                orch_config.model.lora.rank = trainer_lora.rank
+            if orch_config.model.lora.rank > trainer_lora.rank:
+                return (
+                    False,
+                    f"model.lora.rank ({orch_config.model.lora.rank}) exceeds trainer max rank ({trainer_lora.rank})",
+                )
+            return True, ""
+
+        def compute_scaling(orch_config) -> float:
+            return orch_config.model.lora.alpha / orch_config.model.lora.rank
+
+        runs.register_config_validation_hook(validate_lora_rank)
+        runs.register_scaling_hook(compute_scaling)
 
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
@@ -116,10 +150,18 @@ def train(config: RLTrainerConfig):
     logger.info(f"Initializing optimizer ({config.optim})")
     logger.info(f"Using `{config.loss.ratio_type}` importance ratio ({config.loss})")
 
-    optimizer = setup_optimizer(config.optim, model, parallel_dims.world_mesh["dp_shard_cp"])
+    if config.max_concurrent_runs == 1:
+        optimizer = setup_optimizer(
+            config.optim,
+            list(model.named_parameters()),
+            parallel_dims.world_mesh["dp_shard_cp"],
+            lora=config.model.lora is not None,
+        )
+        scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
+    else:
+        optimizer = setup_multi_optimizer(config.optim, parallel_dims.world_mesh["dp_shard_cp"])
+        scheduler = setup_multi_scheduler(optimizer, config.scheduler, config.max_steps)
 
-    # Set up the learning rate scheduler
-    scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
     logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
 
     # Set up weight broadcast
@@ -172,9 +214,7 @@ def train(config: RLTrainerConfig):
         last_async_level_steps = config.max_steps and progress.step >= config.max_steps - config.max_async_level
         if progress.step > 0 and (not last_async_level_steps or config.weight_broadcast.type == "filesystem"):
             broadcast_weights_start_time = time.perf_counter()
-            weight_broadcast.broadcast_weights(
-                model, step=progress.step, adapter_only=config.weight_broadcast.adapter_only
-            )
+            weight_broadcast.broadcast_weights(model, step=progress.step)
             broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
             # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
             ckpt_interval = config.ckpt and config.ckpt.interval
@@ -261,61 +301,78 @@ def train(config: RLTrainerConfig):
             advantages = micro_batch["advantages"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
             inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
+            teacher_logprobs = (
+                micro_batch["teacher_logprobs"].to("cuda") if micro_batch["teacher_logprobs"] is not None else None
+            )
+
+            labels = shift_tensor_left(input_ids)
 
             if cp_enabled:
                 input_ids, forward_position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
+                labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
             else:
                 forward_position_ids = position_ids
+
+            if config.model.lora:
+                lora_num_tokens = micro_batch["lora_num_tokens"].to("cuda")
+                if cp_enabled:
+                    chunk_size = input_ids.shape[1]  # We pad to multiple of cp so this should be fine
+                    logger.debug(f"[Rank {world.rank}] {cp_rank=} {cp_size=} {cp_group=} {chunk_size=}")
+                    # Convert to cumsum, adjust for CP chunk, convert back to num_tokens
+                    cu_offsets = lora_num_tokens.cumsum(dim=0, dtype=torch.int32)
+                    adjusted_cu = torch.clip(cu_offsets - chunk_size * cp_rank, min=0, max=chunk_size)
+                    lora_num_tokens = torch.diff(
+                        adjusted_cu, prepend=torch.tensor([0], device=adjusted_cu.device, dtype=adjusted_cu.dtype)
+                    )
+                set_lora_num_tokens(lora_num_tokens)
 
             temperature = micro_batch["temperature"]
 
             # Forward pass
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                logits = forward(model, input_ids, forward_position_ids).float().contiguous()
+                out = forward(model, input_ids, forward_position_ids, labels=labels, temperature=temperature)
+
+            if out.get("logprobs") is None:
+                assert out.get("logits") is not None, "Logits must be provided to compute logprobs"
+                logits = out["logits"] / float(temperature)
+                out["logprobs"] = selective_log_softmax(logits, labels)
+                out["entropy"] = compute_entropy(logits)
 
             if cp_enabled:
-                left_pad_logit = get_padding_logit_from_prev_cp_rank(logits, cp_rank, cp_size, cp_group)
-            else:
-                left_pad_logit = None
+                logprobs = dist_nn.all_gather(out["logprobs"], group=cp_group)
+                out["logprobs"] = torch.cat(logprobs, dim=1)
 
-            shifted_logits = shift_logits(logits, left_pad_logit=left_pad_logit)
-            shifted_logits = shifted_logits / temperature
-            trainer_logprobs = selective_log_softmax(shifted_logits, input_ids)
+                entropies = [torch.zeros_like(out["entropy"]) for _ in range(cp_size)]
+                dist.all_gather(entropies, out["entropy"], group=cp_group)
+                out["entropy"] = torch.cat(entropies, dim=1)
 
-            if cp_enabled:
-                trainer_logprobs = dist_nn.all_gather(trainer_logprobs, group=cp_group)
-                trainer_logprobs = torch.cat(trainer_logprobs, dim=1)
+            vocab_size = model.config.vocab_size
+            # This is not really necessary as the first token should be masked out, but we do it anyway to be sure
+            out["logprobs"] = shift_tensor_right(out["logprobs"], pad_value=torch.log(torch.tensor(1.0 / vocab_size)).item())
+            out["entropy"] = shift_tensor_right(out["entropy"], pad_value=torch.log(torch.tensor(float(vocab_size))).item())
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
             loss, loss_tensors = compute_loss(
-                trainer_logprobs=trainer_logprobs.squeeze().split(response_lengths),
+                trainer_logprobs=out["logprobs"].squeeze().split(response_lengths),
                 inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
+                teacher_logprobs=teacher_logprobs.squeeze().split(response_lengths)
+                if teacher_logprobs is not None
+                else None,
                 advantages=advantages.squeeze().split(response_lengths),
                 loss_mask=loss_mask.squeeze().split(response_lengths),
                 loss_config=config.loss,
                 loss_scale=loss_scale,
             )
 
-            # Compute entropy
-            entropy = compute_entropy(shifted_logits)
-
-            if cp_enabled:
-                entropies = [torch.zeros_like(entropy) for _ in range(cp_size)]
-                dist.all_gather(entropies, entropy, group=cp_group)
-                entropy = torch.cat(entropies, dim=1)
-
-            # Delete logits and shifted_logits before backward pass to avoid memory spike
-            del logits, shifted_logits
-
             # Backward pass
             with maybe_record_function("backward"):
                 loss.backward()
 
             # Add relevant tensors to tensor dict for logging purposes
-            tensors["trainer_probs"].append(torch.exp(trainer_logprobs)[loss_mask].detach().to("cpu"))
+            tensors["trainer_probs"].append(torch.exp(out["logprobs"])[loss_mask].detach().to("cpu"))
             tensors["inference_probs"].append(torch.exp(inference_logprobs)[loss_mask].detach().to("cpu"))
-            tensors["entropy"].append(entropy[loss_mask].detach().to("cpu"))
+            tensors["entropy"].append(out["entropy"][loss_mask].detach().to("cpu"))
             tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
 
             if is_tt_moe_model(model):
@@ -347,12 +404,13 @@ def train(config: RLTrainerConfig):
         optimizer.zero_grad()
 
         # Update learning rate scheduler
-        current_lr = optimizer.param_groups[0]["lr"]
         scheduler.step()
 
+        if config.max_concurrent_runs == 1:
+            current_lr = optimizer.param_groups[0]["lr"]
+        else:
+            current_lr = optimizer.get_current_lr()
         forward_backward_time = time.perf_counter() - forward_backward_start_time
-
-        # TODO: Broadcast weight checkpoint via shardcast
 
         # Optionally, dump memory snapshot
         if memory_profiler is not None:
@@ -387,7 +445,7 @@ def train(config: RLTrainerConfig):
             "perf/peak_memory": peak_memory,
             "step": progress.step,
         }
-        monitor.log(perf_metrics)
+        monitor.log(perf_metrics, step=progress.step)
 
         # Log optimizer metrics
         optim_metrics = {
@@ -395,11 +453,11 @@ def train(config: RLTrainerConfig):
             "optim/grad_norm": grad_norm.item(),
             "step": progress.step,
         }
-        monitor.log(optim_metrics)
+        monitor.log(optim_metrics, step=progress.step)
 
         # Log tensor stats
         tensor_stats["step"] = progress.step
-        monitor.log(tensor_stats)
+        monitor.log(tensor_stats, step=progress.step)
 
         # Log time metrics
         time_metrics = {
@@ -411,7 +469,51 @@ def train(config: RLTrainerConfig):
             "time/forward_backward": forward_backward_time,
             "step": progress.step,
         }
-        monitor.log(time_metrics)
+        monitor.log(time_metrics, step=progress.step)
+
+        # Log disk metrics
+        disk_metrics = get_ckpt_disk_metrics(config.output_dir)
+        disk_metrics["step"] = progress.step
+        monitor.log(disk_metrics, step=progress.step)
+
+        # Update Prometheus metrics if configured
+        if metrics_server is not None:
+            metrics_server.update(
+                step=progress.step,
+                loss=tensor_stats["loss/mean"],
+                throughput=throughput,
+                grad_norm=grad_norm.item(),
+                peak_memory_gib=peak_memory,
+                learning_rate=current_lr,
+                mfu=mfu,
+                entropy=tensor_stats.get("entropy/mean", 0.0),
+                mismatch_kl=tensor_stats.get("mismatch_kl/mean", 0.0),
+            )
+            # Update run/LoRA metrics
+            runs = get_runs()
+            runs_discovered = len(list(config.output_dir.glob("run_*")))
+            run_stats = []
+            for idx in runs.used_idxs:
+                run_id = runs.idx_2_id[idx]
+                run_progress = runs.progress[idx]
+                if config.max_concurrent_runs == 1:
+                    lr = optimizer.param_groups[0]["lr"]
+                else:
+                    lr = optimizer.get_current_lr(idx) if optimizer.optimizers[idx] else 0.0
+                run_stats.append(
+                    RunStats(
+                        run_id=run_id,
+                        step=run_progress.step,
+                        total_tokens=run_progress.total_tokens,
+                        learning_rate=lr,
+                        ready=runs.ready_to_update[idx],
+                    )
+                )
+            metrics_server.update_runs(
+                runs_discovered=runs_discovered,
+                runs_max=runs.max_runs,
+                run_stats=run_stats,
+            )
 
         progress.step += 1
         is_first_step = False
@@ -442,6 +544,10 @@ def train(config: RLTrainerConfig):
 
     logger.info(f"Peak memory: {max(to_col_format(monitor.history)['perf/peak_memory']):.1f} GiB")
     logger.success("RL trainer finished!")
+
+    # Stop metrics server if configured
+    if metrics_server is not None:
+        metrics_server.stop()
 
     # Optionally, print benchmark table
     if config.bench and world.is_master:
