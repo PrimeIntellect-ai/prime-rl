@@ -41,7 +41,7 @@ jobs:
 
   get-image-digest:
     name: Get image digest
-    runs-on: ubuntu-latest
+    runs-on: 2xh100
     outputs:
       image_with_digest: ${{ steps.digest.outputs.image_with_digest }}
     steps:
