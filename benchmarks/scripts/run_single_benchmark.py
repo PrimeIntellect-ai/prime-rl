@@ -20,6 +20,8 @@ from pydantic import Field
 
 from prime_rl.utils.pydantic_config import BaseSettings, parse_argv
 
+MAX_LORAS = 4
+
 
 def get_commit_sha() -> str:
     """Get current git commit SHA."""
@@ -117,6 +119,7 @@ def build_command(config: BenchmarkConfig) -> list[str]:
     # Add LoRA configuration if applicable
     if config.lora_rank is not None:
         cmd.extend(["--model.lora.rank", str(config.lora_rank)])
+        cmd.extend(["--max-concurrency", str(MAX_LORAS)])
 
     # Data configuration differs between RL and SFT
     if config.type.startswith("rl"):
