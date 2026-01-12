@@ -90,7 +90,7 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - name: Checkout repository
+      - name: Checkout repository # We can't use the image because then no git
         uses: actions/checkout@v4
       - name: Install uv
         uses: astral-sh/setup-uv@v5
