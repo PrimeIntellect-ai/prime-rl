@@ -151,7 +151,7 @@ def generate_markdown(
                 True,
             )
             step_str, step_reg = format_metric(
-                cfg["seq_len"] / m["thoughput"]["mean"], None, threshold, diff_display_threshold, "{:.2f}s", False
+                cfg["seq_len"] / m["throughput"]["mean"], None, threshold, diff_display_threshold, "{:.2f}s", False
             )
 
             has_regressions = has_regressions or mfu_reg or tps_reg or step_reg
