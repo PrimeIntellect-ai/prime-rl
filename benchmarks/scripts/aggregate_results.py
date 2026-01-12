@@ -114,6 +114,7 @@ def generate_markdown(
             by_model.setdefault(model, []).append(r)
 
     commit = results[0]["config"].get("commit_sha", "unknown") if results else "unknown"
+    docker_image = results[0]["config"].get("docker_image", "unknown") if results else "unknown"
 
     lines = [
         "# Performance Benchmarks",
@@ -122,6 +123,7 @@ def generate_markdown(
         "",
         f"**Last Updated:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}  ",
         f"**Commit:** `{commit}`",
+        f"**Docker Image:** `{docker_image}`",
         "",
         f"> :warning: indicates regression > {threshold * 100:.0f}% from baseline",
         f"> diffs shown when abs(change) >= {diff_display_threshold * 100:.1f}% (except regressions, which always show diffs)",
