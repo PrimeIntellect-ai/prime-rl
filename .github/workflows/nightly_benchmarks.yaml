@@ -123,18 +123,10 @@ jobs:
         with:
           path: /tmp/benchmark_artifacts
           pattern: benchmark-*
-      - name: Set baselines from artifacts
-        if: ${{ github.event.inputs.set_baselines == 'true' }}
-        run: |
-          rm -f benchmarks/baselines/*.json
-          mkdir -p benchmarks/baselines
-          for dir in /tmp/benchmark_artifacts/*/; do
-            name=$(basename "$dir")
-            cp "$dir/benchmark_result.json" "benchmarks/baselines/${name}.json"
-          done
       - name: Aggregate results
         id: aggregate
         run: |
+          mkdir -p benchmarks/baselines
           uv run python benchmarks/scripts/aggregate_results.py \
             --artifacts-dir "/tmp/benchmark_artifacts" \
             --baselines-dir "benchmarks/baselines" \
@@ -146,6 +138,14 @@ jobs:
           else
             echo "has_regressions=false" >> "$GITHUB_OUTPUT"
           fi
+      - name: Set baselines from artifacts
+        if: ${{ github.event.inputs.set_baselines == 'true' }}
+        run: |
+          rm -f benchmarks/baselines/*.json
+          for dir in /tmp/benchmark_artifacts/*/; do
+            name=$(basename "$dir")
+            cp "$dir/benchmark_result.json" "benchmarks/baselines/${name}.json"
+          done
       - name: Set benchmark metadata (date + unique branch)
         run: |
           BENCHMARK_DATE="$(date +%Y-%m-%d)"
