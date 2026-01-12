@@ -340,7 +340,7 @@ class SharedTrainEnvConfig(SharedBaseEnvConfig):
 class SharedEvalEnvConfig(SharedBaseEnvConfig):
     """Shared configuration for evaluation environments."""
 
-    num_examples: int | None = None
+    num_examples: int = -1
     rollouts_per_example: int = 1
     skip_first: int | None = 0
     sampling: EvalSamplingConfig = Field(

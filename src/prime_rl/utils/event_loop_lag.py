@@ -30,6 +30,7 @@ class EventLoopLagMonitor:
         self.warn_med_lag_threshold = warn_med_lag_threshold
         self.warn_p90_lag_threshold = warn_p90_lag_threshold
         self.logger = get_logger()
+        self.task: asyncio.Task | None = None
         self.lags = []
 
     async def measure_lag(self):
@@ -48,9 +49,9 @@ class EventLoopLagMonitor:
             if len(self.lags) > self.max_window_size:
                 self.lags.pop(0)
 
-    async def start(self):
+    def start(self):
         """Start the event loop lag monitor as a background task."""
-        return asyncio.create_task(self.run())
+        self.task = asyncio.create_task(self.run())
 
     def reset(self):
         """Reset the list of measured lags."""

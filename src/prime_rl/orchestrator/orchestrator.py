@@ -4,8 +4,9 @@ import time
 import tomli_w
 
 from prime_rl.orchestrator.advantage import compute_advantages
+from prime_rl.orchestrator.ckpt import Progress
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
-from prime_rl.orchestrator.scheduler import TrainRolloutScheduler
+from prime_rl.orchestrator.scheduler import EvalRolloutScheduler, TrainScheduler
 from prime_rl.orchestrator.trajectories import branch_rollout, interleave_rollout
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
 from prime_rl.utils.event_loop_lag import EventLoopLagMonitor
@@ -22,7 +23,7 @@ monkey_patch_chat_completion_logprobs()
 import pandas as pd
 from loguru import logger
 
-from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
+from prime_rl.orchestrator.ckpt import setup_ckpt_manager
 from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.orchestrator.utils import (
     compute_teacher_logprobs,
@@ -49,45 +50,45 @@ from prime_rl.utils.vf import get_completion_len, get_prompt_len, get_seq_len
 class Orchestrator:
     def __init__(self, config: OrchestratorConfig):
         self.config = config
+        from pprint import pprint
+
+        pprint(config.model_dump(exclude_none=True, mode="json"))
         self.logger = setup_logger(
             config.log.level, log_file=config.output_dir / "logs" / "orchestrator.log" if config.log.file else None
         )
 
-        # Start from scratch
         self.progress = Progress()
-
-        self.logger.info(f"Initializing env worker groups ({config.train.envs}")
-        self.train_scheduler = TrainRolloutScheduler(
-            step=0,
-            max_async_level=config.max_async_level,
-            strict_async_level=config.strict_async_level,
-            max_off_policy_steps=config.max_off_policy_steps,
-            client_config=config.client,
-            output_dir=config.output_dir,
-            model_name=config.model.name,
-            lora_name=config.model.lora.name if config.model.lora else None,
+        self.train_scheduler = TrainScheduler(
+            progress=self.progress,
             env_worker_group_config=config.train.envs,
             buffer_config=config.buffer,
             batch_size=config.batch_size,
             rollouts_per_example=config.rollouts_per_example,
             oversampling_factor=config.oversampling_factor,
+            model_name=config.model.name,
+            lora_name=config.model.lora.name if config.model.lora else None,
+            max_async_level=config.max_async_level,
+            strict_async_level=config.strict_async_level,
+            max_off_policy_steps=config.max_off_policy_steps,
+            client_config=config.client,
+            output_dir=config.output_dir,
         )
-        # if config.validation:
-        #     self.logger.info(f"Initializing validation env worker groups ({config.validation.envs}")
-        #     self.validation_env_worker_group = EnvWorkerGroup(config.validation.envs)
-        # else:
-        #     self.validation_env_worker_group = None
-        # if config.eval:
-        #     self.logger.info(f"Initializing eval env worker groups ({config.eval.envs}")
-        #     self.eval_env_worker_group = EnvWorkerGroup(config.eval.envs)
-        # else:
-        #     self.eval_env_worker_group = None
+        if config.validation:
+            self.val_scheduler = EvalRolloutScheduler(
+                env_worker_group_config=config.validation.envs,
+                model_name=config.model.name,
+            )
+        if config.eval:
+            self.eval_scheduler = EvalRolloutScheduler(
+                env_worker_group_config=config.eval.envs,
+                model_name=config.model.name,
+            )
 
         self.logger.info(f"Initializing admin clients ({config.client})")
         self.admin_clients = setup_admin_clients(config.client)
 
         # Setup training batch sender for sending training examples to trainer
-        logger.info(f"Initializing training batch sender ({config.rollout_transport})")
+        self.logger.info(f"Initializing training batch sender ({config.rollout_transport})")
         self.training_batch_sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
 
         if config.teacher_model:
@@ -109,7 +110,7 @@ class Orchestrator:
         self.event_loop_lag_monitor = EventLoopLagMonitor()
 
         if config.heartbeat is not None:
-            logger.info("Initializing heartbeat")
+            self.logger.info("Initializing heartbeat")
             self.heart = Heartbeat(config.heartbeat.url)
         else:
             self.heart = None
@@ -126,25 +127,25 @@ class Orchestrator:
         """Save orchestrator config to output directory."""
         config_dir = self.config.output_dir / "configs"
         config_dir.mkdir(parents=True, exist_ok=True)
-        with open(config_dir / f"{self.name}.toml", "wb") as f:
+        with open(config_dir / "orch.toml", "wb") as f:
             tomli_w.dump(self.config.model_dump(exclude_none=True, mode="json"), f)
 
     @clean_exit
     @logger.catch(reraise=True)
-    async def start(self, config: OrchestratorConfig):
-        logger.info("Starting orchestrator")
-        await self.event_loop_lag_monitor.start()
+    async def start(self):
+        self.logger.info("Starting orchestrator")
 
-        self.train_scheduler.start()
+        self.save_config()
+        self.event_loop_lag_monitor.start()
 
         # Set up weight broadcast backend
-        logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
-        if config.weight_broadcast.type == "nccl":
+        self.logger.info(f"Initializing weight broadcast ({self.config.weight_broadcast})")
+        if self.config.weight_broadcast.type == "nccl":
             await init_nccl_broadcast(
                 self.admin_clients,
-                config.weight_broadcast.host,
-                config.weight_broadcast.port,
-                config.weight_broadcast.timeout,
+                self.config.weight_broadcast.host,
+                self.config.weight_broadcast.port,
+                self.config.weight_broadcast.timeout,
             )
 
         # Load environment and extract dataset
@@ -201,10 +202,10 @@ class Orchestrator:
         # await scheduler.start()
 
         # Check health of the client
-        logger.info("Waiting for inference pool to be ready")
+        self.logger.info("Waiting for inference pool to be ready")
         await check_health(self.admin_clients)
         # await check_has_model(clients, config.model.name)
-        logger.success("Inference pool ready")
+        self.logger.success("Inference pool ready")
 
         # Track last online eval checkpoint step for this process
         # last_eval_step = -1
@@ -227,10 +228,16 @@ class Orchestrator:
         #         await reload_weights(admin_clients)
 
         # Iterate over dataset in batches
-        max_steps = config.max_steps or int(1e9)
-        logger.info(f"Starting orchestrator loop (max_steps={max_steps or 'infinite'})")
-        is_first_step = True
-        await set_semaphore(config.max_concurrent or -1)
+        max_steps = self.config.max_steps or int(1e9)
+        self.logger.info(f"Starting orchestrator loop (max_steps={max_steps or 'infinite'})")
+        # is_first_step = True
+        await set_semaphore(self.config.max_concurrent or -1)
+
+        self.train_scheduler.start()
+        if self.config.validation:
+            self.val_scheduler.start()
+        if self.config.eval:
+            self.eval_scheduler.start()
 
         # Start update policy loop
         # update_policy_task = asyncio.create_task(scheduler.update_policy_loop())
@@ -246,24 +253,24 @@ class Orchestrator:
             # ckpt_step = scheduler.ckpt_step
 
             # Save checkpoint (if we are at an interval step and not at the first or last step)
-            is_last_step = config.max_steps is not None and progress.step == config.max_steps - 1
-            save_ckpt_time = 0
-            if (
-                ckpt_manager is not None
-                and (config.ckpt and config.ckpt.interval)
-                and not (is_first_step or is_last_step)
-                and progress.step % config.ckpt.interval == 0
-            ):
-                logger.info(f"Saving checkpoint at step {progress.step}")
-                save_ckpt_start_time = time.perf_counter()
-                ckpt_manager.save(progress, train_buffer, step=progress.step)
-                save_ckpt_time = time.perf_counter() - save_ckpt_start_time
+            # is_last_step = config.max_steps is not None and self.progress.step == config.max_steps - 1
+            # save_ckpt_time = 0
+            # if (
+            #     ckpt_manager is not None
+            #     and (config.ckpt and config.ckpt.interval)
+            #     and not (is_first_step or is_last_step)
+            #     and progress.step % config.ckpt.interval == 0
+            # ):
+            #     logger.info(f"Saving checkpoint at step {progress.step}")
+            #     save_ckpt_start_time = time.perf_counter()
+            #     ckpt_manager.save(progress, train_buffer, step=progress.step)
+            #     save_ckpt_time = time.perf_counter() - save_ckpt_start_time
 
             # Break if we have reached the maximum number of steps
-            if config.max_steps and progress.step >= config.max_steps:
+            if self.config.max_steps and self.progress.step >= self.config.max_steps:
                 break
 
-            logger.info(f"Starting orchestrator step {progress.step}")
+            self.logger.info(f"Starting orchestrator step {self.progress.step}")
             step_start_time = time.perf_counter()
 
             # Run evals BEFORE training (blocking, in subprocess to isolate event loop)
@@ -297,42 +304,20 @@ class Orchestrator:
 
             # Schedule generating the training batch
             generate_completions_start_time = time.perf_counter()
-            num_examples_per_batch = config.batch_size // config.rollouts_per_example
-            inputs = train_buffer.sample_inputs(num_examples_per_batch)
-            train_tasks = [
-                train_env_worker_group.run_group(
-                    env_name, example_id, rollouts_per_example=config.rollouts_per_example, model_name=config.model.name
-                )
-                for env_name, example_id in inputs
-            ]
-            from tqdm.asyncio import tqdm
-
-            nested_train_rollouts = await tqdm.gather(*train_tasks)
-            train_rollouts = [rollout for nested_rollouts in nested_train_rollouts for rollout in nested_rollouts]
-            # train_task = asyncio.create_task(scheduler.generate_batch(step=progress.step))
+            train_task = self.train_scheduler.wait_for_batch()
 
             # Schedule running validation at the specified interval
-            # if val_buffer and config.val and progress.step % config.val.interval == 0:
-            #     logger.info(f"Running validation for step {progress.step}")
-            #     val_examples = val_buffer.sample_examples(config.val.num_examples)
-            #     val_task = asyncio.create_task(
-            #         generate_batch(
-            #             clients=clients,
-            #             env=env,
-            #             model_name=config.model.name,
-            #             examples=val_examples,
-            #             rollouts_per_example=config.val.rollouts_per_example,
-            #             sampling_args=get_sampling_args(config.sampling),
-            #             pbar_description="Generating rollouts (val)",
-            #         )
-            #     )
-            # else:
-            #     val_task = asyncio.create_task(asyncio.sleep(0))  # Dummy task
+            if self.config.validation and self.progress.step % self.config.validation.interval == 0:
+                assert self.val_scheduler is not None
+                self.logger.info(f"Running validation for step {self.progress.step}")
+                env_name = self.val_scheduler.env_worker_group.env_names[0]
+                val_task = self.val_scheduler.generate_batch(env_name)
+            else:
+                val_task = None
 
             # Await train rollouts, process results and write batch to disk to consume by trainer
-            # await train_task
+            train_rollouts = await train_task
             generate_completions_time = time.perf_counter() - generate_completions_start_time
-            # train_rollouts = train_task.result()
 
             # Compute advantages
             rewards = [rollout["reward"] for rollout in train_rollouts]
@@ -340,12 +325,14 @@ class Orchestrator:
             advantages = compute_advantages(
                 rewards,
                 completion_lens,
-                config.rollouts_per_example,
-                config.advantage,
+                self.config.rollouts_per_example,
+                self.config.advantage,
             )
 
             # Update and sample rollouts from the buffer
-            make_train_example = interleave_rollout if config.trajectory_strategy == "interleaved" else branch_rollout
+            make_train_example = (
+                interleave_rollout if self.config.trajectory_strategy == "interleaved" else branch_rollout
+            )
             train_examples: list[TrainingSample] = []
             for train_rollout, advantage in zip(train_rollouts, advantages):
                 train_example = make_train_example(train_rollout)
@@ -354,36 +341,38 @@ class Orchestrator:
                         te.advantage = advantage
                         te.reward = train_rollout["reward"]
                     train_examples.extend(train_example)
-            logger.debug(
-                f"Converted {len(train_rollouts)} training rollouts to {len(train_examples)} training examples using {config.trajectory_strategy} strategy"
+            self.logger.debug(
+                f"Converted {len(train_rollouts)} training rollouts to {len(train_examples)} training examples using {self.config.trajectory_strategy} strategy"
             )
 
             # Compute teacher logprobs if teacher model is configured
             teacher_logprobs_time = 0
-            if config.teacher_model is not None:
-                assert teacher_clients is not None
-                logger.info(f"Computing teacher logprobs for {len(train_examples)} training examples")
+            if self.config.teacher_model is not None:
+                assert self.teacher_clients is not None
+                self.logger.info(f"Computing teacher logprobs for {len(train_examples)} training examples")
                 teacher_logprobs_start_time = time.perf_counter()
                 teacher_logprobs_list = await compute_teacher_logprobs(
-                    clients=teacher_clients,
-                    model_name=config.teacher_model.model.name,
+                    clients=self.teacher_clients,
+                    model_name=self.config.teacher_model.model.name,
                     samples=train_examples,
                 )
                 for train_example, teacher_logprobs in zip(train_examples, teacher_logprobs_list):
                     train_example.teacher_logprobs = teacher_logprobs
                 teacher_logprobs_time = time.perf_counter() - teacher_logprobs_start_time
-                logger.debug(f"Computed teacher logprobs in {teacher_logprobs_time:.2f}s")
+                self.logger.debug(f"Computed teacher logprobs in {teacher_logprobs_time:.2f}s")
 
             training_batch = TrainingBatch(
                 examples=train_examples,
-                temperature=config.sampling.temperature,
-                step=progress.step,
+                temperature=self.config.sampling.temperature,
+                step=self.progress.step,
             )
-            training_batch_sender.send(training_batch)
+            self.training_batch_sender.send(training_batch)
 
             # Await and process val results
-            # await val_task
-            # val_outputs = val_task.result()
+            if val_task is not None:
+                await val_task
+            # if eval_task is not None:
+            #     await eval_task
 
             # Gather metrics in dataframes
             results_df = pd.DataFrame(
@@ -419,15 +408,15 @@ class Orchestrator:
 
             # Update progress metrics and throughput
             num_tokens = int(results_df.seq_len.sum())
-            progress.total_tokens += num_tokens
-            progress.total_samples += config.batch_size
-            progress.total_problems += config.batch_size // config.rollouts_per_example
+            self.progress.total_tokens += num_tokens
+            self.progress.total_samples += self.config.batch_size
+            self.progress.total_problems += self.config.batch_size // self.config.rollouts_per_example
             throughput = num_tokens / generate_completions_time
 
             # Compute solve all and none tensors
             solve_all = (
                 results_df.groupby("example_id")
-                .apply(lambda x: x.reward.sum() == config.rollouts_per_example, include_groups=False)
+                .apply(lambda x: x.reward.sum() == self.config.rollouts_per_example, include_groups=False)
                 .mean()
             )
             solve_none = (
@@ -439,11 +428,11 @@ class Orchestrator:
             to_log = {
                 # Progress metrics
                 "progress/tokens": num_tokens,
-                "progress/samples": config.batch_size,
-                "progress/problems": config.batch_size // config.rollouts_per_example,
-                "progress/total_tokens": progress.total_tokens,
-                "progress/total_samples": progress.total_samples,
-                "progress/total_problems": progress.total_problems,
+                "progress/samples": self.config.batch_size,
+                "progress/problems": self.config.batch_size // self.config.rollouts_per_example,
+                "progress/total_tokens": self.progress.total_tokens,
+                "progress/total_samples": self.progress.total_samples,
+                "progress/total_problems": self.progress.total_problems,
                 # "progress/ckpt_step": ckpt_step,  # Shared W&B axis
                 # Sequence length metrics
                 "seq_len/mean": results_df.groupby("example_id").seq_len.mean().mean(),
@@ -489,15 +478,15 @@ class Orchestrator:
                 "time/step": step_time,
                 "time/generate_completions": generate_completions_time,
                 "time/teacher_logprobs": teacher_logprobs_time,
-                "time/save_ckpt": save_ckpt_time,
+                # "time/save_ckpt": save_ckpt_time,
                 # Scheduler metrics
                 # **scheduler.get_metrics(),
                 # Buffer metrics
                 # **train_buffer.get_metrics(),
                 # Event loop lag metrics
-                **event_loop_lag_monitor.get_metrics(),
+                # **self.event_loop_lag_monitor.get_metrics(),
                 # W&B axis
-                "step": progress.step,
+                "step": self.progress.step,
             }
 
             # If more than one env, add per-env metrics
@@ -520,34 +509,34 @@ class Orchestrator:
             #         to_log.update({f"val_batch/{env}": ratio for env, ratio in per_env_ratio.items()})
 
             # Log metrics to monitor(s)
-            monitor.log(to_log)
+            self.monitor.log(to_log)
 
             # Log samples to monitor(s) if enabled
             # subset_train_rollouts = random.sample(train_rollouts, min(8, len(train_rollouts)))
             # monitor.log_samples(subset_train_rollouts, step=progress.step)
 
             # Log distributions (rewards, advantages) if enabled
-            monitor.log_distributions(
+            self.monitor.log_distributions(
                 distributions={
                     "rewards": rewards,
                     "advantages": advantages,
                 },
-                step=progress.step,
+                step=self.progress.step,
             )
 
-            step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.groupby('example_id').seq_len.mean().mean():.1f} tokens/sample"  # | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
+            step_message = f"Step {self.progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.groupby('example_id').seq_len.mean().mean():.1f} tokens/sample"  # | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
             # step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} |{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.groupby('example_id').seq_len.mean().mean():.1f} tokens/sample"  # | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
-            logger.success(step_message)
+            self.logger.success(step_message)
 
             # Increment step
-            progress.step += 1
-            is_first_step = False
+            self.progress.step += 1
+            # is_first_step = False
 
-            event_loop_lag_monitor.reset()
+            self.event_loop_lag_monitor.reset()
 
             # Send heartbeat if configured
-            if heart is not None:
-                heart.beat()
+            if self.heart is not None:
+                self.heart.beat()
 
         # if config.eval:
         #     logger.info("Running final evals (subprocess)")
@@ -564,186 +553,22 @@ class Orchestrator:
         #     )
 
         # Log final (immutable) samples and distributions to monitor(s)
-        monitor.log_final_samples()
-        monitor.save_final_summary()
+        self.monitor.log_final_samples()
+        self.monitor.save_final_summary()
 
         # Write final checkpoint
-        if ckpt_manager is not None:
-            logger.info("Writing final checkpoint")
-            ckpt_manager.save(progress, train_buffer, step=progress.step)
+        # if ckpt_manager is not None:
+        #     logger.info("Writing final checkpoint")
+        #     ckpt_manager.save(self.progress, train_buffer, step=self.progress.step)
 
         # Close training batch sender
-        training_batch_sender.close()
+        self.training_batch_sender.close()
 
-        # Stop env workers
-        # await scheduler.stop()
-
-        # Cancel event loop lag monitor task
-        event_loop_lag_monitor_task.cancel()
-
-        logger.success("Orchestrator finished.")
+        self.logger.success("Orchestrator finished.")
 
         # Optionally, print benchmark table
-        if config.bench:
-            print_benchmark(to_col_format(monitor.history))
-
-    async def schedule_group_rollout(self):
-        """Asynchronously schedules a group rollout request."""
-        example = self.buffer.sample_examples(n=1)[0]
-
-        # Route to worker for this example's environment
-        task = example["task"]
-        workers = self.workers[task]
-        worker = min(workers, key=lambda w: w.pending_count)
-
-        future = await worker.submit_request(
-            example_id=example["example_id"],
-            rollouts_per_example=self.config.rollouts_per_example,
-        )
-
-        # Extract request_id from the future's pending tracking
-        request_id = [k for k, v in worker.pending_futures.items() if v is future][0]
-
-        self.inflight_group_rollouts[future] = InflightRolloutInfo(
-            off_policy_steps=0,
-            worker=worker,
-            request_id=request_id,
-        )
-
-    async def update_policy_loop(self):
-        """Continuously checks for new policy checkpoints."""
-        while True:
-            await self.update_policy()
-            await asyncio.sleep(1)
-
-    async def update_policy(self):
-        """Updates the policy to the latest available checkpoint. Aborts rollout requests that are older than the max retention steps."""
-        latest_ckpt_step = get_latest_ckpt_step(get_broadcast_dir(self.config.output_dir)) or 0
-        async_away_ckpt_step = max(self.step - self.max_async_level, 0)
-        next_ckpt_step = (
-            async_away_ckpt_step if self.strict_async_level else max(async_away_ckpt_step, latest_ckpt_step)
-        )
-
-        if next_ckpt_step > self.ckpt_step:
-            if next_ckpt_step == async_away_ckpt_step:
-                self.logger.info(
-                    f"Hit async barrier because we are >{self.max_async_level} step(s) async. Waiting for checkpoint {next_ckpt_step}"
-                )
-                self.checkpoint_ready.clear()
-                wait_for_ckpt_start_time = time.perf_counter()
-                await wait_for_path(get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
-                self.wait_for_ckpt_time = time.perf_counter() - wait_for_ckpt_start_time
-                self.logger.debug(f"Waited for checkpoint {next_ckpt_step} for {self.wait_for_ckpt_time:.2f}s")
-
-            self.logger.debug(
-                f"Got new policy with step {next_ckpt_step}. Updating weights and cancelling old rollout requests."
-            )
-
-            # Update weights on inference servers
-            update_weights_start_time = time.perf_counter()
-            await update_weights(
-                self.admin_clients,
-                get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step),
-                lora_name=self.lora_name,
-            )
-            self.update_weights_time = time.perf_counter() - update_weights_start_time
-            self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
-
-            if self.lora_name is not None:
-                self.model_name = self.lora_name
-
-            # Update model name on all workers
-            for workers in self.workers.values():
-                for worker in workers:
-                    worker.update_model_name(self.model_name)
-
-            self.checkpoint_ready.set()
-
-            # Handle off-policy tracking - cancel old requests
-            futures_to_remove = []
-            futures_to_update = []
-
-            for future, info in self.inflight_group_rollouts.items():
-                if info.off_policy_steps > self.max_off_policy_steps:
-                    if not future.done():
-                        future.cancel()
-                    futures_to_remove.append((future, info.worker))
-                else:
-                    futures_to_update.append((future, info.off_policy_steps + 1, info.worker, info.request_id))
-
-            # Remove cancelled
-            for future, worker in futures_to_remove:
-                self.inflight_group_rollouts.pop(future, None)
-            self.cancelled_rollouts_count += len(futures_to_remove)
-
-            # Update off-policy steps for remaining
-            for future, off_policy_steps, worker, request_id in futures_to_update:
-                if future in self.inflight_group_rollouts:
-                    self.inflight_group_rollouts[future] = InflightRolloutInfo(
-                        off_policy_steps=off_policy_steps,
-                        worker=worker,
-                        request_id=request_id,
-                    )
-
-            if len(futures_to_remove) > 0:
-                self.logger.warning(
-                    f"Cancelled {len(futures_to_remove)} old rollout requests (will refill naturally). Consider increasing max_off_policy_steps to avoid this."
-                )
-
-            self.ckpt_step = next_ckpt_step
-
-    async def generate_batch(self, step: int) -> list[dict]:
-        """Generate a batch of rollouts using workers.
-
-        Returns list of result dicts (not vf.State, since those stay in workers).
-        """
-        self.step = step
-
-        # Schedule initial tasks
-        self.logger.debug("Starting to generate batch rollouts")
-        while len(self.inflight_group_rollouts) < self.problems_per_batch:
-            await self.schedule_group_rollout()
-
-        batch_rollouts: list[dict] = []
-        pbar = tqdm(total=self.config.batch_size, desc="Generating rollouts (train)")
-
-        while len(batch_rollouts) < self.config.batch_size:
-            # Wait for at least one future to complete
-            done, _ = await asyncio.wait(
-                self.inflight_group_rollouts.keys(),
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-
-            await self.checkpoint_ready.wait()
-
-            for finished_future in done:
-                if len(batch_rollouts) >= self.config.batch_size:
-                    batch_rollouts = batch_rollouts[: self.config.batch_size]
-                    break
-
-                # Safely pop the future from tracking
-                if self.inflight_group_rollouts.pop(finished_future, None) is None:
-                    continue
-
-                try:
-                    group_results: list[dict] = finished_future.result()
-
-                    # Update buffer with results
-                    self.buffer.update(group_results)
-                    accepted_rollouts = self.buffer.sample_rollouts(n=self.config.rollouts_per_example)
-
-                    batch_rollouts.extend(accepted_rollouts)
-                    pbar.update(len(accepted_rollouts))
-
-                except asyncio.CancelledError:
-                    pass  # Request was cancelled, will be rescheduled
-                except Exception as e:
-                    self.logger.warning(f"Rollout failed: {e}")
-
-                await self.schedule_group_rollout()
-
-        pbar.close()
-        return batch_rollouts
+        if self.config.bench:
+            print_benchmark(to_col_format(self.monitor.history))
 
 
 def main():

@@ -8,7 +8,7 @@ import asyncio
 import queue
 from dataclasses import dataclass
 from itertools import cycle
-from multiprocessing import Process, Queue, Value
+from multiprocessing import Event, Process, Queue, Value
 from typing import Literal
 
 import verifiers as vf
@@ -94,6 +94,7 @@ class EnvWorkerHelper:
         response_queue: "Queue[EnvWorkerResponse]",
         num_examples,  # mp.Value
     ):
+        self.ready = Event()
         self.env_config = env_config
         if env_config.type == "train":
             self.sampling_args = get_train_sampling_args(env_config.sampling)
@@ -113,7 +114,10 @@ class EnvWorkerHelper:
         env = vf.load_environment(self.env_config.id, **self.env_config.args)
         env.set_max_seq_len(self.env_config.seq_len)
         env.set_interleaved_rollouts(self.env_config.interleaved_rollouts)
-        dataset = env.get_dataset()
+        if self.env_config.type == "train":
+            dataset = env.get_dataset()
+        else:
+            dataset = env.get_eval_dataset(n=self.env_config.num_examples)
 
         # Set dataset size in shared value for synchronous access from parent process
         self.num_examples.value = len(dataset)
@@ -199,6 +203,7 @@ class EnvWorkerHelper:
                     self.response_queue.put(response)
 
         # Run async loop
+        self.ready.set()
         asyncio.run(worker_loop())
 
 
@@ -232,6 +237,7 @@ class EnvWorker:
     def start(self):
         self.env_worker_process = Process(target=self.env_worker_helper.start, daemon=True)
         self.env_worker_process.start()
+        self.env_worker_helper.ready.wait()
         self.response_collector_task = asyncio.create_task(self.collect_responses())
 
     async def stop(self):

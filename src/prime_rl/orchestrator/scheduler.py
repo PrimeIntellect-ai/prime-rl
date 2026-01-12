@@ -11,6 +11,7 @@ from pathlib import Path
 from tqdm import tqdm
 
 from prime_rl.orchestrator.buffer import Buffer
+from prime_rl.orchestrator.ckpt import Progress
 from prime_rl.orchestrator.config import BufferConfig, EvalEnvGroupConfig, TrainEnvGroupConfig
 from prime_rl.orchestrator.env_worker_group import EnvWorkerGroup
 from prime_rl.utils.client import (
@@ -27,24 +28,19 @@ from prime_rl.utils.utils import (
 )
 
 
-class RolloutScheduler:
-    """Continuously schedules group rollout requests.
-
-    References:
-    - AReal: https://arxiv.org/abs/2505.24298v1
-    - PipelineRL: https://arxiv.org/abs/2509.19128v1
-    """
+class TrainRolloutScheduler:
+    """Continuously schedules group rollout requests, sampling rollouts from a buffer."""
 
     def __init__(
         self,
-        env_worker_group_config: TrainEnvGroupConfig | EvalEnvGroupConfig,
+        env_worker_group_config: TrainEnvGroupConfig,
         buffer_config: BufferConfig,
         batch_size: int,
         rollouts_per_example: int,
         model_name: str,
         oversampling_factor: float,
-        schedule_rollouts: asyncio.Event,
-        pending_tasks: dict[asyncio.Task, int],
+        schedule_rollouts: asyncio.Event | None = None,
+        pending_tasks: dict[asyncio.Task, int] | None = None,
     ):
         self.logger = get_logger()
         self.env_worker_group = EnvWorkerGroup(env_worker_group_config)
@@ -54,16 +50,15 @@ class RolloutScheduler:
         self.rollouts_per_example = rollouts_per_example
         self.finished_rollouts: list[dict] = []
         self.oversampling_factor = oversampling_factor
-        self.max_pending_groups = self.batch_size * self.oversampling_factor // self.rollouts_per_example
-        self.schedule_rollouts = schedule_rollouts
+        self.max_pending_groups = int(self.batch_size * self.oversampling_factor / self.rollouts_per_example)
 
         self.accepted_rollouts: list[dict] = []
-        self.pending_tasks = pending_tasks
+        self.schedule_rollouts = schedule_rollouts or asyncio.Event()
+        self.pending_tasks = pending_tasks or {}
 
     def start(self):
         self.env_worker_group.start()
         self.buffer = Buffer(self.env_worker_group, self.buffer_config)
-
         asyncio.create_task(self.generate())
 
     async def schedule_group_rollout(self):
@@ -76,15 +71,14 @@ class RolloutScheduler:
     async def generate(self):
         """Generate a batch of rollouts continuously."""
 
-        # Schedule initial tasks
-        self.logger.debug("Starting to generate batch rollouts")
+        # initial fill
+        self.logger.debug(f"Filling up {self.max_pending_groups} in-flight group rollout requests")
         while len(self.pending_tasks) < self.max_pending_groups:
             await self.schedule_group_rollout()
 
-        batch_rollouts: list[dict] = []
         pbar = tqdm(total=self.batch_size, desc="Generating rollouts (train)")
 
-        while len(batch_rollouts) < self.batch_size:
+        while True:
             # wait for at least one future to complete
             finished_tasks, _ = await asyncio.wait(
                 self.pending_tasks.keys(),
@@ -92,28 +86,40 @@ class RolloutScheduler:
             )
 
             for finished_task in finished_tasks:
-                if len(batch_rollouts) >= self.batch_size:
-                    batch_rollouts = batch_rollouts[: self.batch_size]
-                    break
-
                 # safely pop the future from tracking
                 if self.pending_tasks.pop(finished_task, None) is None:
                     continue
 
+                # store rollouts in rollout buffer
                 rollouts = finished_task.result()
-
-                # Update buffer with results
                 self.buffer.update(rollouts)
-                accepted_rollouts = self.buffer.sample_rollouts(n=self.rollouts_per_example)
-
-                batch_rollouts.extend(accepted_rollouts)
-                pbar.update(len(accepted_rollouts))
+                pbar.update(len(self.buffer.rollout_buffer))
 
                 # refill
                 await self.schedule_group_rollout()
 
-        pbar.close()
-        return batch_rollouts
+    async def wait_for_batch(self):
+        while len(self.buffer.rollout_buffer) < self.batch_size:
+            await asyncio.sleep(0.1)
+        return self.buffer.sample_rollouts(n=self.batch_size)
+
+
+class EvalRolloutScheduler:
+    """Scheduler that schedules and awaits num_examples * rollouts_per_example rollouts for evaluation per eval environment."""
+
+    def __init__(self, env_worker_group_config: EvalEnvGroupConfig, model_name: str):
+        self.env_worker_group = EnvWorkerGroup(env_worker_group_config)
+        self.model_name = model_name
+
+    def start(self):
+        self.env_worker_group.start()
+
+    async def generate_batch(self, env_name: str):
+        num_examples = self.env_worker_group.get_dataset_size(env_name)
+        tasks = []
+        for example_id in range(num_examples):
+            tasks.append(self.env_worker_group.run_group(env_name, example_id, self.model_name))
+        return await asyncio.gather(*tasks)
 
 
 class UpdatePolicyScheduler:
@@ -121,7 +127,7 @@ class UpdatePolicyScheduler:
 
     def __init__(
         self,
-        step: int,
+        progress: Progress,
         max_async_level: int,
         strict_async_level: bool,
         max_off_policy_steps: int,
@@ -138,14 +144,15 @@ class UpdatePolicyScheduler:
         self.strict_async_level = strict_async_level
         self.max_off_policy_steps = max_off_policy_steps
         self.schedule_rollouts = schedule_rollouts
-        self.step = step
-        self.ckpt_step = step  # resume is always from the same policy
+        self.progress = progress
+        self.ckpt_step = progress.step  # resume is always from the same policy
         self.output_dir = output_dir
         self.model_name = model_name
         self.lora_name = lora_name
         self.pending_tasks = pending_tasks
 
     def start(self):
+        self.schedule_rollouts.set()  # initially allow scheduling rollouts
         asyncio.create_task(self.update_policy_loop())
 
     async def update_policy_loop(self):
@@ -156,7 +163,7 @@ class UpdatePolicyScheduler:
     async def update_policy(self):
         """Updates the policy to the latest available checkpoint. Aborts rollout requests that are older than max_off_policy_steps."""
         latest_ckpt_step = get_latest_ckpt_step(get_broadcast_dir(self.output_dir)) or 0
-        async_away_ckpt_step = max(self.step - self.max_async_level, 0)
+        async_away_ckpt_step = max(self.progress.step - self.max_async_level, 0)
         next_ckpt_step = (
             async_away_ckpt_step if self.strict_async_level else max(async_away_ckpt_step, latest_ckpt_step)
         )
@@ -166,7 +173,7 @@ class UpdatePolicyScheduler:
                 self.logger.info(
                     f"Hit async barrier because we are >{self.max_async_level} step(s) async. Waiting for checkpoint {next_ckpt_step}"
                 )
-                self.schedule_rollouts.clear()  # block scheduling new rollouts
+                self.schedule_rollouts.clear()  # barrier enforced: block scheduling rollouts
                 wait_for_ckpt_start_time = time.perf_counter()
                 await wait_for_path(get_step_path(get_broadcast_dir(self.output_dir), next_ckpt_step) / "STABLE")
                 self.wait_for_ckpt_time = time.perf_counter() - wait_for_ckpt_start_time
@@ -189,7 +196,7 @@ class UpdatePolicyScheduler:
             if self.lora_name is not None:
                 self.model_name = self.lora_name
 
-            self.schedule_rollouts.set()  # allow scheduling new rollouts
+            self.schedule_rollouts.set()  # barrier cleared: allow scheduling rollouts
 
             # Handle off-policy tracking - cancel old requests
             tasks_to_remove, tasks_to_update = [], []
@@ -218,12 +225,12 @@ class UpdatePolicyScheduler:
             self.ckpt_step = next_ckpt_step
 
 
-class TrainRolloutScheduler:
+class TrainScheduler:
     """Scheduler that schedules rollouts and updates the policy for training."""
 
     def __init__(
         self,
-        step: int,
+        progress: Progress,
         max_async_level: int,
         strict_async_level: bool,
         max_off_policy_steps: int,
@@ -239,7 +246,7 @@ class TrainRolloutScheduler:
     ):
         self.pending_tasks: dict[asyncio.Task, int] = {}
         self.schedule_rollouts = asyncio.Event()
-        self.rollout_scheduler = RolloutScheduler(
+        self.rollout_scheduler = TrainRolloutScheduler(
             env_worker_group_config,
             buffer_config,
             batch_size,
@@ -250,7 +257,7 @@ class TrainRolloutScheduler:
             self.pending_tasks,
         )
         self.update_policy_scheduler = UpdatePolicyScheduler(
-            step,
+            progress,
             max_async_level,
             strict_async_level,
             max_off_policy_steps,
@@ -265,3 +272,6 @@ class TrainRolloutScheduler:
     def start(self):
         self.rollout_scheduler.start()
         self.update_policy_scheduler.start()
+
+    async def wait_for_batch(self):
+        return await self.rollout_scheduler.wait_for_batch()

@@ -39,6 +39,8 @@ class Buffer:
             random.seed(self.config.seed)
 
         # Basic assertions
+        print(self.env_names)
+        print(self.env_sizes)
         assert sum(self.env_sizes) > 0, "there must be at least one example in the buffer."
 
         # Initialize example buffer (env_name -> list[example_id])
