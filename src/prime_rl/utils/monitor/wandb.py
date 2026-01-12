@@ -7,7 +7,6 @@ from typing import Any
 
 import pandas as pd
 import verifiers as vf
-import wandb
 
 from prime_rl.trainer.config import TokenizerConfig
 from prime_rl.utils.config import WandbConfig, WandbWithExtrasConfig

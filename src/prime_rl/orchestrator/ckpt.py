@@ -93,4 +93,4 @@ class CheckpointManager:
 def setup_ckpt_manager(output_dir: Path, config: CheckpointConfig | None) -> CheckpointManager | None:
     if config is None:
         return None
-    return CheckpointManager(output_dir, config)
+    return

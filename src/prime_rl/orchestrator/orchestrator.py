@@ -1,15 +1,17 @@
 import asyncio
+import random
 import time
 
 import tomli_w
 
 from prime_rl.orchestrator.advantage import compute_advantages
-from prime_rl.orchestrator.ckpt import Progress
+from prime_rl.orchestrator.ckpt import CheckpointManager, Progress
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.scheduler import EvalRolloutScheduler, TrainScheduler
 from prime_rl.orchestrator.trajectories import branch_rollout, interleave_rollout
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
 from prime_rl.utils.event_loop_lag import EventLoopLagMonitor
+from prime_rl.utils.pathing import resolve_latest_ckpt_step
 
 # This monkey patch is necessary to avoid Pydantic validating fields using typing.Iterable (e.g. in multimodal or tool call messages) lazily which leads to tokenization errors, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1249
 monkey_patch_oai_iterable_types()
@@ -23,7 +25,6 @@ monkey_patch_chat_completion_logprobs()
 import pandas as pd
 from loguru import logger
 
-from prime_rl.orchestrator.ckpt import setup_ckpt_manager
 from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.orchestrator.utils import (
     compute_teacher_logprobs,
@@ -73,11 +74,6 @@ class Orchestrator:
             client_config=config.client,
             output_dir=config.output_dir,
         )
-        if config.validation:
-            self.val_scheduler = EvalRolloutScheduler(
-                env_worker_group_config=config.validation.envs,
-                model_name=config.model.name,
-            )
         if config.eval:
             self.eval_scheduler = EvalRolloutScheduler(
                 env_worker_group_config=config.eval.envs,
@@ -115,9 +111,11 @@ class Orchestrator:
         else:
             self.heart = None
 
-        # Get checkpoint manager
-        self.logger.info(f"Initializing checkpoint manager ({config.ckpt})")
-        self.ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
+        if config.ckpt is not None:
+            self.logger.info(f"Initializing checkpoint manager ({config.ckpt})")
+            self.ckpt_manager = CheckpointManager(config.output_dir, config.ckpt)
+        else:
+            self.ckpt_manager = None
 
     @property
     def name(self) -> str:
@@ -148,58 +146,12 @@ class Orchestrator:
                 self.config.weight_broadcast.timeout,
             )
 
-        # Load environment and extract dataset
-        # logger.info(
-        #     f"Loading {len(config.env)} training environment(s) ({', '.join(env.name or env.id for env in config.env)})"
-        # )
-        # env = vf.EnvGroup(
-        #     envs=[vf.load_environment(env.id, **env.args) for env in config.env],
-        #     env_names=[env.name or env.id for env in config.env],
-        #     map_kwargs=dict(writer_batch_size=1),  # Set defensively to not error on map operations on large datasets
-        # )
-        # env.set_max_seq_len(config.seq_len)
-        # if config.trajectory_strategy == "interleaved":
-        #     logger.info("Using token prompts in environment to avoid retokenization discrepancies in multi-turn rollouts")
-        #     env.set_interleaved_rollouts(True)
-        # if config.buffer.skip_verification:
-        #     logger.info("Skipping verification (rewards will be set to 0)")
-        #     env.set_score_rollouts(False)
-
-        # if config.validation:
-        #     val_buffer_config = BufferConfig(env_ratios=config.buffer.env_ratios)
-        #     val_dataset = env.get_eval_dataset(seed=val_buffer_config.seed)
-        #     val_buffer = Buffer(val_dataset, env.env_names, val_buffer_config)
-        # else:
-        #     val_buffer = None
-
-        # checkpoint_step = None
-        # if config.ckpt and config.ckpt.resume_step is not None and ckpt_manager is not None:
-        #     if config.ckpt.resume_step == -1:
-        #         checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
-        #     else:
-        #         checkpoint_step = config.ckpt.resume_step
-
-        # Setup scheduler (uses subprocess workers for env execution)
-        # scheduler = Scheduler(
-        #     admin_clients=admin_clients,
-        #     client_config=config.client,
-        #     env_configs=config.env,
-        #     buffer=buffer,
-        #     config=config,
-        #     oversampling_factor=config.oversampling_factor,
-        #     max_async_level=config.max_async_level,
-        #     max_off_policy_steps=config.max_off_policy_steps,
-        #     strict_async_level=config.strict_async_level,
-        #     lora_name=config.model.lora.name if config.model.lora else None,
-        # )
-
+        # TODO: can we not jsut set model.lora.name as lora name initially?
         # if checkpoint_step is not None and config.model.lora is not None:
         #     scheduler.model_name = config.model.lora.name
         #     for workers in scheduler.workers.values():
         #         for worker in workers:
         #             worker.model_name = config.model.lora.name
-
-        # await scheduler.start()
 
         # Check health of the client
         self.logger.info("Waiting for inference pool to be ready")
@@ -210,110 +162,85 @@ class Orchestrator:
         # Track last online eval checkpoint step for this process
         # last_eval_step = -1
 
-        # if checkpoint_step is not None and ckpt_manager is not None:
-        #     ckpt_manager.load(progress, buffer, step=checkpoint_step)
-        #     logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
-        #     scheduler.ckpt_step = progress.step  # Always resume from the latest checkpoint
-        #     if config.eval and config.eval.skip_eval_on_resume:
-        #         last_eval_step = scheduler.ckpt_step
-        #         logger.info(f"Skipping online eval on resume (ckpt_step={scheduler.ckpt_step})")
-        #     await update_weights(
-        #         admin_clients,
-        #         get_step_path(get_broadcast_dir(config.output_dir), scheduler.ckpt_step),
-        #         lora_name=config.model.lora.name if config.model.lora else None,
-        #     )
-        # else:
-        #     logger.info("Training from scratch. Resetting weights to base model")
-        #     if config.model.lora is None:
-        #         await reload_weights(admin_clients)
+        if self.ckpt_manager:
+            assert self.config.ckpt
+            if self.config.ckpt.resume_step == -1:
+                checkpoint_step = resolve_latest_ckpt_step(self.ckpt_manager.ckpt_dir)
+            else:
+                checkpoint_step = self.config.ckpt.resume_step
+            assert isinstance(checkpoint_step, int)
+            self.ckpt_manager.load(self.progress, self.train_scheduler.rollout_scheduler.buffer, step=checkpoint_step)
+            logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
+            self.train_scheduler.update_policy_scheduler.ckpt_step = (
+                self.progress.step
+            )  # always resume from the latest checkpoint
+            if self.config.eval and self.config.eval.skip_eval_on_resume:
+                last_eval_step = self.progress.step  # will skip eval on first resume step
+            else:
+                last_eval_step = -1
+                logger.info("Skipping online eval on resume")
+            await self.train_scheduler.update_policy_scheduler.update_weights(checkpoint_step)
+        else:
+            logger.info("Training from scratch. Resetting weights to base model")
+            if self.config.model.lora is None:
+                await self.train_scheduler.update_policy_scheduler.reload_weights()
+            last_eval_step = -1
 
         # Iterate over dataset in batches
         max_steps = self.config.max_steps or int(1e9)
         self.logger.info(f"Starting orchestrator loop (max_steps={max_steps or 'infinite'})")
-        # is_first_step = True
+        is_first_step = True
         await set_semaphore(self.config.max_concurrent or -1)
 
         self.train_scheduler.start()
-        if self.config.validation:
-            self.val_scheduler.start()
         if self.config.eval:
             self.eval_scheduler.start()
 
-        # Start update policy loop
-        # update_policy_task = asyncio.create_task(scheduler.update_policy_loop())
-
         while True:
-            # Check if update_policy_task has failed and propagate the exception
-            # if update_policy_task.done():
-            #     # End all other tasks
-            #     for task in asyncio.all_tasks():
-            #         task.cancel()
-            #     update_policy_task.result()  # Raises if the task failed
-            # Capture ckpt_step once for consistency (it's updated by update_policy_loop concurrently)
-            # ckpt_step = scheduler.ckpt_step
-
-            # Save checkpoint (if we are at an interval step and not at the first or last step)
-            # is_last_step = config.max_steps is not None and self.progress.step == config.max_steps - 1
-            # save_ckpt_time = 0
-            # if (
-            #     ckpt_manager is not None
-            #     and (config.ckpt and config.ckpt.interval)
-            #     and not (is_first_step or is_last_step)
-            #     and progress.step % config.ckpt.interval == 0
-            # ):
-            #     logger.info(f"Saving checkpoint at step {progress.step}")
-            #     save_ckpt_start_time = time.perf_counter()
-            #     ckpt_manager.save(progress, train_buffer, step=progress.step)
-            #     save_ckpt_time = time.perf_counter() - save_ckpt_start_time
+            # save checkpoint (if we are at an interval step and not at the first or last step)
+            is_last_step = self.config.max_steps is not None and self.progress.step == self.config.max_steps - 1
+            save_ckpt_time = 0
+            if (
+                (self.config.ckpt and self.config.ckpt.interval)
+                and not (is_first_step or is_last_step)
+                and self.progress.step % self.config.ckpt.interval == 0
+            ):
+                assert self.ckpt_manager is not None
+                logger.info(f"Saving checkpoint at step {self.progress.step}")
+                save_ckpt_start_time = time.perf_counter()
+                self.ckpt_manager.save(
+                    self.progress, self.train_scheduler.rollout_scheduler.buffer, step=self.progress.step
+                )
+                save_ckpt_time = time.perf_counter() - save_ckpt_start_time
 
             # Break if we have reached the maximum number of steps
             if self.config.max_steps and self.progress.step >= self.config.max_steps:
                 break
 
-            self.logger.info(f"Starting orchestrator step {self.progress.step}")
+            self.logger.info(f"Starting step {self.progress.step}")
             step_start_time = time.perf_counter()
 
-            # Run evals BEFORE training (blocking, in subprocess to isolate event loop)
-            # This ensures weights don't change during eval and eval doesn't cause event loop lag
-            # if (
-            #     config.eval
-            #     and ckpt_step % config.eval.interval == 0
-            #     and ckpt_step > last_eval_step
-            #     and ((ckpt_step == 0 and config.eval.eval_base_model) or ckpt_step > 0)
-            # ):
-            #     last_eval_step = ckpt_step
-            #     logger.info(f"Running evals for checkpoint step {ckpt_step} (blocking, subprocess)")
-
-            #     # Pause weight updates during eval
-            #     scheduler.checkpoint_ready.clear()
-
-            #     await run_evals_subprocess(
-            #         client_config=config.client,
-            #         eval_config=config.eval,
-            #         model_config=config.model,
-            #         sampling_config=config.eval.sampling,
-            #         reasoning_field=config.eval.reasoning_field,
-            #         output_dir=config.output_dir,
-            #         ckpt_step=ckpt_step,
-            #         step=progress.step,
-            #         max_concurrent=config.max_concurrent or -1,
-            #     )
-
-            #     # Resume weight updates
-            #     scheduler.checkpoint_ready.set()
+            if (
+                self.config.eval
+                and self.progress.step % self.config.eval.interval == 0
+                and self.progress.step > last_eval_step
+                and (
+                    (self.train_scheduler.update_policy_scheduler.ckpt_step == 0 and self.config.eval.eval_base_model)
+                    or self.progress.step > 0
+                )
+            ):
+                logger.info(f"Running evals for step {self.progress.step}")
+                self.train_scheduler.schedule_rollouts.clear()  # block scheduling rollouts
+                tasks = []
+                for env_name in self.eval_scheduler.env_worker_group.env_names:
+                    tasks.append(self.eval_scheduler.generate_batch(env_name))
+                await asyncio.gather(*tasks)
+                self.train_scheduler.schedule_rollouts.set()
+                last_eval_step = self.progress.step
 
             # Schedule generating the training batch
             generate_completions_start_time = time.perf_counter()
             train_task = self.train_scheduler.wait_for_batch()
-
-            # Schedule running validation at the specified interval
-            if self.config.validation and self.progress.step % self.config.validation.interval == 0:
-                assert self.val_scheduler is not None
-                self.logger.info(f"Running validation for step {self.progress.step}")
-                env_name = self.val_scheduler.env_worker_group.env_names[0]
-                val_task = self.val_scheduler.generate_batch(env_name)
-            else:
-                val_task = None
 
             # Await train rollouts, process results and write batch to disk to consume by trainer
             train_rollouts = await train_task
@@ -368,12 +295,6 @@ class Orchestrator:
             )
             self.training_batch_sender.send(training_batch)
 
-            # Await and process val results
-            if val_task is not None:
-                await val_task
-            # if eval_task is not None:
-            #     await eval_task
-
             # Gather metrics in dataframes
             results_df = pd.DataFrame(
                 {
@@ -393,18 +314,6 @@ class Orchestrator:
 
             # Gather individual reward function metrics
             metrics_df = pd.DataFrame([rollout["metrics"] for rollout in train_rollouts])
-
-            # val_results_df = (
-            #     pd.DataFrame(
-            #         {
-            #             "example_id": [rollout["input"]["example_id"] for rollout in val_outputs],
-            #             "task": [rollout["input"]["task"] for rollout in val_outputs],
-            #             "reward": [rollout["reward"] for rollout in val_outputs],
-            #         }
-            #     )
-            #     if val_outputs is not None
-            #     else None
-            # )
 
             # Update progress metrics and throughput
             num_tokens = int(results_df.seq_len.sum())
@@ -478,7 +387,7 @@ class Orchestrator:
                 "time/step": step_time,
                 "time/generate_completions": generate_completions_time,
                 "time/teacher_logprobs": teacher_logprobs_time,
-                # "time/save_ckpt": save_ckpt_time,
+                "time/save_ckpt": save_ckpt_time,
                 # Scheduler metrics
                 # **scheduler.get_metrics(),
                 # Buffer metrics
@@ -497,23 +406,12 @@ class Orchestrator:
                 per_env_ratio = results_df.task.value_counts(normalize=True).to_dict()
                 to_log.update({f"batch/{env}": ratio for env, ratio in per_env_ratio.items()})
 
-            # Optionally, add val metrics
-            # if val_results_df is not None:
-            #     to_log.update({"val_reward/mean": val_results_df.reward.mean()})
-
-            #     if val_results_df.task.nunique() > 1:
-            #         per_env_reward = val_results_df.groupby("task").reward.mean().to_dict()
-            #         to_log.update({f"val_reward/{env}": reward for env, reward in per_env_reward.items()})
-
-            #         per_env_ratio = val_results_df.task.value_counts(normalize=True).to_dict()
-            #         to_log.update({f"val_batch/{env}": ratio for env, ratio in per_env_ratio.items()})
-
             # Log metrics to monitor(s)
             self.monitor.log(to_log)
 
             # Log samples to monitor(s) if enabled
-            # subset_train_rollouts = random.sample(train_rollouts, min(8, len(train_rollouts)))
-            # monitor.log_samples(subset_train_rollouts, step=progress.step)
+            subset_train_rollouts = random.sample(train_rollouts, min(8, len(train_rollouts)))
+            self.monitor.log_samples(subset_train_rollouts, step=self.progress.step)
 
             # Log distributions (rewards, advantages) if enabled
             self.monitor.log_distributions(
@@ -524,13 +422,12 @@ class Orchestrator:
                 step=self.progress.step,
             )
 
-            step_message = f"Step {self.progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.groupby('example_id').seq_len.mean().mean():.1f} tokens/sample"  # | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
-            # step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} |{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.groupby('example_id').seq_len.mean().mean():.1f} tokens/sample"  # | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
+            step_message = f"Step {self.progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} | Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.groupby('example_id').seq_len.mean().mean():.1f} tokens/sample | Async Level: {self.train_scheduler.update_policy_scheduler.async_level} | Max. Off-Policy Level: {self.train_scheduler.update_policy_scheduler.max_off_policy_level}"
             self.logger.success(step_message)
 
             # Increment step
             self.progress.step += 1
-            # is_first_step = False
+            is_first_step = False
 
             self.event_loop_lag_monitor.reset()
 
@@ -538,28 +435,25 @@ class Orchestrator:
             if self.heart is not None:
                 self.heart.beat()
 
-        # if config.eval:
-        #     logger.info("Running final evals (subprocess)")
-        #     await run_evals_subprocess(
-        #         client_config=config.client,
-        #         eval_config=config.eval,
-        #         model_config=config.model,
-        #         sampling_config=config.eval.sampling,
-        #         reasoning_field=config.eval.reasoning_field,
-        #         output_dir=config.output_dir,
-        #         ckpt_step=scheduler.ckpt_step,
-        #         step=progress.step,
-        #         max_concurrent=config.max_concurrent or -1,
-        #     )
+        if self.config.eval:
+            assert self.eval_scheduler is not None
+            logger.info("Running final evals")
+            tasks = []
+            for env_name in self.eval_scheduler.env_worker_group.env_names:
+                tasks.append(self.eval_scheduler.generate_batch(env_name))
+            await asyncio.gather(*tasks)
 
         # Log final (immutable) samples and distributions to monitor(s)
         self.monitor.log_final_samples()
         self.monitor.save_final_summary()
 
         # Write final checkpoint
-        # if ckpt_manager is not None:
-        #     logger.info("Writing final checkpoint")
-        #     ckpt_manager.save(self.progress, train_buffer, step=self.progress.step)
+        if self.config.ckpt:
+            assert self.ckpt_manager is not None
+            logger.info("Writing final checkpoint")
+            self.ckpt_manager.save(
+                self.progress, self.train_scheduler.rollout_scheduler.buffer, step=self.progress.step
+            )
 
         # Close training batch sender
         self.training_batch_sender.close()

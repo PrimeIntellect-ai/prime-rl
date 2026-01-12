@@ -9,12 +9,14 @@ import time
 from pathlib import Path
 
 from tqdm import tqdm
+from tqdm.asyncio import tqdm as asyncio_tqdm
 
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress
 from prime_rl.orchestrator.config import BufferConfig, EvalEnvGroupConfig, TrainEnvGroupConfig
 from prime_rl.orchestrator.env_worker_group import EnvWorkerGroup
 from prime_rl.utils.client import (
+    reload_weights,
     setup_admin_clients,
     update_weights,
 )
@@ -119,7 +121,7 @@ class EvalRolloutScheduler:
         tasks = []
         for example_id in range(num_examples):
             tasks.append(self.env_worker_group.run_group(env_name, example_id, self.model_name))
-        return await asyncio.gather(*tasks)
+        return await asyncio_tqdm.gather(*tasks, total=num_examples, desc="Generating rollouts (eval)")
 
 
 class UpdatePolicyScheduler:
@@ -224,9 +226,29 @@ class UpdatePolicyScheduler:
 
             self.ckpt_step = next_ckpt_step
 
+    @property
+    def async_level(self) -> int:
+        return self.progress.step - self.ckpt_step
+
+    @property
+    def max_off_policy_level(self) -> float:
+        off_policy_steps = list(self.pending_tasks.values())
+        return sum(off_policy_steps) / len(off_policy_steps) if off_policy_steps else 0.0
+
+    async def reload_weights(self):
+        # TODO: move method
+        await reload_weights(self.admin_clients)
+
+    async def update_weights(self, step: int):
+        await update_weights(
+            self.admin_clients,
+            get_step_path(get_broadcast_dir(self.output_dir), step),
+            lora_name=self.lora_name,
+        )
+
 
 class TrainScheduler:
-    """Scheduler that schedules rollouts and updates the policy for training."""
+    """Schedules training rollouts and updates the policy for training."""
 
     def __init__(
         self,

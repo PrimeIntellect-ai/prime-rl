@@ -457,12 +457,12 @@ class CheckpointConfig(BaseConfig):
     interval: Annotated[int | None, Field(ge=1, description="Interval at which to save the checkpoint.")] = None
 
     resume_step: Annotated[
-        int | None,
+        int,
         Field(
             ge=-1,
             description="Step to resume orchestrator from. If None, will start from scratch. If -1, will restart from latest checkpoint available.",
         ),
-    ] = None
+    ] = -1
 
     keep_last: Annotated[
         int | None,
