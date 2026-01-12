@@ -271,8 +271,8 @@ class EnvWorker:
         self,
         example_id: int,
         rollouts_per_example: int,
-    ) -> tuple[asyncio.Future, str]:
-        """Submit a rollout request and return a (future, request_id) tuple."""
+    ) -> asyncio.Future:
+        """Submit a rollout request and return a future for the response."""
         request_id = uuid.uuid4().hex
         request = RolloutRequest(
             request_id=request_id,
@@ -283,10 +283,11 @@ class EnvWorker:
 
         loop = asyncio.get_event_loop()
         future = loop.create_future()
+        future.request_id = request_id
         self.pending_futures[request_id] = future
 
         self.request_queue.put(request)
-        return future, request_id
+        return future
 
     async def collect_responses(self):
         """Background task to collect responses and resolve futures."""

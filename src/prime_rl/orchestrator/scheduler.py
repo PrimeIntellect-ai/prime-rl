@@ -143,7 +143,7 @@ class Scheduler:
         workers = self.workers[task]
         worker = min(workers, key=lambda w: w.pending_count)
 
-        future, request_id = await worker.submit_request(
+        future = await worker.submit_request(
             example_id=example["example_id"],
             rollouts_per_example=self.config.rollouts_per_example,
         )
@@ -151,7 +151,7 @@ class Scheduler:
         self.inflight_group_rollouts[future] = InflightRolloutInfo(
             off_policy_steps=0,
             worker=worker,
-            request_id=request_id,
+            request_id=future.request_id,
         )
 
     async def update_policy_loop(self):
