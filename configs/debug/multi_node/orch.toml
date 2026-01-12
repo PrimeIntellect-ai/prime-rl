@@ -16,3 +16,6 @@ args = { min_turns = 2, max_turns = 2 }
 [wandb]
 project = "daniel-repro"
 name = "repro-orch"
+
+[log]
+level = "debug"

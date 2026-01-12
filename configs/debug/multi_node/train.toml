@@ -8,3 +8,6 @@ seq_len = 2048
 [wandb]
 project = "daniel-repro"
 name = "repro-train"
+
+[log]
+level = "debug"

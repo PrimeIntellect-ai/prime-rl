@@ -144,6 +144,9 @@ else
     # This is required for compilation to work correctly
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 
+    # Debug: Get real CUDA stack traces
+    export CUDA_LAUNCH_BLOCKING=1
+
         echo $HOSTNAMES | tee  $OUTPUT_DIR/slurm/latest_train_node_rank_${TRAIN_NODE_RANK}.log
     uv run torchrun \
         --nnodes=$NUM_TRAIN_NODES \
