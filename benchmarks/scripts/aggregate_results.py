@@ -26,6 +26,7 @@ class AggregateConfig(BaseSettings):
     baselines_dir: Annotated[Path, Field(description="Directory containing baseline JSON artifacts")]
     output_markdown: Annotated[Path, Field(description="Output markdown file path")]
     regression_threshold: Annotated[float, Field(description="Regression threshold (default: 0.05 = 5%)")] = 0.05
+    diff_display_threshold: Annotated[float, Field(description="Diff display threshold (default: 0.01 = 1%)")] = 0.01
 
 
 # These words are stripped from the device name to get the short name
@@ -76,7 +77,14 @@ def load_json_dir(directory: Path) -> list[dict]:
     return results
 
 
-def format_metric(value: float, baseline: float | None, threshold: float, fmt: str, higher_is_better: bool = True):
+def format_metric(
+    value: float,
+    baseline: float | None,
+    threshold: float,
+    diff_display_threshold: float,
+    fmt: str,
+    higher_is_better: bool = True,
+) -> tuple[str, bool]:
     formatted = fmt.format(value)
     if baseline is None or baseline == 0:
         return formatted, False
@@ -86,12 +94,17 @@ def format_metric(value: float, baseline: float | None, threshold: float, fmt: s
 
     if is_regression:
         return f"**{formatted}** :warning: ({pct_change:+.1f}%)", True
-    elif abs(pct_change) > 1:
+    elif abs(pct_change) >= diff_display_threshold * 100:
         return f"{formatted} ({pct_change:+.1f}%)", False
     return formatted, False
 
 
-def generate_markdown(results: list[dict], baselines: dict[str, dict], threshold: float) -> tuple[str, bool]:
+def generate_markdown(
+    results: list[dict],
+    baselines: dict[str, dict],
+    threshold: float,
+    diff_display_threshold: float,
+) -> tuple[str, bool]:
     has_regressions = False
 
     by_model: dict[str, list[dict]] = {}
@@ -111,6 +124,7 @@ def generate_markdown(results: list[dict], baselines: dict[str, dict], threshold
         f"**Commit:** `{commit}`",
         "",
         f"> :warning: indicates regression > {threshold * 100:.0f}% from baseline",
+        f"> diffs shown when abs(change) >= {diff_display_threshold * 100:.1f}% (except regressions, which always show diffs)",
         "",
     ]
 
@@ -124,15 +138,20 @@ def generate_markdown(results: list[dict], baselines: dict[str, dict], threshold
             cfg, m = r["config"], r["metrics"]
             bl = baselines.get(get_config_key(cfg), {})
 
-            mfu_str, mfu_reg = format_metric(m["mfu"]["mean"], bl.get("mfu"), threshold, "{:.1f}%", True)
+            mfu_str, mfu_reg = format_metric(
+                m["mfu"]["mean"], bl.get("mfu"), threshold, diff_display_threshold, "{:.1f}%", True
+            )
             tps_str, tps_reg = format_metric(
                 m["throughput"]["mean"] / 1000,
                 bl.get("throughput", 0) / 1000 if bl.get("throughput") else None,
                 threshold,
+                diff_display_threshold,
                 "{:.2f}k",
                 True,
             )
-            step_str, step_reg = format_metric(m["step_time"]["mean"], bl.get("step_time"), threshold, "{:.2f}s", False)
+            step_str, step_reg = format_metric(
+                m["step_time"]["mean"], bl.get("step_time"), threshold, diff_display_threshold, "{:.2f}s", False
+            )
 
             has_regressions = has_regressions or mfu_reg or tps_reg or step_reg
             attn = SHORTENED_ATTN_MAPPING.get(cfg["attention"], cfg["attention"])
@@ -174,7 +193,9 @@ def main():
             }
     print(f"Loaded {len(baselines)} baseline entries", file=sys.stderr)
 
-    markdown, has_regressions = generate_markdown(results, baselines, config.regression_threshold)
+    markdown, has_regressions = generate_markdown(
+        results, baselines, config.regression_threshold, config.diff_display_threshold
+    )
     config.output_markdown.parent.mkdir(parents=True, exist_ok=True)
     config.output_markdown.write_text(markdown)
     print(f"Wrote markdown report to {config.output_markdown}", file=sys.stderr)
