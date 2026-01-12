@@ -74,11 +74,14 @@ jobs:
             --output "/tmp/benchmark_result.json" \
             --docker-image "${{ inputs.image }}" \
             --timeout 1800
+      - name: Set artifact name
+        id: artifact
+        run: echo "name=benchmark-$(echo '${{ matrix.model }}' | sed 's/\//--/')-${{ matrix.type }}-${{ matrix.lora_rank || 'full' }}-${{ matrix.num_gpus }}gpu" >> "$GITHUB_OUTPUT"
       - name: Upload benchmark result
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: benchmark-${{ matrix.model }}-${{ matrix.type }}-${{ matrix.lora_rank || 'full' }}-${{ matrix.num_gpus }}gpu
+          name: ${{ steps.artifact.outputs.name }}
           path: /tmp/benchmark_result.json
           retention-days: 30
 
