@@ -325,7 +325,7 @@ async def generate_and_save_group(
                 sampling_args["max_tokens"] = new_max_tokens
                 states = await generate_group(client, env, model_name, example, rollouts_per_example, sampling_args)
                 for state in states:
-                    if state.get("error") and isinstance(state["error"], vf.SandboxError):
+                    if state.get("error") and isinstance(state["error"], vf.InfraError):
                         raise state["error"]
                 return states
             raise
