@@ -30,25 +30,21 @@ jobs:
       - name: Build matrix
         id: build
         run: |
-          cat << 'EOF' > /tmp/matrix.json
-          {
-            "include": [
-              {"model": "Qwen/Qwen3-0.6B", "runner": "2xa6000", "num_gpus": 2, "type": "rl", "lora_rank": 16, "seq_len": 8192, "attention": "flash_attention_2", "ac": "Recompute"},
-              {"model": "Qwen/Qwen3-0.6B", "runner": "2xa6000", "num_gpus": 2, "type": "sft", "lora_rank": 16, "seq_len": 8192, "attention": "flash_attention_2", "ac": "Recompute"},
-              {"model": "Qwen/Qwen3-0.6B", "runner": "2xa6000", "num_gpus": 2, "type": "rl", "lora_rank": null, "seq_len": 8192, "attention": "flash_attention_2", "ac": "Recompute"},
-              {"model": "Qwen/Qwen3-4B", "runner": "2xa6000", "num_gpus": 2, "type": "rl", "lora_rank": 16, "seq_len": 8192, "attention": "flash_attention_2", "ac": "Recompute"},
-              {"model": "Qwen/Qwen3-4B", "runner": "2xa6000", "num_gpus": 2, "type": "sft", "lora_rank": 16, "seq_len": 8192, "attention": "flash_attention_2", "ac": "Recompute"},
-              {"model": "Qwen/Qwen3-4B", "runner": "2xa6000", "num_gpus": 2, "type": "rl", "lora_rank": null, "seq_len": 8192, "attention": "flash_attention_2", "ac": "Recompute"},
-              {"model": "Qwen/Qwen3-0.6B", "runner": "2xh100", "num_gpus": 2, "type": "rl", "lora_rank": 16, "seq_len": 8192, "attention": "flash_attention_2", "ac": "Recompute"},
-              {"model": "Qwen/Qwen3-0.6B", "runner": "2xh100", "num_gpus": 2, "type": "sft", "lora_rank": 16, "seq_len": 8192, "attention": "flash_attention_2", "ac": "Recompute"},
-              {"model": "Qwen/Qwen3-0.6B", "runner": "2xh100", "num_gpus": 2, "type": "rl", "lora_rank": null, "seq_len": 8192, "attention": "flash_attention_2", "ac": "Recompute"},
-              {"model": "Qwen/Qwen3-4B", "runner": "2xh100", "num_gpus": 2, "type": "rl", "lora_rank": 16, "seq_len": 8192, "attention": "flash_attention_2", "ac": "Recompute"},
-              {"model": "Qwen/Qwen3-4B", "runner": "2xh100", "num_gpus": 2, "type": "sft", "lora_rank": 16, "seq_len": 8192, "attention": "flash_attention_2", "ac": "Recompute"},
-              {"model": "Qwen/Qwen3-4B", "runner": "2xh100", "num_gpus": 2, "type": "rl", "lora_rank": null, "seq_len": 8192, "attention": "flash_attention_2", "ac": "Recompute"},
-            ]
-          }
-          EOF
-          echo "matrix=$(cat /tmp/matrix.json | jq -c .)" >> "$GITHUB_OUTPUT"
+          matrix='{"include":[
+            {"model":"Qwen/Qwen3-0.6B","runner":"2xa6000","num_gpus":2,"type":"rl","lora_rank":16,"seq_len":8192,"attention":"flash_attention_2","ac":"Recompute"},
+            {"model":"Qwen/Qwen3-0.6B","runner":"2xa6000","num_gpus":2,"type":"sft","lora_rank":16,"seq_len":8192,"attention":"flash_attention_2","ac":"Recompute"},
+            {"model":"Qwen/Qwen3-0.6B","runner":"2xa6000","num_gpus":2,"type":"rl","lora_rank":null,"seq_len":8192,"attention":"flash_attention_2","ac":"Recompute"},
+            {"model":"Qwen/Qwen3-4B","runner":"2xa6000","num_gpus":2,"type":"rl","lora_rank":16,"seq_len":8192,"attention":"flash_attention_2","ac":"Recompute"},
+            {"model":"Qwen/Qwen3-4B","runner":"2xa6000","num_gpus":2,"type":"sft","lora_rank":16,"seq_len":8192,"attention":"flash_attention_2","ac":"Recompute"},
+            {"model":"Qwen/Qwen3-4B","runner":"2xa6000","num_gpus":2,"type":"rl","lora_rank":null,"seq_len":8192,"attention":"flash_attention_2","ac":"Recompute"},
+            {"model":"Qwen/Qwen3-0.6B","runner":"2xh100","num_gpus":2,"type":"rl","lora_rank":16,"seq_len":8192,"attention":"flash_attention_2","ac":"Recompute"},
+            {"model":"Qwen/Qwen3-0.6B","runner":"2xh100","num_gpus":2,"type":"sft","lora_rank":16,"seq_len":8192,"attention":"flash_attention_2","ac":"Recompute"},
+            {"model":"Qwen/Qwen3-0.6B","runner":"2xh100","num_gpus":2,"type":"rl","lora_rank":null,"seq_len":8192,"attention":"flash_attention_2","ac":"Recompute"},
+            {"model":"Qwen/Qwen3-4B","runner":"2xh100","num_gpus":2,"type":"rl","lora_rank":16,"seq_len":8192,"attention":"flash_attention_2","ac":"Recompute"},
+            {"model":"Qwen/Qwen3-4B","runner":"2xh100","num_gpus":2,"type":"sft","lora_rank":16,"seq_len":8192,"attention":"flash_attention_2","ac":"Recompute"},
+            {"model":"Qwen/Qwen3-4B","runner":"2xh100","num_gpus":2,"type":"rl","lora_rank":null,"seq_len":8192,"attention":"flash_attention_2","ac":"Recompute"}
+          ]}'
+          echo "matrix=$(echo "$matrix" | jq -c .)" >> "$GITHUB_OUTPUT"
 
   run-benchmark:
     name: "${{ matrix.model }} (${{ matrix.type }}${{ matrix.lora_rank && format(' r={0}', matrix.lora_rank) || '' }}) on ${{ matrix.num_gpus }}xGPU"
