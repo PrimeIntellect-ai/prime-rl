@@ -74,7 +74,7 @@ jobs:
             --timeout 1800
       - name: Set artifact name
         id: artifact
-        run: echo "name=benchmark-$(echo '${{ matrix.model }}' | sed 's/\//--/')-${{ matrix.type }}-${{ matrix.lora_rank || 'full' }}-${{ matrix.num_gpus }}gpu" >> "$GITHUB_OUTPUT"
+        run: echo "name=benchmark-${{ matrix.runner }}-$(echo '${{ matrix.model }}' | sed 's/\//--/')-${{ matrix.type }}-${{ matrix.lora_rank || 'full' }}-${{ matrix.num_gpus }}gpu" >> "$GITHUB_OUTPUT"
       - name: Upload benchmark result
         uses: actions/upload-artifact@v4
         if: always()
