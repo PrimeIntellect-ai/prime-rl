@@ -14,6 +14,7 @@ export CKPT_STEP=-1
 
 export NUM_TRAIN_NODES=${NUM_TRAIN_NODES:-16}
 export NUM_INFER_NODES=${NUM_INFER_NODES:-41}
+export INFER_TP_SIZE=${INFER_TP_SIZE:-1}
 
 if [ $((NUM_TRAIN_NODES + NUM_INFER_NODES)) != $SLURM_JOB_NUM_NODES ]; then
     echo "NUM_TRAIN_NODES + NUM_INFER_NODES must equal SLURM_JOB_NUM_NODES"
@@ -63,6 +64,7 @@ echo "HOSTNAMES=${HOSTNAMES[@]}"
 echo "TRAIN_HOSTS=${TRAIN_HOSTS[@]}"
 echo "INFER_HOSTS=${INFER_HOSTS[@]}"
 echo "INFER_URLS=${INFER_URLS}"
+echo "INFER_TP_SIZE=${INFER_TP_SIZE}"
 
 export MASTER_ADDR="${HOSTNAMES[$NUM_INFER_NODES]}"
 export MASTER_PORT=29500
@@ -112,6 +114,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     uv run inference \
         @ configs/debug/multi_node/infer.toml \
         --weight_broadcast.type nccl \
+        --tensor-parallel-size $INFER_TP_SIZE \
         --enable-log-requests \
         --no-disable-log-requests \
         2>&1 | tee $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log $OUTPUT_DIR/slurm/job_${INFER_NODE_RANK}_infer_node_rank_${INFER_NODE_RANK}.log
@@ -157,7 +160,7 @@ else
         --weight_broadcast.type nccl \
         --weight_broadcast.host 0.0.0.0 \
         --weight_broadcast.port $BROADCAST_PORT \
-        --weight_broadcast.inference_world_size $((8 * NUM_INFER_NODES)) \
+        --weight_broadcast.inference_world_size $((INFER_TP_SIZE * NUM_INFER_NODES)) \
         --weight_broadcast.timeout $BROADCAST_TIMEOUT \
         --dist_timeout_seconds $NCCL_COMM_TIMEOUT \
         --output-dir $OUTPUT_DIR \
