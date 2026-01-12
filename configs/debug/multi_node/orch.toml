@@ -9,10 +9,15 @@ name = "Qwen/Qwen3-4B-Instruct-2507"
 [sampling]
 max_tokens = 512
 
+# [[env]]
+# id = "primeintellect/alphabet-sort"
+# name = "alphabet-sort"
+# args = { min_turns = 2, max_turns = 2 }
+
 [[env]]
-id = "primeintellect/alphabet-sort"
-name = "alphabet-sort"
-args = { min_turns = 2, max_turns = 2 }
+id = "mini-swe-agent-plus"
+args = { max_turns = 50, cpu_cores = 2, memory_gb = 4, disk_size_gb = 2, labels = ["mini-swe-agent-plus-daniel"], total_timeout_minutes = 720, sandbox_client_max_workers = 128}
+name = "mini-swe-agent-plus"
 
 [wandb]
 project = "daniel-repro"

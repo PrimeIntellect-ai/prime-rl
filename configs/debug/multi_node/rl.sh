@@ -91,6 +91,8 @@ srun bash -c '
     source .env
     source .venv/bin/activate
 
+    uv pip install -e /home/daniel/git/research-environments/environments/mini_swe_agent_plus
+
     # Disable sync to avoid conflicts with lockfile
 
     # Higher ulimit
