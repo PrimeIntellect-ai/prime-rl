@@ -48,7 +48,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     container:
       image: ${{ inputs.image }}
-      options: --gpus all --shm-size=16g --entrypoint bash
+      options: --gpus all --shm-size=16g --entrypoint bash -v $HOME/.cache/huggingface:/root/.cache/huggingface
+    env:
+      HF_HOME: /root/.cache/huggingface
     defaults:
       run:
         working-directory: /app
