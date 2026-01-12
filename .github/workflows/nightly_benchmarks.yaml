@@ -42,12 +42,25 @@ jobs:
           ]}'
           echo "matrix=$(echo "$matrix" | jq -c .)" >> "$GITHUB_OUTPUT"
 
+  get-image-digest:
+    name: Get image digest
+    runs-on: ubuntu-latest
+    outputs:
+      image_with_digest: ${{ steps.digest.outputs.image_with_digest }}
+    steps:
+      - name: Get image digest
+        id: digest
+        run: |
+          docker pull "${{ inputs.image }}"
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${{ inputs.image }}")
+          echo "image_with_digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+
   run-benchmark:
     name: "${{ matrix.model }} (${{ matrix.type }}${{ matrix.lora_rank && format(' r={0}', matrix.lora_rank) || '' }}) on ${{ matrix.runner }}"
-    needs: build-matrix
+    needs: [build-matrix, get-image-digest]
     runs-on: ${{ matrix.runner }}
     container:
-      image: ${{ inputs.image }}
+      image: ${{ needs.get-image-digest.outputs.image_with_digest }}
       options: --gpus all --shm-size=16g --user root --entrypoint bash -v huggingface_cache:/huggingface_cache
     env:
       HF_HOME: /huggingface_cache
@@ -77,7 +90,7 @@ jobs:
             --ac "${{ matrix.ac }}" \
             --attention "${{ matrix.attention }}" \
             --output "/tmp/benchmark_result.json" \
-            --docker-image "${{ inputs.image }}" \
+            --docker-image "${{ needs.get-image-digest.outputs.image_with_digest }}" \
             --timeout 1800
       - name: Set artifact name
         id: artifact
