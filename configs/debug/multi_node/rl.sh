@@ -34,6 +34,7 @@ rm -rf $OUTPUT_DIR/rollouts
 rm -rf $OUTPUT_DIR/broadcasts
 rm -rf $OUTPUT_DIR/run_0/rollouts
 rm -rf $OUTPUT_DIR/run_0/broadcasts
+rm -rf $OUTPUT_DIR/run_0/checkpoints
 
 # Remove the STABLE files in weight directory to respect the async barrier on orchestrator
 # rm $OUTPUT_DIR/weights/*/STABLE
@@ -135,7 +136,6 @@ else
             --client.timeout 3600 \
             --num-train-workers $((NUM_TRAIN_NODES * 8)) \
             --output-dir $OUTPUT_DIR/run_0 \
-            --ckpt.resume_step $CKPT_STEP \
             2>&1 | tee $OUTPUT_DIR/slurm/latest_orchestrator.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_orchestrator.log & disown
     fi
 
