@@ -119,7 +119,7 @@ def build_command(config: BenchmarkConfig) -> list[str]:
     # Add LoRA configuration if applicable
     if config.lora_rank is not None:
         cmd.extend(["--model.lora.rank", str(config.lora_rank)])
-        cmd.extend(["--max-concurrency", str(MAX_LORAS)])
+        cmd.extend(["--max-concurrent-runs", str(MAX_LORAS)])
 
     # Data configuration differs between RL and SFT
     if config.type.startswith("rl"):
