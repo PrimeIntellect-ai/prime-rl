@@ -32,16 +32,16 @@ jobs:
         run: |
           matrix='{"include":[
             {"model":"Qwen/Qwen3-0.6B","runner":"2xa6000","num_gpus":2,"type":"rl","lora_rank":16,"seq_len":8192,"attention":"flash_attention_2","ac":"Recompute"},
-            {"model":"Qwen/Qwen3-0.6B","runner":"2xa6000","num_gpus":2,"type":"sft","lora_rank":16,"seq_len":8192,"attention":"flash_attention_2","ac":"Recompute"},
+            {"model":"Qwen/Qwen3-0.6B","runner":"2xa6000","num_gpus":2,"type":"sft","lora_rank":null,"seq_len":8192,"attention":"flash_attention_2","ac":"Recompute"},
             {"model":"Qwen/Qwen3-0.6B","runner":"2xa6000","num_gpus":2,"type":"rl","lora_rank":null,"seq_len":8192,"attention":"flash_attention_2","ac":"Recompute"},
             {"model":"Qwen/Qwen3-4B","runner":"2xa6000","num_gpus":2,"type":"rl","lora_rank":16,"seq_len":8192,"attention":"flash_attention_2","ac":"Recompute"},
-            {"model":"Qwen/Qwen3-4B","runner":"2xa6000","num_gpus":2,"type":"sft","lora_rank":16,"seq_len":8192,"attention":"flash_attention_2","ac":"Recompute"},
+            {"model":"Qwen/Qwen3-4B","runner":"2xa6000","num_gpus":2,"type":"sft","lora_rank":null,"seq_len":8192,"attention":"flash_attention_2","ac":"Recompute"},
             {"model":"Qwen/Qwen3-4B","runner":"2xa6000","num_gpus":2,"type":"rl","lora_rank":null,"seq_len":8192,"attention":"flash_attention_2","ac":"Recompute"},
             {"model":"Qwen/Qwen3-0.6B","runner":"2xh100","num_gpus":2,"type":"rl","lora_rank":16,"seq_len":8192,"attention":"flash_attention_2","ac":"Recompute"},
-            {"model":"Qwen/Qwen3-0.6B","runner":"2xh100","num_gpus":2,"type":"sft","lora_rank":16,"seq_len":8192,"attention":"flash_attention_2","ac":"Recompute"},
+            {"model":"Qwen/Qwen3-0.6B","runner":"2xh100","num_gpus":2,"type":"sft","lora_rank":null,"seq_len":8192,"attention":"flash_attention_2","ac":"Recompute"},
             {"model":"Qwen/Qwen3-0.6B","runner":"2xh100","num_gpus":2,"type":"rl","lora_rank":null,"seq_len":8192,"attention":"flash_attention_2","ac":"Recompute"},
             {"model":"Qwen/Qwen3-4B","runner":"2xh100","num_gpus":2,"type":"rl","lora_rank":16,"seq_len":8192,"attention":"flash_attention_2","ac":"Recompute"},
-            {"model":"Qwen/Qwen3-4B","runner":"2xh100","num_gpus":2,"type":"sft","lora_rank":16,"seq_len":8192,"attention":"flash_attention_2","ac":"Recompute"},
+            {"model":"Qwen/Qwen3-4B","runner":"2xh100","num_gpus":2,"type":"sft","lora_rank":null,"seq_len":8192,"attention":"flash_attention_2","ac":"Recompute"},
             {"model":"Qwen/Qwen3-4B","runner":"2xh100","num_gpus":2,"type":"rl","lora_rank":null,"seq_len":8192,"attention":"flash_attention_2","ac":"Recompute"}
           ]}'
           echo "matrix=$(echo "$matrix" | jq -c .)" >> "$GITHUB_OUTPUT"
