@@ -18,6 +18,9 @@ SHORTENED_ATTN_MAPPING = {
     "flash_attention_3": "FA3",
 }
 
+# These words are stripped from the device name to get the short name
+DEVICE_NAME_STRIP_WORDS = ["NVIDIA", "RTX", "80GB", "40GB"]
+
 
 class AggregateConfig(BaseSettings):
     """Configuration for aggregating benchmark results."""
@@ -27,10 +30,6 @@ class AggregateConfig(BaseSettings):
     output_markdown: Annotated[Path, Field(description="Output markdown file path")]
     regression_threshold: Annotated[float, Field(description="Regression threshold (default: 0.05 = 5%)")] = 0.05
     diff_display_threshold: Annotated[float, Field(description="Diff display threshold (default: 0.01 = 1%)")] = 0.01
-
-
-# These words are stripped from the device name to get the short name
-DEVICE_NAME_STRIP_WORDS = ["NVIDIA", "RTX", "80GB", "40GB"]
 
 
 def get_hardware(config: dict) -> str:
