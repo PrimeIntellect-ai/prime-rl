@@ -110,6 +110,7 @@ jobs:
         if: ${{ github.event.inputs.set_baselines == 'true' }}
         run: |
           rm -f benchmarks/baselines/*.json
+          mkdir -p benchmarks/baselines
           for dir in /tmp/benchmark_artifacts/*/; do
             name=$(basename "$dir")
             cp "$dir/benchmark_result.json" "benchmarks/baselines/${name}.json"
