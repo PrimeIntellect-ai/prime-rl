@@ -111,7 +111,7 @@ jobs:
 
   get-image-digest:
     name: Get image digest
-    runs-on: 2xh100
+    runs-on: 1xa6000
     outputs:
       image_with_digest: ${{ steps.digest.outputs.image_with_digest }}
     steps:
