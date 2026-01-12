@@ -9,9 +9,6 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 [model.lora]
 rank = 8
 
-[optim]
-lr = 1e-5
-
 [weight_broadcast]
 adapter_only = true
 
