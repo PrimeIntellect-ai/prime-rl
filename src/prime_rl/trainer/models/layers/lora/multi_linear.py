@@ -45,7 +45,7 @@ class MultiLoRALinear(MultiLoRAModule):
         base_layer: nn.Linear,
         rank: int,
         n_adapters: int,
-        alpha: float = 16.0,
+        alpha: float = 32.0,
         dropout: float = 0.0,
         use_grouped_mm: bool = True,
     ):

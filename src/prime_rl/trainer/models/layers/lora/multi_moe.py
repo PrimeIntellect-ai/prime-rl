@@ -78,7 +78,7 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
         base_layer: GroupedExperts,
         rank: int,
         n_adapters: int,
-        alpha: float = 16.0,
+        alpha: float = 32.0,
         dropout: float = 0.0,
     ):
         super().__init__(base_layer)
