@@ -1,4 +1,4 @@
-name: Nightly Benchmarks
+name: Trainer Benchmarks
 
 on:
   workflow_dispatch:
