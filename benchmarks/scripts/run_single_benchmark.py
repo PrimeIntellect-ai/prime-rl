@@ -32,6 +32,19 @@ def get_commit_sha() -> str:
         return "unknown"
 
 
+def extract_oom_error_reason(output: str) -> str | None:
+    """
+    Extract a human-readable error reason from process output.
+
+    Currently we only special-case CUDA OOM to make failures easier to triage in CI.
+    """
+    needle = "torch.OutOfMemoryError: CUDA out of memory."
+    for line in output.splitlines():
+        if needle in line:
+            return line.strip()
+    return None
+
+
 class BenchmarkConfig(BaseSettings):
     """Configuration for running a single benchmark."""
 
@@ -164,18 +177,20 @@ def run_benchmark(config: BenchmarkConfig) -> None:
             text=True,
             timeout=config.timeout,
         )
+        output = result.stdout + result.stderr
 
         if result.returncode != 0:
             config.success = False
-            print(f"Process exited with code {result.returncode}: {result.stdout + result.stderr}")
+            config.error_reason = extract_oom_error_reason(output) or f"Non-zero exit code: {result.returncode}"
+            print(f"Process exited with code {result.returncode}: {output}")
         if not config.output.exists():
             config.success = False
-            print(f"Process exited with code {result.returncode}: {result.stdout + result.stderr}")
+            config.error_reason = config.error_reason or extract_oom_error_reason(output) or "No JSON output written"
+            print(f"Process exited with code {result.returncode}: {output}")
             print("Benchmark completed but no JSON output was written")
         else:
             with open(config.output) as f:
                 metrics = json.load(f)
-            output = result.stdout + result.stderr
             lines = output.splitlines()
             print("\n".join(lines[-100:]))
     except subprocess.TimeoutExpired:
@@ -184,6 +199,7 @@ def run_benchmark(config: BenchmarkConfig) -> None:
         print(f"Benchmark timed out after {config.timeout} seconds")
     except Exception as e:
         config.success = False
+        config.error_reason = str(e)
         print(f"Error: {e}")
 
     if not config.success:
