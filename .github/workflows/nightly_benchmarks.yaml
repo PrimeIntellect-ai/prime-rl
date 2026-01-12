@@ -61,6 +61,7 @@ jobs:
       options: --gpus all --shm-size=16g --user root --entrypoint bash -v huggingface_cache:/huggingface_cache
     env:
       HF_HOME: /huggingface_cache
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
     defaults:
       run:
         working-directory: /app
@@ -91,7 +92,7 @@ jobs:
             --timeout 1800
       - name: Set artifact name
         id: artifact
-        run: echo "name=benchmark-${{ matrix.runner }}-$(echo '${{ matrix.model }}' | sed 's/\//--/')-${{ matrix.type }}-${{ matrix.lora_rank || 'full' }}-${{ matrix.num_gpus }}gpu" >> "$GITHUB_OUTPUT"
+        run: echo "name=benchmark-${{ matrix.runner }}-$(echo '${{ matrix.model }}' | sed 's/\//--/')-${{ matrix.type }}-${{ matrix.lora_rank || 'full' }}-${{ matrix.num_gpus }}gpu-${{ matrix.ac }}-${{ matrix.attention }}-${{ matrix.seq_len }}" >> "$GITHUB_OUTPUT"
       - name: Upload benchmark result
         uses: actions/upload-artifact@v4
         if: always()
