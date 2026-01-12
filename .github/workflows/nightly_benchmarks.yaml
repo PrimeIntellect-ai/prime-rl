@@ -13,10 +13,6 @@ on:
         required: true
         type: string
 
-concurrency:
-  group: nightly-benchmarks
-  cancel-in-progress: false
-
 env:
   BENCHMARK_BRANCH: benchmark-results-${{ github.run_id }}
 
