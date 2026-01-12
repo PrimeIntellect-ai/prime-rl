@@ -59,6 +59,13 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.build-matrix.outputs.matrix) }}
     steps:
+      - name: Clean HF cache locks and fix permissions
+        run: |
+          # Remove stale lock files from interrupted downloads
+          find /huggingface_cache -name "*.lock" -type f -delete 2>/dev/null || true
+          # Ensure cache directory exists and is writable
+          mkdir -p /huggingface_cache/hub
+          chmod -R u+rw /huggingface_cache 2>/dev/null || true
       - name: Run benchmark
         run: |
           python benchmarks/scripts/run_single_benchmark.py \
