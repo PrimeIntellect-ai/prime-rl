@@ -119,7 +119,7 @@ def generate_markdown(
     lines = [
         "# Performance Benchmarks",
         "",
-        "Automated nightly benchmark results for prime-rl using `--bench` flag.",
+        "Automated benchmark results for prime-rl using `--bench` flag.",
         "",
         f"**Last Updated:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}  ",
         f"**Commit:** `{commit}`",
@@ -127,6 +127,7 @@ def generate_markdown(
         "",
         f"> :warning: indicates regression > {threshold * 100:.0f}% from baseline",
         f"> diffs shown when abs(change) >= {diff_display_threshold * 100:.1f}% (except regressions, which always show diffs)",
+        "> :clock10: The Step Time shown is the time taken per micro batch. This differs from what gets displayed in the bench table which is the total step time."
         "",
     ]
 
@@ -152,7 +153,7 @@ def generate_markdown(
                 True,
             )
             step_str, step_reg = format_metric(
-                m["step_time"]["mean"], bl.get("step_time"), threshold, diff_display_threshold, "{:.2f}s", False
+                cfg["seq_len"] / m["thoughput"]["mean"], None, threshold, diff_display_threshold, "{:.2f}s", False
             )
 
             has_regressions = has_regressions or mfu_reg or tps_reg or step_reg
