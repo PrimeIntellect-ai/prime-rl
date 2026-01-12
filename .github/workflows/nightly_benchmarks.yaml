@@ -52,7 +52,10 @@ jobs:
     runs-on: ${{ matrix.runner }}
     container:
       image: ${{ inputs.image }}
-      options: --gpus all --shm-size=16g
+      options: --gpus all --shm-size=16g --entrypoint bash
+    defaults:
+      run:
+        working-directory: /app
     timeout-minutes: 30
     strategy:
       fail-fast: false
