@@ -1,6 +1,7 @@
 max_steps = 100
 batch_size = 512
 rollouts_per_example = 16
+max_async_level = 99
 
 [model]
 name = "Qwen/Qwen3-4B-Instruct-2507"

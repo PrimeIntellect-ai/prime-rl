@@ -22,7 +22,7 @@ if [ $((NUM_TRAIN_NODES + NUM_INFER_NODES)) != $SLURM_JOB_NUM_NODES ]; then
 fi
 
 # Paths
-export BASE_DIR=${BASE_DIR:-"/home/daniel/prime-rl3"}
+export BASE_DIR=${BASE_DIR:-"/home/daniel/git/prime-rl3"}
 export OUTPUT_DIR=${OUTPUT_DIR:-"/home/daniel/outputs/$SLURM_JOB_NAME"}
 mkdir -p $OUTPUT_DIR/slurm
 
@@ -113,7 +113,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 
     uv run inference \
         @ configs/debug/multi_node/infer.toml \
-        --weight_broadcast.type nccl \
+        --weight_broadcast.type filesystem \
         --tensor-parallel-size $INFER_TP_SIZE \
         --enable-log-requests \
         --no-disable-log-requests \
@@ -125,7 +125,7 @@ else
 
         uv run orchestrator \
             @ configs/debug/multi_node/orch.toml \
-            --weight_broadcast.type nccl \
+            --weight_broadcast.type filesystem \
             --weight_broadcast.host $MASTER_ADDR \
             --weight_broadcast.port $BROADCAST_PORT \
             --weight_broadcast.timeout $BROADCAST_TIMEOUT \
@@ -148,26 +148,30 @@ else
     export CUDA_LAUNCH_BLOCKING=1
 
         echo $HOSTNAMES | tee  $OUTPUT_DIR/slurm/latest_train_node_rank_${TRAIN_NODE_RANK}.log
-    uv run torchrun \
-        --nnodes=$NUM_TRAIN_NODES \
-        --nproc-per-node=8 \
-        --node-rank=$TRAIN_NODE_RANK \
-        --rdzv-endpoint=$MASTER_ADDR:$MASTER_PORT \
-        --rdzv-id=job_$SLURM_JOB_ID \
-        --log-dir=$OUTPUT_DIR/torchrun \
-        --tee=3 \
-        --redirects=3 \
-        --local-ranks-filter=0,1,2,3,4,5,6,7 \
-        src/prime_rl/trainer/rl/train.py \
-        @ configs/debug/multi_node/train.toml \
-        --weight_broadcast.type nccl \
-        --weight_broadcast.host 0.0.0.0 \
-        --weight_broadcast.port $BROADCAST_PORT \
-        --weight_broadcast.inference_world_size $((INFER_TP_SIZE * NUM_INFER_NODES)) \
-        --weight_broadcast.timeout $BROADCAST_TIMEOUT \
-        --dist_timeout_seconds $NCCL_COMM_TIMEOUT \
-        --output-dir $OUTPUT_DIR \
-        --ckpt.resume_step $CKPT_STEP \
-        2>&1 | tee -a $OUTPUT_DIR/slurm/latest_train_node_rank_${TRAIN_NODE_RANK}.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_train_node_rank_${TRAIN_NODE_RANK}.log
+
+    # Keep train node alive while orchestrator runs (trainer is commented out)
+    sleep infinity
+
+    # uv run torchrun \
+    #     --nnodes=$NUM_TRAIN_NODES \
+    #     --nproc-per-node=8 \
+    #     --node-rank=$TRAIN_NODE_RANK \
+    #     --rdzv-endpoint=$MASTER_ADDR:$MASTER_PORT \
+    #     --rdzv-id=job_$SLURM_JOB_ID \
+    #     --log-dir=$OUTPUT_DIR/torchrun \
+    #     --tee=3 \
+    #     --redirects=3 \
+    #     --local-ranks-filter=0,1,2,3,4,5,6,7 \
+    #     src/prime_rl/trainer/rl/train.py \
+    #     @ configs/debug/multi_node/train.toml \
+    #     --weight_broadcast.type nccl \
+    #     --weight_broadcast.host 0.0.0.0 \
+    #     --weight_broadcast.port $BROADCAST_PORT \
+    #     --weight_broadcast.inference_world_size $((INFER_TP_SIZE * NUM_INFER_NODES)) \
+    #     --weight_broadcast.timeout $BROADCAST_TIMEOUT \
+    #     --dist_timeout_seconds $NCCL_COMM_TIMEOUT \
+    #     --output-dir $OUTPUT_DIR \
+    #     --ckpt.resume_step $CKPT_STEP \
+    #     2>&1 | tee -a $OUTPUT_DIR/slurm/latest_train_node_rank_${TRAIN_NODE_RANK}.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_train_node_rank_${TRAIN_NODE_RANK}.log
     fi
 '
