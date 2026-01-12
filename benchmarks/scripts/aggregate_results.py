@@ -57,7 +57,6 @@ def get_config_key(config: dict) -> str:
             config.get("type", "rl"),
             str(config.get("lora_rank") or "none"),
             str(config.get("seq_len", 0)),
-            str(config.get("batch_size", 0)),
             config.get("ac", "None"),
             config.get("attention", "unknown"),
         ]
