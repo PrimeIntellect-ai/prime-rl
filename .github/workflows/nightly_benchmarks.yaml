@@ -47,7 +47,7 @@ jobs:
           echo "matrix=$(echo "$matrix" | jq -c .)" >> "$GITHUB_OUTPUT"
 
   run-benchmark:
-    name: "${{ matrix.model }} (${{ matrix.type }}${{ matrix.lora_rank && format(' r={0}', matrix.lora_rank) || '' }}) on ${{ matrix.num_gpus }}xGPU"
+    name: "${{ matrix.model }} (${{ matrix.type }}${{ matrix.lora_rank && format(' r={0}', matrix.lora_rank) || '' }}) on ${{ matrix.runner }}"
     needs: build-matrix
     runs-on: ${{ matrix.runner }}
     container:
