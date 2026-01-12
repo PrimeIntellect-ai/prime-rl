@@ -121,7 +121,7 @@ async def worker_loop(
     lag_monitor_task = asyncio.create_task(lag_monitor.run())
 
     # Track in-flight tasks
-    pending_tasks: dict[asyncio.Task, int] = {}
+    pending_tasks: dict[asyncio.Task, str] = {}
 
     def check_for_requests():
         """Non-blocking check for new requests."""
