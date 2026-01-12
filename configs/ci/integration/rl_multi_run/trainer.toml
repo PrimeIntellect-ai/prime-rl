@@ -10,7 +10,7 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 rank = 8
 
 [optim]
-lr = 1e-4
+lr = 5e-5
 
 [weight_broadcast]
 adapter_only = true
