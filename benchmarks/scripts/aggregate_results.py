@@ -28,10 +28,14 @@ class AggregateConfig(BaseSettings):
     regression_threshold: Annotated[float, Field(description="Regression threshold (default: 0.05 = 5%)")] = 0.05
 
 
+# These words are stripped from the device name to get the short name
+DEVICE_NAME_STRIP_WORDS = ["NVIDIA", "RTX", "80GB", "40GB"]
+
+
 def get_hardware(config: dict) -> str:
     num_gpus = config.get("num_gpus", 1)
     device_name = config.get("device_name", "Unknown")
-    short_name = device_name.split()[-1] if device_name else "Unknown"
+    short_name = " ".join(word for word in device_name.split() if word not in DEVICE_NAME_STRIP_WORDS)
     return f"{num_gpus}x{short_name}"
 
 
