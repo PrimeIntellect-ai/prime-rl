@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Literal
@@ -94,6 +95,9 @@ class BenchmarkConfig(BaseSettings):
     error_reason: Annotated[str | None, Field(description="Error reason. This is set automatically by the script.")] = (
         None
     )
+    time_taken: Annotated[
+        float | None, Field(description="Time taken in seconds. This is set automatically by the script.")
+    ] = None
 
 
 def build_command(config: BenchmarkConfig) -> list[str]:
@@ -169,6 +173,7 @@ def run_benchmark(config: BenchmarkConfig) -> None:
     if config.dry_run:
         return
 
+    start_time = time.perf_counter()
     try:
         config.output.parent.mkdir(parents=True, exist_ok=True)
         result = subprocess.run(
@@ -201,6 +206,8 @@ def run_benchmark(config: BenchmarkConfig) -> None:
         config.success = False
         config.error_reason = str(e)
         print(f"Error: {e}")
+    finally:
+        config.time_taken = time.perf_counter() - start_time
 
     if not config.success:
         metrics = dummy_metrics()
