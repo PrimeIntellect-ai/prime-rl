@@ -49,21 +49,28 @@ uv run rl @ configs/thesis/wiki_search.toml --wandb.name wiki-search-in-flight-o
 got crashing run with 16 step off-policy and otherwise defaults.
 
 ```bash
-# more aggressive masking (token-level)
+# token mask
 uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-token-mask-0.25-4 --trainer.loss.token-mask-low 0.25 --trainer.loss.token-mask-high 4
 uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-token-mask-0.5-2 --trainer.loss.token-mask-low 0.5 --trainer.loss.token-mask-high 2
 
 # sequence masking
+
+# kl tau
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-no-mask-kl-tau-1e-4 --trainer.loss.kl-tau 1e-4 --trainer.loss.token-mask-low 0 --trainer.loss.token-mask-high 1e10 --trainer.loss.sequence-mask-low 0 --trainer.loss.sequence-mask-high 1e10 --trainer.loss.geo-mask-low 0 --trainer.loss.geo-mask-high 1e10 --trainer.loss.sequence-clip-high 1e10
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-no-mask-kl-tau-2e-3 --trainer.loss.kl-tau 2e-3 --trainer.loss.token-mask-low 0 --trainer.loss.token-mask-high 1e10 --trainer.loss.sequence-mask-low 0 --trainer.loss.sequence-mask-high 1e10 --trainer.loss.geo-mask-low 0 --trainer.loss.geo-mask-high 1e10 --trainer.loss.sequence-clip-high 1e10
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-no-mask-kl-tau-1e-2 --trainer.loss.kl-tau 1e-2 --trainer.loss.token-mask-low 0 --trainer.loss.token-mask-high 1e10 --trainer.loss.sequence-mask-low 0 --trainer.loss.sequence-mask-high 1e10 --trainer.loss.geo-mask-low 0 --trainer.loss.geo-mask-high 1e10 --trainer.loss.sequence-clip-high 1e10
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-no-mask-kl-tau-1e-1 --trainer.loss.kl-tau 1e-1 --trainer.loss.token-mask-low 0 --trainer.loss.token-mask-high 1e10 --trainer.loss.sequence-mask-low 0 --trainer.loss.sequence-mask-high 1e10 --trainer.loss.geo-mask-low 0 --trainer.loss.geo-mask-high 1e10 --trainer.loss.sequence-clip-high 1e10
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-no-mask-kl-tau-1 --trainer.loss.kl-tau 1 --trainer.loss.token-mask-low 0 --trainer.loss.token-mask-high 1e10 --trainer.loss.sequence-mask-low 0 --trainer.loss.sequence-mask-high 1e10 --trainer.loss.geo-mask-low 0 --trainer.loss.geo-mask-high 1e10 --trainer.loss.sequence-clip-high 1e10
 
 # kl tau + icepop (1/8, 8)
 uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-kl-tau-1e-4 --trainer.loss.kl-tau 1e-4
 uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-kl-tau-2e-3 --trainer.loss.kl-tau 2e-3
 uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-kl-tau-1e-2 --trainer.loss.kl-tau 1e-2
 uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-kl-tau-1e-1 --trainer.loss.kl-tau 1e-1
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-kl-tau-1 --trainer.loss.kl-tau 1
 ```
 
 to try later:
 - sequence masking only
 - geometric sequence masking
 - combine masking strategies
-- combine masking + kl tau
