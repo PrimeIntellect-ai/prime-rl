@@ -300,11 +300,6 @@ class RetryConfig(BaseConfig):
 class EnvLogConfig(BaseConfig):
     """Configures logging for an environment worker."""
 
-    enabled: Annotated[
-        bool,
-        Field(description="Whether to enable logging for this environment's workers."),
-    ] = False
-
     level: Annotated[
         str,
         Field(description="Log level for prime-rl logger in worker (debug, info, warn, error)."),
@@ -322,7 +317,10 @@ class EnvConfig(BaseConfig):
     id: Annotated[str, Field(description="ID of the environment to use.")] = "reverse-text"
     args: Annotated[dict, Field(description="Arguments to pass to the environment.")] = {}
     name: Annotated[str | None, Field(description="Name of the environment to use.")] = None
-    log: Annotated[EnvLogConfig, Field(description="Logging config for this env's workers.")] = EnvLogConfig()
+    log: Annotated[
+        EnvLogConfig | None,
+        Field(description="Logging config for this env's workers. If None, logging is disabled."),
+    ] = None
 
 
 class EvalEnvConfig(EnvConfig):
