@@ -1,8 +1,12 @@
 import shutil
 import time
 from collections import defaultdict, deque
+from typing import TYPE_CHECKING
 
 from transformers.tokenization_utils import PreTrainedTokenizer
+
+if TYPE_CHECKING:
+    from prime_rl.orchestrator.config import OrchestratorConfig
 
 from prime_rl.trainer.batch import prepare_batch
 from prime_rl.trainer.runs import get_runs
@@ -54,6 +58,18 @@ class Packer:
 
         # Register creation hook to reset state when a run is replaced
         self.runs.register_creation_hook(self._on_run_created)
+        # Register create_run_data hook for receiver reset (master only, runs during check_for_changes)
+        # This must happen early to prevent receiver from getting stuck looking for old data
+        self.runs.register_create_run_data_hook(self._on_run_data_created)
+
+    def _on_run_data_created(self, idx: int, run_id: str, config: "OrchestratorConfig") -> None:
+        """Reset receiver state when run data is created (master only).
+
+        Called during check_for_changes() before sync to prevent receiver from getting
+        stuck in infinite loop looking for old run data.
+        """
+        self.logger.debug(f"Resetting receiver state for run {idx}")
+        self.receiver.reset_run(idx)
 
     def _on_run_created(self, idx: int, run_id: str) -> None:
         """Reset packer state for a run index when a new run is created.
@@ -61,6 +77,7 @@ class Packer:
         Called via creation hook when a run is deleted and a new run takes its place.
         Clears buffered samples and partial step progress for the index.
         """
+        self.logger.debug(f"Resetting packer state for run {idx}")
         # Clear any buffered samples from the old run
         if idx in self.buffers:
             self.buffers[idx].clear()
@@ -68,9 +85,6 @@ class Packer:
         # Reset partial step progress
         if idx in self.samples_consumed_this_step:
             del self.samples_consumed_this_step[idx]
-
-        # Reset receiver state (e.g., received step tracking)
-        self.receiver.reset_run(idx)
 
     def _get_batch(self) -> None:
         """Receive batches from orchestrator and buffer samples per run."""
@@ -105,14 +119,11 @@ class Packer:
 
         threshold = self.seq_len * self.dp_world_size
         tokens = 0
-        samples = 1e-5  # Avoid division by zero
 
         for buffer in self.buffers.values():
             for sample, _ in buffer:
                 tokens += len(sample.prompt_ids) + len(sample.completion_ids)
-                samples += 1
-                estimated_next_sample_tokens = tokens + tokens / samples
-                if estimated_next_sample_tokens >= threshold:
+                if tokens >= threshold:
                     return True
         return False
 

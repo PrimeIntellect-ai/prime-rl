@@ -40,6 +40,7 @@ class Runs:
         self.ready_to_update = [False] * max_runs
 
         self._creation_hooks: list[Callable[[int, str], None]] = []
+        self._create_run_data_hooks: list[Callable[[int, str, "OrchestratorConfig"], None]] = []
         self._config_validation_hooks: list[Callable[["OrchestratorConfig"], tuple[bool, str]]] = []
         self._scaling_hook: Callable[["OrchestratorConfig"], float] | None = None
 
@@ -89,6 +90,15 @@ class Runs:
             hook: A callable that takes (config: OrchestratorConfig) and returns the scaling factor.
         """
         self._scaling_hook = hook
+
+    def register_create_run_data_hook(self, hook: Callable[[int, str, "OrchestratorConfig"], None]) -> None:
+        """Register a hook to be called when run data is created (master only).
+
+        Args:
+            hook: A callable that takes (idx: int, run_id: str, config: OrchestratorConfig).
+                  Called only on master rank when a new run's data structures are initialized.
+        """
+        self._create_run_data_hooks.append(hook)
 
     def get_orchestrator_config(self, run_id: str) -> Optional["OrchestratorConfig"]:
         """Load and validate orchestrator config for a run.
@@ -198,6 +208,8 @@ class Runs:
                     continue
 
                 self._create_run_data(new_run, new_id, config)
+                for hook in self._create_run_data_hooks:
+                    hook(new_id, new_run, config)
             except StopIteration:
                 continue
 
