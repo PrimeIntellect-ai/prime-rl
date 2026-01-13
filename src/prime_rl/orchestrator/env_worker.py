@@ -199,7 +199,9 @@ def worker_main(
         # Redirect verifiers to file instead of inherited stderr
         vf_logger = logging.getLogger("verifiers")
         vf_logger.handlers.clear()
-        vf_logger.addHandler(logging.FileHandler(log_file))
+        vf_handler = logging.FileHandler(log_file)
+        vf_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)7s %(message)s", datefmt="%H:%M:%S"))
+        vf_logger.addHandler(vf_handler)
     else:
         # Set up a silent logger to avoid RuntimeError when EventLoopLagMonitor calls get_logger()
         # Using CRITICAL level + disabled critical logging (in setup_logger) = silent logger
