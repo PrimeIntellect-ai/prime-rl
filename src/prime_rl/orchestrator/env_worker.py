@@ -205,6 +205,7 @@ def worker_main(
     else:
         # Set up a silent logger to avoid RuntimeError when EventLoopLagMonitor calls get_logger()
         # Using CRITICAL level + disabled critical logging (in setup_logger) = silent logger
+        reset_logger()
         setup_logger("CRITICAL")
 
     # Load environment
