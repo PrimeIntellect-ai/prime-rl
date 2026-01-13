@@ -118,10 +118,10 @@ class NCCLWeightBroadcastSender:
         if self.world.is_master:
             broadcast_integer(num_state_dict_to_send, self.communicator)
 
+        self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
+
         for layer_id, state_dict in filter_state_dict_by_layers(state_dict, num_layers):
-            if layer_id == 0:
-                self.logger.debug("Sending non-layer weights state dict")
-            else:
+            if layer_id > 0:
                 self.logger.debug(f"Sending layer {layer_id} state dict")
             for key, value in list(state_dict.items()):
                 if isinstance(value, DTensor):
