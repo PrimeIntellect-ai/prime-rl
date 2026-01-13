@@ -95,7 +95,7 @@ class Scheduler:
             # Setup log directory if logging is enabled for this env
             env_log = env_config.log
             env_log_dir = None
-            if env_log.enabled and output_dir is not None:
+            if env_log is not None and output_dir is not None:
                 env_log_dir = get_env_worker_log_dir(output_dir, env_name)
                 env_log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -111,9 +111,8 @@ class Scheduler:
                     example_lookup=self.example_lookups[env_name],
                     sampling_args=self.sampling_args,
                     worker_name=f"{env_name}_{worker_idx}",
-                    log_enabled=env_log.enabled,
-                    log_level=env_log.level,
-                    vf_log_level=env_log.vf_level,
+                    log_level=env_log.level if env_log else "warn",
+                    vf_log_level=env_log.vf_level if env_log else "warn",
                     log_file=str(env_log_dir / f"worker_{worker_idx}.log") if env_log_dir else None,
                 )
                 self.workers[env_name].append(worker)

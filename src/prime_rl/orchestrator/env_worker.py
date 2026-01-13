@@ -185,14 +185,13 @@ def worker_main(
     max_concurrent: int,
     example_lookup: dict[int, dict],
     sampling_args: dict,
-    log_enabled: bool,
     log_level: str,
     vf_log_level: str,
     log_file: str | None,
 ):
     """Main entry point for worker process."""
     # Reset logger inherited from parent process, then setup fresh logger for this worker
-    if log_enabled and log_file:
+    if log_file:
         reset_logger()
         setup_logger(log_level, log_file=Path(log_file))
         vf.setup_logging(level=vf_log_level.upper())
@@ -242,7 +241,6 @@ class EnvWorker:
         example_lookup: dict[int, dict],
         sampling_args: dict,
         worker_name: str | None = None,
-        log_enabled: bool = False,
         log_level: str = "warn",
         vf_log_level: str = "warn",
         log_file: str | None = None,
@@ -258,7 +256,6 @@ class EnvWorker:
         self.sampling_args = sampling_args
         self.worker_name = worker_name or env_id
 
-        self.log_enabled = log_enabled
         self.log_level = log_level
         self.vf_log_level = vf_log_level
         self.log_file = log_file
@@ -293,7 +290,6 @@ class EnvWorker:
                 self.max_concurrent,
                 self.example_lookup,
                 self.sampling_args,
-                self.log_enabled,
                 self.log_level,
                 self.vf_log_level,
                 self.log_file,
