@@ -130,7 +130,7 @@ class Packer:
         if not self.small_batch_granularity:
             for run_idx in self._get_runs_with_full_batch():
                 while len(self.buffers[run_idx]) > 0:
-                    sample, temperature = self.buffers[run_idx].pop()
+                    sample, temperature = self.buffers[run_idx].popleft()
                     selected.append((run_idx, sample, temperature))
             return selected
 
@@ -152,7 +152,7 @@ class Packer:
                 if tokens_collected > token_budget:
                     return selected
                 selected.append((run_idx, sample, temperature))
-                self.buffers[run_idx].pop()
+                self.buffers[run_idx].popleft()
 
         return selected
 
