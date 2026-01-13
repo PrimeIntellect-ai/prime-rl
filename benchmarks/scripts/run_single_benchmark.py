@@ -197,7 +197,7 @@ def run_benchmark(config: BenchmarkConfig) -> None:
             with open(config.output) as f:
                 metrics = json.load(f)
             lines = output.splitlines()
-            print("\n".join(lines[-100:]))
+            print("\n".join(lines))
     except subprocess.TimeoutExpired:
         config.success = False
         config.error_reason = "Timeout"
