@@ -136,8 +136,13 @@ class Packer:
 
         while tokens_collected < token_budget:
             # Round-robin until we find a run with work
-            while len(self.buffers[self._round_robin_position]) == 0:
+            for _ in range(len(self.buffers)):
+                if len(self.buffers[self._round_robin_position]) != 0:
+                    break
                 self._round_robin_position = (self._round_robin_position + 1) % len(self.buffers)
+            else:
+                # TODO: We could probably make the logic safer. This is basically counting on _has_enough_tokens() to be correct.
+                raise ValueError("No runs with work found. This should never happen.")
             run_idx = self._round_robin_position
             self._round_robin_position += 1
 
