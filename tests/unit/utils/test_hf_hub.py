@@ -1,5 +1,4 @@
 from prime_rl.utils.hf_hub import (
-    HubUploadPaths,
     build_training_path_in_repo,
     build_weights_path_in_repo,
     should_upload_step,
@@ -15,13 +14,11 @@ def test_should_upload_step_uses_keep_interval_only():
 
 
 def test_build_paths_default_prefixes():
-    paths = HubUploadPaths()
-    assert build_training_path_in_repo(paths, 123) == "checkpoints/step_123"
-    assert build_weights_path_in_repo(paths, 123) == "weights/step_123"
+    assert build_training_path_in_repo("", 123) == "checkpoints/step_123"
+    assert build_weights_path_in_repo("", 123) == "weights/step_123"
 
 
 def test_build_paths_custom_prefixes_are_normalized():
-    paths = HubUploadPaths(training_prefix="/foo/bar/", weights_prefix="///baz///")
-    assert build_training_path_in_repo(paths, 1) == "foo/bar/step_1"
-    assert build_weights_path_in_repo(paths, 2) == "baz/step_2"
+    assert build_training_path_in_repo("/foo/bar/", 1) == "foo/bar/checkpoints/step_1"
+    assert build_weights_path_in_repo("///baz///", 2) == "baz/weights/step_2"
 
