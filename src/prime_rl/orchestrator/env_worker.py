@@ -192,8 +192,8 @@ def worker_main(
 ):
     """Main entry point for worker process."""
     # Reset logger inherited from parent process, then setup fresh logger for this worker
-    reset_logger()
     if log_enabled and log_file:
+        reset_logger()
         setup_logger(log_level, log_file=Path(log_file))
         vf.setup_logging(level=vf_log_level.upper())
         # Redirect verifiers to file instead of inherited stderr
