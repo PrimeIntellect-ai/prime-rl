@@ -143,8 +143,8 @@ def generate_markdown(
     for model, model_results in sorted(by_model.items()):
         lines.append(f"## {model.split('/')[-1]}")
         lines.append("")
-        lines.append("| Type | Hardware | SeqLen | AC | Attn | MFU | TPS | Step Time | Peak Mem |")
-        lines.append("|------|----------|--------|----|----|-----|-----|-----------|----------|")
+        lines.append("| Type | SeqLen | AC | Attn | Hardware | MFU | TPS | Step Time | Peak Mem |")
+        lines.append("|------|--------|----|----|----------|-----|-----|-----------|----------|")
 
         for r in sorted(model_results, key=sorting_key):
             cfg, m = r["config"], r["metrics"]
@@ -174,7 +174,7 @@ def generate_markdown(
             attn = SHORTENED_ATTN_MAPPING.get(cfg["attention"], cfg["attention"])
 
             lines.append(
-                f"| {get_training_type(cfg)} | {get_hardware(cfg)} | {cfg['seq_len']} | {cfg.get('ac', 'None')} | {attn} | "
+                f"| {get_training_type(cfg)} | {cfg['seq_len']} | {cfg.get('ac', 'None')} | {attn} | {get_hardware(cfg)} | "
                 f"{mfu_str} | {tps_str} | {step_str} | {m['peak_memory']['gib']:.1f} GiB |"
             )
         lines.append("")
