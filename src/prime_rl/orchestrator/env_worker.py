@@ -202,11 +202,6 @@ def worker_main(
         vf_handler = logging.FileHandler(log_file)
         vf_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)7s %(message)s", datefmt="%H:%M:%S"))
         vf_logger.addHandler(vf_handler)
-    else:
-        # Set up a silent logger to avoid RuntimeError when EventLoopLagMonitor calls get_logger()
-        # Using CRITICAL level + disabled critical logging (in setup_logger) = silent logger
-        reset_logger()
-        setup_logger("CRITICAL")
 
     # Load environment
     env = vf.load_environment(env_id, **env_args)
