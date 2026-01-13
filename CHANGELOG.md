@@ -31,3 +31,4 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`model.fused_lm_head_chunk_size`**: RL training now auto-sets this to 2048 if not specified (except when `impl='liger_kernel'`). SFT training continues to use None (2026-01-05)
 - **`trainer.metrics_server`**: Added optional Prometheus metrics server for trainer observability. Exposes `/metrics` endpoint with step, loss, throughput, grad_norm, etc. Disabled by default (default: None) (#1547, 2026-01-06)
 - **`model.lora.alpha`**: Changed default from 16.0 to 32.0 (2026-01-10)
+- **`orchestrator.env.log`**: Added logging configuration for environment workers. Contains `enabled` (bool, default: False), `level` (str, default: "warn"), and `vf_level` (str, default: "warn") fields (#1561, 2026-01-13)
