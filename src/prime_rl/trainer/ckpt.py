@@ -30,6 +30,13 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.tensor_hashing import get_module_signature, get_optimizer_signature
 from prime_rl.utils.utils import get_all_ckpt_steps, get_ckpt_dir, get_step_path, get_weights_dir
+from prime_rl.utils.hf_hub import (
+    HubUploadPaths,
+    build_training_path_in_repo,
+    build_weights_path_in_repo,
+    should_upload_step,
+    upload_folder_to_hub,
+)
 
 
 class AppState(Stateful):
@@ -201,6 +208,29 @@ class CheckpointManager:
 
         self.save_to_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
         self.ckpt_steps.append(step)
+        if self.world.is_master:
+            self._maybe_upload(step)
+
+    def _maybe_upload(self, step: int) -> None:
+        hub = self.config.hub
+        if hub is None or hub.repo_id is None or not hub.upload_training:
+            return
+        if not should_upload_step(step, self.config.keep_interval):
+            return
+
+        step_dir = get_step_path(self.ckpt_dir, step)
+        paths = HubUploadPaths(training_prefix=hub.training_path_prefix, weights_prefix=hub.weights_path_prefix)
+        path_in_repo = build_training_path_in_repo(paths, step)
+        upload_folder_to_hub(
+            repo_id=hub.repo_id,
+            folder_path=step_dir,
+            path_in_repo=path_in_repo,
+            commit_message=f"Upload trainer checkpoint step {step}",
+            token=hub.token,
+            revision=hub.revision,
+            create_repo=hub.create_repo,
+            private=hub.private,
+        )
 
     def maybe_clean(self) -> None:
         """Deletes past checkpoints based on keep_last and keep_interval policies. No-op if both are None."""
@@ -249,6 +279,7 @@ class WeightCheckpointManager:
         keep_last: int | None = None,
         keep_interval: int | None = None,
         resume_step: int | None = None,
+        hub: CheckpointConfig | None = None,
     ):
         self.weights_dir = get_weights_dir(output_dir)
         self.config = config
@@ -265,6 +296,7 @@ class WeightCheckpointManager:
             self.ckpt_steps = []
         self.keep_last = keep_last
         self.keep_interval = keep_interval
+        self._hub_cfg = hub.hub if hub is not None else None
 
     def get_step_path(self, step: int) -> Path:
         """Get the path to write the weight checkpoint for a given step."""
@@ -343,7 +375,28 @@ class WeightCheckpointManager:
             self.save_to_path(step_path, state_dict, lora_state_dict, model, tokenizer)
             # Write STABLE file to indicate checkpoint is complete (for eval to safely read)
             (step_path / "STABLE").touch()
-        self.ckpt_steps.append(step)
+            self.ckpt_steps.append(step)
+            self._maybe_upload(step, step_path)
+
+    def _maybe_upload(self, step: int, step_path: Path) -> None:
+        hub = self._hub_cfg
+        if hub is None or hub.repo_id is None or not hub.upload_weights:
+            return
+        if not should_upload_step(step, self.keep_interval):
+            return
+
+        paths = HubUploadPaths(training_prefix=hub.training_path_prefix, weights_prefix=hub.weights_path_prefix)
+        path_in_repo = build_weights_path_in_repo(paths, step)
+        upload_folder_to_hub(
+            repo_id=hub.repo_id,
+            folder_path=step_path,
+            path_in_repo=path_in_repo,
+            commit_message=f"Upload weight checkpoint step {step}",
+            token=hub.token,
+            revision=hub.revision,
+            create_repo=hub.create_repo,
+            private=hub.private,
+        )
 
     def maybe_clean(self) -> None:
         """Deletes past checkpoints based on keep_last and keep_interval policies. No-op if both are None."""
@@ -392,6 +445,7 @@ def setup_ckpt_managers(
             keep_last=ckpt_config.keep_last,
             keep_interval=ckpt_config.keep_interval,
             resume_step=ckpt_config.resume_step,
+            hub=ckpt_config,
         )
     else:
         weight_ckpt_manager = None

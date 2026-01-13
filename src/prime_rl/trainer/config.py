@@ -422,6 +422,64 @@ class WeightCheckpointConfig(BaseConfig):
     ] = False
 
 
+class HubCheckpointUploadConfig(BaseConfig):
+    """Configures uploading already-saved checkpoints from disk to the Hugging Face Hub."""
+
+    repo_id: Annotated[
+        str | None,
+        Field(
+            description=(
+                "HF Hub repository id to upload to (e.g. 'org/name'). If None, uploading is disabled."
+            )
+        ),
+    ] = None
+
+    token: Annotated[
+        str | None,
+        Field(
+            description=(
+                "HF Hub token. If None, relies on standard HF authentication mechanisms "
+                "(e.g. HF_TOKEN env var or huggingface-cli login)."
+            )
+        ),
+    ] = None
+
+    revision: Annotated[
+        str | None,
+        Field(description="Branch/tag/commit to upload to. If None, uses the repo default branch."),
+    ] = None
+
+    create_repo: Annotated[
+        bool,
+        Field(description="Create the repo if it does not exist (requires permissions)."),
+    ] = True
+
+    private: Annotated[
+        bool | None,
+        Field(description="If creating the repo, whether it should be private. If None, HF default is used."),
+    ] = None
+
+    upload_training: Annotated[
+        bool,
+        Field(description="Whether to upload full trainer checkpoints under `checkpoints/step_X`."),
+    ] = True
+
+    upload_weights: Annotated[
+        bool,
+        Field(description="Whether to upload HF-compatible weight checkpoints under `weights/step_X`."),
+    ] = True
+
+    training_path_prefix: Annotated[
+        str,
+        Field(description="Prefix within the HF repo to upload full checkpoints into."),
+    ] = "checkpoints"
+
+    weights_path_prefix: Annotated[
+        str,
+        Field(description="Prefix within the HF repo to upload weight checkpoints into."),
+    ] = "weights"
+
+
 class CheckpointConfig(BaseConfig):
     """Configures checkpointing the full model, optimizer and training state for resuming training."""
 
@@ -458,6 +516,8 @@ class CheckpointConfig(BaseConfig):
             description="Keep checkpoints at every N steps permanently (e.g., keep_interval=100 keeps step 100, 200, ...). If None, no interval-based keeping.",
         ),
     ] = None
+
+    hub: HubCheckpointUploadConfig | None = None
 
     skip_progress: Annotated[
         bool,
