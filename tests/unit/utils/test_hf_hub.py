@@ -1,4 +1,9 @@
-from prime_rl.utils.hf_hub import HubUploadPaths, build_training_path_in_repo, build_weights_path_in_repo, should_upload_step
+from prime_rl.utils.hf_hub import (
+    HubUploadPaths,
+    build_training_path_in_repo,
+    build_weights_path_in_repo,
+    should_upload_step,
+)
 
 
 def test_should_upload_step_uses_keep_interval_only():
