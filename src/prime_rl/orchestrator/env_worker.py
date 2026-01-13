@@ -5,6 +5,7 @@ Runs environment rollouts in a separate process to isolate event loop lag.
 """
 
 import asyncio
+import logging
 import queue
 import uuid
 from dataclasses import dataclass
@@ -195,6 +196,10 @@ def worker_main(
     if log_enabled and log_file:
         setup_logger(log_level, log_file=Path(log_file))
         vf.setup_logging(level=vf_log_level.upper())
+        # Redirect verifiers to file instead of inherited stderr
+        vf_logger = logging.getLogger("verifiers")
+        vf_logger.handlers.clear()
+        vf_logger.addHandler(logging.FileHandler(log_file))
 
     # Load environment
     env = vf.load_environment(env_id, **env_args)
@@ -348,9 +353,7 @@ class EnvWorker:
             # Check if worker process died unexpectedly (but not during intentional shutdown)
             if self.process and not self.process.is_alive() and not self._stopping:
                 exit_code = self.process.exitcode
-                error = WorkerDiedError(
-                    f"Worker '{self.worker_name}' died unexpectedly (exit code: {exit_code})"
-                )
+                error = WorkerDiedError(f"Worker '{self.worker_name}' died unexpectedly (exit code: {exit_code})")
                 # Mark worker as dead so scheduler won't route new requests here
                 self._dead = True
                 # Fail remaining pending futures so callers don't hang indefinitely
