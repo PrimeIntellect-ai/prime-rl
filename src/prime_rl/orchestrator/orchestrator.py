@@ -100,6 +100,7 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup teacher model client if configured
     teacher_clients = None
+    teacher_admin_clients = None
     teacher_model_name = None
     if config.teacher_model:
         logger.info(
@@ -107,6 +108,7 @@ async def orchestrate(config: OrchestratorConfig):
             f"model={config.teacher_model.model.name})"
         )
         teacher_clients = setup_clients(config.teacher_model.client)
+        teacher_admin_clients = setup_admin_clients(config.teacher_model.client)
         teacher_model_name = config.teacher_model.model.name
 
     # Load tokenizer
@@ -195,6 +197,13 @@ async def orchestrate(config: OrchestratorConfig):
     await check_health(admin_clients)
     await check_has_model(clients, config.model.name)
     logger.success("Inference pool ready")
+
+    # Check health of teacher inference server if configured
+    if teacher_admin_clients is not None:
+        logger.info("Waiting for teacher inference pool to be ready")
+        await check_health(teacher_admin_clients)
+        await check_has_model(teacher_clients, teacher_model_name)
+        logger.success("Teacher inference pool ready")
 
     # Set up weight broadcast backend
     logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
@@ -370,7 +379,6 @@ async def orchestrate(config: OrchestratorConfig):
             temperature=config.sampling.temperature,
             step=progress.step,
         )
-        assert len(training_batch.examples) != 0, "Step with no samples is not allowed"
         training_batch_sender.send(training_batch)
 
         # Await and process val results
