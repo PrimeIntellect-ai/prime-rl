@@ -1,4 +1,3 @@
-import os
 import sys
 from pathlib import Path
 
@@ -7,35 +6,6 @@ _LOGGER = None
 
 NO_BOLD = "\033[22m"
 RESET = "\033[0m"
-
-
-def _is_truthy_env(value: str | None) -> bool:
-    if value is None:
-        return False
-    return value.strip().lower() in {"1", "true", "t", "yes", "y", "on"}
-
-
-def _should_use_json(json: bool | None) -> bool:
-    if json is not None:
-        return json
-
-    # Prefer explicit format selector.
-    fmt = os.getenv("PRIME_RL_LOG_FORMAT", "").strip().lower()
-    if fmt == "json":
-        return True
-    if fmt in {"pretty", "text", "human"}:
-        return False
-
-    # Boolean toggle fallback.
-    if _is_truthy_env(os.getenv("PRIME_RL_LOG_JSON")):
-        return True
-
-    # Loguru-compatible env var (nice when deploying via generic tooling).
-    if _is_truthy_env(os.getenv("LOGURU_SERIALIZE")):
-        return True
-
-    return False
-
 
 def setup_logger(log_level: str, log_file: Path | None = None, json: bool | None = None):
     global _LOGGER
@@ -76,7 +46,7 @@ def setup_logger(log_level: str, log_file: Path | None = None, json: bool | None
         extra={},
     )
 
-    json_logging = _should_use_json(json)
+    json_logging = bool(json)
 
     # Install console handler
     if json_logging:
@@ -120,7 +90,4 @@ def get_logger():
 def reset_logger():
     """Reset the global logger. Useful mainly in test to clear loggers between tests."""
     global _LOGGER
-    if _LOGGER is not None:
-        # Remove all sinks/handlers to avoid duplicate logging across test runs.
-        _LOGGER.remove()
     _LOGGER = None
