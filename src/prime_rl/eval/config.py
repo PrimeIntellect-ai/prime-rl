@@ -90,18 +90,6 @@ class OfflineEvalConfig(EvalConfig, BaseSettings):
     ] = None
 
     @model_validator(mode="after")
-    def validate_steps(self):
-        if self.steps is not None and self.weights_dir is not None:
-            # When watching, steps may not exist yet at startup.
-            if self.watcher:
-                return self
-            ckpt_steps = sorted([int(step_path.name.split("_")[-1]) for step_path in self.weights_dir.glob("step_*")])
-            for step in self.steps:
-                if step not in ckpt_steps:
-                    raise ValueError(f"Step {step} not found in weights directory {self.weights_dir}")
-        return self
-
-    @model_validator(mode="after")
     def validate_eval_base(self):
         if self.weights_dir is None and not self.eval_base:
             raise ValueError(

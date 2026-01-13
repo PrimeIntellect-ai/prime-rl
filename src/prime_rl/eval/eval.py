@@ -98,6 +98,7 @@ async def eval(config: OfflineEvalConfig):
 
         if config.watcher:
             stable_at_start = list_stable_ckpt_steps()
+            target_steps = set(config.steps) if config.steps is not None else None
             if config.steps is None:
                 evaluated_steps = set(stable_at_start)
                 logger.info(
@@ -106,7 +107,7 @@ async def eval(config: OfflineEvalConfig):
             else:
                 evaluated_steps = set()
                 logger.info(
-                    f"Watcher enabled; will evaluate requested steps as they become stable: {', '.join(map(str, config.steps))}"
+                    f"Watcher enabled; will evaluate requested steps as they become stable: {', '.join(map(str, sorted(target_steps)))}"
                 )
 
             while True:
@@ -114,7 +115,7 @@ async def eval(config: OfflineEvalConfig):
                 candidate_steps = [
                     step
                     for step in stable_steps
-                    if step not in evaluated_steps and (config.steps is None or step in config.steps)
+                    if step not in evaluated_steps and (target_steps is None or step in target_steps)
                 ]
 
                 for ckpt_step in sorted(candidate_steps):
@@ -133,7 +134,7 @@ async def eval(config: OfflineEvalConfig):
                     )
                     evaluated_steps.add(ckpt_step)
 
-                if config.steps is not None and all(step in evaluated_steps for step in config.steps):
+                if target_steps is not None and target_steps.issubset(evaluated_steps):
                     break
 
                 await asyncio.sleep(10)
@@ -143,6 +144,11 @@ async def eval(config: OfflineEvalConfig):
 
             # Filter the steps to evaluate
             if config.steps is not None:
+                missing_steps = sorted(set(config.steps) - set(ckpt_steps))
+                if missing_steps:
+                    raise ValueError(
+                        f"Requested steps not found in weights directory {config.weights_dir}: {', '.join(map(str, missing_steps))}"
+                    )
                 ckpt_steps = [step for step in ckpt_steps if step in config.steps]
 
             logger.info(f"Evaluating {len(ckpt_steps)} weight checkpoints (steps: {', '.join(map(str, ckpt_steps))})")
