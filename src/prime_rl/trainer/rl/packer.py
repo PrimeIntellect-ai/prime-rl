@@ -128,10 +128,10 @@ class Packer:
         # For full batch mode, determine eligible runs once at the start
         # (so popping samples doesn't disqualify runs mid-selection)
         if not self.small_batch_granularity:
-            run_idx = self._get_runs_with_full_batch()[0]
-            while len(self.buffers[run_idx]) > 0:
-                sample, temperature = self.buffers[run_idx].pop()
-                selected.append((run_idx, sample, temperature))
+            for run_idx in self._get_runs_with_full_batch():
+                while len(self.buffers[run_idx]) > 0:
+                    sample, temperature = self.buffers[run_idx].pop()
+                    selected.append((run_idx, sample, temperature))
             return selected
 
         while tokens_collected < token_budget:
