@@ -57,7 +57,7 @@ flash-attn = [
     "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.6.8/flash_attn-2.8.3+cu128torch2.9-cp312-cp312-linux_x86_64.whl",
 ]
 flash-attn-3 = [
-    "flash-attn-3 @ git+https://github.com/Dao-AILab/flash-attention.git@main#subdirectory=hopper",
+    "flash_attn_3 @ https://github.com/samsja/flash-attn-builds/releases/download/v0.1/flash_attn_3-3.0.0b1-cp39-abi3-linux_x86_64.whl",
 ]
 metrics = [
     "prometheus_client>=0.20.0",
@@ -74,7 +74,7 @@ dev = [
 
 
 [tool.uv]
-no-build-isolation-package = ["flash-attn", "flash-attn-3"]
+no-build-isolation-package = ["flash-attn"]
 prerelease = "allow"
 
 [tool.uv.sources]
