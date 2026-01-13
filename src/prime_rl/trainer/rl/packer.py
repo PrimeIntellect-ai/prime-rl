@@ -110,6 +110,7 @@ class Packer:
         for buffer in self.buffers.values():
             for sample, _ in buffer:
                 tokens += len(sample.prompt_ids) + len(sample.completion_ids)
+                samples += 1
                 estimated_next_sample_tokens = tokens + tokens / samples
                 if estimated_next_sample_tokens >= threshold:
                     return True
