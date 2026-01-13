@@ -200,6 +200,10 @@ def worker_main(
         vf_logger = logging.getLogger("verifiers")
         vf_logger.handlers.clear()
         vf_logger.addHandler(logging.FileHandler(log_file))
+    else:
+        # Set up a silent logger to avoid RuntimeError when EventLoopLagMonitor calls get_logger()
+        # Using CRITICAL level + disabled critical logging (in setup_logger) = silent logger
+        setup_logger("CRITICAL")
 
     # Load environment
     env = vf.load_environment(env_id, **env_args)
