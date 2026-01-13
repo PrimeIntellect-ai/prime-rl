@@ -829,6 +829,17 @@ requires-dist = [
 ]
 
 [[package]]
+name = "flash-attn-3"
+version = "3.0.0b1"
+source = { git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=hopper&rev=main#13696f2e5e235696a6851eada1780f7753226a68" }
+dependencies = [
+    { name = "einops" },
+    { name = "ninja" },
+    { name = "packaging" },
+    { name = "torch" },
+]
+
+[[package]]
 name = "flashinfer-python"
 version = "0.5.3"
 source = { registry = "https://pypi.org/simple" }
@@ -2432,6 +2443,9 @@ dependencies = [
 flash-attn = [
     { name = "flash-attn" },
 ]
+flash-attn-3 = [
+    { name = "flash-attn-3" },
+]
 metrics = [
     { name = "prometheus-client" },
 ]
@@ -2454,6 +2468,7 @@ requires-dist = [
     { name = "datasets", specifier = ">=4.0.0" },
     { name = "dion", git = "https://github.com/samsja/dion.git?rev=main" },
     { name = "flash-attn", marker = "extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.6.8/flash_attn-2.8.3+cu128torch2.9-cp312-cp312-linux_x86_64.whl" },
+    { name = "flash-attn-3", marker = "extra == 'flash-attn-3'", git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=hopper&rev=main" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "liger-kernel", specifier = ">=0.5.10" },
     { name = "loguru", specifier = ">=0.7.3" },
@@ -2486,7 +2501,7 @@ requires-dist = [
     { name = "vllm", specifier = "==0.12.0" },
     { name = "wandb", specifier = ">=0.20.1" },
 ]
-provides-extras = ["flash-attn", "metrics"]
+provides-extras = ["flash-attn", "flash-attn-3", "metrics"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -3022,7 +3037,7 @@ dependencies = [
     { name = "verifiers" },
 ]
 wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/reverse-text/@f5644269/reverse_text-0.1.4-py2.py3-none-any.whl", hash = "sha256:0adc3abcb6ceba3fa82709258c732e95c90400bc899230dce47a2e0f31a74aec" },
+    { url = "https://hub.primeintellect.ai/primeintellect/reverse-text/@efe79870/reverse_text-0.1.4-py2.py3-none-any.whl", hash = "sha256:0adc3abcb6ceba3fa82709258c732e95c90400bc899230dce47a2e0f31a74aec" },
 ]
 
 [[package]]

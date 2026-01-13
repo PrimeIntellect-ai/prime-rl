@@ -56,6 +56,9 @@ synthesize = "prime_rl.synthesize.synthesize:main"
 flash-attn = [
     "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.6.8/flash_attn-2.8.3+cu128torch2.9-cp312-cp312-linux_x86_64.whl",
 ]
+flash-attn-3 = [
+    "flash-attn-3 @ git+https://github.com/Dao-AILab/flash-attention.git@main#subdirectory=hopper",
+]
 metrics = [
     "prometheus_client>=0.20.0",
 ]
@@ -71,7 +74,7 @@ dev = [
 
 
 [tool.uv]
-no-build-isolation-package = ["flash-attn"]
+no-build-isolation-package = ["flash-attn", "flash-attn-3"]
 prerelease = "allow"
 
 [tool.uv.sources]
@@ -83,6 +86,7 @@ torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
+flash-attn-3 = [{ requirement = "torch", match-runtime = true }]
 
 [tool.uv.extra-build-variables]
 flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
