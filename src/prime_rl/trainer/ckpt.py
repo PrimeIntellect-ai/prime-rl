@@ -211,7 +211,7 @@ class CheckpointManager:
             self._maybe_upload(step)
 
     def _maybe_upload(self, step: int) -> None:
-        hub = self.config.hub
+        hub = self.config.hf_push
         if hub is None:
             return
         if not should_upload_step(step, self.config.keep_interval):
@@ -292,7 +292,7 @@ class WeightCheckpointManager:
             self.ckpt_steps = []
         self.keep_last = keep_last
         self.keep_interval = keep_interval
-        self._hub_cfg = hub.hub if hub is not None else None
+        self._hub_cfg = hub.hf_push if hub is not None else None
 
     def get_step_path(self, step: int) -> Path:
         """Get the path to write the weight checkpoint for a given step."""
