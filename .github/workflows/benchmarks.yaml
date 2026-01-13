@@ -159,7 +159,7 @@ jobs:
             --attention "${{ matrix.attention }}" \
             --output "/tmp/benchmark_result.json" \
             --docker-image "${{ needs.get-image-digest.outputs.image_with_digest }}" \
-            --timeout ${{ (matrix.timeout_minutes - 5) * 60 }}
+            --timeout $(( (${{ matrix.timeout_minutes }} - 5) * 60 ))
       - name: Set artifact name
         id: artifact
         run: echo "name=benchmark-${{ matrix.runner }}-$(echo '${{ matrix.model }}' | sed 's/\//--/')-${{ matrix.type }}-${{ matrix.lora_rank || 'full' }}-${{ matrix.num_gpus }}gpu-${{ matrix.ac }}-${{ matrix.attention }}-${{ matrix.seq_len }}" >> "$GITHUB_OUTPUT"
