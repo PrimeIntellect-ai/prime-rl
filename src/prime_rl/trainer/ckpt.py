@@ -28,7 +28,6 @@ from prime_rl.trainer.weights import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.hf_hub import (
-    HubUploadPaths,
     build_training_path_in_repo,
     build_weights_path_in_repo,
     should_upload_step,
@@ -213,23 +212,20 @@ class CheckpointManager:
 
     def _maybe_upload(self, step: int) -> None:
         hub = self.config.hub
-        if hub is None or hub.repo_id is None or not hub.upload_training:
+        if hub is None:
             return
         if not should_upload_step(step, self.config.keep_interval):
             return
 
         step_dir = get_step_path(self.ckpt_dir, step)
-        paths = HubUploadPaths(training_prefix=hub.training_path_prefix, weights_prefix=hub.weights_path_prefix)
-        path_in_repo = build_training_path_in_repo(paths, step)
+        path_in_repo = build_training_path_in_repo(hub.repo_prefix, step)
         upload_folder_to_hub(
             repo_id=hub.repo_id,
             folder_path=step_dir,
             path_in_repo=path_in_repo,
             commit_message=f"Upload trainer checkpoint step {step}",
-            token=hub.token,
-            revision=hub.revision,
-            create_repo=hub.create_repo,
-            private=hub.private,
+            create_repo=True,
+            private=True,
         )
 
     def maybe_clean(self) -> None:
@@ -380,22 +376,19 @@ class WeightCheckpointManager:
 
     def _maybe_upload(self, step: int, step_path: Path) -> None:
         hub = self._hub_cfg
-        if hub is None or hub.repo_id is None or not hub.upload_weights:
+        if hub is None:
             return
         if not should_upload_step(step, self.keep_interval):
             return
 
-        paths = HubUploadPaths(training_prefix=hub.training_path_prefix, weights_prefix=hub.weights_path_prefix)
-        path_in_repo = build_weights_path_in_repo(paths, step)
+        path_in_repo = build_weights_path_in_repo(hub.repo_prefix, step)
         upload_folder_to_hub(
             repo_id=hub.repo_id,
             folder_path=step_path,
             path_in_repo=path_in_repo,
             commit_message=f"Upload weight checkpoint step {step}",
-            token=hub.token,
-            revision=hub.revision,
-            create_repo=hub.create_repo,
-            private=hub.private,
+            create_repo=True,
+            private=True,
         )
 
     def maybe_clean(self) -> None:

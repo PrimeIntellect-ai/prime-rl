@@ -426,58 +426,23 @@ class HubCheckpointUploadConfig(BaseConfig):
     """Configures uploading already-saved checkpoints from disk to the Hugging Face Hub."""
 
     repo_id: Annotated[
-        str | None,
+        str,
         Field(
             description=(
-                "HF Hub repository id to upload to (e.g. 'org/name'). If None, uploading is disabled."
+                "HF Hub repository id to upload to (e.g. 'PrimeIntellect/INTELLECT-4-585-Ckpt')."
             )
         ),
-    ] = None
+    ]
 
-    token: Annotated[
-        str | None,
+    repo_prefix: Annotated[
+        str,
         Field(
             description=(
-                "HF Hub token. If None, relies on standard HF authentication mechanisms "
-                "(e.g. HF_TOKEN env var or huggingface-cli login)."
+                "Root folder within the HF repo to upload into (e.g. for repo "
+                "'PrimeIntellect/INTELLECT-4-585-Ckpt', a good prefix is 'INTELLECT-4')."
             )
         ),
-    ] = None
-
-    revision: Annotated[
-        str | None,
-        Field(description="Branch/tag/commit to upload to. If None, uses the repo default branch."),
-    ] = None
-
-    create_repo: Annotated[
-        bool,
-        Field(description="Create the repo if it does not exist (requires permissions)."),
-    ] = True
-
-    private: Annotated[
-        bool | None,
-        Field(description="If creating the repo, whether it should be private. If None, HF default is used."),
-    ] = None
-
-    upload_training: Annotated[
-        bool,
-        Field(description="Whether to upload full trainer checkpoints under `checkpoints/step_X`."),
-    ] = True
-
-    upload_weights: Annotated[
-        bool,
-        Field(description="Whether to upload HF-compatible weight checkpoints under `weights/step_X`."),
-    ] = True
-
-    training_path_prefix: Annotated[
-        str,
-        Field(description="Prefix within the HF repo to upload full checkpoints into."),
-    ] = "checkpoints"
-
-    weights_path_prefix: Annotated[
-        str,
-        Field(description="Prefix within the HF repo to upload weight checkpoints into."),
-    ] = "weights"
+    ] = ""
 
 
 class CheckpointConfig(BaseConfig):

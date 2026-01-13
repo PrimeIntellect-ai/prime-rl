@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 
 from prime_rl.utils.logger import get_logger
@@ -40,23 +39,14 @@ def _should_use_large_upload(folder_path: Path) -> bool:
                 return True
     return False
 
-
-@dataclass(frozen=True)
-class HubUploadPaths:
-    training_prefix: str = "checkpoints"
-    weights_prefix: str = "weights"
-
-
 def upload_folder_to_hub(
     *,
     repo_id: str,
     folder_path: Path,
     path_in_repo: str,
     commit_message: str,
-    token: str | None = None,
-    revision: str | None = None,
     create_repo: bool = True,
-    private: bool | None = None,
+    private: bool = True,
     repo_type: str = "model",
 ) -> None:
     """
@@ -82,7 +72,7 @@ def upload_folder_to_hub(
             "depends on it) and retry."
         ) from e
 
-    api = hf_hub.HfApi(token=token)
+    api = hf_hub.HfApi()
     if create_repo:
         api.create_repo(repo_id=repo_id, repo_type=repo_type, exist_ok=True, private=private)
 
@@ -97,15 +87,14 @@ def upload_folder_to_hub(
         folder_path=str(folder_path),
         path_in_repo=path_in_repo,
         commit_message=commit_message,
-        revision=revision,
         repo_type=repo_type,
     )
 
 
-def build_training_path_in_repo(paths: HubUploadPaths, step: int) -> str:
-    return _join_repo_path(paths.training_prefix, f"step_{step}")
+def build_training_path_in_repo(repo_prefix: str, step: int) -> str:
+    return _join_repo_path(repo_prefix, "checkpoints", f"step_{step}")
 
 
-def build_weights_path_in_repo(paths: HubUploadPaths, step: int) -> str:
-    return _join_repo_path(paths.weights_prefix, f"step_{step}")
+def build_weights_path_in_repo(repo_prefix: str, step: int) -> str:
+    return _join_repo_path(repo_prefix, "weights", f"step_{step}")
 
