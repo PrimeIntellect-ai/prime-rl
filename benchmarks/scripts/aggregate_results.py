@@ -131,11 +131,12 @@ def generate_markdown(
         "Automated benchmark results for prime-rl using `--bench` flag.",
         "",
         f"**Last Updated:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}  ",
-        f"**Commit:** `{commit}`",
+        f"**Commit:** `{commit}`  ",
         f"**Docker Image:** `{docker_image}`",
         "",
         f"> :warning: indicates regression > {threshold * 100:.0f}% from baseline",
         f"> diffs shown when abs(change) >= {diff_display_threshold * 100:.1f}% (except regressions, which always show diffs)",
+        "",
         "> :clock10: The Step Time shown is the time taken per micro batch. This differs from what gets displayed in the bench table which is the total step time."
         "",
     ]
