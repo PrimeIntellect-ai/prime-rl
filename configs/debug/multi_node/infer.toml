@@ -1,4 +1,4 @@
 [model]
-name = "Qwen/Qwen3-4B-Instruct-2507"
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
 enable_auto_tool_choice = true
 tool_call_parser = "hermes"

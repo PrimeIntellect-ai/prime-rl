@@ -1,10 +1,10 @@
-max_steps = 100
+max_steps = 30
 batch_size = 512
 rollouts_per_example = 16
 max_async_level = 99
 
 [model]
-name = "Qwen/Qwen3-4B-Instruct-2507"
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
 
 [sampling]
 max_tokens = 512
