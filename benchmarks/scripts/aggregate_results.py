@@ -97,6 +97,17 @@ def format_metric(
     return formatted, False
 
 
+def sorting_key(x: dict) -> tuple:
+    return (
+        get_training_type(x["config"]),
+        x["config"]["seq_len"],
+        -x["metrics"]["throughput"]["mean"],
+        get_hardware(x["config"]),
+        x["config"]["ac"],
+        x["config"]["attention"],
+    )
+
+
 def generate_markdown(
     results: list[dict],
     baselines: dict[str, dict],
@@ -135,7 +146,7 @@ def generate_markdown(
         lines.append("| Type | Hardware | SeqLen | AC | Attn | MFU | TPS | Step Time | Peak Mem |")
         lines.append("|------|----------|--------|----|----|-----|-----|-----------|----------|")
 
-        for r in sorted(model_results, key=lambda x: (get_hardware(x["config"]), get_training_type(x["config"]))):
+        for r in sorted(model_results, key=sorting_key):
             cfg, m = r["config"], r["metrics"]
             bl = baselines.get(get_config_key(cfg), {})
 
