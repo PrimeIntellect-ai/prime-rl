@@ -2,6 +2,7 @@ max_steps = 30
 batch_size = 512
 rollouts_per_example = 16
 max_async_level = 99
+workers_per_env = 4
 
 [model]
 name = "Qwen/Qwen3-30B-A3B-Thinking-2507"

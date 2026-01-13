@@ -9,6 +9,9 @@
 #SBATCH --output=/shared/logs/job_%j.log
 #SBATCH --error=/shared/logs/job_%j.log
 
+# dump a traceback on SIGABRT / SIGSEGV
+export PYTHONFAULTHANDLER=1
+
 # Configs
 export CKPT_STEP=-1
 
