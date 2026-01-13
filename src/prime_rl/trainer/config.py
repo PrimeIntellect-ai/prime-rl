@@ -461,7 +461,7 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = None
 
-    hub: HubCheckpointUploadConfig | None = None
+    hf_push: HubCheckpointUploadConfig | None = None
 
     skip_progress: Annotated[
         bool,
