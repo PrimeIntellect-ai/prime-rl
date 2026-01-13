@@ -18,13 +18,11 @@ def should_upload_step(step: int, keep_interval: int | None) -> bool:
     return step % keep_interval == 0
 
 
-def _join_repo_path(*parts: str) -> str:
-    cleaned: list[str] = []
-    for p in parts:
-        p = p.strip().strip("/")
-        if p:
-            cleaned.append(p)
-    return "/".join(cleaned)
+def _path_in_repo(repo_prefix: str, kind: str, step: int) -> str:
+    repo_prefix = repo_prefix.strip().strip("/")
+    if repo_prefix:
+        return f"{repo_prefix}/{kind}/step_{step}"
+    return f"{kind}/step_{step}"
 
 
 def upload_folder_to_hub(
@@ -42,30 +40,15 @@ def upload_folder_to_hub(
 
     This is intentionally "upload from disk" (no in-memory serialization).
     """
-    try:
-        logger = get_logger()
-    except RuntimeError:
-        logger = None
-    if not repo_id:
-        raise ValueError("repo_id must be set to upload to the Hub")
-    if not folder_path.exists():
-        raise FileNotFoundError(f"Folder to upload does not exist: {folder_path}")
+    logger = get_logger()
 
-    # Import inside to keep import-time side effects minimal and to ease testing via monkeypatching.
-    try:
-        import huggingface_hub as hf_hub
-    except ModuleNotFoundError as e:  # pragma: no cover
-        raise RuntimeError(
-            "huggingface_hub is required for uploading checkpoints. Install it (or install transformers, which "
-            "depends on it) and retry."
-        ) from e
+    import huggingface_hub as hf_hub
 
     api = hf_hub.HfApi()
     if create_repo:
         api.create_repo(repo_id=repo_id, repo_type=repo_type, exist_ok=True, private=private)
 
-    if logger is not None:
-        logger.info(f"Uploading {folder_path} to hf://{repo_id}/{path_in_repo}")
+    logger.info(f"Uploading {folder_path} to hf://{repo_id}/{path_in_repo}")
     api.upload_folder(
         repo_id=repo_id,
         folder_path=str(folder_path),
@@ -76,9 +59,9 @@ def upload_folder_to_hub(
 
 
 def build_training_path_in_repo(repo_prefix: str, step: int) -> str:
-    return _join_repo_path(repo_prefix, "checkpoints", f"step_{step}")
+    return _path_in_repo(repo_prefix, "checkpoints", step)
 
 
 def build_weights_path_in_repo(repo_prefix: str, step: int) -> str:
-    return _join_repo_path(repo_prefix, "weights", f"step_{step}")
+    return _path_in_repo(repo_prefix, "weights", step)
 
