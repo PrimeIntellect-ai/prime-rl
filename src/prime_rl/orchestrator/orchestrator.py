@@ -379,6 +379,7 @@ async def orchestrate(config: OrchestratorConfig):
             temperature=config.sampling.temperature,
             step=progress.step,
         )
+        assert len(training_batch.examples) != 0, "Step with no samples is not allowed"
         training_batch_sender.send(training_batch)
 
         # Await and process val results
