@@ -24,7 +24,9 @@ from prime_rl.utils.utils import clean_exit, get_env_ids_to_install, get_step_pa
 async def eval(config: OfflineEvalConfig):
     # Initialize the logger
     logger = setup_logger(
-        config.log.level, log_file=config.output_dir / "logs" / "eval.log" if config.log.file else None
+        config.log.level,
+        log_file=config.output_dir / "logs" / "eval.log" if config.log.file else None,
+        json=config.log.json,
     )
     vf.setup_logging(level=config.log.vf_level.upper())
 

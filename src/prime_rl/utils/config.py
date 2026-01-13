@@ -61,6 +61,16 @@ class LogConfig(BaseConfig):
         Field(description="Logging level for the process. Will determine the logging verbosity and format."),
     ] = "info"
 
+    json: Annotated[
+        bool,
+        Field(
+            description=(
+                "Whether to emit JSON logs (newline-delimited JSON) suitable for log aggregation systems like Loki. "
+                "Implemented via Loguru's `serialize=True`."
+            ),
+        ),
+    ] = False
+
     vf_level: Annotated[
         str,
         Field(description="Logging level for the verifiers package. Will determine the logging verbosity and format."),

@@ -55,6 +55,7 @@ def train(config: SFTTrainerConfig):
     logger = setup_logger(
         config.log.level,
         log_file=config.output_dir / "logs" / "trainer" / f"rank_{world.rank}.log" if config.log.file else None,
+        json=config.log.json,
     )
     logger.info(f"Starting SFT trainer in {world}")
 

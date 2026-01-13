@@ -52,6 +52,16 @@ class SharedLogConfig(BaseSettings):
 
     file: Annotated[bool | None, Field(description="Whether to log to a file.")] = True
 
+    json: Annotated[
+        bool | None,
+        Field(
+            description=(
+                "Whether to emit JSON logs (newline-delimited JSON) for Loki/Grafana. "
+                "If None, submodule configs are unchanged."
+            ),
+        ),
+    ] = None
+
 
 class SharedWandbConfig(BaseSettings):
     """Configures shared W&B configs."""
@@ -247,6 +257,9 @@ class RLConfig(BaseSettings):
             if self.log.file is not None:
                 self.trainer.log.file = self.log.file
                 self.orchestrator.log.file = self.log.file
+            if self.log.json is not None:
+                self.trainer.log.json = self.log.json
+                self.orchestrator.log.json = self.log.json
 
         return self
 
@@ -548,7 +561,9 @@ def monitor_process(process: Popen, stop_event: Event, error_queue: list, proces
 def rl(config: RLConfig):
     # Setup logger
     logger = setup_logger(
-        config.log.level or "info", log_file=config.output_dir / "logs" / "rl.log" if config.log.file else None
+        config.log.level or "info",
+        log_file=config.output_dir / "logs" / "rl.log" if config.log.file else None,
+        json=config.trainer.log.json,
     )
     start_command = sys.argv
     logger.info("Starting RL run")
