@@ -32,7 +32,7 @@ class Packer:
         tokenizer: PreTrainedTokenizer,
         config: TransportConfigType,
         start_step: int = 0,
-        small_batch_granularity: bool = False,
+        pack_only_one_microbatch_in_each_step: bool = False,
     ):
         self.logger = get_logger()
         self.runs = get_runs()
@@ -40,7 +40,7 @@ class Packer:
         self.seq_len = seq_len
         self.pad_to_multiple_of = pad_to_multiple_of
         self.tokenizer = tokenizer
-        self.small_batch_granularity = small_batch_granularity
+        self.pack_only_one_microbatch_in_each_step = pack_only_one_microbatch_in_each_step
         self.receiver = setup_training_batch_receiver(config)
         shutil.rmtree(get_rollout_dir(self.runs.output_dir), ignore_errors=True)
         self.sender: MicroBatchSender = setup_micro_batch_sender(
@@ -93,11 +93,11 @@ class Packer:
     def _has_enough_tokens(self) -> bool:
         """Check if we have enough samples in buffer to pack a step
 
-        When small_batch_granularity=False, requires at least one run to have batch_size samples before packing.
-        When small_batch_granularity=True, we pack whenever we can make at least 1 micro batch for each data rank.
+        When pack_only_one_microbatch_in_each_step=False, requires at least one run to have batch_size samples before packing.
+        When pack_only_one_microbatch_in_each_step=True, we pack whenever we can make at least 1 micro batch for each data rank.
         """
         # When not using small batch granularity, require at least one full batch
-        if not self.small_batch_granularity:
+        if not self.pack_only_one_microbatch_in_each_step:
             return len(self._get_runs_with_full_batch()) > 0
 
         threshold = self.seq_len * self.dp_world_size
@@ -113,15 +113,15 @@ class Packer:
     def _select_samples_round_robin(self, token_budget: int) -> list[tuple[int, TrainingSample, float]]:
         """Select samples using round-robin from runs with buffered work.
 
-        When small_batch_granularity=False, we ignore the token budget and select all the samples from a run with enough samples.
-        When small_batch_granularity=True, we select samples from runs with buffered work until we have enough tokens to pack a step.
+        When pack_only_one_microbatch_in_each_step=False, we ignore the token budget and select all the samples from a run with enough samples.
+        When pack_only_one_microbatch_in_each_step=True, we select samples from runs with buffered work until we have enough tokens to pack a step.
         """
         selected: list[tuple[int, TrainingSample, float]] = []
         tokens_collected = 0
 
         # For full batch mode, determine eligible runs once at the start
         # (so popping samples doesn't disqualify runs mid-selection)
-        if not self.small_batch_granularity:
+        if not self.pack_only_one_microbatch_in_each_step:
             for run_idx in self._get_runs_with_full_batch():
                 while len(self.buffers[run_idx]) > 0:
                     sample, temperature = self.buffers[run_idx].popleft()
@@ -171,7 +171,7 @@ class Packer:
 
         while not self._has_enough_tokens():
             if (
-                self.small_batch_granularity
+                self.pack_only_one_microbatch_in_each_step
                 and time.time() - start_time > TIMEOUT_SECONDS
                 and any(len(i) > 0 for i in self.buffers)
             ):

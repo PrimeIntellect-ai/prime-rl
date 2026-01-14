@@ -133,7 +133,7 @@ class DataLoader:
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
         config: TransportConfigType,
-        small_batch_granularity: bool = False,
+        pack_only_one_microbatch_in_each_step: bool = False,
     ):
         self.world = get_world()
 
@@ -145,7 +145,7 @@ class DataLoader:
                 config=config,
                 pad_to_multiple_of=pad_to_multiple_of,
                 start_step=start_step,
-                small_batch_granularity=small_batch_granularity,
+                pack_only_one_microbatch_in_each_step=pack_only_one_microbatch_in_each_step,
             )
 
         non_dp_world_size = self.world.world_size // dp_world_size

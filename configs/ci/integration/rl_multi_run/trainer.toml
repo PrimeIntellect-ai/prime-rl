@@ -10,4 +10,4 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 rank = 8
 
 [data]
-small_batch_granularity = true
+pack_only_one_microbatch_in_each_step = true
