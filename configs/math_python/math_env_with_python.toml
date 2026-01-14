@@ -1,0 +1,32 @@
+max_steps = 300
+seq_len = 4096
+
+[wandb]
+project = "math-python-debug"
+name = "math-env-with-python"
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[orchestrator]
+batch_size = 512
+rollouts_per_example = 16
+
+[orchestrator.sampling]
+max_tokens = 512
+
+[[orchestrator.env]]
+id = "math-env"
+args = { dataset_name="openai/gsm8k", dataset_subset="main", python_tool = true, sandbox_client_max_workers = 128, max_startup_wait_seconds = 120 }
+
+[trainer] # Default trainer config
+
+[trainer.model.ac]
+
+[inference]
+api_server_count = 4
+
+[inference.model]
+enable_auto_tool_choice = true
+tool_call_parser = "hermes"
+max_model_len = 4096
